@@ -95,6 +95,10 @@ describe('each value in plain words (#1295)', () => {
     );
   });
 
+  it('never claims a check code did not name', () => {
+    expect(readingSentence({ ...base, checked_by: null })).toBe('read from the plan view: 24"');
+  });
+
   it('asks a person to confirm a value only its drawn length checks', () => {
     expect(readingSentence(toConfirm)).toBe('read 22 7/8" on the side view — please confirm (only the drawn length checks it)');
   });

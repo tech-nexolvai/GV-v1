@@ -72,6 +72,7 @@ from rules.snapshot import SnapshotIntegrityError
 from units.imperial import format_inches
 from verdict.outcomes import Outcome
 from workflow.depth_evidence import (
+    AGREED_PREFIX,
     CONFIRM_ONLY,
     DEPTH_FIELDS,
     DEPTH_READER_FLAG,
@@ -123,6 +124,12 @@ _WAITING: Final = frozenset({Outcome.NOT_FOUND, Outcome.REVIEW_REQUIRED})
 
 NO_VIEW: Final = "no plan or section view of its drawing was found."
 UNPLACED: Final = "the view it was read on could not be tied to one countertop: {reason}"
+#: A person confirmed another number for this dimension on an earlier reading
+#: (`depth_evidence.PERSON_EARLIER`, said the same way).
+PERSON_EARLIER: Final = (
+    "a person confirmed {earlier} for this countertop's {what} on an earlier reading of this view, "
+    "and the new reading says {now}: held for a person."
+)
 
 #: The vendor's own text layers (`workflow/stages._PRINTED_CODE_EXTRACTORS`, held the same by a
 #: test): the vector text, the CAD notes, a pasted drawing's font text and the local OCR. Never GV's
@@ -184,16 +191,35 @@ class _Row:
     def reason(self) -> str:
         return " ".join((self.row.review_reason or "").split()) or "no reason was recorded."
 
+    @property
+    def agreed(self) -> Fraction | None:
+        """The two readers' agreed number: the value, or on a held value the one they agreed."""
+        if self.value is not None:
+            return self.value
+        raw = self.flag(AGREED_PREFIX)
+        try:
+            return None if raw is None else Fraction(raw)
+        except (ValueError, ZeroDivisionError):
+            return None
+
+    @property
+    def dimension(self) -> tuple[UUID, frozenset[str]]:
+        """Which printed dimension it is: its page, view and span, the same on every reading
+        (`depth_evidence._Reading.dimension`)."""
+        return self.row.page_id, frozenset(
+            f for f in self.flags if f.startswith(("view:", "span:"))
+        )
+
 
 def _inches(value: Fraction) -> str:
     return f'{format_inches(value)}"'
 
 
-def _good_run(session: Session, revision_id: UUID) -> UUID | None:
-    """The revision's newest depth reading that did not fail: two queries."""
+def _good_runs(session: Session, revision_id: UUID) -> list[UUID]:
+    """The revision's depth readings that did not fail, newest first: two queries."""
     runs = depth_runs(session, revision_id)
     if not runs:
-        return None
+        return []
     failed = set(
         session.scalars(
             select(ObservationCandidate.extraction_run_id)
@@ -204,7 +230,7 @@ def _good_run(session: Session, revision_id: UUID) -> UUID | None:
             .distinct()
         )
     )
-    return next((run.id for run in runs if run.id not in failed), None)
+    return [run.id for run in runs if run.id not in failed]
 
 
 def _current(links: Iterable[ItemViewLink]) -> dict[UUID, ItemViewLink]:
@@ -228,6 +254,9 @@ class _Reading:
     """One revision's newest good depth reading, loaded once for every countertop and check."""
 
     rows: list[_Row]
+    earlier: list[_Row]
+    """The rows of the set's earlier good readings: a person's decision on one carries over to the
+    same dimension read again (design §9.5, as `depth_evidence._decide` carries it)."""
     supports: dict[UUID, list[UUID]]
     """A reading's two readers' own rows, by the reading."""
     links: dict[UUID, ItemViewLink]
@@ -251,6 +280,22 @@ class _Reading:
         if link.judged_by != "person" and f"{ITEM_PREFIX}{proposal}" not in row.flags:
             return False
         return link.part_proposal_id == proposal
+
+    def people_for(self, row: _Row, proposal: UUID) -> tuple[list[CanonicalObservation], bool]:
+        """What a person confirmed of this value: on this very reading, or on an earlier reading of
+        the same dimension tied to the same countertop. True when it was on this very reading."""
+        own = self.people.get(row.row.id, [])
+        if own:
+            return own, True
+        earlier = [
+            canonical
+            for old in self.earlier
+            if old.dimension == row.dimension
+            and old.field == row.field
+            and self.linked_to(old, proposal)
+            for canonical in self.people.get(old.row.id, [])
+        ]
+        return earlier, False
 
     def mine(self, proposal: UUID) -> list[_Row]:
         return [row for row in self.rows if self.linked_to(row, proposal)]
@@ -283,20 +328,23 @@ class _Reading:
         return found
 
 
-def _load(session: Session, run_id: UUID) -> _Reading:
-    """Everything a screen shows of one reading, in a fixed number of queries."""
+def _load(session: Session, run_ids: Sequence[UUID]) -> _Reading:
+    """Everything a screen shows of the newest good reading (`run_ids[0]`), and the people's
+    decisions on the earlier good ones, in a fixed number of queries."""
     loaded = session.execute(
         select(ObservationCandidate, Page.index)
         .join(Page, Page.id == ObservationCandidate.page_id)
-        .where(ObservationCandidate.extraction_run_id == run_id)
+        .where(ObservationCandidate.extraction_run_id.in_(run_ids))
         .order_by(Page.index, ObservationCandidate.created_at, ObservationCandidate.id)
     ).all()
     rows: list[_Row] = []
+    earlier: list[_Row] = []
     supports: dict[UUID, list[UUID]] = {}
     for candidate, page_index in loaded:
         flags = frozenset(candidate.ambiguity_flags or ())
         if DEPTH_READER_FLAG in flags:
-            rows.append(_Row(candidate, page_index, flags))
+            row = _Row(candidate, page_index, flags)
+            (rows if candidate.extraction_run_id == run_ids[0] else earlier).append(row)
         elif SUPPORT_FLAG in flags:
             parent = next(
                 (f.removeprefix("supports:") for f in flags if f.startswith("supports:")), ""
@@ -305,14 +353,14 @@ def _load(session: Session, run_id: UUID) -> _Reading:
                 supports.setdefault(UUID(parent), []).append(candidate.id)
             except ValueError:
                 continue
-    pages = {row.row.page_id for row in rows}
+    pages = {row.row.page_id for row in (*rows, *earlier)}
     links = _current(
         session.scalars(select(ItemViewLink).where(ItemViewLink.page_id.in_(pages)))
         if pages
         else ()
     )
     owner = {child: parent for parent, children in supports.items() for child in children}
-    ids = [row.row.id for row in rows] + list(owner)
+    ids = [row.row.id for row in (*rows, *earlier)] + list(owner)
     people: dict[UUID, list[CanonicalObservation]] = {}
     any_evidence: set[UUID] = set()
     if ids:
@@ -350,12 +398,12 @@ def _load(session: Session, run_id: UUID) -> _Reading:
                 stored[crop_id] = marks
     marks_now = current_crop_marks(session, stored)
     crops = {candidate: marks_now[crop] for candidate, crop in crop_of.items()}
-    return _Reading(rows, supports, links, people, any_evidence, crops)
+    return _Reading(rows, earlier, supports, links, people, any_evidence, crops)
 
 
 def _labels(
     session: Session, revision_id: UUID, proposals: set[UUID]
-) -> tuple[dict[UUID, str], dict[UUID, int], dict[UUID, UUID]]:
+) -> tuple[dict[UUID, str], dict[UUID, int], dict[UUID, UUID], set[UUID]]:
     """Each countertop suggestion's name on the screens, its page, and each live item's suggestion.
 
     A suggestion behind a live countertop item takes the item's own name ("Countertop 1 on page 3",
@@ -395,7 +443,12 @@ def _labels(
     for item, proposal in item_proposal.items():
         labels[proposal] = live[item].label
         pages[proposal] = live[item].page_index
-    return labels, pages, item_proposal
+    # The items alone on their drawing: only there is a confirmed reading this countertop's alone.
+    on_view: dict[UUID, int] = {}
+    for countertop in live.values():
+        on_view[countertop.view_id] = on_view.get(countertop.view_id, 0) + 1
+    alone = {item for item, countertop in live.items() if on_view[countertop.view_id] == 1}
+    return labels, pages, item_proposal, alone
 
 
 def _rule_fields(session: Session, snapshot_ids: set[UUID]) -> dict[UUID, list[str]]:
@@ -429,10 +482,15 @@ def _line(
     row: _Row,
     field: str,
     countertop: str,
+    proposal: UUID,
     *,
     tied: bool,
+    may_confirm: bool,
 ) -> DepthReadingOut:
-    """One value as read, in the screen's terms. A view not tied to one countertop is held."""
+    """One value as read, in the screen's terms. A view not tied to one countertop is held.
+
+    `may_confirm`: only on a countertop's own result, alone on its drawing, is a reading offered
+    for confirming: a confirmation is evidence for that countertop's own check only."""
     value = row.value
     line = DepthReadingOut(
         countertop=countertop,
@@ -448,12 +506,22 @@ def _line(
         picture_shows_gv_mark=reading.crops.get(row.row.id),
         can_confirm=False,
     )
-    people = reading.people.get(row.row.id, [])
-    if tied and people:
+    people, here = reading.people_for(row, proposal) if tied else ([], False)
+    if people:
         same = [p for p in people if p.semantic_type == field]
         if same:
             confirmed = Fraction(same[0].value_numerator, same[0].value_denominator)
-            return line.model_copy(update={"state": "confirmed", "value": _inches(confirmed)})
+            if here or row.agreed == confirmed:
+                return line.model_copy(update={"state": "confirmed", "value": _inches(confirmed)})
+            return line.model_copy(
+                update={
+                    "reason": PERSON_EARLIER.format(
+                        earlier=_inches(confirmed),
+                        what=DEPTH_FIELDS[field],
+                        now="no number" if row.agreed is None else _inches(row.agreed),
+                    )
+                }
+            )
         return line.model_copy(update={"state": "not_this"})
     if not tied:
         return line.model_copy(update={"reason": UNPLACED.format(reason=row.reason)})
@@ -465,7 +533,8 @@ def _line(
                 "state": "to_confirm",
                 # The existing confirm path needs the reading's own picture, and refuses a reading
                 # already standing behind an observation.
-                "can_confirm": row.row.id in reading.crops
+                "can_confirm": may_confirm
+                and row.row.id in reading.crops
                 and row.row.id not in reading.any_evidence,
             }
         )
@@ -485,17 +554,24 @@ def _countertop_lines(
     countertop: str,
     *,
     every_field: bool,
+    may_confirm: bool,
 ) -> list[DepthReadingOut]:
     """One countertop's lines for one check: each value read, and with `every_field` a line for a
-    value nothing was read for, with why."""
+    value nothing was read for, with why. `may_confirm` as `_line`."""
     mine = reading.mine(proposal)
     unplaced = reading.unplaced(proposal, mine)
     lines: list[DepthReadingOut] = []
     for field in fields:
         tied = [row for row in mine if row.field == field and VIEW_NOTE not in row.flags]
         away = [row for row in unplaced if row.field == field and VIEW_NOTE not in row.flags]
-        lines += [_line(reading, row, field, countertop, tied=True) for row in tied]
-        lines += [_line(reading, row, field, countertop, tied=False) for row in away]
+        lines += [
+            _line(reading, row, field, countertop, proposal, tied=True, may_confirm=may_confirm)
+            for row in tied
+        ]
+        lines += [
+            _line(reading, row, field, countertop, proposal, tied=False, may_confirm=False)
+            for row in away
+        ]
         if not tied and not away and every_field:
             notes = sorted({row.reason for row in (*mine, *unplaced) if VIEW_NOTE in row.flags})
             lines.append(
@@ -541,12 +617,12 @@ def depth_readings_for(
     answers: dict[UUID, list[DepthReadingOut]] = {}
     fields = _rule_fields(session, {item.rule_snapshot_id for item in waiting})
     for revision_id in sorted({item.package_revision_id for item in waiting}, key=str):
-        run_id = _good_run(session, revision_id)
-        if run_id is None:
+        run_ids = _good_runs(session, revision_id)
+        if not run_ids:
             continue
-        reading = _load(session, run_id)
+        reading = _load(session, run_ids)
         proposals = reading.proposals()
-        labels, pages, item_proposal = _labels(session, revision_id, proposals)
+        labels, pages, item_proposal, alone = _labels(session, revision_id, proposals)
         ordered = sorted(
             proposals, key=lambda p: (pages.get(p, 1 << 30), labels.get(p, ""), str(p))
         )
@@ -564,6 +640,8 @@ def depth_readings_for(
                         wanted,
                         labels.get(proposal, "This countertop"),
                         every_field=True,
+                        # Re-checked here: the countertop's drawing must hold it alone.
+                        may_confirm=item.scope_item_id in alone,
                     )
             else:
                 for proposal in ordered:
@@ -573,6 +651,9 @@ def depth_readings_for(
                         wanted,
                         labels.get(proposal, "A countertop"),
                         every_field=False,
+                        # Never on a whole-package result: a person's confirmation is one
+                        # countertop's evidence, and the package's check cannot use it (#1296).
+                        may_confirm=False,
                     )
             if lines:
                 answers[item.id] = lines
@@ -646,9 +727,10 @@ def vendor_sink_notes(session: Session, revision_id: UUID) -> list[VendorSinkNot
     **It is never filled into a setting**: the sink's inside size is typed from its spec sheet.
     Empty when the reader never read the set.
     """
-    run_id = _good_run(session, revision_id)
-    if run_id is None:
+    good = _good_runs(session, revision_id)
+    if not good:
         return []
+    run_id = good[0]
     pages = set(
         session.scalars(
             select(ObservationCandidate.page_id)

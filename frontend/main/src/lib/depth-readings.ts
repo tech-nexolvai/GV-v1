@@ -53,7 +53,10 @@ export function readingSentence(reading: DepthReading): string {
   const value = reading.value ?? '';
   switch (reading.state) {
     case 'read':
-      return `read from ${onView(reading)}: ${value} (${CHECKED[reading.checked_by ?? 'printed_text']})`;
+      // Only what the server says code checked it by; never a check it did not name.
+      return reading.checked_by
+        ? `read from ${onView(reading)}: ${value} (${CHECKED[reading.checked_by]})`
+        : `read from ${onView(reading)}: ${value}`;
     case 'to_confirm':
       return `read ${value} on ${onView(reading)} — please confirm (only the drawn length checks it)`;
     case 'confirmed':

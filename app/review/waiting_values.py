@@ -427,6 +427,9 @@ def missing_inputs_for(
         return None if row is None else _saved(row, ParameterLayer.RUN.value, setting=False)
 
     answers: dict[UUID, list[MissingInputOut]] = {}
+    # A setting is for the job, not for one countertop: among one check's per-countertop results it
+    # is asked once, on the first, as the check's one whole-package result asks it (#1296).
+    asked_for_countertops: set[tuple[UUID, str, str]] = set()
     for item in waiting:
         rule = snapshots.get(item.rule_snapshot_id)
         if rule is None:  # pragma: no cover - the foreign key guarantees the snapshot
@@ -443,6 +446,11 @@ def missing_inputs_for(
             if not allowed_sources(name):
                 # No honest source is recorded for it, so the save path would refuse it: not asked.
                 continue
+            if item.scope_item_id is not None:
+                key = (item.package_revision_id, item.rule_id, name)
+                if key in asked_for_countertops:
+                    continue
+                asked_for_countertops.add(key)
             guide = _setting_guide(name)
             scope: Scope = "sink" if name in SINK_SETTINGS else "project"
             needs.append(
