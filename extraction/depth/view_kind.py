@@ -1153,9 +1153,15 @@ def _views_by_heading_words(
             "to the drawing above: they could belong to the view above or to the one below"
         )
     for text, taken in label_ink:
+        numbers = sum(1 for box, is_char in taken if is_char and box in digits)
         notes.append(
             f"taken as the label of {text!r} and hidden in every picture: {len(taken)} piece(s) "
-            "of ink on its line (its bubble, underline or scale note)"
+            + (
+                "of ink on its line (its bubble, underline or scale note)"
+                if not numbers
+                else f"of ink on its line, {numbers} of them digits (a view's number on its "
+                "bubble, or a dimension's number printed beside the caption)"
+            )
         )
     if hanging:
         notes.append(
@@ -1270,8 +1276,9 @@ def _views_by_heading_words(
                     + repr((second if caption is first else first).text)
                     + " on its row: code cannot tell which drawing the ink near the split belongs to"
                 )
-        # Ink on a caption row next to this cut (left out as level with the captions, or taken
-        # as a caption's label) that could be read: it may be this view's own dimension or label.
+        # Ink on a caption row next to this cut that could be its own dimension: left out as
+        # level with the captions (a number or a long stroke), or a number taken into a caption's
+        # label (#1313 re-review: a dimension printed within a bubble's reach of a caption).
         level_near = _near_readable(
             level_ink, extent, join=join, reach=reach, characters=0, numbers=digits
         )
@@ -1281,6 +1288,16 @@ def _views_by_heading_words(
                 "long stroke) stand within twice the joining reach of its cut: they may be its own "
                 "dimension"
             )
+        for text, taken in label_ink:
+            label_numbers = [(box, True) for box, is_char in taken if is_char and box in digits]
+            label_near = _near_readable(
+                label_numbers, extent, join=join, reach=reach, characters=0, numbers=digits
+            )
+            if label_near:
+                held.append(
+                    f"{label_near} digit(s) taken as the label of {text!r} stand within twice the "
+                    "joining reach of its cut: they may be its own dimension's number"
+                )
         if index in near:
             held.append(
                 f"{near[index]} piece(s) of readable ink (a long stroke or a word) stand just beyond "

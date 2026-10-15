@@ -217,6 +217,29 @@ def test_a_dimension_on_a_captions_line_is_never_taken_as_its_label() -> None:
     assert any("level with a row of captions" in note for note in notes)
 
 
+def test_a_number_taken_into_a_captions_label_holds_the_view_beside_it() -> None:
+    """A narrow section's overall depth (its line and "24") is printed on the plan caption's line,
+    within a bubble's reach: it is taken into the plan's label and hidden. The section would be
+    read with only its partial "20", so it is held, and the note says a number was taken
+    (#1313 re-review)."""
+    captions = word("PLAN", 350, 200) + word("SECTION", 360, 560)
+    number = word("24", 415, 201, height=6)
+    overall = [line(380, 208, 460, 208), line(382, 213, 382, 257), line(460, 213, 460, 257)]
+    part = word("20", 400, 245, height=6)
+    partial = [line(382, 252, 440, 252), line(440, 250, 440, 257)]
+    ink = panel(
+        PLAN + rect(382, 260, 460, 540) + overall + partial,
+        text=number + part,
+    )
+    views, notes = find(captions + number + part, ink)
+    section = views["SECTION"]
+    assert not section.cut_apart
+    assert "taken as the label of 'PLAN'" in section.reason
+    assert any(
+        "taken as the label of 'PLAN'" in note and "2 of them digits" in note for note in notes
+    )
+
+
 def test_a_captions_own_bubble_and_scale_are_its_label_with_a_note() -> None:
     """A tall caption's scale note under it and its bubble beside it are its label (hidden in
     every picture, with a note), never the drawing of the view below, whose cut starts under them.
