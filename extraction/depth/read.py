@@ -686,11 +686,12 @@ def paint_panel_headings(
 ) -> PanelPaint:
     """What every picture of a panel paints out so no reader sees a view's name (#1327).
 
-    Each label's whole box (`heading_box`) is painted, grown by `pad` pixels (the most any picture
-    grows it), unless that would hide ink the readers may need (`_needed_ink`): a character that is
-    no label's, or an end or the number of a dimension code found. Then, for a view found by its title over a scale note,
-    only the label's own lettering is painted (title, scale note, bubble letters), where that
-    hides none of it; the bubble's ring and the line under the title stay, and name nothing.
+    Each label's whole box (`heading_box`) is painted, as before, unless that box grown by `pad`
+    pixels (the most any picture grows a painted box) would touch ink the readers may need
+    (`_needed_ink`): a character that is no label's, or an end or the number of a dimension code
+    found. Then, for a view found by its title over a scale note, only the label's own lettering
+    is painted (title, scale note, bubble letters), where that touches none of it; the bubble's
+    ring and the line under the title stay, and name nothing.
     Where even that would hide needed ink (or the label is a caption's, with no lettering), the
     whole box is painted and every view that ink belongs to is held: a partly hidden number could
     be read wrong. Never silent: each case leaves a note.
