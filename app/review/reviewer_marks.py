@@ -57,7 +57,7 @@ from app.models.evidence import (
     NoCountertopAnswer,
     ObservationCandidate,
 )
-from app.models.review import ReviewAction, ReviewActionKind
+from app.models.review import ReviewAction, ReviewActionKind, decision_rows
 from app.models.runs import ExtractionRun
 from app.models.verdicts import Finding
 from app.review.signed_record import ReviewDisposition, SignedReviewFinding
@@ -475,13 +475,25 @@ def _by_hand(
     places: _Places,
     drawn: frozenset[UUID],
 ) -> list[FrozenReviewerMark]:
-    """The standing decision on each result shown, as one mark: a result checked by hand."""
+    """The standing decision on each result shown, as one mark: a result checked by hand.
+
+    A person's answer about a held reading (#1367) is drawn from its observation like any confirmed
+    reading, and is never the standing decision: the decision before it stands."""
     rows = {finding.id: finding for finding, _ in findings}
+    listed = [action.action_id for decided in decisions for action in decided.actions]
+    answers = (
+        frozenset(
+            db.scalars(select(ReviewAction.id).where(ReviewAction.id.in_(listed), ~decision_rows()))
+        )
+        if listed
+        else frozenset()
+    )
     marks: list[FrozenReviewerMark] = []
     for decided in decisions:
-        if not decided.actions:
+        standing = [action for action in decided.actions if action.action_id not in answers]
+        if not standing:
             continue
-        last = decided.actions[-1]
+        last = standing[-1]
         if last.action == ReviewActionKind.CORRECT.value or last.action_id in drawn:
             continue  # a fix or a confirmed reading: drawn from its observations above
         finding = rows.get(decided.finding_id)

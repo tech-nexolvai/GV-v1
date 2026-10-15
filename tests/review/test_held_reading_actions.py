@@ -179,6 +179,8 @@ def test_a_held_reading_waits_until_a_person_confirms_it_then_code_decides(
     )
     assert action.original_observation_id == decision.original.id
     assert action.resulting_observation_id == decision.resulting.id
+    # An answer about a held reading, never a decision on the finding (#1367).
+    assert action.tags == ["held-reading-answer"]
     assert decision.original.status == EvidenceStatus.RAW_CANDIDATE.value
     assert session.query(ReviewAction).count() == 1
     assert session.query(CorrectionLedgerEntry).count() == 0
@@ -436,9 +438,10 @@ def test_the_newest_answer_wins(session: Session, tmp_path: Path) -> None:
 
 def test_taking_back_a_fix_after_code_decided_on_it(session: Session, tmp_path: Path) -> None:
     """Input: the held label fixed to 21", the check re-run (code decides FAIL on 21"), then the
-    person confirms the AI's 20" through that FAIL. Outcome: accepted as the newest answer, with no
-    review action on the decided FAIL (a confirm there would read as the person standing behind
-    it); sign-off waits for the re-run, which decides PASS; Smriti skips the replaced fix."""
+    person confirms the AI's 20" through that FAIL. Outcome: accepted as the newest answer. Its
+    `confirm` review action on the decided FAIL is tagged `held-reading-answer` (#1367): the
+    correction rate counts it, and it never stands behind the FAIL; sign-off waits for the re-run,
+    which decides PASS; Smriti skips the replaced fix."""
     from eval.smriti.export import export_candidates
 
     project_id, package_id, anchors = _held_rows(session)
@@ -467,8 +470,18 @@ def test_taking_back_a_fix_after_code_decided_on_it(session: Session, tmp_path: 
     )
     session.commit()
 
-    assert taken_back.action is None
-    assert session.query(ReviewAction).count() == actions
+    assert session.query(ReviewAction).count() == actions + 1
+    assert (taken_back.action.action, taken_back.action.finding_id, taken_back.action.note) == (
+        "confirm",
+        decided.id,
+        None,
+    )
+    assert taken_back.action.tags == ["held-reading-answer"]
+    assert not decision_holds(
+        decided, decision_records(session, [decided.id]), when=datetime.now(UTC)
+    )
+    (rate,) = correction_rate(session, window=timedelta(days=1)).values()
+    assert (rate.numerator, rate.denominator) == (1, 2)  # the fix and this confirmation
     revision = _revision(session, package_id)
     assert revision.id in _revisions_with_unchecked_inputs(session, [revision.id])
     exported = export_candidates(session, database="synthetic").candidates

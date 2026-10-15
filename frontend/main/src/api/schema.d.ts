@@ -6975,6 +6975,8 @@ export interface components {
              * Format: uuid
              */
             review_session_id: string;
+            /** Tags */
+            tags?: components["schemas"]["ReviewActionTag"][];
         };
         /**
          * ReviewActionPage
@@ -6984,6 +6986,22 @@ export interface components {
             /** Items */
             items: components["schemas"]["ReviewActionOut"][];
         };
+        /**
+         * ReviewActionTag
+         * @description What a review action records beside its verb, never a decision of its own (#1367).
+         *
+         *     - `held-reading-answer`: a person confirmed the AI's own reading of a number the checks held
+         *       back (`app/review/evidence_actions.confirm_candidate_reading`). It is an answer about one
+         *       reading, counted by the correction rate, and **never a decision on the finding it was
+         *       recorded on**, whatever that finding's result: every reader that asks which decision stands
+         *       skips it (`is_decision`, `decision_rows`). The next check run uses the value and code decides.
+         *     - `drawn-length-disagreed`: on such an answer, the label's drawn length did not fit the number
+         *       both AI readers agreed on (the reader's `drawn-length` hold). Shown in the history; it decides
+         *       nothing and is never written into the note, which sign-off would read as the person deciding
+         *       the result (Anant, 2026-10-16, "Separate tag").
+         * @enum {string}
+         */
+        ReviewActionTag: "held-reading-answer" | "drawn-length-disagreed";
         /** ReviewDocumentOut */
         ReviewDocumentOut: {
             /**

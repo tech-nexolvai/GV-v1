@@ -20,7 +20,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.models.review import ExceptionScope, ReviewActionKind
+from app.models.review import ExceptionScope, ReviewActionKind, ReviewActionTag
 
 
 def optional_in_schema(schema: dict[str, Any]) -> None:
@@ -106,6 +106,12 @@ class ReviewActionOut(BaseModel):
 
     carried_from_finding_id: UUID | None = None
     """The result the reviewer actually decided on, when `carried_over`; otherwise null."""
+
+    tags: list[ReviewActionTag] = Field(default_factory=list, json_schema_extra=optional_in_schema)
+    """What the action records beside its verb (#1367). `held-reading-answer`: the person confirmed
+    the AI's reading of one number the checks held back; it is history, never a decision on this
+    result. `drawn-length-disagreed`: that number did not fit its drawn length. Empty for every
+    decision; a client that has not learned of it treats a missing one as empty."""
 
 
 class ReviewActionPage(BaseModel):

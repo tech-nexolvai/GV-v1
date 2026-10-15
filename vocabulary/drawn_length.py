@@ -23,6 +23,10 @@ from typing import Final
 
 #: The flag on a sealed reading the drawn-length check could not reach (no scale in its row).
 NO_DRAWN_LENGTH_WITNESS: Final = "no-drawn-length-witness"
+#: The hold code (and flag) on a label whose drawn length does not fit the number both readers
+#: agreed on (`workflow/slot_reader._veto_by_drawn_length`, #992): the drawn length disagreed. A
+#: person who confirms that number anyway has it recorded as a tag on the answer (#1367).
+DRAWN_LENGTH_DISAGREED: Final = "drawn-length"
 #: The words the results and the signed report use for such a reading.
 DRAWN_LENGTH_NOT_CHECKED: Final = "drawn length not checked (no scale)"
 #: Why a width PASS resting on such a reading waits for the reviewer.
@@ -56,6 +60,7 @@ def engine_result_note(outcome: str, reason: str) -> str:
 
 
 __all__ = [
+    "DRAWN_LENGTH_DISAGREED",
     "DRAWN_LENGTH_NOT_CHECKED",
     "NO_DRAWN_LENGTH_WITNESS",
     "NO_WITNESS_REASON",

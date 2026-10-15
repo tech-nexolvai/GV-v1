@@ -896,23 +896,39 @@ function HistoryList({ findingId, outcome, projectId, packageId }: { findingId: 
   if (history.status === 'loading') return <p className="text-sm text-muted-foreground" role="status">Loading the history…</p>;
   if (history.status === 'error') return <p className="text-sm" role="alert">The history could not be loaded: {history.error.message}</p>;
   if (history.data.items.length === 0) return <p className="text-sm text-muted-foreground">No decisions recorded yet.</p>;
+  // An answer about a held AI reading (#1367) is history, never a decision: "latest" marks the
+  // newest real decision, whatever answers came after it.
+  const latest = history.data.items.find((action) => !isHeldReadingAnswer(action))?.id;
   return (
     <ol data-slot="queue-history" aria-label="Decisions, newest first" className="flex flex-col gap-2 text-sm">
-      {history.data.items.map((action, i) => (
-        <li key={action.id} className={cn('flex flex-col gap-0.5', i > 0 && 'text-muted-foreground')}>
+      {history.data.items.map((action) => (
+        <li key={action.id} className={cn('flex flex-col gap-0.5', action.id !== latest && 'text-muted-foreground')}>
           <span className="font-medium">
-            {decisionWords(action.action, outcome)}
+            {isHeldReadingAnswer(action) ? HELD_READING_ANSWER_WORDS : decisionWords(action.action, outcome)}
             {action.carried_over && <> <CarriedOver /></>}
-            {i === 0 && <span className="ml-1.5 rounded-full border px-1.5 text-xs font-normal">latest</span>}
+            {action.id === latest && <span className="ml-1.5 rounded-full border px-1.5 text-xs font-normal">latest</span>}
           </span>
           <span className="text-xs">
             {action.actor} · <span className="num">{new Date(action.created_at).toLocaleString()}</span>
           </span>
+          {isHeldReadingAnswer(action) && <span className="text-xs">{HELD_READING_ANSWER_NOTE}</span>}
+          {action.tags?.includes('drawn-length-disagreed') && (
+            <span data-slot="history-tag" className="w-fit rounded-full border px-1.5 text-xs">{DRAWN_LENGTH_DISAGREED_WORDS}</span>
+          )}
           {action.note && <span className="text-xs">“{action.note}”</span>}
         </li>
       ))}
     </ol>
   );
+}
+
+/** What a person's answer about a held AI reading says in the history (#1367). */
+const HELD_READING_ANSWER_WORDS = "Confirmed the AI's reading of a number";
+const HELD_READING_ANSWER_NOTE = 'Not a decision on this result: the next check run uses the number.';
+const DRAWN_LENGTH_DISAGREED_WORDS = 'Drawn length disagreed';
+
+function isHeldReadingAnswer(action: { tags?: readonly string[] }): boolean {
+  return action.tags?.includes('held-reading-answer') ?? false;
 }
 
 /**

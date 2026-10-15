@@ -22,7 +22,9 @@ a FAIL counts only when a real reviewer stood behind it: their newest decision o
 `confirm`, or they signed the revision (`approved_findings`) and did not dismiss or correct that
 finding (sign-off covers every finding, including the dismissed ones). The newest decision counts,
 so a later dismiss replaces an earlier confirm; at the same instant the more cautious decision
-(dismiss or correct, then except) wins over a confirm.
+(dismiss or correct, then except) wins over a confirm. A person's answer about a held reading (a
+`confirm` tagged `held-reading-answer`, #1367) is never a decision: it confirms one number the AI
+read, not the FAIL it was recorded on, so it is never counted and never replaces a decision.
 
 * **Only names on the local real-reviewer list count** (`reviewers`, the names the caller read from
   the `GV_SMRITI_REVIEWERS` list, `eval/smriti/actors.py`; compared without case or surrounding
@@ -60,6 +62,7 @@ from app.models.review import (
     FindingDecisionCarryover,
     ReviewAction,
     ReviewActionKind,
+    decision_rows,
 )
 from app.models.verdicts import CheckRun, Finding
 from verdict.outcomes import Outcome
@@ -209,7 +212,7 @@ def _person_confirmed(
             ReviewAction.id,
             ReviewAction.action,
             ReviewAction.actor,
-        ).where(ReviewAction.finding_id.in_(finding_ids))
+        ).where(ReviewAction.finding_id.in_(finding_ids), decision_rows())
     ).all()
     carried = session.execute(
         select(
@@ -220,7 +223,7 @@ def _person_confirmed(
             ReviewAction.actor,
         )
         .join(ReviewAction, ReviewAction.id == FindingDecisionCarryover.review_action_id)
-        .where(FindingDecisionCarryover.new_finding_id.in_(finding_ids))
+        .where(FindingDecisionCarryover.new_finding_id.in_(finding_ids), decision_rows())
     ).all()
     for rows, is_carried in ((own, False), (carried, True)):
         for finding_id, when, action_id, action, actor in rows:

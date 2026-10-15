@@ -335,6 +335,27 @@ describe('needs-you queue: on screen', { timeout: 15_000 }, () => {
     await waitFor(() => expect(props.handlers.onAction).toHaveBeenCalledWith('f-fail', 'dismiss', 'TEST changed my mind'));
   });
 
+  it('an answer about a held AI reading shows in the history with its tag, never as the latest decision (#1367)', async () => {
+    const user = userEvent.setup();
+    history = { items: [
+      { id: 'a3', review_session_id: 's', finding_id: 'f-fail', package_revision_id: 'r', action: 'confirm', actor: 'Reviewer C', note: null, created_at: '2026-01-03T10:00:00Z', tags: ['held-reading-answer', 'drawn-length-disagreed'] },
+      ...HISTORY.items,
+    ] } as typeof HISTORY;
+    const { rerender } = setup();
+    const decided = ROWS.map((r) => (r.row_id === 'fail' ? { ...r, needs_decision: false, reviewer_decision: { action: 'confirm', note: null, actor: 'Reviewer B', time: '2026-01-02T10:00:00Z' } } : r));
+    rerender({ rows: decided, blocking: new Set(['f-walls', 'f-panels', 'f-sink']) });
+    key('j');
+    key('j');
+    await user.click(screen.getByRole('button', { name: 'History' }));
+    const list = await screen.findByRole('list', { name: 'Decisions, newest first' }, { timeout: 5000 });
+    const items = within(list).getAllByRole('listitem');
+    expect(items[0].textContent).toContain("Confirmed the AI's reading of a number");
+    expect(items[0].textContent).toContain('Not a decision on this result');
+    expect(items[0].textContent).toContain('Drawn length disagreed');
+    expect(items[0].textContent).not.toContain('latest');
+    expect(items.map((li) => li.textContent?.split('Reviewer')[0]).slice(1)).toEqual(['Confirmedlatest', 'Dismissed']);
+  });
+
   it('when nothing is left: "All decisions made", then the next action', async () => {
     const user = userEvent.setup();
     const { props, rerender } = setup();

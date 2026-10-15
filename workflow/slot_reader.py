@@ -160,7 +160,7 @@ from extraction.slot_reader.walls import (
     wall_pictures,
 )
 from vocabulary.check_holds import NO_STONE_FLAG, STONE_INTO_WALLS, STONE_SHORT_OF_ENDS
-from vocabulary.drawn_length import NO_DRAWN_LENGTH_WITNESS
+from vocabulary.drawn_length import DRAWN_LENGTH_DISAGREED, NO_DRAWN_LENGTH_WITNESS
 from vocabulary.semantic_types import ProductType
 from workflow.ai_budget import AiBudget, ai_budget_from_settings, claude_ceiling
 from workflow.form_reader import RUN_LABEL_CHARACTERS, FormReaderRuntime
@@ -3703,7 +3703,7 @@ def _veto_by_drawn_length(
             return owner
         reason = vetoes.get(owner.owner.index)
         if reason is not None:
-            return finalize(owner, code="drawn-length", reason=reason)
+            return finalize(owner, code=DRAWN_LENGTH_DISAGREED, reason=reason)
         # No derived scale means no drawn-length evidence either way. This check is reject-only: it
         # can veto a clear misfit, never hold a reading merely because scale is unavailable — but a
         # reading it could not reach says so (#1107), and a width PASS resting on one waits for
@@ -3721,7 +3721,7 @@ def _veto_by_drawn_length(
     held_indices = {
         owner.owner.index
         for owner in (*held_slots, *((held_overall,) if held_overall is not None else ()))
-        if owner.outcome.reason_code == "drawn-length"
+        if owner.outcome.reason_code == DRAWN_LENGTH_DISAGREED
     }
     return held_slots, held_overall, tuple(index for index in order if index in held_indices)
 
