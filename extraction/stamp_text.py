@@ -51,7 +51,7 @@ from __future__ import annotations
 
 import io
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from fractions import Fraction
 from typing import Any, Final
@@ -81,6 +81,7 @@ __all__ = [
     "coloured_paths",
     "coloured_text",
     "drawing_ink",
+    "gv_tick",
     "pasted_picture",
     "pasted_stamps",
     "path_ink",
@@ -470,6 +471,151 @@ def _covers(point: tuple[int, int], rings: tuple[Ring, ...], even_odd: bool) -> 
     return crossings % 2 == 1 if even_odd else winding != 0
 
 
+def _exact(value: object) -> Fraction | None:
+    """A number pdfplumber gives, as an exact fraction of its printed digits; `None` for anything
+    that is not a finite number."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+        return None
+    exact = Decimal(str(value))
+    return Fraction(exact) if exact.is_finite() else None
+
+
+def _green(colour: object) -> bool:
+    """Whether a fill colour is plainly green: an RGB colour whose green is at least 0.35, whose
+    red is at most 0.15 and whose blue is at least 0.2 below its green (GV's ticks on the client's
+    sets are 0/0.5/0.25 and 0/0.5/0 and 0/1/0). Anything else, including CMYK and patterns, is not.
+    """
+    if not isinstance(colour, (tuple, list)) or len(colour) != 3:
+        return False
+    parts = [_exact(part) for part in colour]
+    if any(part is None for part in parts):
+        return False
+    red, green, blue = (part for part in parts if part is not None)
+    return (
+        green >= Fraction(35, 100) and red <= Fraction(15, 100) and green - blue >= Fraction(1, 5)
+    )
+
+
+#: How big a tick may be, either way, in points: GV's are about 11 by 8 and 15 by 10.
+_TICK_SIZE: Final = (Fraction(2), Fraction(40))
+
+
+def _tick_corners(commands: Sequence[Any]) -> list[tuple[Fraction, Fraction]] | None:
+    """The six corners of a path drawn as one closed outline of straight lines, top-down; `None`
+    for any other path (a curve, a second sub-path, a number that is not one)."""
+    if not commands or commands[0][0] != "m":
+        return None
+    operators = [command[0] for command in commands]
+    body = operators[1:-1] if operators[-1] == "h" else operators[1:]
+    if any(operator != "l" for operator in body):
+        return None
+    corners: list[tuple[Fraction, Fraction]] = []
+    for command in commands:
+        if command[0] == "h":
+            continue
+        if len(command) != 2:
+            return None
+        x, top = (_exact(value) for value in command[1])
+        if x is None or top is None:
+            return None
+        corners.append((x, top))
+    if len(corners) == 7 and corners[-1] == corners[0]:
+        corners.pop()
+    return corners if len(corners) == 6 else None
+
+
+def _check_shape(corners: Sequence[tuple[Fraction, Fraction]]) -> bool:
+    """Whether six corners outline a check mark: two thick strokes meeting at the bottom, the one
+    to the right longer, at roughly a right angle (60 to 120 degrees).
+
+    Exact arithmetic on the file's own numbers (top-down, as pdfplumber gives them). The outline has
+    exactly one inward corner, the crotch between the strokes; the corner three along from it is the
+    bottom. Each stroke's two long sides run parallel (within about 6 degrees); its free end is
+    above the bottom; the left stroke's end is left of the bottom and the right one's right of it.
+    """
+
+    def turn(
+        before: tuple[Fraction, Fraction],
+        at: tuple[Fraction, Fraction],
+        after: tuple[Fraction, Fraction],
+    ) -> Fraction:
+        return (at[0] - before[0]) * (after[1] - before[1]) - (at[1] - before[1]) * (
+            after[0] - before[0]
+        )
+
+    count = len(corners)
+    twice_area = sum(
+        corners[i][0] * corners[(i + 1) % count][1] - corners[(i + 1) % count][0] * corners[i][1]
+        for i in range(count)
+    )
+    if twice_area == 0:
+        return False
+    turns = [turn(corners[i - 1], corners[i], corners[(i + 1) % count]) for i in range(count)]
+    inward = [i for i, value in enumerate(turns) if value != 0 and (value > 0) != (twice_area > 0)]
+    if len(inward) != 1:
+        return False
+
+    def at(step: int) -> tuple[Fraction, Fraction]:
+        return corners[(inward[0] + step) % count]
+
+    bottom = at(3)
+    ends = sorted(
+        (
+            ((at(1)[0] + at(2)[0]) / 2, (at(1)[1] + at(2)[1]) / 2),
+            ((at(4)[0] + at(5)[0]) / 2, (at(4)[1] + at(5)[1]) / 2),
+        )
+    )
+    left, right = ends
+    if not (left[1] < bottom[1] and right[1] < bottom[1] and left[0] < bottom[0] < right[0]):
+        return False
+    short = (left[0] - bottom[0], left[1] - bottom[1])
+    long = (right[0] - bottom[0], right[1] - bottom[1])
+    short_2 = short[0] ** 2 + short[1] ** 2
+    long_2 = long[0] ** 2 + long[1] ** 2
+    if long_2 <= short_2:
+        return False
+    dot = short[0] * long[0] + short[1] * long[1]
+    if 4 * dot * dot > short_2 * long_2:  # |cos| > 1/2: not between 60 and 120 degrees
+        return False
+
+    def parallel(
+        a: tuple[Fraction, Fraction],
+        b: tuple[Fraction, Fraction],
+        c: tuple[Fraction, Fraction],
+        d: tuple[Fraction, Fraction],
+    ) -> bool:
+        u = (b[0] - a[0], b[1] - a[1])
+        v = (d[0] - c[0], d[1] - c[1])
+        cross = u[0] * v[1] - u[1] * v[0]
+        return 100 * cross * cross <= (u[0] ** 2 + u[1] ** 2) * (v[0] ** 2 + v[1] ** 2)
+
+    if not (parallel(at(0), at(1), at(3), at(2)) and parallel(at(0), at(5), at(3), at(4))):
+        return False
+    width = max(x for x, _ in corners) - min(x for x, _ in corners)
+    height = max(y for _, y in corners) - min(y for _, y in corners)
+    low, high = _TICK_SIZE
+    return low <= width <= high and low <= height <= high
+
+
+def gv_tick(path: dict[str, Any]) -> bool:
+    """Whether a path is GV's green tick (#1198): a small check mark, filled green and not
+    stroked, drawn as one closed outline of six straight corners (`_check_shape`).
+
+    It only ever names a mark: a tick is still GV's ink, and a number it touches stays held. Any
+    doubt answers `False` — a red or stroked check, a green box, a mirrored check, a curve — and
+    the place keeps the general "covered by reviewer markup" words. On the client's three sets
+    every one of 318 paths it accepted was a tick (checked by eye, 2026-10-15); one tick drawn
+    another way (filled and outlined, seven corners) is not accepted, which only keeps the general
+    words there.
+    """
+    if not path.get("fill") or path.get("stroke"):
+        return False
+    if not _green(path.get("non_stroking_color")):
+        return False
+    corners = _tick_corners(path.get("path") or ())
+    return corners is not None and _check_shape(corners)
+
+
 @dataclass(frozen=True, slots=True)
 class ColouredPath:
     """One path the page's pasted drawings draw in colour, in the page's pixels at the dpi it was
@@ -491,6 +637,8 @@ class ColouredPath:
     areas: tuple[PixelBox, ...]
     rings: tuple[Ring, ...]
     even_odd: bool
+    tick: bool = False
+    """GV's green tick (`gv_tick`, #1198): still GV's ink, named so a held number can say why."""
 
     def meets(self, box: PixelBox) -> bool:
         """Whether any part of the path lies in `box`, edges included.
@@ -602,7 +750,7 @@ def coloured_paths(data: bytes, page_index: int, *, dpi: int) -> tuple[ColouredP
             page = document.pages[page_index]
             place = pixel_placement(page, dpi)
             return tuple(
-                _coloured_path(path, place)
+                replace(_coloured_path(path, place), tick=gv_tick(path))
                 for path in (*page.lines, *page.rects, *page.curves)
                 if (path.get("stroke") or path.get("fill")) and not path_ink(path)
             )

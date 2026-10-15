@@ -89,6 +89,10 @@ class InkAt:
     reviewer_text: str
     """The coloured words touching the box, in reading order, joined by spaces: context for the
     person ("reviewer wrote …"), never a value. Empty where none touches it."""
+    tick_only: bool = False
+    """GV's ink here is GV's green tick and nothing else (#1198): no coloured word, no pasted
+    stamp, no covered word and no other coloured path. It changes only the words of the hold; the
+    place is still `GV` or `COVERED` and a reading there is still held. Always `False` on `VENDOR`."""
 
 
 def _meet(first: PixelBox, second: PixelBox) -> bool:
@@ -123,7 +127,9 @@ class PageInk:
         `COVERED` where a coloured fill covers the box's centre, or the box touches a word already
         found covered; otherwise `GV` where coloured text, a coloured path or a pasted stamp touches
         the box at all; otherwise `VENDOR`. The order matters only for the word used: a yellow box
-        with a red number over it is "covered", and the red number is the reviewer's text.
+        with a red number over it is "covered", and the red number is the reviewer's text. Where
+        every coloured thing at the box is GV's green tick, `tick_only` says so (#1198); the class
+        is the same either way.
         """
         if box[0] > box[2] or box[1] > box[3]:
             raise ValueError(
@@ -135,16 +141,23 @@ class PageInk:
             if label.ink is InkClass.GV and _meet(label.box, box)
         )
         centre = _centre(box)
-        if any(path.covers(centre) for path in self.paths) or any(
+        touching = [path for path in self.paths if path.meets(box) or path.covers(centre)]
+        covered_word = any(
             label.ink is InkClass.COVERED and _meet(label.box, box) for label in self.labels
-        ):
-            return InkAt(InkClass.COVERED, reviewer)
-        if (
-            reviewer
-            or any(_meet(stamp, box) for stamp in self.stamps)
-            or any(path.meets(box) for path in self.paths)
-        ):
-            return InkAt(InkClass.GV, reviewer)
+        )
+        stamped = any(_meet(stamp, box) for stamp in self.stamps)
+        # GV's tick and nothing else (#1198): only the words of the hold change.
+        tick_only = (
+            bool(touching)
+            and all(path.tick for path in touching)
+            and not reviewer
+            and not covered_word
+            and not stamped
+        )
+        if any(path.covers(centre) for path in self.paths) or covered_word:
+            return InkAt(InkClass.COVERED, reviewer, tick_only)
+        if reviewer or stamped or touching:
+            return InkAt(InkClass.GV, reviewer, tick_only)
         return InkAt(InkClass.VENDOR, "")
 
 
