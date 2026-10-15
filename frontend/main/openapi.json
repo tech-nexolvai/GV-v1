@@ -6898,6 +6898,14 @@
             "title": "Rule Id",
             "type": "string"
           },
+          "settings": {
+            "description": "The company or project settings the check was missing when it ran, each a field on Company settings (#1373). Worked out from the rule and what its run had (`missing_settings_for`), never from the words; empty when it lacked none (a drawn value, say). The sink's sizes are on the project's sink card, not a field, so never listed.",
+            "items": {
+              "$ref": "#/components/schemas/NotCheckedSettingOut"
+            },
+            "title": "Settings",
+            "type": "array"
+          },
           "status": {
             "enum": [
               "open",
@@ -6921,6 +6929,34 @@
           "status"
         ],
         "title": "NotCheckedOut",
+        "type": "object"
+      },
+      "NotCheckedSettingOut": {
+        "description": "A setting a not-checked check is waiting for, as listed on Company settings (#1373).",
+        "properties": {
+          "key": {
+            "description": "The setting's name (`countertop_overhang`): the field `#/settings/company?focus=<key>&project=<project_id>` opens.",
+            "title": "Key",
+            "type": "string"
+          },
+          "name": {
+            "description": "The setting's plain name.",
+            "title": "Name",
+            "type": "string"
+          },
+          "project_id": {
+            "description": "The project whose setting it is.",
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "name",
+          "project_id"
+        ],
+        "title": "NotCheckedSettingOut",
         "type": "object"
       },
       "NotPartReason": {

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -144,6 +145,58 @@ def test_every_blocking_result_is_listed_exactly_once(session: Session, tmp_path
     assert header["not_checked"] == len(body["not_checked"])
     assert header["numbers"] == 6
     assert header["confirmed_by_ai"] == 5
+
+
+def test_a_not_checked_entry_names_the_settings_it_waits_for(
+    session: Session, tmp_path: Path
+) -> None:
+    """#1373: a check missing a company or project setting carries its key and plain name, so the
+    screen can link to that field; one missing only a drawn value carries none. Each key is a field
+    the Company settings page lists for the project (`focus=<key>` lands on it)."""
+    project_id, package_id, _anchors = _package_rows(session, unsealed_page=0)
+    _run_current_checks(session, package_id, tmp_path)
+    session.commit()
+    client = _client(session, project_id)
+
+    response = client.get(f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/review-items")
+    assert response.status_code == 200, response.text
+    by_rule: dict[str, list[dict[str, Any]]] = {}
+    for entry in response.json()["not_checked"]:
+        by_rule.setdefault(str(entry["rule_id"]), []).append(entry)
+
+    def settings(rule_id: str) -> list[list[tuple[str, str, str]]]:
+        assert by_rule.get(rule_id), f"the fixture must leave {rule_id} not checked"
+        return [
+            [(need["key"], need["name"], need["project_id"]) for need in entry["settings"]]
+            for entry in by_rule[rule_id]
+        ]
+
+    project = str(project_id)
+    # Missing two project settings (and a drawn value): both named, on every one of its results.
+    assert all(
+        listed
+        == [
+            ("cabinet_depth", "Cabinet depth", project),
+            ("countertop_overhang", "Countertop overhang", project),
+        ]
+        for listed in settings("CT-DEPTH-001")
+    )
+    # Missing only a drawn value: no setting, so no link.
+    assert all(listed == [] for listed in settings("CT-SINK-OFFSET-FRONT-001"))
+    # Missing the sink's inside width: on the sink card, not a settings field, so not listed.
+    assert all(listed == [] for listed in settings("CT-SINK-CUTOUT-WIDTH-001"))
+
+    projects = client.get(f"{API_PREFIX}/company-settings/projects")
+    assert projects.status_code == 200, projects.text
+    fields = {
+        setting["name"]
+        for listed in projects.json()["projects"]
+        if listed["id"] == project
+        for setting in listed["settings"]
+    }
+    keys = {need["key"] for entry in response.json()["not_checked"] for need in entry["settings"]}
+    assert keys, "the fixture must give a setting to link to"
+    assert keys <= fields, keys - fields
 
 
 def test_reading_the_list_writes_nothing(session: Session, tmp_path: Path) -> None:

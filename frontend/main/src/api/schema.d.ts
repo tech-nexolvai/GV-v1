@@ -5433,12 +5433,39 @@ export interface components {
             /** Rule Id */
             rule_id: string;
             /**
+             * Settings
+             * @description The company or project settings the check was missing when it ran, each a field on Company settings (#1373). Worked out from the rule and what its run had (`missing_settings_for`), never from the words; empty when it lacked none (a drawn value, say). The sink's sizes are on the project's sink card, not a field, so never listed.
+             */
+            settings?: components["schemas"]["NotCheckedSettingOut"][];
+            /**
              * Status
              * @enum {string}
              */
             status: "open" | "done" | "rechecking";
             /** Why */
             why: string;
+        };
+        /**
+         * NotCheckedSettingOut
+         * @description A setting a not-checked check is waiting for, as listed on Company settings (#1373).
+         */
+        NotCheckedSettingOut: {
+            /**
+             * Key
+             * @description The setting's name (`countertop_overhang`): the field `#/settings/company?focus=<key>&project=<project_id>` opens.
+             */
+            key: string;
+            /**
+             * Name
+             * @description The setting's plain name.
+             */
+            name: string;
+            /**
+             * Project Id
+             * Format: uuid
+             * @description The project whose setting it is.
+             */
+            project_id: string;
         };
         /**
          * NotPartReason

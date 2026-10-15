@@ -32,12 +32,19 @@ export function ArchitectProvider({ projectId, packageId, loader, children }: { 
 export function ArchitectChoices({
   item,
   busy,
+  saving = null,
+  refresh = 0,
   onAnswer,
   onProposal,
   onOpenAdvanced,
 }: {
   item: ReviewItem;
+  /** True while an answer to this item is being saved: every choice waits. */
   busy: boolean;
+  /** The answer being saved (clicked, or the C key's proposal): only its card spins. */
+  saving?: ActionExtra | null;
+  /** Bumped by the page to read the question again (after a stale answer, #1368). */
+  refresh?: number;
   onAnswer: (extra: ActionExtra) => void;
   /** Reports the proposal once loaded, for the C key; null when there is none. */
   onProposal?: (extra: ActionExtra | null) => void;
@@ -45,11 +52,16 @@ export function ArchitectChoices({
 }) {
   const context = useContext(ArchitectContext);
   const [attempt, setAttempt] = useState(0);
-  const [loaded, setLoaded] = useState<{ attempt: number; state: Loaded } | null>(null);
+  const [loaded, setLoaded] = useState<{ ask: string; state: Loaded } | null>(null);
   const rowId = item.row_id ?? null;
   const projectId = context?.projectId ?? null;
   const loader = context?.loader ?? null;
   const packageId = context?.packageId ?? '';
+  // The question is read again whenever the item moves on (a re-check gives it a newer result or
+  // a new status) or the page asks (after a stale answer), so an answer never names an old record.
+  const findingId = item.finding_id ?? null;
+  const status = item.status;
+  const ask = `${attempt}|${refresh}|${findingId ?? ''}|${status}`;
 
   useEffect(() => {
     if (loader === null || projectId === null || rowId === null) return;
@@ -61,19 +73,19 @@ export function ArchitectChoices({
           match && match.current && match.current.status === 'needs_reviewer'
             ? { kind: 'view', match, recordId: match.current.record_id }
             : { kind: 'pairing', pairing };
-        setLoaded({ attempt, state: { status: 'ready', question } });
+        setLoaded({ ask, state: { status: 'ready', question } });
       },
-      (error: unknown) => current && setLoaded({ attempt, state: { status: 'error', message: error instanceof Error ? error.message : String(error) } }),
+      (error: unknown) => current && setLoaded({ ask, state: { status: 'error', message: error instanceof Error ? error.message : String(error) } }),
     );
     return () => {
       current = false;
     };
-  }, [loader, packageId, projectId, rowId, attempt]);
+  }, [loader, packageId, projectId, rowId, ask]);
 
   const state: Loaded =
     rowId === null || projectId === null
       ? { status: 'error', message: 'This item names no countertop row, so its choices cannot be loaded.' }
-      : loaded && loaded.attempt === attempt
+      : loaded && loaded.ask === ask
         ? loaded.state
         : { status: 'loading' };
 
@@ -85,6 +97,8 @@ export function ArchitectChoices({
   }, [question]);
 
   const open = item.status === 'open';
+  const sentView = saving?.architect_view ?? null;
+  const sentPairs = saving?.architect_pairing?.pairs ?? null;
   const heading = (
     <legend className="mb-1 text-[15px] leading-6 font-medium text-foreground">
       {question?.kind === 'view' ? "Which of the architect's views shows this countertop?" : "Which of the architect's dimensions match this countertop?"}
@@ -142,8 +156,8 @@ export function ArchitectChoices({
                   }
                   proposal={proposed ? proposal!.by : null}
                   leadsTo="This countertop is compared with this view, and the checks run again."
-                  disabled={!open || !candidate.can_pick}
-                  busy={busy && proposed}
+                  disabled={!open || busy || !candidate.can_pick}
+                  busy={busy && sentView?.view_id === candidate.view.view_id}
                   showKey={proposed && open}
                   onChoose={() => onAnswer({ architect_view: { view_id: candidate.view.view_id, expected_record_id: recordId } })}
                 />
@@ -155,7 +169,8 @@ export function ArchitectChoices({
               <ChoiceCard
                 title="None of these"
                 leadsTo="Nothing on the architect's drawings is compared with this countertop, and the cloud PDF says so."
-                disabled={!open}
+                disabled={!open || busy}
+                busy={busy && sentView?.none_of_these === true}
                 onChoose={() => onAnswer({ architect_view: { none_of_these: true, expected_record_id: recordId } })}
               />
             </li>
@@ -192,8 +207,8 @@ export function ArchitectChoices({
               proposal={by}
               proposalTag={effective.source.includes('ais') ? 'AI proposal' : 'Proposal'}
               leadsTo="These dimensions are compared with the architect's, and the checks run again."
-              disabled={!open}
-              busy={busy && by !== null}
+              disabled={!open || busy}
+              busy={busy && sentPairs !== null && sentPairs.length > 0}
               showKey={by !== null && open}
               onChoose={() => onAnswer(body)}
             />
@@ -204,8 +219,12 @@ export function ArchitectChoices({
             title="None of these"
             detail="Nothing on the architect's drawing is comparable with this countertop."
             leadsTo="Nothing is compared with the architect for this countertop, and the cloud PDF says so."
-            disabled={!open}
+            disabled={!open || busy}
+            busy={busy && sentPairs !== null && sentPairs.length === 0}
             onChoose={() =>
+              // The route takes the record the reviewer was shown, when there is one. With no record
+              // yet it has no way to say "expect none"; W3's `expected_finding_id` still refuses an
+              // answer to a result that moved on.
               onAnswer({
                 architect_pairing: { pairs: [], note: NONE_COMPARABLE_NOTE, ...(pairing.current ? { expected_record_id: pairing.current.record_id } : {}) },
               })
