@@ -73,6 +73,7 @@ from eval.pariksha.kinds import (
     load_stored_pieces,
     score_kinds,
 )
+from eval.pariksha.row_geometry import RowBoxes
 from eval.pariksha.score import (
     AGREED_RIGHT,
     AGREED_WRONG,
@@ -633,9 +634,11 @@ def measure(
     *,
     kind_source: str = PRODUCT,
     scorer_version: str = "unknown",
+    row_boxes: RowBoxes | None = None,
 ) -> Side:
     """One stored run scored against one key, read-only; a run with nothing of its kind is a
-    side with no card (any other refusal is raised)."""
+    side with no card (any other refusal is raised). A geometry rows key's cases are matched to
+    the readers' boxes through `row_boxes`, the run's box map (#1321)."""
     run = ref.run_for(entry.agent)
     pages = key_pages(key)
     common = {"code_version": ref.code_version, "scorer_version": scorer_version}
@@ -664,8 +667,9 @@ def measure(
             session, agent=key.agent, database=ref.database, extraction_run_id=run
         )
         read = pages & {question.identity.page_sha256 for question in stored.questions}
-        scorer = score_akshara if key.agent == "akshara" else score_rekha
-        return Side(card=scorer(key, stored, **common), pages=read)
+        if key.agent == "akshara":
+            return Side(card=score_akshara(key, stored, **common), pages=read)
+        return Side(card=score_rekha(key, stored, row_boxes=row_boxes, **common), pages=read)
     except StoredRunError as error:
         if not nothing_stored(error):
             raise

@@ -25,6 +25,14 @@ agreed-right or **agreed-wrong** only when both give the same answer the product
 person: the same box, or both "no countertop". Anything else is *split*, including two "not among
 the boxes" or two unsure answers, which the product sends to the reviewer.
 
+**Rows by geometry (#1321).** A row case may name its line by geometry (`RowTruth.at`, with the
+key's `row_tolerance_pt`) instead of a box number. Its question is still found by its identity, but
+on the picture the question showed, the keyed line is turned into that picture's own answer by the
+box map (`eval/pariksha/row_geometry.py`, given as `row_boxes`): the one box within the tolerance,
+or "not among the boxes" when none is. Then the readers are scored exactly as against a box-number
+key. With no proven boxes for the picture, a box count other than the question's, or two boxes
+within the tolerance, the case is *not asked*, with the reason: a box is never guessed.
+
 **Vastu (architect reader).** `eval/architect_reader.score_pages` on the stored spans, one case per
 key width (`p<page>:<inches>#<n>`: found, held or missing) and one per usable value the key does not
 list (`p<page>:extra:<inches>#<n>`), which a person checks: it is the only way the architect reader
@@ -60,6 +68,7 @@ from eval.pariksha.keys import (
     QuestionIdentity,
     RowTruth,
 )
+from eval.pariksha.row_geometry import RowBoxes, on_picture
 from eval.pariksha.stored import (
     StoredArchitectRun,
     StoredAttempt,
@@ -503,6 +512,43 @@ def _match(case: KeyCase, index: _Index) -> StoredQuestion | str:
     return question
 
 
+def _on_this_picture(
+    case: KeyCase, question: StoredQuestion, key: AnswerKey, row_boxes: RowBoxes | None
+) -> tuple[RowTruth, str] | str:
+    """A geometry case's truth on the picture this question showed, as that picture's own answer
+    (with what to show as expected), or why it cannot be scored on it."""
+    truth = case.truth
+    assert isinstance(truth, RowTruth) and truth.at is not None
+    assert key.row_tolerance_pt is not None
+    if row_boxes is None:
+        return (
+            "no box geometry was given, so the readers' box numbers cannot be matched to the "
+            "keyed line (give the run's box map)"
+        )
+    page = question.identity.page_sha256
+    shown = [sha for sha in question.picture_sha256 if row_boxes.get(sha, page) is not None]
+    if not shown:
+        pictures = ", ".join(sha[:12] for sha in question.picture_sha256) or "none recorded"
+        return f"no box geometry for the picture this question showed on its page ({pictures})"
+    if len(shown) > 1:
+        return (
+            f"the box map knows {len(shown)} of the pictures this question showed "
+            f"({', '.join(sha[:12] for sha in shown)}); which one numbers its boxes is not knowable"
+        )
+    picture = row_boxes.get(shown[0], page)
+    assert picture is not None
+    count = _candidate_count(question)
+    if count is not None and count != len(picture.boxes):
+        return (
+            f"the box map gives picture {picture.picture_sha256[:12]} {len(picture.boxes)} boxes, "
+            f"but the question showed {count}"
+        )
+    found = on_picture(truth.at, picture, key.row_tolerance_pt)
+    if isinstance(found, str):
+        return found
+    return found, f"{found} on picture {picture.picture_sha256[:12]} ({truth.at})"
+
+
 def _score_pairs(
     agent: str,
     key: AnswerKey,
@@ -511,6 +557,7 @@ def _score_pairs(
     code_version: str,
     scorer_version: str,
     created_at: str | None,
+    row_boxes: RowBoxes | None = None,
 ) -> Scorecard:
     _provenance(code_version)
     if key.agent != agent:
@@ -533,6 +580,14 @@ def _score_pairs(
         if isinstance(matched, str):
             cases.append(_not_asked(case, matched))
             continue
+        truth = case.truth
+        expected = str(case.truth)
+        if isinstance(truth, RowTruth) and truth.at is not None:
+            here = _on_this_picture(case, matched, key, row_boxes)
+            if isinstance(here, str):
+                cases.append(_not_asked(case, here))
+                continue
+            truth, expected = here
         keyed.add(matched.identity)
         read = _answers(matched, readers)
         answers = read.answers
@@ -542,15 +597,15 @@ def _score_pairs(
         shown: dict[str, str] = {}
         definite: dict[str, object] = {}
         for model in readers:
-            if isinstance(case.truth, LabelTruth):
+            if isinstance(truth, LabelTruth):
                 state = _label_state(answers[model])
-                verdicts[model] = _label_verdict(state, case.truth)
+                verdicts[model] = _label_verdict(state, truth)
                 shown[model] = _label_shown(state)
                 if state[0] == "yes":
                     definite[model] = state[1]
             else:
                 choice = _row_choice(answers[model])
-                verdicts[model] = _row_verdict(choice, case.truth)
+                verdicts[model] = _row_verdict(choice, truth)
                 shown[model] = _row_shown(choice)
                 if choice[0] in _AGREEABLE_ROW_KINDS:
                     definite[model] = choice
@@ -571,7 +626,7 @@ def _score_pairs(
             CaseScore(
                 case_id=case.case_id,
                 question=str(matched.identity),
-                expected=str(case.truth),
+                expected=expected,
                 outcome=outcome,
                 readers=tuple(
                     ReaderScore(model_id=model, answer=shown[model], verdict=verdicts[model])
@@ -677,8 +732,10 @@ def score_rekha(
     code_version: str,
     scorer_version: str = "unknown",
     created_at: str | None = None,
+    row_boxes: RowBoxes | None = None,
 ) -> Scorecard:
-    """The row choice's scorecard: agreed-right, agreed-wrong and split; per reader."""
+    """The row choice's scorecard: agreed-right, agreed-wrong and split; per reader. A geometry
+    key's cases are matched to the readers' boxes through `row_boxes` (#1321)."""
     return _score_pairs(
         "rekha",
         key,
@@ -686,6 +743,7 @@ def score_rekha(
         code_version=code_version,
         scorer_version=scorer_version,
         created_at=created_at,
+        row_boxes=row_boxes,
     )
 
 

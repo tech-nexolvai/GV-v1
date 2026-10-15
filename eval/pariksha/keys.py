@@ -11,13 +11,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Final
 
 from eval.architect_reader import KeyPage, key_pages
+from eval.smriti.actors import not_a_person
 from extraction.slot_reader.seal import normalise_text
 
 __all__ = [
@@ -25,6 +28,7 @@ __all__ = [
     "DEPTH_FAMILIES",
     "FAMILIES",
     "KEY_FORMAT",
+    "MAX_ROW_TOLERANCE_PT",
     "NO_ROW_KINDS",
     "AnswerKey",
     "ArchitectAnswerKey",
@@ -32,6 +36,7 @@ __all__ = [
     "KeyFormatError",
     "LabelTruth",
     "QuestionIdentity",
+    "RowAt",
     "RowTruth",
     "dump_key",
     "load_key",
@@ -57,11 +62,27 @@ NO_ROW_KINDS: Final = ("no_countertop", "not_among_boxes")
 
 _SHA256: Final = re.compile(r"^[0-9a-f]{64}$")
 _BOX: Final = re.compile(r"^\d+,\d+,\d+,\d+$")
-_HEADER: Final = frozenset({"format", "agent", "name", "version", "cases"})
+#: The widest tolerance a geometry row key may state (#1321): two of code's candidate rows on one
+#: page can lie under 2 pt apart (a chain and its own overall), so a wider one would let a key's line
+#: match two boxes; the scorer then refuses to choose, but a key that wide is a mistake to refuse
+#: when it is read.
+MAX_ROW_TOLERANCE_PT: Final = Decimal(5)
+_POINT: Final = Decimal("0.01")
+_HEADER: Final = frozenset({"format", "agent", "name", "version", "cases", "row_tolerance_pt"})
 _ARCH_HEADER: Final = frozenset({"format", "agent", "name", "version", "document_sha256", "pages"})
 _CASE: Final = frozenset(
-    {"family", "page_sha256", "question_id", "slot_box", "picture_sha256", "answer", "source"}
+    {
+        "family",
+        "page_sha256",
+        "question_id",
+        "slot_box",
+        "picture_sha256",
+        "answer",
+        "source",
+        "confirmed_by",
+    }
 )
+_ROW_AT: Final = frozenset({"y", "x0", "x1"})
 
 
 class KeyFormatError(ValueError):
@@ -101,16 +122,83 @@ class LabelTruth:
         return "no label" if self.no_label else " | ".join(self.texts)
 
 
+def _points(value: object, where: str) -> Decimal:
+    """A length in page points, to 0.01 pt: a JSON number or a decimal string."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str, Decimal)):
+        raise KeyFormatError(f"{where} must be a number of points, not {value!r}")
+    try:
+        number = Decimal(str(value))
+    except InvalidOperation as error:
+        raise KeyFormatError(f"{where} must be a number of points, not {value!r}") from error
+    if not number.is_finite() or (isinstance(value, float) and not math.isfinite(value)):
+        raise KeyFormatError(f"{where} must be a finite number of points, not {value!r}")
+    return number.quantize(_POINT)
+
+
+@dataclass(frozen=True, slots=True, order=True)
+class RowAt:
+    """A dimension line by where it is on the page, not by the number its box got (#1321).
+
+    In page points as code's row candidates hold them (`CountertopRowCandidate`: pdfplumber's
+    frame, x from the left edge and y down from the top): the line's height `y` and its two end
+    ticks `x0` < `x1`, to 0.01 pt. The same line on any picture of the page has this geometry,
+    whatever box number that picture gave it.
+    """
+
+    y: Decimal
+    x0: Decimal
+    x1: Decimal
+
+    @classmethod
+    def of(cls, y: object, x0: object, x1: object) -> RowAt:
+        """The line at `y` from `x0` to `x1` (either order), to 0.01 pt."""
+        low, high = sorted((_points(x0, "x0"), _points(x1, "x1")))
+        return cls(y=_points(y, "y"), x0=low, x1=high)
+
+    @classmethod
+    def read(cls, data: object, where: str) -> RowAt:
+        if not isinstance(data, Mapping) or set(data) != _ROW_AT:
+            raise KeyFormatError(
+                f"{where}: row_at is {{'y': pt, 'x0': pt, 'x1': pt}}, not {data!r}"
+            )
+        try:
+            line = cls(
+                y=_points(data["y"], "y"),
+                x0=_points(data["x0"], "x0"),
+                x1=_points(data["x1"], "x1"),
+            )
+        except KeyFormatError as error:
+            raise KeyFormatError(f"{where}: row_at {error}") from error
+        if line.x0 >= line.x1:
+            raise KeyFormatError(f"{where}: row_at's x0 must be left of its x1, not {data!r}")
+        return line
+
+    def document(self) -> dict[str, float]:
+        return {"y": float(self.y), "x0": float(self.x0), "x1": float(self.x1)}
+
+    def distance(self, other: RowAt) -> Decimal:
+        """How far apart two lines are: the largest of their differences in y, x0 and x1."""
+        return max(abs(self.y - other.y), abs(self.x0 - other.x0), abs(self.x1 - other.x1))
+
+    def __str__(self) -> str:
+        return f"the line at y {self.y} pt, x {self.x0} to {self.x1} pt"
+
+
 @dataclass(frozen=True, slots=True)
 class RowTruth:
-    """The box that is the countertop row, or one of the two answers that name no box."""
+    """The countertop row, by its box number or by its geometry, or one of the two answers that
+    name no box."""
 
     box: int | None
     kind: str
     """`row`, `no_countertop` or `not_among_boxes`."""
+    at: RowAt | None = None
+    """A geometry key's line (#1321): matched to whichever box shows it on the picture asked."""
 
     def __str__(self) -> str:
-        return f"box {self.box}" if self.kind == "row" else self.kind
+        if self.kind != "row":
+            return self.kind
+        return str(self.at) if self.at is not None else f"box {self.box}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +213,9 @@ class KeyCase:
     showed another picture is not this case's. Optional on a label."""
     source: str = ""
     """Who keyed it and how (free text, for a person)."""
+    confirmed_by: str = ""
+    """Who confirmed this case's answer by looking at it (#1321), e.g. `anant`; empty while it is
+    only the keyer's (for most row cases, Claude's)."""
 
     @property
     def case_id(self) -> str:
@@ -141,6 +232,9 @@ class AnswerKey:
     cases: tuple[KeyCase, ...]
     sha256: str
     """Hash of the key's canonical JSON, recorded in every scorecard scored against it."""
+    row_tolerance_pt: Decimal | None = None
+    """A geometry row key's stated tolerance (#1321): a box shows the keyed line when its y, x0
+    and x1 each lie within this many points of the key's. `None` on a key with no geometry case."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,6 +286,8 @@ def _label_truth(answer: Mapping[str, object], where: str) -> LabelTruth:
 
 
 def _row_truth(answer: Mapping[str, object], where: str) -> RowTruth:
+    if set(answer) == {"row_at"}:
+        return RowTruth(box=None, kind="row", at=RowAt.read(answer["row_at"], where))
     if set(answer) == {"box"}:
         box = answer["box"]
         if isinstance(box, bool) or not isinstance(box, int) or box < 1:
@@ -200,8 +296,8 @@ def _row_truth(answer: Mapping[str, object], where: str) -> RowTruth:
     if set(answer) == {"kind"} and answer["kind"] in NO_ROW_KINDS:
         return RowTruth(box=None, kind=str(answer["kind"]))
     raise KeyFormatError(
-        f"{where}: a row answer is {{'box': n}} or {{'kind': one of {NO_ROW_KINDS}}}, "
-        f"not {answer!r}"
+        f"{where}: a row answer is {{'box': n}}, {{'row_at': {{'y', 'x0', 'x1'}}}} or "
+        f"{{'kind': one of {NO_ROW_KINDS}}}, not {answer!r}"
     )
 
 
@@ -228,29 +324,76 @@ def _case(agent: str, data: object, index: int) -> KeyCase:
     ):
         raise KeyFormatError(f"{where}: slot_box is a label's 'x0,y0,x1,y1', not {slot_box!r}")
     picture = data.get("picture_sha256")
-    if agent == "rekha" and picture is None:
-        raise KeyFormatError(
-            f"{where}: a row case needs picture_sha256, the numbered picture its box number "
-            "belongs to: on a re-numbered picture the same number is another line"
-        )
-    if picture is not None and (not isinstance(picture, str) or not _SHA256.match(picture)):
-        raise KeyFormatError(f"{where}: picture_sha256 must be 64 lower-case hex characters")
     answer = data.get("answer")
     if not isinstance(answer, Mapping):
         raise KeyFormatError(f"{where}: answer must be an object")
     truth: LabelTruth | RowTruth = (
         _label_truth(answer, where) if agent == "akshara" else _row_truth(answer, where)
     )
+    # A box number, or "not among the boxes", means something only on one numbered picture; a
+    # line named by its geometry, or "no countertop on this page", means the same on any (#1321).
+    if (
+        isinstance(truth, RowTruth)
+        and picture is None
+        and truth.at is None
+        and truth.kind != "no_countertop"
+    ):
+        raise KeyFormatError(
+            f"{where}: a row case answered by box number (or 'not among the boxes') needs "
+            "picture_sha256, the numbered picture the answer belongs to: on a re-numbered picture "
+            "the same number is another line"
+        )
+    if picture is not None and (not isinstance(picture, str) or not _SHA256.match(picture)):
+        raise KeyFormatError(f"{where}: picture_sha256 must be 64 lower-case hex characters")
     source = data.get("source", "")
     if not isinstance(source, str):
         raise KeyFormatError(f"{where}: source must be text")
+    confirmed_by = data.get("confirmed_by", "")
+    if "confirmed_by" in data and (not isinstance(confirmed_by, str) or not confirmed_by.strip()):
+        raise KeyFormatError(
+            f"{where}: confirmed_by must name who confirmed it, not {confirmed_by!r}"
+        )
+    if isinstance(confirmed_by, str) and confirmed_by.strip():
+        # Only a person confirms an answer: never an AI, an agent or code (the AI under test is
+        # Claude, so its own confirmation would grade itself right; Smriti's rule, #1321).
+        why = not_a_person(confirmed_by.strip())
+        if why is not None:
+            raise KeyFormatError(
+                f"{where}: confirmed_by {confirmed_by!r} {why}; only a person confirms a case"
+            )
     return KeyCase(
         question=QuestionIdentity(family=family, page_sha256=page, question_id=question_id),
         truth=truth,
         slot_box=slot_box,
         picture_sha256=picture,
         source=source,
+        confirmed_by=str(confirmed_by).strip(),
     )
+
+
+def _tolerance(data: Mapping[str, object], cases: tuple[KeyCase, ...]) -> Decimal | None:
+    """The key's stated geometry tolerance: required when a case names its line by geometry, and
+    refused when none does (a tolerance that matches nothing is a typo, not a setting)."""
+    geometry = any(isinstance(case.truth, RowTruth) and case.truth.at is not None for case in cases)
+    if "row_tolerance_pt" not in data:
+        if geometry:
+            raise KeyFormatError(
+                "a key that names rows by geometry must state row_tolerance_pt: how many points a "
+                "box's line may lie from the key's and still be it"
+            )
+        return None
+    if not geometry:
+        raise KeyFormatError("row_tolerance_pt is stated but no case names its row by geometry")
+    try:
+        tolerance = _points(data["row_tolerance_pt"], "row_tolerance_pt")
+    except KeyFormatError as error:
+        raise KeyFormatError(f"row_tolerance_pt: {error}") from error
+    if not Decimal(0) < tolerance <= MAX_ROW_TOLERANCE_PT:
+        raise KeyFormatError(
+            f"row_tolerance_pt must be more than 0 and at most {MAX_ROW_TOLERANCE_PT} pt, "
+            f"not {tolerance}"
+        )
+    return tolerance
 
 
 def load_key(data: Mapping[str, object]) -> AnswerKey | ArchitectAnswerKey:
@@ -298,7 +441,14 @@ def load_key(data: Mapping[str, object]) -> AnswerKey | ArchitectAnswerKey:
         if case.question in seen:
             raise KeyFormatError(f"the key names question {case.question} twice")
         seen.add(case.question)
-    key = AnswerKey(agent=str(agent), name=name, version=version, cases=cases, sha256="")
+    key = AnswerKey(
+        agent=str(agent),
+        name=name,
+        version=version,
+        cases=cases,
+        sha256="",
+        row_tolerance_pt=_tolerance(data, cases),
+    )
     # Hashed in its canonical form, so two spellings of one key (key order, a `″` for a `"`) are
     # one key, and a scorecard's key hash says exactly which answers it was scored against.
     return replace(key, sha256=_canonical_hash(dump_key(key)))
@@ -316,6 +466,8 @@ def _case_document(case: KeyCase) -> dict[str, object]:
     answer: dict[str, object]
     if isinstance(case.truth, LabelTruth):
         answer = {"no_label": True} if case.truth.no_label else {"texts": list(case.truth.texts)}
+    elif case.truth.at is not None:
+        answer = {"row_at": case.truth.at.document()}
     elif case.truth.kind == "row":
         answer = {"box": case.truth.box}
     else:
@@ -332,6 +484,8 @@ def _case_document(case: KeyCase) -> dict[str, object]:
         document["picture_sha256"] = case.picture_sha256
     if case.source:
         document["source"] = case.source
+    if case.confirmed_by:
+        document["confirmed_by"] = case.confirmed_by
     return document
 
 
@@ -348,10 +502,13 @@ def dump_key(key: AnswerKey | ArchitectAnswerKey) -> dict[str, object]:
         if key.document_sha256 is not None:
             document["document_sha256"] = key.document_sha256
         return document
-    return {
+    document = {
         "format": KEY_FORMAT,
         "agent": key.agent,
         "name": key.name,
         "version": key.version,
         "cases": [_case_document(case) for case in key.cases],
     }
+    if key.row_tolerance_pt is not None:
+        document["row_tolerance_pt"] = float(key.row_tolerance_pt)
+    return document
