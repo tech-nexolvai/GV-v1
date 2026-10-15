@@ -147,6 +147,7 @@ from evidence.crop import (
     CropStatus,
     RenderedPage,
     crop_pixel_box,
+    crop_png,
     encode_png,
     generate_crop,
 )
@@ -1004,6 +1005,19 @@ UNCONFIGURED_LAYOUT_MODEL_ID = "layout-reader-unconfigured"
 #: refusal per candidate — thousands of near-identical sentences — and a reviewer reads the first few
 #: or none at all. The exact number is always reported alongside.
 REPORTED_REFUSALS = 20
+
+
+@dataclass(slots=True)
+class PageCrops:
+    """What `DatabaseStages.cut_page_crops` did on one page."""
+
+    cut: list[UUID] = field(default_factory=list)
+    """The readings given a crop (in a dry run, that would be)."""
+    skipped: int = 0
+    """Readings that had one already, or on a page that would not render."""
+    refusals: list[str] = field(default_factory=list)
+    """Why a reading on this page has no crop, one sentence each."""
+
 
 #: Part of an OCR run's identity since #703: text that could not be a reading is no longer recorded,
 #: so a run from before holds rows a run from after does not, and the two must not be one run.
@@ -3184,6 +3198,10 @@ class DatabaseStages:
         reading that could not be recorded. A set signed off while its depths were read keeps
         nothing of this reading (its paid answers stay in the call ledger, reused if asked again).
 
+        **Each depth reading gets its picture** (#1389), cut at the end by the crop stage's own code
+        (`_depth_pictures`), since the crop stage does not run again; one that cannot be cut is
+        named in the reason.
+
         **The package's state is not moved**: the set stays with the reviewer
         (`AWAITING_REVIEW` or `NEEDS_INPUT`), and the checks are queued again as after "Read the
         unread pages" (`_queue_checks_after_reading`): only where they ran before, with the layout
@@ -3228,6 +3246,7 @@ class DatabaseStages:
         session.refresh(revision, with_for_update=True)
         if revision.state in CLOSED_STATES:
             raise DepthsAgainRefused(CLOSED)
+        pictures = self._depth_pictures(session, package_revision_id)
         checks = _queue_checks_after_reading(session, package_revision_id)
         kept = (
             " The earlier complete reading is still used."
@@ -3242,13 +3261,47 @@ class DatabaseStages:
             reason = str(depth.get("reason"))
         else:
             reason = "Depths read again."
+        missing = pictures.get("not_cut")
+        why_not = pictures.get("reasons")
+        if missing != 0 and isinstance(why_not, list) and why_not:
+            # Never silent: a reading left without its picture is named, with the first reason.
+            counted = (
+                f"{missing} depth reading{'s have' if missing != 1 else ' has'} no picture: "
+                if isinstance(missing, int)
+                else ""
+            )
+            reason += f" {counted}{why_not[0]}."
         return {
             "ran": depth.get("ran") is True,
             "reason": reason,
             "bala": bala,
             "depth": depth,
+            "pictures": pictures,
             "checks_queued": checks is not None,
         }
+
+    def _depth_pictures(self, session: Session, package_revision_id: UUID) -> dict[str, object]:
+        """The end of "Read depths again" (#1389): a picture for every depth reading of the set
+        without one, cut by the crop stage's own code (`workflow/depth_pictures.py`), so the simple
+        screen can offer Confirm on it. The crop stage does not run again after this reading.
+
+        A picture that cannot be cut never undoes the reading: its readings stay without one, and
+        the reason says why."""
+        from workflow.depth_pictures import cut_depth_pictures
+
+        try:
+            with session.begin_nested():
+                return cut_depth_pictures(
+                    session, self, package_revision_id=package_revision_id
+                ).as_dict()
+        except Exception as error:  # noqa: BLE001 - the reading stands; the sentence says why
+            return {
+                "cut": 0,
+                "not_cut": None,
+                "reasons": [
+                    f"the depth pictures could not be cut ({type(error).__name__}: {error})"[:900]
+                ],
+            }
 
     def _architect_matcher(
         self,
@@ -4487,6 +4540,102 @@ class DatabaseStages:
             maximum_pixels=MAXIMUM_RENDER_PIXELS,
             vendor_only=False,
         )
+
+    @property
+    def evidence_dpi(self) -> int:
+        """The dpi evidence crops are cut at (`evidence_render`): a reading's polygon is a region of
+        this rendering only when it was read at the same dpi (#1389)."""
+        return self._dpi
+
+    def cut_page_crops(
+        self,
+        session: Session,
+        data: bytes,
+        page: Page,
+        candidates: Sequence[ObservationCandidate],
+        already: set[UUID],
+        *,
+        dry_run: bool = False,
+    ) -> PageCrops:
+        """Cut and record the evidence crop of each of `candidates` on `page` without one.
+
+        The crop stage's own cut (`validate_evidence`), shared with the depth pictures of "Read
+        depths again" and their backfill (#1389, `workflow/depth_pictures.py`), so every reading's
+        picture is cut the same way. `already` holds the readings that have a crop: they are
+        skipped, and each one cut here is added to it. A page that will not render cuts nothing and
+        says why; so does each reading whose region is not one of the rendering. `dry_run` cuts the
+        pixels to show they would come, and stores and records nothing.
+        """
+        outcome = PageCrops()
+        if page.render_failed:
+            outcome.refusals.append(f"page {page.index}: the manifest recorded a failed render")
+            outcome.skipped += len(candidates)
+            return outcome
+        try:
+            rendered = self.evidence_render(data, page)
+        except (PageTooLarge, UnreadablePdf, ValueError) as error:
+            # One page that will not render, in a document whose others might. Every candidate on
+            # it keeps its reading and goes without a picture, which is the honest pair.
+            outcome.refusals.append(f"page {page.index}: {error}")
+            outcome.skipped += len(candidates)
+            return outcome
+
+        marks = None if dry_run else self.evidence_marks(data, page)
+
+        for candidate in candidates:
+            if candidate.id in already:
+                outcome.skipped += 1
+                continue
+            spec = evidence_crop_spec(candidate, rendered)
+            if spec is None:
+                outcome.refusals.append(
+                    f"page {page.index}: a candidate's polygon does not describe a region of "
+                    "this rendering"
+                )
+                continue
+            if marks is None:
+                # A dry run: the very pixels `generate_crop` would store, stored nowhere.
+                try:
+                    crop_png(rendered, spec)
+                except ValueError as error:
+                    outcome.refusals.append(f"page {page.index}: {error}")
+                    continue
+                already.add(candidate.id)
+                outcome.cut.append(candidate.id)
+                continue
+            if self._store is None:
+                raise ValueError("these stages have no artifact store to keep a picture in")
+            result = generate_crop(rendered, spec, self._store)
+            if result.status is not CropStatus.AVAILABLE or result.artifact is None:
+                # `generate_crop` abstains rather than raising, and the reason is a sentence. It
+                # is carried through rather than counted, because "17 crops failed" tells a
+                # reviewer nothing they can act on.
+                outcome.refusals.append(f"page {page.index}: {result.reason}")
+                continue
+            artifact = result.artifact
+            # **Both layers are in this picture, so both are asked about (#952).** GV's marks
+            # baked into the vendor's drawing (`crop_shows_a_gv_mark`), and GV's own annotation
+            # layer, which this person-facing render paints on and the vision crops leave out.
+            mark_state = marks.state(rendered, spec)
+            session.add(
+                EvidenceArtifact(
+                    candidate_id=candidate.id,
+                    canonical_observation_id=None,
+                    document_version_id=page.document_version_id,
+                    page_id=page.id,
+                    kind=EvidenceArtifactKind.CROP.value,
+                    storage_key=artifact.key,
+                    sha256=artifact.sha256,
+                    media_type="image/png",
+                    # The crop is pixels of a rendered page, so the space it is expressed in is
+                    # the image's, not the normalised one the polygon was converted to.
+                    coordinate_space="image",
+                    shows_gv_marks=mark_state,
+                )
+            )
+            already.add(candidate.id)
+            outcome.cut.append(candidate.id)
+        return outcome
 
     def evidence_marks(self, data: bytes, page: Page) -> EvidenceMarks:
         """What an evidence crop on this page is checked against for GV's markup (#952).
@@ -7403,58 +7552,12 @@ class DatabaseStages:
                 continue
             if page.document_version_id not in documents:
                 documents[page.document_version_id] = _fetch(self._store, key)
-            try:
-                rendered = self.evidence_render(documents[page.document_version_id], page)
-            except (PageTooLarge, UnreadablePdf, ValueError) as error:
-                # One page that will not render, in a document whose others might. Every candidate on
-                # it keeps its reading and goes without a picture, which is the honest pair.
-                abstained.append(f"page {page.index}: {error}")
-                skipped += len(candidates)
-                continue
-
-            marks = self.evidence_marks(documents[page.document_version_id], page)
-
-            for candidate in candidates:
-                if candidate.id in already:
-                    skipped += 1
-                    continue
-                spec = evidence_crop_spec(candidate, rendered)
-                if spec is None:
-                    abstained.append(
-                        f"page {page.index}: a candidate's polygon does not describe a region of "
-                        "this rendering"
-                    )
-                    continue
-                result = generate_crop(rendered, spec, self._store)
-                if result.status is not CropStatus.AVAILABLE or result.artifact is None:
-                    # `generate_crop` abstains rather than raising, and the reason is a sentence. It
-                    # is carried through rather than counted, because "17 crops failed" tells a
-                    # reviewer nothing they can act on.
-                    abstained.append(f"page {page.index}: {result.reason}")
-                    continue
-                artifact = result.artifact
-                # **Both layers are in this picture, so both are asked about (#952).** GV's marks
-                # baked into the vendor's drawing (`crop_shows_a_gv_mark`), and GV's own annotation
-                # layer, which this person-facing render paints on and the vision crops leave out.
-                mark_state = marks.state(rendered, spec)
-                session.add(
-                    EvidenceArtifact(
-                        candidate_id=candidate.id,
-                        canonical_observation_id=None,
-                        document_version_id=page.document_version_id,
-                        page_id=page.id,
-                        kind=EvidenceArtifactKind.CROP.value,
-                        storage_key=artifact.key,
-                        sha256=artifact.sha256,
-                        media_type="image/png",
-                        # The crop is pixels of a rendered page, so the space it is expressed in is
-                        # the image's, not the normalised one the polygon was converted to.
-                        coordinate_space="image",
-                        shows_gv_marks=mark_state,
-                    )
-                )
-                already.add(candidate.id)
-                written += 1
+            cut = self.cut_page_crops(
+                session, documents[page.document_version_id], page, candidates, already
+            )
+            written += len(cut.cut)
+            skipped += cut.skipped
+            abstained.extend(cut.refusals)
 
         session.flush()
         # This is the only automatic route across the semantic wall: an exact, vector-extracted
