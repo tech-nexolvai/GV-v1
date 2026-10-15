@@ -6,6 +6,7 @@ import { pageTarget } from '@/lib/assistant';
 import { THERE_IS_A_COUNTERTOP_TIP, type AnswerNoCountertop } from '@/components/results/no-countertop-pages';
 import { useAsync } from '@/api/useAsync';
 import type { Finding } from '@/data/types';
+import { countertopNotes } from '@/lib/countertop-notes';
 import { decisionWords, formatDelta, isNotChecked, isSplitPage, NO_RESULT_HINT, notCheckedSituation, notCheckedSummary, sharedNotComparedReason } from '@/lib/countertop-results';
 import { targetFromArchitect, targetFromFinding, targetFromRow, type Mark } from '@/lib/drawing-viewer';
 import { architectState, pairedByWords } from '@/lib/architect';
@@ -543,6 +544,9 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
                   />
                 )}
                 {item.kind === 'check' && finding?.reason && <p className="line-clamp-3 text-sm text-muted-foreground" title={finding.reason}>{finding.reason}</p>}
+                {item.kind === 'check' && finding && countertopNotes(finding).map((note) => (
+                  <p key={note} data-slot="countertop-note" className="text-sm text-muted-foreground">{note}</p>
+                ))}
                 {item.kind === 'page' && (
                   <PageQuestion
                     key={item.recordId}
