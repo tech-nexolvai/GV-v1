@@ -15,6 +15,8 @@ CT-BACK-OFFSET-MIN-001 and CT-SINK-CABINET-WIDTH-001, in both depth-reader modes
   keeps one held whole-package result naming it, so nothing goes silent;
 * a package with one countertop is exactly as before.
 
+The run check sees a countertop that lost its own result (#1305, section 6), by the same split.
+
 Every value, name and note here is made up.
 """
 
@@ -648,3 +650,194 @@ def test_the_queue_takes_only_the_width_result_for_a_row_s_own() -> None:
 
     shown = (Path(__file__).parents[2] / "frontend/main/src/lib/countertop-results.ts").read_text()
     assert f"export const ROW_WIDTH_CHECK = '{WIDTH_RULE_ID}';" in shown
+
+
+# -- 6. the run check sees a countertop that lost its own result (#1305) --------------------------
+
+OWN_RESULT = "countertop-without-depth-or-sink-result"
+
+
+def _own_faults(session: Session, revision_id: UUID) -> list[Any]:
+    """The run check's items for a countertop with no live result of one of the six checks."""
+    from workflow.pariksha_run_check import run_check
+
+    return [item for item in run_check(session, revision_id).items if item.code == OWN_RESULT]
+
+
+def _lose(session: Session, finding: Any) -> None:
+    """What a faulty run leaves: this result is no longer live, and nothing replaced it."""
+    from app.db.base import utc_now
+    from app.models import CheckRun
+
+    session.get_one(CheckRun, finding.check_run_id).superseded_at = utc_now()
+    session.flush()
+
+
+@pytest.mark.parametrize("on", [False, True], ids=["reader-off", "reader-on-no-run-decided"])
+@pytest.mark.parametrize("typed", [False, True], ids=["nothing-given", "typed-depth"])
+def test_the_run_check_finds_nothing_missing_on_countertop_rows(
+    session: Session, store: LocalStore, on: bool, typed: bool
+) -> None:
+    made, _anchors = _rows(session)
+    _check(
+        session,
+        store,
+        made,
+        on=on,
+        typed=_typed("CT-DEPTH-001", countertop_depth=Fraction(51, 2)) if typed else None,
+    )
+
+    assert _own_faults(session, made.revision.id) == []
+
+
+def test_the_run_check_finds_nothing_missing_with_a_split_page_or_a_second_box(
+    session: Session, store: LocalStore
+) -> None:
+    from tests.workflow.test_bala_items import _Revision
+
+    made = _Revision(session, pages=3)
+    run = made.run()
+    made.row(run, page=0, extra=("row-also:opus:2",))
+    made.row(run, page=1)
+    made.split_page(run, page=2)
+    _project_depth_parameters(session, made.revision)
+    _publish_rulebook(session)
+    DatabaseStages(store).run_checks(session, made.revision.id)
+    session.flush()
+
+    assert _own_faults(session, made.revision.id) == []
+
+
+@pytest.mark.parametrize("on", [False, True], ids=["reader-off", "reader-on"])
+def test_the_run_check_finds_nothing_missing_on_countertops_with_no_row(
+    session: Session, store: LocalStore, on: bool
+) -> None:
+    sheet, _proposal, item, _page = _two(session, store)
+    if on:
+        for countertop in (sheet.item, item):
+            withdraw_countertop_run(session, countertop_item_id=countertop, actor=ACTOR)
+        sheet.reading(CT010, Fraction(51, 2), QUALIFIED, link=sheet.link())
+
+    _run(sheet, store, on=on)
+
+    assert _own_faults(session, sheet.revision.id) == []
+
+
+def test_a_row_that_lost_one_held_result_is_reported_and_its_neighbour_is_not(
+    session: Session, store: LocalStore
+) -> None:
+    """The issue's case: two countertop rows, the second row's own depth result is gone. One item,
+    naming that row and that check only."""
+    made, anchors = _rows(session)
+    found = _check(session, store, made)
+    (lost,) = [f for f in _scoped(found, "CT-DEPTH-001") if f.scope_row_candidate_id == anchors[1]]
+    _lose(session, lost)
+
+    (item,) = _own_faults(session, made.revision.id)
+    assert ("row", str(anchors[1])) in item.ids and ("row", str(anchors[0])) not in item.ids
+    assert [value for kind, value in item.ids if kind == "rule"] == ["CT-DEPTH-001"]
+
+
+def test_a_left_over_countertop_no_whole_package_hold_names_is_reported(
+    session: Session, store: LocalStore
+) -> None:
+    """A second box on page 1 has no record, so the whole-package hold names it. Seeded fault: that
+    hold is gone while the row's own result stays. The box is reported, by its name."""
+    from tests.workflow.test_bala_items import _Revision
+
+    made = _Revision(session, pages=1)
+    anchor = made.row(made.run(), page=0, extra=("row-also:opus:2",))
+    _project_depth_parameters(session, made.revision)
+    _publish_rulebook(session)
+    DatabaseStages(store).run_checks(session, made.revision.id)
+    session.flush()
+    found = _findings(session, made.revision)
+    assert _own_faults(session, made.revision.id) == []
+    _lose(session, _unscoped(found, "CT-DEPTH-001")[0])
+
+    (item,) = _own_faults(session, made.revision.id)
+    assert item.found.startswith("another countertop row on page 1 (box 2) has no live result")
+    assert ("row", str(anchor)) not in item.ids
+    assert [value for kind, value in item.ids if kind == "rule"] == ["CT-DEPTH-001"]
+
+
+def test_a_decided_countertop_that_lost_its_own_result_is_reported(
+    session: Session, store: LocalStore
+) -> None:
+    """Reader on: countertop A's run is decided, B is a row on page 2. Seeded fault: A's own depth
+    result is gone. A is reported by its item; B, which still has its own, is not."""
+    sheet = _Set(session, store)
+    _project_depth_parameters(session, sheet.revision)
+    _publish_rulebook(session)
+    _slot_rows(sheet, [sheet.page, _blank_page(sheet, 1)])
+    withdraw_countertop_run(session, countertop_item_id=sheet.item, actor=ACTOR)
+    sheet.reading(CT010, 24, QUALIFIED, link=sheet.link())
+    found = _run(sheet, store, on=True)
+    assert _own_faults(session, sheet.revision.id) == []
+    (mine,) = [f for f in found["CT-DEPTH-001"] if f.scope_item_id == sheet.item]
+    _lose(session, mine)
+
+    (item,) = _own_faults(session, sheet.revision.id)
+    assert ("item", str(sheet.item)) in item.ids
+    assert [value for kind, value in item.ids if kind == "rule"] == ["CT-DEPTH-001"]
+
+
+@pytest.mark.parametrize("on", [False, True], ids=["reader-off", "reader-on"])
+def test_one_countertop_gives_the_run_check_nothing_new(
+    session: Session, store: LocalStore, on: bool
+) -> None:
+    sheet = _Set(session, store)
+    _project_depth_parameters(session, sheet.revision)
+    _publish_rulebook(session)
+    found = _run(sheet, store, on=on)
+    assert _own_faults(session, sheet.revision.id) == []
+    _lose(session, found["CT-DEPTH-001"][0])
+
+    assert _own_faults(session, sheet.revision.id) == []
+
+
+def test_the_run_check_split_is_the_check_stage_s_and_names_match_whole() -> None:
+    """`missing_own_results` on made-up countertops: a name counts as named only as a whole entry
+    ("Countertop 1" is not named by "Countertop 10"), and a second countertop on a record another
+    one's result uses must be named on the hold, as `countertop_holds` leaves it over."""
+    from uuid import uuid4
+
+    from workflow.several_countertops import (
+        CountedCountertop,
+        PackageCountertops,
+        missing_own_results,
+        own_or_left,
+        unchecked_note,
+    )
+
+    one, ten, two = (CountedCountertop(f"Countertop {n}") for n in (1, 10, 2))
+    package = PackageCountertops((one, ten, two))
+    assert missing_own_results(
+        package, item_ids=(), row_ids=(), whole_package_notes=[unchecked_note([ten, two])]
+    ) == (one,)
+    assert (
+        missing_own_results(
+            package, item_ids=(), row_ids=(), whole_package_notes=[unchecked_note([one, ten, two])]
+        )
+        == ()
+    )
+    assert (
+        missing_own_results(
+            PackageCountertops((one,)), item_ids=(), row_ids=(), whole_package_notes=()
+        )
+        == ()
+    )
+
+    record = uuid4()
+    first, second = (CountedCountertop(f"Row {n}", row_id=record) for n in (1, 2))
+    shared = PackageCountertops((first, second))
+    assert own_or_left(shared.countertops) == ((first,), (second,))
+    assert missing_own_results(shared, item_ids=(), row_ids={record}, whole_package_notes=()) == (
+        second,
+    )
+    assert (
+        missing_own_results(
+            shared, item_ids=(), row_ids={record}, whole_package_notes=[unchecked_note([second])]
+        )
+        == ()
+    )
