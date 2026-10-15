@@ -79,7 +79,13 @@ from verdict.operations import POSITION_SENSITIVE_OPERATIONS
 from workflow.depth_evidence import DEPTH_READER_FLAG, ITEM_PREFIX, LINK_PREFIX, current_link
 from workflow.depth_evidence import SUPPORT_FLAG as DEPTH_SUPPORT_FLAG
 from workflow.item_plan import countertops_by_view, live_countertops
-from workflow.measurements import typed_drawn, typed_drawn_reason
+from workflow.measurements import (
+    TypedDrawn,
+    agrees,
+    typed_drawn,
+    typed_drawn_differs,
+    typed_drawn_reason,
+)
 from workflow.part_operands import part_operands
 from workflow.several_countertops import clears_when
 
@@ -597,20 +603,15 @@ def evidence_operands(
         ambiguous[rule_id].update(selected.ambiguous.get(rule_id, {}))
     missing = dict(selected.missing)
     if scope_item_id is None:
-        # **A drawn value typed before confirm-only no longer counts** (#1303): `operands_for` leaves
-        # it out, so a revision-wide check with no reading of that input waits. Its NOT_FOUND says
-        # why first (`missing`, as `run_checks` words a revision-wide one), naming the inputs. Words
-        # only: no operand is added or removed here. A scoped check never read typed values.
-        for rule_id, names in sorted(typed_drawn(session, package_revision_id, rules).items()):
-            waiting = {
-                name
-                for name in names
-                if name not in operands.get(rule_id, {})
-                and name not in selected.owned.get(rule_id, ())
-            }
-            if waiting:
-                why = typed_drawn_reason(waiting)
-                missing[rule_id] = f"{missing[rule_id]} {why}" if rule_id in missing else why
+        _stop_typed_drawn(
+            typed_drawn(session, package_revision_id, rules),
+            rules,
+            operands=operands,
+            ambiguous=ambiguous,
+            missing=missing,
+            owned=selected.owned,
+            read=by_need,
+        )
     return EvidenceOperands(
         operands=operands,
         ambiguous=ambiguous,
@@ -619,6 +620,63 @@ def evidence_operands(
         notes=selected.notes,
         with_readings=with_readings,
     )
+
+
+def _stop_typed_drawn(
+    typed: Mapping[str, Mapping[str, TypedDrawn]],
+    rules: Sequence[Rule],
+    *,
+    operands: dict[str, dict[str, VerdictOperand]],
+    ambiguous: dict[str, dict[str, str]],
+    missing: dict[str, str],
+    owned: Mapping[str, frozenset[str]],
+    read: Mapping[tuple[str, str], Sequence[object]],
+) -> None:
+    """What a revision-wide check does with a drawn input typed before confirm-only (#1303).
+
+    `operands_for` no longer hands the typed value to the check. For each such input:
+
+    * **a reading of it is used, and it is the same number**: unchanged, the reading decides;
+    * **a reading of it is used, and it is a different number**: the reading is taken back and the
+      input is withheld with both values (`typed_drawn_differs`), so the engine returns the rule's
+      `on_ambiguous` (REVIEW_REQUIRED). Before #1303 the typed value decided; letting the reading
+      decide alone would turn a FAIL into a PASS or a PASS into a FAIL (#1303 review). A person does;
+    * **already withheld** for its own reason (readings on two drawings, a depth reader's reading):
+      that reason stands and nothing is added;
+    * **no reading used**: the check's NOT_FOUND starts with why (`missing`), saying "confirm a
+      reading" only when there was none to use.
+
+    **Only ever takes an operand away or adds words.** Inputs owned by a confirmed run never read
+    typed values, so they are left alone.
+    """
+    by_id = {rule.id: rule for rule in rules}
+    for rule_id, stopped in sorted(typed.items()):
+        rule = by_id.get(rule_id)
+        if rule is None:
+            continue
+        held = owned.get(rule_id, frozenset())
+        waiting: set[str] = set()
+        unused: set[str] = set()
+        for name, earlier in sorted(stopped.items()):
+            if name in held or name not in (rule.inputs or {}):
+                continue
+            used = operands.get(rule_id, {}).get(name)
+            if used is not None:
+                if not agrees(earlier, used.value):
+                    del operands[rule_id][name]
+                    ambiguous.setdefault(rule_id, {})[name] = typed_drawn_differs(
+                        name, earlier, used.value
+                    )
+                continue
+            if name in ambiguous.get(rule_id, {}):
+                continue
+            if read.get(_need(rule.inputs[name])):
+                unused.add(name)
+            else:
+                waiting.add(name)
+        if waiting or unused:
+            why = typed_drawn_reason(waiting, unused)
+            missing[rule_id] = f"{missing[rule_id]} {why}" if rule_id in missing else why
 
 
 #: A depth-reader row's countertop as the reader tagged it (`None`: tied to none), its page index,

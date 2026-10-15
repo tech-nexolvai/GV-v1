@@ -59,6 +59,8 @@ const REQUIRED = {
   saved_parameters: [],
 };
 
+/** What `/required-inputs` answers; a test may give a field an AI proposal (#1303 review). */
+let required: Record<string, unknown> = REQUIRED;
 const calls: { method: string; url: string; body?: string }[] = [];
 /** The AI readings offered on page 1; none unless a test says so. */
 let offered: unknown[] = [];
@@ -68,11 +70,12 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
 beforeEach(() => {
   calls.length = 0;
   offered = [];
+  required = REQUIRED;
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const method = init?.method ?? 'GET';
     calls.push({ method, url, body: typeof init?.body === 'string' ? init.body : undefined });
-    if (url.includes('/required-inputs')) return json(REQUIRED);
+    if (url.includes('/required-inputs')) return json(required);
     if (url.endsWith('/company-settings')) return json({ version: 1, settings: [] });
     if (method === 'POST' && url.endsWith('/measurements')) {
       return json({ parameter_set_version: null, measurement_set_version: 2, parameters: [], measurements: [], lists: [] }, 201);
@@ -246,5 +249,55 @@ describe('a drawn field says exactly what the checks will use (#1262, #1303)', {
     await openValues();
 
     expect(field('SHOP:CT012')!.textContent).not.toContain('Also confirmed');
+  });
+});
+
+describe('a value typed before is never overruled by Save (#1303 review)', { timeout: 15_000 }, () => {
+  const proposed = (value: string) => ({
+    ...REQUIRED,
+    proposed_readings: [
+      { field_key: 'SHOP:CT007', name: 'front_offset', source: 'SHOP', many: false, placement_verified: true, expected_count: 1, values: [{ candidate_id: 'c-1', value, page_index: 0, position: 0 }] },
+    ],
+  });
+
+  it('never confirms the AI reading of a field typed before when an unrelated value is saved', async () => {
+    required = proposed('5 in');
+    const user = await openValues();
+
+    await user.type(box('USER_INPUT:field_dimension') as HTMLInputElement, '120"');
+    await user.click(screen.getByRole('button', { name: 'Save values' }));
+    await waitFor(() => expect(postsTo('/measurements')).toHaveLength(1));
+
+    expect(postsTo('/confirm')).toHaveLength(0);
+    expect(screen.queryByText(/could not be confirmed/)).toBeNull();
+    const offset = field('SHOP:CT007')!;
+    // The AI reading is not the field's value: it waits for its own Confirm click.
+    expect(offset.querySelector('[data-part="confirm-only-value"]')).toBeNull();
+    expect(offset.textContent).toContain('No reading confirmed yet');
+  });
+
+  it('says when the AI reading differs from the value typed before, and that Save does not confirm it', async () => {
+    required = proposed('5 in');
+    await openValues();
+
+    const differs = field('SHOP:CT007')!.querySelector('[data-part="typed-differs"]')!;
+    expect(differs.textContent).toContain('5 in');
+    expect(differs.textContent).toContain(`the value typed ${settingDate(SAVED_AT)} (4 in)`);
+    expect(differs.textContent).toContain('Save does not confirm it');
+  });
+
+  it('says nothing about a difference when the AI reading is the value typed before', async () => {
+    required = proposed('4 in');
+    await openValues();
+
+    expect(field('SHOP:CT007')!.querySelector('[data-part="typed-differs"]')).toBeNull();
+  });
+
+  it('says a confirmed reading that differs from the value typed before makes the check wait for a person', async () => {
+    await openValues();
+
+    const differs = field('SHOP:CT011')!.querySelector('[data-part="typed-differs"]')!;
+    expect(differs.textContent).toContain(`The confirmed reading (2 in) differs from the value typed ${settingDate(SAVED_AT)} (1 in)`);
+    expect(differs.textContent).toContain('a person decides');
   });
 });

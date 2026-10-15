@@ -43,6 +43,8 @@ Verification: `tests/workflow/test_measurements.py`, `tests/api/test_confirm_onl
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Final
 from uuid import UUID
 
@@ -55,6 +57,7 @@ from app.models.parameters import from_rows
 from app.verdicts.rulebook import snapshot_store
 from rules.parameters import ParameterLayer, ParameterSet
 from rules.schema import Cardinality, InputSelector, Rule
+from units.imperial import format_inches
 from units.measurement import Measurement, Unit
 from verdict.operands import EvidenceStatus, VerdictOperand
 from workflow.classifications import classification_operands
@@ -62,13 +65,18 @@ from workflow.classifications import classification_operands
 __all__ = [
     "DRAWN_SOURCES",
     "SOURCE",
+    "TYPED_DRAWN_DIFFERS",
     "TYPED_DRAWN_STOPPED",
+    "TYPED_DRAWN_UNUSED",
+    "TypedDrawn",
+    "agrees",
     "confirm_only",
     "drawn_input",
     "operands_for",
     "run_layer",
     "run_parameters_for",
     "typed_drawn",
+    "typed_drawn_differs",
     "typed_drawn_reason",
     "typed_drawn_refusal",
 ]
@@ -104,6 +112,31 @@ TYPED_DRAWN_STOPPED: Final = (
     "confirmed, this check waits for it."
 )
 
+#: The same, for inputs whose readings were found but could not be used (two of them on one drawing,
+#: or none qualified): "confirm a reading" would not be the right next step there.
+TYPED_DRAWN_UNUSED: Final = (
+    "A value typed on Measurements for {inputs} before drawn numbers became confirm-only no longer "
+    "counts (decided 2026-10-15): a number drawn on the drawing must come from a reading. Readings "
+    "of it were found but could not be used (more than one, or none qualified); until one can be, "
+    "this check waits for it."
+)
+
+#: What a check says when a reading of a drawn input differs from the value typed for it before
+#: confirm-only (#1303 review): neither decides, a person does.
+TYPED_DRAWN_DIFFERS: Final = (
+    "A value typed on {day} for {name} ({typed}), before drawn numbers became confirm-only, differs "
+    "from the reading of it ({read}), so neither is used on its own: a person decides."
+)
+
+
+@dataclass(frozen=True)
+class TypedDrawn:
+    """A value typed on a drawn input before confirm-only (#1303), as stored: no longer an operand."""
+
+    value: Measurement | None
+    """The one value typed, or `None` when it is not one plain value (a list under a single input)."""
+    set_at: datetime
+
 
 def confirm_only(source: str, *, many: bool) -> bool:
     """Whether a rule input is one number drawn on a drawing, so it is confirmed and never typed.
@@ -127,11 +160,44 @@ def drawn_input(selector: InputSelector) -> bool:
     return confirm_only(source, many=selector.cardinality is Cardinality.MANY)
 
 
-def typed_drawn_reason(inputs: Iterable[str]) -> str:
-    """`TYPED_DRAWN_STOPPED` for one check's stopped inputs, named in order: "a", "a and b"."""
+def _listed(inputs: Iterable[str]) -> str:
     names = sorted(inputs)
-    listed = names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
-    return TYPED_DRAWN_STOPPED.format(inputs=listed)
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+def typed_drawn_reason(waiting: Iterable[str], unused: Iterable[str] = ()) -> str:
+    """What one check says about its stopped inputs that no reading fills: `TYPED_DRAWN_STOPPED` for
+    those with no reading at all, `TYPED_DRAWN_UNUSED` for those whose readings could not be used,
+    each naming its inputs in order ("a", "a and b")."""
+    waiting, unused = sorted(waiting), sorted(unused)
+    said = [TYPED_DRAWN_STOPPED.format(inputs=_listed(waiting))] if waiting else []
+    if unused:
+        said.append(TYPED_DRAWN_UNUSED.format(inputs=_listed(unused)))
+    return " ".join(said)
+
+
+def _inches(value: Measurement) -> str:
+    """`25 1/2 in`: a value as the Measure page writes it."""
+    return f"{format_inches(value.exact)} {value.unit.value}"
+
+
+def typed_drawn_differs(name: str, earlier: TypedDrawn, read: object) -> str:
+    """`TYPED_DRAWN_DIFFERS` for one input, with both values and the day the value was typed."""
+    typed = "a list of values" if earlier.value is None else _inches(earlier.value)
+    reading = _inches(read) if isinstance(read, Measurement) else "a list of values"
+    return TYPED_DRAWN_DIFFERS.format(
+        day=earlier.set_at.date().isoformat(), name=name, typed=typed, read=reading
+    )
+
+
+def agrees(earlier: TypedDrawn, read: object) -> bool:
+    """Whether a reading is exactly the value typed before: same exact number, same unit."""
+    return (
+        earlier.value is not None
+        and isinstance(read, Measurement)
+        and read.exact == earlier.value.exact
+        and read.unit == earlier.value.unit
+    )
 
 
 def _stopped(keys: Iterable[str], rules: Iterable[Rule]) -> dict[str, frozenset[str]]:
@@ -159,16 +225,37 @@ def _stopped(keys: Iterable[str], rules: Iterable[Rule]) -> dict[str, frozenset[
 
 def typed_drawn(
     session: Session, package_revision_id: UUID, rules: Iterable[Rule]
-) -> dict[str, frozenset[str]]:
-    """The inputs of `rules` that hold a value typed before drawn numbers became confirm-only, by rule.
+) -> dict[str, dict[str, TypedDrawn]]:
+    """The inputs of `rules` that hold a value typed before drawn numbers became confirm-only, by
+    rule then input, each with what was typed and when.
 
     Read from the same newest RUN set `operands_for` reads; `operands_for` leaves each of these out
-    (#1303), and a check that then has no reading for one says why (`workflow/evidence_operands.py`).
+    (#1303). `workflow/evidence_operands.py` then says why a check without a reading waits, and holds
+    a reading that differs from the typed value for a person rather than letting either decide.
     """
     _stored, parameters = _latest_run_set(session, package_revision_id)
     if parameters is None:
         return {}
-    return _stopped(parameters.parameters, rules)
+    stopped = _stopped(parameters.parameters, rules)
+    found: dict[str, dict[str, TypedDrawn]] = {}
+    for rule_id, names in stopped.items():
+        for name in names:
+            plain = parameters.parameters.get(f"{rule_id}:{name}")
+            listed = [
+                value
+                for key, value in parameters.parameters.items()
+                if key.startswith(f"{rule_id}:{name}{LIST_MARKER}")
+            ]
+            row = plain if plain is not None else listed[0]
+            found.setdefault(rule_id, {})[name] = TypedDrawn(
+                value=(
+                    Measurement(plain.value.value, Unit(plain.value.unit), None)
+                    if plain is not None and not listed
+                    else None
+                ),
+                set_at=row.set_at,
+            )
+    return found
 
 
 def _published_rules(session: Session) -> list[Rule]:
