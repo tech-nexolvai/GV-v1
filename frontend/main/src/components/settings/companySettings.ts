@@ -51,3 +51,47 @@ export function changedValues(drafts: Record<string, string>): { name: string; v
     .filter((entry) => entry.value !== '')
     .sort((left, right) => left.name.localeCompare(right.name));
 }
+
+/**
+ * A plain-words hint for a typed value the server would refuse for want of a unit (#1369), or null.
+ *
+ * Only the two obvious cases: no number at all, and a number with no unit (`2`, `1 1/2`). Anything
+ * else goes to the server, which stays the authority and says what is wrong in its own words.
+ */
+export function unitHint(typed: string): string | null {
+  const value = typed.trim();
+  if (value === '') return null;
+  if (!/\d/.test(value)) return 'Type a number with its unit, for example 1 1/2" or 38 mm.';
+  if (/^-?(\d+(\.\d+)?([\s-]+\d+\/\d+)?|\d+\/\d+)$/.test(value)) return 'Add the unit, for example 1 1/2" or 38 mm.';
+  return null;
+}
+
+/** The row a "Not checked" link points at stays marked this long after it is focused (#1369). */
+export const HIGHLIGHT_MS = 2500;
+
+/**
+ * Open Company settings on one setting's box (#1369): a project's box first (the named project's, or
+ * the first project listing it), else GV's standard. Opens a closed list around it, scrolls it into
+ * view, focuses it and marks its row for a moment. Returns false when no box on the page is for it.
+ */
+export function focusSettingField(root: ParentNode, name: string, project?: string): boolean {
+  // Inside a quoted attribute value only `"` and `\` need escaping (and jsdom has no CSS.escape).
+  const quoted = (text: string) => text.replace(/["\\]/g, '\\$&');
+  const field = `[data-setting-field="${quoted(name)}"]`;
+  const box =
+    (project ? root.querySelector<HTMLElement>(`[data-project="${quoted(project)}"] ${field}`) : null) ??
+    root.querySelector<HTMLElement>(`[data-project] ${field}`) ??
+    root.querySelector<HTMLElement>(`[data-part="company-standards"] ${field}`);
+  if (box === null) return false;
+  const list = box.closest('details');
+  if (list !== null) list.open = true;
+  const reduced = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  box.scrollIntoView?.({ block: 'center', behavior: reduced ? 'auto' : 'smooth' });
+  box.focus({ preventScroll: true });
+  const row = box.closest('tr');
+  if (row !== null) {
+    row.setAttribute('data-highlight', 'true');
+    window.setTimeout(() => row.removeAttribute('data-highlight'), HIGHLIGHT_MS);
+  }
+  return true;
+}

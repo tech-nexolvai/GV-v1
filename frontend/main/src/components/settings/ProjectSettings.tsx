@@ -20,8 +20,11 @@ import {
 } from '@/api/client';
 import { SinkEntryForm, SinkSummary } from '@/components/measure/SinkEntry';
 import { Button } from '@/components/ui/button';
+import { InfoTip } from '@/components/ui/info-tip';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
+
+import { settingDate, unitHint } from './companySettings';
 
 const ORIGIN_WORD = {
   project: 'This project',
@@ -34,9 +37,42 @@ function originOf(setting: ProjectSetting): keyof typeof ORIGIN_WORD {
   return setting.in_use_from ?? 'none';
 }
 
-/** Where the value in use comes from, in words, with who set a project value. */
+/** The default a value in use replaces, in words: what overrides what (#1369). */
+function replaced(setting: ProjectSetting): { word: string; value: string } | null {
+  const origin = originOf(setting);
+  if (origin === 'project' && setting.company_value) return { word: ORIGIN_WORD.company, value: setting.company_value };
+  if (origin === 'project' && setting.rulebook_default) return { word: ORIGIN_WORD.rulebook, value: setting.rulebook_default };
+  if (origin === 'company' && setting.rulebook_default) return { word: ORIGIN_WORD.rulebook, value: setting.rulebook_default };
+  return null;
+}
+
+/** Where a value came from, behind "?" so the row stays short: who set it and when, from what, and every default beneath it. */
+function Provenance({ setting }: { setting: ProjectSetting }) {
+  const own = setting.project_value;
+  if (!own && !setting.company_value && !setting.rulebook_default) return null;
+  return (
+    <InfoTip label={`Where ${setting.label} comes from`}>
+      {own && (
+        <>
+          <p data-part="set-by">Set by {own.set_by} on {settingDate(own.set_at)} for this project.</p>
+          <p data-part="from">From: {own.source}{own.reference ? ` (${own.reference})` : ''}</p>
+        </>
+      )}
+      {setting.company_value && (
+        <p data-part="company">{ORIGIN_WORD.company}: <span className="num">{setting.company_value}</span></p>
+      )}
+      {setting.rulebook_default && (
+        <p data-part="rulebook">{ORIGIN_WORD.rulebook}: <span className="num">{setting.rulebook_default}</span></p>
+      )}
+      <p className="text-muted-foreground">A project&apos;s own value wins over GV&apos;s standard, which wins over the checklist default.</p>
+    </InfoTip>
+  );
+}
+
+/** The value in use and where it comes from, the default it replaces, and the story behind "?". */
 function InUse({ setting }: { setting: ProjectSetting }) {
   const origin = originOf(setting);
+  const over = replaced(setting);
   return (
     <div className="flex flex-col gap-0.5">
       <span className="flex flex-wrap items-center gap-2">
@@ -51,18 +87,13 @@ function InUse({ setting }: { setting: ProjectSetting }) {
         >
           {ORIGIN_WORD[origin]}
         </span>
+        <Provenance setting={setting} />
       </span>
       {origin === 'none' && <span className="text-xs text-muted-foreground">Its checks wait until it is set.</span>}
-      {setting.project_value && (
-        <span className="text-xs text-muted-foreground">
-          Set by {setting.project_value.set_by} ({setting.project_value.source})
+      {over && (
+        <span className="text-xs text-muted-foreground" data-part="replaces">
+          Replaces {over.word} <span className="num whitespace-nowrap">{over.value}</span>
         </span>
-      )}
-      {origin === 'project' && setting.company_value && (
-        <span className="text-xs text-muted-foreground">GV standard: <span className="num">{setting.company_value}</span></span>
-      )}
-      {origin !== 'rulebook' && setting.rulebook_default && (
-        <span className="text-xs text-muted-foreground">Checklist default: <span className="num">{setting.rulebook_default}</span></span>
       )}
     </div>
   );
@@ -84,31 +115,45 @@ function SettingRows({
   saving: boolean;
   onDraft: (name: string, draft: Draft) => void;
 }) {
+  const idPrefix = useId();
   return (
     <>
       {settings.map((setting) => {
         const draft = drafts[setting.name] ?? { value: '', source: '' };
+        const hint = unitHint(draft.value);
+        const hintId = `${idPrefix}-${setting.name}-hint`;
         return (
-          <tr key={setting.name} className="border-b align-top last:border-b-0" data-source={originOf(setting)}>
-            <th scope="row" className="min-w-48 px-3 py-2 text-left font-normal">
+          <tr
+            key={setting.name}
+            role="row"
+            // On a phone each row is a short stack (name, value in use, box), so nothing hides off to the side.
+            className="border-b align-top transition-colors duration-500 last:border-b-0 data-[highlight=true]:bg-accent max-sm:flex max-sm:flex-col max-sm:gap-2 max-sm:py-2"
+            data-source={originOf(setting)}
+          >
+            <th scope="row" role="rowheader" className="min-w-48 px-3 py-2 text-left font-normal max-sm:min-w-0 max-sm:py-0">
               <span className="font-medium">{setting.label}</span>
               {setting.purpose && <span className="block text-xs text-muted-foreground">{setting.purpose}</span>}
               <span className="mt-1 block text-xs text-muted-foreground" data-part="checks">
                 Used by: {setting.checks.map((check) => check.name).join(' · ')}
               </span>
             </th>
-            <td className="px-3 py-2"><InUse setting={setting} /></td>
-            <td className="px-3 py-2">
+            <td role="cell" className="px-3 py-2 max-sm:py-0"><InUse setting={setting} /></td>
+            <td role="cell" className="px-3 py-2 max-sm:py-0">
               <div className="flex flex-col gap-1.5">
                 <Input
                   type="text"
+                  inputMode="text"
                   className="num h-8 w-32"
                   placeholder={'e.g. 1 1/2"'}
                   aria-label={`New value for ${setting.label}`}
+                  aria-invalid={hint ? true : undefined}
+                  aria-describedby={hint ? hintId : undefined}
+                  data-setting-field={setting.name}
                   value={draft.value}
                   disabled={saving}
                   onChange={(event) => onDraft(setting.name, { ...draft, value: event.target.value })}
                 />
+                {hint && <span id={hintId} className="max-w-48 text-xs text-destructive">{hint}</span>}
                 {setting.sources.length > 1 && (
                   <select
                     className="h-8 w-48 rounded-md border bg-background px-2 text-sm"
@@ -141,15 +186,16 @@ function SettingsTable({ label, settings, drafts, saving, onDraft }: {
 }) {
   return (
     <div className="overflow-x-auto rounded-lg border">
-      <table className="w-full text-sm" aria-label={label}>
-        <thead className="bg-muted/50 text-left">
+      {/* Roles said outright: a phone shows the rows stacked, and some screen readers drop a table's roles once it is not laid out as one. */}
+      <table role="table" className="w-full text-sm max-sm:block" aria-label={label}>
+        <thead className="bg-muted/50 text-left max-sm:sr-only">
           <tr className="border-b">
             <th scope="col" className="px-3 py-2 font-medium">Setting · what it is for</th>
             <th scope="col" className="px-3 py-2 font-medium">In use · from</th>
             <th scope="col" className="px-3 py-2 font-medium">New value</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody role="rowgroup" className="max-sm:block">
           <SettingRows settings={settings} drafts={drafts} saving={saving} onDraft={onDraft} />
         </tbody>
       </table>
@@ -182,6 +228,7 @@ function ProjectBlock({ initial }: { initial: Project }) {
   const needsSource = changes
     .map((change) => project.settings.find((setting) => setting.name === change.name))
     .filter((setting): setting is ProjectSetting => setting !== undefined && setting.sources.length > 1 && !drafts[setting.name]?.source);
+  const unclear = changes.filter((change) => unitHint(change.value) !== null);
   const used = project.settings.filter((setting) => setting.applies);
   const apart = project.settings.filter((setting) => !setting.applies);
   const onDraft = (name: string, draft: Draft) => {
@@ -257,22 +304,24 @@ function ProjectBlock({ initial }: { initial: Project }) {
         </details>
       )}
 
-      {error && <p className="text-sm text-destructive" role="alert">{error}</p>}
       <div className="flex flex-wrap items-center gap-3">
-        <Button type="button" disabled={saving || changes.length === 0 || needsSource.length > 0} onClick={() => void save()}>
+        <Button type="button" disabled={saving || changes.length === 0 || needsSource.length > 0 || unclear.length > 0} onClick={() => void save()}>
           {saving ? 'Saving…' : changes.length === 0 ? 'No changes to save' : `Save ${changes.length} change${changes.length === 1 ? '' : 's'}`}
         </Button>
         {needsSource.length > 0 && (
           <span className="text-xs text-muted-foreground">Say where {needsSource.map((setting) => setting.label).join(', ')} comes from to save.</span>
         )}
-        {saved && <span className="text-sm" role="status">Saved. Run the checks again to use these values.</span>}
+        {/* Always in the page, so a screen reader hears what a save did (#1369): saved, or the server's refusal. */}
+        <span role="status" className={cn('text-sm', error && 'text-destructive')} data-part="save-status">
+          {error ?? (saved ? 'Saved. Run the checks again to use these values.' : '')}
+        </span>
       </div>
     </section>
   );
 }
 
 /** The Projects section of Company settings: one block per project you belong to. */
-export function ProjectSettingsSection() {
+export function ProjectSettingsSection({ onSettled }: { onSettled?: () => void } = {}) {
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -284,6 +333,12 @@ export function ProjectSettingsSection() {
       .catch((caught: unknown) => { if (live) setError(caught instanceof Error ? caught.message : String(caught)); });
     return () => { live = false; };
   }, [attempt]);
+
+  // Tells the page the projects are on screen (or could not load), so a link to a field can find it.
+  const settled = projects !== null || error !== null;
+  useEffect(() => {
+    if (settled) onSettled?.();
+  }, [settled, onSettled]);
 
   return (
     <section data-tw className="flex flex-col gap-3 font-sans" aria-labelledby="project-settings-title">

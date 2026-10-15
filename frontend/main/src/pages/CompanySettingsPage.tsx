@@ -9,7 +9,7 @@
  * (its sink, cabinet width limits, overrides) are saved by its reviewers in the Projects section.
  */
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import {
   ApiError,
@@ -19,12 +19,18 @@ import {
 } from '../api/client';
 import { CompanySettingsList } from '../components/settings/CompanySettingsList';
 import { ProjectSettingsSection } from '../components/settings/ProjectSettings';
-import { changedValues } from '../components/settings/companySettings';
+import { changedValues, focusSettingField, settingLabel, unitHint } from '../components/settings/companySettings';
 import { PageFrame, PageLoadError } from '@/components/ui/PageFrame';
 import { Button } from '@/components/ui/button';
 import { InfoTip } from '@/components/ui/info-tip';
+import { cn } from '@/lib/utils';
 
-export function CompanySettingsPage() {
+export function CompanySettingsPage({ focus, project }: {
+  /** A setting to open the page on (#1369): `#/settings/company?focus=<setting>`, from "Not checked". */
+  focus?: string;
+  /** The project whose box to prefer for `focus`. */
+  project?: string;
+} = {}) {
   const [current, setCurrent] = useState<CompanySettings | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
@@ -47,6 +53,23 @@ export function CompanySettingsPage() {
   }, [attempt]);
 
   const changes = changedValues(drafts);
+  const unclear = changes.filter((change) => unitHint(change.value) !== null);
+
+  // A link to one field (#1369): once both lists are on screen, open the page on that field. Each link
+  // is followed once, so typing elsewhere afterwards never pulls the focus back.
+  const [projectsSettled, setProjectsSettled] = useState(false);
+  const onProjectsSettled = useCallback(() => setProjectsSettled(true), []);
+  const [missing, setMissing] = useState<string | null>(null);
+  const followed = useRef<string | null>(null);
+  const page = useRef<HTMLDivElement>(null);
+  const companySettled = current !== null || error !== null;
+  useEffect(() => {
+    if (!focus || !companySettled || !projectsSettled || page.current === null) return;
+    const link = `${focus}|${project ?? ''}`;
+    if (followed.current === link) return;
+    followed.current = link;
+    setMissing(focusSettingField(page.current, focus, project) ? null : focus);
+  }, [focus, project, companySettled, projectsSettled]);
 
   async function save() {
     setSaving(true);
@@ -59,6 +82,7 @@ export function CompanySettingsPage() {
     } catch (caught) {
       // A refused save comes back as "Not found" on purpose (every authorisation failure does), so
       // the reason a person can act on is said here.
+      // The server stays the authority: whatever it refused with is said here, as it said it.
       setError(
         caught instanceof ApiError && caught.status === 404
           ? 'Only an admin can change company settings.'
@@ -77,10 +101,10 @@ export function CompanySettingsPage() {
           <span className="num whitespace-nowrap">24&quot;</span> or <span className="num whitespace-nowrap">610 mm</span>.
         </>}>
       {error && current === null && <PageLoadError title="Company settings could not be loaded" message={error} onRetry={() => { setError(null); setAttempt((value) => value + 1); }} />}
-      <div className="flex flex-col gap-3">
-      {error && current !== null && (
-        <p className="text-sm text-destructive" role="alert">
-          {error}
+      <div className="flex flex-col gap-3" ref={page}>
+      {missing !== null && (
+        <p className="rounded-lg border border-dashed px-3 py-2 text-sm" role="status">
+          The setting this link points to, &ldquo;{settingLabel(missing)}&rdquo;, is not listed here: it is not one of GV&apos;s standards or a value any of your projects&apos; checks read.
         </p>
       )}
       {current === null ? (
@@ -107,14 +131,17 @@ export function CompanySettingsPage() {
             }}
           />
           <div className="flex flex-wrap items-center gap-3">
-            <Button type="button" disabled={saving || changes.length === 0} onClick={() => void save()}>
+            <Button type="button" disabled={saving || changes.length === 0 || unclear.length > 0} onClick={() => void save()}>
               {saving ? 'Saving…' : changes.length === 0 ? 'No changes to save' : `Save ${changes.length} change${changes.length === 1 ? '' : 's'}`}
             </Button>
-            {saved && <span className="text-sm" role="status">Saved. Every project now starts from these numbers.</span>}
+            {/* Always in the page, so a screen reader hears what a save did (#1369): saved, or the server's refusal. */}
+            <span role="status" className={cn('text-sm', error && 'text-destructive')} data-part="save-status">
+              {error ?? (saved ? 'Saved. Every project now starts from these numbers.' : '')}
+            </span>
           </div>
         </>
       )}
-      <ProjectSettingsSection />
+      <ProjectSettingsSection onSettled={onProjectsSettled} />
       </div>
     </PageFrame>
   );

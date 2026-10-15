@@ -25,6 +25,13 @@ export interface Route {
    * review opens on the simple review page. Absent rather than false, so plain routes stay plain.
    */
   advanced?: true;
+  /**
+   * Company settings only (#1369): `#/settings/company?focus=<setting>` opens the page on that field,
+   * so a "Not checked: set in Company settings" item links straight to it. `project` narrows it to one
+   * project's field. Absent on plain routes.
+   */
+  focus?: string;
+  project?: string;
 }
 
 const PAGES: readonly Page[] = ['review', 'documents', 'rulebook', 'settings', 'usage', 'ui-kit'];
@@ -32,8 +39,11 @@ const PAGES: readonly Page[] = ['review', 'documents', 'rulebook', 'settings', '
 /** Recognised routes are review, documents, rulebook, settings, usage and ui-kit; unknown or malformed routes open the review start. */
 export function parseRoute(hash: string): Route {
   let parts: string[];
+  let query: URLSearchParams;
   try {
-    parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);
+    const [path, search = ''] = hash.replace(/^#\/?/, '').split('?', 2);
+    parts = path.split('/').filter(Boolean).map(decodeURIComponent);
+    query = new URLSearchParams(search);
   } catch {
     // An edited or truncated URL must not crash the whole reviewer app.
     return { page: 'review', packageId: null };
@@ -44,6 +54,12 @@ export function parseRoute(hash: string): Route {
     const packageId = parts[1] ?? null;
     return packageId !== null && parts[2] === 'advanced' ? { page, packageId, advanced: true } : { page, packageId };
   }
+  if (page === 'settings') {
+    const focus = query.get('focus')?.trim();
+    const project = query.get('project')?.trim();
+    if (!focus) return { page, packageId: null };
+    return project ? { page, packageId: null, focus, project } : { page, packageId: null, focus };
+  }
   return { page, packageId: null };
 }
 
@@ -51,6 +67,10 @@ export function formatRoute(route: Route): string {
   if (route.page === 'review') {
     if (!route.packageId) return '#/';
     return `#/review/${encodeURIComponent(route.packageId)}${route.advanced ? '/advanced' : ''}`;
+  }
+  if (route.page === 'settings' && route.focus) {
+    const query = new URLSearchParams({ focus: route.focus, ...(route.project ? { project: route.project } : {}) });
+    return `#/settings/company?${query.toString()}`;
   }
   return `#/${route.page}`;
 }
