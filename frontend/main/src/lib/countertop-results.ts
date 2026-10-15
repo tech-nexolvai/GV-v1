@@ -410,6 +410,21 @@ export function confirmManyWords(count: number): string {
 }
 
 /**
+ * The six depth and sink checks (#1201). On a package with several countertops each countertop gets
+ * its own result of each, scoped to its row when it has one; those are checks of their own, never
+ * the row's width result. Held the same as the server's list (`WHOLE_PACKAGE_RULE_IDS` in
+ * `workflow/several_countertops.py`) by a backend test.
+ */
+export const DEPTH_AND_SINK_CHECKS: ReadonlySet<string> = new Set([
+  'CT-BACK-OFFSET-MIN-001',
+  'CT-DEPTH-001',
+  'CT-SINK-CABINET-WIDTH-001',
+  'CT-SINK-CUTOUT-DEPTH-001',
+  'CT-SINK-CUTOUT-WIDTH-001',
+  'CT-SINK-OFFSET-FRONT-001',
+]);
+
+/**
  * A result's name in the "Other checks" list (#1201): its check's name and, when the result is one
  * countertop's own, which countertop. A package with several countertops gets one depth or sink
  * result per countertop, and a countertop whose heading is not on screen lists its results there,

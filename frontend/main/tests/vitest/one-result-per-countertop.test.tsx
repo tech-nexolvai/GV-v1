@@ -10,7 +10,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { Finding } from '@/data/types';
 import { OtherChecks } from '@/components/results/other-checks';
+import type { CountertopResult } from '@/api/client';
 import { checkWithCountertop } from '@/lib/countertop-results';
+import { buildQueue } from '@/lib/needs-you-queue';
 
 vi.mock('@/api/config', () => ({ projectId: () => 'project-1' }));
 
@@ -54,5 +56,16 @@ describe('one result per countertop (#1201)', () => {
 
     expect(screen.getByText('Countertop depth verification: Countertop row on page 1')).toBeTruthy();
     expect(screen.getByText('Countertop depth verification: Countertop row on page 2')).toBeTruthy();
+  });
+
+  it('the Needs-you queue lists a row’s own depth result as a check, never as the row’s width', () => {
+    const row = { row_id: 'row-1', finding_id: 'f-width', page_number: 1, label: 'Countertop row on page 1', needs_decision: false } as unknown as CountertopResult;
+    const depth = { ...result('f-depth', 'Countertop row on page 1'), scope_row_candidate_id: 'row-1' } as Finding;
+    const width = { ...result('f-width-new', 'Countertop row on page 1'), check_id: 'CT-WIDTH-001', scope_row_candidate_id: 'row-1' } as Finding;
+
+    const items = buildQueue([row], [depth, width], new Set(['f-depth', 'f-width-new']));
+
+    // The new width result still belongs to its row's item; the depth result is its own check.
+    expect(items.map((item) => item.key)).toEqual(['finding:f-depth']);
   });
 });

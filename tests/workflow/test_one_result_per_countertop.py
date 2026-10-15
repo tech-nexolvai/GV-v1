@@ -402,3 +402,15 @@ def test_the_waiting_sentences_name_no_countertop_and_never_decide() -> None:
             reason = waiting_reason(rule_id, depth_reader=on)
             assert reason == f"{WAITS_FOR[rule_id]} {_why(rule_id, on=on)}"
             assert "page" not in reason and "Countertop " not in reason
+
+
+def test_the_screens_list_the_same_six_checks() -> None:
+    """The Needs-you queue lists a row's own depth or sink result as a check of its own; its list
+    of those checks is the server's."""
+    import re
+
+    from workflow.several_countertops import WHOLE_PACKAGE_RULE_IDS
+
+    shown = (Path(__file__).parents[2] / "frontend/main/src/lib/countertop-results.ts").read_text()
+    block = shown.split("export const DEPTH_AND_SINK_CHECKS", 1)[1].split("]);", 1)[0]
+    assert set(re.findall(r"'([A-Z0-9-]+)'", block)) == set(WHOLE_PACKAGE_RULE_IDS)
