@@ -195,3 +195,63 @@ describe('unchanged rows (#1329)', () => {
     expect(difference('h')).toBe('—');
   });
 });
+
+describe('walls proposed but not confirmed (#1329 review)', () => {
+  const proposed = (source: CountertopResult['wall_layout']['source'], config: string | null) => ({ config, label: config ? 'Synthetic proposal' : null, source });
+
+  it.each([
+    ['both readers', 'back_and_left'],
+    ['drawing clues', 'back_only'],
+    ['between panels', null],
+  ] as const)('a "%s" proposal with cases that disagree lists each case', async (source, config) => {
+    const user = userEvent.setup();
+    render(<CountertopTable rows={[row('p', { outcome: 'REVIEW_REQUIRED', wall_layout: proposed(source, config), wall_cases: MIXED })]} actions={ACTIONS} />);
+    expect(needed('p')).toBe('42 1/4" / 41 1/4" / 40 1/4"');
+    expect(difference('p')).toBe('walls needed');
+    await user.click(within(cells('p')[0]).getByRole('button', { name: 'Show details' }));
+    expect(document.querySelectorAll('[data-slot="countertop-table"] td [data-slot="needed-per-wall-case"] li')).toHaveLength(5);
+  });
+
+  it('a "both readers" proposal wrong for every case shows the range', () => {
+    render(<CountertopTable rows={[row('p', { wall_layout: proposed('both readers', 'back_and_left'), wall_cases: SHORT })]} actions={ACTIONS} />);
+    expect(needed('p')).toBe('40 1/4" – 42 1/4"');
+    expect(difference('p')).toBe('at least 1/4" short');
+  });
+
+  it.each([
+    ['reviewer', 'back_only'],
+    ['code ink and both AIs', 'back_left_right'],
+  ] as const)('walls that are "%s" never show the cases', (source, config) => {
+    expect(neededAcrossWalls(row('p', { wall_layout: proposed(source, config), wall_cases: SHORT }))).toBeNull();
+    expect(neededAcrossWalls(row('p', { outcome: 'REVIEW_REQUIRED', wall_layout: proposed(source, config), wall_cases: MIXED }))).toBeNull();
+  });
+});
+
+describe('"same" needs every case to have the row\'s recorded result (#1329 review)', () => {
+  it('a FAIL row with one passing case is not shown as wrong for every case', () => {
+    const across = neededAcrossWalls(row('f', { outcome: 'FAIL', wall_cases: MIXED }));
+    expect(across?.kind).toBe('mixed');
+    render(<CountertopTable rows={[row('f', { outcome: 'FAIL', wall_cases: MIXED })]} actions={ACTIONS} />);
+    expect(difference('f')).toBe('walls needed');
+    expect(document.querySelector('[data-slot="difference-across-walls"]')).toBeNull();
+    expect(document.body.textContent).not.toContain('at least');
+  });
+
+  it('cases that all fail do not make a range when the recorded result is not FAIL', () => {
+    expect(neededAcrossWalls(row('r', { outcome: 'REVIEW_REQUIRED', wall_cases: SHORT }))?.kind).toBe('mixed');
+  });
+});
+
+describe('sorting by Difference (#1329 review)', () => {
+  it('sorts a range row by its closest gap, short below zero, and a "—" row last', async () => {
+    const user = userEvent.setup();
+    const set = row('set', { expected_total: v('321', '8', '40 1/8"'), delta: v('-1', '8', '-1/8"'), wall_layout: { config: 'back_only', label: 'Back only', source: 'reviewer' }, wall_cases: { cases: [], unavailable_reason: null } });
+    const over = row('over', { printed_overall: v('45', '1', '45"'), wall_cases: OVER });
+    const short = row('short', { wall_cases: SHORT });
+    const none = row('none');
+    render(<CountertopTable rows={[none, over, set, short]} actions={ACTIONS} />);
+    await user.click(screen.getByRole('button', { name: 'Difference' }));
+    const order = [...document.querySelectorAll<HTMLElement>('[data-slot="countertop-table"] tr[data-row-id]')].map((item) => item.dataset.rowId);
+    expect(order).toEqual(['short', 'set', 'over', 'none']);
+  });
+});

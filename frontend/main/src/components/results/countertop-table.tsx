@@ -53,7 +53,8 @@ const COLUMNS: ColumnDef<CountertopResult>[] = [
   { id: 'printed', accessorFn: (r) => sortValue(r.printed_overall) },
   // Before the walls are set (#1329): the least the cases need, as the cell shows it first.
   { id: 'needed', accessorFn: (r) => sortValue(r.expected_total ?? sameAcrossWalls(r)?.least ?? null) },
-  { id: 'difference', accessorFn: (r) => sortValue(r.delta) },
+  // A range sorts by its closest gap, short below zero (#1329).
+  { id: 'difference', accessorFn: (r) => sortValue(r.delta ?? sameAcrossWalls(r)?.gap ?? null) },
 ];
 
 export function CountertopTable({

@@ -106,18 +106,24 @@ export function fieldCutOf(row: Pick<CountertopResult, 'field_cut_per_end' | 'wa
  * - `mixed`: the cases disagree, so the walls are still needed; each case's needed overall is listed.
  *
  * Null when the table's usual Needed and Difference apply: the result used one wall case (walls
- * set), or there are no recorded cases (held, not checked, or the field cut changed since).
+ * set or used), or there are no recorded cases (held, not checked, or the field cut changed since).
  */
 export type NeededAcrossWalls =
-  | { kind: 'same'; needed: string; difference: string; outcome: 'PASS' | 'FAIL'; least: ExactValue }
+  | { kind: 'same'; needed: string; difference: string; outcome: 'PASS' | 'FAIL'; least: ExactValue; gap: ExactValue }
   | { kind: 'mixed'; needed: string[]; cases: { words: string; needed: string; outcome: Outcome }[] };
 
 type NeededRow = Pick<CountertopResult, 'expected_total' | 'outcome' | 'wall_layout' | 'wall_cases'>;
 
-const WALLS_NOT_SET: ReadonlySet<CountertopResult['wall_layout']['source']> = new Set(['not needed', 'not established']);
+/**
+ * Walls a result is checked with: the reviewer's, or seen in the code ink and confirmed by both AIs.
+ * Any other source (not set, not needed, or only proposed by the AIs, the drawing's clues or the
+ * side panels) leaves the walls unconfirmed, and the check then records every wall case.
+ */
+const WALLS_USED: ReadonlySet<CountertopResult['wall_layout']['source']> = new Set(['reviewer', 'code ink and both AIs']);
 
 export function neededAcrossWalls(row: NeededRow): NeededAcrossWalls | null {
-  if (row.expected_total || !WALLS_NOT_SET.has(row.wall_layout.source)) return null;
+  // Walls chosen after an every-case run keep the table's usual "—" until the checks run again.
+  if (row.expected_total || WALLS_USED.has(row.wall_layout.source)) return null;
   const recorded = row.wall_cases;
   const cases = (recorded?.cases ?? []).filter((item) => item.expected_total);
   if (!recorded || cases.length === 0) return null;
@@ -141,6 +147,8 @@ export function neededAcrossWalls(row: NeededRow): NeededAcrossWalls | null {
       difference: signOf(gap) === 0 ? gap.display : `${atLeast}${gap.display} ${direction}`,
       outcome,
       least,
+      // For sorting only, beside the row's own signed difference: short below zero.
+      gap: direction === 'short' ? { ...gap, numerator: `-${gap.numerator}` } : gap,
     };
   }
   return {
