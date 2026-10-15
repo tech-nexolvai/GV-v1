@@ -25,6 +25,10 @@ fraction), or the stored suggestion. A number under GV's markup has no guess and
 GV's markup is the answer key, never a reading source. The hold text "reviewer wrote X" is never
 shown. A number with no guess is checked by hand, with no typing (confirm-only).
 
+**Status is the result's, not the number's.** Several `number` items of one width result share its
+finding id and its status. Nothing records a decision on one held number yet; when W3/W2 add one,
+each number's own status should be read from it.
+
 **Reader texts** come from the reading's own record (`reader:<model>:<text>` on the candidate), so
 nothing under `extraction/` is imported (`tests/api/test_no_heavy_work.py`).
 
@@ -109,7 +113,13 @@ _NUMBER_LEVEL_HOLD: Final = "row-held"
 _GV_MARKUP_FLAGS: Final = frozenset({"reviewer-markup", "gv-tick", "gv-other-mark"})
 
 #: "…; reviewer wrote 42" in a stored hold reason: GV's own words, never shown as a guess.
-_REVIEWER_WROTE = re.compile(r";?\s*reviewer wrote\b[^;.]*[.]?", re.IGNORECASE)
+#: Removed to the end of its clause (the next ";"), so "42.5" or "3 1/2. Box" leave nothing behind.
+_REVIEWER_WROTE = re.compile(r";?\s*reviewer wrote\b[^;]*", re.IGNORECASE)
+
+#: A record whose texts may hold more than the vendor's one label: a piece with two or more labels
+#: (every label's reader texts are written on one record, with no ink flag, and one of them may be
+#: GV's correction beside the vendor's number), or a label whose ink was never checked.
+_UNTRUSTED_TEXT_FLAGS: Final = frozenset({"two-labels", "ink-unchecked"})
 
 _ACTIONS: Final[Mapping[str, tuple[str, ...]]] = {
     "number": ("confirm", "fix"),
@@ -269,6 +279,19 @@ def under_gv_markup(flags: Iterable[str]) -> bool:
     return False
 
 
+def vendor_ink_only(flags: Iterable[str]) -> bool:
+    """Whether this record's texts are positively the vendor's one label: checked as vendor ink
+    (`ink:vendor`, and no other ink), with no second label and no unchecked ink. Anything else gives
+    no guess and no reader texts: the number is checked by hand."""
+    listed = set(flags)
+    inks = {flag for flag in listed if flag.startswith("ink:")}
+    return (
+        inks == {"ink:vendor"}
+        and not listed & _UNTRUSTED_TEXT_FLAGS
+        and not under_gv_markup(listed)
+    )
+
+
 def reader_texts(flags: Iterable[str]) -> list[tuple[str, str]]:
     """Each source's text as the reading recorded it (`reader:<source>:<text>`), in order."""
     found: list[tuple[str, str]] = []
@@ -304,7 +327,7 @@ def best_guess(candidate: object) -> BestGuessOut | None:
     """The held number's guess: the PDF text, else both readers' identical text, else the stored
     suggestion. None under GV's markup, and None when nothing was guessed."""
     flags = _flags(candidate)
-    if under_gv_markup(flags):
+    if not vendor_ink_only(flags):
         return None
     texts = reader_texts(flags)
     pdf = next((text for source, text in texts if source == TEXT_LAYER_SOURCE), None)
@@ -327,7 +350,7 @@ def best_guess(candidate: object) -> BestGuessOut | None:
 
 def _readers(candidate: object) -> list[ReaderTextOut]:
     flags = _flags(candidate)
-    if under_gv_markup(flags):
+    if not vendor_ink_only(flags):
         return []
     return [
         ReaderTextOut(reader=source, text=text)
@@ -825,11 +848,8 @@ def _width_items(
     locations[None] = result.printed_overall_location
     held: list[ObservationCandidate] = []
     if row is not None:
-        held = [
-            candidate
-            for candidate in row.candidates
-            if _slot(candidate) != -1 and not candidate_is_sealed(candidate)
-        ]
+        # Every held number, a record with no `slot:` place too (checked by hand, never skipped).
+        held = [candidate for candidate in row.candidates if not candidate_is_sealed(candidate)]
     found: list[ReviewItemOut] = []
     by_hand: list[ObservationCandidate] = []
     for candidate in held:
@@ -864,9 +884,13 @@ def _width_items(
     ]
     if by_hand or (not found and (hold is not None or missing_positions)):
         first = by_hand[0] if by_hand else None
-        positions = [
-            position for candidate in by_hand if (position := _slot(candidate)) != -1
-        ] or missing_positions
+        unplaced = sum(1 for candidate in by_hand if _slot(candidate) == -1)
+        positions = [position for candidate in by_hand if (position := _slot(candidate)) != -1] or (
+            [] if unplaced else missing_positions
+        )
+        named = [_what(position) for position in positions] + (
+            ["a number whose place on the row was not recorded"] * min(unplaced, 1)
+        )
         reasons = [
             reviewer_reason(_flags(candidate), candidate.review_reason) for candidate in by_hand
         ]
@@ -874,11 +898,7 @@ def _width_items(
             ReviewItemOut(
                 key=f"countertop:{finding.id}",
                 kind="countertop_by_hand",
-                what=(
-                    "Check by hand: " + ", ".join(_what(position) for position in positions)
-                    if positions
-                    else "This countertop"
-                ),
+                what="Check by hand: " + ", ".join(named) if named else "This countertop",
                 why=plain_why(
                     next((reason for reason in reasons if reason), None)
                     or (None if hold is None else hold.reason),

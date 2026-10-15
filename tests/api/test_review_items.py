@@ -18,7 +18,7 @@ from app.auth import Principal, Role, authenticate
 from app.config import Settings
 from app.db.session import session_factory
 from app.main import API_PREFIX, create_app
-from app.models import CheckRun, Finding, PackageRevision
+from app.models import CheckRun, Finding, ObservationCandidate, PackageRevision
 from app.models.rules import RuleDefinition, RuleSnapshot
 from app.review.approval import approval_readiness
 from tests.api.test_slot_rows import _package_rows, _run_current_checks
@@ -187,7 +187,7 @@ def _candidate(flags: list[str], value: tuple[int, int] | None = None) -> Simple
 def test_best_guess_takes_the_file_text_then_agreed_text_then_the_suggestion() -> None:
     from app.review.review_items import best_guess
 
-    both = ["reader:model-a:12 1/2", "reader:model-b:12 1/2"]
+    both = ["ink:vendor", "reader:model-a:12 1/2", "reader:model-b:12 1/2"]
     pdf = best_guess(_candidate(["reader:pdf-text-layer:12 3/4", *both], (49, 4)))
     assert pdf is not None and pdf.source == "pdf_text" and pdf.text == "12 3/4"
     assert pdf.value is not None and pdf.value.display == '12 3/4"'
@@ -195,17 +195,18 @@ def test_best_guess_takes_the_file_text_then_agreed_text_then_the_suggestion() -
     agreed = best_guess(_candidate([*both, "odd-fraction"], (49, 4)))
     assert agreed is not None and agreed.source == "agreed_text" and agreed.text == "12 1/2"
 
-    suggested = best_guess(_candidate(["reader:model-a:12", "reader:model-b:13"], (49, 4)))
+    differ = ["ink:vendor", "reader:model-a:12", "reader:model-b:13"]
+    suggested = best_guess(_candidate(differ, (49, 4)))
     assert suggested is not None and suggested.source == "suggestion"
     assert suggested.text == '12 1/4"'
 
-    assert best_guess(_candidate(["reader:model-a:12", "reader:model-b:13"])) is None
+    assert best_guess(_candidate(differ)) is None
 
 
 def test_gv_markup_is_never_a_guess_or_a_reading() -> None:
     from app.review.review_items import _readers, best_guess, plain_why
 
-    for markup in (["reviewer-markup"], ["gv-tick"], ["ink:reviewer"]):
+    for markup in (["ink:vendor", "reviewer-markup"], ["ink:vendor", "gv-tick"], ["ink:reviewer"]):
         held = _candidate(
             [*markup, "reader:pdf-text-layer:30", "reader:model-a:30", "reader:model-b:30"],
             (30, 1),
@@ -217,6 +218,76 @@ def test_gv_markup_is_never_a_guess_or_a_reading() -> None:
         "Covered by reviewer markup; reviewer wrote 31 1/2", "Check the vendor's own number."
     )
     assert "31" not in why and "wrote" not in why
+
+
+def test_a_second_label_or_unchecked_ink_is_never_a_guess_or_a_reading() -> None:
+    """A piece with two labels keeps every label's reader texts on one record with no ink flag:
+    typically the vendor's number and GV's correction beside it (made-up values). Only a record
+    positively checked as the vendor's one label gives a guess or reader texts."""
+    from app.review.review_items import _readers, best_guess
+
+    texts = ["reader:model-a:30", "reader:model-b:30", "reader:model-a:31 1/2"]
+    for flags in (
+        ["two-labels", *texts],  # two labels, one of them GV's ink: no ink flag at all
+        ["two-labels", "ink:vendor", *texts],
+        ["ink-unchecked", "reader:model-a:30", "reader:model-b:30"],
+        ["reader:model-a:30", "reader:model-b:30"],  # ink never recorded
+        ["ink:vendor", "ink:reviewer", "reader:model-a:30", "reader:model-b:30"],
+    ):
+        held = _candidate([*flags, "reader:pdf-text-layer:30"], (30, 1))
+        assert best_guess(held) is None, flags
+        assert _readers(held) == [], flags
+
+
+def test_reviewer_wrote_is_removed_to_the_end_of_its_clause() -> None:
+    from app.review.review_items import plain_why
+
+    fallback = "Check the vendor's own number."
+    assert plain_why("Covered by reviewer markup; reviewer wrote 42.5", fallback) == (
+        "Covered by reviewer markup"
+    )
+    kept = plain_why("Covered by reviewer markup; reviewer wrote 3 1/2. Box 2; edge", fallback)
+    assert "3 1/2" not in kept and "Box" not in kept and kept.endswith("edge")
+    assert plain_why("reviewer wrote 42.5", fallback) == fallback
+
+
+def test_a_held_number_with_no_place_on_the_row_is_checked_by_hand(
+    session: Session, tmp_path: Path
+) -> None:
+    """A held record with no `slot:` flag is never skipped: it is listed to check by hand."""
+    project_id, package_id, anchors = _package_rows(session, unsealed_page=0)
+    anchor = session.get(ObservationCandidate, anchors[0])
+    assert anchor is not None
+    unplaced = ObservationCandidate(
+        document_version_id=anchor.document_version_id,
+        page_id=anchor.page_id,
+        extraction_run_id=anchor.extraction_run_id,
+        raw_text="17",
+        value_numerator=17,
+        value_denominator=1,
+        unit="in",
+        polygon=[[0, 0], [10, 0], [10, 10], [0, 10]],
+        coordinate_space="image",
+        ambiguity_flags=["slot-reader", "row-rank:1", "ink:vendor", "reader:model-a:17"],
+        review_reason="made-up hold",
+    )
+    session.add(unplaced)
+    session.flush()
+    _run_current_checks(session, package_id, tmp_path)
+    session.commit()
+
+    body = (
+        _client(session, project_id)
+        .get(f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/review-items")
+        .json()
+    )
+    assert body["unaccounted"] == []
+    assert all(item["candidate_id"] != str(unplaced.id) for item in body["items"])
+    by_hand = [
+        item for item in body["items"] if item["kind"] == "countertop_by_hand" and item["page"] == 1
+    ]
+    assert len(by_hand) == 1
+    assert "place on the row was not recorded" in by_hand[0]["what"]
 
 
 def test_the_accounting_names_a_result_or_page_left_out_or_listed_twice() -> None:
