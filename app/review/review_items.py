@@ -1,0 +1,921 @@
+"""One read-only list of exactly what a person must check on a package (#1338, simple review W1).
+
+The simple review screen shows one list instead of the advanced view's tabs. This builds it from the
+projections the advanced view already reads, and adds nothing of its own: no model, no check, no
+write, no guess.
+
+**Three groups, and every blocking result in exactly one of them.**
+
+* `items`: the questions a person answers. A width number the AI could not settle (`number`, one
+  per reading, so each can be confirmed on its own), a countertop to check by hand
+  (`countertop_by_hand`: the row itself was held, or its held numbers have no AI guess), a wall
+  choice, a page listed with no countertop, an architect question, a depth or sink reading to
+  confirm, or any other result that waits for a person (`other_result`).
+* `failures`: FAIL results. Each stays blocking and needs one Agree (Anant, decision 2).
+* `not_checked`: the depth and sink checks that could not run because nothing was read for them
+  (Anant, decision 1: one quiet group).
+
+`unaccounted` lists any blocking result, or any page that blocks sign-off, that is in none of the
+groups or in more than one. It must be empty; it is computed here, on every read, so the screen can
+never hide a result by accident (never silent).
+
+**The best guess, and what is never one.** For a held number the guess is, in this order: the PDF's
+own text for the label, the text both AI readers wrote identically (held by a guard such as an odd
+fraction), or the stored suggestion. A number under GV's markup has no guess and no reader texts:
+GV's markup is the answer key, never a reading source. The hold text "reviewer wrote X" is never
+shown. A number with no guess is checked by hand, with no typing (confirm-only).
+
+**Reader texts** come from the reading's own record (`reader:<model>:<text>` on the candidate), so
+nothing under `extraction/` is imported (`tests/api/test_no_heavy_work.py`).
+
+Source: issue #1338. Verification: `tests/api/test_review_items.py`.
+"""
+
+from __future__ import annotations
+
+import re
+from collections import Counter
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from datetime import datetime
+from fractions import Fraction
+from typing import Final, Literal
+from uuid import UUID
+
+from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.models import CheckRun, Finding, PackageRevision, RuleDefinition, RuleSnapshot
+from app.models.drawing import VendorPagePicture
+from app.models.evidence import ObservationCandidate
+from app.review.approval import readiness_and_decisions
+from app.review.depth_readings import depth_readings_for
+from app.review.requirements import BLOCKING_OUTCOMES
+from app.review.row_location import RowLocation
+from app.schemas.visual_ui import CountertopItemRefOut, CountertopResultOut, ExactValueOut
+from units.imperial import format_inches, parse_imperial
+from verdict.outcomes import Outcome
+from vocabulary.reviewer_reasons import finding_reviewer_reason, reviewer_reason
+from workflow.slot_row_scope import SlotRow, candidate_is_sealed, slot_rows
+
+__all__ = [
+    "DEPTH_AND_SINK_RULES",
+    "NOT_CHECKED_NOTE",
+    "BestGuessOut",
+    "ReviewItemOut",
+    "ReviewItemsOut",
+    "account",
+    "best_guess",
+    "review_items_for_revision",
+]
+
+ItemKind = Literal[
+    "number",
+    "countertop_by_hand",
+    "wall_choice",
+    "no_countertop_page",
+    "architect",
+    "depth_reading",
+    "other_result",
+]
+Status = Literal["open", "done", "rechecking"]
+GuessSource = Literal["pdf_text", "agreed_text", "suggestion"]
+
+#: The six depth and sink checks (`app/review/waiting_values.py`), with their plain names.
+DEPTH_AND_SINK_RULES: Final[Mapping[str, str]] = {
+    "CT-DEPTH-001": "Countertop depth",
+    "CT-SINK-CUTOUT-WIDTH-001": "Sink cut-out width",
+    "CT-SINK-CUTOUT-DEPTH-001": "Sink cut-out depth",
+    "CT-SINK-OFFSET-FRONT-001": "Sink front offset",
+    "CT-BACK-OFFSET-MIN-001": "Back offset minimum",
+    "CT-SINK-CABINET-WIDTH-001": "Sink cabinet width",
+}
+
+WIDTH_RULE: Final = "CT-WIDTH-001"
+ARCHITECT_RULE: Final = "CT-ARCH-WIDTH-001"
+TEXT_LAYER_SOURCE: Final = "pdf-text-layer"
+
+NOT_CHECKED_NOTE: Final = (
+    "These depth and sink checks did not run: nothing was read for them (the depth and sink "
+    "reader is off, or read nothing here). They are printed NOT CHECKED."
+)
+
+#: The one hold code that is about the row's numbers, not the whole row: every other row hold
+#: (lines split, a tall appliance, stone into pockets or short of the ends) is checked by hand.
+_NUMBER_LEVEL_HOLD: Final = "row-held"
+
+#: GV's ink on a number: its markup is never a guess or a reading source.
+_GV_MARKUP_FLAGS: Final = frozenset({"reviewer-markup", "gv-tick", "gv-other-mark"})
+
+#: "…; reviewer wrote 42" in a stored hold reason: GV's own words, never shown as a guess.
+_REVIEWER_WROTE = re.compile(r";?\s*reviewer wrote\b[^;.]*[.]?", re.IGNORECASE)
+
+_ACTIONS: Final[Mapping[str, tuple[str, ...]]] = {
+    "number": ("confirm", "fix"),
+    "countertop_by_hand": ("checked_right", "checked_wrong"),
+    "wall_choice": ("choose_wall",),
+    "no_countertop_page": ("confirm_no_countertop", "there_is_a_countertop"),
+    "architect": ("answer",),
+    "depth_reading": ("confirm", "not_this"),
+    "other_result": ("checked_right", "checked_wrong"),
+    "failure": ("agree",),
+    "not_checked": ("settle_group",),
+}
+
+
+class BestGuessOut(BaseModel):
+    """What the AI or the file suggests a held number is. Shown to confirm, never a value."""
+
+    text: str = Field(description='The guess as written, e.g. `42 1/2"`.')
+    value: ExactValueOut | None = Field(
+        default=None, description="The exact inches, when the text is a plain dimension."
+    )
+    source: GuessSource = Field(
+        description=(
+            "`pdf_text`: the PDF's own text for the label. `agreed_text`: both AI readers wrote "
+            "it identically, but a guard held it. `suggestion`: the stored suggestion."
+        )
+    )
+
+
+class ReaderTextOut(BaseModel):
+    reader: str
+    text: str
+
+
+class ArchitectRefOut(BaseModel):
+    """Where the architect's matching number is, or why there is none."""
+
+    location: RowLocation | None = None
+    reason: str | None = None
+
+
+class ReviewItemOut(BaseModel):
+    """One question a person answers."""
+
+    key: str = Field(description="Stable key for this question.")
+    kind: ItemKind
+    page: int | None = Field(description="1-based vendor page number.")
+    countertop: CountertopItemRefOut | None = None
+    row_label: str | None = None
+    what: str = Field(description="What is being checked, in plain words.")
+    best_guess: BestGuessOut | None = Field(
+        default=None,
+        description="Null when the AI has no guess: the item is then checked by hand, no typing.",
+    )
+    readers: list[ReaderTextOut] = Field(default_factory=list)
+    why: str = Field(description="Why a person is asked, in plain words.")
+    vendor_ref: RowLocation | None = None
+    architect_ref: ArchitectRefOut | None = None
+    zoom_ref: str | None = Field(
+        default=None,
+        description="API path (under the API prefix) of a close-up PNG from the vendor-only page.",
+    )
+    actions: list[str] = Field(description="What a person may do now; empty once answered.")
+    status: Status
+    decided_by: str | None = None
+    decided_at: datetime | None = None
+    finding_id: UUID | None = None
+    row_id: UUID | None = None
+    candidate_id: UUID | None = None
+
+
+class FailureOut(BaseModel):
+    """A FAIL result: it will be clouded as wrong, and needs one Agree."""
+
+    key: str
+    finding_id: UUID
+    rule_id: str
+    page: int | None = None
+    countertop: CountertopItemRefOut | None = None
+    row_label: str | None = None
+    why: str
+    vendor_ref: RowLocation | None = None
+    actions: list[str]
+    status: Status
+    decided_by: str | None = None
+    decided_at: datetime | None = None
+
+
+class NotCheckedOut(BaseModel):
+    """A check that could not run because nothing was read for it."""
+
+    key: str
+    finding_id: UUID
+    rule_id: str
+    check: str = Field(description="The check in plain words.")
+    page: int | None = None
+    countertop: CountertopItemRefOut | None = None
+    row_label: str | None = None
+    why: str
+    status: Status
+    decided_by: str | None = None
+    decided_at: datetime | None = None
+
+
+class UnaccountedOut(BaseModel):
+    """A blocking result or page the list failed to place exactly once. Must never happen."""
+
+    kind: Literal["finding", "page"]
+    finding_id: UUID | None = None
+    page: int | None = None
+    why: str
+
+
+class ReviewHeaderOut(BaseModel):
+    pages_read: int = Field(description="Vendor pages the reader looked at for a countertop.")
+    numbers: int = Field(description="Width numbers on the countertop rows read.")
+    confirmed_by_ai: int = Field(description="Of those, numbers both AI readers settled.")
+    checked_by_you: int = Field(
+        description="Items, failures and not-checked results a person decided."
+    )
+    open: int = Field(description="Items and failures still waiting for a person.")
+    failures: int
+    not_checked: int
+    rechecking: int = Field(description="Items waiting for the next check run.")
+    can_finalise: bool
+    blocked_reason: str | None = None
+
+
+class ReviewItemsOut(BaseModel):
+    package_id: UUID
+    revision_id: UUID
+    revision_number: int
+    header: ReviewHeaderOut
+    items: list[ReviewItemOut]
+    failures: list[FailureOut]
+    not_checked_note: str = NOT_CHECKED_NOTE
+    not_checked: list[NotCheckedOut]
+    unaccounted: list[UnaccountedOut] = Field(
+        description="Must be empty. Anything here is a blocking result the list did not place once."
+    )
+
+
+# --- the best guess -------------------------------------------------------------------------------
+
+
+def _flags(candidate: object) -> list[str]:
+    return [str(flag) for flag in getattr(candidate, "ambiguity_flags", None) or ()]
+
+
+def under_gv_markup(flags: Iterable[str]) -> bool:
+    """Whether GV's ink sits on this number (its markup is never a guess or a reading)."""
+    for flag in flags:
+        if flag in _GV_MARKUP_FLAGS:
+            return True
+        if flag.startswith("ink:") and flag != "ink:vendor":
+            return True
+    return False
+
+
+def reader_texts(flags: Iterable[str]) -> list[tuple[str, str]]:
+    """Each source's text as the reading recorded it (`reader:<source>:<text>`), in order."""
+    found: list[tuple[str, str]] = []
+    for flag in flags:
+        if not flag.startswith("reader:"):
+            continue
+        source, _, text = flag.removeprefix("reader:").partition(":")
+        if source and text.strip():
+            found.append((source, text.strip()))
+    return found
+
+
+def _exact(value: Fraction | None) -> ExactValueOut | None:
+    if value is None:
+        return None
+    return ExactValueOut(
+        numerator=str(value.numerator),
+        denominator=str(value.denominator),
+        display=f'{format_inches(value)}"',
+    )
+
+
+def _parsed(text: str) -> Fraction | None:
+    cleaned = text.strip().removesuffix('"').removesuffix(" in").strip()
+    try:
+        value = parse_imperial(cleaned)
+    except (ValueError, TypeError, ArithmeticError):
+        return None
+    return value if value > 0 else None
+
+
+def best_guess(candidate: object) -> BestGuessOut | None:
+    """The held number's guess: the PDF text, else both readers' identical text, else the stored
+    suggestion. None under GV's markup, and None when nothing was guessed."""
+    flags = _flags(candidate)
+    if under_gv_markup(flags):
+        return None
+    texts = reader_texts(flags)
+    pdf = next((text for source, text in texts if source == TEXT_LAYER_SOURCE), None)
+    if pdf:
+        return BestGuessOut(text=pdf, value=_exact(_parsed(pdf)), source="pdf_text")
+    readers = [text for source, text in texts if source != TEXT_LAYER_SOURCE]
+    if len(readers) >= 2 and len({" ".join(text.split()) for text in readers}) == 1:
+        return BestGuessOut(
+            text=readers[0], value=_exact(_parsed(readers[0])), source="agreed_text"
+        )
+    numerator = getattr(candidate, "value_numerator", None)
+    denominator = getattr(candidate, "value_denominator", None)
+    if numerator is not None and denominator and getattr(candidate, "unit", None) == "in":
+        value = Fraction(numerator, denominator)
+        return BestGuessOut(
+            text=f'{format_inches(value)}"', value=_exact(value), source="suggestion"
+        )
+    return None
+
+
+def _readers(candidate: object) -> list[ReaderTextOut]:
+    flags = _flags(candidate)
+    if under_gv_markup(flags):
+        return []
+    return [
+        ReaderTextOut(reader=source, text=text)
+        for source, text in reader_texts(flags)
+        if source != TEXT_LAYER_SOURCE
+    ]
+
+
+def plain_why(text: str | None, fallback: str) -> str:
+    """A reason in plain words, without GV's own written words ("reviewer wrote X")."""
+    cleaned = _REVIEWER_WROTE.sub("", text or "").strip()
+    if not cleaned:
+        return fallback
+    return cleaned[:1].upper() + cleaned[1:]
+
+
+# --- the accounting -------------------------------------------------------------------------------
+
+
+def account(
+    *,
+    blocking_findings: Iterable[UUID],
+    blocking_pages: Iterable[int],
+    items: Sequence[ReviewItemOut],
+    failures: Sequence[FailureOut],
+    not_checked: Sequence[NotCheckedOut],
+) -> list[UnaccountedOut]:
+    """Every blocking result in exactly one group, and every blocking page in exactly one item.
+
+    In `items` one width result may span several questions (one per held number, plus one for its
+    numbers checked by hand): it is still one group. In `failures` and `not_checked` a result is
+    listed once. A result in no group, or in two, is unaccounted; so is a listed result that is not
+    blocking (the list would ask for something sign-off does not need).
+    """
+    groups: dict[UUID, list[str]] = {}
+    for name, ids in (
+        ("items", list({item.finding_id for item in items if item.finding_id is not None})),
+        ("failures", [entry.finding_id for entry in failures]),
+        ("not_checked", [entry.finding_id for entry in not_checked]),
+    ):
+        for finding_id in ids:
+            groups.setdefault(finding_id, []).append(name)
+    required = set(blocking_findings)
+    found: list[UnaccountedOut] = []
+    for finding_id in sorted(required | set(groups), key=str):
+        placed = groups.get(finding_id, [])
+        if finding_id not in required:
+            found.append(
+                UnaccountedOut(
+                    kind="finding", finding_id=finding_id, why="listed but not a blocking result"
+                )
+            )
+        elif not placed:
+            found.append(UnaccountedOut(kind="finding", finding_id=finding_id, why="in no group"))
+        elif len(placed) > 1:
+            found.append(
+                UnaccountedOut(
+                    kind="finding",
+                    finding_id=finding_id,
+                    why="listed more than once: " + ", ".join(placed),
+                )
+            )
+    page_items = Counter(
+        item.page
+        for item in items
+        if item.page is not None
+        and (item.kind == "no_countertop_page" or (item.finding_id is None and item.row_id))
+    )
+    for page in sorted(set(blocking_pages)):
+        count = page_items.get(page, 0)
+        if count != 1:
+            found.append(
+                UnaccountedOut(
+                    kind="page",
+                    page=page,
+                    why="in no item" if count == 0 else f"in {count} items",
+                )
+            )
+    return found
+
+
+# --- building the list ----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _Live:
+    finding: Finding
+    rule_id: str
+    rule_snapshot_id: UUID
+
+
+def _live_findings(session: Session, revision_id: UUID) -> list[_Live]:
+    return [
+        _Live(finding, rule_id, snapshot_id)
+        for finding, rule_id, snapshot_id in session.execute(
+            select(Finding, RuleDefinition.rule_id, CheckRun.rule_snapshot_id)
+            .join(CheckRun, CheckRun.id == Finding.check_run_id)
+            .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
+            .join(RuleDefinition, RuleDefinition.id == RuleSnapshot.rule_definition_id)
+            .where(Finding.package_revision_id == revision_id, CheckRun.superseded_at.is_(None))
+            .order_by(Finding.created_at, Finding.id)
+        ).all()
+    ]
+
+
+@dataclass(frozen=True, slots=True)
+class _DepthItem:
+    """What `depth_readings_for` reads of a result."""
+
+    id: UUID
+    package_revision_id: UUID
+    rule_id: str
+    rule_snapshot_id: UUID
+    outcome: Outcome
+    scope_item_id: UUID | None
+    scope_row_candidate_id: UUID | None
+
+
+def _slot(candidate: object) -> int | None | Literal[-1]:
+    raw = next(
+        (flag.removeprefix("slot:") for flag in _flags(candidate) if flag.startswith("slot:")), ""
+    )
+    if raw == "overall":
+        return None
+    return int(raw) if raw.isdigit() else -1
+
+
+def _what(position: int | None) -> str:
+    return "Overall countertop width" if position is None else f"Piece {position + 1} width"
+
+
+def review_items_for_revision(
+    session: Session,
+    *,
+    project_id: UUID,
+    package_id: UUID,
+    revision: PackageRevision,
+    api_root: str = "",
+) -> ReviewItemsOut:
+    """The list for one revision. Read-only; a fixed handful of reads whatever the rows."""
+    # Imported here: the projection lives with its route, and importing it at module load would
+    # make `app.review` load the API package first (as `app/review/signed_exports.py` does).
+    from app.api.visual_countertops import _countertop_results_for_revision
+
+    projection = _countertop_results_for_revision(session, package_id, revision)
+    readiness, records = readiness_and_decisions(session, revision.id)
+    open_ids = set(readiness.blocking_finding_ids)
+    corrected = set(records.corrected)
+    live = _live_findings(session, revision.id)
+    # Every result sign-off waits on: a blocking outcome, decided or not, and a corrected result
+    # waiting for its re-run (readiness lists it whatever its outcome).
+    blocking = [
+        entry
+        for entry in live
+        if entry.finding.outcome in BLOCKING_OUTCOMES or entry.finding.id in open_ids
+    ]
+
+    rows = slot_rows(session, revision.id) if projection.countertops_checked else ()
+    row_by_id: dict[UUID, SlotRow] = {row.anchor.id: row for row in rows}
+    result_by_row: dict[UUID, CountertopResultOut] = {
+        item.row_id: item for item in projection.items
+    }
+    result_by_finding: dict[UUID, CountertopResultOut] = {
+        item.finding_id: item for item in projection.items if item.finding_id is not None
+    }
+    pictured = (
+        set(
+            session.scalars(
+                select(VendorPagePicture.page_id).where(
+                    VendorPagePicture.page_id.in_(
+                        {candidate.page_id for row in rows for candidate in row.candidates}
+                    )
+                )
+            ).all()
+        )
+        if rows
+        else set()
+    )
+    prefix = f"{api_root}/projects/{project_id}/packages/{package_id}"
+
+    def zoom(candidate: ObservationCandidate) -> str | None:
+        if candidate.page_id not in pictured:
+            return None
+        return f"{prefix}/candidates/{candidate.id}/vendor-only/picture"
+
+    def status_of(finding_id: UUID | None) -> tuple[Status, str | None, datetime | None]:
+        if finding_id is None or finding_id in corrected:
+            return "rechecking", None, None
+        if finding_id in open_ids:
+            return "open", None, None
+        decision = records.decisions.get(finding_id)
+        if decision is None:
+            return "done", None, None
+        return "done", decision.action.actor, decision.action.created_at
+
+    def actions(kind: str, status: Status) -> list[str]:
+        return list(_ACTIONS[kind]) if status == "open" else []
+
+    def scope_of(finding: Finding) -> tuple[int | None, CountertopItemRefOut | None, str | None]:
+        row_id = finding.scope_row_candidate_id
+        result = None if row_id is None else result_by_row.get(row_id)
+        if result is not None:
+            return result.page_number, result.countertop_item, result.label
+        row = None if row_id is None else row_by_id.get(row_id)
+        if row is not None:
+            return row.page_number, None, row.label
+        return None, None, None
+
+    def architect_ref(result: CountertopResultOut | None) -> ArchitectRefOut:
+        if result is None:
+            return ArchitectRefOut(reason="Not compared with the architect's drawing here.")
+        located = next(
+            (
+                pair.architect_location
+                for pair in result.architect.compared
+                if pair.architect_location
+            ),
+            None,
+        )
+        if located is not None:
+            return ArchitectRefOut(location=located)
+        return ArchitectRefOut(
+            reason=result.architect.not_compared_reason
+            or result.architect.reason
+            or "No architect number was placed for this row."
+        )
+
+    depth_lines = depth_readings_for(
+        session,
+        [
+            _DepthItem(
+                entry.finding.id,
+                entry.finding.package_revision_id,
+                entry.rule_id,
+                entry.rule_snapshot_id,
+                Outcome(entry.finding.outcome),
+                entry.finding.scope_item_id,
+                entry.finding.scope_row_candidate_id,
+            )
+            for entry in blocking
+            if entry.rule_id in DEPTH_AND_SINK_RULES
+        ],
+    )
+
+    items: list[ReviewItemOut] = []
+    failures: list[FailureOut] = []
+    not_checked: list[NotCheckedOut] = []
+
+    for entry in blocking:
+        finding, rule_id = entry.finding, entry.rule_id
+        state, decided_by, decided_at = status_of(finding.id)
+        page, countertop, row_label = scope_of(finding)
+        reason = finding_reviewer_reason(finding.outcome, finding.reason)
+        why = plain_why(reason, "This result needs a person.")
+        result = result_by_finding.get(finding.id)
+        if finding.outcome == Outcome.FAIL.value:
+            failures.append(
+                FailureOut(
+                    key=f"failure:{finding.id}",
+                    finding_id=finding.id,
+                    rule_id=rule_id,
+                    page=page,
+                    countertop=countertop,
+                    row_label=row_label,
+                    why=why,
+                    vendor_ref=None if result is None else result.row_location,
+                    actions=actions("failure", state),
+                    status=state,
+                    decided_by=decided_by,
+                    decided_at=decided_at,
+                )
+            )
+            continue
+        if rule_id in DEPTH_AND_SINK_RULES:
+            to_confirm = [
+                line for line in depth_lines.get(finding.id, []) if line.state == "to_confirm"
+            ]
+            if to_confirm:
+                items.append(
+                    ReviewItemOut(
+                        key=f"depth:{finding.id}",
+                        kind="depth_reading",
+                        page=page,
+                        countertop=countertop,
+                        row_label=row_label,
+                        what=DEPTH_AND_SINK_RULES[rule_id],
+                        why="The two AI readers agree, but only the drawn length checks it: "
+                        + "; ".join(line.label for line in to_confirm)
+                        + ".",
+                        actions=actions("depth_reading", state),
+                        status=state,
+                        decided_by=decided_by,
+                        decided_at=decided_at,
+                        finding_id=finding.id,
+                        row_id=finding.scope_row_candidate_id,
+                    )
+                )
+            else:
+                not_checked.append(
+                    NotCheckedOut(
+                        key=f"not-checked:{finding.id}",
+                        finding_id=finding.id,
+                        rule_id=rule_id,
+                        check=DEPTH_AND_SINK_RULES[rule_id],
+                        page=page,
+                        countertop=countertop,
+                        row_label=row_label,
+                        why=why,
+                        status=state,
+                        decided_by=decided_by,
+                        decided_at=decided_at,
+                    )
+                )
+            continue
+        if rule_id == WIDTH_RULE and result is not None:
+            items.extend(
+                _width_items(
+                    result,
+                    row_by_id.get(result.row_id),
+                    finding=finding,
+                    why=why,
+                    state=state,
+                    decided_by=decided_by,
+                    decided_at=decided_at,
+                    actions=actions,
+                    zoom=zoom,
+                    architect=architect_ref(result),
+                )
+            )
+            continue
+        kind: ItemKind = "architect" if rule_id == ARCHITECT_RULE else "other_result"
+        items.append(
+            ReviewItemOut(
+                key=f"result:{finding.id}",
+                kind=kind,
+                page=page,
+                countertop=countertop,
+                row_label=row_label,
+                what=(
+                    "Compare with the architect's drawing"
+                    if kind == "architect"
+                    else f"Result of {rule_id}"
+                ),
+                why=why,
+                vendor_ref=None if result is None else result.row_location,
+                architect_ref=architect_ref(result) if kind == "architect" else None,
+                actions=actions(kind, state),
+                status=state,
+                decided_by=decided_by,
+                decided_at=decided_at,
+                finding_id=finding.id,
+                row_id=finding.scope_row_candidate_id,
+            )
+        )
+
+    # A page a person said has a countertop, waiting for its first result (#1191).
+    for result in projection.items:
+        if result.finding_id is None and result.needs_decision:
+            items.append(
+                ReviewItemOut(
+                    key=f"countertop:{result.row_id}",
+                    kind="countertop_by_hand",
+                    page=result.page_number,
+                    countertop=result.countertop_item,
+                    row_label=result.label,
+                    what="This countertop",
+                    why=plain_why(
+                        None if result.hold is None else result.hold.reason,
+                        "Waiting for the next check run.",
+                    ),
+                    vendor_ref=result.row_location,
+                    architect_ref=architect_ref(result),
+                    actions=[],
+                    status="rechecking",
+                    row_id=result.row_id,
+                )
+            )
+
+    # Pages every AI said have no countertop, which a person must confirm (#1191).
+    for listed in projection.pages_without_countertop:
+        if not listed.needs_answer:
+            continue
+        confirmation = listed.confirmation
+        page_state: Status = "open" if confirmation is None else "done"
+        items.append(
+            ReviewItemOut(
+                key=f"page:{listed.record_id}",
+                kind="no_countertop_page",
+                page=listed.page_number,
+                what="No countertop on this page?",
+                why=plain_why(listed.reason, "Every AI said this page has no countertop."),
+                architect_ref=ArchitectRefOut(
+                    reason="Not compared: no countertop was found on this page."
+                ),
+                actions=actions("no_countertop_page", page_state),
+                status=page_state,
+                decided_by=None if confirmation is None else confirmation.confirmed_by,
+                decided_at=None if confirmation is None else confirmation.confirmed_at,
+                row_id=listed.record_id,
+            )
+        )
+
+    unaccounted = account(
+        blocking_findings=[entry.finding.id for entry in blocking] + list(open_ids),
+        blocking_pages=[
+            *readiness.unconfirmed_no_countertop_pages,
+            *readiness.unchecked_countertop_pages,
+        ],
+        items=items,
+        failures=failures,
+        not_checked=not_checked,
+    )
+
+    numbers = [candidate for row in rows for candidate in row.candidates if _slot(candidate) != -1]
+    everything: list[ReviewItemOut | FailureOut | NotCheckedOut] = [
+        *items,
+        *failures,
+        *not_checked,
+    ]
+    decided = {
+        (entry.finding_id or getattr(entry, "row_id", None) or entry.key)
+        for entry in everything
+        if entry.status == "done" and entry.decided_by
+    }
+    header = ReviewHeaderOut(
+        pages_read=len(
+            {result.page_number for result in projection.items}
+            | {page.page_number for page in projection.pages_without_countertop}
+        ),
+        numbers=len(numbers),
+        confirmed_by_ai=sum(1 for candidate in numbers if candidate_is_sealed(candidate)),
+        checked_by_you=len(decided),
+        open=sum(1 for item in items if item.status == "open")
+        + sum(1 for failure in failures if failure.status == "open"),
+        failures=len(failures),
+        not_checked=len(not_checked),
+        rechecking=sum(1 for entry in everything if entry.status == "rechecking"),
+        can_finalise=readiness.can_approve,
+        blocked_reason=readiness.reason,
+    )
+    return ReviewItemsOut(
+        package_id=package_id,
+        revision_id=revision.id,
+        revision_number=revision.revision_number,
+        header=header,
+        items=sorted(items, key=lambda item: (item.page or 0, item.key)),
+        failures=failures,
+        not_checked=not_checked,
+        unaccounted=unaccounted,
+    )
+
+
+def _width_items(
+    result: CountertopResultOut,
+    row: SlotRow | None,
+    *,
+    finding: Finding,
+    why: str,
+    state: Status,
+    decided_by: str | None,
+    decided_at: datetime | None,
+    actions: Callable[[str, Status], list[str]],
+    zoom: Callable[[ObservationCandidate], str | None],
+    architect: ArchitectRefOut,
+) -> list[ReviewItemOut]:
+    """One width result's questions: a held row is one countertop to check by hand; otherwise one
+    item per held number with a guess, one more for the held numbers without, or the walls."""
+    common = {
+        "page": result.page_number,
+        "countertop": result.countertop_item,
+        "row_label": result.label,
+        "status": state,
+        "decided_by": decided_by,
+        "decided_at": decided_at,
+        "finding_id": finding.id,
+        "row_id": result.row_id,
+        "architect_ref": architect,
+    }
+    hold = result.hold
+    if hold is not None and hold.code != _NUMBER_LEVEL_HOLD:
+        return [
+            ReviewItemOut(
+                key=f"countertop:{finding.id}",
+                kind="countertop_by_hand",
+                what="This countertop",
+                why=plain_why(hold.reason, why),
+                vendor_ref=result.row_location,
+                actions=actions("countertop_by_hand", state),
+                **common,  # type: ignore[arg-type]
+            )
+        ]
+    locations: dict[int | None, RowLocation | None] = {
+        piece.index: piece.location for piece in result.pieces
+    }
+    locations[None] = result.printed_overall_location
+    held: list[ObservationCandidate] = []
+    if row is not None:
+        held = [
+            candidate
+            for candidate in row.candidates
+            if _slot(candidate) != -1 and not candidate_is_sealed(candidate)
+        ]
+    found: list[ReviewItemOut] = []
+    by_hand: list[ObservationCandidate] = []
+    for candidate in held:
+        guess = best_guess(candidate)
+        position = _slot(candidate)
+        if guess is None or position == -1:
+            by_hand.append(candidate)
+            continue
+        flags = _flags(candidate)
+        found.append(
+            ReviewItemOut(
+                key=f"number:{candidate.id}",
+                kind="number",
+                what=_what(position),
+                best_guess=guess,
+                readers=_readers(candidate),
+                # The number's own hold first ("readers differ"); a row's words only without it.
+                why=plain_why(
+                    candidate.review_reason,
+                    reviewer_reason(flags, candidate.review_reason) or why,
+                ),
+                vendor_ref=locations.get(position),
+                zoom_ref=zoom(candidate),
+                actions=actions("number", state),
+                candidate_id=candidate.id,
+                **common,  # type: ignore[arg-type]
+            )
+        )
+    missing_positions: list[int | None] = [
+        *([None] if result.printed_overall is None else []),
+        *(piece.index for piece in result.pieces if piece.source == "missing"),
+    ]
+    if by_hand or (not found and (hold is not None or missing_positions)):
+        first = by_hand[0] if by_hand else None
+        positions = [
+            position for candidate in by_hand if (position := _slot(candidate)) != -1
+        ] or missing_positions
+        reasons = [
+            reviewer_reason(_flags(candidate), candidate.review_reason) for candidate in by_hand
+        ]
+        found.append(
+            ReviewItemOut(
+                key=f"countertop:{finding.id}",
+                kind="countertop_by_hand",
+                what=(
+                    "Check by hand: " + ", ".join(_what(position) for position in positions)
+                    if positions
+                    else "This countertop"
+                ),
+                why=plain_why(
+                    next((reason for reason in reasons if reason), None)
+                    or (None if hold is None else hold.reason),
+                    why,
+                ),
+                vendor_ref=(
+                    (locations.get(_slot(first)) if first is not None else None)
+                    or result.row_location
+                ),
+                zoom_ref=None if first is None else zoom(first),
+                actions=actions("countertop_by_hand", state),
+                candidate_id=None,
+                **common,  # type: ignore[arg-type]
+            )
+        )
+    if found:
+        return found
+    if result.wall_layout.config is None and result.wall_layout.source == "not established":
+        return [
+            ReviewItemOut(
+                key=f"walls:{finding.id}",
+                kind="wall_choice",
+                what="Which ends of this countertop meet a wall",
+                why=plain_why(result.wall_layout.line, why),
+                vendor_ref=result.row_location,
+                actions=actions("wall_choice", state),
+                **common,  # type: ignore[arg-type]
+            )
+        ]
+    return [
+        ReviewItemOut(
+            key=f"countertop:{finding.id}",
+            kind="countertop_by_hand",
+            what="This countertop",
+            why=why,
+            vendor_ref=result.row_location,
+            actions=actions("countertop_by_hand", state),
+            **common,  # type: ignore[arg-type]
+        )
+    ]

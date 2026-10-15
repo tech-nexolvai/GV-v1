@@ -1139,6 +1139,34 @@
         "title": "ArchitectPairingRecordOut",
         "type": "object"
       },
+      "ArchitectRefOut": {
+        "description": "Where the architect's matching number is, or why there is none.",
+        "properties": {
+          "location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RowLocation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "title": "ArchitectRefOut",
+        "type": "object"
+      },
       "ArchitectResultOut": {
         "description": "The vendor-vs-architect check (CT-ARCH-WIDTH-001) for one countertop row (#1054).\n\n`finding_id` and `outcome` are null when nothing was compared for this row; then\n`not_compared_reason` says why, and no reviewer decision is needed for it. Values are the ones\nthe recorded check used, never recomputed.",
         "properties": {
@@ -1903,6 +1931,43 @@
           "unconfirmed"
         ],
         "title": "AwaitingToleranceOut",
+        "type": "object"
+      },
+      "BestGuessOut": {
+        "description": "What the AI or the file suggests a held number is. Shown to confirm, never a value.",
+        "properties": {
+          "source": {
+            "description": "`pdf_text`: the PDF's own text for the label. `agreed_text`: both AI readers wrote it identically, but a guard held it. `suggestion`: the stored suggestion.",
+            "enum": [
+              "pdf_text",
+              "agreed_text",
+              "suggestion"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "text": {
+            "description": "The guess as written, e.g. `42 1/2\"`.",
+            "title": "Text",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExactValueOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The exact inches, when the text is a plain dimension."
+          }
+        },
+        "required": [
+          "text",
+          "source"
+        ],
+        "title": "BestGuessOut",
         "type": "object"
       },
       "BlankPageProofOut": {
@@ -4578,6 +4643,119 @@
         "title": "ExtractionRequestOut",
         "type": "object"
       },
+      "FailureOut": {
+        "description": "A FAIL result: it will be clouded as wrong, and needs one Agree.",
+        "properties": {
+          "actions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Actions",
+            "type": "array"
+          },
+          "countertop": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CountertopItemRefOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "decided_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided By"
+          },
+          "finding_id": {
+            "format": "uuid",
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "row_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Label"
+          },
+          "rule_id": {
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "open",
+              "done",
+              "rechecking"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "vendor_ref": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RowLocation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "why": {
+            "title": "Why",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "finding_id",
+          "rule_id",
+          "why",
+          "actions",
+          "status"
+        ],
+        "title": "FailureOut",
+        "type": "object"
+      },
       "FillerDistributionRequest": {
         "additionalProperties": false,
         "description": "Inputs for the deterministic filler-first distribution proposal.\n\n``field_width`` is nullable on purpose: a missing on-site field dimension is a business\nabstention (NOT_FOUND), not a guessed zero or a selected default.",
@@ -6457,6 +6635,107 @@
         "title": "NoCountertopPagesIn",
         "type": "object"
       },
+      "NotCheckedOut": {
+        "description": "A check that could not run because nothing was read for it.",
+        "properties": {
+          "check": {
+            "description": "The check in plain words.",
+            "title": "Check",
+            "type": "string"
+          },
+          "countertop": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CountertopItemRefOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "decided_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided By"
+          },
+          "finding_id": {
+            "format": "uuid",
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "row_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Label"
+          },
+          "rule_id": {
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "open",
+              "done",
+              "rechecking"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "why": {
+            "title": "Why",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "finding_id",
+          "rule_id",
+          "check",
+          "why",
+          "status"
+        ],
+        "title": "NotCheckedOut",
+        "type": "object"
+      },
       "NotPartReason": {
         "description": "Why a person said a suggested piece is not a part (#1246, phase 5 decision 6).\n\nThe person's own answer to \"what is it?\", kept so the page can show it back after a reload.\nNothing reads it to decide anything. Stored on `part_confirmations`, so the strings are part of\nthe data contract: treat them as fixed.",
         "enum": [
@@ -8314,6 +8593,24 @@
         "title": "ReadDepthsAgainStatusOut",
         "type": "object"
       },
+      "ReaderTextOut": {
+        "properties": {
+          "reader": {
+            "title": "Reader",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reader",
+          "text"
+        ],
+        "title": "ReaderTextOut",
+        "type": "object"
+      },
       "ReadingActivityItemOut": {
         "description": "One item of the reading's activity, in the state its newest event gives it (#1238).",
         "properties": {
@@ -9032,6 +9329,346 @@
           "created_at"
         ],
         "title": "ReviewExceptionOut",
+        "type": "object"
+      },
+      "ReviewHeaderOut": {
+        "properties": {
+          "blocked_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blocked Reason"
+          },
+          "can_finalise": {
+            "title": "Can Finalise",
+            "type": "boolean"
+          },
+          "checked_by_you": {
+            "description": "Items, failures and not-checked results a person decided.",
+            "title": "Checked By You",
+            "type": "integer"
+          },
+          "confirmed_by_ai": {
+            "description": "Of those, numbers both AI readers settled.",
+            "title": "Confirmed By Ai",
+            "type": "integer"
+          },
+          "failures": {
+            "title": "Failures",
+            "type": "integer"
+          },
+          "not_checked": {
+            "title": "Not Checked",
+            "type": "integer"
+          },
+          "numbers": {
+            "description": "Width numbers on the countertop rows read.",
+            "title": "Numbers",
+            "type": "integer"
+          },
+          "open": {
+            "description": "Items and failures still waiting for a person.",
+            "title": "Open",
+            "type": "integer"
+          },
+          "pages_read": {
+            "description": "Vendor pages the reader looked at for a countertop.",
+            "title": "Pages Read",
+            "type": "integer"
+          },
+          "rechecking": {
+            "description": "Items waiting for the next check run.",
+            "title": "Rechecking",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pages_read",
+          "numbers",
+          "confirmed_by_ai",
+          "checked_by_you",
+          "open",
+          "failures",
+          "not_checked",
+          "rechecking",
+          "can_finalise"
+        ],
+        "title": "ReviewHeaderOut",
+        "type": "object"
+      },
+      "ReviewItemOut": {
+        "description": "One question a person answers.",
+        "properties": {
+          "actions": {
+            "description": "What a person may do now; empty once answered.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Actions",
+            "type": "array"
+          },
+          "architect_ref": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArchitectRefOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "best_guess": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BestGuessOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null when the AI has no guess: the item is then checked by hand, no typing."
+          },
+          "candidate_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Id"
+          },
+          "countertop": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CountertopItemRefOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "decided_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided By"
+          },
+          "finding_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finding Id"
+          },
+          "key": {
+            "description": "Stable key for this question.",
+            "title": "Key",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "number",
+              "countertop_by_hand",
+              "wall_choice",
+              "no_countertop_page",
+              "architect",
+              "depth_reading",
+              "other_result"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "1-based vendor page number.",
+            "title": "Page"
+          },
+          "readers": {
+            "items": {
+              "$ref": "#/components/schemas/ReaderTextOut"
+            },
+            "title": "Readers",
+            "type": "array"
+          },
+          "row_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Id"
+          },
+          "row_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Label"
+          },
+          "status": {
+            "enum": [
+              "open",
+              "done",
+              "rechecking"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "vendor_ref": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RowLocation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "what": {
+            "description": "What is being checked, in plain words.",
+            "title": "What",
+            "type": "string"
+          },
+          "why": {
+            "description": "Why a person is asked, in plain words.",
+            "title": "Why",
+            "type": "string"
+          },
+          "zoom_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "API path (under the API prefix) of a close-up PNG from the vendor-only page.",
+            "title": "Zoom Ref"
+          }
+        },
+        "required": [
+          "key",
+          "kind",
+          "page",
+          "what",
+          "why",
+          "actions",
+          "status"
+        ],
+        "title": "ReviewItemOut",
+        "type": "object"
+      },
+      "ReviewItemsOut": {
+        "properties": {
+          "failures": {
+            "items": {
+              "$ref": "#/components/schemas/FailureOut"
+            },
+            "title": "Failures",
+            "type": "array"
+          },
+          "header": {
+            "$ref": "#/components/schemas/ReviewHeaderOut"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewItemOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "not_checked": {
+            "items": {
+              "$ref": "#/components/schemas/NotCheckedOut"
+            },
+            "title": "Not Checked",
+            "type": "array"
+          },
+          "not_checked_note": {
+            "default": "These depth and sink checks did not run: nothing was read for them (the depth and sink reader is off, or read nothing here). They are printed NOT CHECKED.",
+            "title": "Not Checked Note",
+            "type": "string"
+          },
+          "package_id": {
+            "format": "uuid",
+            "title": "Package Id",
+            "type": "string"
+          },
+          "revision_id": {
+            "format": "uuid",
+            "title": "Revision Id",
+            "type": "string"
+          },
+          "revision_number": {
+            "title": "Revision Number",
+            "type": "integer"
+          },
+          "unaccounted": {
+            "description": "Must be empty. Anything here is a blocking result the list did not place once.",
+            "items": {
+              "$ref": "#/components/schemas/UnaccountedOut"
+            },
+            "title": "Unaccounted",
+            "type": "array"
+          }
+        },
+        "required": [
+          "package_id",
+          "revision_id",
+          "revision_number",
+          "header",
+          "items",
+          "failures",
+          "not_checked",
+          "unaccounted"
+        ],
+        "title": "ReviewItemsOut",
         "type": "object"
       },
       "ReviewSessionOut": {
@@ -11589,6 +12226,52 @@
           "source"
         ],
         "title": "TracedOperandOut",
+        "type": "object"
+      },
+      "UnaccountedOut": {
+        "description": "A blocking result or page the list failed to place exactly once. Must never happen.",
+        "properties": {
+          "finding_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finding Id"
+          },
+          "kind": {
+            "enum": [
+              "finding",
+              "page"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "why": {
+            "title": "Why",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "why"
+        ],
+        "title": "UnaccountedOut",
         "type": "object"
       },
       "UploadConfirmation": {
@@ -16879,6 +17562,60 @@
         "summary": "What the published rulebook needs before it can decide anything",
         "tags": [
           "measurements"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/review-items": {
+      "get": {
+        "description": "Items to answer, FAIL results to agree with, and the checks that could not run.\n\nEvery blocking result is in exactly one of `items`, `failures` and `not_checked`, and every\npage that blocks sign-off is one item; `unaccounted` names anything that is not, and must be\nempty. Nothing here decides or records anything.",
+        "operationId": "review_items_api_v1_projects__project_id__packages__package_id__review_items_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewItemsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List exactly what a person must check on the newest revision, read-only",
+        "tags": [
+          "simple review"
         ]
       }
     },
