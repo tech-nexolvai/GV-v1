@@ -533,3 +533,42 @@ def test_walls_the_readers_did_not_agree_on_propose_nothing() -> None:
     asked_again = row(sealed, wall_hold="an earlier answer could not be carried")
     assert _readers_proposal(result("back_left_right"), asked_again) is None
     assert _readers_proposal(result("back_and_left", chosen=True), row(sealed)) is None
+
+
+def test_a_setting_saved_since_the_run_says_so(session: Session, tmp_path: Path) -> None:
+    """#1382: saving a setting does not re-run a check. Each setting a not-checked entry names says
+    whether the company or project settings hold it now; one saved after the run says so, and one
+    still unset does not. Before the save, none is set."""
+    project_id, package_id, _anchors = _package_rows(session, unsealed_page=0)
+    _run_current_checks(session, package_id, tmp_path)
+    session.commit()
+    client = _client(session, project_id)
+    url = f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/review-items"
+
+    def depth_settings() -> list[dict[str, bool]]:
+        response = client.get(url)
+        assert response.status_code == 200, response.text
+        listed = [
+            {need["key"]: need["set_now"] for need in entry["settings"]}
+            for entry in response.json()["not_checked"]
+            if entry["rule_id"] == "CT-DEPTH-001"
+        ]
+        assert listed, "the fixture must leave the depth check not checked"
+        return listed
+
+    assert all(
+        listed == {"cabinet_depth": False, "countertop_overhang": False}
+        for listed in depth_settings()
+    )
+
+    saved = client.post(
+        f"{API_PREFIX}/company-settings/projects/{project_id}",
+        json={"values": [{"name": "cabinet_depth", "value": '24"', "source": "G.C / Client"}]},
+    )
+    assert saved.status_code == 201, saved.text
+
+    # Still not checked (nothing re-ran), still naming both; only the saved one is set now.
+    assert all(
+        listed == {"cabinet_depth": True, "countertop_overhang": False}
+        for listed in depth_settings()
+    )

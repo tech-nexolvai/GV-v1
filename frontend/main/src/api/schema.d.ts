@@ -5466,6 +5466,12 @@ export interface components {
              * @description The project whose setting it is.
              */
             project_id: string;
+            /**
+             * Set Now
+             * @description Whether the company or project settings hold it now (#1382). The run lacked it, so true means it was saved after this check ran: saving never re-runs a check, so the screen says to run the checks again instead of linking to a field that has a value.
+             * @default false
+             */
+            set_now: boolean;
         };
         /**
          * NotPartReason
