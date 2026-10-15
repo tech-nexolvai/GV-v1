@@ -40,6 +40,7 @@ import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 from typing import Any, Final, Literal
 from uuid import UUID
@@ -167,15 +168,35 @@ def is_checked_wrong(disposition: ReviewDisposition) -> bool:
 # ---------------------------------------------------------------------------
 
 
+#: How far past the page's edge a converted point may land and still be the edge (#1394): a
+#: whole-page box can end a hair outside 0..1 after conversion. Anything further out is kept as is,
+#: so a real out-of-page box is still refused and listed.
+EDGE_TOLERANCE: Final = Decimal("0.001")
+
+
+def onto_page(value: object) -> object:
+    """`value`, moved onto the page's edge when it overshoots 0..1 by at most `EDGE_TOLERANCE`."""
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return value
+    if -EDGE_TOLERANCE <= number < 0:
+        return Decimal(0)
+    if 1 < number <= 1 + EDGE_TOLERANCE:
+        return Decimal(1)
+    return value
+
+
 def _reference(
     document_version_id: UUID, page_index: int, polygon: Iterable[Sequence[object]]
 ) -> str:
-    """The same JSON `workflow/redline_outputs._typed_references` writes for a finding."""
+    """The same JSON `workflow/redline_outputs._typed_references` writes for a finding, with a
+    hair's overshoot past the page's edge put back on it (#1394)."""
     return json.dumps(
         {
             "document_version_id": str(document_version_id),
             "page": page_index,
-            "polygon": [[str(x), str(y)] for x, y in polygon],
+            "polygon": [[str(onto_page(x)), str(onto_page(y))] for x, y in polygon],
             "space": "stored",
         },
         sort_keys=True,

@@ -333,6 +333,12 @@ def find_entry(
         offered = ", ".join(sorted(_TAKES[kind]))
         raise ItemRefused(422, f"This item does not take '{action}'. It takes: {offered}.")
     finding_id = entry.finding_id
+    if finding_id is not None and expected_finding_id is None:
+        # Nothing was named, so nothing is stale: the request is incomplete (#1394).
+        raise ItemRefused(
+            422,
+            "expected_finding_id is required: say which result you saw. Nothing was saved.",
+        )
     if finding_id is not None and expected_finding_id != finding_id:
         raise ItemRefused(
             409,
@@ -489,10 +495,13 @@ def group_keys(listed: ReviewItemsOut, group: Group) -> list[str]:
     """The open keys a group key answers, in the list's order."""
     if group == NOT_CHECKED_GROUP:
         return [entry.key for entry in listed.not_checked if entry.status == "open"]
+    # Only the proposed pages (#1394): an older or doubtful reading is never answered in one click.
     return [
         item.key
         for item in listed.items
-        if item.kind == "no_countertop_page" and item.status == "open"
+        if item.kind == "no_countertop_page"
+        and item.status == "open"
+        and item.proposed_no_countertop
     ]
 
 

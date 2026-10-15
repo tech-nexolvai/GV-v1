@@ -55,7 +55,7 @@ export const ItemRow = forwardRef<HTMLButtonElement, {
       {/* One line from tablet width up; on a phone the guess and the status drop to a second line. */}
       <span className="flex min-w-0 flex-1 flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
         <span className="flex min-w-0 flex-1 items-baseline gap-3">
-          <span className={cn('truncate text-[15px] font-medium', item.status === 'done' ? 'text-muted-foreground' : 'text-foreground')}>{item.what}</span>
+          <span title={item.what} className={cn('truncate text-[15px] font-medium', item.status === 'done' ? 'text-muted-foreground' : 'text-foreground')}>{item.what}</span>
           <span className="hidden truncate text-[13px] text-muted-foreground md:inline">{placeWord(item)}</span>
           <PageTag page={item.page} />
         </span>

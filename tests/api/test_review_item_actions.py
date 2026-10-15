@@ -228,8 +228,11 @@ def test_a_stale_expected_finding_is_409_and_records_nothing(
         {"expected_finding_id": str(uuid4())},
     )
     assert wrong.status_code == 409, wrong.text
+    # Naming no result is an incomplete request, not a stale one (#1394).
     missing = _act(client, project_id, package_id, str(item["key"]), "checked_right", {})
-    assert missing.status_code == 409, missing.text
+    assert missing.status_code == 422, missing.text
+    assert "expected_finding_id is required" in missing.text
+    assert "newer result" not in missing.text
 
     # The checks ran again since the screen loaded: the item's result was replaced.
     _run_current_checks(session, package_id, tmp_path)
