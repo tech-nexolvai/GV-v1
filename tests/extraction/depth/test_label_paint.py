@@ -123,10 +123,11 @@ def test_a_title_over_scale_label_names_where_its_own_lettering_is() -> None:
     view = the_view(chars, ink)
 
     assert view.found_by == "title over scale"
+    # Each box tight round its words, grown by half a point (a letter's ink overruns its box).
     title, scale, bubble = view.lettering
-    assert (title.x0, title.top, title.bottom) == (d(310), d(386), d(398))  # SECTION VIEW
-    assert (scale.x0, scale.top, scale.bottom) == (d(310), d(400), d(412))  # 1:20
-    assert (bubble.x0, bubble.top, bubble.bottom) == (d(287), d(366), d(374))  # the bubble's C
+    assert (title.x0, title.top, title.bottom) == (d(309.5), d(385.5), d(398.5))  # SECTION VIEW
+    assert (scale.x0, scale.top, scale.bottom) == (d(309.5), d(399.5), d(412.5))  # 1:20
+    assert (bubble.x0, bubble.top, bubble.bottom) == (d(286.5), d(365.5), d(374.5))  # the C
     # The whole label box is unchanged: the ring's top down to the scale note's bottom.
     assert view.heading_box is not None
     assert (view.heading_box.top, view.heading_box.bottom) == (d(358), d(412))
@@ -228,7 +229,7 @@ def test_a_digit_in_the_corner_of_the_bubbles_square_is_not_its_lettering() -> N
     (prepared,), notes = prepare(chars, ink)
 
     _title, _scale, bubble = view.lettering
-    assert (bubble.x0, bubble.top, bubble.bottom) == (d(287), d(366), d(374))  # the C alone
+    assert (bubble.x0, bubble.top, bubble.bottom) == (d(286.5), d(365.5), d(374.5))  # C alone
     assert prepared.panel_headings == view.lettering
     (note,) = [note for note in notes if "lettering" in note]
     assert "5" in note.split("printed characters ")[1].split(" and ")[0]

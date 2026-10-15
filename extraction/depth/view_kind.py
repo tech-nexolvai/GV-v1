@@ -452,6 +452,11 @@ def find_vendor_views(
     return separate_views(_find_vendor_views(chars, ink, panel, settings))
 
 
+#: A letter's ink runs a little past the box its font gives it (a curve's top, a stroke's edge):
+#: each box of a label's lettering is painted this much larger, so no sliver of a painted-out
+#: title is left at its edge (#1327). What it hides is checked like the rest of the box.
+_LETTERING_MARGIN_PT: Final = Decimal("0.5")
+
 #: Two views' extents may share this much along each side and still be apart (a shared border).
 _SHARED_EDGE_PT: Final = Decimal(1)
 #: Two views' drawings overlap when their extents share more than this part of the smaller one's
@@ -577,8 +582,8 @@ def _trouble(survey: PageViewSurvey) -> list[PageNote]:
 def _lettering(view: PageView, chars: Sequence[TextChar]) -> tuple[Box, ...]:
     """Where a title-over-scale label's own words are printed: its title, its scale note and the
     letters inside its bubble (each character whose middle lies inside the bubble's ring, not
-    merely inside the square round it: a neighbour's digit can stand in that square's corner), or
-    nothing when `page_views` gave no title box."""
+    merely inside the square round it: a neighbour's digit can stand in that square's corner),
+    each grown by `_LETTERING_MARGIN_PT`; or nothing when `page_views` gave no title box."""
     if view.title_box is None:
         return ()
     boxes = [view.title_box, view.scale.box]
@@ -595,7 +600,11 @@ def _lettering(view: PageView, chars: Sequence[TextChar]) -> tuple[Box, ...]:
         ]
         if letters:
             boxes.append(_union_all(letters))
-    return tuple(boxes)
+    margin = _LETTERING_MARGIN_PT
+    return tuple(
+        Box(box.x0 - margin, box.top - margin, box.x1 + margin, box.bottom + margin)
+        for box in boxes
+    )
 
 
 def _title_over_scale(
