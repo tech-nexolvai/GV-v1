@@ -147,18 +147,11 @@ def finding_reason(finding: Finding) -> str | None:
 
 
 def is_checked_wrong(disposition: ReviewDisposition) -> bool:
-    """The hook for "Checked by reviewer: WRONG" (#1358): a person checked a result by hand and
-    found it wrong.
+    """ "Checked by reviewer: WRONG" (#1358): a person checked a result by hand and found it wrong.
 
-    Drawn from the fixed note the simple review records (one shared constant), never by matching
-    the words. #1358 moves that note into one shared constant beside `signed_record.wording`; when
-    it merges, import it from there. Until then it is W3's constant.
+    Read from `signed_record`'s own mark (the shared `CHECKED_WRONG_NOTE`), never from the words.
     """
-    from app.review.review_item_actions import CHECKED_WRONG_NOTE
-
-    return disposition.action == ReviewActionKind.DISMISS.value and (
-        disposition.note == CHECKED_WRONG_NOTE
-    )
+    return disposition.checked_wrong_by_hand
 
 
 # ---------------------------------------------------------------------------

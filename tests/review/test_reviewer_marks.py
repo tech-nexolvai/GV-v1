@@ -396,9 +396,6 @@ def test_a_malformed_snapshot_is_refused_when_loaded(session: Session, tmp_path:
         load_snapshot(session, fake)
 
 
-@pytest.mark.skip(
-    reason="#1358 adds the 'Checked by reviewer: WRONG' wording to signed_record; enable when merged"
-)
 def test_the_wrong_mark_carries_the_1358_wording(session: Session, tmp_path: Path) -> None:
     revision, _anchors, _findings = _answered(session, tmp_path)
     payload = _snapshot(session, _approve(session, revision))
