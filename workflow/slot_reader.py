@@ -31,7 +31,16 @@ readings stand for the countertop only when `extraction/slot_reader/equal_shares
 exactly (one inner `X"(N EQ)` with N = the chosen row's pieces, every piece and the overall
 sealed). Otherwise nothing changes. Holds from both rows still hold.
 
-Source: issues #987, #992, #1051, #1086 · Verification: `tests/workflow/test_slot_reader.py`
+**Try again (#1309), off unless `GV_TRY_AGAIN_GATES` names a gate.** When the two row readers name
+different lines or Rekha's gate stops the line both named, or the seal holds a label for the
+readers' own disagreement or doubt, both readers are asked again up to three smarter ways
+(`extraction/slot_reader/try_again.py`), stopping at the first try that settles the item. A try
+settles it only on the new pair, through the same agreement, gate, seal and drawn-length veto; the
+tries spend at most a tenth of the reading's cap, with a stop of their own that never stops the
+reading (`_rekha_tries`, `_akshara_tries`).
+
+Source: issues #987, #992, #1051, #1086, #1309 · Verification: `tests/workflow/test_slot_reader.py`,
+`tests/workflow/test_try_again.py`
 """
 
 from __future__ import annotations
