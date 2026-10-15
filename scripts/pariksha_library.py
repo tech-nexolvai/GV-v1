@@ -17,7 +17,8 @@ of an agent, with Pariksha's own loaders, scorers and compares (`eval/smriti/lib
         --agent rekha \\
         --before-db <name or URL> [--before-run [AGENT=]<run id>]... --before-code <commit> \\
         --after-db <name or URL> [--after-run [AGENT=]<run id>]... --after-code <commit> \\
-        [--kind-source product|face-tag] [--cards ~/gv-local/<folder>] [--detail]
+        [--kind-source product|face-tag] [--cards ~/gv-local/<folder>] [--detail] \\
+        [--row-boxes ~/gv-local/keys/<box map>.json]...
 
 `--library` may instead come from the `GV_KEY_LIBRARY` setting; there is no default, and a list
 inside a git working tree is refused. `--agent rekha` takes every Rekha key (rows, walls, views);
@@ -26,6 +27,9 @@ read: a bare id for every key, or `AGENT=<id>` for one key agent (the pieces of 
 another extraction run than its reader questions). Without one, a database with a single run of
 that kind is read, and one with several is refused with the list. `--db` names work as in
 `scripts/pariksha_scorecard.py` (a full URL, or a name on the server `DATABASE_URL` points at).
+`--row-boxes` (repeatable) gives the box maps a geometry rows key needs to match the readers' boxes
+on both runs' pictures (`scripts/pariksha_row_boxes.py`, #1321); without one, a geometry case is not
+asked, never guessed.
 
 A change is accepted only when it is better on at least one key and worse on none: a key the change
 left alone is NEUTRAL (0 new wrong, nothing lost, nothing worse by count, not better), and a library where
@@ -55,6 +59,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from eval.pariksha.kinds import PRODUCT, SOURCES
+from eval.pariksha.row_geometry import RowBoxes, RowBoxesError, read_row_boxes
 from eval.pariksha.scorecard import ScorecardError, write_scorecard
 from eval.pariksha.stored import StoredRunError
 from eval.regression import IncomparableRuns
@@ -135,7 +140,11 @@ def _runs(values: Sequence[str] | None) -> dict[str, UUID]:
 
 
 def _side(
-    args: argparse.Namespace, entry: LibraryEntry, ref: StoredRunRef, session: Session
+    args: argparse.Namespace,
+    entry: LibraryEntry,
+    ref: StoredRunRef,
+    session: Session,
+    row_boxes: RowBoxes | None = None,
 ) -> Side:
     return measure(
         session,
@@ -144,6 +153,7 @@ def _side(
         ref,
         kind_source=args.kind_source,
         scorer_version=_scorer_version(),
+        row_boxes=row_boxes,
     )
 
 
@@ -157,6 +167,7 @@ def _write_cards(folder: Path, label: str, entry: LibraryEntry, side: Side) -> N
 def _compare(args: argparse.Namespace) -> int:
     library = read_library(library_path(args.library))
     cards = None if args.cards is None else outside_git(args.cards, "a scorecard folder")
+    row_boxes = read_row_boxes(args.row_boxes) if args.row_boxes else None
     entries = library.for_agent(args.agent)
     refs = {
         "before": StoredRunRef(
@@ -184,7 +195,7 @@ def _compare(args: argparse.Namespace) -> int:
                         code_version=ref.code_version,
                         runs=ref.runs,
                     )
-                    sides[label] = _side(args, entry, named, session)
+                    sides[label] = _side(args, entry, named, session, row_boxes)
                 if cards is not None:
                     _write_cards(cards, label, entry, sides[label])
             results.append(judge_key(entry, pages, sides["before"], sides["after"]))
@@ -237,6 +248,12 @@ def build_parser() -> argparse.ArgumentParser:
     judge.add_argument("--kind-source", choices=SOURCES, default=PRODUCT)
     judge.add_argument("--cards", type=Path, help="also write every scorecard into this folder")
     judge.add_argument("--detail", action="store_true", help="print each key's full comparison")
+    judge.add_argument(
+        "--row-boxes",
+        type=Path,
+        action="append",
+        help="a box map for the geometry rows keys (repeatable)",
+    )
     judge.set_defaults(handler=_compare)
     return parser
 
@@ -252,6 +269,7 @@ def main(argv: list[str] | None = None) -> int:
         IncomparableRuns,
         MissingProvenanceError,
         FileExistsError,
+        RowBoxesError,
     ) as error:
         # A refusal is not a verdict: 0 ACCEPT, 1 REJECT, 3 NOT MEASURED, 4 NEUTRAL, 2 refused.
         print(f"pariksha library: {error}", file=sys.stderr)
