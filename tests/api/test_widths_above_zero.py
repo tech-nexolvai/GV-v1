@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from alembic import command
 from app.api.dependencies import get_session
 from app.api.review import _corrected_inches
-from app.api.slot_rows import SlotRowReviewIn, review_slot_row
+from app.api.slot_rows import TYPED_WIDTH_CLOSED, SlotRowReviewIn, review_slot_row
 from app.auth import Principal, Role, authenticate
 from app.config import Settings
 from app.db.session import session_factory
@@ -75,27 +75,33 @@ def test_a_rows_width_of_zero_or_less_is_refused_and_nothing_saved(
         )
 
     assert refused.value.status_code == 422
-    assert refused.value.detail == f"Piece widths:0: {NOT_ABOVE_ZERO}"
+    # Since #1339 no width is typed for a row at all (confirm-only); zero or less never was saved.
+    assert refused.value.detail == TYPED_WIDTH_CLOSED
     assert session.scalar(select(func.count()).select_from(SlotRowReviewDecision)) == 0
 
 
-def test_a_rows_positive_widths_are_still_saved(session: Session) -> None:
+def test_a_rows_positive_typed_widths_are_refused_too(session: Session) -> None:
+    """#1339 (confirm-only): a positive typed width is no longer saved either."""
     project_id, package_id, anchors = _package_rows(session, unsealed_all=True)
     principal = Principal(
         id="synthetic reviewer", roles=frozenset({Role.REVIEWER}), projects=frozenset({project_id})
     )
 
-    review_slot_row(
-        principal,
-        principal,
-        session,
-        project_id,
-        package_id,
-        anchors[0],
-        SlotRowReviewIn(measurements={"countertop_width": "40 in", "piece_widths:0": "1/16 in"}),
-    )
+    with pytest.raises(HTTPException) as refused:
+        review_slot_row(
+            principal,
+            principal,
+            session,
+            project_id,
+            package_id,
+            anchors[0],
+            SlotRowReviewIn(
+                measurements={"countertop_width": "40 in", "piece_widths:0": "1/16 in"}
+            ),
+        )
 
-    assert session.scalar(select(func.count()).select_from(SlotRowReviewDecision)) == 1
+    assert refused.value.status_code == 422
+    assert session.scalar(select(func.count()).select_from(SlotRowReviewDecision)) == 0
 
 
 # ---------------------------------------------------------------------------

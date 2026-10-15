@@ -591,8 +591,9 @@ def test_a_wall_answer_and_a_typed_width_on_a_page_already_read_survive(
     session: Session, store: LocalStore
 ) -> None:
     """N2: "Read the unread pages" writes a new reading of every page, so page 1's row is a new
-    record. The reviewer's wall answer and typed width on it come along, by the row identity a
-    later revision uses, each naming the answer it was copied from."""
+    record. The reviewer's wall answer on it comes along, by the row identity a later revision
+    uses, naming the answer it was copied from. A width once typed on it is not copied: since
+    #1339 a typed width fills nothing (widths are confirmed from the AI's reading, not typed)."""
     from app.models import SlotRowReviewDecision
 
     rates = PricedRates(OUTPUT_PRICE)
@@ -622,10 +623,7 @@ def test_a_wall_answer_and_a_typed_width_on_a_page_already_read_survive(
     assert after[0].anchor.id != first.anchor.id, "a new reading: a new row record"
     decision = after[0].decision
     assert decision is not None
-    assert (decision.wall_config, decision.measurements) == (
-        "back_left_right",
-        {"piece_widths:0": "21 in"},
-    )
+    assert (decision.wall_config, decision.measurements) == ("back_left_right", {})
     assert (decision.confirmed_by, decision.carried_from_id) == ("synthetic reviewer", answer.id)
     assert result["answers_carried"] == 1
 

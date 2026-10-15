@@ -8,8 +8,19 @@ rests on the two readers' identical text alone: its row had no scale to check it
 `SlotRowCheck.unwitnessed` names those positions among the row's operands, and
 `confirm_unwitnessed_pass` turns the width check's PASS on such a row into REVIEW_REQUIRED with the
 engine's PASS kept in the notes, the shape of the type 1 one-judgment rule
-(`workflow/architect_row_plan.py`). A FAIL already waits for the reviewer; a value the reviewer typed
-is not a reading and never triggers it.
+(`workflow/architect_row_plan.py`). A FAIL already waits for the reviewer; a reading a person
+confirmed is not an unwitnessed one and never triggers it.
+
+**A held reading a person answered (#1339).** A label the readers did not seal (they differed, one
+could not read it, ...) fills its position only through a person: a `HUMAN_CONFIRMED` observation
+citing THIS row's own label at that position (`app/review/evidence_actions.py`: the person confirmed
+the AI's reading, or fixed it). The newest answer wins; another row's or another position's never
+counts. Widths are no longer typed for a row (confirm-only, 2026-10-15): a value saved on the row's
+review decision fills nothing. When people have answered every label the readers held, the row's
+"incomplete" hold (`row-partial`) is resolved; every other hold (the line finder's `row-hold:`,
+`row-ambiguous`, a check hold) stays, so a person still decides those rows by hand. Which answers
+count, and when the hold is resolved, is `workflow/row_answers.py` (light, so the API can ask it too);
+this module seals them.
 """
 
 from __future__ import annotations
@@ -73,13 +84,12 @@ from vocabulary.wall_layouts import (
     is_between_panels,
     wall_layout_words,
 )
+from workflow.row_answers import qualify_row as _qualify
+from workflow.row_answers import row_positions as _row_positions
+from workflow.row_answers import row_readings as _row_readings
 from workflow.slot_row_scope import (
     SlotRow,
-    SlotRowQualification,
-    SlotRowReading,
     candidate_is_sealed,
-    candidate_value,
-    qualify_slot_row,
 )
 
 
@@ -216,106 +226,17 @@ def confirm_unwitnessed_pass(finding: Finding, unwitnessed: tuple[int | None, ..
     )
 
 
-def _row_positions(
-    row: SlotRow,
-) -> tuple[dict[int | None, ObservationCandidate], dict[UUID, str]] | str:
-    """The row's width candidates by position, or why the row has none it can use."""
-    candidates_by_position: dict[int | None, ObservationCandidate] = {}
-    proposal_fields = {
-        candidate_id: proposal.field_key for candidate_id, proposal in row.proposals.items()
-    }
-    for candidate in row.candidates:
-        flags = candidate.ambiguity_flags or []
-        slot = next(
-            (flag.removeprefix("slot:") for flag in flags if flag.startswith("slot:")), None
-        )
-        if slot == "overall":
-            position: int | None = None
-        elif slot is not None and slot.isdigit():
-            position = int(slot)
-        else:
-            continue
-        field = proposal_fields.get(candidate.id)
-        if field not in {
-            "SHOP:countertop_overall_width",
-            "SHOP:countertop_piece_width",
-            "SHOP:cabinet_width",
-            "SHOP:filler_width",
-        }:
-            continue
-        if position in candidates_by_position:
-            # Duplicate candidates at one position are not a tie-break opportunity.
-            return "This row has more than one saved reading for a width position."
-        candidates_by_position[position] = candidate
-    return candidates_by_position, proposal_fields
-
-
-def _row_readings(
-    row: SlotRow, candidates_by_position: dict[int | None, ObservationCandidate]
-) -> tuple[list[SlotRowReading], dict[int | None, Measurement]]:
-    """Each position's sealed reading, or the value a reviewer saved against this exact row."""
-    decision = row.decision
-    typed = {} if decision is None else decision.measurements
-    readings: list[SlotRowReading] = []
-    values: dict[int | None, Measurement] = {}
-    for position in (None, *range(row.piece_count)):
-        selected_candidate: ObservationCandidate | None = candidates_by_position.get(position)
-        if selected_candidate is not None and candidate_is_sealed(selected_candidate):
-            value = candidate_value(selected_candidate)
-            if value is None:
-                continue
-            reading = SlotRowReading(
-                candidate_id=selected_candidate.id,
-                position=position,
-                value_numerator=value.numerator,
-                value_denominator=value.denominator,
-                unit="in",
-                status=selected_candidate.corroboration_status,
-                lane=selected_candidate.corroboration_lane,
-                flags=frozenset(selected_candidate.ambiguity_flags or ()),
-            )
-            readings.append(reading)
-            values[position] = Measurement(value, Unit.INCH, selected_candidate.raw_text)
-            continue
-        # A reader suggestion that did not seal is not an operand. It may be shown as a proposal,
-        # but only a reviewer value saved against this same row can fill this position.
-        key = "countertop_width" if position is None else f"piece_widths:{position}"
-        saved = typed.get(key)
-        if not isinstance(saved, dict):
-            continue
-        try:
-            numerator = int(saved["numerator"])
-            denominator = int(saved["denominator"])
-            unit = str(saved["unit"])
-            exact = Fraction(numerator, denominator)
-        except (KeyError, TypeError, ValueError, ZeroDivisionError):
-            continue
-        if denominator <= 0 or unit != Unit.INCH.value:
-            continue
-        assert decision is not None
-        readings.append(
-            SlotRowReading(
-                candidate_id=decision.id,
-                position=position,
-                value_numerator=exact.numerator,
-                value_denominator=exact.denominator,
-                unit=unit,
-                status=EvidenceStatus.HUMAN_CONFIRMED.value,
-                lane="HUMAN",
-                flags=frozenset({"human-saved-for-row"}),
-            )
-        )
-        values[position] = Measurement(exact, Unit.INCH, str(saved.get("display", "")))
-    return readings, values
-
-
-def _qualify(row: SlotRow, readings: list[SlotRowReading]) -> SlotRowQualification:
-    return qualify_slot_row(
-        tuple(readings),
-        expected_piece_count=row.piece_count,
-        held_reason=row.held_reason,
-        shop_document=row.held_reason != "This is not the vendor drawing.",
-    )
+def _person_operand(
+    session: Session, canonical: CanonicalObservation, name: str
+) -> VerdictOperand | str:
+    """A person's answer as an operand, sealed through the same gate as every reading."""
+    domain = _domain_observation(session, canonical)
+    if domain is None:
+        return "A person's answer for this row could not be read back as evidence."
+    operand = seal(domain, name)
+    if isinstance(operand, GateRefusal):
+        return operand.detail
+    return replace(operand, evidence_observation_id=str(canonical.id))
 
 
 def _seal_row(
@@ -323,15 +244,15 @@ def _seal_row(
     row: SlotRow,
     candidates_by_position: dict[int | None, ObservationCandidate],
     proposal_fields: dict[UUID, str],
-    values: dict[int | None, Measurement],
+    answers: dict[int | None, CanonicalObservation],
 ) -> tuple[dict[str, VerdictOperand], tuple[UUID, ...]] | str:
     """Seal every width of a qualified row, or say which one could not be sealed.
 
     The one place a vendor row's widths become verdict operands: the width check (CT-WIDTH-001)
     and the architect check (CT-ARCH-WIDTH-001, #1054) both take them from here, so the vendor's
-    side of the two checks is the same evidence, sealed the same way.
+    side of the two checks is the same evidence, sealed the same way. A position the readers held
+    is sealed from a person's answer about this row's own label there (#1339).
     """
-    decision = row.decision
     operands: dict[str, VerdictOperand] = {}
     observation_ids: list[UUID] = []
     overall_candidate = candidates_by_position.get(None)
@@ -350,21 +271,34 @@ def _seal_row(
             return operand.detail
         operands["countertop_width"] = replace(operand, evidence_observation_id=str(observation.id))
         observation_ids.append(observation.id)
+    elif None in answers:
+        person = _person_operand(session, answers[None], "countertop_width")
+        if isinstance(person, str):
+            return person
+        operands["countertop_width"] = person
+        observation_ids.append(answers[None].id)
     else:
-        if decision is None or None not in values:
-            return "The overall width is not sealed or saved by a reviewer for this row."
-        operands["countertop_width"] = _human_operand("countertop_width", values[None], decision.id)
+        return (
+            "The overall width is not sealed by both readers or confirmed by a person for this row."
+        )
 
     piece_operands: list[Measurement] = []
-    piece_sources: list[tuple[Measurement, UUID | None, UUID | None, EvidenceStatus]] = []
+    piece_sources: list[tuple[Measurement, UUID, EvidenceStatus]] = []
     for position in range(row.piece_count):
         selected_candidate = candidates_by_position.get(position)
         if selected_candidate is None or not candidate_is_sealed(selected_candidate):
-            if decision is None or position not in values:
-                return f"Piece {position + 1} is not sealed or saved by a reviewer for this row."
-            measurement = values[position]
-            piece_operands.append(measurement)
-            piece_sources.append((measurement, None, decision.id, EvidenceStatus.HUMAN_CONFIRMED))
+            answer = answers.get(position)
+            if answer is None:
+                return (
+                    f"Piece {position + 1} is not sealed by both readers or confirmed by a person "
+                    "for this row."
+                )
+            person = _person_operand(session, answer, f"piece_width_{position + 1}")
+            if isinstance(person, str) or not isinstance(person.value, Measurement):
+                return "A piece width a person confirmed did not pass the evidence gate."
+            piece_operands.append(person.value)
+            piece_sources.append((person.value, answer.id, person.status))
+            observation_ids.append(answer.id)
             continue
         field = proposal_fields[selected_candidate.id]
         observation = _canonical_for_candidate(
@@ -380,13 +314,12 @@ def _seal_row(
         if isinstance(operand, GateRefusal) or not isinstance(operand.value, Measurement):
             return "A piece width did not pass the evidence gate."
         piece_operands.append(operand.value)
-        piece_sources.append((operand.value, observation.id, None, operand.status))
+        piece_sources.append((operand.value, observation.id, operand.status))
         observation_ids.append(observation.id)
 
     if not piece_operands or any(not isinstance(value, Measurement) for value in piece_operands):
         return "Every piece width is required for this row."
-    human_piece = any(source[3] is EvidenceStatus.HUMAN_CONFIRMED for source in piece_sources)
-    decision_id = None if decision is None or not human_piece else str(decision.id)
+    human_piece = any(source[2] is EvidenceStatus.HUMAN_CONFIRMED for source in piece_sources)
     operands["piece_widths"] = VerdictOperand(
         name="piece_widths",
         value=tuple(piece_operands),
@@ -394,17 +327,15 @@ def _seal_row(
         source=DocumentRole.SHOP.value,
         # A tuple has multiple independent origins; the indexed audit operands below preserve each.
         evidence_observation_id=None,
-        row_review_decision_id=decision_id,
     )
-    for position, (measurement, observation_id, review_id, status) in enumerate(piece_sources):
+    for position, (measurement, observation_id, status) in enumerate(piece_sources):
         name = f"piece_widths[{position}]"
         operands[name] = VerdictOperand(
             name=name,
             value=measurement,
             status=status,
             source=DocumentRole.SHOP.value,
-            evidence_observation_id=None if observation_id is None else str(observation_id),
-            row_review_decision_id=None if review_id is None else str(review_id),
+            evidence_observation_id=str(observation_id),
         )
     return operands, tuple(observation_ids)
 
@@ -415,7 +346,7 @@ def slot_row_check(session: Session, row: SlotRow) -> SlotRowCheck:
     if isinstance(positions, str):
         return SlotRowCheck(False, positions, None, None, None, {}, ())
     candidates_by_position, proposal_fields = positions
-    readings, values = _row_readings(row, candidates_by_position)
+    readings, answers = _row_readings(session, row, candidates_by_position)
     qualification = _qualify(row, readings)
     layout, wall_reason, wall_note = _row_wall(row)
     if not qualification.eligible:
@@ -424,7 +355,7 @@ def slot_row_check(session: Session, row: SlotRow) -> SlotRowCheck:
         waiting = wall_note or "Choose this row's wall layout."
         # Only the walls are missing (#1202): seal the numbers exactly as the check would, so the
         # width can be worked out for every wall case. A row that does not seal waits as before.
-        sealed_open = _seal_row(session, row, candidates_by_position, proposal_fields, values)
+        sealed_open = _seal_row(session, row, candidates_by_position, proposal_fields, answers)
         if isinstance(sealed_open, str):
             return SlotRowCheck(False, waiting, None, wall_reason, wall_note, {}, ())
         return SlotRowCheck(
@@ -438,7 +369,7 @@ def slot_row_check(session: Session, row: SlotRow) -> SlotRowCheck:
             unwitnessed_positions(candidates_by_position),
             walls_open=True,
         )
-    sealed = _seal_row(session, row, candidates_by_position, proposal_fields, values)
+    sealed = _seal_row(session, row, candidates_by_position, proposal_fields, answers)
     if isinstance(sealed, str):
         return SlotRowCheck(False, sealed, layout, None, wall_note, {}, ())
     operands, observation_ids = sealed
@@ -473,17 +404,17 @@ def vendor_row_operands(session: Session, row: SlotRow) -> VendorRowOperands:
     The architect check (#1054) compares the vendor's printed widths with the architect's; the wall
     layout decides the width check's field cut and has nothing to say about that. Everything else
     is the width check's own path: the same row qualification, the same canonical evidence, the same
-    gate, the same reviewer-typed values for this row only.
+    gate, the same people's answers about this row's own held labels only.
     """
     positions = _row_positions(row)
     if isinstance(positions, str):
         return VendorRowOperands(False, positions, {})
     candidates_by_position, proposal_fields = positions
-    readings, values = _row_readings(row, candidates_by_position)
+    readings, answers = _row_readings(session, row, candidates_by_position)
     qualification = _qualify(row, readings)
     if not qualification.eligible:
         return VendorRowOperands(False, qualification.reason, {})
-    sealed = _seal_row(session, row, candidates_by_position, proposal_fields, values)
+    sealed = _seal_row(session, row, candidates_by_position, proposal_fields, answers)
     if isinstance(sealed, str):
         return VendorRowOperands(False, sealed, {})
     return VendorRowOperands(True, None, sealed[0], unwitnessed_positions(candidates_by_position))
@@ -971,15 +902,4 @@ def _reconstituted(
         corroborated_by=lanes,
         conflicts_with=(),
         evidence_crop_uri=row.evidence_crop_uri,
-    )
-
-
-def _human_operand(name: str, value: Measurement, decision_id: UUID) -> VerdictOperand:
-    return VerdictOperand(
-        name=name,
-        value=value,
-        status=EvidenceStatus.HUMAN_CONFIRMED,
-        source="USER_INPUT",
-        evidence_ref=str(decision_id),
-        row_review_decision_id=str(decision_id),
     )

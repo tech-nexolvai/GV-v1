@@ -142,7 +142,6 @@ def architect_row_operands(
         architect_values.append(architect.value)
         vendor_values.append(vendor_operand.value)
         human_vendor = human_vendor or vendor_operand.status is EvidenceStatus.HUMAN_CONFIRMED
-    decision = row.decision
     operands["architect_widths"] = VerdictOperand(
         name="architect_widths",
         value=tuple(architect_values),
@@ -156,10 +155,9 @@ def architect_row_operands(
         value=tuple(vendor_values),
         status=EvidenceStatus.HUMAN_CONFIRMED if human_vendor else EvidenceStatus.CORROBORATED,
         source=DocumentRole.SHOP.value,
+        # Each person-confirmed member names its own confirmation on its per-pair operand above.
+        # The row's decision holds only its walls since #1339, never a width, so it is not named.
         evidence_observation_id=None,
-        row_review_decision_id=(
-            str(decision.id) if human_vendor and decision is not None else None
-        ),
     )
     compared_slots = {pair.vendor_slot for pair in plan.pairs}
     return ArchitectRowOperands(

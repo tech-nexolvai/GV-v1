@@ -929,7 +929,12 @@ def read_required_inputs(
     # different package (or an older revision containing different documents) must never prefill this
     # review.  Page/candidate ordering makes a MANY field deterministic without assigning meaning.
     confirmed_query = (
-        select(CanonicalObservation, Page.index, ObservationCandidate.created_at)
+        select(
+            CanonicalObservation,
+            Page.index,
+            ObservationCandidate.created_at,
+            EvidenceSupportingCandidate.candidate_id,
+        )
         .join(
             EvidenceSupportingCandidate,
             EvidenceSupportingCandidate.canonical_observation_id == CanonicalObservation.id,
@@ -954,13 +959,32 @@ def read_required_inputs(
     # another page is not empty, and the form says which page holds it (#1253 review).
     confirmed_rows = session.execute(confirmed_query).all()
     confirmed_pages: dict[str, set[int]] = {}
+    # A person may answer about one label more than once (a fix, then a confirmation: #1339); only
+    # the newest person's answer per label and type is what the reviewer confirmed now.
+    newest_answer: dict[tuple[UUID, str], CanonicalObservation] = {}
+    for observation, _page, _created, label_id in confirmed_rows:
+        if observation.status != EvidenceStatus.HUMAN_CONFIRMED.value:
+            continue
+        key_of = (label_id, observation.semantic_type)
+        standing = newest_answer.get(key_of)
+        if standing is None or (observation.created_at, observation.id) > (
+            standing.created_at,
+            standing.id,
+        ):
+            newest_answer[key_of] = observation
+    replaced_answers = {
+        observation.id
+        for observation, _page, _created, label_id in confirmed_rows
+        if observation.status == EvidenceStatus.HUMAN_CONFIRMED.value
+        and newest_answer[(label_id, observation.semantic_type)].id != observation.id
+    }
 
     seen_observations: set[UUID] = set()
     confirmed_readings_list: list[ConfirmedReadingOut] = []
     # One canonical observation can have a primary candidate plus corroborating candidates.  It is
     # still one qualified reading, especially for a many-valued rule input.
-    for observation, page_index, _created_at in confirmed_rows:
-        if observation.id in seen_observations:
+    for observation, page_index, _created_at, _label_id in confirmed_rows:
+        if observation.id in seen_observations or observation.id in replaced_answers:
             continue
         seen_observations.add(observation.id)
         key = f"{observation.document_role}:{observation.semantic_type}"

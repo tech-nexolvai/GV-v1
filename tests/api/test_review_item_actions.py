@@ -34,6 +34,7 @@ from app.models import (
     PackageState,
     SlotRowReviewDecision,
 )
+from app.models.evidence import CanonicalObservation
 from app.models.outbox import OutboxEntry
 from app.models.review import ReviewAction, ReviewSession
 from app.review import review_item_actions
@@ -42,6 +43,7 @@ from tests.api.test_slot_rows import _package_rows, _run_current_checks, _save_a
 from tests.api.test_wall_cases_api import _sealed
 from tests.app.postgres_fixture import alembic_config
 from tests.review.test_no_countertop_answers import _listed_page
+from verdict.operands import EvidenceStatus
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -287,7 +289,7 @@ def _mixed(page_index: int, _row: int, slot: str) -> list[str]:
     return []
 
 
-def test_a_number_is_501_until_confirming_a_number_arrives(
+def test_a_number_is_confirmed_through_w2_with_the_value_shown(
     session: Session, tmp_path: Path
 ) -> None:
     project_id, package_id, _anchors = _package_rows(
@@ -315,18 +317,51 @@ def test_a_number_is_501_until_confirming_a_number_arrives(
         )
         assert refused.status_code == code, refused.text
 
-    for action, body in (("confirm", {"shown_value": '20"'}), ("fix", {"value": '21"'})):
-        response = _act(
-            client,
-            project_id,
-            package_id,
-            str(number["key"]),
-            action,
-            {"expected_finding_id": number["finding_id"], **body},
-        )
-        assert response.status_code == 501, response.text
-        assert response.json()["message"] == review_item_actions.NUMBERS_NOT_YET
     assert session.scalars(select(ReviewAction)).first() is None
+
+    # A fix in millimetres is refused, never converted (W2, #1339): nothing saved.
+    mm = _act(
+        client,
+        project_id,
+        package_id,
+        str(number["key"]),
+        "fix",
+        {"expected_finding_id": number["finding_id"], "value": "520 mm"},
+    )
+    assert mm.status_code == 422, mm.text
+    assert session.scalars(select(ReviewAction)).first() is None
+
+    # Confirm the value shown: W2 records exactly the stored reading, and the checks run again.
+    confirmed = _act(
+        client,
+        project_id,
+        package_id,
+        str(number["key"]),
+        "confirm",
+        {"expected_finding_id": number["finding_id"], "shown_value": '20"'},
+    )
+    assert confirmed.status_code == 201, confirmed.text
+    assert confirmed.json()["recorded"].startswith("Confirmed")
+    person = session.scalars(
+        select(CanonicalObservation).where(
+            CanonicalObservation.status == EvidenceStatus.HUMAN_CONFIRMED.value
+        )
+    ).all()
+    assert [(o.value_numerator, o.value_denominator) for o in person] == [(20, 1)]
+    assert session.scalars(
+        select(OutboxEntry).where(OutboxEntry.workflow == RUN_CHECKS_WORKFLOW)
+    ).all()
+
+    # The same answer again is refused as already answered: nothing new is written.
+    again = _act(
+        client,
+        project_id,
+        package_id,
+        str(number["key"]),
+        "confirm",
+        {"expected_finding_id": number["finding_id"], "shown_value": '20"'},
+    )
+    assert again.status_code in (409, 422), again.text
 
 
 def test_a_result_held_on_several_numbers_is_never_settled_from_one_of_them(

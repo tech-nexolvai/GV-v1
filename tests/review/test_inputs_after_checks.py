@@ -61,6 +61,7 @@ from app.models import (
     WorkflowRun,
 )
 from app.models.evidence import ArchitectViewMatchRecord, ItemClassification
+from app.models.verdicts import FindingEvidence
 from app.review.approval import (
     INPUTS_CHANGED_NEEDS_RERUN,
     UnaddressedReviewRequired,
@@ -617,6 +618,12 @@ def test_an_evidence_action_is_not_counted_again(postgres_engine: Engine) -> Non
         finding = _checked(db, sheet.revision, at=CHECKED_AT)
         original = _observation(db, sheet, at=BEFORE_THE_RUN)
         copy = _observation(db, sheet)
+        # An evidence action acts on the finding's own evidence (`evidence_actions._context`).
+        db.add(
+            FindingEvidence(
+                finding_id=finding.id, canonical_observation_id=original.id, role="operand"
+            )
+        )
         review = open_session(db, package_revision_id=sheet.revision.id, reviewer=ACTOR)
         db.add(
             ReviewAction(

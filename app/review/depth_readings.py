@@ -206,7 +206,7 @@ class _Row:
     @property
     def dimension(self) -> tuple[UUID, frozenset[str]]:
         """Which printed dimension it is: its page, view and span, the same on every reading
-        (`depth_evidence._Reading.dimension`)."""
+        (`depth_evidence.DepthReading.dimension`)."""
         return self.row.page_id, frozenset(
             f for f in self.flags if f.startswith(("view:", "span:"))
         )
@@ -270,7 +270,7 @@ class _Reading:
     """Each reading with a picture, and whether it shows GV's own marks (`None`: not checked)."""
 
     def linked_to(self, row: _Row, proposal: UUID) -> bool:
-        """`depth_evidence._linked`: the reading's view is tied to this countertop now."""
+        """`depth_evidence.reading_linked`: the reading's view is tied to this countertop now."""
         raw = row.flag(LINK_PREFIX)
         try:
             link = None if raw is None else self.links.get(UUID(raw))
