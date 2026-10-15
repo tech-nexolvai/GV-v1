@@ -3640,6 +3640,158 @@
         "title": "DecisionOut",
         "type": "object"
       },
+      "DepthReadingOut": {
+        "description": "One depth or sink value the depth and sink reader read for one countertop (#1295).\n\nWhat was read, on which view and how code checked it; a value waiting for a person to confirm\nit; or why it was not used. Shown on a waiting depth or sink check. **It decides nothing**: which\nreading a check uses is decided only when the checks run (`workflow/depth_evidence.py`).",
+        "properties": {
+          "can_confirm": {
+            "description": "Whether a person may confirm it here, through the existing confirm path: a reading to confirm, tied to this countertop, with its picture, and not confirmed already.",
+            "title": "Can Confirm",
+            "type": "boolean"
+          },
+          "candidate_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The reading: its picture, and the reading a person confirms.",
+            "title": "Candidate Id"
+          },
+          "checked_by": {
+            "anyOf": [
+              {
+                "enum": [
+                  "printed_text",
+                  "chain",
+                  "drawn_length"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How code checked the number the two readers agreed on.",
+            "title": "Checked By"
+          },
+          "countertop": {
+            "description": "Which countertop, as the screens name it: \"Countertop 1 on page 3\".",
+            "title": "Countertop",
+            "type": "string"
+          },
+          "field": {
+            "description": "The value's code (`CT010`): what a person confirms the reading as.",
+            "title": "Field",
+            "type": "string"
+          },
+          "has_picture": {
+            "title": "Has Picture",
+            "type": "boolean"
+          },
+          "label": {
+            "description": "The value in plain words: \"Countertop depth\".",
+            "title": "Label",
+            "type": "string"
+          },
+          "page_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Number"
+          },
+          "picture_shows_gv_mark": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Picture Shows Gv Mark"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "state": {
+            "description": "`read`: both AI readers agree and code checked the number by the printed text or a chain of dimensions. `to_confirm`: both readers agree but only its drawn length checks it, so a person confirms it. `confirmed`: a person confirmed it. `not_this`: a person said it is another value. `held`: read but not used, `reason` says why. `not_read`: nothing was read for it, `reason` says why.",
+            "enum": [
+              "read",
+              "to_confirm",
+              "confirmed",
+              "not_this",
+              "held",
+              "not_read"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Exact, as a drawing writes it: `24 3/4\"`.",
+            "title": "Value"
+          },
+          "view": {
+            "anyOf": [
+              {
+                "enum": [
+                  "plan",
+                  "section",
+                  "side",
+                  "front",
+                  "detail"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The kind of view it was read on, when it is known.",
+            "title": "View"
+          }
+        },
+        "required": [
+          "countertop",
+          "field",
+          "label",
+          "state",
+          "value",
+          "view",
+          "page_number",
+          "checked_by",
+          "candidate_id",
+          "has_picture",
+          "picture_shows_gv_mark",
+          "can_confirm"
+        ],
+        "title": "DepthReadingOut",
+        "type": "object"
+      },
       "DiscriminatorOut": {
         "description": "A judgement about the drawing that decides which variant of a rule applies.",
         "properties": {
@@ -4809,6 +4961,13 @@
             "title": "Created At",
             "type": "string"
           },
+          "depth_readings": {
+            "items": {
+              "$ref": "#/components/schemas/DepthReadingOut"
+            },
+            "title": "Depth Readings",
+            "type": "array"
+          },
           "engine_version": {
             "title": "Engine Version",
             "type": "string"
@@ -5773,6 +5932,52 @@
           "linked_to_number"
         ],
         "title": "LinkReadingOut",
+        "type": "object"
+      },
+      "LinkedViewOut": {
+        "description": "One view of the drawing tied to this countertop, and its kind (#1295, `item_view_links`).",
+        "properties": {
+          "by_person": {
+            "description": "True when a person tied it; false when code and the AI did.",
+            "title": "By Person",
+            "type": "boolean"
+          },
+          "heading": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The vendor's heading over the view, when one is read.",
+            "title": "Heading"
+          },
+          "page_number": {
+            "title": "Page Number",
+            "type": "integer"
+          },
+          "view": {
+            "description": "The view's kind in plain words: a vendor's elevation is the front view.",
+            "enum": [
+              "plan",
+              "section",
+              "side",
+              "front",
+              "detail"
+            ],
+            "title": "View",
+            "type": "string"
+          }
+        },
+        "required": [
+          "view",
+          "page_number",
+          "heading",
+          "by_person"
+        ],
+        "title": "LinkedViewOut",
         "type": "object"
       },
       "MeasurementEntry": {
@@ -7211,6 +7416,14 @@
               }
             ],
             "description": "The left end of the line that defines it, or null when no line did."
+          },
+          "linked_views": {
+            "description": "For a countertop: the plan, section or side views the depth and sink reader tied to it (#1295), each with its kind. Empty when the reader never read the set (it is off by default).",
+            "items": {
+              "$ref": "#/components/schemas/LinkedViewOut"
+            },
+            "title": "Linked Views",
+            "type": "array"
           },
           "page_index": {
             "title": "Page Index",
@@ -10344,6 +10557,14 @@
             ],
             "description": "The sink card's name, when at least one size comes from it.",
             "title": "Model Name"
+          },
+          "vendor_notes": {
+            "description": "What the vendor's drawing prints about the sink, on the pages the depth and sink reader read (#1295). **A hint only**: it is never filled into a setting, and the sink's inside size is still typed from its spec sheet. Empty when the reader never read the set.",
+            "items": {
+              "$ref": "#/components/schemas/VendorSinkNoteOut"
+            },
+            "title": "Vendor Notes",
+            "type": "array"
           }
         },
         "required": [
@@ -11682,6 +11903,26 @@
           "snap_points"
         ],
         "title": "VendorPagePictureOut",
+        "type": "object"
+      },
+      "VendorSinkNoteOut": {
+        "description": "The vendor's printed words naming a sink (#1295): a hint, never filled into a setting.",
+        "properties": {
+          "page_number": {
+            "title": "Page Number",
+            "type": "integer"
+          },
+          "text": {
+            "description": "As the vendor's drawing prints it.",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "page_number"
+        ],
+        "title": "VendorSinkNoteOut",
         "type": "object"
       },
       "ViewOut": {

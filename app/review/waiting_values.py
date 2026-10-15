@@ -116,6 +116,21 @@ WAITING_RULES: Final[frozenset[str]] = frozenset(
     }
 )
 
+#: The five depth and sink checks, which the depth and sink reader scopes to each countertop when it
+#: is on (#1290). Such a countertop's own result still waits on the same settings, so it asks for
+#: them too; what was read for it is shown beside them (`app/review/depth_readings.py`, #1295).
+#: The same five as `workflow.depth_evidence.DEPTH_RULE_IDS`, held so by a test: importing it here
+#: would loop back through `workflow.item_plan`.
+PER_COUNTERTOP_RULES: Final[frozenset[str]] = frozenset(
+    {
+        "CT-DEPTH-001",
+        "CT-SINK-CUTOUT-WIDTH-001",
+        "CT-SINK-CUTOUT-DEPTH-001",
+        "CT-SINK-OFFSET-FRONT-001",
+        "CT-BACK-OFFSET-MIN-001",
+    }
+)
+
 #: Where a list a check lacks is entered (a row of cabinets keeps its order there).
 LIST_ON_MEASUREMENTS: Final = "Entered on Measurements, where a row keeps its order."
 
@@ -337,14 +352,17 @@ def missing_inputs_for(
     """For each revision-wide `NOT_FOUND` result in `items`, the values it could not run without.
 
     A result that decided, or abstained for another reason, or belongs to one countertop row (those
-    are asked on the countertop's own card), gets nothing. A fixed handful of queries for the page.
+    are asked on the countertop's own card), gets nothing. **One countertop's own depth or sink
+    result** (`PER_COUNTERTOP_RULES`, the depth reader's scope, #1290) asks for its settings only:
+    what was read for its drawn values is listed beside them, per countertop
+    (`app/review/depth_readings.py`). A fixed handful of queries for the page.
     """
     waiting = [
         item
         for item in items
         if item.outcome is Outcome.NOT_FOUND
         and item.rule_id in WAITING_RULES
-        and item.scope_item_id is None
+        and (item.scope_item_id is None or item.rule_id in PER_COUNTERTOP_RULES)
         and item.scope_row_candidate_id is None
     ]
     if not waiting:
@@ -409,6 +427,9 @@ def missing_inputs_for(
         return None if row is None else _saved(row, ParameterLayer.RUN.value, setting=False)
 
     answers: dict[UUID, list[MissingInputOut]] = {}
+    # A setting is for the job, not for one countertop: among one check's per-countertop results it
+    # is asked once, on the first, as the check's one whole-package result asks it (#1296).
+    asked_for_countertops: set[tuple[UUID, str, str]] = set()
     for item in waiting:
         rule = snapshots.get(item.rule_snapshot_id)
         if rule is None:  # pragma: no cover - the foreign key guarantees the snapshot
@@ -425,6 +446,11 @@ def missing_inputs_for(
             if not allowed_sources(name):
                 # No honest source is recorded for it, so the save path would refuse it: not asked.
                 continue
+            if item.scope_item_id is not None:
+                key = (item.package_revision_id, item.rule_id, name)
+                if key in asked_for_countertops:
+                    continue
+                asked_for_countertops.add(key)
             guide = _setting_guide(name)
             scope: Scope = "sink" if name in SINK_SETTINGS else "project"
             needs.append(
@@ -451,7 +477,7 @@ def missing_inputs_for(
         # Measurements, where a run keeps its order, and the line says so.
         drawn: list[MissingInputOut] = []
         for input_name, selector in rule.inputs.items():
-            if input_name in operands:
+            if input_name in operands or item.scope_item_id is not None:
                 continue
             source = getattr(selector.source, "value", str(selector.source))
             semantic = getattr(selector.semantic_type, "value", str(selector.semantic_type))

@@ -54,10 +54,11 @@ from types import MappingProxyType
 from typing import Final
 from uuid import UUID
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import exists, or_, select
+from sqlalchemy.orm import Session, aliased
 
 from app.evidence.sides import ReadingSides
+from app.models import PartConfirmation, PartDecision
 from app.models.document import DocumentVersion, PackageRevisionDocument, Page
 from app.models.evidence import (
     CanonicalObservation,
@@ -75,8 +76,9 @@ from rules.semantic_types import DocumentRole, SemanticType
 from units.measurement import Measurement, Unit
 from verdict.operands import VerdictOperand
 from verdict.operations import POSITION_SENSITIVE_OPERATIONS
+from workflow.depth_evidence import DEPTH_READER_FLAG, ITEM_PREFIX
 from workflow.depth_evidence import SUPPORT_FLAG as DEPTH_SUPPORT_FLAG
-from workflow.item_plan import countertops_by_view
+from workflow.item_plan import countertops_by_view, live_countertops
 from workflow.part_operands import part_operands
 
 __all__ = [
@@ -86,6 +88,7 @@ __all__ = [
     "ENTER_IN_ORDER",
     "ENTER_IN_WALL_ORDER",
     "IDENTIFIER_PAIRING_WITHHELD",
+    "ONE_COUNTERTOPS_READING",
     "RUN_ORDER_WITHHELD",
     "WITHHELD_FOR_ORDER",
     "EvidenceOperands",
@@ -104,6 +107,16 @@ _ONE_ASSEMBLY: Final = frozenset({Scope.SAME_ASSEMBLY, Scope.SAME_VIEW})
 DRAWINGS_SPANNED: Final = (
     "The labelled readings for this check are on {count} different drawings, so they may belong to "
     "different countertops. Label one countertop's run, or enter it on the form."
+)
+
+#: What a check run once for the whole package says when a person confirmed a depth reader's reading
+#: (#1290, #1295): that reading is one countertop's, used only by that countertop's own check, so the
+#: whole-package check is held for a person, naming the countertops.
+ONE_COUNTERTOPS_READING: Final = (
+    "A person confirmed this value from the depth and sink reader for {countertops}. Such a "
+    "reading is used only by that countertop's own check, never for the whole package, so this "
+    "check is held. Decide each countertop's run on Measurements, so each countertop is checked "
+    "on its own."
 )
 
 #: Which drawing a reading lies on: a drawing view, a page with no views (the page is the drawing),
@@ -380,23 +393,15 @@ def evidence_operands(
     by_need: dict[tuple[str, str], list[tuple[DomainObservation, UUID, _Drawing]]] = {}
     observations: dict[UUID, tuple[DomainObservation, _Drawing]] = {}
     sides = ReadingSides(session)
-    # The depth reader's readers' rows (#1290): what its code+AI observations stand on. Such an
-    # observation belongs to one countertop and is used only by that countertop's scoped check
-    # (`workflow/depth_evidence.py`), never by a revision-wide one; a person's stays usable.
-    depth_supports = set(
-        session.scalars(
-            select(ObservationCandidate.id)
-            .join(
-                PackageRevisionDocument,
-                PackageRevisionDocument.document_version_id
-                == ObservationCandidate.document_version_id,
-            )
-            .where(
-                PackageRevisionDocument.package_revision_id == package_revision_id,
-                ObservationCandidate.ambiguity_flags.contains([DEPTH_SUPPORT_FLAG]),
-            )
-        )
-    )
+    # The depth reader's rows (#1290, #1295): a reading and its readers' own rows, and the
+    # countertop the reading's view is tied to. **Every observation standing on one belongs to that
+    # countertop alone** and is used only by its own scoped check (`workflow/depth_evidence.py`),
+    # never by a revision-wide one: a code+AI one, and a person's confirmation of one too. A
+    # person's confirmation of one countertop's depth is not the package's depth; filling a
+    # revision-wide operand from it would check one countertop and pass the others unchecked.
+    depth_rows = _depth_reader_rows(session, package_revision_id)
+    # The readings a person confirmed that a revision-wide check may not use, by what they are.
+    depth_confirmed: dict[tuple[str, str], set[tuple[UUID | None, int]]] = {}
     # The live countertop items on each drawing (#1245): which countertop a reading belongs to.
     countertops = countertops_by_view(session, package_revision_id)
     # Readings on a drawing that holds two or more countertops, for the reviewer's sentence.
@@ -427,9 +432,12 @@ def evidence_operands(
             # A stored lane unknown to this code must cost the rule its operand.  Treating it as a
             # known qualifier would let a newer database declaration bypass this older gate.
             continue
-        if row.status != EvidenceStatus.HUMAN_CONFIRMED.value and any(
-            UUID(candidate) in depth_supports for candidate in supported_by
-        ):
+        owners = [depth_rows[UUID(c)] for c in supported_by if UUID(c) in depth_rows]
+        if owners:
+            if row.status == EvidenceStatus.HUMAN_CONFIRMED.value:
+                depth_confirmed.setdefault((row.document_role, row.semantic_type), set()).update(
+                    owners
+                )
             continue
         observation = _domain(
             row,
@@ -469,6 +477,12 @@ def evidence_operands(
         withheld = _shared_drawing_reason(
             rule, ordered, _spanning(rule, ordered, by_need), by_need, drawing_of, shared
         )
+        for name, selector in (rule.inputs or {}).items():
+            held = depth_confirmed.get(_need(selector))
+            if held and name not in withheld and name not in ordered:
+                withheld[name] = ONE_COUNTERTOPS_READING.format(
+                    countertops=_countertop_names(session, package_revision_id, held)
+                )
         if withheld:
             ambiguous[rule.id] = withheld
         for name, selector in (rule.inputs or {}).items():
@@ -560,6 +574,93 @@ def evidence_operands(
         notes=selected.notes,
         with_readings=with_readings,
     )
+
+
+def _depth_reader_rows(
+    session: Session, package_revision_id: UUID
+) -> dict[UUID, tuple[UUID | None, int]]:
+    """Each depth-reader row of the revision (a reading or a reader's own row of one, #1290), with
+    the countertop suggestion its view is tied to (`None`: tied to none) and its page index."""
+    rows = session.execute(
+        select(ObservationCandidate.id, ObservationCandidate.ambiguity_flags, Page.index)
+        .join(Page, Page.id == ObservationCandidate.page_id)
+        .join(
+            PackageRevisionDocument,
+            PackageRevisionDocument.document_version_id == ObservationCandidate.document_version_id,
+        )
+        .where(
+            PackageRevisionDocument.package_revision_id == package_revision_id,
+            or_(
+                ObservationCandidate.ambiguity_flags.contains([DEPTH_READER_FLAG]),
+                ObservationCandidate.ambiguity_flags.contains([DEPTH_SUPPORT_FLAG]),
+            ),
+        )
+    ).all()
+
+    def flag(flags: Collection[str], prefix: str) -> str | None:
+        return next((f.removeprefix(prefix) for f in flags if f.startswith(prefix)), None)
+
+    def proposal(flags: Collection[str]) -> UUID | None:
+        raw = flag(flags, ITEM_PREFIX)
+        try:
+            return None if raw is None else UUID(raw)
+        except ValueError:
+            return None
+
+    found: dict[UUID, tuple[UUID | None, int]] = {
+        candidate: (proposal(flags or ()), index)
+        for candidate, flags, index in rows
+        if DEPTH_READER_FLAG in (flags or ())
+    }
+    for candidate, flags, index in rows:
+        if DEPTH_SUPPORT_FLAG not in (flags or ()):
+            continue
+        parent = flag(flags or (), "supports:")
+        try:
+            owner = found.get(UUID(parent)) if parent is not None else None
+        except ValueError:
+            owner = None
+        found[candidate] = owner if owner is not None else (None, index)
+    return found
+
+
+def _countertop_names(
+    session: Session, package_revision_id: UUID, held: Collection[tuple[UUID | None, int]]
+) -> str:
+    """The countertops whose confirmed readings a revision-wide check may not use, by name."""
+    later = aliased(PartConfirmation)
+    proposals = {proposal for proposal, _page in held if proposal is not None}
+    items = (
+        dict(
+            session.execute(
+                select(PartConfirmation.part_proposal_id, PartConfirmation.drawing_item_id).where(
+                    PartConfirmation.part_proposal_id.in_(proposals),
+                    PartConfirmation.decision == PartDecision.CONFIRMED.value,
+                    ~exists().where(later.supersedes_id == PartConfirmation.id),
+                )
+            ).all()
+        )
+        if proposals
+        else {}
+    )
+    labels = (
+        {
+            countertop.item_id: countertop.label
+            for countertop in live_countertops(session, package_revision_id, follow_rows=False)
+        }
+        if items
+        else {}
+    )
+
+    def name(proposal: UUID | None, page: int) -> str:
+        if proposal is None:
+            return f"a view on page {page + 1} tied to no one countertop"
+        item = items.get(proposal)
+        found = None if item is None else labels.get(item)
+        return found or f"the countertop read on page {page + 1}"
+
+    names = sorted({name(proposal, page) for proposal, page in held})
+    return ", ".join(names)
 
 
 def _spanning(

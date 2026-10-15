@@ -214,6 +214,54 @@ class MissingInputOut(BaseModel):
     saved: SavedInputOut | None = None
 
 
+class DepthReadingOut(BaseModel):
+    """One depth or sink value the depth and sink reader read for one countertop (#1295).
+
+    What was read, on which view and how code checked it; a value waiting for a person to confirm
+    it; or why it was not used. Shown on a waiting depth or sink check. **It decides nothing**: which
+    reading a check uses is decided only when the checks run (`workflow/depth_evidence.py`).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    countertop: str = Field(
+        description='Which countertop, as the screens name it: "Countertop 1 on page 3".'
+    )
+    field: str = Field(
+        description="The value's code (`CT010`): what a person confirms the reading as."
+    )
+    label: str = Field(description='The value in plain words: "Countertop depth".')
+    state: Literal["read", "to_confirm", "confirmed", "not_this", "held", "not_read"] = Field(
+        description=(
+            "`read`: both AI readers agree and code checked the number by the printed text or a "
+            "chain of dimensions. `to_confirm`: both readers agree but only its drawn length checks "
+            "it, so a person confirms it. `confirmed`: a person confirmed it. `not_this`: a person "
+            "said it is another value. `held`: read but not used, `reason` says why. `not_read`: "
+            "nothing was read for it, `reason` says why."
+        )
+    )
+    value: str | None = Field(description='Exact, as a drawing writes it: `24 3/4"`.')
+    view: Literal["plan", "section", "side", "front", "detail"] | None = Field(
+        description="The kind of view it was read on, when it is known."
+    )
+    page_number: int | None
+    checked_by: Literal["printed_text", "chain", "drawn_length"] | None = Field(
+        description="How code checked the number the two readers agreed on."
+    )
+    candidate_id: UUID | None = Field(
+        description="The reading: its picture, and the reading a person confirms."
+    )
+    has_picture: bool
+    picture_shows_gv_mark: bool | None
+    can_confirm: bool = Field(
+        description=(
+            "Whether a person may confirm it here, through the existing confirm path: a reading to "
+            "confirm, tied to this countertop, with its picture, and not confirmed already."
+        )
+    )
+    reason: str | None = None
+
+
 class FindingOut(BaseModel):
     """One finding, with enough version information to go and reconstruct it.
 
@@ -285,6 +333,13 @@ class FindingOut(BaseModel):
     )
     """For a check waiting on a value (`NOT_FOUND`, revision-wide): exactly the values it could not
     run without, each with where to find it (#1181). Empty for every other result."""
+
+    depth_readings: list[DepthReadingOut] = Field(
+        default_factory=list, json_schema_extra=optional_in_schema
+    )
+    """For a depth or sink check still waiting (#1295): what the depth and sink reader read for each
+    countertop, or why a value was not used. Empty when the reader never read the set (it is off by
+    default), and for every other result."""
 
 
 class FindingPage(BaseModel):

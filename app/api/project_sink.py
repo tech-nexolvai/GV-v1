@@ -44,8 +44,10 @@ from app.models.project_sinks import (
     SOURCE_NOTE_MAX_LENGTH,
     ProjectSink,
 )
+from app.review.depth_readings import vendor_sink_notes
 from app.review.setting_sizes import refused_size
 from app.review.settings_in_force import settings_in_force
+from app.schemas.review import optional_in_schema
 from rules.parameters import ParameterLayer, Provenance
 from units.imperial import format_inches
 from units.measurement import Measurement, Unit
@@ -165,6 +167,13 @@ class SinkSizeInUseOut(BaseModel):
     set_at: datetime | None
 
 
+class VendorSinkNoteOut(BaseModel):
+    """The vendor's printed words naming a sink (#1295): a hint, never filled into a setting."""
+
+    text: str = Field(description="As the vendor's drawing prints it.")
+    page_number: int
+
+
 class SinkInUseOut(BaseModel):
     """The sink a package's checks use now (#1181)."""
 
@@ -173,6 +182,15 @@ class SinkInUseOut(BaseModel):
     )
     inside_width: SinkSizeInUseOut | None
     inside_depth: SinkSizeInUseOut | None
+    vendor_notes: list[VendorSinkNoteOut] = Field(
+        default_factory=list,
+        json_schema_extra=optional_in_schema,
+        description=(
+            "What the vendor's drawing prints about the sink, on the pages the depth and sink reader "
+            "read (#1295). **A hint only**: it is never filled into a setting, and the sink's inside "
+            "size is still typed from its spec sheet. Empty when the reader never read the set."
+        ),
+    )
 
 
 @router.get(
@@ -207,6 +225,10 @@ def read_sink_in_use(
         model_name=None if card is None else card.model_name,
         inside_width=width,
         inside_depth=depth,
+        vendor_notes=[
+            VendorSinkNoteOut(text=note.text, page_number=note.page_number)
+            for note in vendor_sink_notes(session, revision.id)
+        ],
     )
 
 

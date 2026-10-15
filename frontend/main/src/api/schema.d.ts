@@ -3745,6 +3745,70 @@ export interface components {
             not_part_reason?: components["schemas"]["NotPartReason"] | null;
         };
         /**
+         * DepthReadingOut
+         * @description One depth or sink value the depth and sink reader read for one countertop (#1295).
+         *
+         *     What was read, on which view and how code checked it; a value waiting for a person to confirm
+         *     it; or why it was not used. Shown on a waiting depth or sink check. **It decides nothing**: which
+         *     reading a check uses is decided only when the checks run (`workflow/depth_evidence.py`).
+         */
+        DepthReadingOut: {
+            /**
+             * Can Confirm
+             * @description Whether a person may confirm it here, through the existing confirm path: a reading to confirm, tied to this countertop, with its picture, and not confirmed already.
+             */
+            can_confirm: boolean;
+            /**
+             * Candidate Id
+             * @description The reading: its picture, and the reading a person confirms.
+             */
+            candidate_id: string | null;
+            /**
+             * Checked By
+             * @description How code checked the number the two readers agreed on.
+             */
+            checked_by: ("printed_text" | "chain" | "drawn_length") | null;
+            /**
+             * Countertop
+             * @description Which countertop, as the screens name it: "Countertop 1 on page 3".
+             */
+            countertop: string;
+            /**
+             * Field
+             * @description The value's code (`CT010`): what a person confirms the reading as.
+             */
+            field: string;
+            /** Has Picture */
+            has_picture: boolean;
+            /**
+             * Label
+             * @description The value in plain words: "Countertop depth".
+             */
+            label: string;
+            /** Page Number */
+            page_number: number | null;
+            /** Picture Shows Gv Mark */
+            picture_shows_gv_mark: boolean | null;
+            /** Reason */
+            reason?: string | null;
+            /**
+             * State
+             * @description `read`: both AI readers agree and code checked the number by the printed text or a chain of dimensions. `to_confirm`: both readers agree but only its drawn length checks it, so a person confirms it. `confirmed`: a person confirmed it. `not_this`: a person said it is another value. `held`: read but not used, `reason` says why. `not_read`: nothing was read for it, `reason` says why.
+             * @enum {string}
+             */
+            state: "read" | "to_confirm" | "confirmed" | "not_this" | "held" | "not_read";
+            /**
+             * Value
+             * @description Exact, as a drawing writes it: `24 3/4"`.
+             */
+            value: string | null;
+            /**
+             * View
+             * @description The kind of view it was read on, when it is known.
+             */
+            view: ("plan" | "section" | "side" | "front" | "detail") | null;
+        };
+        /**
          * DiscriminatorOut
          * @description A judgement about the drawing that decides which variant of a rule applies.
          */
@@ -4301,6 +4365,8 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Depth Readings */
+            depth_readings?: components["schemas"]["DepthReadingOut"][];
             /** Engine Version */
             engine_version: string;
             exception?: components["schemas"]["ExceptionOut"] | null;
@@ -4720,6 +4786,30 @@ export interface components {
              * @description The reading's exact value, as `25 1/2 in`.
              */
             value: string;
+        };
+        /**
+         * LinkedViewOut
+         * @description One view of the drawing tied to this countertop, and its kind (#1295, `item_view_links`).
+         */
+        LinkedViewOut: {
+            /**
+             * By Person
+             * @description True when a person tied it; false when code and the AI did.
+             */
+            by_person: boolean;
+            /**
+             * Heading
+             * @description The vendor's heading over the view, when one is read.
+             */
+            heading: string | null;
+            /** Page Number */
+            page_number: number;
+            /**
+             * View
+             * @description The view's kind in plain words: a vendor's elevation is the front view.
+             * @enum {string}
+             */
+            view: "plan" | "section" | "side" | "front" | "detail";
         };
         /**
          * MeasurementEntry
@@ -5447,6 +5537,11 @@ export interface components {
             kind_named: boolean;
             /** @description The left end of the line that defines it, or null when no line did. */
             left_end: components["schemas"]["PointOut"] | null;
+            /**
+             * Linked Views
+             * @description For a countertop: the plan, section or side views the depth and sink reader tied to it (#1295), each with its kind. Empty when the reader never read the set (it is off by default).
+             */
+            linked_views?: components["schemas"]["LinkedViewOut"][];
             /** Page Index */
             page_index: number;
             /** @description What its picture was found to show of GV's own coloured marks when it was cut (#921): `shown` where markup drawn in colour lies in it, so the page warns under it; `not_shown` where it was checked and none does; `not_checked` for a picture cut before the check existed or whose page's coloured markup could not be read. Null when no picture is stored. */
@@ -7093,6 +7188,11 @@ export interface components {
              * @description The sink card's name, when at least one size comes from it.
              */
             model_name: string | null;
+            /**
+             * Vendor Notes
+             * @description What the vendor's drawing prints about the sink, on the pages the depth and sink reader read (#1295). **A hint only**: it is never filled into a setting, and the sink's inside size is still typed from its spec sheet. Empty when the reader never read the set.
+             */
+            vendor_notes?: components["schemas"]["VendorSinkNoteOut"][];
         };
         /**
          * SinkSizeInUseOut
@@ -7650,6 +7750,19 @@ export interface components {
             url: string;
             /** Width Px */
             width_px: number;
+        };
+        /**
+         * VendorSinkNoteOut
+         * @description The vendor's printed words naming a sink (#1295): a hint, never filled into a setting.
+         */
+        VendorSinkNoteOut: {
+            /** Page Number */
+            page_number: number;
+            /**
+             * Text
+             * @description As the vendor's drawing prints it.
+             */
+            text: string;
         };
         /**
          * ViewOut

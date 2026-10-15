@@ -48,6 +48,7 @@ export function toFinding(listed: Listed): Finding {
     reviewer_carried_over: listed.reviewer_action?.carried_over ?? false,
     created_at: listed.created_at,
     missing_inputs: listed.missing_inputs ?? [],
+    depth_readings: listed.depth_readings ?? [],
   };
 }
 

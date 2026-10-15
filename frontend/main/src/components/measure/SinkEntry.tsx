@@ -7,6 +7,9 @@
  * this package's checks use is shown above them: the sink card's size, or a size typed for this
  * package on Measurements, which wins there. Shown as a small card on Measurements, and in a dialog
  * from a sink check's "Needs" line.
+ *
+ * Where the depth and sink reader read the set, the vendor's own printed note naming the sink is shown
+ * as a hint (#1295). It is never filled into a box: the size is typed from the spec sheet.
  */
 import { useId, useState } from 'react';
 
@@ -17,6 +20,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { SINK_NOTE_HINT, sinkNoteSentence } from '@/lib/depth-readings';
 import { SIGNED_OFF_NOTE, useSignedOff } from '@/lib/signed-off';
 
 type Sink = NonNullable<ProjectSink['sink']>;
@@ -66,6 +70,23 @@ export function SinkInUseLine({ inUse }: { inUse: SinkInUse }) {
         </span>
       ))}
     </p>
+  );
+}
+
+/**
+ * The vendor's own printed note naming the sink (#1295), from the pages the depth and sink reader read:
+ * shown as a hint, never filled into the boxes (Anant, 2026-10-14). Nothing shows without one.
+ */
+export function VendorSinkNotes({ inUse }: { inUse: SinkInUse }) {
+  const notes = inUse.vendor_notes ?? [];
+  if (notes.length === 0) return null;
+  return (
+    <div data-slot="vendor-sink-notes" role="note" className="flex flex-col gap-0.5 rounded-md bg-muted/50 px-3 py-2 text-sm">
+      {notes.map((note) => (
+        <p key={`${note.page_number}-${note.text}`}>{sinkNoteSentence(note)}</p>
+      ))}
+      <p className="text-xs text-muted-foreground">{SINK_NOTE_HINT}</p>
+    </div>
   );
 }
 
@@ -164,6 +185,7 @@ export function SinkEntryCard({ packageId, onSaved }: { packageId?: string | nul
         <p className="text-sm text-muted-foreground">Entered once for the job, from the sink&apos;s spec sheet. Every sink check of every package uses it.</p>
       </div>
       {inUse.status === 'ready' && inUse.data && <SinkInUseLine inUse={inUse.data} />}
+      {inUse.status === 'ready' && inUse.data && <VendorSinkNotes inUse={inUse.data} />}
       {current.status === 'loading' && <p className="text-sm text-muted-foreground" role="status">Loading the sink…</p>}
       {current.status === 'error' && <p role="alert" className="text-sm">The sink could not be loaded: {current.error.message}</p>}
       {current.status === 'ready' && !editing && (
@@ -225,6 +247,7 @@ export function SinkEntryDialog({
           <DialogDescription>Entered once from the sink&apos;s spec sheet; every sink check uses it once the checks run again.</DialogDescription>
         </DialogHeader>
         {inUse.status === 'ready' && inUse.data && <SinkInUseLine inUse={inUse.data} />}
+        {inUse.status === 'ready' && inUse.data && <VendorSinkNotes inUse={inUse.data} />}
         {open && <SinkEntryForm onCancel={() => onOpenChange(false)} onSaved={() => onSaved()} />}
       </DialogContent>
     </Dialog>
