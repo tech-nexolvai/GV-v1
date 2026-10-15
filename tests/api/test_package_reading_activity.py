@@ -263,7 +263,10 @@ def test_trying_again_shows_each_try_and_how_it_went(session: Session, store: An
         "Page 12: the number reader is trying again (try 2 of 3) with a 3× close-up, "
         "turned upright."
     )
-    assert body["items"][2]["line"] == "Page 12: try 1 helped: the line finder's two AIs now agree, and it passed every check."
+    assert (
+        body["items"][2]["line"]
+        == "Page 12: try 1 helped: the line finder's two AIs now agree, and it passed every check."
+    )
     assert body["now"] == "Page 12: the number reader could not read a number clearly."
     assert body["summary"] == {
         "passed": 0,
