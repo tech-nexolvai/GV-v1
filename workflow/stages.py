@@ -372,7 +372,13 @@ from workflow.bala_items import (
 )
 from workflow.config import READER_RASTER_DPI
 from workflow.depth_evidence import DEPTH_RULE_IDS, depth_runs, suggestion_depth_operands
-from workflow.depth_rows import NOT_PER_ROW, ONE_COUNTERTOPS_OPENING, ROW_CHECK_NOTE, depth_rows
+from workflow.depth_rows import (
+    NOT_PER_ROW,
+    ONE_COUNTERTOPS_OPENING,
+    ROW_CHECK_NOTE,
+    WHOLE_PACKAGE_VALUE,
+    depth_rows,
+)
 from workflow.evidence_operands import (
     EvidenceOperands,
     evidence_operands,
@@ -8130,12 +8136,12 @@ class DatabaseStages:
             whole-package result only where it still says something; how many were written.
 
             **A value given for the whole package by a person** (a labelled reading, anything but a
-            depth reader's reading a person confirmed) keeps today's whole-package result on a
-            package with one countertop: a person's word is never replaced by a reader's. On a
-            package with several countertops that result is held anyway (#1297), so each row
-            checked on its own gets its result beside it. Never silent: a row not checked on its
-            own keeps its held result with why (`NOT_PER_ROW`), and the whole-package result says
-            why in a note when no row of it was checked on its own.
+            depth reader's reading a person confirmed for a row checked on its own) means no row
+            decides this check on its own: a person's word is never set aside for a reader's. With
+            one countertop, today's whole-package result stands; with several, every row keeps its
+            held result and the whole-package result is held, as today. Never silent: a row not
+            checked on its own says why in its held result's reason (`NOT_PER_ROW`), and so does
+            the whole-package result of a package with one countertop.
             """
             assert per_row is not None
             rule = snapshot.rule
@@ -8157,6 +8163,21 @@ class DatabaseStages:
                 for countertop in countertops.countertops
                 if countertop.row_id is None or countertop.row_id not in covered
             ]
+            if persons and countertops.several:
+                # A person's value for the whole package is never set aside for a reader's: no row
+                # decides this check on its own. Every row keeps its held result, saying why, and
+                # the whole-package result is held as today (#1297).
+                return record_whole_package(
+                    finding,
+                    rule,
+                    operands=operands,
+                    given=bool(operands) or bool(ambiguous),
+                    missing=_declared_inputs(rule),
+                    row_why={
+                        **per_row.held,
+                        **{row.row_id: WHOLE_PACKAGE_VALUE for row in per_row.rows},
+                    },
+                )
             if not countertops.several and (not per_row.rows or uncovered or persons):
                 if not per_row.rows:
                     why = (
@@ -8166,9 +8187,11 @@ class DatabaseStages:
                 elif uncovered:
                     why = "its countertop is not a countertop row whose two judgments agree"
                 else:
-                    why = "a value was given for the whole package, which stands"
+                    why = WHOLE_PACKAGE_VALUE
+                # Said in the reason, which the simple screen shows, as on a row's held result.
+                said = NOT_PER_ROW.format(why=why)
                 return record_whole_package(
-                    replace(finding, notes=(*finding.notes, NOT_PER_ROW.format(why=why))),
+                    replace(finding, reason=f"{finding.reason} {said}" if finding.reason else said),
                     rule,
                     operands=operands,
                     given=bool(operands) or bool(ambiguous),

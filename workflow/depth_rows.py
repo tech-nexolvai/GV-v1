@@ -75,6 +75,7 @@ __all__ = [
     "ROW_CHECK_NOTE",
     "VIEW_IN_ANOTHER",
     "VIEW_IN_DRAWING",
+    "WHOLE_PACKAGE_VALUE",
     "DepthRow",
     "DepthRows",
     "depth_rows",
@@ -115,6 +116,9 @@ NOT_A_COUNTERTOP: Final = (
     "a person decided the part suggested from this row is not a live countertop"
 )
 ANOTHER_ROW: Final = "a reader named another countertop row on this page"
+WHOLE_PACKAGE_VALUE: Final = (
+    "a person gave a value for this check for the whole package, which stands over any reading"
+)
 NO_ROW_READ: Final = (
     "no countertop row was read on this page, so code made no countertop suggestion from it"
 )
@@ -222,9 +226,9 @@ def depth_rows(session: Session, revision_id: UUID) -> DepthRows:
         if decision is not None and decision.decision == PartDecision.WITHDRAWN.value:
             held[anchor] = TAKEN_BACK
             continue
-        if decision is not None and (
-            decision.kind != PartKind.COUNTERTOP.value or decision.drawing_item_id not in live
-        ):
+        # A confirmation stands for a countertop only while its item is a live countertop: one a
+        # person confirmed as another kind, or corrected, is not (`live_countertops`).
+        if decision is not None and decision.drawing_item_id not in live:
             held[anchor] = NOT_A_COUNTERTOP
             continue
         slot_row = rows_by_anchor.get(anchor)

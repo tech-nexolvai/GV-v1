@@ -70,10 +70,13 @@ from workflow.depth_evidence import (
     QUALIFIED,
 )
 from workflow.depth_rows import (
+    NO_ONE_SUGGESTION,
+    NOT_A_COUNTERTOP,
     NOT_PER_ROW,
     ROW_CHECK_NOTE,
     VIEW_IN_ANOTHER,
     VIEW_IN_DRAWING,
+    WHOLE_PACKAGE_VALUE,
     depth_rows,
     row_check_proposal,
     view_in_drawing,
@@ -451,10 +454,9 @@ def _held_on_one_countertop(rows: _Rows, why: str) -> None:
     for rule_id in DEPTH_RULE_IDS:
         (finding,) = findings[rule_id]
         assert finding.scope_row_candidate_id is None and finding.scope_item_id is None
-        assert any(
-            note.startswith(NOT_PER_ROW.split("{why}")[0]) and why in note
-            for note in finding.notes or ()
-        ), (rule_id, finding.notes)
+        # In the reason, which the simple screen shows.
+        reason = finding.reason or ""
+        assert NOT_PER_ROW.split("{why}")[0] in reason and why in reason, (rule_id, reason)
 
 
 def test_judgment_one_the_readers_did_not_both_name_the_row(session: Session) -> None:
@@ -560,22 +562,16 @@ def test_a_person_s_run_keeps_the_revision_on_the_advanced_path(session: Session
     assert _shape(rows.check(on=True)) == _shape(rows.check(on=False))
 
 
-def test_a_person_s_value_for_the_whole_package_stands_on_one_countertop(
-    session: Session,
-) -> None:
-    """A person confirmed a front offset that is not a depth reader's reading: on a package with
-    one countertop, each check reading it keeps today's whole-package result, saying why the row is
-    not checked on its own; the reader's value never replaces a person's."""
+def _person_labels(session: Session, rows: _Rows, index: int, inches: int) -> None:
+    """A person confirms a labelled front offset on a row's page: not a depth reader's reading."""
     from app.evidence.confirm import confirm_candidate_type
 
-    rows = _Rows(session)
-    rows.reading(CT007, 4, QUALIFIED, link=rows.link())
     labelled = ObservationCandidate(
-        document_version_id=rows.sheets[0].page.document_version_id,
-        page_id=rows.sheets[0].page.id,
+        document_version_id=rows.sheets[index].page.document_version_id,
+        page_id=rows.sheets[index].page.id,
         extraction_run_id=rows.run.id,
-        raw_text='3"',
-        value_numerator=3,
+        raw_text=f'{inches}"',
+        value_numerator=inches,
         value_denominator=1,
         unit="in",
         polygon=[[700, 300], [760, 300], [760, 330], [700, 330]],
@@ -588,6 +584,45 @@ def test_a_person_s_value_for_the_whole_package_stands_on_one_countertop(
         session, candidate_id=labelled.id, semantic_type=CT007, confirmed_by=PERSON
     )
     assert isinstance(confirmed, CanonicalObservation), confirmed
+
+
+def test_a_person_s_value_for_the_whole_package_holds_every_row_of_several(
+    session: Session,
+) -> None:
+    """Review of #1395: with several countertops, a person's labelled 2" never gives way to the
+    readers' 4" on a row. No row decides the checks that read it; each keeps its held result, saying
+    why, and the whole-package result is exactly today's."""
+    rows = _Rows(session, pages=(0, 1))
+    rows.reading(CT007, 4, QUALIFIED, link=rows.link())
+    _person_labels(session, rows, 0, 2)
+
+    off = rows.check(on=False)
+    on = rows.check(on=True)
+
+    for rule_id in ("CT-SINK-OFFSET-FRONT-001", "CT-BACK-OFFSET-MIN-001"):
+        assert all(row_check_proposal(f.notes) is None for f in on[rule_id]), rule_id
+        assert all(f.outcome == Outcome.REVIEW_REQUIRED.value for f in on[rule_id]), rule_id
+        for anchor in rows.anchors:
+            held = _row_results(on, anchor)[rule_id]
+            assert NOT_PER_ROW.format(why=WHOLE_PACKAGE_VALUE) in (held.reason or ""), rule_id
+        package = [f for f in on[rule_id] if f.scope_row_candidate_id is None]
+        before = [f for f in off[rule_id] if f.scope_row_candidate_id is None]
+        assert [(f.outcome, f.reason) for f in package] == [(f.outcome, f.reason) for f in before]
+    # The checks no person gave a value for are still each row's own.
+    assert row_check_proposal(_row_results(on, rows.anchors[0])["CT-DEPTH-001"].notes) == (
+        rows.proposals[0]
+    )
+
+
+def test_a_person_s_value_for_the_whole_package_stands_on_one_countertop(
+    session: Session,
+) -> None:
+    """A person confirmed a front offset that is not a depth reader's reading: on a package with
+    one countertop, each check reading it keeps today's whole-package result, saying why the row is
+    not checked on its own; the reader's value never replaces a person's."""
+    rows = _Rows(session)
+    rows.reading(CT007, 4, QUALIFIED, link=rows.link())
+    _person_labels(session, rows, 0, 3)
 
     off = rows.check(on=False)
     on = rows.check(on=True)
@@ -602,10 +637,8 @@ def test_a_person_s_value_for_the_whole_package_stands_on_one_countertop(
     }
     assert all(len(on[rule_id]) == 1 for rule_id in DEPTH_RULE_IDS)
     assert after.scope_row_candidate_id is None and after.scope_item_id is None
-    assert (after.outcome, after.reason) == (before.outcome, before.reason)
-    assert NOT_PER_ROW.format(why="a value was given for the whole package, which stands") in (
-        after.notes or []
-    )
+    assert after.outcome == before.outcome
+    assert after.reason == f"{before.reason} {NOT_PER_ROW.format(why=WHOLE_PACKAGE_VALUE)}"
 
 
 def test_a_confirmed_countertop_with_no_run_is_still_checked_on_its_row(session: Session) -> None:
@@ -784,57 +817,67 @@ _MODELS = {"items": DrawingItem, "links": ItemViewLink, "readings": ObservationC
 # -- the record layer: a depth value supports a row's result only through the row's own suggestion -
 
 
-def test_the_record_layer_refuses_a_depth_value_of_another_suggestion(session: Session) -> None:
+def test_the_record_layer_refuses_a_value_not_tied_to_the_row_s_suggestion(
+    session: Session,
+) -> None:
+    """Both judgments hold, and the value is on the row's own page, but the depth reading behind it
+    is tied to no countertop: the record layer refuses it on the row's result."""
+    from app.evidence.confirm import confirm_candidate_type
     from app.models import RuleSnapshot
     from app.verdicts.record import EvidenceMissing, record_finding
     from app.verdicts.rulebook import from_row
     from verdict.finding import Finding as Decided
-    from workflow.depth_evidence import suggestion_depth_operands
+    from workflow.depth_evidence import _sealed
     from workflow.review import ENGINE_VERSION
 
     rows = _Rows(session)
     _publish_rulebook_once(session)
-    rows.second_countertop()
-    from app.models import PartProposal
-
-    theirs = session.scalars(select(PartProposal).where(PartProposal.source == "reviewer")).one()
-    rows.reading(CT007, 4, QUALIFIED, link=rows.link(proposal=theirs.id))
+    loose = rows.reading(CT007, 4, CONFIRM_ONLY)
+    confirmed = confirm_candidate_type(
+        session, candidate_id=loose.id, semantic_type=CT007, confirmed_by=PERSON
+    )
+    assert isinstance(confirmed, CanonicalObservation), confirmed
     snapshot = next(
         from_row(row)
         for row in session.scalars(select(RuleSnapshot))
         if from_row(row).rule.id == "CT-SINK-OFFSET-FRONT-001"
     )
-    found = suggestion_depth_operands(
-        session, rows.revision.id, snapshot.rule, theirs.id, rows.built.views[0].id
-    )
-    assert found.operands, found
-    decided = Decided(
-        rule_id=snapshot.rule.id,
-        outcome=Outcome.REVIEW_REQUIRED,
-        severity=snapshot.rule.severity,
-        reason="synthetic",
-        snapshot_id=snapshot.snapshot_id,
-        engine_version=ENGINE_VERSION,
-    )
+    (name,) = list(snapshot.rule.inputs or {})
+    operand = _sealed(session, confirmed, name)
+    assert operand is not None
+    assert depth_rows(session, rows.revision.id).row(rows.anchor) is not None
 
-    for suggestion in (rows.proposal, theirs.id):
-        with pytest.raises(EvidenceMissing), session.begin_nested():
-            record_finding(
-                session,
-                package_revision_id=rows.revision.id,
-                finding=decided,
-                operands=found.operands,
-                parameter_set_ids={},
-                scope_row_candidate_id=rows.anchor,
-                scope_label="Countertop row on page 1",
-                row_depth_suggestion=suggestion,
-            )
+    with pytest.raises(EvidenceMissing, match="not supported by this countertop row"):
+        record_finding(
+            session,
+            package_revision_id=rows.revision.id,
+            finding=Decided(
+                rule_id=snapshot.rule.id,
+                outcome=Outcome.REVIEW_REQUIRED,
+                severity=snapshot.rule.severity,
+                reason="synthetic",
+                snapshot_id=snapshot.snapshot_id,
+                engine_version=ENGINE_VERSION,
+            ),
+            operands={name: operand},
+            parameter_set_ids={},
+            scope_row_candidate_id=rows.anchor,
+            scope_label="Countertop row on page 1",
+            row_depth_suggestion=rows.proposal,
+        )
     # And a row's own depth check names a row.
     with pytest.raises(EvidenceMissing, match="one countertop row"):
         record_finding(
             session,
             package_revision_id=rows.revision.id,
-            finding=decided,
+            finding=Decided(
+                rule_id=snapshot.rule.id,
+                outcome=Outcome.REVIEW_REQUIRED,
+                severity=snapshot.rule.severity,
+                reason="synthetic",
+                snapshot_id=snapshot.snapshot_id,
+                engine_version=ENGINE_VERSION,
+            ),
             operands={},
             parameter_set_ids={},
             row_depth_suggestion=rows.proposal,
@@ -942,3 +985,134 @@ def test_a_split_page_keeps_its_held_result_with_why(session: Session) -> None:
     assert row_check_proposal(_row_results(findings, rows.anchor)["CT-DEPTH-001"].notes) == (
         rows.proposal
     )
+
+
+# -- review of #1395: the record layer re-reads both judgments ------------------------------------
+
+
+def _forge(session: Session, rows: _Rows) -> None:
+    """A row result citing the row's own qualified reading, written straight to the record layer."""
+    from app.models import RuleSnapshot
+    from app.verdicts.record import record_finding
+    from app.verdicts.rulebook import from_row
+    from verdict.finding import Finding as Decided
+    from workflow.depth_evidence import suggestion_depth_operands
+    from workflow.review import ENGINE_VERSION
+
+    _publish_rulebook_once(session)
+    snapshot = next(
+        from_row(row)
+        for row in session.scalars(select(RuleSnapshot))
+        if from_row(row).rule.id == "CT-SINK-OFFSET-FRONT-001"
+    )
+    found = suggestion_depth_operands(
+        session, rows.revision.id, snapshot.rule, rows.proposal, rows.built.views[0].id
+    )
+    assert found.operands, found
+    with session.begin_nested():
+        record_finding(
+            session,
+            package_revision_id=rows.revision.id,
+            finding=Decided(
+                rule_id=snapshot.rule.id,
+                outcome=Outcome.REVIEW_REQUIRED,
+                severity=snapshot.rule.severity,
+                reason="synthetic",
+                snapshot_id=snapshot.snapshot_id,
+                engine_version=ENGINE_VERSION,
+            ),
+            operands=found.operands,
+            parameter_set_ids={},
+            scope_row_candidate_id=rows.anchor,
+            scope_label="Countertop row on page 1",
+            row_depth_suggestion=rows.proposal,
+        )
+
+
+def test_the_record_layer_accepts_the_row_s_own_value_while_both_judgments_hold(
+    session: Session,
+) -> None:
+    rows = _Rows(session)
+    rows.reading(CT007, 4, QUALIFIED, link=rows.link())
+
+    _forge(session, rows)
+
+
+def test_the_record_layer_refuses_once_the_suggestion_is_taken_back(session: Session) -> None:
+    from app.models import PartProposal
+    from app.verdicts.record import EvidenceMissing
+
+    rows = _Rows(session)
+    rows.reading(CT007, 4, QUALIFIED, link=rows.link())
+    withdraw_part(session, proposal=session.get_one(PartProposal, rows.proposal), actor=PERSON)
+
+    with pytest.raises(EvidenceMissing, match="not checked on its own now"):
+        _forge(session, rows)
+
+
+def test_the_record_layer_refuses_once_the_drawing_holds_a_second_countertop(
+    session: Session,
+) -> None:
+    from app.verdicts.record import EvidenceMissing
+
+    rows = _Rows(session)
+    rows.reading(CT007, 4, QUALIFIED, link=rows.link())
+    rows.second_countertop()
+
+    with pytest.raises(EvidenceMissing, match="not checked on its own now"):
+        _forge(session, rows)
+
+
+# -- review of #1395: each remaining judgment, pinned ----------------------------------------------
+
+
+def test_a_row_with_no_countertop_suggestion_on_record_is_held(session: Session) -> None:
+    """Bala filed no suggestion from the row (here: never asked to): judgment 1 cannot name one."""
+    built, anchor = _qualifying(session)
+
+    found = depth_rows(session, built.revision.id)
+
+    assert found.rows == ()
+    assert found.held[anchor] == NO_ONE_SUGGESTION
+
+
+def test_only_bala_s_countertop_suggestion_on_the_row_s_drawing_counts() -> None:
+    from types import SimpleNamespace
+
+    from workflow.bala_items import BALA_SOURCE
+    from workflow.depth_rows import _bala_countertop_on
+
+    view = uuid4()
+    good = {"kind": PartKind.COUNTERTOP.value, "source": BALA_SOURCE, "drawing_view_id": view}
+    assert _bala_countertop_on(SimpleNamespace(**good), view)  # type: ignore[arg-type]
+    for change in (
+        {"kind": PartKind.CABINET.value},
+        {"source": "reviewer"},
+        {"drawing_view_id": uuid4()},
+    ):
+        assert not _bala_countertop_on(SimpleNamespace(**{**good, **change}), view), change  # type: ignore[arg-type]
+
+
+def test_a_suggestion_a_person_confirmed_as_a_cabinet_is_held(session: Session) -> None:
+    from app.models import PartProposal
+
+    rows = _Rows(session)
+    rows.reading(CT007, 4, QUALIFIED, link=rows.link())
+    confirm_part(
+        session,
+        proposal=session.get_one(PartProposal, rows.proposal),
+        kind=PartKind.CABINET,
+        code=None,
+        actor=PERSON,
+    )
+
+    assert depth_rows(session, rows.revision.id).held[rows.anchor] == NOT_A_COUNTERTOP
+
+
+def test_a_row_s_reading_is_confirmed_once_only(session: Session, store: LocalStore) -> None:
+    rows, row, front = _waiting_row(session, store)
+    _confirm(session, rows, front, row)
+
+    with pytest.raises(HeldReadingRefused) as refused:
+        _confirm(session, rows, front, row)
+    assert refused.value.reason is HeldReadingRefusal.DEPTH_CONFIRM_ONCE
