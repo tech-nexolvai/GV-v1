@@ -53,7 +53,18 @@ from app.auth import Action, Principal, require_action, require_project_access
 from app.errors import _envelope
 from app.models import Package, PackageRevision
 from app.review import review_item_actions as actions
-from app.review.review_items import ReviewItemOut, ReviewItemsOut, review_items_for_revision
+from app.review.evidence_actions import (
+    HeldReadingRefusal,
+    HeldReadingRefused,
+    confirm_candidate_reading,
+    correct_candidate_reading,
+)
+from app.review.review_items import (
+    ReviewItemOut,
+    ReviewItemsOut,
+    parsed_inches,
+    review_items_for_revision,
+)
 from app.schemas.architect_matches import ArchitectViewPickIn
 
 router = APIRouter(tags=["simple review"])
@@ -181,25 +192,19 @@ def answer_review_item(
     except actions.ItemRefused as refused:
         raise _http(refused) from refused
 
-    if kind in ("number", "depth_reading"):
-        if kind == "number" and name == "confirm" and isinstance(entry, ReviewItemOut):
-            # The value the person saw, carried for W2's Confirm, which records the stored value.
-            try:
-                actions.check_shown_value(entry, body.shown_value)
-            except actions.ItemRefused as refused:
-                session.rollback()
-                raise _http(refused) from refused
-        # Not yet, said plainly: a raised 5xx would hide the reason behind the generic sentence.
+    if kind == "depth_reading":
+        # Not yet, said plainly (#1360): a raised 5xx would hide the reason behind the generic sentence.
         session.rollback()
         return _envelope(
-            request,
-            "not_implemented",
-            actions.NUMBERS_NOT_YET if kind == "number" else actions.DEPTH_NOT_YET,
-            status.HTTP_501_NOT_IMPLEMENTED,
+            request, "not_implemented", actions.DEPTH_NOT_YET, status.HTTP_501_NOT_IMPLEMENTED
         )
 
     sitting_id: UUID | None = None
-    if name in actions.FINDING_ANSWERS:
+    if kind == "number":
+        if not isinstance(entry, ReviewItemOut) or name not in ("confirm", "fix"):
+            raise _unprocessable("A number takes Confirm or Fix.")
+        sitting_id, recorded = _answer_number(session, principal, revision, entry, name, body)
+    elif name in actions.FINDING_ANSWERS:
         if entry.finding_id is None:
             raise _unprocessable("This item has no result to record the answer on.")
         if isinstance(entry, ReviewItemOut):
@@ -250,6 +255,91 @@ def answer_review_item(
         review_items=review_items_for_revision(
             session, project_id=project_id, package_id=package_id, revision=revision
         ),
+    )
+
+
+#: W2 refusals that mean "the item moved on since you looked": 409, reload. The rest are 422.
+_NUMBER_CONFLICTS: frozenset[HeldReadingRefusal] = frozenset(
+    {
+        HeldReadingRefusal.ALREADY_ANSWERED,
+        HeldReadingRefusal.ALREADY_COUNTS,
+        HeldReadingRefusal.SHOWN_VALUE_DIFFERS,
+        HeldReadingRefusal.REVISION_CLOSED,
+        HeldReadingRefusal.DEPTH_CONFIRM_ONCE,
+    }
+)
+
+
+def _answer_number(
+    session: Session,
+    principal: Principal,
+    revision: PackageRevision,
+    entry: ReviewItemOut,
+    name: str,
+    body: actions.ReviewItemActionIn,
+) -> tuple[UUID, str]:
+    """Confirm or Fix one held AI number through W2 (#1339), with one coalesced re-check.
+
+    Confirm records exactly the stored reading, and only when it is the value the screen showed
+    (`shown_value`); Fix records the person's value as a correction. Both, and the re-check, commit
+    together or not at all.
+    """
+    if entry.finding_id is None or entry.candidate_id is None:
+        raise _unprocessable("This number has no AI reading to confirm or fix; check it by hand.")
+    try:
+        if name == "confirm":
+            actions.check_shown_value(entry, body.shown_value)
+    except actions.ItemRefused as refused:
+        session.rollback()
+        raise _http(refused) from refused
+    if name == "fix" and (body.value is None or not body.value.strip()):
+        raise _unprocessable("Type the value the drawing shows, in inches. Nothing was saved.")
+    try:
+        sitting = actions.reviewer_session(session, revision.id, principal.id)
+        if name == "confirm":
+            shown = parsed_inches(body.shown_value or "")
+            assert shown is not None  # check_shown_value refused anything else
+            confirm_candidate_reading(
+                session,
+                principal=principal,
+                review_session_id=sitting.id,
+                finding_id=entry.finding_id,
+                candidate_id=entry.candidate_id,
+                expected_value=shown,
+            )
+        else:
+            correct_candidate_reading(
+                session,
+                principal=principal,
+                review_session_id=sitting.id,
+                finding_id=entry.finding_id,
+                candidate_id=entry.candidate_id,
+                corrected_value=body.value or "",
+            )
+        queue_recheck(session, revision)
+        sitting_id = sitting.id
+        session.commit()
+    except HeldReadingRefused as refused:
+        session.rollback()
+        code = (
+            status.HTTP_409_CONFLICT
+            if refused.reason in _NUMBER_CONFLICTS
+            else status.HTTP_422_UNPROCESSABLE_CONTENT
+        )
+        raise HTTPException(
+            status_code=code, detail=f"{refused.detail}. Nothing was saved."
+        ) from refused
+    except HTTPException:
+        session.rollback()
+        raise
+    except Exception as error:
+        session.rollback()
+        raise _refuse(error) from error
+    if name == "confirm":
+        return sitting_id, "Confirmed: the checks will use this reading."
+    return (
+        sitting_id,
+        "Fixed: recorded as a correction of the AI's reading; the checks will use your value.",
     )
 
 
