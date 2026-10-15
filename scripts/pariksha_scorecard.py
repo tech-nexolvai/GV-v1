@@ -18,6 +18,10 @@ database holding several runs needs `--run`; the refusal lists them. Vastu also 
 
 `--code-version` is the stored run's commit, or `unrecorded` (flagged: not attributable).
 
+`--row-boxes` (repeatable, Rekha only) gives the box maps a geometry rows key needs to match the
+readers' boxes to its lines (`scripts/pariksha_row_boxes.py`, #1321); without one, a geometry case
+is not asked, never guessed.
+
     # score the phase-5 agents (#1257): view kind or depth and sink values, from an answers file
     python scripts/pariksha_scorecard.py score --agent akshara-depth \\
         --key ~/GV-v1/data/goldset/depth-key-ai-set-3/akshara-depth.json \\
@@ -68,6 +72,7 @@ from eval.pariksha.depth import (
     score_depth,
 )
 from eval.pariksha.keys import AnswerKey, ArchitectAnswerKey, KeyFormatError, read_key
+from eval.pariksha.row_geometry import RowBoxesError, read_row_boxes
 from eval.pariksha.score import UNRECORDED, Scorecard, score_akshara, score_rekha, score_vastu
 from eval.pariksha.scorecard import ScorecardError, read_scorecard, write_scorecard
 from eval.pariksha.stored import StoredRunError, load_architect_run, load_stored_run
@@ -198,6 +203,9 @@ def _score(args: argparse.Namespace) -> int:
     # Read before scoring, so a refused candidates file never leaves a scorecard behind.
     decisions = None if args.smriti is None else read_candidates(args.smriti.expanduser())
     key = read_key(args.key.expanduser())
+    row_boxes = read_row_boxes(args.row_boxes) if args.row_boxes else None
+    if row_boxes is not None and args.agent != "rekha":
+        raise Refused("--row-boxes is for a Rekha rows key only")
     expected = ArchitectAnswerKey if args.agent == "vastu" else AnswerKey
     if not isinstance(key, expected) or (isinstance(key, AnswerKey) and key.agent != args.agent):
         raise Refused(f"{args.key} is not a key for {args.agent}")
@@ -229,14 +237,23 @@ def _score(args: argparse.Namespace) -> int:
                         extraction_run_id=args.run,
                         with_try_again=args.with_try_again,
                     )
-                    scorer = score_akshara if args.agent == "akshara" else score_rekha
-                    card = scorer(
-                        key,
-                        stored,
-                        code_version=args.code_version,
-                        scorer_version=_scorer_version(),
-                        with_try_again=args.with_try_again,
-                    )
+                    if args.agent == "akshara":
+                        card = score_akshara(
+                            key,
+                            stored,
+                            code_version=args.code_version,
+                            scorer_version=_scorer_version(),
+                            with_try_again=args.with_try_again,
+                        )
+                    else:
+                        card = score_rekha(
+                            key,
+                            stored,
+                            code_version=args.code_version,
+                            scorer_version=_scorer_version(),
+                            with_try_again=args.with_try_again,
+                            row_boxes=row_boxes,
+                        )
             finally:
                 session.rollback()
     finally:
@@ -311,6 +328,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="a Smriti candidates file: also print the reviewer decisions about this agent",
     )
+    score.add_argument(
+        "--row-boxes",
+        type=Path,
+        action="append",
+        help="rekha: a box map for a geometry rows key (repeatable)",
+    )
     score.set_defaults(handler=_score)
     compare = commands.add_parser("compare", help="compare two scorecards: before, after")
     compare.add_argument("before", type=Path)
@@ -332,6 +355,7 @@ def main(argv: list[str] | None = None) -> int:
         MissingProvenanceError,
         FileExistsError,
         CandidatesFileError,
+        RowBoxesError,
     ) as error:
         # A refusal is not a verdict: 0 is ACCEPT, 1 is REJECT, 2 is "will not judge this".
         print(f"pariksha: {error}", file=sys.stderr)
