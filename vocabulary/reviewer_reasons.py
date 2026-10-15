@@ -5,6 +5,12 @@ from collections.abc import Iterable
 
 from vocabulary.check_holds import CHECK_HOLD_REASONS
 
+#: On a number held for GV's ink (#1198): GV's green tick was the only GV ink there, or something
+#: else of GV's was. A row's reason gathers every number's flags, so the second keeps one ticked
+#: number from speaking for another GV boxed or corrected.
+GV_TICK_FLAG = "gv-tick"
+GV_OTHER_MARK_FLAG = "gv-other-mark"
+
 REVIEWER_REASONS = {
     # #1206: first, because the readers' later questions on this row were never asked at all.
     "budget-not-asked": "Not asked: the AI budget was reached before this page's later questions (walls, stone ends, the equal-share chain or the architect pairing). Use 'Read the unread pages', or ask an admin to raise the limit.",
@@ -12,6 +18,8 @@ REVIEWER_REASONS = {
     "field-cut-included": "This width already includes the field cut. The reviewer must check it.",
     "vif": "This dimension is provisional (VIF). Verify it on site before using it.",
     **CHECK_HOLD_REASONS,
+    # #1198: only where every GV mark at the row's held numbers is GV's green tick (`reviewer_reason`).
+    GV_TICK_FLAG: "GV ticked this number (round 2), so it is shown to you. GV's marks are never read as a value: check the vendor's own number.",
     "reviewer-markup": "Covered by reviewer markup. Check the vendor's own number.",
     "row-ambiguous": "The readers could not establish which row measures the countertop.",
     "row-choice-disagreement": "The readers did not agree on which row measures the countertop.",
@@ -32,6 +40,9 @@ def reviewer_reason(flags: Iterable[str], fallback: str | None) -> str | None:
     codes = {flag.removeprefix("row-hold:").removeprefix("check-hold:") for flag in flags}
     if fallback and "reviewer markup" in fallback.lower():
         codes.add("reviewer-markup")
+    if "reviewer-markup" not in codes or GV_OTHER_MARK_FLAG in codes:
+        # A tick only words a markup hold that exists, and only when it is GV's one mark (#1198).
+        codes.discard(GV_TICK_FLAG)
     for code, words in REVIEWER_REASONS.items():
         if code in codes:
             return words

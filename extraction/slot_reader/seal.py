@@ -50,6 +50,7 @@ from extraction.slot_reader.runs import Lane, PlannedLabel
 from units.measurement import Measurement
 from units.normalise import fold_fractions
 from vocabulary.cabinet_codes import is_cabinet_code, is_finish_code
+from vocabulary.reviewer_reasons import GV_OTHER_MARK_FLAG, GV_TICK_FLAG
 
 __all__ = [
     "STACKED_BY_CODE",
@@ -90,6 +91,8 @@ _QUOTES: Final = {
 _ODD_FRACTION: Final = "fraction-not-drawn"
 #: Two numbers, one in brackets, whose mm and inches are not one length (#1263; `labels.mm_inch_refusal`).
 _MM_INCH_DISAGREE: Final = "mm-inch-disagree"
+#: A number GV's green tick touches, and no other GV ink (#1198): held like any GV ink, and said so.
+GV_TICK_REASON: Final = "GV ticked this number (round 2); GV's marks are never read as a value"
 _CLAUDE_PAIR: Final = frozenset({"anthropic.claude-opus-5-5", "anthropic.claude-sonnet-5-5"})
 
 
@@ -283,6 +286,10 @@ def seal_label(
             reason = REVIEWER_MARKUP_REASON
             if ink.reviewer_text:
                 reason = f"{reason}; reviewer wrote {ink.reviewer_text}"
+            if ink.tick_only:
+                # GV's green tick and nothing else (#1198): still held, only named plainly.
+                reason = GV_TICK_REASON
+            flags.append(GV_TICK_FLAG if ink.tick_only else GV_OTHER_MARK_FLAG)
             hard = ("reviewer-markup", reason)
     if row_ambiguity is not None:
         soft.append(("row-ambiguous", f"not sure which row is the countertop: {row_ambiguity}"))

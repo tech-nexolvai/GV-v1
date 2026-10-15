@@ -747,3 +747,63 @@ def test_a_page_that_is_not_there_cannot_be_read_for_marks() -> None:
         pasted_stamps(sheet, 3, dpi=DPI)
     with pytest.raises(UnreadablePdf):
         coloured_paths(sheet, 3, dpi=DPI)
+
+
+# --- #1198: GV's green tick, named by shape and colour --------------------------------------
+
+#: A check glyph's six corners, top-down as pdfplumber gives them: two strokes meeting at the
+#: bottom, the right one longer. Made up, in the shape GV's annotation tool draws.
+_TICK = ((0, 4.2), (1.2, 2.9), (3.9, 5.7), (9.6, 0.0), (10.8, 1.2), (3.9, 8.1))
+
+
+def _tick_path(
+    corners: tuple[tuple[float, float], ...] = _TICK,
+    *,
+    scale: float = 1.0,
+    colour: tuple[float, ...] = (0.0, 0.5, 0.25),
+    fill: bool = True,
+    stroke: bool = False,
+) -> dict[str, object]:
+    placed = [(100 + x * scale, 200 + y * scale) for x, y in corners]
+    commands = [("m", placed[0]), *(("l", point) for point in placed[1:]), ("h",)]
+    return {"path": commands, "fill": fill, "stroke": stroke, "non_stroking_color": colour}
+
+
+def test_gv_tick_is_a_small_green_filled_check_at_any_scale() -> None:
+    from extraction.stamp_text import gv_tick
+
+    for scale in (0.5, 1.0, 1.4, 3.0):
+        assert gv_tick(_tick_path(scale=scale)), scale
+    assert gv_tick(_tick_path(colour=(0.0, 1.0, 0.0)))
+    assert gv_tick(_tick_path(colour=(0.0, 0.5, 0.0)))
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        _tick_path(colour=(1.0, 0.0, 0.0)),  # red
+        _tick_path(colour=(0.5, 1.0, 0.5)),  # pale green, as a vendor's fill
+        _tick_path(colour=(0.0, 0.0, 0.0, 1.0)),  # CMYK
+        _tick_path(stroke=True),  # filled and outlined
+        _tick_path(fill=False, stroke=True),  # a line drawing
+        _tick_path(scale=6.0),  # too big to be a tick
+        _tick_path(scale=0.1),  # too small
+        _tick_path(tuple((-x, y) for x, y in _TICK)),  # mirrored: long stroke on the left
+        _tick_path(tuple((x, -y) for x, y in _TICK)),  # upside down
+        _tick_path(_TICK[:5]),  # five corners
+        _tick_path(((0, 0), (10, 0), (10, 8), (0, 8), (0, 4), (0, 2))),  # a box
+    ],
+)
+def test_anything_else_is_not_a_tick(path: dict[str, object]) -> None:
+    from extraction.stamp_text import gv_tick
+
+    assert not gv_tick(path)
+
+
+def test_a_curved_tick_is_not_named() -> None:
+    from extraction.stamp_text import gv_tick
+
+    path = _tick_path()
+    commands = list(path["path"])  # type: ignore[call-overload]
+    commands[2] = ("c", (101, 203), (102, 204), (103.9, 205.7))
+    assert not gv_tick({**path, "path": commands})
