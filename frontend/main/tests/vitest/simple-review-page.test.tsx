@@ -262,7 +262,9 @@ describe('SimpleReviewPage (#1343)', () => {
     expect(left.textContent).toContain('62"');
     expect(left.textContent).toContain('Right');
     const proposal = within(choices).getByRole('button', { name: /walls at both ends/ });
-    expect(proposal.getAttribute('aria-pressed')).toBe('true');
+    // Pre-selected by look and by its description, never announced as a pressed toggle.
+    expect(proposal.hasAttribute('aria-pressed')).toBe(false);
+    expect(proposal.getAttribute('data-proposed')).toBe('true');
     expect(proposal.textContent).toContain('Wrong');
     expect(screen.queryByRole('button', { name: /It is right|It is wrong|Choose walls/ })).toBeNull();
     await userEvent.click(left);
@@ -339,9 +341,9 @@ describe('SimpleReviewPage (#1343)', () => {
     await userEvent.click(rowButton(/Compare with the architect/));
     const choices = await screen.findByRole('group', { name: /Which of the architect's views/ });
     const proposed = within(choices).getByRole('button', { name: /Sheet A-2 · Kitchen elevation/ });
-    expect(proposed.getAttribute('aria-pressed')).toBe('true');
+    expect(proposed.getAttribute('data-proposed')).toBe('true');
     expect(proposed.textContent).toContain('AI proposal');
-    expect(within(choices).getByRole('button', { name: /Sheet A-3/ }).getAttribute('aria-pressed')).toBe('false');
+    expect(within(choices).getByRole('button', { name: /Sheet A-3/ }).hasAttribute('data-proposed')).toBe(false);
     await userEvent.click(within(choices).getByRole('button', { name: /None of these/ }));
     await waitFor(() => expect(posted[0]).toEqual({
       key: 'result:find-20',
@@ -434,5 +436,172 @@ describe('SimpleReviewPage (#1343)', () => {
     expect(within(screen.getByRole('region', { name: /Architect/ })).getByTestId('page-counter').textContent).toBe('12 / 14');
     await user.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+});
+
+describe('SimpleReviewPage after the independent review (#1368)', () => {
+  /** A save that waits until the test lets it finish, so the page can be read while it is saving. */
+  function holdSaves() {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    server.use(
+      http.post(`${API}/review-items/:key/:action`, async ({ params, request }) => {
+        posted.push({ key: decodeURIComponent(String(params.key)), action: String(params.action), body: await request.json() });
+        await gate;
+        return HttpResponse.json({ ok: true });
+      }),
+    );
+    return () => release();
+  }
+
+  /** The view question, whose record (and how often it was read) the test controls. */
+  function trackedViewLoader() {
+    const base = architectLoader('view');
+    const state = { record: 'rec-view-1', reads: 0 };
+    const loader: ArchitectLoader = {
+      viewMatch: async (...args) => {
+        state.reads += 1;
+        const match = (await base.viewMatch(...args))!;
+        return { ...match, current: { ...match.current!, record_id: state.record } } as ArchitectViewMatch;
+      },
+      pairing: base.pairing,
+    };
+    return { state, loader };
+  }
+
+  /** The same list with the architect question now on a newer result (a re-check replaced it). */
+  function architectRechecked(): ReviewItemsOut {
+    const next = withArchitect();
+    next.items.find((entry) => entry.key === 'result:find-20')!.finding_id = 'find-21';
+    return next;
+  }
+
+  function spins(card: HTMLElement): boolean {
+    return card.querySelector('.animate-spin') !== null;
+  }
+
+  it('while a wall choice saves, every card is disabled and only the clicked one spins', async () => {
+    const release = holdSaves();
+    renderPage();
+    await screen.findByTestId('ai-read-line');
+    await userEvent.click(rowButton(/Where are the walls/));
+    const choices = screen.getByRole('group', { name: 'Where are the walls?' });
+    const left = within(choices).getByRole('button', { name: /wall at the left end/ });
+    const proposal = within(choices).getByRole('button', { name: /walls at both ends/ });
+    await userEvent.click(left);
+    await waitFor(() => expect(posted).toHaveLength(1));
+    for (const card of within(choices).getAllByRole('button')) expect((card as HTMLButtonElement).disabled).toBe(true);
+    expect(spins(left)).toBe(true);
+    expect(left.getAttribute('aria-busy')).toBe('true');
+    expect(spins(proposal)).toBe(false);
+    release();
+    await waitFor(() => expect((left as HTMLButtonElement).disabled).toBe(false));
+    expect(posted).toHaveLength(1);
+  });
+
+  it('while an architect answer saves, every card is disabled and only the clicked one spins', async () => {
+    const release = holdSaves();
+    current = withArchitect();
+    renderPage({ architect: architectLoader('view') });
+    await screen.findByTestId('ai-read-line');
+    await userEvent.click(rowButton(/Compare with the architect/));
+    const choices = await screen.findByRole('group', { name: /Which of the architect's views/ });
+    const other = within(choices).getByRole('button', { name: /Sheet A-3/ });
+    const proposal = within(choices).getByRole('button', { name: /Sheet A-2/ });
+    await userEvent.click(other);
+    await waitFor(() => expect(posted).toHaveLength(1));
+    for (const card of within(choices).getAllByRole('button', { name: /Sheet|None of these/ })) expect((card as HTMLButtonElement).disabled).toBe(true);
+    expect(spins(other)).toBe(true);
+    expect(spins(proposal)).toBe(false);
+    expect(spins(within(choices).getByRole('button', { name: /None of these/ }))).toBe(false);
+    release();
+    await waitFor(() => expect((other as HTMLButtonElement).disabled).toBe(false));
+  });
+
+  it('a re-check while the item stays open reads the architect question again, so the answer names the new record', async () => {
+    current = withArchitect();
+    const { state, loader } = trackedViewLoader();
+    renderPage({ architect: loader });
+    await screen.findByTestId('ai-read-line');
+    await userEvent.click(rowButton(/Compare with the architect/));
+    let choices = await screen.findByRole('group', { name: /Which of the architect's views/ });
+    expect(state.reads).toBe(1);
+    // The answer is saved; the checks run again and the question comes back on a newer record.
+    current = architectRechecked();
+    state.record = 'rec-view-2';
+    await userEvent.click(within(choices).getByRole('button', { name: /None of these/ }));
+    await waitFor(() => expect(state.reads).toBe(2));
+    choices = await screen.findByRole('group', { name: /Which of the architect's views/ });
+    await userEvent.click(within(choices).getByRole('button', { name: /Sheet A-2/ }));
+    await waitFor(() => expect(posted[1]?.body).toEqual({ expected_finding_id: 'find-21', architect_view: { view_id: 'view-2', expected_record_id: 'rec-view-2' }, answer: 'answer' }));
+  });
+
+  it('C on a closed architect item never sends a proposal read for an older result', async () => {
+    current = withArchitect();
+    const { state, loader } = trackedViewLoader();
+    renderPage({ architect: loader });
+    await screen.findByTestId('ai-read-line');
+    const user = userEvent.setup();
+    await user.click(rowButton(/Compare with the architect/));
+    await screen.findByRole('group', { name: /Which of the architect's views/ });
+    await user.keyboard('{Escape}');
+    expect(rowButton(/Compare with the architect/).getAttribute('aria-expanded')).toBe('false');
+    // Something else is answered; the reloaded list carries the architect question on a newer result.
+    current = architectRechecked();
+    state.record = 'rec-view-2';
+    const before = loads;
+    await user.click(within(screen.getByRole('region', { name: 'Will be clouded as wrong' })).getAllByRole('button', { name: /Agree/ })[0]);
+    await waitFor(() => expect(loads).toBe(before + 1));
+    rowButton(/Compare with the architect/).focus();
+    await user.keyboard('c');
+    // The stale proposal is not sent: the item opens and reads its question again.
+    await screen.findByRole('group', { name: /Which of the architect's views/ });
+    expect(posted.filter((entry) => entry.key === 'result:find-20')).toEqual([]);
+    await waitFor(() => expect(state.reads).toBe(2));
+    await user.keyboard('c');
+    await waitFor(() => expect(posted.filter((entry) => entry.key === 'result:find-20').map((entry) => entry.body)).toEqual([
+      { expected_finding_id: 'find-21', architect_view: { view_id: 'view-2', expected_record_id: 'rec-view-2' }, answer: 'answer' },
+    ]));
+  });
+
+  it('after a stale architect answer (409), Retry reads the question again instead of resending the refused answer', async () => {
+    server.use(http.post(`${API}/review-items/:key/:action`, async ({ params, request }) => {
+      posted.push({ key: decodeURIComponent(String(params.key)), action: String(params.action), body: await request.json() });
+      return HttpResponse.json({ error: 'stale', message: "This row's match changed after you opened it.", request_id: 'req-7' }, { status: 409 });
+    }, { once: true }));
+    current = withArchitect();
+    const { state, loader } = trackedViewLoader();
+    renderPage({ architect: loader });
+    await screen.findByTestId('ai-read-line');
+    await userEvent.click(rowButton(/Compare with the architect/));
+    let choices = await screen.findByRole('group', { name: /Which of the architect's views/ });
+    await userEvent.click(within(choices).getByRole('button', { name: /Sheet A-2/ }));
+    const alert = await screen.findByRole('alert');
+    state.record = 'rec-view-2';
+    const reads = state.reads;
+    await userEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(state.reads).toBe(reads + 1));
+    expect(posted).toHaveLength(1);
+    choices = await screen.findByRole('group', { name: /Which of the architect's views/ });
+    await userEvent.click(within(choices).getByRole('button', { name: /Sheet A-2/ }));
+    await waitFor(() => expect(posted[1]?.body).toEqual({ expected_finding_id: 'find-20', architect_view: { view_id: 'view-2', expected_record_id: 'rec-view-2' }, answer: 'answer' }));
+  });
+
+  it('the same answer saved twice is announced twice', async () => {
+    renderPage();
+    await screen.findByTestId('ai-read-line');
+    await userEvent.click(rowButton(/Overall countertop width.*Countertop 1/));
+    const notice = document.querySelector('[data-slot="saved-notice"]')!;
+    await userEvent.click(screen.getByRole('button', { name: /^Confirm/ }));
+    await waitFor(() => expect(notice.textContent).toContain('Confirmed.'));
+    const first = notice.firstElementChild;
+    expect(first).not.toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: /^Confirm/ }));
+    await waitFor(() => expect(posted).toHaveLength(2));
+    // A new node in the live region: screen readers announce it again, though the words are the same.
+    await waitFor(() => expect(notice.firstElementChild).not.toBe(first));
+    expect(notice.textContent).toContain('Confirmed.');
   });
 });
