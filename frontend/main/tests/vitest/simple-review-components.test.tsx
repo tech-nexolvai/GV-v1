@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -45,7 +45,7 @@ describe('FailuresStrip', () => {
     render(<FailuresStrip failures={data.failures} busyKey={null} errors={{}} onAgree={onAgree} />);
     const strip = screen.getByRole('region', { name: 'Will be clouded as wrong' });
     expect(within(strip).getAllByText('Wrong')).toHaveLength(2);
-    expect(strip.querySelectorAll('[data-outcome-icon="FAIL"]')).toHaveLength(2);
+    expect(strip.querySelectorAll('[data-slot="failure-row"] [data-outcome-icon="FAIL"]')).toHaveLength(2);
     await userEvent.click(within(strip).getAllByRole('button', { name: /Agree/ })[0]);
     expect(onAgree).toHaveBeenCalledWith(data.failures[0]);
   });
@@ -106,7 +106,7 @@ describe('ItemDetail', () => {
     expect(await screen.findByRole('img', { name: /Vendor page 3, the number ringed/ })).toBeTruthy();
     expect(screen.getByRole('img', { name: /Architect page 12/ })).toBeTruthy();
     expect(await screen.findByRole('img', { name: /Close-up/ })).toBeTruthy();
-    expect(document.querySelector('[data-slot="spot-ring"]')).toBeTruthy();
+    await waitFor(() => expect(document.querySelectorAll('[data-slot="spot-ring"]')).toHaveLength(2));
   });
 
   it("says why there is no architect page instead of an empty box", () => {
@@ -126,7 +126,7 @@ describe('ItemDetail', () => {
   it('Confirm sends one click; Fix offers the other reading to pick, never a box to type in', async () => {
     const { onAct } = renderDetail('number:cand-101');
     await userEvent.click(screen.getByRole('button', { name: /Confirm/ }));
-    expect(onAct).toHaveBeenCalledWith('confirm', undefined);
+    expect(onAct).toHaveBeenCalledWith('confirm');
     await userEvent.click(screen.getByRole('button', { name: /Fix/ }));
     await userEvent.click(await screen.findByRole('menuitem', { name: /96 3\/4"/ }));
     expect(onAct).toHaveBeenCalledWith('fix', '96 3/4"');
@@ -139,10 +139,24 @@ describe('ItemDetail', () => {
     expect(onOpenPdfs).toHaveBeenCalledWith(item('number:cand-101'));
   });
 
-  it('a by-hand item offers right and wrong, and a no-countertop page its two answers', async () => {
+  it('a by-hand item offers right and wrong', async () => {
     const { onAct } = renderDetail('countertop:find-5');
+    expect(screen.getByRole('button', { name: /It is right/ })).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: /It is wrong/ }));
-    expect(onAct).toHaveBeenCalledWith('checked_wrong', undefined);
+    expect(onAct).toHaveBeenCalledWith('checked_wrong');
+  });
+
+  it('a no-countertop page offers its two answers', () => {
+    renderDetail('page:rec-9');
+    expect(screen.getByRole('button', { name: /Confirm: no countertop/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /There is a countertop/ })).toBeTruthy();
+  });
+
+  it('Fix with no other reading says so and points to the PDFs', async () => {
+    const { onOpenPdfs } = renderDetail('number:cand-102');
+    await userEvent.click(screen.getByRole('button', { name: /Fix/ }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /Open the PDFs/ }));
+    expect(onOpenPdfs).toHaveBeenCalled();
   });
 
   it('a failed save is named, with Retry', async () => {

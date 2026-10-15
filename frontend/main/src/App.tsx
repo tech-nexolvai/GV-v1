@@ -2,6 +2,8 @@ import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import { AppShell } from './components/shell/AppShell';
 import type { Crumb } from './components/shell/app-topbar';
 import { ReviewPage } from './pages/ReviewPage';
+import { SimpleReviewPage } from './pages/SimpleReviewPage';
+import { AdvancedBanner } from './components/simple-review/advanced-banner';
 import { PackagesPage } from './pages/PackagesPage';
 import { WelcomePage } from './pages/WelcomePage';
 import { CompanySettingsPage } from './pages/CompanySettingsPage';
@@ -123,7 +125,21 @@ export default function App() {
         />
       )}
 
-      {route.page === 'review' && packageId !== null && (
+      {/* The simple review page (#1343) at #/review/<id>; the old tabs at #/review/<id>/advanced. */}
+      {route.page === 'review' && packageId !== null && !route.advanced && (
+        <SimpleReviewPage
+          key={packageId}
+          packageId={packageId}
+          onOpenAdvanced={() => navigate({ page: 'review', packageId, advanced: true })}
+          onTitleChange={(vendor, revisionNumber) => setReviewTitle({ packageId, title: vendor, revision: revisionNumber })}
+        />
+      )}
+
+      {route.page === 'review' && packageId !== null && route.advanced && (
+        <AdvancedBanner onBack={() => navigate({ page: 'review', packageId })} />
+      )}
+
+      {route.page === 'review' && packageId !== null && route.advanced && (
         <ReviewPage
           key={packageId}
           sessionId={packageId}
