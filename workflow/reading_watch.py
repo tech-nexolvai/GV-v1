@@ -154,9 +154,12 @@ class CallLedger:
 
     `to_record(run_id, attempt)` builds the ledger row the stage would have written for the attempt,
     priced the same way. The ledger run is opened on the first paid attempt, in its own committed
-    transaction, under a task run keyed `ledger_key_prefix(stage_key) + <uuid>` on the stage's
-    workflow run — and only when that workflow run is already committed, so no side write ever waits
-    on the stage's own uncommitted rows.
+    transaction, under a task run keyed `ledger_key_prefix(stage_key) + key_tag + <uuid>` on the
+    stage's workflow run — and only when that workflow run is already committed, so no side write
+    ever waits on the stage's own uncommitted rows. `key_tag` (#1328) names who asked, so the calls
+    one "Read depths again" request paid for are found by its id
+    (`workflow.depth_again.request_ledger_tag`); the key still starts with the stage's prefix, so the
+    stage's spend carry-over (`ledger_spend_filter`) counts them as before.
     """
 
     def __init__(
@@ -167,8 +170,10 @@ class CallLedger:
         stage_key: str | None,
         reader_version: str,
         to_record: Callable[[UUID, AttemptUsage], InvocationRecord],
+        key_tag: str = "",
     ) -> None:
         self._engine = engine if workflow_run_id is not None and stage_key is not None else None
+        self._key_tag = key_tag
         self._workflow_run_id = workflow_run_id
         self._stage_key = stage_key
         self._reader_version = reader_version
@@ -257,7 +262,9 @@ class CallLedger:
                     return None
                 task = TaskRun(
                     workflow_run_id=self._workflow_run_id,
-                    idempotency_key=f"{ledger_key_prefix(self._stage_key)}{uuid4().hex}",
+                    idempotency_key=(
+                        f"{ledger_key_prefix(self._stage_key)}{self._key_tag}{uuid4().hex}"
+                    ),
                     task_type=LEDGER_TASK_TYPE,
                     attempt=1,
                     outcome="recorded",

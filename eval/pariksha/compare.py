@@ -45,9 +45,10 @@ from eval.release_metrics import Direction
 __all__ = ["CaseChange", "Comparison", "compare_scorecards", "metric_direction"]
 
 #: Metrics where more is better; every other scored metric is better lower. `unkeyed_questions`
-#: and `reused_answers` describe the run and the key, not the agent, so they have no direction.
+#: and `reused_answers` describe the run and the key, not the agent, so they have no direction; nor
+#: do the try-again counts (#1309), whose new wrong answers the per-case walk already rejects.
 _HIGHER: Final = ("asked", "pair_agreed_right", "reader_right:", "found")
-_NEITHER: Final = ("unkeyed_questions", "reused_answers")
+_NEITHER: Final = ("unkeyed_questions", "reused_answers", "try_again_")
 _LISTED: Final = 10
 
 

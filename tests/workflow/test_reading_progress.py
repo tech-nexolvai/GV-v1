@@ -834,3 +834,33 @@ def test_a_progress_hook_that_raises_changes_no_reading(in_batch: bool) -> None:
         progress=_BrokenProgress(in_batch=in_batch),
     )
     assert _readings(watched) == _readings(plain)
+
+
+def test_a_tagged_ledger_run_keeps_the_stage_prefix_and_names_who_asked(
+    engine: Engine, session: Session
+) -> None:
+    """#1328: a "Read depths again" request's ledger run carries its tag after the stage's prefix,
+    so the request finds its own calls by id and the stage's spend carry-over still counts them."""
+    from workflow.depth_again import _request_calls, request_ledger_tag
+
+    _revision, version, page_row, run = _scaffold(session)
+    session.commit()
+    stages = _stages_for(_runtime(_readers(_page(version.id, page_row.id))))
+    task = session.get(TaskRun, run.task_run_id)
+    assert task is not None
+    stage_key = f"test-stage:{uuid4().hex}"
+    request = str(uuid4())
+    ledger = CallLedger(
+        engine,
+        workflow_run_id=task.workflow_run_id,
+        stage_key=stage_key,
+        reader_version="depth-reader-test",
+        to_record=lambda run_id, attempt: stages._reader_invocation(run_id, attempt),
+        key_tag=request_ledger_tag(request),
+    )
+    ledger.record(_attempt(1))
+
+    (row,) = _ledger_rows(engine, stage_key)
+    with Session(engine) as watcher:
+        assert set(_request_calls(watcher, request)) == {row.id}
+        assert _request_calls(watcher, str(uuid4())) == {}

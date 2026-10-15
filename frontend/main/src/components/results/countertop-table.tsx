@@ -4,7 +4,7 @@ import { ChevronRight, CircleDashed, FileSearch, Hourglass, LayoutPanelTop, Lock
 
 import { cn } from '@/lib/utils';
 import type { CountertopResult } from '@/api/client';
-import type { Finding } from '@/data/types';
+import type { Finding, Outcome } from '@/data/types';
 import { decisionWords, formatDelta, initials, isNotChecked, isSplitPage, rowNeedsYou, sectionRows, sortValue, widthNeedsYou, type CountertopGroup } from '@/lib/countertop-results';
 import { architectState, neutralNumbers, headlinePair, pairLabel, pairedByWords } from '@/lib/architect';
 import { SortableHeader } from '@/components/data-table/data-table';
@@ -16,6 +16,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { WallGlyph } from './wall-glyph';
 import { WallsLine } from './wall-rule-info';
+import { neededAcrossWalls } from '@/lib/wall-rule';
 import { CountertopStrip } from './CountertopStrip';
 import { ArchitectDelta, ArchitectLine, ArchitectPairs, ArchitectStatus, ArchitectViewLink, MatchTag } from './architect-line';
 import { ArchitectMatchDetails } from './architect-match-details';
@@ -50,8 +51,10 @@ const COLUMNS: ColumnDef<CountertopResult>[] = [
   { id: 'page', accessorFn: (r) => r.page_number },
   { id: 'label', accessorFn: (r) => r.label },
   { id: 'printed', accessorFn: (r) => sortValue(r.printed_overall) },
-  { id: 'needed', accessorFn: (r) => sortValue(r.expected_total) },
-  { id: 'difference', accessorFn: (r) => sortValue(r.delta) },
+  // Before the walls are set (#1329): the least the cases need, as the cell shows it first.
+  { id: 'needed', accessorFn: (r) => sortValue(r.expected_total ?? sameAcrossWalls(r)?.least ?? null) },
+  // A range sorts by its closest gap, short below zero (#1329).
+  { id: 'difference', accessorFn: (r) => sortValue(r.delta ?? sameAcrossWalls(r)?.gap ?? null) },
 ];
 
 export function CountertopTable({
@@ -197,7 +200,7 @@ export function CountertopTable({
                     </TableCell>
                     <TableCell><ResultCell row={row} notCheckedHint={notCheckedHint} /></TableCell>
                     <TableCell className="num text-right">{row.printed_overall?.display ?? '—'}</TableCell>
-                    <TableCell className="num text-right">{row.expected_total?.display ?? '—'}</TableCell>
+                    <TableCell className="num text-right"><Needed row={row} /></TableCell>
                     <TableCell className="text-right"><Delta row={row} /></TableCell>
                     <TableCell>{isSplitPage(row) ? <SplitWalls /> : <WallGlyph layout={row.wall_layout} compactSource labelled />}</TableCell>
                     <TableCell><DecidedBy row={row} /></TableCell>
@@ -240,7 +243,7 @@ export function CountertopTable({
               </div>
               <dl className="mt-2 grid grid-cols-3 gap-2 text-xs">
                 <div><dt className="text-muted-foreground">Printed</dt><dd className="num text-sm">{row.printed_overall?.display ?? '—'}</dd></div>
-                <div><dt className="text-muted-foreground">Needed</dt><dd className="num text-sm">{row.expected_total?.display ?? '—'}</dd></div>
+                <div><dt className="text-muted-foreground">Needed</dt><dd className="num text-sm"><Needed row={row} /></dd></div>
                 <div><dt className="text-muted-foreground">Difference</dt><dd className="text-sm"><Delta row={row} /></dd></div>
               </dl>
               <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
@@ -334,7 +337,58 @@ function ResultCell({ row, notCheckedHint }: { row: CountertopResult; notChecked
   );
 }
 
+function sameAcrossWalls(row: CountertopResult) {
+  const across = neededAcrossWalls(row);
+  return across?.kind === 'same' ? across : null;
+}
+
+/**
+ * What the overall should be: the one the result used; before the walls are set (#1329), the
+ * range the recorded wall cases need when they all agree, or each case's when they do not.
+ */
+function Needed({ row }: { row: CountertopResult }) {
+  const across = neededAcrossWalls(row);
+  if (!across) return <>{row.expected_total?.display ?? '—'}</>;
+  if (across.kind === 'same') {
+    return <span data-slot="needed-across-walls" title="What each wall case needs, as the check recorded it">{across.needed}</span>;
+  }
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span data-slot="needed-each-wall-case" tabIndex={0} className="rounded-md text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          {across.needed.join(' / ')}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-80"><NeededEachCase cases={across.cases} /></TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** Each wall case's needed overall and result, as the check recorded them (#1329). */
+function NeededEachCase({ cases }: { cases: { words: string; needed: string; outcome: Outcome }[] }) {
+  return (
+    <ul className="flex flex-col gap-0.5 text-xs">
+      {cases.map((item, index) => (
+        <li key={index}>
+          {item.words}: <span className="num">{item.needed}</span> needed — {OUTCOME_LABELS[item.outcome]}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function Delta({ row }: { row: CountertopResult }) {
+  const across = neededAcrossWalls(row);
+  if (across?.kind === 'mixed') return <span data-slot="walls-needed" className="text-xs text-muted-foreground">walls needed</span>;
+  if (across?.kind === 'same') {
+    const ok = across.outcome === 'PASS';
+    return (
+      <span data-slot="difference-across-walls" className={cn('num inline-flex items-center gap-1 font-medium', ok ? 'text-outcome-pass-fg' : 'text-outcome-fail-fg')}>
+        <OutcomeIcon outcome={across.outcome} size={13} />
+        {across.difference}
+      </span>
+    );
+  }
   const { text, sign } = formatDelta(row.delta);
   if (sign === null) return <span className="num text-muted-foreground">—</span>;
   const ok = sign === 0;
@@ -504,12 +558,25 @@ function ReadDetails({ row }: { row: CountertopResult }) {
           </span>
         )}
       </div>
+      <NeededPerCase row={row} />
       {row.hold && <p className="text-xs text-muted-foreground"><HoldChip hold={row.hold} /> <span className="ml-1">{row.hold.reason}</span></p>}
       {/* Which walls were used and who decided (#1202), with GV's field-cut rule behind the "i". */}
       <WallsLine row={row} />
       <DrawnLengthNote row={row} />
       <CountertopStrip row={row} />
     </>
+  );
+}
+
+/** The cases' own needed overalls when they disagree (#1329), in full: the cell lists only the values. */
+function NeededPerCase({ row }: { row: CountertopResult }) {
+  const across = neededAcrossWalls(row);
+  if (across?.kind !== 'mixed') return null;
+  return (
+    <div data-slot="needed-per-wall-case" className="flex flex-col gap-1 text-xs text-muted-foreground">
+      <p>Needed for each wall case, as the check recorded it:</p>
+      <NeededEachCase cases={across.cases} />
+    </div>
   );
 }
 

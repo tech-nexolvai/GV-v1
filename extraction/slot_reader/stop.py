@@ -13,6 +13,9 @@ refused or never sent is noted with its page and what kind of question it was, s
 tell a page whose own reading is missing (listed as unread) from a page read in full whose later
 questions were not asked (kept, with a hold that names the budget).
 
+The try-again batches (#1309) have a `ReadingStop` of their own: a try refused for its allowance
+stops only the tries, never the main reading, and `missed` tells which tries were not sent.
+
 Thread-safe: the reader threads trip it and note questions; the stage reads it after the batch.
 Pure apart from its lock. Verification: `tests/extraction/slot_reader/test_reading_stop.py`.
 """
@@ -107,6 +110,12 @@ class ReadingStop:
     def unasked_count(self) -> int:
         with self._lock:
             return len(self._unasked)
+
+    def missed(self, job: object) -> bool:
+        """Whether this question was refused or never sent (#1309: a try the allowance stopped)."""
+        entry = _entry(job)
+        with self._lock:
+            return entry in self._refused or entry in self._unasked
 
     def pages_left(self) -> frozenset[int]:
         """Every page (by index) whose own reading (row or dimension question) was refused or
