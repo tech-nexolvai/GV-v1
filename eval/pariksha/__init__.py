@@ -53,6 +53,15 @@ the tests use invented ones.
   `{"no_label": true}`: the span has no printed label of its own.
 * **Row answers**: `{"box": n}` (the numbered box that is the countertop row), or
   `{"kind": "no_countertop"}` / `{"kind": "not_among_boxes"}`.
+* **Rows by geometry (#1321)**: `{"row_at": {"y": pt, "x0": pt, "x1": pt}}` names the line itself
+  (page points, as code's row candidates hold them), with the key's stated
+  `"row_tolerance_pt"` (more than 0, at most 5). It needs no `picture_sha256`: on whatever picture
+  a question showed, the run's box map (`eval/pariksha/row_geometry.py`, proven by drawing the
+  stored picture again byte for byte) says which box is that line, so a re-numbered picture is
+  still scored. "No countertop" needs no picture either; a box number or "not among the boxes"
+  does.
+* **`confirmed_by`** (optional, any case): who confirmed the answer by looking at it (e.g. on the
+  line check page, `scripts/pariksha_row_review_page.py`); absent while it is only the keyer's.
 * **Vastu** reuses the architect key's own page shape (`eval/architect_reader.key_pages`):
   `{"format": "pariksha-key/1", "agent": "vastu", "name", "version", "document_sha256": optional,
   "pages": [{"page": 1, "arch_widths": [{"text": "...", "in": 24}]}]}`. The document is named by
@@ -106,6 +115,9 @@ Scorecards of different keys (key hash) or, for Vastu, of different documents ar
 all, nor is one with unreadable answers. The script exits 0 on ACCEPT, 1 on REJECT and 2 on any
 refusal. A scorecard's code version is the stored run's commit or the word `unrecorded`, which is
 flagged as not attributable.
+
+The countertop-level scorecard (`eval/pariksha/countertops.py`, #1321) counts, per keyed
+countertop, whether the app decided it by itself and whether that decision was right.
 
 Source: issue #1219 · Verification: `tests/eval/test_pariksha_*.py`,
 `tests/scripts/test_pariksha_scorecard.py`
