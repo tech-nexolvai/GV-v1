@@ -60,6 +60,7 @@ from tests.workflow.test_reading_parts import REGION, _confirmed
 from tests.workflow.test_stages import _publish_rulebook
 from verdict.outcomes import Outcome
 from vocabulary.part_kinds import PartKind
+from workflow.countertop_runs import withdraw_countertop_run
 from workflow.depth_evidence import (
     CONFIRM_ONLY,
     DEPTH_READER_FLAG,
@@ -670,3 +671,190 @@ def test_no_sink_note_without_a_depth_reading(session: Session, store: LocalStor
 
 def test_the_sink_note_reads_the_vendor_s_own_text_layers_only() -> None:
     assert VENDOR_TEXT_EXTRACTORS == _PRINTED_CODE_EXTRACTORS
+
+
+# -- review of #1296: a person's confirmation of one countertop's depth never passes the package ---
+
+
+def _two_countertops(
+    session: Session, store: LocalStore
+) -> tuple[_Set, Any, list[ObservationCandidate]]:
+    """The reviewer's case: two countertops, each alone on its drawing, each with a depth only its
+    drawn length checks (25" and 30"); cabinet depth 24" and overhang 1" set for the job; no
+    countertop in scope, so the five checks run once for the whole package."""
+    sheet = _Set(session, store)
+    first = sheet.reading(
+        CT010, 25, CONFIRM_ONLY, link=sheet.link(), confirmed_by="drawn-length-only"
+    )
+    proposal, _item, page = _countertop(sheet, 1)
+    sheet.page = page
+    second = sheet.reading(
+        CT010, 30, CONFIRM_ONLY, link=sheet.link(proposal), confirmed_by="drawn-length-only"
+    )
+    for row in (first, second):
+        _crop(session, store, row)
+    _publish_rulebook(session)
+    session.commit()
+    client = _client(session, store, sheet)
+    saved = client.post(
+        f"{_base(sheet)}/measurements",
+        json={
+            "parameters": [
+                {"name": name, "value": value, "scope": "project", "reference": "Synthetic spec"}
+                for name, value in (("cabinet_depth", '24"'), ("countertop_overhang", '1"'))
+            ]
+        },
+    )
+    assert saved.status_code == 201, saved.text
+    return sheet, client, [first, second]
+
+
+def _whole_package_run(sheet: _Set, store: LocalStore) -> None:
+    DatabaseStages(
+        store, discriminators={"wall_config": "back_left_right"}, depth_reader=True
+    ).run_checks(sheet.session, sheet.revision.id)
+    sheet.session.commit()
+
+
+def test_confirming_one_countertop_s_depth_never_passes_the_whole_package(
+    session: Session, store: LocalStore
+) -> None:
+    sheet, client, (first, _second) = _two_countertops(session, store)
+    _whole_package_run(sheet, store)
+
+    confirmed = client.post(
+        f"{_base(sheet)}/candidates/{first.id}/confirm", json={"semantic_type": CT010}
+    )
+    assert confirmed.status_code == 201, confirmed.text
+    _whole_package_run(sheet, store)
+
+    whole = _findings(client, sheet)[("CT-DEPTH-001", None)]
+    assert whole["outcome"] == Outcome.REVIEW_REQUIRED.value, whole
+    assert "Countertop 1 on page 1" in whole["reason"], whole["reason"]
+    assert "never for the whole package" in whole["reason"]
+
+
+def test_confirming_from_the_measurements_list_never_passes_the_whole_package(
+    session: Session, store: LocalStore
+) -> None:
+    sheet, client, (first, _second) = _two_countertops(session, store)
+    _whole_package_run(sheet, store)
+
+    # The Measurements page lists the reading for a person to confirm, and confirms it the same way.
+    listed = client.get(f"{_base(sheet)}/candidates", params={"page_number": 1})
+    assert listed.status_code == 200, listed.text
+    assert str(first.id) in {c["candidate_id"] for c in listed.json()["candidates"]}
+    confirmed = client.post(
+        f"{_base(sheet)}/candidates/{first.id}/confirm", json={"semantic_type": CT010}
+    )
+    assert confirmed.status_code == 201, confirmed.text
+    _whole_package_run(sheet, store)
+
+    found = _findings(client, sheet)
+    assert found[("CT-DEPTH-001", None)]["outcome"] != Outcome.PASS.value
+    assert found[("CT-BACK-OFFSET-MIN-001", None)]["outcome"] != Outcome.PASS.value
+
+
+def test_the_whole_package_card_never_offers_confirm(session: Session, store: LocalStore) -> None:
+    sheet, client, _rows = _two_countertops(session, store)
+    _whole_package_run(sheet, store)
+
+    whole = _findings(client, sheet)[("CT-DEPTH-001", None)]
+
+    assert [(line["value"], line["state"]) for line in whole["depth_readings"]] == [
+        ('25"', "to_confirm"),
+        ('30"', "to_confirm"),
+    ]
+    assert all(line["can_confirm"] is False for line in whole["depth_readings"])
+
+
+def test_a_shared_drawing_s_reading_is_never_offered_for_confirming(
+    session: Session, store: LocalStore
+) -> None:
+    sheet = _Set(session, store)
+    _confirmed(session, sheet.view, PartKind.COUNTERTOP, "0.10", "0.15")
+    row = sheet.reading(
+        CT010, 24, CONFIRM_ONLY, link=sheet.link(), confirmed_by="drawn-length-only"
+    )
+    _crop(session, store, row)
+
+    lines = _mine(_checked(sheet, store), sheet, "CT-DEPTH-001")["depth_readings"]
+
+    assert lines and all(line["can_confirm"] is False for line in lines)
+
+
+def _reread(sheet: _Set, inches: int) -> ObservationCandidate:
+    """The same dimension read again, by a newer reading tied to the same countertop."""
+    link = sheet.session.scalars(
+        select(ItemViewLink).where(ItemViewLink.part_proposal_id == sheet.proposal)
+    ).first()
+    sheet.rerun()
+    row = sheet.reading(
+        CT010,
+        inches,
+        CONFIRM_ONLY,
+        link=link,
+        confirmed_by="drawn-length-only",
+        view="p0:v1.1",
+    )
+    return row
+
+
+def test_a_person_s_confirmation_carries_over_a_re_read_on_the_card(
+    session: Session, store: LocalStore
+) -> None:
+    from app.evidence.confirm import confirm_candidate_type
+
+    sheet = _Set(session, store)
+    first = sheet.reading(
+        CT010, 24, CONFIRM_ONLY, link=sheet.link(), confirmed_by="drawn-length-only", view="p0:v1.1"
+    )
+    confirm_candidate_type(session, candidate_id=first.id, semantic_type=CT010, confirmed_by=ACTOR)
+    _reread(sheet, 24)
+
+    (line,) = _mine(_checked(sheet, store), sheet, "CT-DEPTH-001")["depth_readings"]
+
+    assert (line["state"], line["value"], line["can_confirm"]) == ("confirmed", '24"', False)
+
+
+def test_a_re_read_with_another_number_than_a_person_confirmed_is_held_on_the_card(
+    session: Session, store: LocalStore
+) -> None:
+    from app.evidence.confirm import confirm_candidate_type
+
+    sheet = _Set(session, store)
+    first = sheet.reading(
+        CT010, 24, CONFIRM_ONLY, link=sheet.link(), confirmed_by="drawn-length-only", view="p0:v1.1"
+    )
+    confirm_candidate_type(session, candidate_id=first.id, semantic_type=CT010, confirmed_by=ACTOR)
+    _reread(sheet, 26)
+
+    (line,) = _mine(_checked(sheet, store), sheet, "CT-DEPTH-001")["depth_readings"]
+
+    assert (line["state"], line["can_confirm"]) == ("held", False)
+    assert line["reason"] == (
+        "a person confirmed 24\" for this countertop's countertop depth on an earlier reading of "
+        'this view, and the new reading says 26": held for a person.'
+    )
+
+
+def test_the_job_s_settings_are_asked_once_not_on_every_countertop_s_card(
+    session: Session, store: LocalStore
+) -> None:
+    sheet = _Set(session, store)
+    _proposal, other, _page = _countertop(sheet, 1)
+    _publish_rulebook(session)
+    for item in (sheet.item, other):
+        withdraw_countertop_run(session, countertop_item_id=item, actor=ACTOR)
+    DatabaseStages(
+        store, discriminators={"wall_config": "back_left_right"}, depth_reader=True
+    ).run_checks(session, sheet.revision.id)
+    session.commit()
+
+    found = _findings(_client(session, store, sheet), sheet)
+
+    asked = [
+        [need["key"] for need in found[("CT-DEPTH-001", str(item))]["missing_inputs"]]
+        for item in (sheet.item, other)
+    ]
+    assert sorted(asked) == [[], ["cabinet_depth", "countertop_overhang"]]
