@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 from collections.abc import Iterator, Mapping
@@ -66,12 +67,15 @@ LOCAL_STACK_PORT = 5433
 #: libpq's port when neither the connection nor `PGPORT` gives one.
 DEFAULT_PORT = "5432"
 
+#: A port written as a plain number: ASCII digits only (`str.isdigit` would also take other scripts' digits).
+_PORT = re.compile(r"[0-9]+")
+
 #: The worker ids pytest-xdist hands out: `gw0`, `gw1`, ... Anything else is refused, which also keeps
 #: the id safe to put inside a quoted database name.
 _WORKER_ID = re.compile(r"gw[0-9]+")
 
 
-def _effective_ports(url: URL, environ: Mapping[str, str]) -> list[str]:
+def _effective_ports(url: URL, environ: Mapping[str, str]) -> list[int]:
     """Every port a connection to `url` could reach, worked out the way the driver and libpq do (#1293).
 
     The port before the database name is only one of the places a port can come from. SQLAlchemy hands
@@ -79,10 +83,14 @@ def _effective_ports(url: URL, environ: Mapping[str, str]) -> list[str]:
     hosts give several ports); and a connection with no port at all takes `PGPORT`, then 5432. So the
     check reads the very arguments SQLAlchemy would pass, rather than `url.port`.
 
-    Two things it refuses rather than follow: a connection service (`?service=` or `PGSERVICE`), whose
-    file can set the port and the database where nothing here can see them, and a database named again
-    in the query string (`?dbname=`), which would replace the name the prefix rule checked. Neither is
-    used by CI or by the local scratch databases.
+    Each port is compared as a number, and only a plain one (digits) is accepted: libpq reads `+5433` and
+    `05433` as 5433 as well, so a text comparison is not enough (#1300's review).
+
+    What it refuses rather than follow: a connection service (`?service=` or `PGSERVICE`), whose file can
+    set the port and the database where nothing here can see them; any database named in the query
+    string (`?dbname=`), which would replace the worker's own name; and a host that still carries a port
+    SQLAlchemy did not split off (`?host=name:+5433`). None of these is used by CI or by the local
+    scratch databases.
     """
     _args, params = url.get_dialect()().create_connect_args(url)
     if params.get("service") or environ.get("PGSERVICE"):
@@ -90,18 +98,52 @@ def _effective_ports(url: URL, environ: Mapping[str, str]) -> list[str]:
             "DATABASE_URL uses a connection service (service= or PGSERVICE), which can set the port and "
             "the database out of sight of this check; give the host, port and database in the URL instead"
         )
-    if str(params.get("dbname", url.database)) != url.database:
+    if "dbname" in url.query:
+        # Any `?dbname=`, even the same name: the worker's own name is set as the URL's database, and
+        # the query string would override it, putting every worker in one database (#1300's review).
         raise ValueError(
-            f"DATABASE_URL's query string names the database {params['dbname']!r}, not "
-            f"{url.database!r}; refusing to create per-worker databases beside it"
+            f"DATABASE_URL's query string names the database again (dbname={url.query['dbname']!r}), "
+            "which overrides the one the URL names; refusing to create per-worker databases beside it"
         )
+    for host in str(params.get("host") or "").split(","):
+        host = host.strip()
+        # SQLAlchemy splits `?host=name:port` only when the port is digits; `name:+5433` stays one host
+        # name that still carries a port. An IPv6 address or a socket directory may hold a colon.
+        if ":" in host and not host.startswith("/") and not _is_ip_address(host):
+            raise ValueError(
+                f"DATABASE_URL's host {host!r} carries a port that is not a plain port number; "
+                "give the port as digits only"
+            )
     default = [
-        port.strip() or DEFAULT_PORT for port in (environ.get("PGPORT") or DEFAULT_PORT).split(",")
+        _plain_port(port) if port.strip() else int(DEFAULT_PORT)
+        for port in (environ.get("PGPORT") or DEFAULT_PORT).split(",")
     ]
-    ports: list[str] = []
+    ports: list[int] = []
     for port in str(params.get("port") or "").split(","):
-        ports.extend([port.strip()] if port.strip() else default)
+        ports.extend([_plain_port(port)] if port.strip() else default)
     return ports
+
+
+def _plain_port(port: str) -> int:
+    """`port` as a number, if it is written as digits only (#1300's review).
+
+    libpq reads `+5433` and `05433` as 5433 too, so a text comparison misses them. Leading zeros are a
+    plain number and compared as one; a sign, a letter or anything else is refused rather than guessed.
+    """
+    if not _PORT.fullmatch(port.strip()):
+        raise ValueError(
+            f"{port!r} is not a plain port number (digits only); refusing it rather than guessing "
+            f"whether it reaches port {LOCAL_STACK_PORT}"
+        )
+    return int(port.strip())
+
+
+def _is_ip_address(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
 
 
 def worker_database_url(url: URL, worker: str, environ: Mapping[str, str] = os.environ) -> URL:
@@ -132,7 +174,7 @@ def worker_database_url(url: URL, worker: str, environ: Mapping[str, str] = os.e
             f"{own!r} is longer than PostgreSQL's {MAX_DATABASE_NAME_LENGTH}-byte limit, which would cut "
             "it short; use a shorter test database name"
         )
-    if any(port.lstrip("0") == str(LOCAL_STACK_PORT) for port in _effective_ports(url, environ)):
+    if LOCAL_STACK_PORT in _effective_ports(url, environ):
         raise ValueError(
             f"DATABASE_URL reaches port {LOCAL_STACK_PORT}, the local stack's database; "
             "per-worker test databases are never created there"
@@ -247,7 +289,8 @@ def _create_cluster_wide_objects(base: URL, own: URL, *, lock_timeout_seconds: f
                     f"{base.database!r}, which one pytest-xdist worker at a time holds while it sets up "
                     "the server-wide roles; another run's worker seems stuck holding it. Find it with "
                     f"SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND objid = {CLUSTER_SETUP_LOCK} "
-                    "AND granted, then end that run (or pg_terminate_backend(pid))"
+                    "AND granted AND database = (SELECT oid FROM pg_database WHERE "
+                    f"datname = '{base.database}'), then end that run (or pg_terminate_backend(pid))"
                 ) from error
             try:
                 with admin.connect() as connection:

@@ -25,10 +25,10 @@ every other database test, and run on CI.
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import importlib.util
 import os
-import re
 import subprocess
 import sys
 import threading
@@ -98,6 +98,12 @@ def test_the_local_stack_port_is_refused_even_for_a_test_name() -> None:
         "postgresql+psycopg://gv:gv@localhost/gvtest_7?host=localhost:5433",
         # ... including one of several hosts.
         "postgresql+psycopg://gv:gv@/gvtest_7?host=elsewhere:5434&host=localhost:5433",
+        # libpq reads a port with a sign or leading zeros as the same number (#1300's review).
+        "postgresql+psycopg://gv:gv@localhost:5434/gvtest_7?port=%2B5433",
+        "postgresql+psycopg://gv:gv@localhost:5434/gvtest_7?port=05433",
+        # SQLAlchemy leaves `name:+5433` unsplit, as a host name that still carries the port.
+        "postgresql+psycopg://gv:gv@localhost/gvtest_7?host=localhost:%2B5433",
+        "postgresql+psycopg://gv:gv@localhost/gvtest_7?host=localhost:%2B05433",
     ],
 )
 def test_the_local_stack_port_is_refused_when_the_query_string_gives_it(raw_url: str) -> None:
@@ -106,12 +112,22 @@ def test_the_local_stack_port_is_refused_when_the_query_string_gives_it(raw_url:
         worker_database_url(make_url(raw_url), "gw0", NO_ENVIRONMENT)
 
 
-def test_the_local_stack_port_is_refused_when_pgport_gives_it() -> None:
+@pytest.mark.parametrize("pgport", ["5433", "+5433", "05433", " 5433 "])
+def test_the_local_stack_port_is_refused_when_pgport_gives_it(pgport: str) -> None:
     """With no port in the URL, libpq takes `PGPORT`; that is the port the connection would use."""
     url = make_url("postgresql+psycopg://gv:gv@localhost/gvtest_7")
 
     with pytest.raises(ValueError, match="5433"):
-        worker_database_url(url, "gw0", {"PGPORT": "5433"})
+        worker_database_url(url, "gw0", {"PGPORT": pgport})
+
+
+@pytest.mark.parametrize("port", ["+5434", "5434x", "0x152D", "-5434", "５４３４"])
+def test_a_port_that_is_not_a_plain_number_is_refused(port: str) -> None:
+    """Only digits are compared; a form libpq might still read as a number is refused, not guessed."""
+    url = make_url("postgresql+psycopg://gv:gv@localhost/gvtest_7")
+
+    with pytest.raises(ValueError, match="plain port number"):
+        worker_database_url(url, "gw0", {"PGPORT": port})
 
 
 def test_pgport_does_not_matter_when_the_url_names_a_port() -> None:
@@ -137,11 +153,16 @@ def test_a_connection_service_is_refused(raw_url: str, environ: dict[str, str]) 
         worker_database_url(make_url(raw_url), "gw0", environ)
 
 
-def test_a_database_named_again_in_the_query_string_is_refused() -> None:
-    """`?dbname=` overrides the name the prefix rule checked, so the connection would go elsewhere."""
-    url = make_url("postgresql+psycopg://gv:gv@localhost:5434/gvtest_7?dbname=live_review")
+@pytest.mark.parametrize("dbname", ["live_review", "gvtest_7", "gvtest_7_gw0"])
+def test_a_database_named_again_in_the_query_string_is_refused(dbname: str) -> None:
+    """`?dbname=` overrides the database the URL names, so every worker's URL would reach that one.
 
-    with pytest.raises(ValueError, match="live_review"):
+    A different name escapes the prefix rule; even the same name would put all the workers in one
+    database, because the worker's own name goes where the query string then overrides it.
+    """
+    url = make_url(f"postgresql+psycopg://gv:gv@localhost:5434/gvtest_7?dbname={dbname}")
+
+    with pytest.raises(ValueError, match="dbname"):
         worker_database_url(url, "gw0", NO_ENVIRONMENT)
 
 
@@ -230,14 +251,54 @@ def test_the_postgres_fixture_is_loaded_under_one_name(pytestconfig: pytest.Conf
     assert "postgres_fixture" not in sys.modules
 
 
+def _declared_plugins(source: str) -> list[str]:
+    """Every string in a `pytest_plugins = ...` anywhere in a module, however it is laid out."""
+    names: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        else:
+            continue
+        if any(
+            isinstance(target, ast.Name) and target.id == "pytest_plugins" for target in targets
+        ):
+            names.extend(
+                constant.value
+                for constant in ast.walk(value)
+                if isinstance(constant, ast.Constant) and isinstance(constant.value, str)
+            )
+    return names
+
+
+def test_the_plugin_scan_reads_any_layout() -> None:
+    """Split over lines, inside an `if`, annotated or a bare string: all are read."""
+    source = (
+        "import sys\n"
+        "pytest_plugins: tuple[str, ...] = ()\n"
+        "if sys:\n"
+        "    pytest_plugins = (\n"
+        '        "other_plugin",\n'
+        '        "postgres_fixture",\n'
+        "    )\n"
+        'pytest_plugins = "tests.app.postgres_fixture"\n'
+    )
+
+    assert sorted(_declared_plugins(source)) == [
+        "other_plugin",
+        "postgres_fixture",
+        "tests.app.postgres_fixture",
+    ]
+
+
 def test_every_module_names_the_postgres_fixture_the_same_way() -> None:
     """A module that registered the bare name would bring the second copy back."""
-    declared = re.compile(r"^pytest_plugins\b.*$", re.MULTILINE)
     odd = [
-        f"{path.relative_to(REPO_ROOT)}: {line}"
+        f"{path.relative_to(REPO_ROOT)}: {name}"
         for path in sorted((REPO_ROOT / "tests").rglob("*.py"))
-        for line in declared.findall(path.read_text(encoding="utf-8"))
-        if "postgres_fixture" in line and f'"{FIXTURE_PLUGIN}"' not in line
+        for name in _declared_plugins(path.read_text(encoding="utf-8"))
+        if "postgres_fixture" in name and name != FIXTURE_PLUGIN
     ]
 
     assert not odd, odd
@@ -446,6 +507,8 @@ def test_a_worker_gives_up_on_a_setup_lock_held_too_long(postgres_engine: Engine
                 holder.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": CLUSTER_SETUP_LOCK})
         assert len(outcome) == 1 and isinstance(outcome[0], TimeoutError), outcome
         assert f"advisory lock {CLUSTER_SETUP_LOCK}" in str(outcome[0])
+        # The hint finds the holder in this run's base database only: lock keys are per database.
+        assert f"datname = '{base.database}'" in str(outcome[0])
         assert not _exists(admin, own.database)
     finally:
         worker.join(timeout=240)

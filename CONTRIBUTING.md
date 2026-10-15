@@ -333,9 +333,10 @@ the same locally; without `-n`, nothing about a run changes.
   (`tests/conftest.py`).
 - **Only a test database.** The name must start with `gv_test` or `gvtest`, hold only `a-z`, `0-9` and
   `_`, and stay within 63 characters with the `_gw<N>` suffix. The port must not be 5433, the local
-  stack's database, wherever it is given (in the URL, its query string or `PGPORT`); a connection
-  service (`service=` or `PGSERVICE`) is refused. Anything else stops the run before a test starts. So
-  point it at a scratch database, for example:
+  stack's database, wherever it is given (in the URL, its query string or `PGPORT`), and every port must
+  be digits only. A connection service (`service=` or `PGSERVICE`) and a `dbname=` in the query string
+  are refused. Anything else stops the run before a test starts. So point it at a scratch database, for
+  example:
 
   ```bash
   createdb -h localhost -p <port> -U <user> gvtest_mine
