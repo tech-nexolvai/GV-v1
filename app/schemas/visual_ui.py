@@ -124,6 +124,13 @@ class WallCaseOut(BaseModel):
         description="What the overall should be in this case, as the engine worked it out."
     )
     outcome: Outcome
+    difference: ExactValueOut | None = Field(
+        default=None,
+        description=(
+            "The vendor's printed overall minus this case's needed overall, from the two recorded "
+            "numbers (#1329): below zero, the vendor's overall is short; above, it is over."
+        ),
+    )
 
 
 class WallCasesOut(BaseModel):
@@ -144,6 +151,21 @@ class WallCasesOut(BaseModel):
     )
     field_cut_per_end: ExactValueOut | None = Field(
         default=None, description="The project's field cut per wall end the cases used."
+    )
+    needed_least: ExactValueOut | None = Field(
+        default=None,
+        description="The smallest of the cases' needed overalls, as recorded (#1329).",
+    )
+    needed_most: ExactValueOut | None = Field(
+        default=None,
+        description="The largest of the cases' needed overalls, as recorded (#1329).",
+    )
+    closest_gap: ExactValueOut | None = Field(
+        default=None,
+        description=(
+            "How near the vendor's printed overall comes to any case's needed overall: the "
+            "smallest size of the cases' differences, never below zero (#1329)."
+        ),
     )
     unavailable_reason: str | None = None
 

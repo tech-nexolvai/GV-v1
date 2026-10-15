@@ -8,6 +8,7 @@ wrong with no end walls (41") or walls at both ends (43").
 from __future__ import annotations
 
 from collections.abc import Iterator
+from fractions import Fraction
 from pathlib import Path
 from uuid import UUID
 
@@ -292,3 +293,71 @@ def test_the_reviewers_choice_is_named_in_the_results_line(
     result = _result(session, package_id, anchors[0])
     assert result.wall_layout.line == "wall at the left end — chosen by synthetic reviewer"
     assert result.field_cut_count == 1
+
+
+def _shown(value):  # type: ignore[no-untyped-def]
+    return None if value is None else value.display
+
+
+def test_wrong_for_every_wall_case_records_the_needed_range_and_the_closest_gap(
+    session: Session, tmp_path: Path
+) -> None:
+    """#1329: the results table shows what was needed and how far off, with no walls set. Every
+    number is the recorded cases' own: 41", 42" or 43" needed, the vendor wrote 50"."""
+    _project_id, package_id, anchors = _sealed(
+        session, wall_source="readers", field_cuts=1, overall_override=50
+    )
+    _run_current_checks(session, package_id, tmp_path)
+    result = _result(session, package_id, anchors[0])
+    assert result.expected_total is None and result.delta is None, "no one wall case applied"
+    cases = result.wall_cases
+    assert [(_shown(case.expected_total), _shown(case.difference)) for case in cases.cases] == [
+        ('43"', '7"'),
+        ('42"', '8"'),
+        ('42"', '8"'),
+        ('41"', '9"'),
+        ('41"', '9"'),
+    ]
+    # The differences are the recorded numbers' own: the vendor's overall minus each case's needed.
+    vendor = Fraction(int(cases.vendor_wrote.numerator), int(cases.vendor_wrote.denominator))
+    for case in cases.cases:
+        needed = Fraction(int(case.expected_total.numerator), int(case.expected_total.denominator))
+        difference = Fraction(int(case.difference.numerator), int(case.difference.denominator))
+        assert difference == vendor - needed
+    assert (_shown(cases.needed_least), _shown(cases.needed_most)) == ('41"', '43"')
+    assert _shown(cases.closest_gap) == '7"'
+
+
+def test_mixed_wall_cases_record_each_cases_difference(session: Session, tmp_path: Path) -> None:
+    """Right with a wall at one end (42"), wrong otherwise: each case keeps its own signed
+    difference (short below zero), and the closest gap is nothing."""
+    _project_id, package_id, anchors = _sealed(session, wall_source="readers", field_cuts=1)
+    _run_current_checks(session, package_id, tmp_path)
+    cases = _result(session, package_id, anchors[0]).wall_cases
+    assert [(case.outcome, _shown(case.difference)) for case in cases.cases] == [
+        ("FAIL", '-1"'),
+        ("PASS", '0"'),
+        ("PASS", '0"'),
+        ("FAIL", '1"'),
+        ("FAIL", '1"'),
+    ]
+    assert (_shown(cases.needed_least), _shown(cases.needed_most)) == ('41"', '43"')
+    assert _shown(cases.closest_gap) == '0"'
+
+
+def test_walls_set_give_no_range(session: Session, tmp_path: Path) -> None:
+    project_id, package_id, anchors = _sealed(session, wall_source="readers", field_cuts=1)
+    review_slot_row(
+        _principal(project_id),
+        _principal(project_id),
+        session,
+        project_id,
+        package_id,
+        anchors[0],
+        SlotRowReviewIn(wall_config="back_only"),
+    )
+    _run_current_checks(session, package_id, tmp_path)
+    result = _result(session, package_id, anchors[0])
+    assert _shown(result.expected_total) == '41"' and _shown(result.delta) == '1"'
+    assert result.wall_cases.cases == ()
+    assert result.wall_cases.needed_least is None and result.wall_cases.closest_gap is None

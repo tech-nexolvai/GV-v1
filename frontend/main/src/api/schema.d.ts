@@ -7927,6 +7927,8 @@ export interface components {
          * @description One wall case the width check was run for, as the verdict engine recorded it (#1202).
          */
         WallCaseOut: {
+            /** @description The vendor's printed overall minus this case's needed overall, from the two recorded numbers (#1329): below zero, the vendor's overall is short; above, it is over. */
+            difference?: components["schemas"]["ExactValueOut"] | null;
             /** @description What the overall should be in this case, as the engine worked it out. */
             expected_total: components["schemas"]["ExactValueOut"] | null;
             /**
@@ -7958,8 +7960,14 @@ export interface components {
              * @default []
              */
             cases: components["schemas"]["WallCaseOut"][];
+            /** @description How near the vendor's printed overall comes to any case's needed overall: the smallest size of the cases' differences, never below zero (#1329). */
+            closest_gap?: components["schemas"]["ExactValueOut"] | null;
             /** @description The project's field cut per wall end the cases used. */
             field_cut_per_end?: components["schemas"]["ExactValueOut"] | null;
+            /** @description The smallest of the cases' needed overalls, as recorded (#1329). */
+            needed_least?: components["schemas"]["ExactValueOut"] | null;
+            /** @description The largest of the cases' needed overalls, as recorded (#1329). */
+            needed_most?: components["schemas"]["ExactValueOut"] | null;
             /** @description The row's pieces added up, as the engine worked it out. */
             pieces_add_up_to?: components["schemas"]["ExactValueOut"] | null;
             /** Unavailable Reason */

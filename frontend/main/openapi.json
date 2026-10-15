@@ -12225,6 +12225,17 @@
       "WallCaseOut": {
         "description": "One wall case the width check was run for, as the verdict engine recorded it (#1202).",
         "properties": {
+          "difference": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExactValueOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The vendor's printed overall minus this case's needed overall, from the two recorded numbers (#1329): below zero, the vendor's overall is short; above, it is over."
+          },
           "expected_total": {
             "anyOf": [
               {
@@ -12294,6 +12305,17 @@
             "title": "Cases",
             "type": "array"
           },
+          "closest_gap": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExactValueOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How near the vendor's printed overall comes to any case's needed overall: the smallest size of the cases' differences, never below zero (#1329)."
+          },
           "field_cut_per_end": {
             "anyOf": [
               {
@@ -12304,6 +12326,28 @@
               }
             ],
             "description": "The project's field cut per wall end the cases used."
+          },
+          "needed_least": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExactValueOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The smallest of the cases' needed overalls, as recorded (#1329)."
+          },
+          "needed_most": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExactValueOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The largest of the cases' needed overalls, as recorded (#1329)."
           },
           "pieces_add_up_to": {
             "anyOf": [
