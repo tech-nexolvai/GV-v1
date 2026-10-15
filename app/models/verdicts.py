@@ -377,6 +377,9 @@ class OutputArtifactKind(StrEnum):
     FINDINGS_WORKBOOK = "findings_workbook"
     FINDINGS_PDF = "findings_pdf"
     REDLINE = "redline"
+    DRAFT_REDLINE = "draft_redline"
+    """The draft cloud PDF a reviewer asks for before sign-off (#1340), with a "DRAFT - not
+    signed off" banner on every page. Never part of a signed bundle, and never served as one."""
 
 
 OUTPUT_ARTIFACT_KIND_VALUES = _sql_values(OutputArtifactKind)

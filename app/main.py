@@ -143,6 +143,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         depth_again,
         distribution,
         documents,
+        draft_cloud,
         drawing_parts,
         drawing_views,
         finding_chain,
@@ -203,6 +204,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # corrected or taken back by a person, one part at a time (#913).
     app.include_router(reading_parts.router, prefix=API_PREFIX)
     app.include_router(approvals.router, prefix=API_PREFIX)
+    # The draft cloud PDF any time before sign-off (#1340): queued, never rendered here.
+    app.include_router(draft_cloud.router, prefix=API_PREFIX)
     app.include_router(findings.router, prefix=API_PREFIX)
     app.include_router(visual_countertops.router, prefix=API_PREFIX)
     # Each confirmed countertop's comparison with the architect, read by countertop (#1273): it

@@ -16,7 +16,7 @@ import hashlib
 import json
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from io import BytesIO
 from uuid import UUID
@@ -52,7 +52,15 @@ from storage.store import ArtifactStore, StoredArtifact
 from verdict.outcomes import Outcome, Severity, is_decision
 from workflow.changed_values import ChangedValues
 
-__all__ = ["RedlineOutput", "render_evidence_grounded_redline"]
+__all__ = [
+    "NOT_CHECKED",
+    "RedlineOutput",
+    "render_draft_redline",
+    "render_evidence_grounded_redline",
+]
+
+#: How a result nothing checked yet is printed on the draft cloud PDF (#1340, Anant 2026-10-15).
+NOT_CHECKED = "NOT CHECKED"
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +129,47 @@ def render_evidence_grounded_redline(
             ),
             signed_review=signed_review,
             countertop_labels=countertop_labels,
+        ),
+        None,
+    )
+
+
+def render_draft_redline(
+    session: Session,
+    store: ArtifactStore,
+    *,
+    package_revision_id: UUID,
+    findings: Sequence[tuple[FindingRow, CheckRun, str, str]],
+    not_checked: frozenset[UUID] = frozenset(),
+    changed_values: ChangedValues | None = None,
+) -> RedlineOutput:
+    """The draft cloud PDF's drawing pages, before sign-off (#1340): always INTERNAL mode.
+
+    The same placement rule as the signed redline: a mark only from a typed, stored location. Unlike
+    it, a draft is made even when nothing can be placed, because its listing pages still account
+    for every result, and a reviewer asking "what will be clouded?" deserves that answer too.
+
+    A result in `not_checked` is printed with its reason after `NOT CHECKED: `, so the draft never
+    shows a check that did not run as if it had been judged. The stored verdict is not changed.
+    """
+    if not findings:
+        return RedlineOutput(None, "this revision has no live findings")
+    references = _typed_references(session, findings)
+    package = _source_package(session, store, package_revision_id)
+    if package is None:
+        return RedlineOutput(
+            None,
+            "the source drawing pages or their recorded transforms are unavailable for redline placement",
+        )
+    rendered = []
+    for row, run, rule_id, snapshot_id in findings:
+        finding = _stored_finding(row, run, rule_id, snapshot_id, references.get(row.id, ()))
+        if row.id in not_checked:
+            finding = replace(finding, reason=f"{NOT_CHECKED}: {finding.reason}")
+        rendered.append(finding)
+    return RedlineOutput(
+        render_redline(
+            package, tuple(rendered), ReportMode.INTERNAL, store, changed_values=changed_values
         ),
         None,
     )
