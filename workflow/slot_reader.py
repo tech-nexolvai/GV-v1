@@ -2089,7 +2089,9 @@ def read_slot_pages(
                 key = _key(page.page_index, owner.index, position, row_key)
                 box_px = _pixels(page.rows, label.box, page.rendered)
                 crop_px = _pixels(page.rows, label.crop, page.rendered)
-                ink = None if page.ink is None else page.ink.at(crop_px)
+                # The label's own box says whether GV's tick is on the number or only beside it
+                # (#1335); it changes only the hold's words.
+                ink = None if page.ink is None else page.ink.at(crop_px, label=box_px)
                 crops[key] = (box_px, crop_px, ink)
                 if held:
                     continue

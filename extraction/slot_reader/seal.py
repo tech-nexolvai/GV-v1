@@ -50,7 +50,7 @@ from extraction.slot_reader.runs import Lane, PlannedLabel
 from units.measurement import Measurement
 from units.normalise import fold_fractions
 from vocabulary.cabinet_codes import is_cabinet_code, is_finish_code
-from vocabulary.reviewer_reasons import GV_OTHER_MARK_FLAG, GV_TICK_FLAG
+from vocabulary.reviewer_reasons import GV_OTHER_MARK_FLAG, GV_TICK_BESIDE_FLAG, GV_TICK_FLAG
 
 __all__ = [
     "STACKED_BY_CODE",
@@ -93,6 +93,11 @@ _ODD_FRACTION: Final = "fraction-not-drawn"
 _MM_INCH_DISAGREE: Final = "mm-inch-disagree"
 #: A number GV's green tick touches, and no other GV ink (#1198): held like any GV ink, and said so.
 GV_TICK_REASON: Final = "GV ticked this number (round 2); GV's marks are never read as a value"
+#: The same, where the tick touches neither the number's box nor a digit, only the crop's margin
+#: (#1335): it may be GV's tick for something else, so the words claim only that it is beside.
+GV_TICK_BESIDE_REASON: Final = (
+    "GV's tick is beside this number (round 2); GV's marks are never read as a value"
+)
 _CLAUDE_PAIR: Final = frozenset({"anthropic.claude-opus-5-5", "anthropic.claude-sonnet-5-5"})
 
 
@@ -287,9 +292,12 @@ def seal_label(
             if ink.reviewer_text:
                 reason = f"{reason}; reviewer wrote {ink.reviewer_text}"
             if ink.tick_only:
-                # GV's green tick and nothing else (#1198): still held, only named plainly.
-                reason = GV_TICK_REASON
+                # GV's green tick and nothing else (#1198): still held, only named plainly; and
+                # only "beside" where the tick touches neither the box nor a digit (#1335).
+                reason = GV_TICK_BESIDE_REASON if ink.tick_beside else GV_TICK_REASON
             flags.append(GV_TICK_FLAG if ink.tick_only else GV_OTHER_MARK_FLAG)
+            if ink.tick_only and ink.tick_beside:
+                flags.append(GV_TICK_BESIDE_FLAG)
             hard = ("reviewer-markup", reason)
     if row_ambiguity is not None:
         soft.append(("row-ambiguous", f"not sure which row is the countertop: {row_ambiguity}"))

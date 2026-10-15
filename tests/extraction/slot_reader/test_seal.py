@@ -545,3 +545,27 @@ def test_a_number_gv_ticked_stays_held_and_says_so_plainly() -> None:
 def test_any_other_gv_ink_is_named_as_such() -> None:
     outcome = seal(ink=InkAt(InkClass.GV, '15"'))
     assert "gv-other-mark" in outcome.flags and "gv-tick" not in outcome.flags
+
+
+def test_a_tick_only_beside_the_number_is_held_and_said_to_be_beside_it() -> None:
+    """#1335: a tick in the crop's margin, touching neither the number's box nor a digit, may be
+    GV's tick for something else. The number is held exactly as before; the words say only that
+    GV's tick is beside it."""
+    for ink in (
+        InkAt(InkClass.GV, "", tick_only=True, tick_beside=True),
+        InkAt(InkClass.COVERED, "", tick_only=True, tick_beside=True),
+    ):
+        outcome = seal(ink=ink)
+        ticked = seal(ink=replace(ink, tick_beside=False))
+        assert outcome.state is ticked.state is LabelState.REVIEW
+        assert outcome.reason_code == ticked.reason_code == "reviewer-markup"
+        assert outcome.value is None and outcome.suggestion is None
+        assert ticked.value is None and ticked.suggestion is None
+        assert outcome.reason == (
+            "GV's tick is beside this number (round 2); GV's marks are never read as a value"
+        )
+        assert "GV ticked" not in outcome.reason
+        assert ticked.reason is not None and ticked.reason.startswith("GV ticked this number")
+        assert {"gv-tick", "gv-tick-beside"} <= set(outcome.flags)
+        assert "gv-tick-beside" not in ticked.flags
+        assert [flag for flag in outcome.flags if flag != "gv-tick-beside"] == list(ticked.flags)

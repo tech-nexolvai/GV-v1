@@ -697,6 +697,39 @@ def test_a_label_under_the_reviewers_yellow_box_is_never_read_or_sealed() -> Non
     assert result.mapping.proposals == ()
 
 
+def test_the_ink_check_is_told_each_labels_own_box(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#1335: the reviewer-ink check looks at the crop and is told the label's own box inside it,
+    so GV's tick in the crop's margin only can be worded as beside the number."""
+    from extraction.ink import PageInk
+
+    asked: list[tuple[tuple[int, int, int, int], tuple[int, int, int, int] | None]] = []
+    original = PageInk.at
+
+    def spy(
+        self: PageInk,
+        box: tuple[int, int, int, int],
+        *,
+        label: tuple[int, int, int, int] | None = None,
+    ) -> Any:
+        asked.append((box, label))
+        return original(self, box, label=label)
+
+    monkeypatch.setattr(PageInk, "at", spy)
+    page = slot_page(sheets.sheet(text_labels()))
+    lookup = crops_to_texts(page, TEXTS)
+
+    result = read(page, FakeReaders(lambda _model, png: lookup[png]))
+
+    labels = [
+        label
+        for owner in (*result.slots, *((result.overall,) if result.overall else ()))
+        for label in owner.labels
+    ]
+    assert labels
+    for label in labels:
+        assert (label.crop_px, label.box_px) in asked
+
+
 def test_glyph_labels_need_two_makers_to_agree() -> None:
     page = slot_page(sheets.sheet(sheets.glyph_labels()))
     lookup = crops_to_texts(page, TEXTS)

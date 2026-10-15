@@ -10,6 +10,9 @@ from vocabulary.check_holds import CHECK_HOLD_REASONS
 #: number from speaking for another GV boxed or corrected.
 GV_TICK_FLAG = "gv-tick"
 GV_OTHER_MARK_FLAG = "gv-other-mark"
+#: Beside `gv-tick` where the tick touches neither the number's box nor a digit (#1335): the words
+#: then say only that GV's tick is beside the number.
+GV_TICK_BESIDE_FLAG = "gv-tick-beside"
 
 REVIEWER_REASONS = {
     # #1206: first, because the readers' later questions on this row were never asked at all.
@@ -19,6 +22,8 @@ REVIEWER_REASONS = {
     "vif": "This dimension is provisional (VIF). Verify it on site before using it.",
     **CHECK_HOLD_REASONS,
     # #1198: only where every GV mark at the row's held numbers is GV's green tick (`reviewer_reason`).
+    # #1335: "beside" first, so a tick on one number never claims another whose tick is only beside.
+    GV_TICK_BESIDE_FLAG: "GV's tick is beside this number (round 2), so it is shown to you. GV's marks are never read as a value: check the vendor's own number.",
     GV_TICK_FLAG: "GV ticked this number (round 2), so it is shown to you. GV's marks are never read as a value: check the vendor's own number.",
     "reviewer-markup": "Covered by reviewer markup. Check the vendor's own number.",
     "row-ambiguous": "The readers could not establish which row measures the countertop.",
@@ -40,9 +45,10 @@ def reviewer_reason(flags: Iterable[str], fallback: str | None) -> str | None:
     codes = {flag.removeprefix("row-hold:").removeprefix("check-hold:") for flag in flags}
     if fallback and "reviewer markup" in fallback.lower():
         codes.add("reviewer-markup")
-    if "reviewer-markup" not in codes or GV_OTHER_MARK_FLAG in codes:
-        # A tick only words a markup hold that exists, and only when it is GV's one mark (#1198).
-        codes.discard(GV_TICK_FLAG)
+    if "reviewer-markup" not in codes or GV_OTHER_MARK_FLAG in codes or GV_TICK_FLAG not in codes:
+        # A tick only words a markup hold that exists, and only when it is GV's one mark (#1198);
+        # "beside" only ever qualifies a tick (#1335).
+        codes -= {GV_TICK_FLAG, GV_TICK_BESIDE_FLAG}
     for code, words in REVIEWER_REASONS.items():
         if code in codes:
             return words
