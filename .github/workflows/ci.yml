@@ -119,11 +119,12 @@ jobs:
     name: tests (shard ${{ matrix.group }}/4)
     if: github.event_name != 'schedule' && !(github.event_name == 'pull_request' && github.event.pull_request.draft)
     runs-on: ubuntu-latest
-    # About 5 minutes each today; 15 stops a hung test long before it drains the quota.
-    timeout-minutes: 15
-    # Four shards, kept. Billing rounds each job up to the minute, and each shard pays about a minute
-    # of fixed cost (database server, checkout, install). Three shards of ~6 minutes bill more than
-    # four of ~5, and two would double the wait for a result.
+    # About 3-4.5 minutes each on four workers (#1289); a single-process recording run (below) takes
+    # up to about 9. 12 leaves that run room and still stops a hung test before it drains the quota.
+    timeout-minutes: 12
+    # Four shards, kept. Billing rounds each job up to the minute, and each shard pays about half a
+    # minute of fixed cost (database server, checkout, install). Two shards would bill a little less
+    # and double the wait for a result.
     strategy:
       fail-fast: false
       matrix:
@@ -248,6 +249,19 @@ jobs:
       #   3. Commit the new `.test_durations` in a pull request; that PR's run shows the new balance.
       #
       # Only CI's times are valid: a laptop runs the suite at a different speed, test by test.
+      #
+      # **Four workers per shard (#1289).** The runner has 4 CPUs (the "Runner CPU" step prints them), and
+      # one pytest process used one. `-n 4` (pytest-xdist) runs the shard's tests on four worker processes.
+      # The split is unchanged: every worker collects the whole suite, keeps the same shard with the same
+      # pytest-split arguments, and xdist stops the run if two workers disagree on the list, so the shard
+      # runs exactly the tests it ran before, each once. Each worker gets its own database on this job's
+      # server (`gv_test_gw0` ... `gv_test_gw3`), created and dropped by `tests/conftest.py`, so workers
+      # never share a row, a schema or an extension. `--dist loadgroup` keeps any test marked
+      # `@pytest.mark.xdist_group(...)` on one worker; tests that must not run beside a twin carry it.
+      #
+      # **The recording run stays single-process**, exactly as before: the times it records are the ones
+      # the split balances, and a worker's per-test time also counts the other three competing for the
+      # machine. It takes about the old shard time (7-8 minutes), and it is run by hand, rarely.
       - name: Run complete pytest shard
         env:
           GROUP: ${{ matrix.group }}
@@ -259,6 +273,7 @@ jobs:
             # outside the checkout as a path to test, moves its root directory up to the common parent,
             # and every test name gains a prefix: no recorded time then matches a test, the split falls
             # back to equal counts, and the recorded names are useless. The check after it makes sure.
+            # No `-n`: single-process on purpose (see above), so no worker database either.
             recorded="$RUNNER_TEMP/test-durations-shard-$GROUP.json"
             cp .test_durations "$recorded"
             pytest -q --splits 4 --group "$GROUP" \
@@ -274,7 +289,7 @@ jobs:
           print(f"recorded the times of {len(names)} tests")
           PY
           else
-            pytest -q --splits 4 --group "$GROUP" \
+            pytest -q -n 4 --dist loadgroup --splits 4 --group "$GROUP" \
               --splitting-algorithm least_duration \
               --durations-path .test_durations
           fi
@@ -319,10 +334,11 @@ jobs:
   # OpenAPI document, and the guarantee — rename a field on the server and the frontend stops
   # compiling — is only real if regenerating is verified to produce no diff.
   #
-  # **Board status drift runs here too (#1283)**, as the last step; it used to be a job of its own, and
-  # one job fewer per run means one runner slot and one billed minute fewer. Two things claim to say
-  # whether a story may be worked on: the contract in the issue body, which scripts/issue_gate.py reads,
-  # and the status label, which every human, board view and filter reads. Nothing made them agree, so
+  # **Board status drift runs here too (#1283)**; it used to be a job of its own. One job fewer per run
+  # means one runner slot fewer, but not fewer billed minutes: this job and `Python quality` each grew by
+  # about a minute, so a run bills about the same. Two things claim to say whether a story may be worked
+  # on: the contract in the issue body, which scripts/issue_gate.py reads, and the status label, which
+  # every human, board view and filter reads. Nothing made them agree, so
   # they drifted — a sweep found eighteen disagreements across 135 open issues, twelve showing 'ready' on
   # work the gate stops. This is a board check, not a code check, so it can fail a pull request that
   # changed nothing. That is the point. The alternative is a sweep somebody remembers to run, and the
@@ -334,6 +350,11 @@ jobs:
   # its environment. It is not one of the jobs `lint, types, tests` needs, as the board job was not, so
   # the required check means what it meant before. The Python install below is a superset of what the
   # board check needs, so it costs no extra install.
+  #
+  # **The board check runs first, before Node is set up or `npm ci` runs (#1288)**, so no npm package's
+  # install script has run on this machine while the token is in use. Its result is held until the end
+  # (`continue-on-error`, then the last step fails the job if it failed), so a board disagreement does
+  # not stop the frontend steps either: both answers arrive in every run.
   frontend:
     name: frontend (install, types, build) + board status drift
     if: github.event_name != 'schedule' && !(github.event_name == 'pull_request' && github.event.pull_request.draft)
@@ -351,6 +372,33 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 1
+
+      # Python for the board check and for the API schema export (`api:check`, below).
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
+
+      - name: Install the API for schema export
+        working-directory: .
+        run: uv pip install --system -e ".[ai,dev,rules,platform,reports]"
+
+      # Before any npm code has run (see the comment above the job). `continue-on-error` keeps the
+      # frontend steps running after a board failure; the last step of the job turns it back into a red
+      # job, so the failure is never lost.
+      - name: Board status drift (label vs contract)
+        id: board
+        continue-on-error: true
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pytest tests/test_board_drift.py -q
+          python scripts/check_board_drift.py
 
       - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4
         with:
@@ -383,38 +431,17 @@ jobs:
 
       # Needs Python, because the schema is exported from the route table rather than fetched from a
       # running server - that is what makes it safe here and unable to drift from what is deployed.
-      #
-      # The Python steps run even when a frontend step above failed (`!cancelled()`), so a broken build
-      # never hides the board check at the end of this job.
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        if: ${{ !cancelled() }}
-        with:
-          python-version: "3.12"
-
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        if: ${{ !cancelled() }}
-        with:
-          enable-cache: true
-          cache-dependency-glob: pyproject.toml
-
-      - name: Install the API for schema export
-        id: python_install
-        if: ${{ !cancelled() }}
-        working-directory: .
-        run: uv pip install --system -e ".[ai,dev,rules,platform,reports]"
-
       - name: Generated API types are current
         run: npm run api:check
 
-      # Runs whenever the Python install worked, whatever happened to the frontend steps above.
-      - name: Board status drift (label vs contract)
-        if: ${{ !cancelled() && steps.python_install.outcome == 'success' }}
+      # The board check's answer, held since the start of the job. Runs only when every step above
+      # passed (a failed frontend step has already made the job red).
+      - name: Board status drift result
+        if: steps.board.outcome == 'failure'
         working-directory: .
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          pytest tests/test_board_drift.py -q
-          python scripts/check_board_drift.py
+          echo "::error::Board status drift failed; see the 'Board status drift (label vs contract)' step."
+          exit 1
 
   # ---------------------------------------------------------------------------
   # Guards. These are the checks that turn the project's invariants from prose
