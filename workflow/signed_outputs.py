@@ -33,7 +33,7 @@ from reports.spreadsheet import (
     write_stored_workbook,
 )
 from storage.store import ArtifactStore
-from workflow.redline_outputs import render_evidence_grounded_redline
+from workflow.redline_outputs import redline_marks, render_evidence_grounded_redline
 
 
 def record_publication_failure(
@@ -99,6 +99,9 @@ def generate_signed_outputs(
     countertop_labels = tuple(
         f"Page {item.page_number} — {item.label}" for item in countertop_results.items
     )
+    # A format-2 snapshot (#1363) carries a person's marks and the results printed NOT CHECKED;
+    # a format-1 snapshot carries neither, and its cloud PDF is drawn exactly as before.
+    marks = payload.reviewer_marks
     redline = render_evidence_grounded_redline(
         db,
         store,
@@ -107,6 +110,8 @@ def generate_signed_outputs(
         changed_values=payload.changed_values,
         signed_review=payload.review,
         countertop_labels=countertop_labels,
+        reviewer_marks=None if marks is None else redline_marks(marks),
+        not_checked=frozenset(() if marks is None else marks.not_checked_finding_ids),
     )
     if redline.artifact is None:
         raise SignedExportRefused(f"signed drawing unavailable: {redline.reason}")

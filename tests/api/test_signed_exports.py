@@ -150,9 +150,10 @@ def test_legacy_explicit_request_publishes_all_three_and_never_changes_outcomes(
         response = client.get(base + "/" + endpoint)
         assert response.status_code == 200, response.text
         text = _text(response.content)
-        assert (
-            text.count("Not checked: dismissed as not checkable by reviewer ana@example.com") == 8
-        )
+        # The cloud PDF also lists each person's answer once more, as its mark (#1363).
+        assert text.count(
+            "Not checked: dismissed as not checkable by reviewer ana@example.com"
+        ) == (16 if endpoint == "redline.pdf" else 8)
         assert "FAIL: problem for the vendor, confirmed by reviewer ana@example.com" in text
         assert "Reason: Not checkable: synthetic source missing" in text
         assert str(approval.id) in text and "9 findings covered" in text

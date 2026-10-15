@@ -42,14 +42,15 @@ from app.models.package import Package, PackageRevision
 from app.models.rules import RuleDefinition, RuleSnapshot
 from app.models.verdicts import CheckRun, Finding, OutputArtifact, OutputArtifactKind
 from app.review.approval import approval_readiness
+from app.review.reviewer_marks import is_not_checked, live_decisions, reviewer_marks_for
 from storage.store import ArtifactStore
-from verdict.outcomes import Outcome, is_abstention
+from verdict.outcomes import Outcome
 from workflow.draft_cloud import (
     DraftCloudRefused,
     draft_for_request,
     draft_storage_prefix,
 )
-from workflow.redline_outputs import NOT_CHECKED, render_draft_redline
+from workflow.redline_outputs import NOT_CHECKED, redline_marks, render_draft_redline
 
 __all__ = ["BANNER", "OpenItems", "grouped_by_reason", "open_items", "render_draft_cloud"]
 
@@ -110,9 +111,7 @@ def open_items(
         item = OpenItem(_label(finding, definition.rule_id), _reason(finding))
         if finding.outcome == Outcome.FAIL.value:
             failures.append(item)
-        elif finding.outcome == Outcome.NO_APPLICABLE_RULE.value or (
-            is_abstention(Outcome(finding.outcome)) and item.reason.startswith(_WAITING)
-        ):
+        elif is_not_checked(finding.outcome, item.reason):
             # Settling a check that never ran does not make it checked (decision 1): still
             # printed NOT CHECKED, with who settled it said.
             if finding.outcome != Outcome.NO_APPLICABLE_RULE.value and finding.id not in blocking:
@@ -179,6 +178,15 @@ def render_draft_cloud(
 
     from workflow.changed_values import changed_values_for_revision
 
+    # The same marks the signed cloud PDF draws from its snapshot (#1363), from the live records.
+    shown = [(finding, definition.rule_id) for finding, _run, _snapshot, definition in rows]
+    marks = reviewer_marks_for(
+        session,
+        package_revision_id,
+        findings=shown,
+        decisions=live_decisions(session, shown),
+        until=None,
+    )
     drawing = render_draft_redline(
         session,
         store,
@@ -189,6 +197,7 @@ def render_draft_cloud(
         ),
         not_checked=items.not_checked_ids,
         changed_values=changed_values_for_revision(session, package_revision_id),
+        reviewer_marks=redline_marks(marks),
     )
     if drawing.artifact is None:
         raise DraftCloudRefused(f"The draft could not be drawn: {drawing.reason}.")
