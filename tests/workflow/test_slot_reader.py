@@ -400,7 +400,7 @@ def test_claude_opus_selects_only_a_numbered_code_candidate_before_slot_reading(
     asked = sorted(model for model, _image in readers.row_requests)
     assert asked == sorted([OPUS, SONNET]), "both readers are asked the row question"
     assert len({image for _model, image in readers.row_requests}) == 1, "with the same picture"
-    row_attempt = next(attempt for attempt in attempts if attempt.prompt_id == "slot-row-choice-v4")
+    row_attempt = next(attempt for attempt in attempts if attempt.prompt_id == "slot-row-choice-v5")
     assert row_attempt.raw_response_text is not None
     assert row_attempt.question_packet is None
     assert result.mapping.proposals, "the selected non-rank-one candidate supplies the slot plan"
@@ -549,7 +549,7 @@ def test_row_selection_packet_binds_the_numbered_page_and_ordered_candidates() -
         [page], runtime=configured, record_attempt=attempts.append, store=store
     )
 
-    row_attempt = next(attempt for attempt in attempts if attempt.prompt_id == "slot-row-choice-v4")
+    row_attempt = next(attempt for attempt in attempts if attempt.prompt_id == "slot-row-choice-v5")
     packet = row_attempt.question_packet
     assert packet is not None
     assert packet["candidate_ids"] == [str(value) for value in result.row_candidate_ids]

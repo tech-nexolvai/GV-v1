@@ -137,8 +137,15 @@ __all__ = [
 ]
 
 CROP_PROMPT_ID: Final = "slot-crop-v1"
-ROW_PROMPT_ID: Final = "slot-row-choice-v4"
-"""v4 (#1213): the wording the demo-test measured (2026-10-13). The piece row may be drawn anywhere
+ROW_PROMPT_ID: Final = "slot-row-choice-v5"
+"""v5 (#1314): the wording measured on 2026-10-15 over AI Sets 1-3 (two full runs: agreed-wrong rows
+2 -> 0; some agreed rows became splits, which a person settles). v4's stone-chain sentence made both
+readers pick the cabinets' wall-to-wall chain where the stone runs into the walls; now the cabinets'
+chain still wins over the stone's own chain, but the stone's chain is the row when no box measures
+the cabinets, and where the stone runs into a wall (its two outer ticks are the stone's two ends). A
+chain at the top of the view counts only when no boxed chain of printed widths runs along the stone.
+Shipped by Anant's decision as an exception to the key-library gate. Answer shape: v3's, unchanged.
+v4 (#1213): the wording the demo-test measured (2026-10-13). The piece row may be drawn anywhere
 on the front view, as long as its ticks line up with the pieces under the stone; a box around a line
 with no printed numbers (the stone's own outline) or around material tags is never the row; the
 stone's own chain is not the piece row when another box measures the cabinets and fillers; every
@@ -152,7 +159,13 @@ names the box colours, none of which the reviewer's markup uses (box 1 used to b
 same question said red numbers are the reviewer's)."""
 #: Earlier wordings of the row question, still recognised when a stored run is replayed.
 ROW_PROMPT_IDS: Final = frozenset(
-    {ROW_PROMPT_ID, "slot-row-choice-v3", "slot-row-choice-v2", "slot-row-choice-v1"}
+    {
+        ROW_PROMPT_ID,
+        "slot-row-choice-v4",
+        "slot-row-choice-v3",
+        "slot-row-choice-v2",
+        "slot-row-choice-v1",
+    }
 )
 CLAUDE_SPAN_PROMPT_ID: Final = "claude-slot-span-v5"
 """v5 (#1213): the wording the demo-test measured (2026-10-13), asked with new pictures
@@ -257,12 +270,15 @@ ROW_PROMPT: Final = (
     "Task: which numbered box marks the COUNTERTOP PIECE ROW - the horizontal chain of piece widths "
     "(fillers, cabinets, appliance spaces) on the vendor's FRONT VIEW / ELEVATION that measures the "
     "pieces under the stone countertop, from one end of the stone top to the other? It may be drawn "
-    "anywhere on the front view - just above or below the stone, below the base cabinets, or at the "
-    "top of the view above the upper cabinets - as long as its ticks line up with the pieces under "
-    "the stone. It is NOT a wall-to-wall or room dimension, NOT a row inside a plan (top) view or a "
+    "just above or below the stone or below the base cabinets, as long as its ticks line up with the "
+    "pieces under the stone. A chain at the top of the view, above the upper cabinets, is the piece "
+    "row only when no box around a chain of printed widths runs along the stone itself. It is NOT a wall-to-wall or room dimension, NOT a row inside a plan (top) view or a "
     "section view, and NOT the architect's small drawing. If the stone top has a chain of its own "
     "(the top with its end splashes, or the top split into slabs), that is not the piece row when "
-    "another box measures the cabinets and fillers under it. A box around a line that carries no "
+    "another box measures the cabinets and fillers under it, but it is the piece row when no box "
+    "does - and where the stone runs into a wall, the cabinets' chain stops at the wall face (wall to "
+    "wall), so the stone's own chain, with the part of the stone inside the wall, is the piece row, "
+    "because its two outer ticks are the stone top's two ends. A box around a line that carries no "
     "printed numbers - for example the outline of the stone top itself - or around a row of "
     "material tags is never the piece row.\n"
     "Answer fields:\n"
