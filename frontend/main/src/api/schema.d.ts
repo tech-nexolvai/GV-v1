@@ -1612,6 +1612,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/review-items/{key}/{action}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Answer one item of the review list, through the existing decision paths
+         * @description One answer. URL actions: `confirm | fix | answer | agree | clear-not-checked`.
+         *
+         *     `answer` carries the answer's own name in the body: `{"answer": "checked_right"}`,
+         *     `{"answer": "checked_wrong"}`, `{"answer": "choose_wall", "wall_config": "..."}`,
+         *     `{"answer": "confirm_no_countertop"}`, `{"answer": "there_is_a_countertop"}`, or for an
+         *     architect item `{"architect_view": {...}}` / `{"architect_pairing": {...}}`.
+         *
+         *     Group keys: `not-checked` with `clear-not-checked` dismisses every open "Not checked" result in
+         *     one transaction; `no-countertop-pages` with `answer` `confirm_no_countertop` confirms every
+         *     listed page at once. Both take `expected_keys` (409 when the group changed).
+         */
+        post: operations["answer_review_item_api_v1_projects__project_id__packages__package_id__review_items__key___action__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/review-sessions": {
         parameters: {
             query?: never;
@@ -6932,6 +6961,78 @@ export interface components {
             rechecking: number;
         };
         /**
+         * ReviewItemActionIn
+         * @description One answer. Only the fields the answer needs are read; a person never types a note here.
+         */
+        ReviewItemActionIn: {
+            /**
+             * Answer
+             * @description With the URL action `answer`: which answer, by the W1 list's own action name (`checked_right`, `checked_wrong`, `choose_wall`, `confirm_no_countertop`, `there_is_a_countertop`, `answer`, `not_this`). Defaults to `answer` for an architect item.
+             */
+            answer?: string | null;
+            /**
+             * Architect Pairing
+             * @description With an architect `answer`: the body of `POST .../architect-pairing` (`pairs`, optional `expected_record_id` and `note`); `pairs: []` says nothing is comparable.
+             */
+            architect_pairing?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Architect View
+             * @description With an architect `answer`: the body of `POST .../architect-view-match` (`view_id` or `none_of_these`, `expected_record_id`, optional `note`).
+             */
+            architect_view?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Expected Finding Id
+             * @description The `finding_id` of the item as the screen showed it. Required for an item with a result; 409 when the item now names another result or is no longer listed. Null for a page listed with no countertop and for a group key.
+             */
+            expected_finding_id?: string | null;
+            /**
+             * Expected Keys
+             * @description With a group key: the open keys the screen showed. 409 when the group differs now.
+             */
+            expected_keys?: string[] | null;
+            /**
+             * Value
+             * @description With `fix`: the reading the person picked, with its unit (W2, #1339).
+             */
+            value?: string | null;
+            /**
+             * Wall Config
+             * @description With `choose_wall`: one of the published wall layouts.
+             */
+            wall_config?: string | null;
+        };
+        /** ReviewItemActionOut */
+        ReviewItemActionOut: {
+            /**
+             * Action
+             * @description The answer recorded, by the W1 list's action name.
+             */
+            action: string;
+            /** Key */
+            key: string;
+            /**
+             * Rechecking
+             * @description True while the checks run again or wait to (this answer is read by them).
+             */
+            rechecking: boolean;
+            /**
+             * Recorded
+             * @description What was recorded, in plain words.
+             */
+            recorded: string;
+            /** @description The list as it stands after the answer. */
+            review_items: components["schemas"]["ReviewItemsOut"];
+            /**
+             * Review Session Id
+             * @description The review session a finding action was recorded in.
+             */
+            review_session_id?: string | null;
+        };
+        /**
          * ReviewItemOut
          * @description One question a person answers.
          */
@@ -11031,6 +11132,63 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
+            };
+        };
+    };
+    answer_review_item_api_v1_projects__project_id__packages__package_id__review_items__key___action__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                key: string;
+                action: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReviewItemActionIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewItemActionOut"];
+                };
+            };
+            /** @description No such package, or no such item. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The item is stale (`expected_finding_id`) or no longer open. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The item does not take this answer, or the answer is incomplete. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description This kind of answer cannot be saved yet (numbers: W2). */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

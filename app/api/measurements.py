@@ -48,6 +48,7 @@ Verification: `tests/api/test_measurements.py`, `tests/api/test_setting_citation
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -1515,19 +1516,8 @@ def request_checks(
         )
     confirmed = confirmed_discriminators(session, revision.id)
     _check_discriminators(session, confirmed)
-    discriminators = dict(confirmed)
-    sources = {name: DISCRIMINATOR_FROM_REVIEWER for name in confirmed}
-    # No revision-wide wall layout without the reviewer (#1202): code's drawing clues never settle
-    # the walls alone, and a readers' layout is a proposal in the Measure form until the reviewer
-    # explicitly selects it, so neither can create a PASS.
     accepted = enqueue(
-        session,
-        workflow=RUN_CHECKS_WORKFLOW,
-        payload={
-            "package_revision_id": str(revision.id),
-            "discriminators": discriminators,
-            "discriminator_sources": sources,
-        },
+        session, workflow=RUN_CHECKS_WORKFLOW, payload=_run_checks_payload(session, revision.id)
     )
     try:
         session.commit()
@@ -1536,6 +1526,86 @@ def request_checks(
         raise
 
     return {"accepted_id": str(accepted), "package_revision_id": str(revision.id)}
+
+
+def _run_checks_payload(session: Session, revision_id: UUID) -> dict[str, object]:
+    """What a check run is asked with: the revision and the discriminators a reviewer confirmed."""
+    confirmed = confirmed_discriminators(session, revision_id)
+    # No revision-wide wall layout without the reviewer (#1202): code's drawing clues never settle
+    # the walls alone, and a readers' layout is a proposal in the Measure form until the reviewer
+    # explicitly selects it, so neither can create a PASS.
+    return {
+        "package_revision_id": str(revision_id),
+        "discriminators": dict(confirmed),
+        "discriminator_sources": {name: DISCRIMINATOR_FROM_REVIEWER for name in confirmed},
+    }
+
+
+def _recheck_lock_key(revision_id: UUID) -> int:
+    """A stable signed 64-bit key for PostgreSQL's advisory lock on one revision's re-checks."""
+    digest = hashlib.sha256(f"review-item-recheck:{revision_id}".encode()).digest()
+    return int.from_bytes(digest[:8], "big", signed=True)
+
+
+def queue_recheck(session: Session, revision: PackageRevision) -> bool:
+    """Ask for the checks to run again after a person's answer, coalesced: never a 409 (#1351).
+
+    True when this call queued a run; False when a run that has not started yet already waits (it
+    reads the answer, which commits with this transaction). Flushes, never commits: the caller's
+    commit lands the answer and the request together.
+
+    **At most one waiting run.** The worker runs one revision's checks one at a time: the local
+    worker (`scripts/drain_outbox.py`) takes rows in order inside one process and stamps a row
+    delivered only when its run finished, holding the row locked (`FOR UPDATE`) meanwhile. So:
+
+    * an undelivered row nobody holds has not started: it will read this answer, nothing is added;
+    * an undelivered row the worker holds is running and may have read the values before this
+      answer: one follow-up is queued, and the next answer finds that follow-up waiting.
+
+    Two answers at once are serialised by a per-revision advisory lock, so they cannot both add one.
+    A revision still being read is left alone: its reading queues its own check run when it ends.
+    Unlike `POST .../checks`, which refuses a second run for the same values (#1179), this never
+    refuses: the person's answer is saved whatever the worker is doing.
+    """
+    if PackageState(revision.state) in READING_STATES:
+        return False
+    session.execute(select(func.pg_advisory_xact_lock(_recheck_lock_key(revision.id))))
+    waiting = session.execute(
+        select(OutboxEntry.id)
+        .where(
+            OutboxEntry.workflow == RUN_CHECKS_WORKFLOW,
+            OutboxEntry.dispatched_at.is_(None),
+            OutboxEntry.abandoned_at.is_(None),
+            OutboxEntry.payload["package_revision_id"].astext == str(revision.id),
+        )
+        .limit(1)
+        .with_for_update(skip_locked=True)
+    ).first()
+    if waiting is not None:
+        return False
+    enqueue(
+        session, workflow=RUN_CHECKS_WORKFLOW, payload=_run_checks_payload(session, revision.id)
+    )
+    return True
+
+
+def checks_pending(session: Session, revision: PackageRevision) -> bool:
+    """Whether this revision's checks are running or asked for and not finished yet."""
+    if revision.state == PackageState.RUNNING_CHECKS:
+        return True
+    return (
+        session.execute(
+            select(OutboxEntry.id)
+            .where(
+                OutboxEntry.workflow == RUN_CHECKS_WORKFLOW,
+                OutboxEntry.dispatched_at.is_(None),
+                OutboxEntry.abandoned_at.is_(None),
+                OutboxEntry.payload["package_revision_id"].astext == str(revision.id),
+            )
+            .limit(1)
+        ).first()
+        is not None
+    )
 
 
 # ---------------------------------------------------------------------------

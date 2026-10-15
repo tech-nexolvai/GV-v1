@@ -9903,6 +9903,157 @@
         "title": "ReviewHeaderOut",
         "type": "object"
       },
+      "ReviewItemActionIn": {
+        "additionalProperties": false,
+        "description": "One answer. Only the fields the answer needs are read; a person never types a note here.",
+        "properties": {
+          "answer": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With the URL action `answer`: which answer, by the W1 list's own action name (`checked_right`, `checked_wrong`, `choose_wall`, `confirm_no_countertop`, `there_is_a_countertop`, `answer`, `not_this`). Defaults to `answer` for an architect item.",
+            "title": "Answer"
+          },
+          "architect_pairing": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With an architect `answer`: the body of `POST .../architect-pairing` (`pairs`, optional `expected_record_id` and `note`); `pairs: []` says nothing is comparable.",
+            "title": "Architect Pairing"
+          },
+          "architect_view": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With an architect `answer`: the body of `POST .../architect-view-match` (`view_id` or `none_of_these`, `expected_record_id`, optional `note`).",
+            "title": "Architect View"
+          },
+          "expected_finding_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The `finding_id` of the item as the screen showed it. Required for an item with a result; 409 when the item now names another result or is no longer listed. Null for a page listed with no countertop and for a group key.",
+            "title": "Expected Finding Id"
+          },
+          "expected_keys": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 1000,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With a group key: the open keys the screen showed. 409 when the group differs now.",
+            "title": "Expected Keys"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With `fix`: the reading the person picked, with its unit (W2, #1339).",
+            "title": "Value"
+          },
+          "wall_config": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With `choose_wall`: one of the published wall layouts.",
+            "title": "Wall Config"
+          }
+        },
+        "title": "ReviewItemActionIn",
+        "type": "object"
+      },
+      "ReviewItemActionOut": {
+        "properties": {
+          "action": {
+            "description": "The answer recorded, by the W1 list's action name.",
+            "title": "Action",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "rechecking": {
+            "description": "True while the checks run again or wait to (this answer is read by them).",
+            "title": "Rechecking",
+            "type": "boolean"
+          },
+          "recorded": {
+            "description": "What was recorded, in plain words.",
+            "title": "Recorded",
+            "type": "string"
+          },
+          "review_items": {
+            "$ref": "#/components/schemas/ReviewItemsOut",
+            "description": "The list as it stands after the answer."
+          },
+          "review_session_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The review session a finding action was recorded in.",
+            "title": "Review Session Id"
+          }
+        },
+        "required": [
+          "key",
+          "action",
+          "recorded",
+          "rechecking",
+          "review_items"
+        ],
+        "title": "ReviewItemActionOut",
+        "type": "object"
+      },
       "ReviewItemOut": {
         "description": "One question a person answers.",
         "properties": {
@@ -18361,6 +18512,90 @@
           }
         },
         "summary": "List exactly what a person must check on the newest revision, read-only",
+        "tags": [
+          "simple review"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/review-items/{key}/{action}": {
+      "post": {
+        "description": "One answer. URL actions: `confirm | fix | answer | agree | clear-not-checked`.\n\n`answer` carries the answer's own name in the body: `{\"answer\": \"checked_right\"}`,\n`{\"answer\": \"checked_wrong\"}`, `{\"answer\": \"choose_wall\", \"wall_config\": \"...\"}`,\n`{\"answer\": \"confirm_no_countertop\"}`, `{\"answer\": \"there_is_a_countertop\"}`, or for an\narchitect item `{\"architect_view\": {...}}` / `{\"architect_pairing\": {...}}`.\n\nGroup keys: `not-checked` with `clear-not-checked` dismisses every open \"Not checked\" result in\none transaction; `no-countertop-pages` with `answer` `confirm_no_countertop` confirms every\nlisted page at once. Both take `expected_keys` (409 when the group changed).",
+        "operationId": "answer_review_item_api_v1_projects__project_id__packages__package_id__review_items__key___action__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "title": "Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "action",
+            "required": true,
+            "schema": {
+              "title": "Action",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewItemActionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewItemActionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No such package, or no such item."
+          },
+          "409": {
+            "description": "The item is stale (`expected_finding_id`) or no longer open."
+          },
+          "422": {
+            "description": "The item does not take this answer, or the answer is incomplete."
+          },
+          "501": {
+            "description": "This kind of answer cannot be saved yet (numbers: W2)."
+          }
+        },
+        "summary": "Answer one item of the review list, through the existing decision paths",
         "tags": [
           "simple review"
         ]
