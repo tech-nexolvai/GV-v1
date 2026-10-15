@@ -10,7 +10,8 @@ write, no guess.
   per reading, so each can be confirmed on its own), a countertop to check by hand
   (`countertop_by_hand`: the row itself was held, or its held numbers have no AI guess), a wall
   choice, a page listed with no countertop, an architect question, a depth or sink reading to
-  confirm, or any other result that waits for a person (`other_result`).
+  confirm (`depth_reading`, one per reading, #1360; one `rechecking` item once a person confirmed
+  it, until the re-check), or any other result that waits for a person (`other_result`).
 * `failures`: FAIL results. Each stays blocking and needs one Agree (Anant, decision 2).
 * `not_checked`: the depth and sink checks that could not run because nothing was read for them
   (Anant, decision 1: one quiet group).
@@ -40,7 +41,8 @@ each number's own status should be read from it.
 **Reader texts** come from the reading's own record (`reader:<model>:<text>` on the candidate), so
 nothing under `extraction/` is imported (`tests/api/test_no_heavy_work.py`).
 
-Source: issue #1338. Verification: `tests/api/test_review_items.py`.
+Source: issues #1338, #1360. Verification: `tests/api/test_review_items.py`,
+`tests/api/test_review_item_depth.py`.
 """
 
 from __future__ import annotations
@@ -60,12 +62,14 @@ from sqlalchemy.orm import Session
 
 from app.models import CheckRun, Finding, PackageRevision, RuleDefinition, RuleSnapshot
 from app.models.drawing import VendorPagePicture
-from app.models.evidence import ObservationCandidate
+from app.models.evidence import EvidenceSupportingCandidate, ObservationCandidate
+from app.models.review import ReviewAction, ReviewActionKind
 from app.review.approval import readiness_and_decisions
 from app.review.depth_readings import depth_readings_for
 from app.review.requirements import BLOCKING_OUTCOMES
 from app.review.row_location import RowLocation
 from app.review.wall_cases import unavailable_reason
+from app.schemas.findings import DepthReadingOut
 from app.schemas.visual_ui import CountertopItemRefOut, CountertopResultOut, ExactValueOut
 from app.verdicts.rulebook import snapshot_store
 from rules.schema import Applicability
@@ -538,6 +542,85 @@ class _DepthItem:
     scope_row_candidate_id: UUID | None
 
 
+#: The view a depth or sink value was read on, as the item's sentence names it.
+_ON_VIEW: Final[Mapping[str, str]] = {
+    "plan": "the plan view",
+    "section": "the section",
+    "side": "the side view",
+    "front": "the front view",
+    "detail": "the detail view",
+}
+
+
+def _depth_item(
+    line: DepthReadingOut,
+    *,
+    finding: Finding,
+    what: str,
+    page: int | None,
+    countertop: CountertopItemRefOut | None,
+    row_label: str | None,
+    state: Status,
+    decided_by: str | None,
+    decided_at: datetime | None,
+) -> ReviewItemOut:
+    """One depth or sink reading to confirm (#1360): its value is exactly what a Confirm records.
+    Confirm is offered only where the advanced depth card offers it (`can_confirm`: the countertop's
+    own result, alone on its drawing, with the reading's picture, not answered yet, #1296)."""
+    stored = None if line.value is None else _parsed(line.value)
+    on = _ON_VIEW.get(line.view or "", "the drawing")
+    offered = ["confirm", "not_this"] if line.can_confirm else ["not_this"]
+    return ReviewItemOut(
+        key=f"depth:{finding.id}:{line.candidate_id}",
+        kind="depth_reading",
+        page=page if page is not None else line.page_number,
+        countertop=countertop,
+        row_label=row_label,
+        what=what,
+        best_guess=(
+            None
+            if stored is None
+            else BestGuessOut(
+                text=f'{format_inches(stored)}"', value=_exact(stored), source="agreed_text"
+            )
+        ),
+        why=(
+            f"Both AI readers read {line.value} for the {line.label.lower()} on {on}, but only "
+            "its drawn length checks it. Confirm it once, or say it is not this value."
+        ),
+        actions=offered if state == "open" else [],
+        status=state,
+        decided_by=decided_by,
+        decided_at=decided_at,
+        finding_id=finding.id,
+        row_id=finding.scope_row_candidate_id,
+        candidate_id=line.candidate_id,
+    )
+
+
+def _depth_answered(session: Session, finding_ids: Sequence[UUID]) -> set[UUID]:
+    """The readings a person confirmed through one of these (current) depth and sink results: a
+    `confirm` from the reading to the person's value (#1339). Every result that reads one waits for
+    the re-check that uses it; after the re-check its results are new, and this is empty for them."""
+    if not finding_ids:
+        return set()
+    return set(
+        session.scalars(
+            select(EvidenceSupportingCandidate.candidate_id)
+            .join(
+                ReviewAction,
+                ReviewAction.resulting_observation_id
+                == EvidenceSupportingCandidate.canonical_observation_id,
+            )
+            .where(
+                ReviewAction.finding_id.in_(list(finding_ids)),
+                ReviewAction.action == ReviewActionKind.CONFIRM.value,
+                ReviewAction.original_observation_id.is_not(None),
+            )
+        )
+    )
+
+
 def _slot(candidate: object) -> int | None | Literal[-1]:
     raw = next(
         (flag.removeprefix("slot:") for flag in _flags(candidate) if flag.startswith("slot:")), ""
@@ -672,6 +755,11 @@ def review_items_for_revision(
         ],
     )
 
+    depth_answered = _depth_answered(
+        session,
+        [entry.finding.id for entry in blocking if entry.rule_id in DEPTH_AND_SINK_RULES],
+    )
+
     items: list[ReviewItemOut] = []
     failures: list[FailureOut] = []
     not_checked: list[NotCheckedOut] = []
@@ -702,10 +790,32 @@ def review_items_for_revision(
             )
             continue
         if rule_id in DEPTH_AND_SINK_RULES:
+            lines = depth_lines.get(finding.id, [])
             to_confirm = [
-                line for line in depth_lines.get(finding.id, []) if line.state == "to_confirm"
+                line
+                for line in lines
+                if line.state == "to_confirm" and line.candidate_id is not None
             ]
             if to_confirm:
+                items.extend(
+                    _depth_item(
+                        line,
+                        finding=finding,
+                        what=DEPTH_AND_SINK_RULES[rule_id],
+                        page=page,
+                        countertop=countertop,
+                        row_label=row_label,
+                        state=state,
+                        decided_by=decided_by,
+                        decided_at=decided_at,
+                    )
+                    for line in to_confirm
+                )
+            elif state == "open" and any(
+                line.state == "confirmed" and line.candidate_id in depth_answered for line in lines
+            ):
+                # A person confirmed its reading here; the result waits for the re-check that uses
+                # it. Never "Not checked": something was read, and a person answered it (#1360).
                 items.append(
                     ReviewItemOut(
                         key=f"depth:{finding.id}",
@@ -714,13 +824,9 @@ def review_items_for_revision(
                         countertop=countertop,
                         row_label=row_label,
                         what=DEPTH_AND_SINK_RULES[rule_id],
-                        why="The two AI readers agree, but only the drawn length checks it: "
-                        + "; ".join(line.label for line in to_confirm)
-                        + ".",
-                        actions=actions("depth_reading", state),
-                        status=state,
-                        decided_by=decided_by,
-                        decided_at=decided_at,
+                        why="A person confirmed the reading; the checks run again to use it.",
+                        actions=[],
+                        status="rechecking",
                         finding_id=finding.id,
                         row_id=finding.scope_row_candidate_id,
                     )

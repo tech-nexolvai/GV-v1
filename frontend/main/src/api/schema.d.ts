@@ -11420,13 +11420,6 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description This kind of answer cannot be saved yet (numbers: W2). */
-            501: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
         };
     };
     open_review_session_api_v1_projects__project_id__packages__package_id__review_sessions_post: {

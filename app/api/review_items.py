@@ -13,7 +13,9 @@ The POST writes ONLY through paths that already exist, and holds no truth path o
 * a wall choice: `POST .../slot-rows/{row}/review`, with the wall choice only;
 * a page listed with no countertop: the existing answer, or "Confirm these N pages";
 * an architect question: the existing view-match or pairing POST;
-* a number: W2's confirm and correct (#1339; 501 until it lands).
+* a number: W2's confirm and correct (#1339);
+* a depth or sink reading (#1360): Confirm through W2's same confirm (once only, its own countertop
+  only); "Not this" as a finding action with a fixed note, printed NOT CHECKED.
 
 An answer that changes what a check reads (a wall, an architect pick, "There is a countertop", a
 number) queues one coalesced re-check (`app/api/measurements.py:queue_recheck`) in the same
@@ -26,7 +28,7 @@ from __future__ import annotations
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from sqlalchemy import select
@@ -50,7 +52,6 @@ from app.api.visual_countertops import (
     confirm_no_countertop_pages,
 )
 from app.auth import Action, Principal, require_action, require_project_access
-from app.errors import _envelope
 from app.models import Package, PackageRevision
 from app.review import review_item_actions as actions
 from app.review.evidence_actions import (
@@ -130,7 +131,6 @@ def _invalid(error: ValidationError) -> HTTPException:
         404: {"description": "No such package, or no such item."},
         409: {"description": "The item is stale (`expected_finding_id`) or no longer open."},
         422: {"description": "The item does not take this answer, or the answer is incomplete."},
-        501: {"description": "This kind of answer cannot be saved yet (numbers: W2)."},
     },
 )
 def answer_review_item(
@@ -142,7 +142,6 @@ def answer_review_item(
     key: str,
     action: str,
     body: actions.ReviewItemActionIn,
-    request: Request,
     response: Response,
 ) -> actions.ReviewItemActionOut | JSONResponse:
     """One answer. URL actions: `confirm | fix | answer | agree | clear-not-checked`.
@@ -192,15 +191,10 @@ def answer_review_item(
     except actions.ItemRefused as refused:
         raise _http(refused) from refused
 
-    if kind == "depth_reading":
-        # Not yet, said plainly (#1360): a raised 5xx would hide the reason behind the generic sentence.
-        session.rollback()
-        return _envelope(
-            request, "not_implemented", actions.DEPTH_NOT_YET, status.HTTP_501_NOT_IMPLEMENTED
-        )
-
     sitting_id: UUID | None = None
-    if kind == "number":
+    if kind == "number" or (kind == "depth_reading" and name == "confirm"):
+        # A depth or sink reading's Confirm is the same held-reading evidence decision as a
+        # number's (#1360): once only, its own countertop only, the value shown.
         if not isinstance(entry, ReviewItemOut) or name not in ("confirm", "fix"):
             raise _unprocessable("A number takes Confirm or Fix.")
         sitting_id, recorded = _answer_number(session, principal, revision, entry, name, body)
