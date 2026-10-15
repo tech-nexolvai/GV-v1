@@ -375,6 +375,36 @@ def test_a_changed_prompt_id_asks_that_question_again_and_reuses_the_rest(
     assert {a.prompt_id for a in attempts if a.reused_from is None} == {"claude-slot-span-v99"}
 
 
+def test_a_stored_row_answer_of_v4_is_never_reused_for_the_v5_row_question(
+    session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1314: the row question was reworded under a new id, so a v4 answer is asked again."""
+    from extraction.slot_reader import bedrock
+    from workflow import slot_reader
+
+    assert bedrock.ROW_PROMPT_ID == "slot-row-choice-v5"
+    revision, version, page_row, first_run = _scaffold(session)
+    page = _page(version.id, page_row.id)
+    with monkeypatch.context() as earlier:
+        earlier.setattr(bedrock, "ROW_PROMPT_ID", "slot-row-choice-v4")
+        earlier.setattr(slot_reader, "ROW_PROMPT_ID", "slot-row-choice-v4")
+        first_readers = _readers(page)
+        _read_and_record(session, page, first_readers, first_run)
+    assert first_readers.row_requests
+    assert {row.prompt_id for row in _rows(session, first_run)} >= {"slot-row-choice-v4"}
+
+    readers = _readers(page)
+    _result, attempts, _meter = _read_and_record(
+        session, page, readers, _new_run(session, revision.id)
+    )
+
+    assert len(readers.row_requests) == len(first_readers.row_requests), "asked again"
+    assert not readers.requests and not readers.wall_requests, "the unchanged ones are reused"
+    row_attempts = [a for a in attempts if a.prompt_id.startswith("slot-row-choice")]
+    assert row_attempts and {a.prompt_id for a in row_attempts} == {"slot-row-choice-v5"}
+    assert all(a.reused_from is None for a in row_attempts)
+
+
 def test_a_changed_model_finds_no_stored_answer(session: Any) -> None:
     """The reader pair is fixed in code, so a changed model is checked where answers are found."""
     from extraction.slot_reader.bedrock import CLAUDE_SPAN_PROMPT_ID
