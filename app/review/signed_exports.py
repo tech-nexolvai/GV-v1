@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -34,6 +34,7 @@ from app.models.signed_exports import (
 )
 from app.models.verdicts import CheckRun, Finding, FindingEvidence, VerdictInput
 from app.review.carry_over import decision_records
+from app.review.reviewer_marks import FrozenReviewerMarks, reviewer_marks_for
 from app.review.signed_record import ReviewDisposition, SignedReview, SignedReviewFinding
 from app.schemas.visual_ui import CountertopResultsOut
 from workflow.changed_values import ChangedValues, changed_values_for_revision
@@ -70,8 +71,19 @@ class FrozenCountertops(BaseModel):
     results: dict[str, Any]
 
 
+#: The sign-off snapshot's format, written into every new snapshot. A snapshot with no
+#: `format_version` key was frozen before #1363 and is format 1.
+#:
+#: * 1: findings, review history, facts, changed values, countertop results (#1182).
+#: * 2 (#1363): adds `reviewer_marks`, a person's confirms, fixes and answers and the results
+#:   printed NOT CHECKED, which the signed cloud PDF draws. A format-1 snapshot has none and its
+#:   cloud PDF is drawn exactly as before (`tests/reports/test_redline_old_format_golden.py`).
+SNAPSHOT_FORMAT_VERSION = 2
+
+
 class ExportSnapshot(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
+    format_version: int = 1
     package_revision_id: UUID
     revision_number: int
     vendor: str | None
@@ -86,6 +98,17 @@ class ExportSnapshot(BaseModel):
     after the approval (or before a retried export) reached the signed files while their findings
     page showed the frozen findings. `None` only on a snapshot frozen before #1182; see
     `frozen_countertop_results`."""
+    reviewer_marks: FrozenReviewerMarks | None = None
+    """Format 2 (#1363): every person's confirm, fix and answer at sign-off, and the results whose
+    check could not run, as the signed cloud PDF prints them. `None` exactly on format 1."""
+
+    @model_validator(mode="after")
+    def known_format(self) -> ExportSnapshot:
+        if not 1 <= self.format_version <= SNAPSHOT_FORMAT_VERSION:
+            raise ValueError(f"unknown sign-off snapshot format {self.format_version}")
+        if (self.format_version >= 2) != (self.reviewer_marks is not None):
+            raise ValueError("a format-2 snapshot carries reviewer marks, and only it")
+        return self
 
 
 def freeze_countertops(results: CountertopResultsOut) -> FrozenCountertops:
@@ -455,6 +478,7 @@ def _request_signed_exports(
     )
     facts = deterministic_facts(db, approval)
     payload = ExportSnapshot(
+        format_version=SNAPSHOT_FORMAT_VERSION,
         package_revision_id=revision.id,
         revision_number=revision.revision_number,
         vendor=package.vendor,
@@ -466,6 +490,14 @@ def _request_signed_exports(
         # Frozen in the approval's own transaction, from the same projection the screen read.
         countertop_results=freeze_countertops(
             _countertop_results_for_revision(db, package.id, revision)
+        ),
+        # Frozen in the same transaction (#1363): the marks the signed cloud PDF draws.
+        reviewer_marks=reviewer_marks_for(
+            db,
+            revision.id,
+            findings=[(finding, definition.rule_id) for finding, _, _, definition in rows],
+            decisions=review_record.findings,
+            until=approval.created_at,
         ),
     )
     encoded = canonical(payload.model_dump(mode="json"))

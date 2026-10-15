@@ -37,12 +37,16 @@ from app.models.document import (
 from app.models.evidence import CanonicalObservation
 from app.models.verdicts import CheckRun, VerdictInput
 from app.models.verdicts import Finding as FindingRow
+from app.review.reviewer_marks import FrozenReviewerMarks
 from evidence.coordinates import PageTransform
 from reports.redline import (
+    NOT_CHECKED,
     RedlineFinding,
     RedlinePackage,
     RedlinePage,
     ReportMode,
+    ReviewerMark,
+    ReviewerMarkKind,
     VendorClearance,
     render_redline,
 )
@@ -55,12 +59,31 @@ from workflow.changed_values import ChangedValues
 __all__ = [
     "NOT_CHECKED",
     "RedlineOutput",
+    "redline_marks",
     "render_draft_redline",
     "render_evidence_grounded_redline",
 ]
 
-#: How a result nothing checked yet is printed on the draft cloud PDF (#1340, Anant 2026-10-15).
-NOT_CHECKED = "NOT CHECKED"
+
+def redline_marks(frozen: FrozenReviewerMarks) -> tuple[ReviewerMark, ...]:
+    """The frozen marks (`app/review/reviewer_marks.py`) as the renderer draws them (#1363)."""
+    return tuple(
+        ReviewerMark(
+            kind=ReviewerMarkKind(mark.kind),
+            words=mark.words,
+            subject=mark.subject,
+            details=mark.details,
+            evidence_ref=mark.place,
+            unplaced_reason=mark.unplaced_reason,
+        )
+        for mark in frozen.marks
+    )
+
+
+def _printed_not_checked(finding: RedlineFinding) -> RedlineFinding:
+    """A result whose check could not run: `❍ NOT CHECKED` and its reason after `NOT CHECKED: `,
+    never shown as judged. The stored verdict is not changed."""
+    return replace(finding, reason=f"{NOT_CHECKED}: {finding.reason}", not_checked=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +103,8 @@ def render_evidence_grounded_redline(
     changed_values: ChangedValues | None = None,
     signed_review: SignedReview | None = None,
     countertop_labels: Sequence[str] = (),
+    reviewer_marks: Sequence[ReviewerMark] | None = None,
+    not_checked: frozenset[UUID] = frozenset(),
 ) -> RedlineOutput:
     """Render one internal redline only when a finding has a typed, stored location.
 
@@ -105,8 +130,11 @@ def render_evidence_grounded_redline(
         )
 
     rendered = tuple(
-        _stored_finding(row, run, rule_id, snapshot_id, references.get(row.id, ()))
-        for row, run, rule_id, snapshot_id in findings
+        _printed_not_checked(finding) if row.id in not_checked else finding
+        for row, finding in (
+            (row, _stored_finding(row, run, rule_id, snapshot_id, references.get(row.id, ())))
+            for row, run, rule_id, snapshot_id in findings
+        )
     )
     # Internal mode is intentional: generation precedes approval.  The normal artifact-download
     # gate still refuses any output before sign-off, and vendor publication remains the separately
@@ -129,6 +157,7 @@ def render_evidence_grounded_redline(
             ),
             signed_review=signed_review,
             countertop_labels=countertop_labels,
+            reviewer_marks=reviewer_marks,
         ),
         None,
     )
@@ -142,6 +171,7 @@ def render_draft_redline(
     findings: Sequence[tuple[FindingRow, CheckRun, str, str]],
     not_checked: frozenset[UUID] = frozenset(),
     changed_values: ChangedValues | None = None,
+    reviewer_marks: Sequence[ReviewerMark] | None = None,
 ) -> RedlineOutput:
     """The draft cloud PDF's drawing pages, before sign-off (#1340): always INTERNAL mode.
 
@@ -149,8 +179,9 @@ def render_draft_redline(
     it, a draft is made even when nothing can be placed, because its listing pages still account
     for every result, and a reviewer asking "what will be clouded?" deserves that answer too.
 
-    A result in `not_checked` is printed with its reason after `NOT CHECKED: `, so the draft never
-    shows a check that did not run as if it had been judged. The stored verdict is not changed.
+    A result in `not_checked` is printed `❍ NOT CHECKED`, with its reason after `NOT CHECKED: `,
+    so the draft never shows a check that did not run as if it had been judged. The stored verdict
+    is not changed. `reviewer_marks` are the same marks the signed cloud PDF draws (#1363).
     """
     if not findings:
         return RedlineOutput(None, "this revision has no live findings")
@@ -165,11 +196,16 @@ def render_draft_redline(
     for row, run, rule_id, snapshot_id in findings:
         finding = _stored_finding(row, run, rule_id, snapshot_id, references.get(row.id, ()))
         if row.id in not_checked:
-            finding = replace(finding, reason=f"{NOT_CHECKED}: {finding.reason}")
+            finding = _printed_not_checked(finding)
         rendered.append(finding)
     return RedlineOutput(
         render_redline(
-            package, tuple(rendered), ReportMode.INTERNAL, store, changed_values=changed_values
+            package,
+            tuple(rendered),
+            ReportMode.INTERNAL,
+            store,
+            changed_values=changed_values,
+            reviewer_marks=reviewer_marks,
         ),
         None,
     )

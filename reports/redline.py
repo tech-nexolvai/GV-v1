@@ -175,6 +175,9 @@ class RedlineFinding:
     scope_label: str | None = None
     comparison: str | None = None
     notes: tuple[str, ...] = ()
+    not_checked: bool = False
+    """The check could not run (decision 1, 2026-10-15): drawn `❍ NOT CHECKED`, never with its
+    stored outcome as if it had been judged (#1363). The stored verdict is unchanged."""
 
     def __post_init__(self) -> None:
         if not self.rule_id.strip():
@@ -318,6 +321,93 @@ class Unplaced:
             raise ValueError("an unplaced finding must say why it could not be marked")
 
 
+#: How a check that could not run is printed (#1340, #1363; Anant, 2026-10-15).
+NOT_CHECKED: Final = "NOT CHECKED"
+
+#: The glyph beside `NOT_CHECKED`. Never the colour alone.
+NOT_CHECKED_GLYPH: Final = "❍"
+
+
+class ReviewerMarkKind(StrEnum):
+    """What a person did, as drawn on the cloud PDF (#1363). Each has its own glyph."""
+
+    CONFIRMED = "confirmed"
+    """A person agreed with the AI's reading: "✓ Confirmed by AB". Not a check result."""
+
+    FIXED = "fixed"
+    """A person fixed the AI's reading: "✎ Fixed by AB: AI read X → Y"."""
+
+    ANSWERED = "answered"
+    """A person's answer: walls chosen, a page answered, a result checked by hand."""
+
+    CHECKED_WRONG = "checked_wrong"
+    """A person checked a result by hand and found it wrong on the drawing."""
+
+
+#: One glyph per kind, deliberately exhaustive: every mark is a glyph plus words, never colour alone.
+REVIEWER_MARK_GLYPHS: Final[dict[ReviewerMarkKind, str]] = {
+    ReviewerMarkKind.CONFIRMED: "✓",
+    ReviewerMarkKind.FIXED: "✎",
+    ReviewerMarkKind.ANSWERED: "✍",
+    ReviewerMarkKind.CHECKED_WRONG: "✗",
+}
+
+#: The colour of each kind: only the second signal, after the glyph and the words.
+_REVIEWER_STROKES: Final[dict[ReviewerMarkKind, tuple[float, float, float]]] = {
+    ReviewerMarkKind.CONFIRMED: (0.05, 0.3, 0.55),
+    ReviewerMarkKind.FIXED: (0.45, 0.15, 0.55),
+    ReviewerMarkKind.ANSWERED: (0.25, 0.3, 0.4),
+    ReviewerMarkKind.CHECKED_WRONG: (0.8, 0.05, 0.05),
+}
+
+#: Glyphs drawn in a standard font that has them, so text extraction reads them back as written.
+_GLYPH_FONTS: Final[dict[str, str]] = {
+    **{glyph: "ZapfDingbats" for glyph in REVIEWER_MARK_GLYPHS.values()},
+    NOT_CHECKED_GLYPH: "ZapfDingbats",
+    "→": "Symbol",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewerMark:
+    """One person's confirm, fix or answer, as the cloud PDF shows it (#1363).
+
+    A presentation value, like `RedlineFinding`: the words were written from stored records by the
+    caller (the frozen sign-off snapshot, or the live records for a draft), and nothing here reads
+    or decides anything. `evidence_ref` is a code-recorded place in the same JSON shape a finding's
+    evidence carries; with none, `unplaced_reason` says why, and the mark is listed instead.
+    """
+
+    kind: ReviewerMarkKind
+    words: str
+    subject: str
+    details: tuple[str, ...] = ()
+    evidence_ref: str | None = None
+    unplaced_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, ReviewerMarkKind):
+            raise TypeError("kind must be a ReviewerMarkKind")
+        if not self.words.strip():
+            raise ValueError("a reviewer mark must say what the person did")
+        if not self.subject.strip():
+            raise ValueError("a reviewer mark must say what it is about")
+
+    @property
+    def text(self) -> str:
+        """The glyph and the words, as drawn."""
+        return f"{REVIEWER_MARK_GLYPHS[self.kind]} {self.words}"
+
+
+@dataclass(frozen=True, slots=True)
+class _ReviewerPlaced:
+    """A reviewer mark, its number on the summary, and the polygon it is drawn at."""
+
+    mark: ReviewerMark
+    number: int
+    polygon: Polygon
+
+
 @dataclass(frozen=True, slots=True)
 class _OutcomeStyle:
     """How one outcome is drawn. §3.2: every outcome is visible, and none of them is 'nothing'."""
@@ -338,6 +428,49 @@ OUTCOME_STYLES: Final[dict[Outcome, _OutcomeStyle]] = {
     Outcome.NOT_FOUND: _OutcomeStyle((0.15, 0.3, 0.6), None, 1.25, True),
     Outcome.NO_APPLICABLE_RULE: _OutcomeStyle((0.4, 0.2, 0.55), None, 1.25, True),
 }
+
+#: A check that could not run: grey and dashed, with `❍ NOT CHECKED` beside it (#1363).
+NOT_CHECKED_STYLE: Final = _OutcomeStyle((0.4, 0.4, 0.4), None, 1.25, True)
+
+
+def _not_checked(finding: RenderableFinding) -> bool:
+    return isinstance(finding, RedlineFinding) and finding.not_checked
+
+
+def _style(finding: RenderableFinding) -> _OutcomeStyle:
+    return NOT_CHECKED_STYLE if _not_checked(finding) else OUTCOME_STYLES[finding.outcome]
+
+
+def _result_words(finding: RenderableFinding) -> str:
+    """The stored outcome, or `❍ NOT CHECKED` for a check that could not run."""
+    if _not_checked(finding):
+        return f"{NOT_CHECKED_GLYPH} {NOT_CHECKED}"
+    return finding.outcome.value
+
+
+def _runs(text: str, font: str) -> list[tuple[str, str]]:
+    """Split text into (font, segment) runs: each glyph in a font that has it, the rest in `font`."""
+    runs: list[tuple[str, str]] = []
+    for character in text:
+        wanted = _GLYPH_FONTS.get(character, font)
+        if runs and runs[-1][0] == wanted:
+            runs[-1] = (wanted, runs[-1][1] + character)
+        else:
+            runs.append((wanted, character))
+    return runs
+
+
+def _has_glyph(text: str) -> bool:
+    return any(character in _GLYPH_FONTS for character in text)
+
+
+def _draw_text(canvas: Canvas, x: float, y: float, text: str, font: str, size: float) -> None:
+    """Draw text whose glyphs (✓ ✎ ✍ ✗ ❍ →) need another standard font, one run at a time."""
+    cursor = x
+    for run_font, segment in _runs(text, font):
+        canvas.setFont(run_font, size)
+        canvas.drawString(cursor, y, segment)
+        cursor += canvas.stringWidth(segment, run_font, size)
 
 
 @dataclass(frozen=True, slots=True)
@@ -373,7 +506,13 @@ CALLOUT_FONT_SIZE: Final = 7.5
 def _fact_note(finding: RenderableFinding) -> str:
     """A fixed presentation template, never a new reading or an inferred role."""
     outcome = finding.outcome
-    parts = [f"{finding.rule_id} · {outcome.value.replace('_', ' ')}"]
+    parts = [
+        (
+            finding.rule_id  # its reason already starts `NOT CHECKED: `
+            if _not_checked(finding)
+            else f"{finding.rule_id} · {outcome.value.replace('_', ' ')}"
+        )
+    ]
     scope = finding.scope_label if isinstance(finding, RedlineFinding) else None
     if scope:
         parts.append(scope)
@@ -458,6 +597,7 @@ def render_redline(
     changed_values: ChangedValues | None = None,
     signed_review: SignedReview | None = None,
     countertop_labels: Sequence[str] = (),
+    reviewer_marks: Sequence[ReviewerMark] | None = None,
 ) -> StoredArtifact:
     """Overlay the findings onto the source pages and store the result.
 
@@ -471,6 +611,11 @@ def render_redline(
 
     `clearance` is meaningful only in vendor mode, and supplying one for an internal render is
     refused rather than ignored — a caller who passed it believed it was doing something.
+
+    `reviewer_marks` are a person's confirms, fixes and answers (#1363): each is drawn where code
+    recorded a place for it, and every one is listed on the summary pages, placed or not. `None`
+    (a sign-off snapshot frozen before #1363) draws exactly what was drawn before; an empty
+    sequence says on the summary that no person answered anything.
     """
     if not isinstance(package, RedlinePackage):
         raise TypeError("package must be a RedlinePackage")
@@ -487,6 +632,12 @@ def render_redline(
         not isinstance(label, str) or not label.strip() for label in countertop_labels
     ):
         raise TypeError("countertop_labels must be a sequence of non-empty strings")
+    if reviewer_marks is not None and (
+        isinstance(reviewer_marks, str)
+        or not isinstance(reviewer_marks, Sequence)
+        or any(not isinstance(mark, ReviewerMark) for mark in reviewer_marks)
+    ):
+        raise TypeError("reviewer_marks must be a sequence of ReviewerMark values")
 
     if clearance is not None and not isinstance(clearance, VendorClearance):
         raise TypeError("clearance must be a VendorClearance")
@@ -508,6 +659,7 @@ def render_redline(
     _check_pages_describe_the_pdf(package, reader)
 
     marks, unplaced, marked = _place(package, findings)
+    reviewer_placed, reviewer_unplaced = _place_reviewer(package, reviewer_marks or ())
     document = _compose(
         package,
         reader,
@@ -518,6 +670,12 @@ def render_redline(
         clearance,
         changed_values,
         countertop_labels,
+        reviewer_placed,
+        (
+            None
+            if reviewer_marks is None
+            else _ReviewerListing(tuple(reviewer_marks), reviewer_unplaced)
+        ),
     )
     if signed_review is not None:
         if clearance is None or signed_review.approval_id != clearance.approval_id:
@@ -697,6 +855,57 @@ def _place(
     return marks, unplaced, marked
 
 
+@dataclass(frozen=True, slots=True)
+class _ReviewerListing:
+    """Every reviewer mark, in order, and why each one not drawn is not drawn (by its number)."""
+
+    marks: tuple[ReviewerMark, ...]
+    unplaced: dict[int, str]
+
+
+def _place_reviewer(
+    package: RedlinePackage, reviewer_marks: Sequence[ReviewerMark]
+) -> tuple[dict[int, list[_ReviewerPlaced]], dict[int, str]]:
+    """Sort a person's marks into places on pages and reasons; every one leaves accounted for.
+
+    Placement follows the findings' own rule: only a recorded page and polygon in the stored space,
+    on a page of this redline. Numbered from 1 in the order given, so the drawing and the summary
+    name each mark the same way.
+    """
+    by_key = {entry.key: entry for entry in package.pages}
+    placed: dict[int, list[_ReviewerPlaced]] = {}
+    unplaced: dict[int, str] = {}
+    for number, mark in enumerate(reviewer_marks, start=1):
+        if mark.evidence_ref is None:
+            unplaced[number] = (
+                mark.unplaced_reason or "no place on the drawing was recorded for this answer"
+            )
+            continue
+        located = _decode_reference(mark.evidence_ref)
+        if isinstance(located, _Undecodable):
+            unplaced[number] = located.reason.replace("its evidence reference", "its place", 1)
+            continue
+        entry = by_key.get((located.document_version_id, located.page))
+        if entry is None:
+            unplaced[number] = (
+                f"it is on page {located.page + 1} of a document version that is not one of the "
+                "pages in this redline"
+            )
+            continue
+        try:
+            polygon = Polygon(
+                points=located.points,
+                space="stored",
+                document_version_id=located.document_version_id,
+                page=located.page,
+            )
+        except (TypeError, ValueError) as error:
+            unplaced[number] = f"its recorded place is not a usable page region ({error})"
+            continue
+        placed.setdefault(entry.source_index, []).append(_ReviewerPlaced(mark, number, polygon))
+    return placed, unplaced
+
+
 # ---------------------------------------------------------------------------
 # Drawing
 # ---------------------------------------------------------------------------
@@ -712,6 +921,8 @@ def _compose(
     clearance: VendorClearance | None,
     changed_values: ChangedValues | None,
     countertop_labels: Sequence[str],
+    reviewer_placed: dict[int, list[_ReviewerPlaced]] | None = None,
+    reviewer_listing: _ReviewerListing | None = None,
 ) -> bytes:
     """Merge the overlays onto the original pages and append the summary pages.
 
@@ -723,14 +934,28 @@ def _compose(
     writer = PdfWriter(clone_from=reader)
     by_index = {entry.source_index: entry for entry in package.pages}
 
+    reviewer_placed = reviewer_placed or {}
     for index, page in enumerate(writer.pages):
         page_marks = marks.get(index) or ()
-        if page_marks:
+        page_reviewer = reviewer_placed.get(index) or ()
+        if page_marks or page_reviewer:
             entry = by_index[index]
             ordered = _ordered_marks(entry, page_marks)
-            placements, columns = _callout_layout(entry, ordered)
+            reviewer_ordered = tuple(sorted(page_reviewer, key=lambda item: item.number))
+            placements, columns = _callout_layout(
+                entry,
+                [_note_lines(mark.finding) for mark in ordered]
+                + [_reviewer_lines(item.mark) for item in reviewer_ordered],
+            )
             expanded = _expanded_boxes(entry, columns)
-            overlay = _overlay(entry, ordered, placements, expanded)
+            overlay = _overlay(
+                entry,
+                ordered,
+                placements[: len(ordered)],
+                expanded,
+                reviewer_ordered,
+                placements[len(ordered) :],
+            )
             _append_overlay(writer, page, overlay, expanded)
 
     pages_with_marks = frozenset(index for index, page_marks in marks.items() if page_marks)
@@ -743,6 +968,12 @@ def _compose(
         clearance,
         changed_values,
         countertop_labels,
+        reviewer_listing,
+        {
+            item.number: entry.page
+            for entry in package.pages
+            for item in reviewer_placed.get(entry.source_index, ())
+        },
     )
     for listing in PdfReader(BytesIO(summary)).pages:
         writer.add_page(listing)
@@ -781,16 +1012,24 @@ def _visible_size(entry: RedlinePage) -> tuple[Decimal, Decimal]:
     return (height, width) if entry.transform.rotation in (90, 270) else (width, height)
 
 
+def _reviewer_lines(mark: ReviewerMark) -> tuple[str, ...]:
+    """The callout under a reviewer mark's heading: what it is about, then its details."""
+    return tuple(
+        wrapped
+        for text in (mark.subject, *mark.details)
+        for wrapped in textwrap.wrap(text, width=47, break_long_words=True)
+    )
+
+
 def _callout_layout(
-    entry: RedlinePage, marks: Sequence[_Mark]
+    entry: RedlinePage, notes: Sequence[tuple[str, ...]]
 ) -> tuple[tuple[tuple[int, Decimal, tuple[str, ...]], ...], int]:
     """Allocate full notes in external columns; never truncate or use the drawing crop."""
     _, height = _visible_size(entry)
     column = 0
     cursor = height - CALLOUT_MARGIN
     result: list[tuple[int, Decimal, tuple[str, ...]]] = []
-    for mark in marks:
-        lines = _note_lines(mark.finding)
+    for lines in notes:
         needed = CALLOUT_LINE_HEIGHT * (len(lines) + 2)
         if result and cursor - needed < CALLOUT_MARGIN:
             column += 1
@@ -843,6 +1082,8 @@ def _overlay(
         tuple[Decimal, Decimal, Decimal, Decimal],
         tuple[Decimal, Decimal, Decimal, Decimal],
     ],
+    reviewer: Sequence[_ReviewerPlaced] = (),
+    reviewer_placements: Sequence[tuple[int, Decimal, tuple[str, ...]]] = (),
 ) -> PageObject:
     """Build the transparent vector mark and callout page."""
     left, bottom, right, top = expanded[0]
@@ -857,19 +1098,53 @@ def _overlay(
         _draw_mark(canvas, mark, entry.transform, angle, index)
         u = visible_width + column * CALLOUT_COLUMN_WIDTH + CALLOUT_MARGIN
         x, y = _visual_point(entry, u, cursor)
-        style = OUTCOME_STYLES[mark.finding.outcome]
+        style = _style(mark.finding)
         canvas.saveState()
         canvas.translate(float(x), float(y))
         canvas.rotate(angle)
         canvas.setFillColorRGB(*style.stroke)
-        canvas.setFont("Courier-Bold", CALLOUT_FONT_SIZE)
-        canvas.drawString(
-            0, 0, f"{index:02d}  {mark.finding.rule_id} · {mark.finding.outcome.value}"
-        )
+        if _not_checked(mark.finding):
+            _draw_text(
+                canvas,
+                0,
+                0,
+                f"{index:02d}  {mark.finding.rule_id} · {_result_words(mark.finding)}",
+                "Courier-Bold",
+                CALLOUT_FONT_SIZE,
+            )
+        else:
+            canvas.setFont("Courier-Bold", CALLOUT_FONT_SIZE)
+            canvas.drawString(
+                0, 0, f"{index:02d}  {mark.finding.rule_id} · {mark.finding.outcome.value}"
+            )
         canvas.setFillColorRGB(0.1, 0.1, 0.1)
         canvas.setFont("Courier", CALLOUT_FONT_SIZE)
         for line_number, line in enumerate(lines, start=1):
             canvas.drawString(0, -line_number * float(CALLOUT_LINE_HEIGHT), line)
+        canvas.restoreState()
+
+    taken: list[tuple[Decimal, Decimal, Decimal, Decimal]] = []
+    for item, (column, cursor, lines) in zip(reviewer, reviewer_placements, strict=True):
+        _draw_reviewer_mark(canvas, item, entry, angle, taken)
+        u = visible_width + column * CALLOUT_COLUMN_WIDTH + CALLOUT_MARGIN
+        x, y = _visual_point(entry, u, cursor)
+        canvas.saveState()
+        canvas.translate(float(x), float(y))
+        canvas.rotate(angle)
+        canvas.setFillColorRGB(*_REVIEWER_STROKES[item.mark.kind])
+        _draw_text(
+            canvas, 0, 0, f"R{item.number}  {item.mark.text}", "Helvetica-Bold", CALLOUT_FONT_SIZE
+        )
+        canvas.setFillColorRGB(0.1, 0.1, 0.1)
+        for line_number, line in enumerate(lines, start=1):
+            _draw_text(
+                canvas,
+                0,
+                -line_number * float(CALLOUT_LINE_HEIGHT),
+                line,
+                "Courier",
+                CALLOUT_FONT_SIZE,
+            )
         canvas.restoreState()
 
     canvas.showPage()
@@ -941,7 +1216,7 @@ def _draw_mark(
     canvas: Canvas, mark: _Mark, transform: PageTransform, angle: int, index: int
 ) -> None:
     """Outline the evidence region and label it with the rule and the outcome."""
-    style = OUTCOME_STYLES[mark.finding.outcome]
+    style = _style(mark.finding)
     points = polygon_pdf_points(mark.polygon, transform)
 
     canvas.saveState()
@@ -993,16 +1268,101 @@ def _draw_label(
     covering the line work with a paragraph would hide the very thing the reviewer is being asked
     to look at.
     """
-    label = f"{index:02d} · {mark.finding.rule_id} · {mark.finding.outcome.value}"
+    label = f"{index:02d} · {mark.finding.rule_id} · {_result_words(mark.finding)}"
     anchor = label_anchor(points, angle)
 
     canvas.saveState()
     canvas.translate(float(anchor.x), float(anchor.y))
     canvas.rotate(angle)
     canvas.translate(0, 12)
-    canvas.setFont("Helvetica-Bold", MARK_FONT_SIZE)
-    canvas.setFillColorRGB(*style.stroke)
-    canvas.drawString(0.0, MARK_FONT_SIZE * 0.35 + 1.0, label)
+    if _not_checked(mark.finding):
+        canvas.setFillColorRGB(*style.stroke)
+        _draw_text(
+            canvas, 0.0, MARK_FONT_SIZE * 0.35 + 1.0, label, "Helvetica-Bold", MARK_FONT_SIZE
+        )
+    else:
+        canvas.setFont("Helvetica-Bold", MARK_FONT_SIZE)
+        canvas.setFillColorRGB(*style.stroke)
+        canvas.drawString(0.0, MARK_FONT_SIZE * 0.35 + 1.0, label)
+    canvas.restoreState()
+
+
+def _draw_reviewer_mark(
+    canvas: Canvas,
+    item: _ReviewerPlaced,
+    entry: RedlinePage,
+    angle: int,
+    taken: list[tuple[Decimal, Decimal, Decimal, Decimal]],
+) -> None:
+    """A person's mark: a dotted frame (never a cloud, which is a check's) and its glyph and words.
+
+    The words go just below the region as the page is read, so they never sit on a finding's
+    label above it; when that would leave the visible sheet (a whole-page answer), just inside.
+    Several answers about one place (a row's results checked by hand) stack one line apart rather
+    than print over each other: `taken` holds the labels already on this page, in the page's
+    visible frame.
+    """
+    points = polygon_pdf_points(item.polygon, entry.transform)
+    stroke = _REVIEWER_STROKES[item.mark.kind]
+    left = min(float(point.x) for point in points) - 3
+    right = max(float(point.x) for point in points) + 3
+    bottom = min(float(point.y) for point in points) - 3
+    top = max(float(point.y) for point in points) + 3
+    canvas.saveState()
+    canvas.setStrokeColorRGB(*stroke)
+    canvas.setLineWidth(0.9)
+    canvas.setDash(1, 2)
+    canvas.rect(left, bottom, right - left, top - bottom, stroke=1, fill=0)
+    canvas.restoreState()
+
+    inverse = (360 - angle) % 360
+    turned = [_turn(point.x, point.y, inverse) for point in points]
+    low_x = min(x for x, _ in turned)
+    low_y = min(y for _, y in turned)
+    left_c, bottom_c, right_c, top_c = entry.transform.crop_box
+    sheet_bottom = min(
+        y
+        for _, y in (
+            _turn(corner_x, corner_y, inverse)
+            for corner_x in (left_c, right_c)
+            for corner_y in (bottom_c, top_c)
+        )
+    )
+    size = Decimal(str(MARK_FONT_SIZE))
+    label = f"R{item.number} {item.mark.text}"
+    width = Decimal(
+        str(
+            sum(
+                canvas.stringWidth(segment, font, MARK_FONT_SIZE)
+                for font, segment in _runs(label, "Helvetica-Bold")
+            )
+        )
+    )
+    below = low_y - 4 - size
+    inside = below < sheet_bottom + 2
+    offset = low_y + 4 if inside else below
+    step = (size + 2) * (1 if inside else -1)
+
+    def clashes(y: Decimal) -> bool:
+        return any(
+            low_x < right_t and low_x + width > left_t and y < top_t and y + size > bottom_t
+            for left_t, bottom_t, right_t, top_t in taken
+        )
+
+    while clashes(offset):
+        offset += step
+    taken.append((low_x, offset, low_x + width, offset + size))
+    anchor = _turn(low_x, offset, angle)
+    canvas.saveState()
+    canvas.translate(float(anchor[0]), float(anchor[1]))
+    canvas.rotate(angle)
+    # A pale backing so the words read over the line work; the drawing still shows through.
+    canvas.setFillColorRGB(1, 1, 1)
+    canvas.setFillAlpha(0.8)
+    canvas.rect(-1, -2, float(width) + 2, float(size) + 2, stroke=0, fill=1)
+    canvas.setFillAlpha(1)
+    canvas.setFillColorRGB(*stroke)
+    _draw_text(canvas, 0.0, 0.0, label, "Helvetica-Bold", MARK_FONT_SIZE)
     canvas.restoreState()
 
 
@@ -1115,6 +1475,33 @@ def _derived_section(
     line("")
 
 
+def _reviewer_section(
+    listing: _ReviewerListing,
+    pages: dict[int, int],
+    line: Callable[..., None],
+    paragraph: Callable[..., None],
+) -> None:
+    """Every confirm, fix and answer a person gave, drawn or not: listed, never dropped (#1363)."""
+    line("What a person answered", font="Helvetica-Bold", size=12.0)
+    paragraph(
+        'A person\'s answer is not a check result. "Confirmed by" means a reviewer looked at the '
+        "AI's reading and agreed with it; the check's own result is listed separately, and a "
+        "confirmation never turns it into PASS. Every answer is listed here, on the drawing or not."
+    )
+    line("")
+    if not listing.marks:
+        paragraph("None. No person confirmed, fixed or answered anything on this revision.")
+    for number, mark in enumerate(listing.marks, start=1):
+        paragraph(f"R{number} {mark.text} — {mark.subject}")
+        for detail in mark.details:
+            paragraph(detail, "    ")
+        if number in listing.unplaced:
+            paragraph(f"not on the drawing: {listing.unplaced[number]}", "    ")
+        else:
+            paragraph(f"marked on page {pages[number] + 1}", "    ")
+        line("")
+
+
 def _listing(
     package: RedlinePackage,
     findings: Sequence[RenderableFinding],
@@ -1124,6 +1511,8 @@ def _listing(
     clearance: VendorClearance | None,
     changed_values: ChangedValues | None,
     countertop_labels: Sequence[str],
+    reviewer_listing: _ReviewerListing | None = None,
+    reviewer_pages: dict[int, int] | None = None,
 ) -> bytes:
     """Render the appended pages that account for every finding not on the drawing.
 
@@ -1141,9 +1530,13 @@ def _listing(
         if cursor < margin:
             canvas.showPage()
             cursor = float(height) - margin
-        canvas.setFont(font, size)
-        canvas.setFillColorRGB(0.1, 0.1, 0.1)
-        canvas.drawString(margin, cursor, text)
+        if _has_glyph(text):
+            canvas.setFillColorRGB(0.1, 0.1, 0.1)
+            _draw_text(canvas, margin, cursor, text, font, size)
+        else:
+            canvas.setFont(font, size)
+            canvas.setFillColorRGB(0.1, 0.1, 0.1)
+            canvas.drawString(margin, cursor, text)
         cursor -= size * 1.6
 
     def paragraph(text: str, indent: str = "") -> None:
@@ -1197,6 +1590,9 @@ def _listing(
             for text in [value.plain() for value in changed_values.defaults_used] or ["None"]:
                 paragraph(text)
         line("")
+
+    if reviewer_listing is not None:
+        _reviewer_section(reviewer_listing, reviewer_pages or {}, line, paragraph)
 
     _derived_section(findings, line, paragraph)
 
