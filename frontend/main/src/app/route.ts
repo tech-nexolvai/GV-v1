@@ -20,6 +20,11 @@ export interface Route {
   page: Page;
   /** The package under review. Only meaningful on `review`; `null` there is the start screen. */
   packageId: string | null;
+  /**
+   * The old tabs and wizard (#1343): `#/review/<id>/advanced`, reached from "More". Without it a
+   * review opens on the simple review page. Absent rather than false, so plain routes stay plain.
+   */
+  advanced?: true;
 }
 
 const PAGES: readonly Page[] = ['review', 'documents', 'rulebook', 'settings', 'usage', 'ui-kit'];
@@ -35,13 +40,17 @@ export function parseRoute(hash: string): Route {
   }
   const page = PAGES.find((candidate) => candidate === parts[0]);
   if (page === undefined) return { page: 'review', packageId: null };
-  if (page === 'review') return { page, packageId: parts[1] ?? null };
+  if (page === 'review') {
+    const packageId = parts[1] ?? null;
+    return packageId !== null && parts[2] === 'advanced' ? { page, packageId, advanced: true } : { page, packageId };
+  }
   return { page, packageId: null };
 }
 
 export function formatRoute(route: Route): string {
   if (route.page === 'review') {
-    return route.packageId ? `#/review/${encodeURIComponent(route.packageId)}` : '#/';
+    if (!route.packageId) return '#/';
+    return `#/review/${encodeURIComponent(route.packageId)}${route.advanced ? '/advanced' : ''}`;
   }
   return `#/${route.page}`;
 }
