@@ -1,0 +1,570 @@
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { MessageSquare, MoreHorizontal, SlidersHorizontal } from 'lucide-react';
+
+import { getPackage, ApiError, downloadPagePicture } from '@/api/client';
+import { projectId as configuredProjectId } from '@/api/config';
+import { apiUrl, liveReviewItemsApi, type ItemAction, type ReviewFailure, type ReviewItem, type ReviewItemsApi, type ReviewItemsOut } from '@/api/review-items';
+import { agreeAction, disagreeAction, orderItems, pointsOf, summarize } from '@/lib/review-items';
+import type { ViewerTarget } from '@/lib/drawing-viewer';
+import type { AssistantRecords } from '@/lib/assistant';
+import { AssistantPanel, type AssistantNavigation } from '@/components/assistant/assistant-panel';
+import { HeaderActions } from '@/components/shell/ShellHeader';
+import { Button } from '@/components/ui/button';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { ReviewHeader, type CloudState } from '@/components/simple-review/review-header';
+import { FailuresStrip, type SaveError } from '@/components/simple-review/failures-strip';
+import { ItemRow } from '@/components/simple-review/item-row';
+import { ItemDetail } from '@/components/simple-review/item-detail';
+import { NotCheckedGroup } from '@/components/simple-review/not-checked-group';
+import { FinalBar } from '@/components/simple-review/final-bar';
+import { LoadError, NothingNeedsYou, ReviewSkeleton, UnaccountedBanner } from '@/components/simple-review/states';
+import { PicturesProvider, type PictureLoader } from '@/components/simple-review/item-pictures';
+
+// Until the dual PDF viewer (U3) lands, "Open PDFs" opens the existing drawing viewer at the spot.
+const DrawingViewerSheet = lazy(() => import('@/components/drawing/drawing-viewer').then((m) => ({ default: m.DrawingViewerSheet })));
+
+/**
+ * The cloud PDF hooks (W4b, #1340). `draft` null: the server cannot make a draft yet, and the button
+ * says so. `final` null: the final PDF is made from the advanced view's sign-off, as today.
+ */
+export interface CloudPdfHooks {
+  draft: (() => Promise<void>) | null;
+  final: (() => Promise<void>) | null;
+}
+
+export interface SimpleReviewPageProps {
+  packageId: string;
+  /** The read and write calls (W1 + W3). Tests pass their own; the app uses the live ones. */
+  api?: ReviewItemsApi;
+  /** How a stored picture becomes an image. Tests and screenshots pass their own. */
+  pictures?: PictureLoader;
+  cloud?: CloudPdfHooks;
+  /**
+   * "Open PDFs" (O). The dual PDF viewer (U3) plugs in here: `item` is the spot to open both
+   * documents at, null for the whole set. Without it the existing drawing viewer opens.
+   */
+  onOpenPdfs?: (item: ReviewItem | null) => void;
+  /** The old tabs and wizard, `#/review/<id>/advanced`. */
+  onOpenAdvanced: () => void;
+  onTitleChange?: (title: string, revision: number | null) => void;
+  /** The review assistant, docked on the right. Off in tests that do not exercise it. */
+  assistantAvailable?: boolean;
+}
+
+type LoadState =
+  | { status: 'loading' }
+  | { status: 'error'; error: Error }
+  | { status: 'ready'; data: ReviewItemsOut };
+
+/** The live picture loader: stored page pictures and the close-ups W1 points at. */
+function useLivePictures(project: string | null, packageId: string): PictureLoader {
+  const urls = useRef<string[]>([]);
+  useEffect(() => () => {
+    for (const url of urls.current) URL.revokeObjectURL(url);
+    urls.current = [];
+  }, []);
+  return useCallback(async (source) => {
+    if (project === null) throw new Error('No project is configured.');
+    let blob: Blob;
+    if (source.kind === 'page') {
+      blob = await downloadPagePicture(project, packageId, source.page, source.documentVersionId);
+    } else {
+      const response = await fetch(apiUrl(source.path), { headers: { Accept: 'image/png,image/*;q=0.8' } });
+      if (!response.ok) throw new Error(`The server answered ${response.status}.`);
+      blob = await response.blob();
+    }
+    const url = URL.createObjectURL(blob);
+    urls.current.push(url);
+    return url;
+  }, [project, packageId]);
+}
+
+/** A failed save in words. 501 is W3's "not built yet"; 404 and 409 keep their own meaning. */
+function errorWords(error: unknown): string {
+  if (error instanceof ApiError) {
+    if (error.status === 501) return `This answer cannot be saved yet: ${error.message}`;
+    if (error.status === 404) return `Not found: ${error.message}`;
+    if (error.status === 409) return `This item changed since you opened it, so the list was reloaded. Look again, then Retry. (${error.message})`;
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** What the viewer's pill says: the item's own state, or "All pages" for the whole set. */
+function viewerWord(item: ReviewItem | null): Pick<ViewerTarget, 'tone' | 'glyph' | 'word'> {
+  if (item === null) return { tone: 'missing', glyph: 'NO_APPLICABLE_RULE', word: 'All pages' };
+  if (item.status === 'open') return { tone: 'review', glyph: 'REVIEW_REQUIRED', word: 'Needs you' };
+  return { tone: 'missing', glyph: 'NO_APPLICABLE_RULE', word: item.status === 'rechecking' ? 'Re-checking' : 'Checked' };
+}
+
+function viewerTarget(item: ReviewItem | null, fallbackPage: number): ViewerTarget {
+  const vendor = item?.vendor_ref ?? null;
+  const architect = item?.architect_ref?.location ?? null;
+  return {
+    key: item?.key ?? 'set',
+    label: item ? item.what : 'All pages',
+    page: vendor?.page_number ?? item?.page ?? fallbackPage,
+    documentVersionId: vendor?.document_version_id ?? null,
+    outline: pointsOf(vendor),
+    findingId: item?.finding_id ?? null,
+    ...viewerWord(item),
+    needsYou: item?.status === 'open',
+    row: null,
+    marks: [],
+    second: architect
+      ? { key: `arch:${architect.page_id}`, label: `Architect page ${architect.page_number}`, heading: `Architect page ${architect.page_number}`, page: architect.page_number, documentVersionId: architect.document_version_id, region: null }
+      : null,
+    showSecond: architect !== null,
+  };
+}
+
+function isTyping(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  if (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return true;
+  return target.closest('[role="menu"], [role="dialog"], [role="listbox"]') !== null;
+}
+
+/** Where the "Not checked" group's busy state and save error are kept (not an API key). */
+const NOT_CHECKED = 'group:not-checked';
+
+const NO_RECORDS: AssistantRecords = {
+  rows: [],
+  rowsReady: false,
+  pagesWithoutCountertop: [],
+  rowsNotChecked: [],
+  findings: [],
+  blocking: null,
+};
+
+/**
+ * The simple review page (#1343): one page with only what needs a person. Items are closed by
+ * default; opening one shows the vendor page with the spot ringed, the architect page and a close-up,
+ * with one-click answers. Results to be clouded as wrong sit above, the checks that did not run sit
+ * quietly below, and the final cloud PDF unlocks when nothing is open. Nothing here asks to type.
+ */
+export function SimpleReviewPage({
+  packageId,
+  api = liveReviewItemsApi,
+  pictures,
+  cloud = { draft: null, final: null },
+  onOpenPdfs,
+  onOpenAdvanced,
+  onTitleChange,
+  assistantAvailable = true,
+}: SimpleReviewPageProps) {
+  const project = useMemo(() => {
+    try {
+      return configuredProjectId();
+    } catch {
+      return null;
+    }
+  }, []);
+  const livePictures = useLivePictures(project, packageId);
+
+  const [version, setVersion] = useState(0);
+  const [load, setLoad] = useState<{ version: number; state: LoadState } | null>(null);
+  // The last good answer stays on screen while a reload is in flight, so the list never flashes.
+  const [lastGood, setLastGood] = useState<ReviewItemsOut | null>(null);
+  const [title, setTitle] = useState<{ vendor: string; revision: number | null } | null>(null);
+
+  const [openKey, setOpenKey] = useState<string | null>(null);
+  const [activeKey, setActiveKey] = useState<string | null>(null);
+  const [fixOpenKey, setFixOpenKey] = useState<string | null>(null);
+  const [busy, setBusy] = useState<{ key: string; action: ItemAction } | null>(null);
+  const [errors, setErrors] = useState<Record<string, SaveError>>({});
+  const [draft, setDraft] = useState<CloudState>({ status: 'idle' });
+  const [final, setFinal] = useState<CloudState>({ status: 'idle' });
+  const [viewer, setViewer] = useState<{ opening: number; target: ViewerTarget } | null>(null);
+  const [assistantOpen, setAssistantOpen] = useState(() => assistantAvailable && typeof window !== 'undefined' && window.matchMedia('(min-width: 1440px)').matches);
+  const [assistantMounted, setAssistantMounted] = useState(assistantOpen);
+  const rowRefs = useRef(new Map<string, HTMLButtonElement>());
+
+  useEffect(() => {
+    if (project === null) return;
+    let current = true;
+    api.load(project, packageId).then(
+      (data) => {
+        if (!current) return;
+        setLoad({ version, state: { status: 'ready', data } });
+        setLastGood(data);
+      },
+      (error: unknown) => current && setLoad({ version, state: { status: 'error', error: error instanceof Error ? error : new Error(String(error)) } }),
+    );
+    return () => {
+      current = false;
+    };
+  }, [api, project, packageId, version]);
+
+  useEffect(() => {
+    if (project === null) return;
+    let current = true;
+    getPackage(project, packageId).then(
+      (detail) => {
+        if (!current) return;
+        const vendor = detail.vendor ?? 'Untitled document set';
+        const revision = detail.current_revision_number ?? null;
+        setTitle({ vendor, revision });
+        onTitleChange?.(vendor, revision);
+      },
+      () => undefined, // The items still show; the header falls back to a plain name.
+    );
+    return () => {
+      current = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project, packageId]);
+
+  const state: LoadState =
+    project === null
+      ? { status: 'error', error: new Error('VITE_PROJECT_ID is not set, so this page does not know which project to ask about.') }
+      : load === null
+        ? { status: 'loading' }
+        : load.version === version || load.state.status === 'error'
+          ? load.state
+          : lastGood
+            ? { status: 'ready', data: lastGood }
+            : { status: 'loading' };
+  const data = state.status === 'ready' ? state.data : null;
+  const summary = useMemo(() => (data ? summarize(data) : null), [data]);
+  const ordered = useMemo(() => (data ? orderItems(data.items) : []), [data]);
+  const reload = useCallback(() => setVersion((n) => n + 1), []);
+
+  // The newest list, for Retry: after a 409 the list is reloaded first, and Retry then sends the
+  // finding the reviewer now sees, never the stale one that was refused.
+  const latest = useRef<ReviewItemsOut | null>(null);
+  useEffect(() => {
+    latest.current = data;
+  }, [data]);
+
+  function findingNow(key: string, fallback: string | null): string | null {
+    const now = latest.current;
+    if (!now) return fallback;
+    const entry = [...now.items, ...now.failures, ...now.not_checked].find((candidate) => candidate.key === key);
+    return entry ? (entry.finding_id ?? null) : fallback;
+  }
+
+  async function send(key: string, action: ItemAction, findingId: string | null, value?: string) {
+    if (project === null) return;
+    await api.act(project, packageId, key, action, value === undefined ? { expected_finding_id: findingId } : { expected_finding_id: findingId, value });
+  }
+
+  function failed(errorKey: string, error: unknown, retry: () => void) {
+    // A stale item: reload the list now, so what the reviewer looks at before Retry is current.
+    if (error instanceof ApiError && error.status === 409) reload();
+    setErrors((all) => ({ ...all, [errorKey]: { message: errorWords(error), retry } }));
+  }
+
+  function cleared(errorKey: string) {
+    setErrors((all) => {
+      const rest = { ...all };
+      delete rest[errorKey];
+      return rest;
+    });
+  }
+
+  async function act(key: string, action: ItemAction, findingId: string | null, value?: string) {
+    setBusy({ key, action });
+    setFixOpenKey(null);
+    try {
+      await send(key, action, findingId, value);
+      cleared(key);
+      reload();
+    } catch (error) {
+      failed(key, error, () => void act(key, action, findingNow(key, findingId), value));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const actOnItem = (item: ReviewItem, action: ItemAction, value?: string) => void act(item.key, action, item.finding_id ?? null, value);
+  const agree = (failure: ReviewFailure) => void act(failure.key, 'agree', failure.finding_id);
+
+  // "Clear all as not checked": one call per unchecked result, each with its own key and finding, as
+  // W3 records every decision on its own (#1351). Stops at the first refusal and names it.
+  async function clearNotChecked() {
+    const rows = (latest.current?.not_checked ?? []).filter((row) => row.status === 'open');
+    setBusy({ key: NOT_CHECKED, action: 'settle_group' });
+    try {
+      for (const row of rows) await send(row.key, 'settle_group', findingNow(row.key, row.finding_id));
+      cleared(NOT_CHECKED);
+      reload();
+    } catch (error) {
+      failed(NOT_CHECKED, error, () => void clearNotChecked());
+      reload();
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const openPdfs = useCallback((item: ReviewItem | null) => {
+    if (onOpenPdfs) onOpenPdfs(item);
+    else setViewer((now) => ({ opening: (now?.opening ?? 0) + 1, target: viewerTarget(item, ordered[0]?.page ?? 1) }));
+  }, [onOpenPdfs, ordered]);
+
+  async function runCloud(kind: 'draft' | 'final') {
+    const hook = kind === 'draft' ? cloud.draft : cloud.final;
+    const set = kind === 'draft' ? setDraft : setFinal;
+    if (hook === null) {
+      if (kind === 'final') onOpenAdvanced();
+      return;
+    }
+    set({ status: 'working' });
+    try {
+      await hook();
+      set({ status: 'idle' });
+    } catch (error) {
+      set({ status: 'error', message: errorWords(error) });
+    }
+  }
+
+  function toggle(key: string) {
+    setActiveKey(key);
+    setFixOpenKey(null);
+    setOpenKey((now) => (now === key ? null : key));
+  }
+
+  function focusRow(key: string) {
+    setActiveKey(key);
+    rowRefs.current.get(key)?.focus();
+  }
+
+  // J/K move, Enter opens, C agrees, F disagrees (Fix opens its menu), O opens the PDFs, Esc closes.
+  useEffect(() => {
+    if (!data) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || isTyping(event.target)) return;
+      const keys = ordered.map((item) => item.key);
+      const key = event.key.toLowerCase();
+      const targetKey = openKey ?? activeKey;
+      const item = ordered.find((entry) => entry.key === targetKey) ?? null;
+      if (key === 'j' || key === 'k') {
+        if (keys.length === 0) return;
+        event.preventDefault();
+        const at = activeKey === null ? -1 : keys.indexOf(activeKey);
+        const next = key === 'j' ? Math.min(at + 1, keys.length - 1) : Math.max(at - 1, 0);
+        focusRow(keys[next]);
+      } else if (event.key === 'Enter') {
+        // A focused row is a button and opens itself; this covers the list with nothing focused.
+        if (event.target instanceof HTMLButtonElement || event.target instanceof HTMLAnchorElement || activeKey === null) return;
+        event.preventDefault();
+        toggle(activeKey);
+      } else if (event.key === 'Escape') {
+        if (openKey === null) return;
+        event.preventDefault();
+        const closed = openKey;
+        setOpenKey(null);
+        setFixOpenKey(null);
+        focusRow(closed);
+      } else if (key === 'c' && item) {
+        const action = agreeAction(item);
+        if (!action || busy) return;
+        event.preventDefault();
+        actOnItem(item, action);
+      } else if (key === 'f' && item) {
+        const action = disagreeAction(item);
+        if (!action || busy) return;
+        event.preventDefault();
+        if (action === 'fix') {
+          setOpenKey(item.key);
+          setFixOpenKey(item.key);
+        } else {
+          actOnItem(item, action);
+        }
+      } else if (key === 'o') {
+        event.preventDefault();
+        openPdfs(item);
+      }
+    }
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  });
+
+  const assistantNav: AssistantNavigation = {
+    openPage: (page) => openPdfs(ordered.find((item) => item.page === page) ?? null),
+    showRow: (row) => {
+      const item = ordered.find((entry) => entry.row_id === row.row_id);
+      if (item) toggle(item.key);
+    },
+    showFinding: (finding) => {
+      const item = ordered.find((entry) => entry.finding_id === finding.id);
+      if (item) toggle(item.key);
+    },
+    openQueue: (key) => {
+      if (ordered.some((item) => item.key === key)) toggle(key);
+    },
+  };
+  const opened = ordered.find((item) => item.key === openKey) ?? null;
+
+  function toggleAssistant() {
+    setAssistantMounted(true);
+    setAssistantOpen((now) => !now);
+  }
+
+  const name = title?.vendor ?? 'This drawing set';
+  const needsYou = ordered.filter((item) => item.status !== 'done');
+  const checked = ordered.filter((item) => item.status === 'done');
+
+  function renderRows(items: readonly ReviewItem[]) {
+    return (
+      <ul className="divide-y divide-border">
+        {items.map((item) => {
+          const open = openKey === item.key;
+          return (
+            <li key={item.key}>
+              <ItemRow
+                ref={(node) => {
+                  if (node) rowRefs.current.set(item.key, node);
+                  else rowRefs.current.delete(item.key);
+                }}
+                item={item}
+                open={open}
+                active={activeKey === item.key}
+                onToggle={() => toggle(item.key)}
+                onFocus={() => setActiveKey(item.key)}
+              />
+              {open && (
+                <div className="animate-in fade-in-0 slide-in-from-top-1 duration-150 motion-reduce:animate-none">
+                  <ItemDetail
+                    item={item}
+                    busy={busy?.key === item.key ? busy.action : null}
+                    error={errors[item.key] ?? null}
+                    fixOpen={fixOpenKey === item.key}
+                    onFixOpenChange={(next) => setFixOpenKey(next ? item.key : null)}
+                    onAct={(action, value) => actOnItem(item, action, value)}
+                    onOpenPdfs={openPdfs}
+                  />
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    );
+  }
+
+  return (
+    <PicturesProvider load={pictures ?? livePictures}>
+      <div data-tw data-slot="simple-review" className="@container/review flex h-full min-h-0 w-full min-w-0 font-sans text-foreground antialiased">
+        <HeaderActions>
+          {assistantAvailable && (
+            <Button
+              variant={assistantOpen ? 'secondary' : 'ghost'}
+              size="sm"
+              onClick={toggleAssistant}
+              aria-label="Assistant"
+              aria-expanded={assistantOpen}
+              aria-controls={assistantMounted ? 'review-assistant' : undefined}
+            >
+              <MessageSquare /> <span className="hidden xl:inline">Assistant</span>
+            </Button>
+          )}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon-sm" aria-label="More">
+                <MoreHorizontal />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onSelect={onOpenAdvanced}>
+                <SlidersHorizontal aria-hidden="true" />
+                Advanced view (admin)
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </HeaderActions>
+
+        <div className="min-w-0 flex-1 overflow-y-auto">
+          <div className="mx-auto flex min-h-full w-full max-w-[60rem] flex-col px-6">
+            {state.status === 'loading' && <ReviewSkeleton />}
+            {state.status === 'error' && !data && <LoadError error={state.error} onRetry={reload} />}
+            {data && summary && (
+              <>
+                <ReviewHeader
+                  title={name}
+                  revision={title?.revision ?? data.revision_number}
+                  header={data.header}
+                  onOpenPdfs={() => openPdfs(opened)}
+                  onDraftCloud={cloud.draft ? () => void runCloud('draft') : null}
+                  draft={draft}
+                />
+                {data.unaccounted.length > 0 && <UnaccountedBanner count={data.unaccounted.length} onOpenAdvanced={onOpenAdvanced} />}
+
+                <div className="flex flex-col gap-8 pt-2">
+                  <FailuresStrip failures={data.failures} busyKey={busy?.key ?? null} errors={errors} onAgree={agree} />
+
+                  {summary.nothingNeedsYou && <NothingNeedsYou checked={checked.length} />}
+
+                  {needsYou.length > 0 && (
+                    <section aria-labelledby="needs-you-title" className="flex flex-col gap-3">
+                      <div className="flex items-baseline justify-between gap-4">
+                        <h2 id="needs-you-title" className="text-[20px] leading-7 font-semibold tracking-[-0.01em]">
+                          Needs you <span className="num ml-1 text-[15px] font-normal text-muted-foreground">{summary.openItems.length}</span>
+                        </h2>
+                        <p className="hidden text-[13px] text-muted-foreground md:block">
+                          <span className="num">J</span>/<span className="num">K</span> to move, <span className="num">Enter</span> to open
+                        </p>
+                      </div>
+                      {summary.rechecking.length > 0 && (
+                        <p role="status" className="text-[13px] text-muted-foreground">
+                          Re-checking {summary.rechecking.length} {summary.rechecking.length === 1 ? 'item' : 'items'} with your answers…
+                        </p>
+                      )}
+                      <div className="overflow-hidden rounded-xl border border-border">{renderRows(needsYou)}</div>
+                    </section>
+                  )}
+
+                  <NotCheckedGroup
+                    items={data.not_checked}
+                    note={data.not_checked_note}
+                    busy={busy?.key === NOT_CHECKED}
+                    error={errors[NOT_CHECKED] ?? null}
+                    onClearAll={() => void clearNotChecked()}
+                  />
+
+                  {checked.length > 0 && (
+                    <section aria-labelledby="checked-title" className="flex flex-col gap-3">
+                      <h2 id="checked-title" className="text-[15px] font-medium text-muted-foreground">
+                        Checked <span className="num ml-1 font-normal">{checked.length}</span>
+                      </h2>
+                      <div className="overflow-hidden rounded-xl border border-border">{renderRows(checked)}</div>
+                    </section>
+                  )}
+                </div>
+
+                <div className="flex-1" />
+                <FinalBar summary={summary} final={final} onCreateFinal={() => void runCloud('final')} />
+              </>
+            )}
+          </div>
+        </div>
+
+        {assistantAvailable && assistantMounted && project !== null && (
+          <AssistantPanel
+            projectId={project}
+            packageId={packageId}
+            setName={name}
+            open={assistantOpen}
+            records={NO_RECORDS}
+            context={opened && opened.page != null ? { page_number: opened.page, record_id: opened.finding_id ?? null } : null}
+            nav={assistantNav}
+            onClose={() => setAssistantOpen(false)}
+          />
+        )}
+      </div>
+
+      {viewer && project !== null && (
+        <Suspense fallback={null}>
+          <DrawingViewerSheet
+            target={viewer.target}
+            opening={viewer.opening}
+            rows={[]}
+            projectId={project}
+            packageId={packageId}
+            onTargetChange={(target) => setViewer((now) => (now ? { ...now, target } : now))}
+            onClose={() => setViewer(null)}
+          />
+        </Suspense>
+      )}
+    </PicturesProvider>
+  );
+}
