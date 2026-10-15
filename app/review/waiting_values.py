@@ -63,7 +63,7 @@ from units.measurement import Unit
 from verdict.outcomes import Outcome
 from vocabulary.semantic_types import CLIENT_CODES, SemanticType
 from vocabulary.setting_names import setting_name
-from workflow.measurements import DRAWN_SOURCES
+from workflow.measurements import DRAWN_SOURCES, drawn_input
 
 __all__ = [
     "DRAWING_GUIDE",
@@ -498,9 +498,11 @@ def missing_inputs_for(
                     where_to_find=where,
                     scope="measurements" if entered else "drawing",
                     askable=False,
+                    # A drawn value typed before confirm-only no longer counts (#1303), so it is never
+                    # "typed since": the check waits for a confirmed reading, not a new run.
                     saved=(
                         None
-                        if is_list
+                        if is_list or drawn_input(selector)
                         else reading_now(f"{rule.id}:{input_name}", item.package_revision_id)
                     ),
                 )

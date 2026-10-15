@@ -146,7 +146,7 @@ from workflow.layout_proposals import (
     record_layout_confirmation,
     stored_layout_proposals,
 )
-from workflow.measurements import LIST_MARKER, confirm_only, typed_drawn_refusal
+from workflow.measurements import LIST_MARKER, confirm_only, drawn_input, typed_drawn_refusal
 from workflow.model_call_recorder import ModelCallRecorder
 from workflow.outbox import enqueue
 from workflow.parameter_citations import (
@@ -1198,7 +1198,8 @@ def enter_measurements(
         # nothing else may slip a value past that: a name carrying the stored key's own markers, an
         # input no check reads, or a value in the wrong shape would be stored where a check reads it,
         # outrank a reading, or crash the checks on arity. All refused before anything is stored.
-        # Values typed before this stay and still count (`workflow/measurements.py`).
+        # Values typed before this stay stored, but no longer count since #1303
+        # (`workflow/measurements.py`).
         refusal = _refused_measurement(measurement, label, declared)
         if refusal is not None:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=refusal)
@@ -1362,7 +1363,7 @@ def _refused_measurement(
         return f"{label} takes a category, not a dimension. Send it as a classification."
     source = str(getattr(selector.source, "value", selector.source))
     many = selector.cardinality is Cardinality.MANY
-    if confirm_only(source, many=many):
+    if drawn_input(selector):
         return typed_drawn_refusal(label, source, where_drawn(source, semantic_type))
     if many and measurement.values is None:
         return (

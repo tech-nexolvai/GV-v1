@@ -28,7 +28,7 @@ from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session
 
 from app.db.session import session_factory
-from app.models import CheckRun, VerdictInput
+from app.models import VerdictInput
 from app.models.parameters import ParameterSet as StoredParameterSet
 from app.models.parameters import ParameterValue as StoredParameterValue
 from app.models.parameters import to_rows
@@ -143,7 +143,9 @@ def test_a_drawn_value_typed_before_no_longer_counts_and_the_check_waits(
 
     drawn = next(n for n in finding["missing_inputs"] if n["key"] == "SHOP:CT010")
     assert drawn["scope"] == "drawing"
-    assert drawn["saved"] is None, "a typed drawn value no longer counts, so it is not 'saved since'"
+    assert (
+        drawn["saved"] is None
+    ), "a typed drawn value no longer counts, so it is not 'saved since'"
 
 
 def test_the_reason_names_every_stopped_input_of_the_check(session: Session) -> None:
@@ -191,7 +193,7 @@ def test_a_confirmed_reading_is_used_instead_of_a_drawn_value_typed_before(
 def test_typed_inputs_that_are_not_drawn_are_unchanged(session: Session) -> None:
     """The site width (USER_INPUT), a typed list (cabinet runs) and a run setting typed beside an
     old drawn value all still count, exactly as typed; only the drawn one is left out."""
-    package, revision = _package(session)
+    _package_id, revision = _package(session)
     _typed_before(
         session,
         revision,

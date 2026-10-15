@@ -79,6 +79,7 @@ from verdict.operations import POSITION_SENSITIVE_OPERATIONS
 from workflow.depth_evidence import DEPTH_READER_FLAG, ITEM_PREFIX, LINK_PREFIX, current_link
 from workflow.depth_evidence import SUPPORT_FLAG as DEPTH_SUPPORT_FLAG
 from workflow.item_plan import countertops_by_view, live_countertops
+from workflow.measurements import typed_drawn, typed_drawn_reason
 from workflow.part_operands import part_operands
 from workflow.several_countertops import clears_when
 
@@ -336,6 +337,9 @@ class EvidenceOperands:
     owned: dict[str, frozenset[str]] = field(default_factory=dict)
     """Inputs reserved to confirmed structure, even when withheld; form values cannot replace them."""
     missing: dict[str, str] = field(default_factory=dict)
+    """What a check says first when it does not run, keyed by rule id: a scoped check returns it as
+    its NOT_FOUND, and a revision-wide NOT_FOUND starts with it (`run_checks`). Revision-wide, it
+    names drawn inputs whose value typed before confirm-only no longer counts (#1303)."""
     notes: dict[str, tuple[str, ...]] = field(default_factory=dict)
     with_readings: dict[str, frozenset[str]] = field(default_factory=dict)
     """The order-compared inputs (`position_sensitive_inputs`) of each rule that labelled readings
@@ -591,11 +595,27 @@ def evidence_operands(
         }
         operands[rule_id].update(selected.operands.get(rule_id, {}))
         ambiguous[rule_id].update(selected.ambiguous.get(rule_id, {}))
+    missing = dict(selected.missing)
+    if scope_item_id is None:
+        # **A drawn value typed before confirm-only no longer counts** (#1303): `operands_for` leaves
+        # it out, so a revision-wide check with no reading of that input waits. Its NOT_FOUND says
+        # why first (`missing`, as `run_checks` words a revision-wide one), naming the inputs. Words
+        # only: no operand is added or removed here. A scoped check never read typed values.
+        for rule_id, names in sorted(typed_drawn(session, package_revision_id, rules).items()):
+            waiting = {
+                name
+                for name in names
+                if name not in operands.get(rule_id, {})
+                and name not in selected.owned.get(rule_id, ())
+            }
+            if waiting:
+                why = typed_drawn_reason(waiting)
+                missing[rule_id] = f"{missing[rule_id]} {why}" if rule_id in missing else why
     return EvidenceOperands(
         operands=operands,
         ambiguous=ambiguous,
         owned=selected.owned,
-        missing=selected.missing,
+        missing=missing,
         notes=selected.notes,
         with_readings=with_readings,
     )
