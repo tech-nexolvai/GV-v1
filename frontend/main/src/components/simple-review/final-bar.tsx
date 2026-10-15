@@ -13,10 +13,19 @@ type Phase =
   | { kind: 'unsigned' }
   | { kind: 'checking' }
   | { kind: 'signed'; files: SignedFilesStatus }
-  | { kind: 'error'; message: string; signed: boolean };
+  | { kind: 'error'; message: string; signed: boolean; retry: Retry };
+
+/** What the error's button does: read where the files are again, or ask for the files again. */
+type Retry = 'status' | 'prepare';
 
 function words(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** The server's words as a sentence, ending with one full stop. */
+function sentence(text: string): string {
+  const trimmed = text.trim();
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
 }
 
 /**
@@ -50,7 +59,10 @@ export function FinalBar({
   const [signedNow, setSignedNow] = useState(false);
   const [files, setFiles] = useState<SignedFilesStatus | null>(null);
   const [statusAsk, setStatusAsk] = useState(0);
-  const [failure, setFailure] = useState<string | null>(null);
+  const [failure, setFailure] = useState<{ message: string; retry: Retry } | null>(null);
+  // The signed files are being asked for: where they are is not read meanwhile, so an older answer
+  // never overwrites the request's own.
+  const [making, setMaking] = useState(false);
   const [dialog, setDialog] = useState(false);
   const [facts, setFacts] = useState<SignOffFacts | null | 'loading'>(null);
   const [stillApply, setStillApply] = useState(false);
@@ -66,7 +78,7 @@ export function FinalBar({
 
   // Once signed off (before the page opened, or here): where the signed files are.
   useEffect(() => {
-    if (!signed || projectId === null) return;
+    if (!signed || projectId === null || failure !== null || making) return;
     let current = true;
     api.status(projectId, packageId).then(
       (answer) => {
@@ -74,12 +86,12 @@ export function FinalBar({
         setFiles(answer);
         setFailure(null);
       },
-      (error: unknown) => current && setFailure(`Where the final cloud PDF is could not be read: ${words(error)}`),
+      (error: unknown) => current && setFailure({ message: `Where the final cloud PDF is could not be read: ${words(error)}`, retry: 'status' }),
     );
     return () => {
       current = false;
     };
-  }, [api, signed, projectId, packageId, statusAsk]);
+  }, [api, signed, projectId, packageId, statusAsk, failure, making]);
 
   // While the files are being made, ask again every few seconds.
   useEffect(() => {
@@ -89,7 +101,7 @@ export function FinalBar({
   }, [files, statusAsk]);
 
   const phase: Phase = failure !== null
-    ? { kind: 'error', message: failure, signed }
+    ? { kind: 'error', message: failure.message, signed, retry: failure.retry }
     : !signed
       ? { kind: 'unsigned' }
       : files === null
@@ -115,24 +127,38 @@ export function FinalBar({
     setSignError(null);
     try {
       await api.signOff(projectId, packageId, carried && stillApply);
-      setDialog(false);
-      setFiles('preparing');
-      setSignedNow(true);
-      onSigned();
     } catch (error) {
-      setSignError(words(error));
-    } finally {
-      if (mounted.current) setSigning(false);
+      // Refused or failed before it was recorded: nothing was signed, and the dialog says so.
+      if (mounted.current) {
+        setSignError(words(error));
+        setSigning(false);
+      }
+      return;
     }
+    // The sign-off is recorded. From here on nothing may say it was not: a failure to make the PDF
+    // is the signed-off error, whose Try again only asks for the PDF.
+    setSigning(false);
+    setDialog(false);
+    setSignedNow(true);
+    onSigned();
+    await prepare();
   }
 
+  /** Ask for the signed files of the recorded sign-off. Never signs again. */
   async function prepare() {
-    if (projectId === null) return;
+    if (projectId === null || making) return;
+    setMaking(true);
+    setFailure(null);
+    setFiles('preparing');
     try {
-      setFiles(await api.prepare(projectId, packageId));
-      setFailure(null);
+      const answer = await api.prepare(projectId, packageId);
+      if (mounted.current) setFiles(answer);
     } catch (error) {
-      setFailure(`The final cloud PDF could not be requested: ${words(error)}`);
+      if (mounted.current) {
+        setFailure({ message: `Sign-off was recorded, but the final cloud PDF could not be made: ${sentence(words(error))} Try again.`, retry: 'prepare' });
+      }
+    } finally {
+      if (mounted.current) setMaking(false);
     }
   }
 
@@ -148,7 +174,7 @@ export function FinalBar({
       link.click();
       URL.revokeObjectURL(url);
     } catch (error) {
-      setFailure(`The final cloud PDF could not be downloaded: ${words(error)}`);
+      setFailure({ message: `The final cloud PDF could not be downloaded: ${words(error)}`, retry: 'status' });
     } finally {
       if (mounted.current) setDownloading(false);
     }
@@ -165,7 +191,12 @@ export function FinalBar({
     icon = <CircleAlert aria-hidden="true" className="size-4 text-outcome-fail-fg" />;
     headline = <span className="text-outcome-fail-fg">{phase.signed ? 'Signed off, but something went wrong' : 'Something went wrong'}</span>;
     sub = phase.message;
-    action = (
+    action = phase.retry === 'prepare' ? (
+      <Button variant="outline" onClick={() => void prepare()} disabled={making}>
+        <RotateCcw aria-hidden="true" />
+        Try again
+      </Button>
+    ) : (
       <Button
         variant="outline"
         onClick={() => {
@@ -208,7 +239,7 @@ export function FinalBar({
       headline = failed ? <span className="text-outcome-fail-fg">Failed: the final cloud PDF could not be made.</span> : 'Signed off. The final cloud PDF has not been made yet.';
       sub = failed ? 'Nothing is signed again: the same sign-off is used.' : null;
       action = (
-        <Button onClick={() => void prepare()}>
+        <Button onClick={() => void prepare()} disabled={making}>
           <FileCheck2 aria-hidden="true" />
           {failed ? 'Try again' : 'Create final cloud PDF'}
         </Button>
@@ -248,8 +279,8 @@ export function FinalBar({
           <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center">{icon}</span>
           <div className="flex min-w-0 flex-col gap-0.5">
             <p role="status" className="text-[15px] leading-6 font-medium text-foreground">{headline}</p>
-            {/* What is left stays on a phone too; the longer sentences are for wider screens. */}
-            {sub && <p className={locked ? 'text-[13px] leading-5 text-muted-foreground' : 'hidden text-[13px] leading-5 text-muted-foreground sm:block'}>{sub}</p>}
+            {/* What is left, and what went wrong, stay on a phone too; the longer sentences are for wider screens. */}
+            {sub && <p className={locked || phase.kind === 'error' ? 'text-[13px] leading-5 text-muted-foreground' : 'hidden text-[13px] leading-5 text-muted-foreground sm:block'}>{sub}</p>}
           </div>
         </div>
         {action && <div className="flex shrink-0 [&>button]:w-full sm:[&>button]:w-auto">{action}</div>}

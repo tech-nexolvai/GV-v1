@@ -1,6 +1,6 @@
 /**
- * The final cloud PDF from the simple review page (#1368): the existing sign-off, then the existing
- * signed files, of which the cloud PDF is the drawing redline. Nothing new on the server: these are
+ * The final cloud PDF from the simple review page (#1368): the existing sign-off, then (a separate
+ * step) the existing signed files, of which the cloud PDF is the drawing redline. Nothing new on the server: these are
  * the advanced view's own calls (`approvePackage`, `prepareSignedExports`, `getSignedExports`,
  * `downloadRedline`), gathered behind one interface so the page can be tested with its own.
  *
@@ -32,10 +32,12 @@ export interface SignOffFacts {
 export interface FinalCloudApi {
   /** Who signs and what was carried over, read when the confirmation opens. */
   facts: (projectId: string, packageId: string) => Promise<SignOffFacts>;
-  /** Sign off (the reviewer's own open sitting on this revision, opened when there is none), then
-   * ask for the signed files. Refused by the server, with its reason, when the review is not ready. */
+  /** Sign off (the reviewer's own open sitting on this revision, opened when there is none).
+   * Resolves once the sign-off is recorded; the signed files are asked for separately (`prepare`),
+   * so a failure there is never mistaken for "nothing was signed". Refused by the server, with its
+   * reason, when the review is not ready. */
   signOff: (projectId: string, packageId: string, carriedConfirmed: boolean) => Promise<void>;
-  /** Ask again for the signed files of the existing sign-off (after a failure). Never re-signs. */
+  /** Ask for the signed files of the existing sign-off (right after it, or after a failure). Never re-signs. */
   prepare: (projectId: string, packageId: string) => Promise<SignedFilesStatus>;
   status: (projectId: string, packageId: string) => Promise<SignedFilesStatus>;
   /** The final cloud PDF (the signed drawing redline). */
@@ -63,7 +65,6 @@ export const liveFinalCloudApi: FinalCloudApi = {
     );
     const sitting = open ?? (await openReviewSession(projectId, packageId, detail.current_revision_id));
     await approvePackage(projectId, sitting.id, carriedConfirmed);
-    await prepareSignedExports(projectId, packageId);
   },
   async prepare(projectId, packageId) {
     return (await prepareSignedExports(projectId, packageId)).status;

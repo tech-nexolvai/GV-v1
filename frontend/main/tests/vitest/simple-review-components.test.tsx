@@ -291,6 +291,8 @@ describe('FinalBar (#1368)', () => {
     await userEvent.click(within(dialog).getByRole('button', { name: 'Sign off and create' }));
     expect(api.signOff).toHaveBeenCalledWith('proj-demo', 'pkg-demo', false);
     expect(onSigned).toHaveBeenCalled();
+    // The PDF is asked for as its own step, after the sign-off is recorded.
+    await waitFor(() => expect(api.prepare).toHaveBeenCalledWith('proj-demo', 'pkg-demo'));
     await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Making the final cloud PDF'));
     status = 'ready';
     await waitFor(() => expect(screen.getByRole('button', { name: 'Download final cloud PDF' })).toBeTruthy(), { timeout: 5000 });
@@ -325,6 +327,28 @@ describe('FinalBar (#1368)', () => {
     expect(api.signOff).toHaveBeenCalledWith('proj-demo', 'pkg-demo', true);
   });
 
+  it('a recorded sign-off whose PDF request fails says it was signed, and Try again only asks for the PDF', async () => {
+    const prepare = vi.fn<FinalCloudApi['prepare']>()
+      .mockRejectedValueOnce(new Error('The export service is busy.'))
+      .mockResolvedValueOnce('preparing');
+    const api = finalApi({ prepare, status: vi.fn(async () => 'preparing' as const) });
+    const { onSigned } = renderBar(allSettled(), api);
+    await userEvent.click(screen.getByRole('button', { name: 'Create final cloud PDF' }));
+    const dialog = await screen.findByRole('dialog');
+    await within(dialog).findByText('Sample Reviewer');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Sign off and create' }));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Signed off, but'));
+    expect(screen.getByText('Sign-off was recorded, but the final cloud PDF could not be made: The export service is busy. Try again.')).toBeTruthy();
+    expect(onSigned).toHaveBeenCalled();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByText(/Nothing was signed/)).toBeNull();
+    expect(screen.queryByRole('button', { name: /Sign off and create|Create final cloud PDF/ })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(prepare).toHaveBeenCalledTimes(2));
+    expect(api.signOff).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Making the final cloud PDF'));
+  });
+
   it('a set already signed off shows where its PDF is; a failed one offers Try again without signing again', async () => {
     const api = finalApi({ status: vi.fn(async () => 'failed' as const) });
     renderBar(allSettled(), api, true);
@@ -339,8 +363,15 @@ describe('ChoiceCard and PagesChoice (#1368)', () => {
   it('a choice says what it leads to; the proposal is pre-selected and labelled, never sent on its own', async () => {
     const onChoose = vi.fn();
     render(<ChoiceCard title="Walls at both ends" leadsTo="The width check runs again." proposal="the AI readers" onChoose={onChoose} />);
-    const card = screen.getByRole('button', { name: /Walls at both ends/ });
-    expect(card.getAttribute('aria-pressed')).toBe('true');
+    // Not a pressed toggle: it is described as a proposal that is not saved until clicked.
+    const card = screen.getByRole('button', { name: /Walls at both ends/, description: /Nothing is saved until you click\./ });
+    expect(card.hasAttribute('aria-pressed')).toBe(false);
+    const note = document.getElementById(card.getAttribute('aria-describedby')!)!;
+    expect(note.textContent).toBe('Proposed by the AI readers. Nothing is saved until you click.');
+    expect(note.closest('[aria-hidden="true"]')).toBeNull();
+    // The name stays short: the note is the description, not part of the name.
+    expect(card.getAttribute('aria-describedby')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Nothing is saved/ })).toBeNull();
     expect(card.textContent).toContain('AI proposal');
     expect(card.textContent).toContain('The width check runs again.');
     expect(onChoose).not.toHaveBeenCalled();

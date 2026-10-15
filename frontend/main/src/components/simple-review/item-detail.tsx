@@ -118,6 +118,7 @@ const AGREE_ICON = <Check aria-hidden="true" />;
 export function ItemDetail({
   item,
   busy,
+  sending = null,
   error,
   fixOpen,
   onFixOpenChange,
@@ -125,10 +126,15 @@ export function ItemDetail({
   onOpenPdfs,
   onOpenAdvanced,
   onProposal,
+  refresh = 0,
 }: {
   item: ReviewItem;
   /** The action being saved now, or null. */
   busy: ItemAction | null;
+  /** What that save sends (the wall or the architect answer), so only the chosen card spins. */
+  sending?: ActionExtra | null;
+  /** Bumped by the page to read an architect question again (after a stale answer). */
+  refresh?: number;
   error: SaveError | null;
   /** The Fix dialog, opened by the F key as well as by a click. */
   fixOpen?: boolean;
@@ -151,9 +157,9 @@ export function ItemDetail({
     <div id={detailId(item.key)} data-slot="item-detail" className="flex flex-col gap-6 border-t border-border bg-muted/30 px-4 pt-5 pb-6 sm:px-6 sm:pl-[3.25rem]">
       <Evidence item={item} />
       {walls ? (
-        <WallChoices item={item} busy={saving} onChoose={(layout) => onAct('choose_wall', { wall_config: layout })} />
+        <WallChoices item={item} busy={busy !== null} saving={sending?.wall_config ?? null} onChoose={(layout) => onAct('choose_wall', { wall_config: layout })} />
       ) : architect ? (
-        <ArchitectChoices item={item} busy={saving} onAnswer={(extra) => onAct('answer', extra)} onProposal={onProposal} onOpenAdvanced={onOpenAdvanced} />
+        <ArchitectChoices item={item} busy={busy !== null} saving={sending} refresh={refresh} onAnswer={(extra) => onAct('answer', extra)} onProposal={onProposal} onOpenAdvanced={onOpenAdvanced} />
       ) : (
         <Guess item={item} />
       )}

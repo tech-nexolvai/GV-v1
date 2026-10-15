@@ -172,7 +172,9 @@ export function SimpleReviewPage({
   const [openKey, setOpenKey] = useState<string | null>(null);
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [fixOpenKey, setFixOpenKey] = useState<string | null>(null);
-  const [busy, setBusy] = useState<{ key: string; action: ItemAction } | null>(null);
+  const [busy, setBusy] = useState<{ key: string; action: ItemAction; extra?: ActionExtra } | null>(null);
+  // One save at a time, checked synchronously: a second click before the re-render is ignored.
+  const saving = useRef(false);
   const [errors, setErrors] = useState<Record<string, SaveError>>({});
   const [draft, setDraft] = useState<CloudState>({ status: 'idle' });
   const [saved, setSaved] = useState<{ words: string; at: number } | null>(null);
@@ -180,8 +182,11 @@ export function SimpleReviewPage({
   // An entry the Assistant asked to open, focused once it is on screen (#1368).
   const pendingFocus = useRef<string | null>(null);
   const [focusAsk, setFocusAsk] = useState(0);
-  // The architect proposal each loaded architect question offers, for the C key.
-  const proposals = useRef(new Map<string, ActionExtra | null>());
+  // The architect proposal each loaded architect question offers, for the C key, with the result it
+  // was read for: a proposal read for an older result is never sent (#1368).
+  const proposals = useRef(new Map<string, { findingId: string | null; extra: ActionExtra | null }>());
+  // Bumped to read the open architect question again (after a stale answer, #1368).
+  const [architectAsk, setArchitectAsk] = useState(0);
   const [viewer, setViewer] = useState<{ opening: number; item: ReviewItem | null } | null>(null);
   const [assistantOpen, setAssistantOpen] = useState(() => assistantAvailable && typeof window !== 'undefined' && window.matchMedia('(min-width: 1440px)').matches);
   const [assistantMounted, setAssistantMounted] = useState(assistantOpen);
@@ -247,6 +252,13 @@ export function SimpleReviewPage({
   const latest = useRef<ReviewItemsOut | null>(null);
   useEffect(() => {
     latest.current = data;
+    if (!data) return;
+    // An architect proposal is kept only while its item is open on the same result; anything else
+    // (a re-check, an answer, the item gone) drops it, and the C key then opens the item to read it again.
+    for (const [key, kept] of proposals.current) {
+      const now = data.items.find((entry) => entry.key === key);
+      if (!now || now.status !== 'open' || (now.finding_id ?? null) !== kept.findingId) proposals.current.delete(key);
+    }
   }, [data]);
 
   function findingNow(key: string, fallback: string | null): string | null {
@@ -277,23 +289,48 @@ export function SimpleReviewPage({
 
   function announce(action: ItemAction) {
     const words = SAVED_WORDS[action];
-    if (words) setSaved({ words, at: Date.now() });
+    // Counted, so the same words saved twice are a new announcement (the notice re-renders its line).
+    if (words) setSaved((now) => ({ words, at: (now?.at ?? 0) + 1 }));
+  }
+
+  /** Starts a save, or says no when one is already being saved. */
+  function begin(next: { key: string; action: ItemAction; extra?: ActionExtra }): boolean {
+    if (saving.current) return false;
+    saving.current = true;
+    setBusy(next);
+    return true;
+  }
+
+  function finish() {
+    saving.current = false;
+    setBusy(null);
   }
 
   async function act(key: string, action: ItemAction, findingId: string | null, extra?: ActionExtra) {
-    setBusy({ key, action });
+    if (!begin({ key, action, extra })) return;
     // The Fix dialog stays open until the correction is saved, so a refusal is read where it was typed.
     if (action !== 'fix') setFixOpenKey(null);
+    const architect = extra?.architect_view !== undefined || extra?.architect_pairing !== undefined;
     try {
       await send(key, action, findingId, extra);
       cleared(key);
       setFixOpenKey(null);
-      announce(action === 'answer' && extra?.architect_view === undefined && extra?.architect_pairing === undefined ? 'not_this' : action);
+      announce(action === 'answer' && !architect ? 'not_this' : action);
       reload();
     } catch (error) {
-      failed(key, error, () => void act(key, action, findingNow(key, findingId), retried(key, action, extra)));
+      if (architect && error instanceof ApiError && error.status === 409) {
+        // The architect answer names the record it was shown, which moved on: Retry reads the
+        // question again, and the reviewer answers what is there now. The refused answer is never resent.
+        proposals.current.delete(key);
+        failed(key, error, () => {
+          cleared(key);
+          setArchitectAsk((n) => n + 1);
+        });
+      } else {
+        failed(key, error, () => void act(key, action, findingNow(key, findingId), retried(key, action, extra)));
+      }
     } finally {
-      setBusy(null);
+      finish();
     }
   }
 
@@ -306,6 +343,7 @@ export function SimpleReviewPage({
   }
 
   function actOnItem(item: ReviewItem, action: ItemAction, extra?: ActionExtra) {
+    if (saving.current) return;
     let body = extra;
     if (action === 'confirm' && item.kind === 'number' && item.best_guess) {
       // The value the reviewer saw: W2 records exactly the stored value, and refuses another (#1358).
@@ -313,7 +351,8 @@ export function SimpleReviewPage({
     }
     if (action === 'answer' && item.kind === 'architect' && !body?.architect_view && !body?.architect_pairing) {
       // The C key on an architect question picks its proposal, once its choices have loaded.
-      const proposal = proposals.current.get(item.key) ?? null;
+      const kept = proposals.current.get(item.key);
+      const proposal = kept && kept.findingId === (item.finding_id ?? null) && item.status === 'open' ? kept.extra : null;
       if (proposal === null) {
         setOpenKey(item.key);
         return;
@@ -338,7 +377,7 @@ export function SimpleReviewPage({
   // (409: the list reloads, and Retry sends the group as it is shown then).
   async function clearNotChecked() {
     const keys = (latest.current?.not_checked ?? []).filter((row) => row.status === 'open').map((row) => row.key);
-    setBusy({ key: NOT_CHECKED, action: 'settle_group' });
+    if (!begin({ key: NOT_CHECKED, action: 'settle_group' })) return;
     try {
       await send(NOT_CHECKED_GROUP, 'settle_group', null, { expected_keys: keys });
       cleared(NOT_CHECKED);
@@ -347,14 +386,14 @@ export function SimpleReviewPage({
     } catch (error) {
       failed(NOT_CHECKED, error, () => void clearNotChecked());
     } finally {
-      setBusy(null);
+      finish();
     }
   }
 
   // "These N pages have no countertop": one group call naming exactly the pages shown (#1358).
   async function confirmPages() {
     const keys = openNoCountertopPages(latest.current?.items ?? []).map((item) => item.key);
-    setBusy({ key: PAGES, action: 'confirm_no_countertop' });
+    if (!begin({ key: PAGES, action: 'confirm_no_countertop' })) return;
     try {
       await send(PAGES_GROUP, 'confirm_no_countertop', null, { expected_keys: keys });
       cleared(PAGES);
@@ -363,7 +402,7 @@ export function SimpleReviewPage({
     } catch (error) {
       failed(PAGES, error, () => void confirmPages());
     } finally {
-      setBusy(null);
+      finish();
     }
   }
 
@@ -537,13 +576,15 @@ export function SimpleReviewPage({
                   <ItemDetail
                     item={item}
                     busy={busy?.key === item.key ? busy.action : null}
+                    sending={busy?.key === item.key ? busy.extra ?? null : null}
+                    refresh={architectAsk}
                     error={errors[item.key] ?? null}
                     fixOpen={fixOpenKey === item.key}
                     onFixOpenChange={(next) => setFixOpenKey(next ? item.key : null)}
                     onAct={(action, extra) => actOnItem(item, action, extra)}
                     onOpenPdfs={openPdfs}
                     onOpenAdvanced={onOpenAdvanced}
-                    onProposal={(extra) => proposals.current.set(item.key, extra)}
+                    onProposal={(extra) => proposals.current.set(item.key, { findingId: item.finding_id ?? null, extra })}
                   />
                 </div>
               )}
@@ -603,7 +644,8 @@ export function SimpleReviewPage({
                 {data.unaccounted.length > 0 && <UnaccountedBanner count={data.unaccounted.length} onOpenAdvanced={onOpenAdvanced} />}
 
                 <p role="status" aria-live="polite" data-slot="saved-notice" className="sr-only">
-                  {saved?.words ?? ''}
+                  {/* A new line per save, so the same words saved again are announced again. */}
+                  {saved && <span key={saved.at}>{saved.words}</span>}
                 </p>
 
                 <div className="flex flex-col gap-10 pt-2">
