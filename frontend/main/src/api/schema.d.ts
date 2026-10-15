@@ -7116,8 +7116,40 @@ export interface components {
              */
             scope_id: string;
         };
-        /** ReviewHeaderOut */
+        /**
+         * ReviewHeaderOut
+         * @description The top of the simple review page (#1338), with the AI's share and accuracy (#1386).
+         *
+         *     Every count is exact and worked out here; the screen only prints them. Each percentage is a
+         *     whole number of its own count over its own total, shown beside the counts (`whole_percent`).
+         *
+         *     **Numbers** (line 1): `numbers` is every width number on the countertop rows of the newest
+         *     reading. Each is in exactly one of two groups, by the one test the rest of the page uses
+         *     (`candidate_is_sealed`): `confirmed_by_ai`, settled by both AIs (the two readers agreed and
+         *     code accepted it), or `need_you`, the rest (held, read by one reader, read differently, or with
+         *     no value). So `confirmed_by_ai + need_you == numbers` always.
+         *
+         *     **Accuracy** (line 2): from this revision's own answers on AI readings, exactly what
+         *     `eval/correction_rate.py` counts (`app/review/reviewed_readings.py`): every `confirm` or
+         *     `correct` evidence action, a held-reading answer included; an Agree on a FAIL or any other
+         *     decision on a result is not one. `readings_checked` is how many answers (one number answered
+         *     twice counts twice, as in the metric; the screen says "Your answers"); `ai_right` is the
+         *     confirms (no correction-ledger row), so `readings_checked - ai_right` were corrected. Of those,
+         *     `settled_checked` judged a reading both AIs settled, and `settled_right` of them were
+         *     confirmed: a settled number a person corrected shows as `settled_checked - settled_right`.
+         *     Nothing checked means no percentage (`None`), never 0% or 100%. No other set's answers count.
+         */
         ReviewHeaderOut: {
+            /**
+             * Ai Right
+             * @description Of those, how many the person confirmed.
+             */
+            ai_right: number;
+            /**
+             * Ai Right Percent
+             * @description ai_right as a whole percent of readings_checked; None when none checked.
+             */
+            ai_right_percent: number | null;
             /** Blocked Reason */
             blocked_reason?: string | null;
             /** Can Finalise */
@@ -7129,11 +7161,16 @@ export interface components {
             checked_by_you: number;
             /**
              * Confirmed By Ai
-             * @description Of those, numbers both AI readers settled.
+             * @description Of those, numbers both AI readers settled (agreed, and code accepted).
              */
             confirmed_by_ai: number;
             /** Failures */
             failures: number;
+            /**
+             * Need You
+             * @description Of those, numbers a person must settle: numbers - confirmed_by_ai, always.
+             */
+            need_you: number;
             /** Not Checked */
             not_checked: number;
             /**
@@ -7152,10 +7189,30 @@ export interface components {
              */
             pages_read: number;
             /**
+             * Readings Checked
+             * @description Answers on AI readings (confirm or correct) on this revision, as the correction rate counts them; one number answered twice counts twice.
+             */
+            readings_checked: number;
+            /**
              * Rechecking
              * @description Items waiting for the next check run.
              */
             rechecking: number;
+            /**
+             * Settled Checked
+             * @description Of readings_checked, those both AI readers had settled.
+             */
+            settled_checked: number;
+            /**
+             * Settled Percent
+             * @description confirmed_by_ai as a whole percent of numbers; None when there are none.
+             */
+            settled_percent: number | null;
+            /**
+             * Settled Right
+             * @description Of settled_checked, how many the person confirmed.
+             */
+            settled_right: number;
         };
         /**
          * ReviewItemActionIn

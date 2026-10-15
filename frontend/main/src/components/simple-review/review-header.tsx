@@ -12,8 +12,11 @@ function Count({ value }: { value: number }) {
 }
 
 /**
- * The top of the page: the set's name, what the AI did on its own, and the two ways out to the
- * drawings — both PDFs, and a draft of the cloud PDF that can be made at any time.
+ * The top of the page: the set's name, what the AI did on its own, how often it was right on the
+ * numbers a person checked (#1386), and the two ways out to the drawings — both PDFs, and a draft
+ * of the cloud PDF that can be made at any time. Every count and percentage is the server's
+ * (`ReviewHeaderOut`); nothing here works one out. With nothing checked there is no accuracy at all,
+ * never 0% or 100%.
  */
 export function ReviewHeader({
   title,
@@ -38,16 +41,37 @@ export function ReviewHeader({
         <h2 className="truncate text-[28px] leading-9 font-semibold tracking-[-0.015em] text-foreground">{title}</h2>
         <p data-testid="ai-read-line" className="text-[15px] leading-6 text-muted-foreground">
           AI read <Count value={header.pages_read} /> pages · <Count value={header.numbers} /> numbers ·{' '}
-          <Count value={header.confirmed_by_ai} /> confirmed by AI
+          <Count value={header.confirmed_by_ai} /> settled by both AIs
+          {header.settled_percent !== null && (
+            <>
+              {' '}(<span className="num">{header.settled_percent}%</span>)
+            </>
+          )}{' '}
+          · <Count value={header.need_you} /> need you
         </p>
+        <p data-testid="accuracy-line" className="text-[13px] leading-5 text-muted-foreground">
+          {header.readings_checked > 0 ? (
+            <>
+              Your answers so far: <Count value={header.readings_checked} /> · AI right on <Count value={header.ai_right} />
+              {header.ai_right_percent !== null && (
+                <>
+                  {' '}(<span className="num">{header.ai_right_percent}%</span>)
+                </>
+              )}
+            </>
+          ) : (
+            'Accuracy: shown after you check some numbers'
+          )}
+        </p>
+        {header.settled_checked > 0 && (
+          <p data-testid="settled-check-line" className="text-[13px] leading-5 text-muted-foreground">
+            Of the numbers both AIs settled that you checked: <Count value={header.settled_right} /> right of{' '}
+            <Count value={header.settled_checked} />
+          </p>
+        )}
         {revision !== null && (
           <p className="text-[13px] leading-5 text-muted-foreground">
             Revision <span className="num">{revision}</span>
-            {header.checked_by_you > 0 && (
-              <>
-                {' '}· <span className="num">{header.checked_by_you}</span> checked by you
-              </>
-            )}
           </p>
         )}
       </div>

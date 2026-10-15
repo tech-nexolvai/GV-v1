@@ -10075,7 +10075,25 @@
         "type": "object"
       },
       "ReviewHeaderOut": {
+        "description": "The top of the simple review page (#1338), with the AI's share and accuracy (#1386).\n\nEvery count is exact and worked out here; the screen only prints them. Each percentage is a\nwhole number of its own count over its own total, shown beside the counts (`whole_percent`).\n\n**Numbers** (line 1): `numbers` is every width number on the countertop rows of the newest\nreading. Each is in exactly one of two groups, by the one test the rest of the page uses\n(`candidate_is_sealed`): `confirmed_by_ai`, settled by both AIs (the two readers agreed and\ncode accepted it), or `need_you`, the rest (held, read by one reader, read differently, or with\nno value). So `confirmed_by_ai + need_you == numbers` always.\n\n**Accuracy** (line 2): from this revision's own answers on AI readings, exactly what\n`eval/correction_rate.py` counts (`app/review/reviewed_readings.py`): every `confirm` or\n`correct` evidence action, a held-reading answer included; an Agree on a FAIL or any other\ndecision on a result is not one. `readings_checked` is how many answers (one number answered\ntwice counts twice, as in the metric; the screen says \"Your answers\"); `ai_right` is the\nconfirms (no correction-ledger row), so `readings_checked - ai_right` were corrected. Of those,\n`settled_checked` judged a reading both AIs settled, and `settled_right` of them were\nconfirmed: a settled number a person corrected shows as `settled_checked - settled_right`.\nNothing checked means no percentage (`None`), never 0% or 100%. No other set's answers count.",
         "properties": {
+          "ai_right": {
+            "description": "Of those, how many the person confirmed.",
+            "title": "Ai Right",
+            "type": "integer"
+          },
+          "ai_right_percent": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "ai_right as a whole percent of readings_checked; None when none checked.",
+            "title": "Ai Right Percent"
+          },
           "blocked_reason": {
             "anyOf": [
               {
@@ -10097,12 +10115,17 @@
             "type": "integer"
           },
           "confirmed_by_ai": {
-            "description": "Of those, numbers both AI readers settled.",
+            "description": "Of those, numbers both AI readers settled (agreed, and code accepted).",
             "title": "Confirmed By Ai",
             "type": "integer"
           },
           "failures": {
             "title": "Failures",
+            "type": "integer"
+          },
+          "need_you": {
+            "description": "Of those, numbers a person must settle: numbers - confirmed_by_ai, always.",
+            "title": "Need You",
             "type": "integer"
           },
           "not_checked": {
@@ -10124,9 +10147,36 @@
             "title": "Pages Read",
             "type": "integer"
           },
+          "readings_checked": {
+            "description": "Answers on AI readings (confirm or correct) on this revision, as the correction rate counts them; one number answered twice counts twice.",
+            "title": "Readings Checked",
+            "type": "integer"
+          },
           "rechecking": {
             "description": "Items waiting for the next check run.",
             "title": "Rechecking",
+            "type": "integer"
+          },
+          "settled_checked": {
+            "description": "Of readings_checked, those both AI readers had settled.",
+            "title": "Settled Checked",
+            "type": "integer"
+          },
+          "settled_percent": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "confirmed_by_ai as a whole percent of numbers; None when there are none.",
+            "title": "Settled Percent"
+          },
+          "settled_right": {
+            "description": "Of settled_checked, how many the person confirmed.",
+            "title": "Settled Right",
             "type": "integer"
           }
         },
@@ -10134,6 +10184,13 @@
           "pages_read",
           "numbers",
           "confirmed_by_ai",
+          "settled_percent",
+          "need_you",
+          "readings_checked",
+          "ai_right",
+          "ai_right_percent",
+          "settled_checked",
+          "settled_right",
           "checked_by_you",
           "open",
           "failures",

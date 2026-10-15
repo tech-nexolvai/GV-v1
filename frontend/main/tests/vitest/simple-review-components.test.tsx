@@ -28,10 +28,32 @@ describe('ReviewHeader', () => {
     render(<ReviewHeader title="Sample Stoneworks" revision={2} header={data.header} onOpenPdfs={() => {}} onDraftCloud={() => {}} draft={{ status: 'idle' }} />);
     expect(screen.getByRole('heading', { level: 2, name: 'Sample Stoneworks' })).toBeTruthy();
     const line = screen.getByTestId('ai-read-line');
-    expect(line.textContent).toBe('AI read 12 pages · 148 numbers · 131 confirmed by AI');
+    expect(line.textContent).toBe('AI read 12 pages · 148 numbers · 131 settled by both AIs (89%) · 17 need you');
     expect(within(line).getByText('148').className).toContain('num');
     expect(screen.getByRole('button', { name: /Open PDFs/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: /Draft cloud PDF/ })).toBeTruthy();
+  });
+
+  it("says how often the AI was right on the numbers you checked, all from the server (#1386)", () => {
+    render(<ReviewHeader title="Sample Stoneworks" revision={2} header={data.header} onOpenPdfs={() => {}} onDraftCloud={() => {}} draft={{ status: 'idle' }} />);
+    expect(screen.getByTestId('accuracy-line').textContent).toBe('Your answers so far: 12 · AI right on 11 (92%)');
+    // A number both AIs settled that a person corrected stays in sight.
+    expect(screen.getByTestId('settled-check-line').textContent).toBe('Of the numbers both AIs settled that you checked: 2 right of 3');
+  });
+
+  it('with nothing checked it shows no accuracy at all, never 0% or 100% (#1386)', () => {
+    const header = { ...data.header, readings_checked: 0, ai_right: 0, ai_right_percent: null, settled_checked: 0, settled_right: 0 };
+    render(<ReviewHeader title="Sample Stoneworks" revision={2} header={header} onOpenPdfs={() => {}} onDraftCloud={() => {}} draft={{ status: 'idle' }} />);
+    expect(screen.getByTestId('accuracy-line').textContent).toBe('Accuracy: shown after you check some numbers');
+    expect(screen.queryByTestId('settled-check-line')).toBeNull();
+  });
+
+  it('prints the percentages the server sent, never its own (#1386)', () => {
+    // Deliberately not 131/148: the screen must print the server's number, not work one out.
+    const header = { ...data.header, settled_percent: 7, ai_right_percent: 3 };
+    render(<ReviewHeader title="Sample Stoneworks" revision={2} header={header} onOpenPdfs={() => {}} onDraftCloud={() => {}} draft={{ status: 'idle' }} />);
+    expect(screen.getByTestId('ai-read-line').textContent).toContain('131 settled by both AIs (7%)');
+    expect(screen.getByTestId('accuracy-line').textContent).toContain('AI right on 11 (3%)');
   });
 
   it('a draft that cannot be made yet is named, not hidden', () => {
