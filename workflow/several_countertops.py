@@ -34,7 +34,9 @@ given for the whole package (typed, or a reading confirmed), which it shows held
 
 What the whole-package check itself still lacks, beyond the drawn values (a project setting not
 given, a wall layout not stated), is said on every countertop's own result too, after "Also:"
-(`also_reason`): the same words on each, so a decision still carries over. **Never silent** (`hold_for_unchecked`): with the reader on, such a
+(`also_reason`): the same words on each, so a decision still carries over. A withheld reading is
+not said there (#1306): its reason can name a countertop and its page, and the whole-package hold,
+written in that case, says it in full. **Never silent** (`hold_for_unchecked`): with the reader on, such a
 countertop the check did not run for is named on one held whole-package result.
 
 A package with one countertop, or none known, is exactly as before.
@@ -65,13 +67,17 @@ no countertop on record, so nothing changes for it.
 every outcome of those six whole-package results into `REVIEW_REQUIRED`, it adds only held results,
 and it leaves any other result untouched.
 
+**The run check uses the same split** (`own_or_left`, `missing_own_results`, #1305): a
+countertop with neither a live result of its own nor its name on the held whole-package result is
+reported there, so one that silently lost its result is seen even while another keeps one.
+
 Read-only and model-free: no extraction import, no write.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Final
 from uuid import UUID
@@ -113,6 +119,8 @@ __all__ = [
     "countertop_holds",
     "hold_for_several",
     "hold_for_unchecked",
+    "missing_own_results",
+    "own_or_left",
     "package_countertops",
     "unchecked_note",
     "waiting_reason",
@@ -231,12 +239,21 @@ _COULD_NOT_RESOLVE: Final = re.compile(
 _ABSENT: Final = re.compile(
     r"^required input\(s\) absent: ([^.]+)\. A missing value is not a passing value\.$"
 )
+#: The engine's sentence for readings found but withheld (`verdict/engine.py`, #826): their reasons,
+#: then the inputs. Such a reason can name countertops and pages (`ONE_COUNTERTOPS_READING`).
+_WITHHELD: Final = re.compile(r"^.+ \(inputs: ([^()]+)\)$")
 
 
 def also_reason(finding: Finding, inputs: Collection[str]) -> str | None:
     """What the whole-package result of a check says it lacks beyond the drawn values, for each
     countertop's own held result (#1201 review); `None` when it decided, or when all it lacks is
     one or more of the rule's drawn `inputs`, which the countertop's own sentence already names.
+
+    `None` too when all it says is that readings of drawn `inputs` were withheld (#1306): that
+    reason can name another countertop and its page (a person confirmed one countertop's
+    depth-reader value), and a countertop's own reason never names a countertop. The whole-package
+    hold, written in that case, keeps the full text. Anything else is said without what clears the
+    whole-package hold (`clears_when`), as `hold_for_several` does: it is not this result's to say.
 
     The same for every countertop of the package: it comes from the one whole-package evaluation.
     """
@@ -249,7 +266,12 @@ def also_reason(finding: Finding, inputs: Collection[str]) -> str | None:
     absent = _ABSENT.match(reason)
     if absent is not None and {n.strip() for n in absent.group(1).split(",")} <= set(inputs):
         return None
-    return reason
+    withheld = _WITHHELD.match(reason)
+    if withheld is not None and {n.strip() for n in withheld.group(1).split(",")} <= set(inputs):
+        return None
+    for clears in (PER_COUNTERTOP_ONCE_DECIDED, READER_OFF, NEVER_PER_COUNTERTOP):
+        reason = reason.replace(clears, " ")
+    return " ".join(reason.split()) or None
 
 
 def clears_when(rule_id: str, *, depth_reader: bool) -> str:
@@ -540,16 +562,9 @@ def countertop_holds(
     if rule_id not in WHOLE_PACKAGE_RULE_IDS:
         return CountertopHolds()
     reason = waiting_reason(rule_id, depth_reader=depth_reader, also=also)
-    own: list[tuple[CountedCountertop, Finding]] = []
-    left: list[CountedCountertop] = []
-    used: set[tuple[UUID | None, UUID | None]] = set()
-    for countertop in countertops:
-        scope = countertop.scope
-        if scope is None or scope in used:
-            left.append(countertop)
-            continue
-        used.add(scope)
-        own.append(
+    own, left = own_or_left(countertops)
+    return CountertopHolds(
+        tuple(
             (
                 countertop,
                 Finding(
@@ -561,8 +576,73 @@ def countertop_holds(
                     engine_version=engine_version,
                 ),
             )
-        )
-    return CountertopHolds(tuple(own), tuple(left))
+            for countertop in own
+        ),
+        left,
+    )
+
+
+def own_or_left(
+    countertops: Sequence[CountedCountertop],
+) -> tuple[tuple[CountedCountertop, ...], tuple[CountedCountertop, ...]]:
+    """Which of these countertops can have a held result of their own (`own`, each scoped to
+    `CountedCountertop.scope`), and which are left over (`left`): no record to scope one to, or a
+    record an earlier countertop's result already uses (fail closed: named on a whole-package
+    result). The one definition: `countertop_holds` writes by it, and the run check
+    (`missing_own_results`) checks by it (#1305)."""
+    own: list[CountedCountertop] = []
+    left: list[CountedCountertop] = []
+    used: set[tuple[UUID | None, UUID | None]] = set()
+    for countertop in countertops:
+        scope = countertop.scope
+        if scope is None or scope in used:
+            left.append(countertop)
+            continue
+        used.add(scope)
+        own.append(countertop)
+    return tuple(own), tuple(left)
+
+
+def missing_own_results(
+    countertops: PackageCountertops,
+    *,
+    item_ids: Collection[UUID],
+    row_ids: Collection[UUID],
+    whole_package_notes: Iterable[str],
+) -> tuple[CountedCountertop, ...]:
+    """The countertops with no live result of one of the six checks, in page order (#1305): what
+    the run check reports. Empty on a package with one countertop, or none known.
+
+    Given that check's live results: `item_ids` and `row_ids` they are scoped to, and the notes of
+    its whole-package results. The same split the check stage writes by:
+
+    * a countertop with a result scoped to its item (reader on, its run decided) has its own;
+    * of the others, one that can have a held result of its own (`own_or_left`) needs one scoped
+      to its row;
+    * one left over needs its name on a whole-package result (`unchecked_note`).
+
+    Reads nothing and decides nothing: a report of a result gone missing, never a result.
+    """
+    if not countertops.several:
+        return ()
+    own, left = own_or_left(countertops.without(item_ids))
+    listed = [
+        note.removeprefix(_UNCHECKED_OPENING)
+        for note in whole_package_notes
+        if note.startswith(_UNCHECKED_OPENING)
+    ]
+    missing = [
+        countertop
+        for countertop in own
+        if countertop.scope is None or countertop.scope[1] not in row_ids
+    ]
+    missing += [
+        countertop
+        for countertop in left
+        if not any(_listed_includes(names, countertop.name) for names in listed)
+    ]
+    gone = {id(countertop) for countertop in missing}
+    return tuple(countertop for countertop in countertops.countertops if id(countertop) in gone)
 
 
 def unchecked_note(countertops: Sequence[CountedCountertop]) -> str:
@@ -570,7 +650,17 @@ def unchecked_note(countertops: Sequence[CountedCountertop]) -> str:
     return UNCHECKED_NOTE.format(names=_listed([c.name for c in countertops]))
 
 
+#: How `unchecked_note` opens, before the names.
+_UNCHECKED_OPENING: Final = UNCHECKED_NOTE.split("{names}")[0]
+
+
 def _listed(names: Sequence[str]) -> str:
     if len(names) < 2:
         return "".join(names)
     return f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+def _listed_includes(listed: str, name: str) -> bool:
+    """Whether `listed` (`_listed`'s names and the note's closing full stop) names `name`: one whole
+    entry, never part of a longer name."""
+    return re.search(rf"(?:^|, | and ){re.escape(name)}(?:, | and |\.$)", listed) is not None
