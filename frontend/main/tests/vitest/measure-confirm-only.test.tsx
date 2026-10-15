@@ -26,9 +26,9 @@ const REQUIRED = {
     { key: 'SHOP:CT004', semantic_type: 'CT004', source: 'SHOP', many: false, confirm_only: true, where_to_find: 'The vendor’s elevation.', confirmed_pages: [1], consumers: [{ rule_id: 'R-SINKCAB', input_name: 'sink_cabinet_width' }], categories: [] },
     { key: 'SHOP:CT007', semantic_type: 'CT007', source: 'SHOP', many: false, confirm_only: true, consumers: [{ rule_id: 'R-OFFSET', input_name: 'front_offset' }], categories: [] },
     { key: 'SHOP:CT012', semantic_type: 'CT012', source: 'SHOP', many: false, confirm_only: true, consumers: [{ rule_id: 'R-CUTOUT', input_name: 'cutout_width' }], categories: [] },
-    // Typed before for one of its two checks only (#1262): the field names which check still uses it.
+    // Typed before for one of its two checks only (#1262), and a reading confirmed here: the reading counts (#1303).
     { key: 'SHOP:CT011', semantic_type: 'CT011', source: 'SHOP', many: false, confirm_only: true, confirmed_pages: [1], consumers: [{ rule_id: 'R-LEFT-A', input_name: 'left_clearance' }, { rule_id: 'R-LEFT-B', input_name: 'left_clearance' }], categories: [] },
-    // Typed before for one check, a different number for another, nothing for a third (#1262).
+    // Typed before for one check, a different number for another, nothing for a third (#1262): none counts (#1303).
     { key: 'SHOP:CT009', semantic_type: 'CT009', source: 'SHOP', many: false, confirm_only: true, confirmed_pages: [], consumers: [{ rule_id: 'R-BACK-A', input_name: 'back_offset' }, { rule_id: 'R-BACK-B', input_name: 'back_offset' }, { rule_id: 'R-BACK-C', input_name: 'back_offset' }], categories: [] },
     // Confirmed on this page and a different reading on page 2 (#1262): the check sees two and waits.
     { key: 'SHOP:CT013', semantic_type: 'CT013', source: 'SHOP', many: false, confirm_only: true, confirmed_pages: [1, 2], consumers: [{ rule_id: 'R-RIGHT', input_name: 'right_clearance' }], categories: [] },
@@ -50,7 +50,7 @@ const REQUIRED = {
   rules_published: 5,
   still_reading: false,
   revision_state: 'READY',
-  // Typed before #1251: kept (append-only) and still counted, but no longer typable.
+  // Typed before #1251: kept (append-only) and shown, but no longer typable and, since #1303, no longer counted.
   saved_measurements: [
     { key: 'SHOP:CT007', values: [saved('4"', '4')], set_by: 'synthetic reviewer', set_at: SAVED_AT, complete: true, held_by: ['R-OFFSET'], differs_for: [] },
     { key: 'SHOP:CT011', values: [saved('1"', '1')], set_by: 'synthetic reviewer', set_at: SAVED_AT, complete: false, held_by: ['R-LEFT-A'], differs_for: [] },
@@ -128,7 +128,7 @@ describe('a number drawn on the drawing is confirmed, never typed (#1251)', { ti
     expect(box('SHOP:cabinet_width')?.tagName).toBe('INPUT');
   });
 
-  it('shows a value typed earlier as still counting, with no box to change it', async () => {
+  it('shows a value typed earlier as no longer counting, with no box to change it (#1303)', async () => {
     await openValues();
 
     const offset = field('SHOP:CT007')!;
@@ -136,8 +136,13 @@ describe('a number drawn on the drawing is confirmed, never typed (#1251)', { ti
     // The value's own saved day (#1262), never a fixed date.
     expect(offset.textContent).toContain(`Typed ${settingDate(SAVED_AT)}`);
     expect(offset.textContent).not.toContain('2026-10-14');
-    expect(offset.textContent).toContain('still counts');
-    expect(offset.textContent).not.toContain('No reading confirmed yet');
+    expect(offset.querySelector('[data-part="typed-before"]')!.textContent).toContain(
+      'It no longer counts: a number drawn on the drawing must come from a confirmed reading.',
+    );
+    expect(offset.textContent).not.toContain('still counts');
+    // With no reading confirmed, the field waits like any drawn field with none.
+    expect(offset.textContent).toContain('No reading confirmed yet');
+    expect(box('SHOP:CT007')).toBeNull();
   });
 
   it('shows a confirmed reading as the value, and Save never sends a drawn value as typed', async () => {
@@ -155,7 +160,7 @@ describe('a number drawn on the drawing is confirmed, never typed (#1251)', { ti
     ]);
   });
 
-  it('keeps showing a value typed before, and that it still counts, after a reading is confirmed', async () => {
+  it('uses a reading confirmed after a value typed before, and still shows the typed one as not counting (#1303)', async () => {
     offered = [READING];
     const user = await openValues();
 
@@ -164,12 +169,13 @@ describe('a number drawn on the drawing is confirmed, never typed (#1251)', { ti
     await user.click(within(offset).getByTitle('Confirm 5 in as Front offset'));
     await waitFor(() => expect(postsTo('/confirm')).toHaveLength(1));
 
-    // The checks still use the typed 4" (it outranks the reading), so the screen shows that one.
-    await waitFor(() => expect(field('SHOP:CT007')!.textContent).toContain('does not replace it'));
+    // The checks use the confirmed 5 in; the typed 4" stays on screen, marked as no longer counting.
+    await waitFor(() => expect(field('SHOP:CT007')!.querySelector('[data-part="confirm-only-value"]')?.textContent).toBe('5 in'));
     const after = field('SHOP:CT007')!;
     expect(after.textContent).toContain('4"');
-    expect(after.textContent).toContain('still counts');
-    expect(after.textContent).not.toContain('5 in');
+    expect(after.textContent).toContain('It no longer counts');
+    expect(after.textContent).not.toContain('still counts');
+    expect(after.textContent).not.toContain('does not replace it');
     // Save never sends a drawn value, so nothing on a confirm-only field may say Save replaces it.
     expect(after.textContent).not.toContain('replaces it');
     expect(after.querySelector('[data-part="saved-replaced"]')).toBeNull();
@@ -205,31 +211,26 @@ describe('a drawn field with no value says only what the screen knows (#1253 rev
   });
 });
 
-describe('a drawn field says exactly what the checks will use (#1262)', { timeout: 15_000 }, () => {
-  it('names the checks that still use a value typed for only some of them', async () => {
+describe('a drawn field says exactly what the checks will use (#1262, #1303)', { timeout: 15_000 }, () => {
+  it('shows the confirmed reading as the value when a value typed for some checks no longer counts', async () => {
     await openValues();
 
     const left = field('SHOP:CT011')!;
-    expect(left.textContent).toContain('1"');
-    expect(left.textContent).toContain('Only check R-LEFT-A still uses this typed value.');
-    expect(left.textContent).toContain('Check R-LEFT-B uses the confirmed reading instead.');
-    expect(left.textContent).not.toContain('the checks still use the typed value');
+    expect(left.querySelector('[data-part="confirm-only-value"]')!.textContent).toBe('2 in');
+    expect(left.querySelector('[data-part="typed-before"]')!.textContent).toContain('1"');
+    expect(left.textContent).toContain('It no longer counts');
+    expect(left.textContent).not.toContain('Only check');
+    expect(left.textContent).not.toContain('still uses this typed value');
   });
 
-  it('says which check waits for a reading and which holds a different typed value', async () => {
+  it('says no check uses a value typed for some checks, and the field waits for a reading', async () => {
     await openValues();
 
     const back = field('SHOP:CT009')!;
-    expect(back.textContent).toContain('Only check R-BACK-A still uses this typed value.');
-    expect(back.textContent).toContain('Check R-BACK-B uses a different typed value.');
-    expect(back.textContent).toContain('Check R-BACK-C waits for a reading to be confirmed.');
-  });
-
-  it('a value typed for every check it feeds keeps the one plain line', async () => {
-    await openValues();
-
-    const offset = field('SHOP:CT007')!;
-    expect(offset.textContent).not.toContain('Only check');
+    expect(back.textContent).toContain('It no longer counts');
+    expect(back.textContent).toContain('No reading confirmed yet');
+    expect(back.textContent).not.toContain('Only check');
+    expect(back.textContent).not.toContain('uses a different typed value');
   });
 
   it('a value shown here that is also confirmed on another page says so, and that the check waits', async () => {

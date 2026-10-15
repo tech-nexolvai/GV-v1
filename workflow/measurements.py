@@ -80,6 +80,15 @@ DRAWN_SOURCES: Final[dict[str, str]] = {
 }
 
 
+#: What a check says when a drawn input it reads holds only a value typed before #1253 (#1303).
+TYPED_DRAWN_STOPPED: Final = (
+    "A value typed on Measurements for {inputs} before drawn numbers became confirm-only no longer "
+    "counts (decided 2026-10-15): a number drawn on the drawing must come from a confirmed reading. "
+    "The typed value is kept on record. Confirm a reading of it on Measurements; until one is "
+    "confirmed, this check waits for it."
+)
+
+
 def confirm_only(source: str, *, many: bool) -> bool:
     """Whether a rule input is one number drawn on a drawing, so it is confirmed and never typed.
 
