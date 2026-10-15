@@ -9,6 +9,8 @@ import {
   pageWord,
   whereWord,
   pointsOf,
+  proposedWall,
+  readerWord,
   ringOf,
   splitNumbers,
   summarize,
@@ -33,6 +35,17 @@ describe('simple review route (#1343)', () => {
 describe('simple review rules', () => {
   const data = reviewItems();
   const item = (key: string) => data.items.find((entry) => entry.key === key)!;
+
+  it('a wall choice pre-selects the readers\' proposal; with none, nothing is picked (#1358)', () => {
+    expect(proposedWall(item('wall:row-7'))).toBe('back_left_right');
+    expect(proposedWall({ wall_choices: item('wall:row-7').wall_choices!.map((choice) => ({ ...choice, proposed: false })) })).toBeNull();
+    expect(proposedWall(item('number:cand-101'))).toBeNull();
+  });
+
+  it('the PDF\'s own text is named as such beside the AIs\' readings', () => {
+    expect(readerWord('pdf-text-layer')).toBe('PDF text');
+    expect(readerWord('MODEL_A')).toBe('AI 1');
+  });
 
   it('C agrees with the AI and F disagrees, for every kind of item', () => {
     expect([agreeAction(item('number:cand-101')), disagreeAction(item('number:cand-101'))]).toEqual(['confirm', 'fix']);

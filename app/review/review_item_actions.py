@@ -20,7 +20,12 @@ run decides the result. Its numbers checked by hand are answered with one findin
 would mark every number of the result done: so that answer waits until each numbered item of the
 same result has its own confirmation (`numbers_answered`), and is refused with 409 before.
 
-Source: issue #1351. Verification: `tests/api/test_review_item_actions.py`.
+**What the person saw (#1358).** A group click names the open keys it was shown (`expected_keys`,
+required; 409 when the group changed), and a Confirm on a number names the value shown
+(`shown_value`, required; 409 when the stored value differs now). "Checked by hand: wrong" is a
+DISMISS with the shared note `app.review.signed_record.CHECKED_WRONG_NOTE`, printed as WRONG.
+
+Source: issues #1351, #1358. Verification: `tests/api/test_review_item_actions.py`.
 """
 
 from __future__ import annotations
@@ -28,6 +33,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from fractions import Fraction
 from typing import Final, Literal
 from uuid import UUID
 
@@ -44,9 +50,11 @@ from app.review.review_items import (
     NotCheckedOut,
     ReviewItemOut,
     ReviewItemsOut,
+    parsed_inches,
     review_items_for_revision,
 )
 from app.review.session import open_session, record_action
+from app.review.signed_record import CHECKED_WRONG_NOTE
 from verdict.operands import EvidenceStatus
 
 __all__ = [
@@ -61,6 +69,7 @@ __all__ = [
     "ReviewItemActionIn",
     "ReviewItemActionOut",
     "answer_name",
+    "check_shown_value",
     "current_items",
     "find_entry",
     "numbers_answered",
@@ -68,9 +77,10 @@ __all__ = [
     "reviewer_session",
 ]
 
-#: The fixed notes each finding action carries. A person never types one here.
+#: The fixed notes each finding action carries. A person never types one here. "Checked by hand:
+#: wrong" is the shared `app.review.signed_record.CHECKED_WRONG_NOTE`, which the signed record and
+#: the cloud PDF read (#1358).
 CHECKED_RIGHT_NOTE: Final = "Checked by hand: right (simple review)."
-CHECKED_WRONG_NOTE: Final = "Checked by hand: wrong (simple review)."
 AGREE_NOTE: Final = "Agreed: this is wrong on the drawing and will be clouded (simple review)."
 NOT_CHECKED_FIXED_NOTE: Final = "Not checked: the values were not read"
 
@@ -140,6 +150,15 @@ class ReviewItemActionIn(BaseModel):
         max_length=64,
         description="With `fix`: the reading the person picked, with its unit (W2, #1339).",
     )
+    shown_value: str | None = Field(
+        default=None,
+        max_length=64,
+        description=(
+            "With `confirm` on a number: the value the screen showed (`best_guess.text`), e.g. "
+            '`20"`. Required; 409 when the stored value differs now (#1358). Confirm records '
+            "exactly the stored value, never another reading."
+        ),
+    )
     wall_config: str | None = Field(
         default=None,
         max_length=64,
@@ -163,7 +182,8 @@ class ReviewItemActionIn(BaseModel):
         default=None,
         max_length=1000,
         description=(
-            "With a group key: the open keys the screen showed. 409 when the group differs now."
+            "With a group key (`not-checked`, `no-countertop-pages`): the open keys the screen "
+            "showed. Required for a group (422 without); 409 when the group differs now (#1358)."
         ),
     )
 
@@ -293,6 +313,29 @@ def find_entry(
     return entry, kind
 
 
+def check_shown_value(entry: ReviewItemOut, shown_value: str | None) -> None:
+    """A Confirm on a number names the value the person saw: 422 without it, 409 when the stored
+    value shown now differs (#1358). Exact inches, so `20"` and `20 in` are the same value."""
+    if shown_value is None or not shown_value.strip():
+        raise ItemRefused(
+            422,
+            "Say which value you confirm (`shown_value`, the value shown). Nothing was saved.",
+        )
+    guess = entry.best_guess
+    shown = None if guess is None or guess.value is None else guess.value
+    seen = parsed_inches(shown_value)
+    if (
+        shown is None
+        or seen is None
+        or Fraction(int(shown.numerator), int(shown.denominator)) != seen
+    ):
+        raise ItemRefused(
+            409,
+            "The value shown for this number changed since you opened it. Nothing was saved. "
+            "Reload the list.",
+        )
+
+
 def numbers_answered(session: Session, candidate_ids: Iterable[UUID]) -> set[UUID]:
     """The held numbers a person has already answered, each with its own confirmation: a
     HUMAN_CONFIRMED canonical observation citing the reading (W2's confirm and fix, #1339)."""
@@ -409,10 +452,17 @@ def group_keys(listed: ReviewItemsOut, group: Group) -> list[str]:
 
 
 def check_group(listed: ReviewItemsOut, group: Group, expected: list[str] | None) -> list[str]:
+    """The group's open keys, only when they are exactly the ones the person saw (#1358): a group
+    click names what was seen, so one result that arrived since is never answered unseen."""
+    if expected is None:
+        raise ItemRefused(
+            422,
+            "Say which items you saw in this group (`expected_keys`). Nothing was saved.",
+        )
     keys = group_keys(listed, group)
     if not keys:
         raise ItemRefused(409, "Nothing in this group is waiting for an answer. Nothing was saved.")
-    if expected is not None and sorted(expected) != sorted(keys):
+    if sorted(expected) != sorted(keys):
         raise ItemRefused(
             409,
             "This group changed since you opened it. Nothing was saved. Reload the list.",

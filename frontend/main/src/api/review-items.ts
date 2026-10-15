@@ -23,6 +23,8 @@ export type BestGuess = Schemas['BestGuessOut'];
 export type ReaderText = Schemas['ReaderTextOut'];
 export type CountertopRef = Schemas['CountertopItemRefOut'];
 export type ArchitectRef = Schemas['ArchitectRefOut'];
+/** One wall layout a wall-only countertop may take, with the result the width check recorded. */
+export type WallChoice = Schemas['WallChoiceOut'];
 /** A spot on a stored page. `polygon` is in stored page space (0..1), as strings. */
 export type PageRef = Schemas['RowLocation'];
 export type ReviewItemKind = ReviewItem['kind'];
@@ -53,11 +55,25 @@ export function isItemAction(action: string): action is ItemAction {
   return (ITEM_ACTIONS as readonly string[]).includes(action);
 }
 
-/** What one click sends. `value` is a reading the reviewer picked from the AIs' own readings. */
+/**
+ * What one click sends. `value` is a reading the reviewer picked from the AIs' own readings;
+ * `shown_value` is the number a Confirm was shown; `wall_config` is the wall layout clicked;
+ * `expected_keys` are the open keys a group click was shown (#1358).
+ */
 export interface ActionBody {
   expected_finding_id: string | null;
   value?: string;
+  shown_value?: string;
+  wall_config?: string;
+  expected_keys?: string[];
 }
+
+/** The answer-specific part of one click, added to `expected_finding_id`. */
+export type ActionExtra = Omit<ActionBody, 'expected_finding_id'>;
+
+/** W3's group keys: every open "Not checked" result, and every page listed with no countertop. */
+export const NOT_CHECKED_GROUP = 'not-checked';
+export const PAGES_GROUP = 'no-countertop-pages';
 
 /** The calls the page makes. The app uses `liveReviewItemsApi`; tests and the UI kit pass their own. */
 export interface ReviewItemsApi {
