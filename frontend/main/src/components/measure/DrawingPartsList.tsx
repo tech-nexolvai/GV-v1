@@ -26,6 +26,7 @@ import { GvMarksWarning } from './GvMarksWarning.js';
 import type { DecisionFeedback } from './decisionFeedback.js';
 import { VendorPagePlacement } from './VendorPagePlacement.js';
 import { Button } from '@/components/ui/button';
+import { LinkedViewChips } from './LinkedViewChips.js';
 import { ChoiceMark, DecisionLine, Hint, INPUT_CLASS, SELECT_CLASS, StepSection } from './wizard-ui.js';
 import { choiceVariant, countWords } from './wizardWords.js';
 
@@ -212,6 +213,7 @@ function PartRow({
         <Hint>{reasonToShow(part)}</Hint>
         <Hint>{part.suggested_code ? `Code read on the drawing: “${part.suggested_code}”` : 'No code read.'}</Hint>
         <p className="text-xs font-medium">{decisionLabel(part)}</p>
+        <LinkedViewChips views={part.linked_views ?? []} />
       </div>
       {foundByCode(part) && (
         <div data-slot="found-by-code" className="flex flex-wrap items-center gap-1.5 text-xs font-medium">

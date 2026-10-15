@@ -150,6 +150,11 @@ export interface Finding {
    * its unit, where to find it, and the value typed since, if any. Empty for every other result.
    */
   missing_inputs?: components['schemas']['MissingInputOut'][];
+  /**
+   * For a depth or sink check still waiting (#1295): what the depth and sink reader read for each
+   * countertop, or why a value was not used. Empty when the reader never read the set.
+   */
+  depth_readings?: components['schemas']['DepthReadingOut'][];
 }
 
 /** A package as the list and the sidebar show it.

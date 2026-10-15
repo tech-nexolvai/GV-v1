@@ -130,7 +130,7 @@ export function OtherChecks({
                   ) : blocking.has(finding.id) ? (
                     <Button size="sm" variant="ghost" onClick={() => onDecide(finding)}>Decide</Button>
                   ) : null}
-                  {packageId && blocking.has(finding.id) && (finding.missing_inputs?.length ?? 0) > 0 && (
+                  {packageId && blocking.has(finding.id) && ((finding.missing_inputs?.length ?? 0) > 0 || (finding.depth_readings?.length ?? 0) > 0) && (
                     <div className="basis-full">
                       <NeedsValues finding={finding} packageId={packageId} onSaved={() => onValuesSaved?.()} onRunChecks={onRunChecks} />
                     </div>

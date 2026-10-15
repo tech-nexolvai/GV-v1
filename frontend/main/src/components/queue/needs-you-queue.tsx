@@ -558,7 +558,7 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
                   />
                 )}
                 {/* A check waiting on a value asks for exactly that value, here (#1181). */}
-                {item.kind === 'check' && finding && status === 'open' && (finding.missing_inputs?.length ?? 0) > 0 && (
+                {item.kind === 'check' && finding && status === 'open' && ((finding.missing_inputs?.length ?? 0) > 0 || (finding.depth_readings?.length ?? 0) > 0) && (
                   <NeedsValues
                     finding={finding}
                     packageId={packageId}

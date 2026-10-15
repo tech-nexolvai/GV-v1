@@ -10,6 +10,10 @@
  * is pre-filled. A saved value is shown with where it is from, and the check keeps saying it is
  * waiting until the checks run again — so the line under it says exactly that, with the review's own
  * "Run checks".
+ *
+ * A depth or sink check the depth and sink reader read (#1295) also says, per countertop, what was
+ * read and how it was checked, a reading to confirm ("Confirm this reading", the existing confirm
+ * path), or why a value was not used. Without readings the card is exactly as it was.
  */
 import { useId, useState } from 'react';
 
@@ -21,6 +25,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { SIGNED_OFF_NOTE, useSignedOff } from '@/lib/signed-off';
 import { SinkEntryDialog } from '@/components/measure/SinkEntry';
+import { DepthReadings } from '@/components/results/depth-readings';
 import {
   overridable,
   saveState,
@@ -57,13 +62,22 @@ export function NeedsValues({
   const [savedHere, setSavedHere] = useState(false);
   const [sinkOpen, setSinkOpen] = useState(false);
   const signedOff = useSignedOff();
-  if (inputs.length === 0) return null;
+  // What the depth and sink reader read for each countertop (#1295): only when it read the set.
+  const readings = finding.depth_readings ?? [];
+  if (inputs.length === 0 && readings.length === 0) return null;
   // A closed review takes no new values (#1182): say so instead of offering boxes that would be refused.
   if (signedOff) {
-    return (
+    const note = (
       <p className="text-sm text-muted-foreground" role="note" data-part="signed-off">
         {SIGNED_OFF_NOTE}
       </p>
+    );
+    if (readings.length === 0) return note;
+    return (
+      <section data-slot="needs-values" aria-label="Values this check needs" className="flex flex-col gap-3 rounded-lg border border-dashed p-3 font-sans text-sm">
+        <DepthReadings readings={readings} packageId={packageId} canAct={false} onConfirmed={onSaved} />
+        {note}
+      </section>
     );
   }
 
@@ -91,20 +105,25 @@ export function NeedsValues({
 
   return (
     <section data-slot="needs-values" aria-label="Values this check needs" className="flex flex-col gap-3 rounded-lg border border-dashed p-3 font-sans text-sm">
-      <ul className="flex flex-col gap-2.5">
-        {inputs.map((input) => (
-          <NeedsLine
-            key={input.key}
-            id={`${id}-${input.key}`}
-            input={input}
-            draft={drafts[input.key] ?? ''}
-            chosen={chosen[input.key] ?? ''}
-            disabled={saving}
-            onDraft={(value) => setDrafts((prior) => ({ ...prior, [input.key]: value }))}
-            onChoose={(value) => setChosen((prior) => ({ ...prior, [input.key]: value }))}
-          />
-        ))}
-      </ul>
+      {readings.length > 0 && (
+        <DepthReadings readings={readings} packageId={packageId} canAct onConfirmed={onSaved} onRunChecks={onRunChecks} />
+      )}
+      {inputs.length > 0 && (
+        <ul className="flex flex-col gap-2.5">
+          {inputs.map((input) => (
+            <NeedsLine
+              key={input.key}
+              id={`${id}-${input.key}`}
+              input={input}
+              draft={drafts[input.key] ?? ''}
+              chosen={chosen[input.key] ?? ''}
+              disabled={saving}
+              onDraft={(value) => setDrafts((prior) => ({ ...prior, [input.key]: value }))}
+              onChoose={(value) => setChosen((prior) => ({ ...prior, [input.key]: value }))}
+            />
+          ))}
+        </ul>
+      )}
       {sink.length > 0 && (
         <div>
           <Button type="button" size="sm" variant="outline" onClick={() => setSinkOpen(true)}>
