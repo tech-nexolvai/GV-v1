@@ -660,13 +660,11 @@ def test_a_try_never_takes_the_first_answer_and_a_rerun_reuses_the_tries_at_no_c
     from workflow.stages import DatabaseStages, _SpendMeter
 
     _revision, version, page_row, run = _scaffold(session)
-    page = replace(_page(), page_id=page_row.id, document_version_id=version.id)
+    page = replace(_two_row_page(), page_id=page_row.id, document_version_id=version.id)
 
     def read_and_record(readers: TryReaders) -> tuple[PageSlotResult, list[AttemptUsage], Any]:
-        result, attempts = _read(
-            page, readers, frozenset({AKSHARA_SEAL}), stored=StoredReaderAnswers(session)
-        )
-        configured = _runtime(readers, frozenset({AKSHARA_SEAL}))
+        result, attempts = _read(page, readers, stored=StoredReaderAnswers(session))
+        configured = _runtime(readers)
         stages = object.__new__(DatabaseStages)
         stages._form_reader = configured.form
         stages._meter = _SpendMeter(cap_micros=10_000_000)
@@ -674,14 +672,17 @@ def test_a_try_never_takes_the_first_answer_and_a_rerun_reuses_the_tries_at_no_c
         session.flush()
         return result, attempts, stages._meter
 
-    first, first_attempts, first_meter = read_and_record(TryReaders(page, span=_slot0_differs))
+    first, first_attempts, first_meter = read_and_record(
+        TryReaders(page, rows=_split_rows, tie_break=lambda _m, _p: _row(1), span=_slot0_differs)
+    )
+    assert first.row_try_again[0].helped and first.slots[0].labels[0].try_again[0].helped
     try_packets = [
         a.question_packet for a in first_attempts if ":again" in a.question_packet["question_id"]
     ]
     first_packets = [
         a.question_packet
         for a in first_attempts
-        if a.question_packet["question_id"] == "p0:slot0:0"
+        if a.question_packet["question_id"] in ("p0:slot0:0", "p0:row-choice")
     ]
     assert try_packets and first_packets
     assert {question_identity(p) for p in try_packets}.isdisjoint(
@@ -690,9 +691,17 @@ def test_a_try_never_takes_the_first_answer_and_a_rerun_reuses_the_tries_at_no_c
     assert first_meter.spent_micros > 0
 
     # A re-run with readers that would answer everything differently asks nothing at all.
-    again = TryReaders(page, rows=lambda _m: _row(0, "no_countertop"), span=lambda *_a: '99"')
+    again = TryReaders(
+        page,
+        rows=lambda _m: _row(0, "no_countertop"),
+        tie_break=lambda _m, _p: _row(2),
+        span=lambda *_a: '99"',
+    )
     second, second_attempts, second_meter = read_and_record(again)
-    assert again.row_requests == [] and again.span_requests == [] and again.other_requests == 0
+    assert again.row_requests == [] and again.tie_break_requests == []
+    assert again.span_requests == [] and again.other_requests == 0
+    assert second.row_try_again == first.row_try_again
+    assert second.row_choice_picks == first.row_choice_picks == ((OPUS, 1), (SONNET, 1))
     assert second_meter.spent_micros == 0
     assert second.slots[0].labels[0].try_again == first.slots[0].labels[0].try_again
     assert second.slots[0].outcome == first.slots[0].outcome
@@ -841,3 +850,46 @@ def test_the_setting_reaches_the_reader_and_needs_the_claude_readers(
             form=object(),  # type: ignore[arg-type]
             environ=FRACTION_ENV,
         )
+
+
+# --- the allowance funds real tries --------------------------------------------------------------
+
+
+def _largest_picture(width: int, height: int) -> bytes:
+    from evidence.crop import encode_png
+
+    return encode_png(width, height, bytes(width * height * 3))
+
+
+@pytest.mark.parametrize("pages", [1, 35, 60])
+def test_a_realistic_cap_funds_a_try_pair_at_its_worst_case(pages: int) -> None:
+    """The coordinator's check (2026-10-15): a tenth of a fresh reading's cap must pay for at least
+    one try of each agent at its worst-case reservation, with the published prices. The smallest
+    cap is the page-scaled budget's minimum ($3, so $0.30 for tries); a tie-break pair reserves about
+    $0.14 and the largest number-reader pair (three pictures at the readers' limits) about $0.19."""
+    from app.runs.rates import load_model_rates
+    from extraction.slot_reader.anthropic import BatchSpendGuard, _reserved_input_tokens
+    from extraction.slot_reader.bedrock import build_crop_request, build_row_request
+    from extraction.slot_reader.try_again import TryAgainGuard, try_again_allowance
+    from workflow.ai_budget import AiBudget
+
+    rates = load_model_rates("deploy/model_rates.us-east-1.json")
+    cap = AiBudget().for_pages(pages)
+    tie_break = _largest_picture(1800, 1800)
+    close_up = _largest_picture(2576, 1736)  # 92 x 62 tiles: within 4,784 visual tokens
+    for build in (
+        lambda model: build_row_request(
+            model_id=model, page_png=tie_break, max_tokens=3000, tiebreak=True
+        ),
+        lambda model: build_crop_request(
+            model_id=model,
+            crop_png=close_up,
+            max_tokens=3000,
+            full_view_png=tie_break,
+            grounded_claude=True,
+            upright_png=_largest_picture(1736, 2576),
+        ),
+    ):
+        guard = TryAgainGuard(try_again_allowance(cap), rates, BatchSpendGuard(cap, rates))
+        for model in (OPUS, SONNET):
+            guard.reserve(model, _reserved_input_tokens(build(model)), 3000)  # never refused

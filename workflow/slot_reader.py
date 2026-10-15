@@ -1906,7 +1906,11 @@ def read_slot_pages(
             clients=runtime.form.clients,
             rates=runtime.form.rates,
             calls_per_minute=runtime.form.calls_per_minute,
-            max_concurrent_calls=runtime.form.max_concurrent_calls,
+            max_concurrent_calls=(
+                min(_TRY_CONCURRENCY, runtime.form.max_concurrent_calls)
+                if trying
+                else runtime.form.max_concurrent_calls
+            ),
             max_tokens=runtime.form.max_tokens,
             max_throttle_retries=runtime.form.max_throttle_retries,
             retry_backoff_seconds=runtime.form.retry_backoff_seconds,
@@ -2594,6 +2598,13 @@ def _choose_row(
             selected_row = None
     return row_choice, row_number, selected_row, gate
 
+
+#: A try batch asks at most this many questions at once (#1309): one item's two readers. Each call
+#: reserves its worst case (twice the input bound, the whole output allowance) until it is settled
+#: at its real cost, so eight at once would reserve about four tie-breaks' worst case together
+#: ($0.57) and the first refusal stops every later try; two at a time, the allowance (a tenth of the
+#: reading's cap, at least $0.30) is spent on what the tries really cost.
+_TRY_CONCURRENCY: Final = 2
 
 #: At most this many other numbered lines are shown by `other-numbered-lines` (#1309).
 _OTHER_LINES_SHOWN: Final = 3
