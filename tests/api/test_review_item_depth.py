@@ -541,7 +541,8 @@ def test_after_not_this_the_cloud_pdf_prints_the_check_not_checked(
     session: Session, store: LocalStore
 ) -> None:
     """The draft's front page and the sign-off marks both list the result as NOT CHECKED, never
-    as a result that simply dropped off (its reason is "Confirm this reading", not "Waiting for")."""
+    as a result that simply dropped off (its reason is "Confirm this reading", not "Waiting for").
+    """
     sheet, _row = _waiting(session, store)
     client = _client(session, store, sheet)
     (item,) = _depth_items(client, sheet)
