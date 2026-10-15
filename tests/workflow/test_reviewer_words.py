@@ -92,3 +92,36 @@ def test_a_tick_flag_alone_never_makes_a_hold() -> None:
     assert reviewer_reason(["gv-tick", "row-hold:counter-break"], None) == reviewer_reason(
         ["row-hold:counter-break"], None
     )
+
+
+def test_a_tick_beside_the_number_is_worded_as_beside() -> None:
+    """#1335: a tick that touches neither the number's box nor a digit is said to be beside it,
+    never "GV ticked this number"."""
+    from vocabulary.reviewer_reasons import reviewer_reason
+
+    words = reviewer_reason(["reviewer-markup", "gv-tick", "gv-tick-beside"], None)
+    assert words is not None
+    assert words.startswith("GV's tick is beside this number (round 2), so it is shown to you.")
+    assert "vendor's own number" in words and "GV ticked" not in words
+
+
+def test_a_row_with_one_number_ticked_and_one_tick_beside_says_beside() -> None:
+    """A row gathers its numbers' flags: the weaker words win, so a tick on one number never
+    claims another number whose tick is only beside it."""
+    from vocabulary.reviewer_reasons import reviewer_reason
+
+    words = reviewer_reason(["reviewer-markup", "gv-tick", "gv-tick", "gv-tick-beside"], None)
+    assert words is not None and words.startswith("GV's tick is beside this number")
+
+
+def test_beside_keeps_every_rule_of_the_tick_words() -> None:
+    """Beside words a markup hold only, and only when GV's tick is GV's one mark in the row."""
+    from vocabulary.reviewer_reasons import reviewer_reason
+
+    general = "Covered by reviewer markup. Check the vendor's own number."
+    assert reviewer_reason(["gv-tick", "gv-tick-beside"], None) is None
+    assert (
+        reviewer_reason(["reviewer-markup", "gv-tick", "gv-tick-beside", "gv-other-mark"], None)
+        == general
+    )
+    assert reviewer_reason(["reviewer-markup", "gv-tick-beside"], None) == general
