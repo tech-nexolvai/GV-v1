@@ -366,13 +366,37 @@ describe('NotCheckedGroup', () => {
       const listed = waiting();
       render(<NotCheckedGroup items={listed.not_checked} note={null} busy={false} error={null} onClearAll={() => {}} canSaveJobValues onSaveJobValues={() => {}} />);
       const summary = screen.getByTestId('job-values-summary');
-      const counted = new Set(listed.not_checked.slice(0, 2).map((entry) => entry.countertop?.item_id ?? entry.key)).size;
+      const counted = new Set(listed.not_checked.slice(0, 2).map((entry) => entry.countertop!.item_id)).size;
       expect(summary.textContent).toBe(
         `${counted} ${counted === 1 ? 'countertop is' : 'countertops are'} waiting for this job's 3 values: Cabinet depth · Countertop overhang · Backsplash thickness`,
       );
       expect(screen.queryAllByRole('listitem')).toHaveLength(0);
       await userEvent.click(screen.getByRole('button', { name: `Show all ${listed.not_checked.length}` }));
       expect(screen.getAllByRole('listitem')).toHaveLength(listed.not_checked.length);
+    });
+
+    it('counts a row on its page as a countertop, and checks when a result covers the whole set', () => {
+      const rows = reviewItems((draft) => {
+        draft.not_checked.forEach((entry, index) => {
+          entry.countertop = null;
+          entry.page = 2;
+          entry.row_label = index < 3 ? 'Row A' : 'Row B';
+          entry.settings = [setting('cabinet_depth', 'Cabinet depth')];
+        });
+      });
+      const { unmount } = render(<NotCheckedGroup items={rows.not_checked} note={null} busy={false} error={null} onClearAll={() => {}} canSaveJobValues onSaveJobValues={() => {}} />);
+      expect(screen.getByTestId('job-values-summary').textContent).toBe("2 countertops are waiting for this job's value: Cabinet depth");
+      unmount();
+      const whole = reviewItems((draft) => {
+        draft.not_checked.forEach((entry, index) => {
+          entry.countertop = null;
+          entry.page = null;
+          entry.row_label = null;
+          entry.settings = index < 3 ? [setting('cabinet_depth', 'Cabinet depth')] : [];
+        });
+      });
+      render(<NotCheckedGroup items={whole.not_checked} note={null} busy={false} error={null} onClearAll={() => {}} canSaveJobValues onSaveJobValues={() => {}} />);
+      expect(screen.getByTestId('job-values-summary').textContent).toBe("3 checks are waiting for this job's value: Cabinet depth");
     });
 
     it('takes one inch value per missing value, refuses what is not inches, and saves only what was typed', async () => {

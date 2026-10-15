@@ -254,7 +254,8 @@ export function detailId(key: string): string {
 
 /**
  * What the open checks still wait for: the settings the API names and none has been saved since
- * (`set_now`), in the list's order, and how many countertops (or checks, for a whole-set check) wait.
+ * (`set_now`), in the list's order, and how many countertops (or checks, for a whole-set check) wait
+ * for them (#1403).
  */
 export function jobValuesWaiting(items: readonly NotCheckedItem[]): { settings: NotCheckedSetting[]; countertops: number | null; checks: number } {
   const settings: NotCheckedSetting[] = [];
@@ -264,8 +265,10 @@ export function jobValuesWaiting(items: readonly NotCheckedItem[]): { settings: 
       if (!setting.set_now && !settings.some((seen) => seen.key === setting.key)) settings.push(setting);
     }
   }
-  const everyOnACountertop = waiting.every((item) => item.countertop);
-  const countertops = everyOnACountertop ? new Set(waiting.map((item) => item.countertop!.item_id)).size : null;
+  // A countertop is its live item, else its row on its page (a result scoped to a row before items
+  // existed); a whole-set result has neither, and then the line counts checks instead.
+  const where = waiting.map((item) => item.countertop?.item_id ?? (item.page != null && item.row_label ? `p${item.page}:${item.row_label}` : null));
+  const countertops = where.every((key) => key !== null) ? new Set(where).size : null;
   return { settings, countertops, checks: waiting.length };
 }
 
