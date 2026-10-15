@@ -137,3 +137,38 @@ def test_signoff_names_the_record_and_coverage() -> None:
     assert "Signed off by reviewer" in record.signoff
     assert str(record.approval_id) in record.signoff
     assert "1 findings covered" in record.signoff
+
+
+@pytest.mark.parametrize("outcome", ["REVIEW_REQUIRED", "NOT_FOUND"])
+def test_checked_by_hand_wrong_prints_wrong_never_ok_or_accepted(outcome: str) -> None:
+    """A person's "checked by hand: wrong" (#1358) is a DISMISS with the one shared note: printed as
+    WRONG, a problem for the vendor, with the recorded check unchanged; and marked for the cloud PDF
+    without matching its words."""
+    from app.review.review_item_actions import FINDING_ANSWERS
+    from app.review.signed_record import CHECKED_WRONG_NOTE
+
+    kind, note = FINDING_ANSWERS["checked_wrong"]
+    assert (kind.value, note) == ("dismiss", CHECKED_WRONG_NOTE)
+    wrong = ReviewDisposition(
+        action_id=uuid4(),
+        action="dismiss",
+        reviewer="reviewer",
+        at=datetime(2026, 1, 1, tzinfo=UTC),
+        note=CHECKED_WRONG_NOTE,
+    )
+    finding = SignedReviewFinding(
+        finding_id=uuid4(), rule_id="CHECK-1", outcome=outcome, actions=(wrong,)
+    )
+    assert finding.wording == (
+        "Checked by reviewer: WRONG — problem for the vendor, by reviewer reviewer on "
+        f"2026-01-01T00:00:00+00:00. Recorded check remains {outcome}."
+    )
+    for never in ("OK", "accepted", "dismissed", "PASS"):
+        assert never not in finding.wording
+    assert wrong.checked_wrong_by_hand is True
+    # Any other dismissal keeps its own words and is not marked wrong.
+    other = wrong.model_copy(update={"note": "Required source not supplied."})
+    assert other.checked_wrong_by_hand is False
+    assert other.wording(outcome).startswith("Not checked: dismissed as not checkable")
+    confirmed = wrong.model_copy(update={"action": "confirm"})
+    assert confirmed.checked_wrong_by_hand is False
