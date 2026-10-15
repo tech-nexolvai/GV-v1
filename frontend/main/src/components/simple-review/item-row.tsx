@@ -12,6 +12,7 @@ function noGuessWord(item: Pick<ReviewItem, 'kind' | 'status'>): string {
   if (item.kind === 'wall_choice') return 'Your choice';
   if (item.kind === 'no_countertop_page') return 'Confirm the page';
   if (item.kind === 'architect') return 'Your answer';
+  if (item.kind === 'cabinet_kinds') return 'Your marks';
   return 'Check by hand';
 }
 

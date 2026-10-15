@@ -45,6 +45,7 @@ export const ACTION_LABELS: Record<ItemAction, string> = {
   not_this: 'Not this one',
   agree: 'Agree',
   settle_group: 'Clear all as not checked',
+  mark_cabinets: 'Save marks',
 };
 
 /** The answer that agrees with the AI (the C key), and the one that disagrees (the F key). */

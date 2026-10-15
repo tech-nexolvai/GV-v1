@@ -27,6 +27,9 @@ export type CountertopRef = Schemas['CountertopItemRefOut'];
 export type ArchitectRef = Schemas['ArchitectRefOut'];
 /** One wall layout a wall-only countertop may take, with the result the width check recorded. */
 export type WallChoice = Schemas['WallChoiceOut'];
+/** One cabinet of a run to mark, and one kind it may be marked as (#648). */
+export type CabinetRow = Schemas['CabinetRowOut'];
+export type CabinetChoice = Schemas['CabinetChoiceOut'];
 /** A spot on a stored page. `polygon` is in stored page space (0..1), as strings. */
 export type PageRef = Schemas['RowLocation'];
 export type ReviewItemKind = ReviewItem['kind'];
@@ -51,6 +54,7 @@ export const ITEM_ACTIONS = [
   'not_this',
   'agree',
   'settle_group',
+  'mark_cabinets',
 ] as const;
 export type ItemAction = (typeof ITEM_ACTIONS)[number];
 
@@ -70,6 +74,8 @@ export interface ActionBody {
   shown_value?: string;
   wall_config?: string;
   expected_keys?: string[];
+  /** A cabinet run's marks, one kind per cabinet shown, left to right (#648). */
+  cabinet_kinds?: string[];
   architect_view?: ArchitectViewAnswer;
   architect_pairing?: ArchitectPairingAnswer;
 }
@@ -161,6 +167,7 @@ const W3_ACTION: Record<ItemAction, 'confirm' | 'fix' | 'answer' | 'agree' | 'cl
   there_is_a_countertop: 'answer',
   answer: 'answer',
   not_this: 'answer',
+  mark_cabinets: 'answer',
 };
 
 /** The URL of a stored picture path that the API hands out (`zoom_ref`). */

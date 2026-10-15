@@ -11,6 +11,7 @@ import {
 } from '@/lib/review-items';
 import { Button } from '@/components/ui/button';
 import { ArchitectChoices } from './architect-choices';
+import { CabinetKinds } from './cabinet-kinds';
 import { FixDialog } from './fix-dialog';
 import { PagePicture, PictureUnavailable, ZoomPicture } from './item-pictures';
 import type { SaveError } from './failures-strip';
@@ -147,16 +148,20 @@ export function ItemDetail({
 }) {
   const walls = item.kind === 'wall_choice';
   const architect = item.kind === 'architect';
-  // A wall or architect question is answered by clicking a card; it has no agree or disagree button.
-  const cards = walls || architect;
+  const cabinets = item.kind === 'cabinet_kinds';
+  // A wall, architect or cabinet question is answered by its own choices; no agree or disagree button.
+  const cards = walls || architect || cabinets;
   const agree = cards ? null : agreeAction(item);
   const disagree = cards ? null : disagreeAction(item);
   const saving = busy !== null;
 
   return (
     <div id={detailId(item.key)} data-slot="item-detail" className="flex flex-col gap-6 border-t border-border bg-muted/30 px-4 pt-5 pb-6 sm:px-6 sm:pl-[3.25rem]">
-      <Evidence item={item} />
-      {walls ? (
+      {/* A cabinet run is entered on Measurements: it has no spot on a page to picture. */}
+      {!cabinets && <Evidence item={item} />}
+      {cabinets ? (
+        <CabinetKinds key={`${item.key}:${item.status}`} item={item} busy={busy !== null} onSave={(kinds) => onAct('mark_cabinets', { cabinet_kinds: kinds })} />
+      ) : walls ? (
         <WallChoices item={item} busy={busy !== null} saving={sending?.wall_config ?? null} onChoose={(layout) => onAct('choose_wall', { wall_config: layout })} />
       ) : architect ? (
         <ArchitectChoices item={item} busy={busy !== null} saving={sending} refresh={refresh} onAnswer={(extra) => onAct('answer', extra)} onProposal={onProposal} onOpenAdvanced={onOpenAdvanced} />

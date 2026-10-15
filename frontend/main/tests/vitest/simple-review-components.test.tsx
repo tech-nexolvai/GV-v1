@@ -499,3 +499,56 @@ describe('page states', () => {
     expect(onOpenAdvanced).toHaveBeenCalled();
   });
 });
+
+describe('CabinetKinds (#648)', () => {
+  const cabinetItem = () => ({
+    ...item('countertop:find-5'),
+    key: 'cabinets:find-cab',
+    kind: 'cabinet_kinds' as const,
+    what: 'Which cabinets keep their width?',
+    status: 'open' as const,
+    actions: ['mark_cabinets'],
+    finding_id: 'find-cab',
+    page: null,
+    best_guess: null,
+    cabinets: [
+      { position: 1, architect_width: '24"', vendor_width: '24"', marked: null, keeps_width: null },
+      { position: 2, architect_width: '36"', vendor_width: '36"', marked: null, keeps_width: null },
+    ],
+    cabinet_choices: [
+      { category: 'single_door', label: 'Single door', keeps_width: false },
+      { category: 'drawer', label: 'Drawer', keeps_width: false },
+      { category: 'sink_cabinet', label: 'Sink cabinet', keeps_width: true },
+    ],
+    settings: [{ key: 'drawer_cab_width_min', name: 'Drawer cabinet minimum width', project_id: 'proj-1', set_now: false }],
+  });
+
+  it('marks each cabinet as keeping its width or resizable, and saves once', async () => {
+    const onAct = vi.fn();
+    render(<ItemDetail item={cabinetItem()} busy={null} error={null} onAct={onAct} onOpenPdfs={() => {}} />);
+    const save = screen.getByRole('button', { name: /Save marks/ }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    // No agree or disagree button: the marks are the answer.
+    expect(screen.queryByRole('button', { name: /It is right/ })).toBeNull();
+
+    const first = screen.getByRole('group', { name: 'Cabinet 1' });
+    await userEvent.click(within(first).getByRole('button', { name: /Can be resized/ }));
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Cabinet 1: which kind' }), 'single_door');
+    const second = screen.getByRole('group', { name: 'Cabinet 2' });
+    await userEvent.click(within(second).getByRole('button', { name: /Keeps its width/ }));
+    const kinds = screen.getByRole('combobox', { name: 'Cabinet 2: which kind' });
+    expect(within(kinds).queryByRole('option', { name: 'Drawer' })).toBeNull();
+    await userEvent.selectOptions(kinds, 'sink_cabinet');
+
+    expect(save.disabled).toBe(false);
+    await userEvent.click(save);
+    expect(onAct).toHaveBeenCalledWith('mark_cabinets', { cabinet_kinds: ['single_door', 'sink_cabinet'] });
+  });
+
+  it('links a missing width limit to its Company settings field', () => {
+    render(<ItemDetail item={cabinetItem()} busy={null} error={null} onAct={() => {}} onOpenPdfs={() => {}} />);
+    expect(screen.getByText(/Not checked: set in Company settings/)).toBeTruthy();
+    const link = screen.getByRole('link', { name: /Set it in Company settings/ }) as HTMLAnchorElement;
+    expect(link.getAttribute('href')).toContain('focus=drawer_cab_width_min');
+  });
+});

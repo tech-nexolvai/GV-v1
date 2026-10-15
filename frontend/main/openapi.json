@@ -2114,6 +2114,33 @@
         "title": "BoundsOut",
         "type": "object"
       },
+      "CabinetChoiceOut": {
+        "description": "One kind a cabinet may be marked as (`vocabulary/cabinet_categories.py`).",
+        "properties": {
+          "category": {
+            "description": "Sent back in `cabinet_kinds`, e.g. `sink_cabinet`.",
+            "title": "Category",
+            "type": "string"
+          },
+          "keeps_width": {
+            "description": "True for an equipment cabinet, whose width never changes; false: resizable.",
+            "title": "Keeps Width",
+            "type": "boolean"
+          },
+          "label": {
+            "description": "The kind in plain words.",
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "category",
+          "label",
+          "keeps_width"
+        ],
+        "title": "CabinetChoiceOut",
+        "type": "object"
+      },
       "CabinetInput": {
         "additionalProperties": false,
         "description": "One cabinet in the ordered run the reviewer is checking.",
@@ -2193,6 +2220,69 @@
           "adjustable"
         ],
         "title": "CabinetProposalOut",
+        "type": "object"
+      },
+      "CabinetRowOut": {
+        "description": "One cabinet of the run, left to right, as entered on Measurements.",
+        "properties": {
+          "architect_width": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "e.g. `24\"`.",
+            "title": "Architect Width"
+          },
+          "keeps_width": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Whether the marked kind keeps its width; null when unmarked.",
+            "title": "Keeps Width"
+          },
+          "marked": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The kind the reviewer marked last; null until they mark it.",
+            "title": "Marked"
+          },
+          "position": {
+            "description": "1-based place in the run, left to right.",
+            "title": "Position",
+            "type": "integer"
+          },
+          "vendor_width": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "e.g. `23 1/2\"`.",
+            "title": "Vendor Width"
+          }
+        },
+        "required": [
+          "position"
+        ],
+        "title": "CabinetRowOut",
         "type": "object"
       },
       "CalculationTraceOut": {
@@ -10097,6 +10187,22 @@
             "description": "With an architect `answer`: the body of `POST .../architect-view-match` (`view_id` or `none_of_these`, `expected_record_id`, optional `note`).",
             "title": "Architect View"
           },
+          "cabinet_kinds": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With `mark_cabinets`: one kind per cabinet shown, left to right (a `cabinet_choices` category). Required; 409 when the run's cabinets changed.",
+            "title": "Cabinet Kinds"
+          },
           "expected_finding_id": {
             "anyOf": [
               {
@@ -10250,6 +10356,22 @@
             ],
             "description": "Null when the AI has no guess: the item is then checked by hand, no typing."
           },
+          "cabinet_choices": {
+            "description": "`cabinet_kinds` only: the kinds a cabinet may be marked as.",
+            "items": {
+              "$ref": "#/components/schemas/CabinetChoiceOut"
+            },
+            "title": "Cabinet Choices",
+            "type": "array"
+          },
+          "cabinets": {
+            "description": "`cabinet_kinds` only: each cabinet of the run, left to right, to mark.",
+            "items": {
+              "$ref": "#/components/schemas/CabinetRowOut"
+            },
+            "title": "Cabinets",
+            "type": "array"
+          },
           "candidate_id": {
             "anyOf": [
               {
@@ -10320,6 +10442,7 @@
               "no_countertop_page",
               "architect",
               "depth_reading",
+              "cabinet_kinds",
               "other_result"
             ],
             "title": "Kind",
@@ -10366,6 +10489,14 @@
               }
             ],
             "title": "Row Label"
+          },
+          "settings": {
+            "description": "`cabinet_kinds` only: the per-type cabinet width limits the run lacked, each a Company settings field (no company value; set per project). Never guessed.",
+            "items": {
+              "$ref": "#/components/schemas/NotCheckedSettingOut"
+            },
+            "title": "Settings",
+            "type": "array"
           },
           "status": {
             "enum": [
