@@ -28,6 +28,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/company-settings/projects": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Each of your projects' own settings, the value in use and where it comes from
+         * @description Only the projects the caller belongs to: every other project is invisible (ADR-0006).
+         */
+        get: operations["read_project_settings_api_v1_company_settings_projects_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/company-settings/projects/{project_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record a project's own values; every value not sent stays as it was
+         * @description A new version of the project's layer — the one Measurements writes — carrying the rest forward.
+         *
+         *     Everything is checked before anything is stored: a name no published check reads, the sink's
+         *     sizes (the sink card's), a bare number, a zero size or a missing source refuses the whole save.
+         */
+        post: operations["save_project_settings_api_v1_company_settings_projects__project_id__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/operations": {
         parameters: {
             query?: never;
@@ -1122,6 +1165,26 @@ export interface paths {
          *     time (the answer was already given).
          */
         post: operations["answer_no_countertop_page_api_v1_projects__project_id__packages__package_id__no_countertop_pages__record_id__answer_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/pages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Both drawings' pages and their pictures, for the side-by-side viewer
+         * @description Every document of the latest revision, vendor first, with each page's picture readiness.
+         */
+        get: operations["review_pages_api_v1_projects__project_id__packages__package_id__pages_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2737,6 +2800,26 @@ export interface components {
             reason?: string | null;
         };
         /**
+         * ArchitectRegionOut
+         * @description One architect's drawing on a page: where the viewer zooms the architect side to.
+         */
+        ArchitectRegionOut: {
+            bbox: components["schemas"]["BoundsOut"];
+            /** Heading */
+            heading: string | null;
+            /** Polygon */
+            polygon: string[][];
+            /** Role Confirmed */
+            role_confirmed: boolean;
+            /** Tag */
+            tag: string;
+            /**
+             * View Id
+             * Format: uuid
+             */
+            view_id: string;
+        };
+        /**
          * ArchitectResultOut
          * @description The vendor-vs-architect check (CT-ARCH-WIDTH-001) for one countertop row (#1054).
          *
@@ -3111,6 +3194,20 @@ export interface components {
             white_paint: number;
         };
         /**
+         * BoundsOut
+         * @description The smallest box around a region, in stored space (exact decimal text).
+         */
+        BoundsOut: {
+            /** X0 */
+            x0: string;
+            /** X1 */
+            x1: string;
+            /** Y0 */
+            y0: string;
+            /** Y1 */
+            y1: string;
+        };
+        /**
          * CabinetInput
          * @description One cabinet in the ordered run the reviewer is checking.
          */
@@ -3301,6 +3398,16 @@ export interface components {
             default?: string | null;
             /** Models */
             models: components["schemas"]["ChatModelChoice"][];
+        };
+        /** CheckOut */
+        CheckOut: {
+            /** Id */
+            id: string;
+            /**
+             * Name
+             * @description The check's plain name, as the rulebook gives it.
+             */
+            name: string;
         };
         /**
          * CheckPlanOut
@@ -5536,6 +5643,19 @@ export interface components {
              */
             page_number: number;
         };
+        /** PagePictureOut */
+        PagePictureOut: {
+            /** Dpi */
+            dpi: number;
+            /** Height Px */
+            height_px: number;
+            /** Media Type */
+            media_type: string;
+            /** Url */
+            url: string;
+            /** Width Px */
+            width_px: number;
+        };
         /** PagePicturesQueuedOut */
         PagePicturesQueuedOut: {
             /** Queued */
@@ -5913,10 +6033,136 @@ export interface components {
             published_checks: number;
             value: components["schemas"]["ProductType"];
         };
+        /**
+         * ProjectSettingOut
+         * @description One setting as a project uses it: what it is for, which checks read it, and the value in use.
+         */
+        ProjectSettingOut: {
+            /**
+             * Applies
+             * @description True when a check for one of this project's products reads it (or the project has no drawing set with a stated product yet). False: still settable, but no drawing set of this project is checked with it — the cabinet width limits on a countertop-only job.
+             */
+            applies: boolean;
+            /**
+             * Cabinet Width Limit
+             * @description One of the six cabinet width limits.
+             */
+            cabinet_width_limit: boolean;
+            /**
+             * Checks
+             * @description The published checks that read it.
+             */
+            checks: components["schemas"]["CheckOut"][];
+            /**
+             * Company Value
+             * @description GV's standard, or null where GV set none.
+             */
+            company_value: string | null;
+            /**
+             * In Use
+             * @description What this project's checks use now, or null: those checks then wait.
+             */
+            in_use: string | null;
+            /** In Use From */
+            in_use_from: ("rulebook" | "company" | "project") | null;
+            /**
+             * Label
+             * @description The setting's plain name.
+             */
+            label: string;
+            /** Name */
+            name: string;
+            project_value: components["schemas"]["ProjectValueOut"] | null;
+            /**
+             * Purpose
+             * @description What the setting is for, in one sentence.
+             */
+            purpose: string | null;
+            /**
+             * Rulebook Default
+             * @description The default the rulebook carries from GV's checklist, or null.
+             */
+            rulebook_default: string | null;
+            /**
+             * Sources
+             * @description Where a value may honestly come from; the person picks when there are several.
+             */
+            sources: components["schemas"]["SourceChoiceOut"][];
+        };
+        /** ProjectSettingsOut */
+        ProjectSettingsOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name: string;
+            /**
+             * Product Types
+             * @description The products this project's drawing sets are for, as stated at upload.
+             */
+            product_types: string[];
+            /** Settings */
+            settings: components["schemas"]["ProjectSettingOut"][];
+            /** @description The project's sink card, or null until entered. */
+            sink: components["schemas"]["SinkEntryOut"] | null;
+            /**
+             * Version
+             * @description The project layer's current version, or null.
+             */
+            version: number | null;
+        };
         /** ProjectSinkOut */
         ProjectSinkOut: {
             /** @description Null until a sink is entered for the project. */
             sink: components["schemas"]["SinkEntryOut"] | null;
+        };
+        /** ProjectValueIn */
+        ProjectValueIn: {
+            /** Name */
+            name: string;
+            /** Reference */
+            reference?: string | null;
+            /** @description Needed only where the setting allows more than one source. */
+            source?: components["schemas"]["Provenance"] | null;
+            /**
+             * Value
+             * @description With its unit — `1"`, `25 mm`. A bare number is refused.
+             */
+            value: string;
+        };
+        /**
+         * ProjectValueOut
+         * @description The project's own value for one setting, and who set it.
+         */
+        ProjectValueOut: {
+            /** Reference */
+            reference: string | null;
+            /**
+             * Set At
+             * Format: date-time
+             */
+            set_at: string;
+            /** Set By */
+            set_by: string;
+            /**
+             * Source
+             * @description Where the person said it came from (#827).
+             */
+            source: string;
+            /** Text */
+            text: string;
+        };
+        /** ProjectValuesIn */
+        ProjectValuesIn: {
+            /** Values */
+            values: components["schemas"]["ProjectValueIn"][];
+        };
+        /** ProjectsSettingsOut */
+        ProjectsSettingsOut: {
+            /** Projects */
+            projects: components["schemas"]["ProjectSettingsOut"][];
         };
         /**
          * ProposedFieldOut
@@ -6582,6 +6828,32 @@ export interface components {
             /** Items */
             items: components["schemas"]["ReviewActionOut"][];
         };
+        /** ReviewDocumentOut */
+        ReviewDocumentOut: {
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+            /**
+             * Document Version Id
+             * Format: uuid
+             */
+            document_version_id: string;
+            /** File Name */
+            file_name: string | null;
+            /** Kind */
+            kind: string;
+            /** Page Count */
+            page_count: number;
+            /** Pages */
+            pages: components["schemas"]["ReviewPageOut"][];
+            /**
+             * Side
+             * @enum {string}
+             */
+            side: "vendor" | "architect" | "other";
+        };
         /**
          * ReviewExceptionOut
          * @description A granted exception, with the terms a later reader needs.
@@ -6755,6 +7027,42 @@ export interface components {
              * @description Must be empty. Anything here is a blocking result the list did not place once.
              */
             unaccounted: components["schemas"]["UnaccountedOut"][];
+        };
+        /** ReviewPageOut */
+        ReviewPageOut: {
+            /** Architect Regions */
+            architect_regions: components["schemas"]["ArchitectRegionOut"][];
+            /**
+             * Page Id
+             * Format: uuid
+             */
+            page_id: string;
+            /** Page Number */
+            page_number: number;
+            picture: components["schemas"]["PagePictureOut"] | null;
+            /**
+             * Picture Status
+             * @enum {string}
+             */
+            picture_status: "ready" | "not_ready" | "render_failed";
+            /** Sheet Number */
+            sheet_number: string | null;
+        };
+        /** ReviewPagesOut */
+        ReviewPagesOut: {
+            /** Combined Set */
+            combined_set: boolean;
+            /** Documents */
+            documents: components["schemas"]["ReviewDocumentOut"][];
+            /**
+             * Package Revision Id
+             * Format: uuid
+             */
+            package_revision_id: string;
+            /** Pages Without Pictures */
+            pages_without_pictures: number;
+            /** Revision Number */
+            revision_number: number;
         };
         /**
          * ReviewSessionOut
@@ -7738,6 +8046,13 @@ export interface components {
             /** Y */
             y: string;
         };
+        /** SourceChoiceOut */
+        SourceChoiceOut: {
+            /** Guidance */
+            guidance: string;
+            /** Value */
+            value: string;
+        };
         /**
          * SourceOut
          * @description One source a setting may come from, and what choosing it means (#827).
@@ -8420,6 +8735,61 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CompanySettingsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_project_settings_api_v1_company_settings_projects_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectsSettingsOut"];
+                };
+            };
+        };
+    };
+    save_project_settings_api_v1_company_settings_projects__project_id__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectValuesIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectSettingsOut"];
                 };
             };
             /** @description Validation Error */
@@ -9943,6 +10313,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CountertopResultsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    review_pages_api_v1_projects__project_id__packages__package_id__pages_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewPagesOut"];
                 };
             };
             /** @description Validation Error */

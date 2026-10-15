@@ -160,6 +160,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         review,
         review_assistant,
         review_items,
+        review_pages,
         reviewer_chat,
         revisions,
         rules,
@@ -191,6 +192,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # withdrawn or added by a person, never all at once (#882).
     app.include_router(drawing_parts.router, prefix=API_PREFIX)
     app.include_router(page_pictures.router, prefix=API_PREFIX)
+    # Both drawings' pages and picture readiness, for the side-by-side viewer (#1342). Reads only.
+    app.include_router(review_pages.router, prefix=API_PREFIX)
     # Which confirmed parts sit beneath each confirmed countertop: suggested by the computer,
     # confirmed, corrected or withdrawn by a person, one countertop at a time (#893).
     app.include_router(countertop_runs.router, prefix=API_PREFIX)

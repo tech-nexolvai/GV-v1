@@ -91,7 +91,16 @@ export function VendorSinkNotes({ inUse }: { inUse: SinkInUse }) {
 }
 
 /** The boxes and Save. Empty on every opening: a sink is typed from its spec sheet, not edited from memory. */
-export function SinkEntryForm({ onSaved, onCancel }: { onSaved: (saved: ProjectSink) => void; onCancel?: () => void }) {
+export function SinkEntryForm({
+  onSaved,
+  onCancel,
+  forProject,
+}: {
+  onSaved: (saved: ProjectSink) => void;
+  onCancel?: () => void;
+  /** The project to save for; the configured one when left out (Company settings → Projects names it, #1341). */
+  forProject?: string;
+}) {
   const id = useId();
   const [name, setName] = useState('');
   const [width, setWidth] = useState('');
@@ -107,7 +116,7 @@ export function SinkEntryForm({ onSaved, onCancel }: { onSaved: (saved: ProjectS
     setSaving(true);
     setError(null);
     try {
-      const saved = await saveProjectSink(projectId(), {
+      const saved = await saveProjectSink(forProject ?? projectId(), {
         model_name: name.trim(),
         inside_width: width.trim(),
         inside_depth: depth.trim(),
