@@ -123,7 +123,7 @@ function names(settings: readonly NotCheckedSetting[]): string {
  * What the check's run lacked. One still unset is a link to its field; one set since the run is not
  * (the field already has a value): it says so, and once none is left unset, to run the checks again.
  */
-function SettingLinks({ settings }: { settings: readonly NotCheckedSetting[] }) {
+export function SettingLinks({ settings }: { settings: readonly NotCheckedSetting[] }) {
   const unset = settings.filter((setting) => !setting.set_now);
   const setSince = settings.filter((setting) => setting.set_now);
   return (
