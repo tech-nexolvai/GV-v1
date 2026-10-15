@@ -47,7 +47,8 @@ refused (`not_a_person`), on both lists and as the confirmer typed on the review
   "l" passes for an "i" ("OpenAl", "Gemlni", "Ciaude"), and some letter pairs pass for one letter:
   "rn" for "m" ("Gernini"), "cl" or "cI" for "d" ("Claucle", "ClaucIe"), "vv" for "w" ("Qvven").
   So within each word (split at spaces only; hyphens and apostrophes inside it are dropped, so
-  "Open-Al" and "Clau-cle" are caught), "i" and "l" are read both ways (every mix) and each pair
+  "Open-Al" and "Clau-cle" are caught, except for "haiku", read only within each part so that
+  "Vishal-Kumar" passes), "i" and "l" are read both ways (every mix) and each pair
   is read as its letter or as itself, and the word is refused if it then holds a long AI name
   (`_LOOK_ALIKE_NAMES`). It is never done across spaces ("Lila Mae" squashed would hold "llama").
   Left out of this reading, because real names hold their look-alikes: "aibot" and "botai"
@@ -57,9 +58,7 @@ refused (`not_a_person`), on both lists and as the confirmer typed on the review
   as a whole word ("Kiml", "Klmi"); "ai" and "glm" are not ("Al", "Gim" pass).
 
 **Known cost:** a few real names hold a distinctive model name and are refused: "Claudette",
-"Haikuo", "Gemma", "Kimi", any name holding "argon" or "grok", and a hyphenated name joining a part
-ending "hal" to one starting "ku" ("Vishal-Kurt" reads as "haiku"; with a space it passes; no
-established hyphenated name in the dictionary does this). Such a person is listed under a
+"Haikuo", "Gemma", "Kimi", and any name holding "argon" or "grok". Such a person is listed under a
 plain-letters variant of their name (for example a nickname, or a surname alone), the same one they
 type on the review page.
 
@@ -204,6 +203,9 @@ _READINGS: Final = {"1": ("l", "i"), "I": ("I", "l")}
 _WORDS: Final = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+")
 #: A run of letters: one word, split only at what is not a letter (spaces, hyphens, apostrophes).
 _LETTER_RUNS: Final = re.compile(r"[A-Za-z]+")
+#: Look-alike names never read across a hyphen or an apostrophe (#1292): a part ending "hal" joined
+#: to one starting "ku" ("Vishal-Kumar") would read as "haiku".
+_NOT_ACROSS_JOINS: Final = frozenset({"haiku"})
 #: "kimi" written with an "l" for an "i" ("Kiml", "Klmi"), matched as a whole word only (#1292).
 _KIMI_LOOK_ALIKE: Final = re.compile(r"k[il]m[il]")
 
@@ -281,10 +283,18 @@ def _words(spelling: str) -> set[str]:
 def _look_alikes(name: str) -> set[str]:
     """The long AI names a word of this name looks like (#1292): within each word (split at spaces
     only, everything but letters dropped), "i" and "l" read both ways and "rn", "cl", "vv" read as
-    "m", "d", "w" (`_LOOK_ALIKES`)."""
+    "m", "d", "w" (`_LOOK_ALIKES`). The names in `_NOT_ACROSS_JOINS` are looked for only within
+    each run of letters, never across a hyphen or an apostrophe."""
     base = name.translate(_SWAPS).replace("1", "l")
-    words = [re.sub(r"[^a-z]", "", word.casefold()) for word in base.split()]
-    return {ai for word in words for ai, pattern in _LOOK_ALIKE_NAMES if pattern.search(word)}
+    found: set[str] = set()
+    for word in base.casefold().split():
+        joined = re.sub(r"[^a-z]", "", word)
+        runs = _LETTER_RUNS.findall(word)
+        for ai, pattern in _LOOK_ALIKE_NAMES:
+            parts = runs if ai in _NOT_ACROSS_JOINS else [joined]
+            if any(pattern.search(part) for part in parts):
+                found.add(ai)
+    return found
 
 
 def _ai_inside(name: str) -> list[str]:

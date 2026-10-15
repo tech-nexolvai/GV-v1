@@ -452,6 +452,7 @@ def test_a_list_naming_one_person_twice_is_refused(
         "Reviewer Klmi",
         "LIama",
         "FabIe",
+        "Hai-ku",
     ],
 )
 def test_an_l_for_i_a_split_kimi_or_a_letter_pair_look_alike_is_refused(name: str) -> None:
@@ -483,6 +484,9 @@ def test_an_l_for_i_a_split_kimi_or_a_letter_pair_look_alike_is_refused(name: st
         "Lilamani",
         "Lila-Mae",
         "Mary-Lou",
+        "Vishal-Kumar",
+        "Vishal-Kumari",
+        "Vishal'Kumar",
         "Kalpana",
         "Malini",
         "Ilina",
