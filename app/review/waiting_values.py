@@ -39,7 +39,7 @@ Source: issue #1181. Verification: `tests/api/test_waiting_values.py`.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final, Literal, Protocol
 from uuid import UUID
@@ -74,6 +74,7 @@ __all__ = [
     "WaitingFinding",
     "missing_inputs_for",
     "missing_settings_for",
+    "settings_set_now",
 ]
 
 Scope = Literal["project", "sink", "drawing", "measurements"]
@@ -348,6 +349,54 @@ def _latest_set_ids(
     return company, project, runs
 
 
+@dataclass(frozen=True, slots=True)
+class _OnRecordNow:
+    """The newest company, project and per-revision RUN settings versions, and the values they hold."""
+
+    company: UUID | None
+    project: UUID | None
+    runs: Mapping[UUID, UUID]
+    rows_by_set: Mapping[UUID, Mapping[str, StoredParameterValue]]
+
+    def _row(self, set_id: UUID | None, name: str) -> StoredParameterValue | None:
+        return None if set_id is None else self.rows_by_set.get(set_id, {}).get(name)
+
+    def setting(self, name: str, revision_id: UUID | None) -> SavedInputOut | None:
+        """The value a run would read for setting `name` now: the package's, else the project's,
+        else the company's. With no revision, only the company and project versions are asked."""
+        found: SavedInputOut | None = None
+        for layer, set_id in (
+            (ParameterLayer.GLOBAL.value, self.company),
+            (ParameterLayer.PROJECT.value, self.project),
+            (ParameterLayer.RUN.value, None if revision_id is None else self.runs.get(revision_id)),
+        ):
+            row = self._row(set_id, name)
+            if row is not None:
+                found = _saved(row, layer, setting=True)
+        return found
+
+    def reading(self, key: str, revision_id: UUID) -> SavedInputOut | None:
+        row = self._row(self.runs.get(revision_id), key)
+        return None if row is None else _saved(row, ParameterLayer.RUN.value, setting=False)
+
+
+def _on_record_now(
+    session: Session, project_id: UUID, revision_ids: Sequence[UUID]
+) -> _OnRecordNow:
+    """What a run would read now. One query for the versions' values, whatever the revisions."""
+    company, project, runs = _latest_set_ids(session, project_id, revision_ids)
+    current_ids = [set_id for set_id in (company, project, *runs.values()) if set_id is not None]
+    rows_by_set: dict[UUID, dict[str, StoredParameterValue]] = {}
+    if current_ids:
+        for value in session.scalars(
+            select(StoredParameterValue).where(
+                StoredParameterValue.parameter_set_id.in_(current_ids)
+            )
+        ):
+            rows_by_set.setdefault(value.parameter_set_id, {})[value.name] = value
+    return _OnRecordNow(company, project, runs, rows_by_set)
+
+
 #: The scopes a setting on Company settings is saved for; a RUN-scope setting is one review's.
 _FIELD_SCOPES: Final = frozenset({ParameterScope.GLOBAL, ParameterScope.PROJECT})
 
@@ -441,6 +490,21 @@ def missing_settings_for(session: Session, items: Sequence[CitingFinding]) -> di
     return found
 
 
+def settings_set_now(session: Session, project_id: UUID, names: Iterable[str]) -> frozenset[str]:
+    """Which of `names` the newest company or project settings versions hold now (#1382).
+
+    The waiting card's own lookup (`_on_record_now`), asked for the two layers Company settings
+    saves. A setting a run lacked that is held now was saved since that run: the screen says to run
+    the checks again rather than linking to a field that already has a value. Saving a setting
+    never re-runs a check.
+    """
+    wanted = set(names)
+    if not wanted:
+        return frozenset()
+    now = _on_record_now(session, project_id, ())
+    return frozenset(name for name in wanted if now.setting(name, None) is not None)
+
+
 def missing_inputs_for(
     session: Session, project_id: UUID, items: Sequence[WaitingFinding]
 ) -> dict[UUID, list[MissingInputOut]]:
@@ -475,31 +539,10 @@ def missing_inputs_for(
         had_operands.setdefault(check_run_id, set()).add(name)
 
     # What is on record now, in the order a run resolves it: company, then project, then package.
-    revision_ids = sorted({item.package_revision_id for item in waiting})
-    company, project, runs = _latest_set_ids(session, project_id, revision_ids)
-    current_ids = [set_id for set_id in (company, project, *runs.values()) if set_id is not None]
-    rows_by_set: dict[UUID, dict[str, StoredParameterValue]] = {}
-    for value in session.scalars(
-        select(StoredParameterValue).where(StoredParameterValue.parameter_set_id.in_(current_ids))
-    ):
-        rows_by_set.setdefault(value.parameter_set_id, {})[value.name] = value
-
-    def setting_now(name: str, revision_id: UUID) -> SavedInputOut | None:
-        found: SavedInputOut | None = None
-        for layer, set_id in (
-            (ParameterLayer.GLOBAL.value, company),
-            (ParameterLayer.PROJECT.value, project),
-            (ParameterLayer.RUN.value, runs.get(revision_id)),
-        ):
-            row = rows_by_set.get(set_id, {}).get(name) if set_id is not None else None
-            if row is not None:
-                found = _saved(row, layer, setting=True)
-        return found
-
-    def reading_now(key: str, revision_id: UUID) -> SavedInputOut | None:
-        set_id = runs.get(revision_id)
-        row = rows_by_set.get(set_id, {}).get(key) if set_id is not None else None
-        return None if row is None else _saved(row, ParameterLayer.RUN.value, setting=False)
+    now = _on_record_now(
+        session, project_id, sorted({item.package_revision_id for item in waiting})
+    )
+    setting_now, reading_now = now.setting, now.reading
 
     answers: dict[UUID, list[MissingInputOut]] = {}
     # A setting is for the job, not for one countertop: among one check's per-countertop results it

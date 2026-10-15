@@ -14,7 +14,9 @@ import { PageTag } from './words';
  * The checks that never ran (the reader they need is off). Quiet and closed by default: they are not
  * the AI's mistakes, and they are printed NOT CHECKED on the cloud PDF. One click clears them all.
  * A check whose run also lacked a setting links to that field on Company settings (#1373), only
- * when the API names it: the screen never works out which setting a check needs.
+ * when the API names it: the screen never works out which setting a check needs. Saving a setting
+ * does not re-run the check, so one the API says is set now (`set_now`, #1382) is not linked again:
+ * the line says it was set after this check ran, and to run the checks again.
  */
 export function NotCheckedGroup({
   items,
@@ -111,8 +113,34 @@ function settingHref(setting: NotCheckedSetting): string {
   return formatRoute({ page: 'settings', packageId: null, focus: setting.key, project: setting.project_id });
 }
 
-/** The settings the check waits for, each a link to its field. One reads "Set it in Company settings". */
+/** "A", "A and B", "A, B and C". */
+function names(settings: readonly NotCheckedSetting[]): string {
+  const all = settings.map((setting) => setting.name);
+  return all.length < 2 ? all.join('') : `${all.slice(0, -1).join(', ')} and ${all[all.length - 1]}`;
+}
+
+/**
+ * What the check's run lacked. One still unset is a link to its field; one set since the run is not
+ * (the field already has a value): it says so, and once none is left unset, to run the checks again.
+ */
 function SettingLinks({ settings }: { settings: readonly NotCheckedSetting[] }) {
+  const unset = settings.filter((setting) => !setting.set_now);
+  const setSince = settings.filter((setting) => setting.set_now);
+  return (
+    <>
+      {unset.length > 0 && <UnsetLinks settings={unset} />}
+      {setSince.length > 0 && (
+        <span>
+          {names(setSince)} {setSince.length === 1 ? 'was' : 'were'} set after this check ran.
+          {unset.length === 0 && ' Run the checks again.'}
+        </span>
+      )}
+    </>
+  );
+}
+
+/** The settings the check waits for, each a link to its field. One reads "Set it in Company settings". */
+function UnsetLinks({ settings }: { settings: readonly NotCheckedSetting[] }) {
   if (settings.length === 1) {
     const [setting] = settings;
     return (

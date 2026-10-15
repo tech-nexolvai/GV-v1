@@ -15,7 +15,8 @@ write, no guess.
 * `not_checked`: the depth and sink checks that could not run because nothing was read for them
   (Anant, decision 1: one quiet group). Each names the Company settings fields its run also lacked
   (`settings`, #1373), worked out from the rule and the settings its run cited, so the screen can
-  link to them; none when it lacked only drawn values.
+  link to them; none when it lacked only drawn values. Each says whether it is set now (`set_now`,
+  #1382): saved since the run, so the checks need running again.
 
 `unaccounted` lists any blocking result, or any page that blocks sign-off, that is in none of the
 groups or in more than one. It must be empty; it is computed here, on every read, so the screen can
@@ -67,7 +68,7 @@ from app.review.approval import readiness_and_decisions
 from app.review.depth_readings import depth_readings_for
 from app.review.requirements import BLOCKING_OUTCOMES
 from app.review.row_location import RowLocation
-from app.review.waiting_values import missing_settings_for
+from app.review.waiting_values import missing_settings_for, settings_set_now
 from app.review.wall_cases import unavailable_reason
 from app.schemas.visual_ui import CountertopItemRefOut, CountertopResultOut, ExactValueOut
 from app.verdicts.rulebook import snapshot_store
@@ -281,6 +282,14 @@ class NotCheckedSettingOut(BaseModel):
     )
     name: str = Field(description="The setting's plain name.")
     project_id: UUID = Field(description="The project whose setting it is.")
+    set_now: bool = Field(
+        default=False,
+        description=(
+            "Whether the company or project settings hold it now (#1382). The run lacked it, so "
+            "true means it was saved after this check ran: saving never re-runs a check, so the "
+            "screen says to run the checks again instead of linking to a field that has a value."
+        ),
+    )
 
 
 class NotCheckedOut(BaseModel):
@@ -719,9 +728,19 @@ def review_items_for_revision(
         ],
     )
 
+    # Which of them are held now (#1382): saved since the run, so the checks need running again.
+    held_now = settings_set_now(
+        session, project_id, {name for names in missing.values() for name in names}
+    )
+
     def settings_for(finding_id: UUID) -> list[NotCheckedSettingOut]:
         return [
-            NotCheckedSettingOut(key=name, name=setting_name(name), project_id=project_id)
+            NotCheckedSettingOut(
+                key=name,
+                name=setting_name(name),
+                project_id=project_id,
+                set_now=name in held_now,
+            )
             for name in missing.get(finding_id, [])
         ]
 
