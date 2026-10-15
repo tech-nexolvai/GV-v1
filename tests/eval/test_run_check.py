@@ -438,7 +438,10 @@ def test_a_countertop_row_that_lost_its_depth_and_sink_results_points_to_nina(
     assert item.action is Action.RERUN
     assert ("row", str(anchors[1])) in item.ids and ("row", str(anchors[0])) not in item.ids
     assert {value for kind, value in item.ids if kind == "rule"} == set(WHOLE_PACKAGE_RULE_IDS)
-    assert item.found.startswith("Countertop row on page 2 has no live result"), item.found
+    assert item.found.startswith(
+        "Countertop row on page 2 has no live result of its own for 6 of the depth and sink "
+        "checks, and no held whole-package result names it: "
+    ), item.found
 
 
 def test_one_lost_depth_result_is_named_for_its_own_row_and_check_only(
@@ -455,6 +458,10 @@ def test_one_lost_depth_result_is_named_for_its_own_row_and_check_only(
     item = _only(run_check(session, revision_id), OWN_RESULT)
     assert ("row", str(anchors[0])) in item.ids and ("row", str(anchors[1])) not in item.ids
     assert [value for kind, value in item.ids if kind == "rule"] == ["CT-DEPTH-001"]
+    assert item.found == (
+        "Countertop row on page 1 has no live result of its own for one of the depth and sink "
+        "checks, and no held whole-package result names it: CT-DEPTH-001. Re-run the checks."
+    )
 
 
 def test_one_countertop_row_needs_no_result_of_its_own(session: Session, tmp_path: Path) -> None:

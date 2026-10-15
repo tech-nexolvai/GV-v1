@@ -723,16 +723,19 @@ def _own_depth_and_sink_coverage(
             scope += (("item", str(countertop.item_id)),)
         if countertop.row_id is not None:
             scope += (("row", str(countertop.row_id)),)
-        checks = "check" if len(rules) == 1 else "checks"
+        which = (
+            "one of the depth and sink checks"
+            if len(rules) == 1
+            else f"{len(rules)} of the depth and sink checks"
+        )
         items.append(
             RunCheckItem(
                 Check.COVERAGE,
                 "countertop-without-depth-or-sink-result",
                 Agent.NINA,
                 Action.RERUN,
-                f"{countertop.name} has no live result of its own for {len(rules)} of the depth "
-                f"and sink {checks}, and no held whole-package result names it: "
-                f"{', '.join(rules)}. Re-run the checks.",
+                f"{countertop.name} has no live result of its own for {which}, and no held "
+                f"whole-package result names it: {', '.join(rules)}. Re-run the checks.",
                 (*scope, *(("rule", rule_id) for rule_id in rules)),
             )
         )

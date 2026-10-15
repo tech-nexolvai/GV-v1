@@ -841,3 +841,23 @@ def test_the_run_check_split_is_the_check_stage_s_and_names_match_whole() -> Non
         )
         == ()
     )
+
+
+def test_only_the_left_over_note_names_a_countertop_for_the_run_check() -> None:
+    """A typed whole-package hold also carries the note listing every countertop
+    (`COUNTERTOPS_NOTE`). That note does not say a countertop has no result of its own, so a
+    left-over countertop it lists, but no left-over note names, is still missing (#1311 review)."""
+    from workflow.several_countertops import (
+        COUNTERTOPS_NOTE,
+        CountedCountertop,
+        PackageCountertops,
+        missing_own_results,
+    )
+
+    first, second = (CountedCountertop(f"Countertop {n}") for n in (1, 2))
+    package = PackageCountertops((first, second))
+    every = COUNTERTOPS_NOTE.format(names="Countertop 1 and Countertop 2")
+    assert missing_own_results(package, item_ids=(), row_ids=(), whole_package_notes=[every]) == (
+        first,
+        second,
+    )
