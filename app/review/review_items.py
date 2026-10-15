@@ -601,7 +601,8 @@ def _depth_item(
 def _depth_answered(session: Session, finding_ids: Sequence[UUID]) -> set[UUID]:
     """The readings a person confirmed through one of these (current) depth and sink results: a
     `confirm` from the reading to the person's value (#1339). Every result that reads one waits for
-    the re-check that uses it; after the re-check its results are new, and this is empty for them."""
+    the re-check that uses it; after the re-check its results are new, and this is empty for them.
+    """
     if not finding_ids:
         return set()
     return set(
