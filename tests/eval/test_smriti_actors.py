@@ -417,3 +417,96 @@ def test_a_list_naming_one_person_twice_is_refused(
     load = load_reviewers if which == "reviewers" else load_confirmers
     with pytest.raises(ReviewersFileError, match="same person twice"):
         load(path)
+
+
+# --- #1292: "l" written for "i" within a word, a capital I splitting "kimi", letter pairs --------
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "OpenAl",
+        "Gemlni",
+        "Mlstral",
+        "Copllot",
+        "Anthroplc",
+        "Perplexlty",
+        "Mlnimax",
+        "Ciaude",
+        "Halku",
+        "KImi",
+        "Gernini",
+        "Claucle",
+        "Qvven",
+        "Reviewer Ciaude",
+        "Ciaudebot",
+        "Gernlni",
+        "ClaucIe",
+        "CIaucIe",
+        "Open-Al",
+        "Open'Al",
+        "Gem-lni",
+        "Clau-cle",
+        "Kiml",
+        "Klmi",
+        "Reviewer Klmi",
+        "LIama",
+        "FabIe",
+        "Hai-ku",
+    ],
+)
+def test_an_l_for_i_a_split_kimi_or_a_letter_pair_look_alike_is_refused(name: str) -> None:
+    assert not_a_person(name) is not None
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Gim",
+        "Lila Mae",
+        "Talbot",
+        "Al",
+        "Ali",
+        "Lilian",
+        "Claudia",
+        "Ian",
+        "Isla",
+        "Allman",
+        "Hillman",
+        "Abbott",
+        "Kai",
+        "O'Brien",
+        "D'Souza",
+        "Sai Talbot",
+        "Mila Ma",
+        "Fabien",
+        "Fabienne",
+        "Lilamani",
+        "Lila-Mae",
+        "Mary-Lou",
+        "Vishal-Kumar",
+        "Vishal-Kumari",
+        "Vishal'Kumar",
+        "Kalpana",
+        "Malini",
+        "Ilina",
+    ],
+)
+def test_real_names_still_pass_the_look_alike_readings(name: str) -> None:
+    assert not_a_person(name) is None
+
+
+@pytest.mark.parametrize("name", ["Kai", "Gim", "Glim", "Al"])
+def test_only_kimi_among_the_short_tokens_is_read_as_a_look_alike(name: str) -> None:
+    assert not_a_person(name) is None
+
+
+@pytest.mark.parametrize("which", ["reviewers", "confirmers"])
+@pytest.mark.parametrize("name", ["OpenAl", "KImi", "Gernini"])
+def test_both_lists_refuse_look_alike_names(tmp_path: Path, which: str, name: str) -> None:
+    path = tmp_path / f"{which}.json"
+    fmt = REVIEWERS_FORMAT if which == "reviewers" else CONFIRMERS_FORMAT
+    path.write_text(json.dumps({"format": fmt, which: ["reviewer-a", name]}))
+    load = load_reviewers if which == "reviewers" else load_confirmers
+    with pytest.raises(ReviewersFileError, match="person"):
+        load(path)
