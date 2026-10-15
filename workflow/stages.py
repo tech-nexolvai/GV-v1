@@ -2833,13 +2833,13 @@ class DatabaseStages:
         return None if reporter is None else PageBatchProgress(reporter)
 
     def _call_ledger(
-        self, session: Session, task_run_id: UUID, *, reader_version: str
+        self, session: Session, task_run_id: UUID, *, reader_version: str, key_tag: str = ""
     ) -> CallLedger:
         """The attempt recorder for one reader batch: every paid call ledgered as it returns (#1178).
 
         Ledgered only when the stage's workflow run is committed and the session is bound to an
         engine; otherwise it buffers exactly like `ThreadSafeAttemptRecorder` and the stage writes
-        every call, as before.
+        every call, as before. `key_tag` names who asked in the ledger run's key (#1328).
         """
         task_run = session.get(TaskRun, task_run_id)
         return CallLedger(
@@ -2848,6 +2848,7 @@ class DatabaseStages:
             stage_key=None if task_run is None else task_run.idempotency_key,
             reader_version=reader_version,
             to_record=lambda run_id, attempt: self._reader_invocation(run_id, attempt),
+            key_tag=key_tag,
         )
 
     def _slot_page(
@@ -6724,7 +6725,7 @@ class DatabaseStages:
         )
         from extraction.reader import UnreadablePdf
         from extraction.slot_reader.anthropic import BatchSpendGuard
-        from workflow.depth_again import STOPPED_KEEPS_EARLIER, again_hash
+        from workflow.depth_again import STOPPED_KEEPS_EARLIER, again_hash, request_ledger_tag
         from workflow.depth_evidence import DEPTH_EXTRACTOR, DEPTH_READER_VERSION, latest_depth_run
         from workflow.depth_evidence import RUN_FAILED as DEPTH_RUN_FAILED
         from workflow.depth_reader import (
@@ -6892,7 +6893,14 @@ class DatabaseStages:
             claude_ceiling_usd=runtime.spend_cap_usd,
         )
         stop = ReadingStop()
-        recorder = self._call_ledger(session, task_run.id, reader_version=DEPTH_READER_VERSION)
+        # A request's paid calls carry its id in their ledger run's key, so its status counts what
+        # it paid for by id, never by time (#1328).
+        recorder = self._call_ledger(
+            session,
+            task_run.id,
+            reader_version=DEPTH_READER_VERSION,
+            key_tag="" if again is None else request_ledger_tag(again),
+        )
         stored = (
             None
             if not runtime.reuse_answers

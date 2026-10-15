@@ -724,13 +724,19 @@ def test_the_status_of_a_request_says_what_happened(
 class _SameSessionLedger:
     """The call ledger (`workflow.reading_watch.CallLedger`) written in the test's own session.
 
+    Like the real one it ledgers every attempt that is not a reused answer, a refused one included
+    (`CallLedger.record`), under a run keyed with the stage's prefix and the request's tag.
+
     The real ledger writes each paid call in a transaction of its own, which needs the workflow run
     committed; the test's session never commits. This one writes the same rows, under a ledger run
     of the stage's workflow run, when the stage asks which calls the ledger holds: so the stage
     writes the $0 twin of each paid call exactly as it does in a real run (#1328)."""
 
-    def __init__(self, stages: DatabaseStages, session: Session, task_run_id: UUID) -> None:
+    def __init__(
+        self, stages: DatabaseStages, session: Session, task_run_id: UUID, key_tag: str
+    ) -> None:
         self._stages = stages
+        self._key_tag = key_tag
         self._session = session
         self._task_run_id = task_run_id
         self._attempts: list[Any] = []
@@ -758,7 +764,9 @@ class _SameSessionLedger:
             stage = session.get_one(TaskRun, self._task_run_id)
             task = TaskRun(
                 workflow_run_id=stage.workflow_run_id,
-                idempotency_key=f"{ledger_key_prefix(stage.idempotency_key)}{uuid4().hex}",
+                idempotency_key=(
+                    f"{ledger_key_prefix(stage.idempotency_key)}{self._key_tag}{uuid4().hex}"
+                ),
                 task_type=LEDGER_TASK_TYPE,
                 attempt=1,
                 outcome="recorded",
@@ -782,16 +790,25 @@ class _SameSessionLedger:
 
 
 def _ledgered_stages(
-    store: LocalStore, clients: object, monkeypatch: pytest.MonkeyPatch
+    store: LocalStore,
+    clients: object,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    ceiling: Decimal | None = None,
 ) -> DatabaseStages:
     """`_stages` whose paid calls go through the call ledger, as in a real run."""
-    stages = _stages(store, clients)
+    stages = _stages(store, clients, ceiling=ceiling)
 
     def ledger(
-        self: DatabaseStages, session: Session, task_run_id: UUID, *, reader_version: str
+        self: DatabaseStages,
+        session: Session,
+        task_run_id: UUID,
+        *,
+        reader_version: str,
+        key_tag: str = "",
     ) -> _SameSessionLedger:
         del reader_version
-        return _SameSessionLedger(self, session, task_run_id)
+        return _SameSessionLedger(self, session, task_run_id, key_tag)
 
     monkeypatch.setattr(DatabaseStages, "_call_ledger", ledger)
     return stages
@@ -877,20 +894,78 @@ def test_the_status_counts_a_new_paid_call_as_paid_not_as_a_stored_answer(
     )
 
 
-def test_each_new_call_is_paid_once_and_a_call_made_before_the_request_is_reused(
+def test_a_refused_attempt_through_the_ledger_is_not_asked_never_paid_for(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1331 review: the call ledger also ledgers an attempt the budget refused, and the stage
+    writes its twin with that outcome. A twin naming it is "not asked", never "paid for"."""
+    sheet = _read_set(session, store)
+    _view_kind_reading(monkeypatch, sheet, views=1)
+    clients = _Answering()
+    stages = _ledgered_stages(store, clients, monkeypatch, ceiling=Decimal("0.01"))
+    _asked_through_the_outbox(session, stages, sheet)
+
+    assert clients.calls == 0
+    (run,) = _again_runs(session, sheet)
+    twins = session.scalars(
+        select(ModelInvocation).where(ModelInvocation.extraction_run_id == run.id)
+    ).all()
+    assert twins and all("reused_from" in (row.reader_question_packet or {}) for row in twins)
+    assert {row.outcome for row in twins} == {"budget_refused"}
+    told = last_request(session, sheet.revision.id)
+    assert told is not None and told.state == "stopped"
+    assert f"{len(twins)} not asked" in told.sentence
+    assert "paid for" not in told.sentence
+
+
+def test_the_ledger_key_mark_is_the_ledger_s_own() -> None:
+    from workflow.depth_again import LEDGER_KEY_MARK, request_ledger_tag
+    from workflow.reading_watch import ledger_key_prefix
+
+    assert ledger_key_prefix("stage").removeprefix("stage") == LEDGER_KEY_MARK
+    assert request_ledger_tag("r1") != request_ledger_tag("r10")[: len(request_ledger_tag("r1"))]
+
+
+def test_each_call_the_request_paid_for_counts_once_and_any_other_is_reused(
     session: Session, store: LocalStore
 ) -> None:
-    """`_spent_by_request` by its rows: a stage-paid row, a twin of a new call, a second question
-    answered by that same new call, a stored answer from before the request, and an attempt the
-    budget refused before it was sent."""
+    """`_spent_by_request` by its rows, decided by the request's id, never by time: a stage-paid
+    row; the twin of a call in the request's tagged ledger run; a second question answered by that
+    same call; its retry (no extra question, its cost counted); a stored answer paid before; a call
+    another reading paid for *after* the request was asked (still reused, not the request's); and
+    attempts refused before they were sent, a twin and a row of the stage's own."""
     from datetime import timedelta
 
-    from workflow.depth_again import _spent_by_request
+    from workflow.depth_again import _spent_by_request, request_ledger_tag
+    from workflow.reading_watch import LEDGER_TASK_TYPE, ledger_key_prefix
 
     sheet = _read_set(session, store)
+    stage = session.get_one(TaskRun, sheet.run.task_run_id)
+    request = str(uuid4())
     asked_at = sheet.run.created_at
 
+    def ledger_run(tag: str) -> ExtractionRun:
+        task = TaskRun(
+            workflow_run_id=stage.workflow_run_id,
+            idempotency_key=f"{ledger_key_prefix(stage.idempotency_key)}{tag}{uuid4().hex}",
+            task_type=LEDGER_TASK_TYPE,
+            attempt=1,
+            outcome="recorded",
+        )
+        session.add(task)
+        session.flush()
+        run = ExtractionRun(
+            task_run_id=task.id,
+            extractor="workflow.call_ledger",
+            extractor_version="call-ledger-v1",
+            config_hash="calls-of:synthetic",
+        )
+        session.add(run)
+        session.flush()
+        return run
+
     def row(run: ExtractionRun, *, cost: int, made: object, **extra: Any) -> ModelInvocation:
+        attempt = extra.pop("attempt", None)
         added = ModelInvocation(
             extraction_run_id=run.id,
             model_id=CLAUDE_PAIR[0],
@@ -902,19 +977,28 @@ def test_each_new_call_is_paid_once_and_a_call_made_before_the_request_is_reused
             outcome=extra.pop("outcome", "ok"),
             cost_micros=cost,
             created_at=made,
+            reader_page_index=None if attempt is None else 0,
+            reader_attempt_number=attempt,
             **extra,
         )
         session.add(added)
         session.flush()
         return added
 
-    before = row(sheet.run, cost=40_000, made=asked_at - timedelta(hours=1))
-    new_call = row(sheet.run, cost=25_000, made=asked_at + timedelta(seconds=5))
+    refused = {"outcome": "budget_refused", "rejection_reason": "SpendCapExceeded"}
+    before = row(ledger_run(""), cost=40_000, made=asked_at - timedelta(hours=1))
+    other_reading = row(ledger_run(""), cost=35_000, made=asked_at + timedelta(seconds=1))
+    mine = ledger_run(request_ledger_tag(request))
+    # The request's own calls, made a moment *before* it was asked by a skewed clock: the id
+    # decides, not the time.
+    new_call = row(mine, cost=25_000, made=asked_at - timedelta(seconds=1))
+    retry = row(mine, cost=5_000, made=asked_at - timedelta(seconds=1), attempt=2)
+    refused_call = row(mine, cost=0, made=asked_at - timedelta(seconds=1), **refused)
     reading = ExtractionRun(
         task_run_id=sheet.run.task_run_id,
         extractor=DEPTH_EXTRACTOR,
         extractor_version="synthetic",
-        config_hash="synthetic;again=x",
+        config_hash=f"synthetic;again={request}",
     )
     session.add(reading)
     session.flush()
@@ -928,13 +1012,16 @@ def test_each_new_call_is_paid_once_and_a_call_made_before_the_request_is_reused
     row(reading, cost=30_000, made=later)  # a paid call the stage wrote itself
     row(reading, cost=0, made=later, **naming(new_call))  # the twin of a new call
     row(reading, cost=0, made=later, **naming(new_call))  # the same new call answers again
+    row(reading, cost=0, made=later, attempt=2, **naming(retry))  # its retry: no new question
     row(reading, cost=0, made=later, **naming(before))  # a stored answer from before
-    row(reading, cost=0, made=later, outcome="budget_refused", rejection_reason="SpendCapExceeded")
+    row(reading, cost=0, made=later, **naming(other_reading))  # another reading's call
+    row(reading, cost=0, made=later, **refused, **naming(refused_call))  # a refused twin
+    row(reading, cost=0, made=later, **refused)  # refused, written by the stage itself
 
-    spent = _spent_by_request(session, reading.id, since=asked_at)
+    spent = _spent_by_request(session, reading.id, request=request)
 
-    assert (spent.asked, spent.reused, spent.paid, spent.not_sent) == (5, 2, 2, 1)
-    assert spent.paid_micros == 30_000 + 25_000
+    assert (spent.asked, spent.reused, spent.paid, spent.not_sent) == (7, 3, 2, 2)
+    assert spent.paid_micros == 30_000 + 25_000 + 5_000
 
 
 def test_a_request_that_paid_for_nothing_says_so() -> None:

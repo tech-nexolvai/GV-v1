@@ -61,7 +61,13 @@ from app.models import (
 )
 from app.models.evidence import ObservationCandidate
 from app.models.package import package_product
-from app.models.runs import REUSED_FROM_KEY, ModelInvocation, ModelInvocationOutcome
+from app.models.runs import (
+    REUSED_FROM_KEY,
+    ExtractionRun,
+    ModelInvocation,
+    ModelInvocationOutcome,
+    TaskRun,
+)
 from rules.semantic_types import ProductType
 from vocabulary.part_kinds import PartKind
 from workflow.ai_budget import AiBudget
@@ -77,6 +83,7 @@ from workflow.slot_row_scope import (
 __all__ = [
     "AGAIN_MARK",
     "ALREADY_ASKED",
+    "LEDGER_KEY_MARK",
     "NEEDS_CLAUDE",
     "NEEDS_REUSE",
     "READ_DEPTHS_AGAIN_WORKFLOW",
@@ -91,6 +98,7 @@ __all__ = [
     "last_request",
     "refusal",
     "request_cap_usd",
+    "request_ledger_tag",
     "request_waiting",
     "set_budget_left",
 ]
@@ -202,6 +210,17 @@ class DepthsAgainRefused(Exception):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.plain_reason = reason
+
+
+#: What every call-ledger run's task key holds after its stage's key
+#: (`workflow.reading_watch.ledger_key_prefix`, which this module may not import: it is heavy).
+LEDGER_KEY_MARK: Final = ":reader-calls:"
+
+
+def request_ledger_tag(request: str) -> str:
+    """What a request's call-ledger runs carry in their key, after `LEDGER_KEY_MARK` (#1328): the
+    calls it paid for are found by its id (`_request_calls`)."""
+    return f"again={request}:"
 
 
 def again_hash(base_hash: str, request: str) -> str:
@@ -453,63 +472,75 @@ _NOT_SENT: Final = frozenset(
 )
 
 
-def _spent_by_request(session: Session, run_id: UUID, *, since: datetime) -> _Spent:
-    """Split a request's questions into reused and paid by the call ledger (#1328).
+def _request_calls(session: Session, request: str) -> dict[UUID, int | None]:
+    """The calls a request paid for, by id, with their cost: the rows of the call-ledger runs whose
+    key carries the request's tag (`request_ledger_tag`), across every try of the request."""
+    return {
+        row_id: cost
+        for row_id, cost in session.execute(
+            select(ModelInvocation.id, ModelInvocation.cost_micros)
+            .join(ExtractionRun, ExtractionRun.id == ModelInvocation.extraction_run_id)
+            .join(TaskRun, TaskRun.id == ExtractionRun.task_run_id)
+            .where(
+                TaskRun.idempotency_key.contains(
+                    f"{LEDGER_KEY_MARK}{request_ledger_tag(request)}", autoescape=True
+                )
+            )
+        )
+    }
+
+
+def _spent_by_request(session: Session, run_id: UUID, *, request: str) -> _Spent:
+    """Split a request's questions into reused, paid and not asked, by the call ledger (#1328).
 
     A row of the run that names another row (`reused_from`) is either a stored answer reused or
-    the $0 twin of a call the request made itself: the call ledger writes each paid call the moment
+    the $0 twin of a call the request made itself: the call ledger writes each attempt the moment
     it returns, and the stage then writes a twin naming it (`workflow/reading_watch.py`). Both have
-    the same shape, so the row named tells them apart: **a call made at or after the request was
-    asked was paid for by the request** (an earlier try of the same request that stopped before
-    recording included: the request paid for it); one made before is a stored answer, reused at no
-    cost. A
-    row naming nothing is a paid call the stage wrote itself. Each call is counted once, so a
-    question asked twice in one run and answered by the same new call is paid for once.
+    the same shape, so the row named tells them apart, **by the request's id, never by time**: a
+    call in a ledger run tagged with this request (`request_ledger_tag`; an earlier try of the same
+    request included, since the request paid for it) was paid for by the request; any other is a
+    stored answer, reused at no cost, even one another reading paid for while this request waited.
+    A row naming nothing is a paid call the stage wrote itself. An attempt the budget or the
+    provider account refused before it was sent is "not asked", whether it is a twin or not. Each
+    call is counted once, and a retry of a question (attempt 2 or later) is no extra question,
+    though its cost counts.
+
+    A request read before this tag existed has no tagged ledger run, so its new calls count as
+    reused; asking again counts them rightly (every answer is then a stored one, at no cost).
     """
+    request_calls = _request_calls(session, request)
     rows = session.execute(
         select(
             func.coalesce(ModelInvocation.reader_attempt_number, 1),
             ModelInvocation.reader_question_packet,
             ModelInvocation.cost_micros,
             ModelInvocation.outcome,
-        ).where(ModelInvocation.extraction_run_id == run_id)
-    ).all()
-    named: dict[int, UUID | None] = {}
-    for position, (_attempt, packet, _cost, _outcome) in enumerate(rows):
-        if isinstance(packet, dict) and REUSED_FROM_KEY in packet:
-            try:
-                named[position] = UUID(str(packet[REUSED_FROM_KEY]))
-            except ValueError:
-                named[position] = None
-    targets = {target for target in named.values() if target is not None}
-    calls = {
-        row_id: (made_at, cost)
-        for row_id, made_at, cost in session.execute(
-            select(
-                ModelInvocation.id, ModelInvocation.created_at, ModelInvocation.cost_micros
-            ).where(ModelInvocation.id.in_(targets))
         )
-    }
+        .where(ModelInvocation.extraction_run_id == run_id)
+        .order_by(ModelInvocation.created_at, ModelInvocation.id)
+    ).all()
     asked = reused = paid = paid_micros = not_sent = 0
     counted_calls: set[UUID] = set()
-    for position, (attempt, _packet, cost, outcome) in enumerate(rows):
+    for attempt, packet, cost, outcome in rows:
         first = attempt == 1
         asked += first
-        if position not in named:
-            if outcome in _NOT_SENT:
-                not_sent += first
-            else:
-                paid += first
-                paid_micros += cost or 0
+        if outcome in _NOT_SENT:
+            not_sent += first
             continue
-        target = named[position]
-        call = None if target is None else calls.get(target)
-        if target is None or call is None or call[0] < since or target in counted_calls:
+        if not (isinstance(packet, dict) and REUSED_FROM_KEY in packet):
+            paid += first
+            paid_micros += cost or 0
+            continue
+        try:
+            target: UUID | None = UUID(str(packet[REUSED_FROM_KEY]))
+        except ValueError:
+            target = None
+        if target is None or target not in request_calls or target in counted_calls:
             reused += first
             continue
         counted_calls.add(target)
         paid += first
-        paid_micros += call[1] or 0
+        paid_micros += request_calls[target] or 0
     return _Spent(asked=asked, reused=reused, paid=paid, paid_micros=paid_micros, not_sent=not_sent)
 
 
@@ -613,7 +644,7 @@ def last_request(session: Session, revision_id: UUID) -> DepthsAgain | None:
         return told("waiting", "Waiting to start, or reading now.")
     failed = _failed_reason(session, run.id)
     refused = _refused(session, run.id)
-    counted = _counted(_spent_by_request(session, run.id, since=entry.created_at))
+    counted = _counted(_spent_by_request(session, run.id, request=str(entry.id)))
     kept = (
         " The earlier complete reading is still used."
         if failed is not None
