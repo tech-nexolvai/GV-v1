@@ -1,5 +1,5 @@
 id: CAB-FILLER-001
-version: 2.1.1
+version: 2.2.0
 product_type: cabinet
 check_type: arch_vs_shop
 severity: FLAG
@@ -14,9 +14,10 @@ description: >
   too narrow. Which cabinets are equipment is the reviewer's classification, supplied per cabinet;
   the engine computes from it and never infers it.
 
-  Where the client's specification is silent the check abstains rather than choosing: a remainder
-  that does not divide into a width a drawing can carry, and a change that has to be shared between
-  fillers that started unequal, both come back for a reviewer to settle.
+  Where the client's specification is silent the check abstains rather than choosing: an equal
+  split that is not a whole 1/16" (kept exact, never rounded), and a change that has to be shared
+  between fillers that started unequal, both come back for a reviewer to settle. A missing
+  per-type cabinet bound leaves the check not checked until it is set; no width is guessed.
 
 # Global, where version 1 discriminated on `filler_symmetry` to select an `allow_asymmetric` flag
 # for `filler_distribution`. The new operation has no such flag — it abstains on unequal fillers

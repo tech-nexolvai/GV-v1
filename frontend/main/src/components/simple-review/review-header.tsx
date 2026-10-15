@@ -52,7 +52,7 @@ export function ReviewHeader({
         <p data-testid="accuracy-line" className="text-[13px] leading-5 text-muted-foreground">
           {header.readings_checked > 0 ? (
             <>
-              Checked by you so far: <Count value={header.readings_checked} /> · AI right on <Count value={header.ai_right} />
+              Your answers so far: <Count value={header.readings_checked} /> · AI right on <Count value={header.ai_right} />
               {header.ai_right_percent !== null && (
                 <>
                   {' '}(<span className="num">{header.ai_right_percent}%</span>)

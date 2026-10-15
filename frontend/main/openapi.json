@@ -2114,6 +2114,33 @@
         "title": "BoundsOut",
         "type": "object"
       },
+      "CabinetChoiceOut": {
+        "description": "One kind a cabinet may be marked as (`vocabulary/cabinet_categories.py`).",
+        "properties": {
+          "category": {
+            "description": "Sent back in `cabinet_kinds`, e.g. `sink_cabinet`.",
+            "title": "Category",
+            "type": "string"
+          },
+          "keeps_width": {
+            "description": "True for an equipment cabinet, whose width never changes; false: resizable.",
+            "title": "Keeps Width",
+            "type": "boolean"
+          },
+          "label": {
+            "description": "The kind in plain words.",
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "category",
+          "label",
+          "keeps_width"
+        ],
+        "title": "CabinetChoiceOut",
+        "type": "object"
+      },
       "CabinetInput": {
         "additionalProperties": false,
         "description": "One cabinet in the ordered run the reviewer is checking.",
@@ -2193,6 +2220,69 @@
           "adjustable"
         ],
         "title": "CabinetProposalOut",
+        "type": "object"
+      },
+      "CabinetRowOut": {
+        "description": "One cabinet of the run, left to right, as entered on Measurements.",
+        "properties": {
+          "architect_width": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "e.g. `24\"`.",
+            "title": "Architect Width"
+          },
+          "keeps_width": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Whether the marked kind keeps its width; null when unmarked.",
+            "title": "Keeps Width"
+          },
+          "marked": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The kind the reviewer marked last; null until they mark it.",
+            "title": "Marked"
+          },
+          "position": {
+            "description": "1-based place in the run, left to right.",
+            "title": "Position",
+            "type": "integer"
+          },
+          "vendor_width": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "e.g. `23 1/2\"`.",
+            "title": "Vendor Width"
+          }
+        },
+        "required": [
+          "position"
+        ],
+        "title": "CabinetRowOut",
         "type": "object"
       },
       "CalculationTraceOut": {
@@ -9985,7 +10075,7 @@
         "type": "object"
       },
       "ReviewHeaderOut": {
-        "description": "The top of the simple review page (#1338), with the AI's share and accuracy (#1386).\n\nEvery count is exact and worked out here; the screen only prints them. Each percentage is a\nwhole number of its own count over its own total, shown beside the counts (`whole_percent`).\n\n**Numbers** (line 1): `numbers` is every width number on the countertop rows of the newest\nreading. Each is in exactly one of two groups, by the one test the rest of the page uses\n(`candidate_is_sealed`): `confirmed_by_ai`, settled by both AIs (the two readers agreed and code\naccepted it), or `need_you`, the rest (held, read by one reader, read differently, or with no\nvalue). So `confirmed_by_ai + need_you == numbers` always.\n\n**Accuracy** (line 2): from this revision's own answers on AI readings, exactly what\n`eval/correction_rate.py` counts (`reviewed_readings`): every `confirm` or `correct` evidence\naction, a held-reading answer included. `readings_checked` is how many; `ai_right` is the\nconfirms (no correction-ledger row), so `readings_checked - ai_right` were corrected. Of those,\n`settled_checked` judged a reading both AIs settled, and `settled_right` of them were confirmed:\na settled number a person corrected shows as `settled_checked - settled_right`. Nothing checked\nmeans no percentage (`None`), never 0% or 100%. No other set's answers are counted.",
+        "description": "The top of the simple review page (#1338), with the AI's share and accuracy (#1386).\n\n    Every count is exact and worked out here; the screen only prints them. Each percentage is a\n    whole number of its own count over its own total, shown beside the counts (`whole_percent`).\n\n    **Numbers** (line 1): `numbers` is every width number on the countertop rows of the newest\n    reading. Each is in exactly one of two groups, by the one test the rest of the page uses\n    (`candidate_is_sealed`): `confirmed_by_ai`, settled by both AIs (the two readers agreed and code\n    accepted it), or `need_you`, the rest (held, read by one reader, read differently, or with no\n    value). So `confirmed_by_ai + need_you == numbers` always.\n\n    **Accuracy** (line 2): from this revision's own answers on AI readings, exactly what\n    `eval/correction_rate.py` counts (`reviewed_readings`): every `confirm` or `correct` evidence\n    action, a held-reading answer included. `readings_checked` is how many answers (one number answered\ntwice counts twice, as in the metric; the screen says \"Your answers\"); `ai_right` is the\n    confirms (no correction-ledger row), so `readings_checked - ai_right` were corrected. Of those,\n    `settled_checked` judged a reading both AIs settled, and `settled_right` of them were confirmed:\n    a settled number a person corrected shows as `settled_checked - settled_right`. Nothing checked\n    means no percentage (`None`), never 0% or 100%. No other set's answers are counted.",
         "properties": {
           "ai_right": {
             "description": "Of those, how many the person confirmed.",
@@ -10058,7 +10148,7 @@
             "type": "integer"
           },
           "readings_checked": {
-            "description": "AI readings a person confirmed or corrected on this revision, as the correction rate counts them.",
+            "description": "Answers on AI readings (confirm or correct) on this revision, as the correction rate counts them; one number answered twice counts twice.",
             "title": "Readings Checked",
             "type": "integer"
           },
@@ -10153,6 +10243,22 @@
             ],
             "description": "With an architect `answer`: the body of `POST .../architect-view-match` (`view_id` or `none_of_these`, `expected_record_id`, optional `note`).",
             "title": "Architect View"
+          },
+          "cabinet_kinds": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With `mark_cabinets`: one kind per cabinet shown, left to right (a `cabinet_choices` category). Required; 409 when the run's cabinets changed.",
+            "title": "Cabinet Kinds"
           },
           "expected_finding_id": {
             "anyOf": [
@@ -10307,6 +10413,22 @@
             ],
             "description": "Null when the AI has no guess: the item is then checked by hand, no typing."
           },
+          "cabinet_choices": {
+            "description": "`cabinet_kinds` only: the kinds a cabinet may be marked as.",
+            "items": {
+              "$ref": "#/components/schemas/CabinetChoiceOut"
+            },
+            "title": "Cabinet Choices",
+            "type": "array"
+          },
+          "cabinets": {
+            "description": "`cabinet_kinds` only: each cabinet of the run, left to right, to mark.",
+            "items": {
+              "$ref": "#/components/schemas/CabinetRowOut"
+            },
+            "title": "Cabinets",
+            "type": "array"
+          },
           "candidate_id": {
             "anyOf": [
               {
@@ -10377,6 +10499,7 @@
               "no_countertop_page",
               "architect",
               "depth_reading",
+              "cabinet_kinds",
               "other_result"
             ],
             "title": "Kind",
@@ -10423,6 +10546,14 @@
               }
             ],
             "title": "Row Label"
+          },
+          "settings": {
+            "description": "`cabinet_kinds` only: the per-type cabinet width limits the run lacked, each a Company settings field (no company value; set per project). Never guessed.",
+            "items": {
+              "$ref": "#/components/schemas/NotCheckedSettingOut"
+            },
+            "title": "Settings",
+            "type": "array"
           },
           "status": {
             "enum": [

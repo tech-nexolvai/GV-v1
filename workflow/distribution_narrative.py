@@ -31,7 +31,7 @@ from units.imperial import format_inches
 from units.measurement import Measurement, Unit
 from verdict.operations.distribution import CabinetType, DistributionCondition
 
-__all__ = ["explain_distribution"]
+__all__ = ["distribution_table", "explain_distribution", "explain_distribution_with_table"]
 
 
 def _is_equipment(name: object) -> bool:
@@ -278,8 +278,102 @@ def _does_not_divide(facts: dict[str, object]) -> str:
         direction = "off" if share.exact < 0 else "onto"
         worked_out = f" — it works out at {_magnitude(share)} {direction} each"
     return (
-        "Dividing that equally does not land on a width a drawing can carry"
+        'Dividing that equally does not land on a whole 1/16"'
         + worked_out
-        + ". The rule does not say how to round it or which part takes the remainder, so confirm "
-        "how it is apportioned."
+        + ". The rule does not say how to round it or which part takes the remainder, and the "
+        "program does not round on its own, so confirm the widths."
     )
+
+
+#: The conditions that end in a corrected layout. Every other one — an RFI, a flagged split, a run
+#: the check cannot compare — has no layout to show, so no table pretends to show one.
+_LAYOUT_CONDITIONS = frozenset(
+    {
+        DistributionCondition.NO_CHANGE_REQUIRED.value,
+        DistributionCondition.FILLERS_ABSORB.value,
+        DistributionCondition.CABINETS_ABSORB_REMAINDER.value,
+    }
+)
+
+_TABLE_HEADER = ("Element", "Architectural", "Shop drawing", "Corrected or retained")
+
+
+def _cabinet_label(position: int, name: object) -> str:
+    """`Cabinet 2 (equipment, fixed width)`: the reviewer's own category, in words."""
+    try:
+        kind = CabinetType(str(name))
+    except ValueError:
+        return f"Cabinet {position}"
+    words = kind.value.replace("_", " ")
+    return (
+        f"Cabinet {position} ({words}, fixed width)"
+        if kind.is_equipment
+        else (f"Cabinet {position} ({words})")
+    )
+
+
+def distribution_table(facts: Mapping[str, object]) -> tuple[tuple[str, str, str, str], ...]:
+    """The slide-6 table: element | architectural | shop drawing | corrected or retained (#648).
+
+    One row per filler and cabinet in wall order (left filler, the cabinets, right filler), then
+    the wall-to-wall total. "Shop drawing" is the width the shop drawing should carry after the
+    correction — a proposal the reviewer confirms, never a change made for them. Read entirely out of
+    the operation's intermediates, like the paragraph; empty when the check proposed no layout.
+    """
+    facts = dict(facts)
+    if str(facts.get("condition", "")) not in _LAYOUT_CONDITIONS:
+        return ()
+    design_fillers = facts.get("design_fillers")
+    expected_fillers = facts.get("expected_fillers")
+    design_cabinets = facts.get("design_cabinets")
+    expected_cabinets = facts.get("expected_cabinets")
+    types = facts.get("cabinet_types")
+    design_width = facts.get("design_width")
+    difference = facts.get("site_difference")
+    runs = (design_fillers, expected_fillers, design_cabinets, expected_cabinets, types)
+    if not all(isinstance(run, tuple) for run in runs):
+        return ()
+    assert isinstance(design_fillers, tuple) and isinstance(expected_fillers, tuple)
+    assert isinstance(design_cabinets, tuple) and isinstance(expected_cabinets, tuple)
+    assert isinstance(types, tuple)
+    if len(design_fillers) != len(expected_fillers) or not (
+        len(design_cabinets) == len(expected_cabinets) == len(types)
+    ):
+        return ()
+
+    def row(element: str, was: object, now: object) -> tuple[str, str, str, str] | None:
+        if not isinstance(was, Measurement) or not isinstance(now, Measurement):
+            return None
+        status = "retained" if was.exact == now.exact else "corrected"
+        return (element, _inches(was), _inches(now), status)
+
+    if len(design_fillers) == 2:
+        filler_names = ["Left filler", "Right filler"]
+    else:
+        filler_names = [f"Filler {index + 1}" for index in range(len(design_fillers))]
+    fillers = [row(n, w, x) for n, w, x in zip(filler_names, design_fillers, expected_fillers)]
+    cabinets = [
+        row(_cabinet_label(index + 1, kind), was, now)
+        for index, (was, now, kind) in enumerate(zip(design_cabinets, expected_cabinets, types))
+    ]
+    ordered = [fillers[0], *cabinets, fillers[1]] if len(fillers) == 2 else [*fillers, *cabinets]
+    if isinstance(design_width, Measurement) and isinstance(difference, Measurement):
+        site = Measurement(design_width.exact + difference.exact, design_width.unit, None)
+        ordered.append(row("Wall to wall", design_width, site))
+    if any(entry is None for entry in ordered):
+        return ()
+    return tuple(entry for entry in ordered if entry is not None)
+
+
+def explain_distribution_with_table(facts: Mapping[str, object]) -> str:
+    """The paragraph, then the table under it, as one text for a stored finding (#648).
+
+    The deck asks for both: the derivation (slides 5 and 9) and the arch-against-shop table
+    (slide 6). Exactly `explain_distribution` when there is no layout to tabulate.
+    """
+    paragraph = explain_distribution(facts)
+    rows = distribution_table(facts)
+    if not paragraph or not rows:
+        return paragraph
+    lines = [" | ".join(_TABLE_HEADER), *(" | ".join(entry) for entry in rows)]
+    return paragraph + "\n\n" + "\n".join(lines)

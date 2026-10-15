@@ -18,7 +18,11 @@ from verdict.operations.distribution import (
     DistributionCondition,
     cabinet_run_distribution,
 )
-from workflow.distribution_narrative import explain_distribution
+from workflow.distribution_narrative import (
+    distribution_table,
+    explain_distribution,
+    explain_distribution_with_table,
+)
 
 #: Wide enough that no case is decided by a cabinet bound unless it sets one. Not defaults: the real
 #: values are unsettled (CLIENT_FACTS Q21) and nothing in this system may carry one.
@@ -279,3 +283,109 @@ def test_every_condition_the_operation_can_return_produces_a_paragraph(
     said = cases[condition.value]
     assert said.strip(), f"{condition.value} produced nothing"
     assert condition.value not in said, "the machine name reached the reviewer"
+
+
+# ---------------------------------------------------------------------------
+# #648: the slide-6 table — element | architectural | shop, corrected or retained
+# ---------------------------------------------------------------------------
+
+
+def _facts(
+    *,
+    field: int,
+    design: int,
+    fillers: tuple[int, ...],
+    cabinets: tuple[int, ...],
+    types: tuple[str, ...],
+) -> dict[str, object]:
+    result = cabinet_run_distribution(
+        field_width=_inches(field),
+        design_width=_inches(design),
+        design_fillers=[_inches(value) for value in fillers],
+        proposed_fillers=[_inches(value) for value in fillers],
+        design_cabinets=[_inches(value) for value in cabinets],
+        proposed_cabinets=[_inches(value) for value in cabinets],
+        cabinet_type=list(types),
+        filler_min=_inches(2),
+        filler_max=_inches(3),
+        **WIDE_BOUNDS,  # type: ignore[arg-type]
+    )
+    return dict(result.intermediates)
+
+
+def test_the_table_reproduces_slide_six_for_the_first_worked_example() -> None:
+    """3|24|36|24|3 = 90 becomes 2|21|36|21|2 = 82; only the equipment cabinet is retained."""
+    facts = _facts(
+        field=82,
+        design=90,
+        fillers=(3, 3),
+        cabinets=(24, 36, 24),
+        types=("double_door", "equipment", "double_door"),
+    )
+
+    assert distribution_table(facts) == (
+        ("Left filler", '3"', '2"', "corrected"),
+        ("Cabinet 1 (double door)", '24"', '21"', "corrected"),
+        ("Cabinet 2 (equipment, fixed width)", '36"', '36"', "retained"),
+        ("Cabinet 3 (double door)", '24"', '21"', "corrected"),
+        ("Right filler", '3"', '2"', "corrected"),
+        ("Wall to wall", '90"', '82"', "corrected"),
+    )
+
+
+def test_the_table_reproduces_the_second_worked_example() -> None:
+    facts = _facts(
+        field=96,
+        design=88,
+        fillers=(2, 2),
+        cabinets=(24, 36, 24),
+        types=("single_door", "sink_cabinet", "drawer"),
+    )
+
+    assert [row[2] for row in distribution_table(facts)] == ['3"', '27"', '36"', '27"', '3"', '96"']
+
+
+def test_cabinets_the_fillers_cover_are_retained() -> None:
+    """Slide 12, outcome 3: only the fillers change; every cabinet keeps its green check."""
+    facts = _facts(
+        field=88,
+        design=90,
+        fillers=(3, 3),
+        cabinets=(24, 36, 24),
+        types=("double_door", "equipment", "double_door"),
+    )
+
+    statuses = [row[3] for row in distribution_table(facts)]
+    assert statuses == ["corrected", "retained", "retained", "retained", "corrected", "corrected"]
+
+
+def test_no_table_when_the_check_proposes_nothing() -> None:
+    """An RFI or a flagged split has no corrected layout, so no table pretends to show one."""
+    unresolvable = _facts(
+        field=40,
+        design=90,
+        fillers=(3, 3),
+        cabinets=(24, 36, 24),
+        types=("double_door", "equipment", "double_door"),
+    )
+
+    assert unresolvable["condition"] == DistributionCondition.CANNOT_BE_RESOLVED.value
+    assert distribution_table(unresolvable) == ()
+    assert explain_distribution_with_table(unresolvable) == explain_distribution(unresolvable)
+    assert distribution_table({}) == ()
+
+
+def test_the_findings_explanation_carries_the_derivation_then_the_table() -> None:
+    facts = _facts(
+        field=82,
+        design=90,
+        fillers=(3, 3),
+        cabinets=(24, 36, 24),
+        types=("double_door", "equipment", "double_door"),
+    )
+
+    said = explain_distribution_with_table(facts)
+
+    assert said.startswith(explain_distribution(facts))
+    assert "Element | Architectural | Shop drawing | Corrected or retained" in said
+    assert 'Cabinet 2 (equipment, fixed width) | 36" | 36" | retained' in said

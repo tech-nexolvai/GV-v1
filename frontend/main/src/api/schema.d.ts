@@ -3288,6 +3288,27 @@ export interface components {
             y1: string;
         };
         /**
+         * CabinetChoiceOut
+         * @description One kind a cabinet may be marked as (`vocabulary/cabinet_categories.py`).
+         */
+        CabinetChoiceOut: {
+            /**
+             * Category
+             * @description Sent back in `cabinet_kinds`, e.g. `sink_cabinet`.
+             */
+            category: string;
+            /**
+             * Keeps Width
+             * @description True for an equipment cabinet, whose width never changes; false: resizable.
+             */
+            keeps_width: boolean;
+            /**
+             * Label
+             * @description The kind in plain words.
+             */
+            label: string;
+        };
+        /**
          * CabinetInput
          * @description One cabinet in the ordered run the reviewer is checking.
          */
@@ -3322,6 +3343,37 @@ export interface components {
              * @enum {string}
              */
             type: "single_door" | "double_door" | "drawer" | "sink_cabinet" | "microwave_cabinet" | "under_counter_refrigeration_cabinet" | "equipment";
+        };
+        /**
+         * CabinetRowOut
+         * @description One cabinet of the run, left to right, as entered on Measurements.
+         */
+        CabinetRowOut: {
+            /**
+             * Architect Width
+             * @description e.g. `24"`.
+             */
+            architect_width?: string | null;
+            /**
+             * Keeps Width
+             * @description Whether the marked kind keeps its width; null when unmarked.
+             */
+            keeps_width?: boolean | null;
+            /**
+             * Marked
+             * @description The kind the reviewer marked last; null until they mark it.
+             */
+            marked?: string | null;
+            /**
+             * Position
+             * @description 1-based place in the run, left to right.
+             */
+            position: number;
+            /**
+             * Vendor Width
+             * @description e.g. `23 1/2"`.
+             */
+            vendor_width?: string | null;
         };
         /**
          * CalculationTraceOut
@@ -7068,22 +7120,23 @@ export interface components {
          * ReviewHeaderOut
          * @description The top of the simple review page (#1338), with the AI's share and accuracy (#1386).
          *
-         *     Every count is exact and worked out here; the screen only prints them. Each percentage is a
-         *     whole number of its own count over its own total, shown beside the counts (`whole_percent`).
+         *         Every count is exact and worked out here; the screen only prints them. Each percentage is a
+         *         whole number of its own count over its own total, shown beside the counts (`whole_percent`).
          *
-         *     **Numbers** (line 1): `numbers` is every width number on the countertop rows of the newest
-         *     reading. Each is in exactly one of two groups, by the one test the rest of the page uses
-         *     (`candidate_is_sealed`): `confirmed_by_ai`, settled by both AIs (the two readers agreed and code
-         *     accepted it), or `need_you`, the rest (held, read by one reader, read differently, or with no
-         *     value). So `confirmed_by_ai + need_you == numbers` always.
+         *         **Numbers** (line 1): `numbers` is every width number on the countertop rows of the newest
+         *         reading. Each is in exactly one of two groups, by the one test the rest of the page uses
+         *         (`candidate_is_sealed`): `confirmed_by_ai`, settled by both AIs (the two readers agreed and code
+         *         accepted it), or `need_you`, the rest (held, read by one reader, read differently, or with no
+         *         value). So `confirmed_by_ai + need_you == numbers` always.
          *
-         *     **Accuracy** (line 2): from this revision's own answers on AI readings, exactly what
-         *     `eval/correction_rate.py` counts (`reviewed_readings`): every `confirm` or `correct` evidence
-         *     action, a held-reading answer included. `readings_checked` is how many; `ai_right` is the
-         *     confirms (no correction-ledger row), so `readings_checked - ai_right` were corrected. Of those,
-         *     `settled_checked` judged a reading both AIs settled, and `settled_right` of them were confirmed:
-         *     a settled number a person corrected shows as `settled_checked - settled_right`. Nothing checked
-         *     means no percentage (`None`), never 0% or 100%. No other set's answers are counted.
+         *         **Accuracy** (line 2): from this revision's own answers on AI readings, exactly what
+         *         `eval/correction_rate.py` counts (`reviewed_readings`): every `confirm` or `correct` evidence
+         *         action, a held-reading answer included. `readings_checked` is how many answers (one number answered
+         *     twice counts twice, as in the metric; the screen says "Your answers"); `ai_right` is the
+         *         confirms (no correction-ledger row), so `readings_checked - ai_right` were corrected. Of those,
+         *         `settled_checked` judged a reading both AIs settled, and `settled_right` of them were confirmed:
+         *         a settled number a person corrected shows as `settled_checked - settled_right`. Nothing checked
+         *         means no percentage (`None`), never 0% or 100%. No other set's answers are counted.
          */
         ReviewHeaderOut: {
             /**
@@ -7136,7 +7189,7 @@ export interface components {
             pages_read: number;
             /**
              * Readings Checked
-             * @description AI readings a person confirmed or corrected on this revision, as the correction rate counts them.
+             * @description Answers on AI readings (confirm or correct) on this revision, as the correction rate counts them; one number answered twice counts twice.
              */
             readings_checked: number;
             /**
@@ -7184,6 +7237,11 @@ export interface components {
             architect_view?: {
                 [key: string]: unknown;
             } | null;
+            /**
+             * Cabinet Kinds
+             * @description With `mark_cabinets`: one kind per cabinet shown, left to right (a `cabinet_choices` category). Required; 409 when the run's cabinets changed.
+             */
+            cabinet_kinds?: string[] | null;
             /**
              * Expected Finding Id
              * @description The `finding_id` of the item as the screen showed it. Required for an item with a result; 409 when the item now names another result or is no longer listed. Null for a page listed with no countertop and for a group key.
@@ -7250,6 +7308,16 @@ export interface components {
             architect_ref?: components["schemas"]["ArchitectRefOut"] | null;
             /** @description Null when the AI has no guess: the item is then checked by hand, no typing. */
             best_guess?: components["schemas"]["BestGuessOut"] | null;
+            /**
+             * Cabinet Choices
+             * @description `cabinet_kinds` only: the kinds a cabinet may be marked as.
+             */
+            cabinet_choices?: components["schemas"]["CabinetChoiceOut"][];
+            /**
+             * Cabinets
+             * @description `cabinet_kinds` only: each cabinet of the run, left to right, to mark.
+             */
+            cabinets?: components["schemas"]["CabinetRowOut"][];
             /** Candidate Id */
             candidate_id?: string | null;
             countertop?: components["schemas"]["CountertopItemRefOut"] | null;
@@ -7268,7 +7336,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "number" | "countertop_by_hand" | "wall_choice" | "no_countertop_page" | "architect" | "depth_reading" | "other_result";
+            kind: "number" | "countertop_by_hand" | "wall_choice" | "no_countertop_page" | "architect" | "depth_reading" | "cabinet_kinds" | "other_result";
             /**
              * Page
              * @description 1-based vendor page number.
@@ -7280,6 +7348,11 @@ export interface components {
             row_id?: string | null;
             /** Row Label */
             row_label?: string | null;
+            /**
+             * Settings
+             * @description `cabinet_kinds` only: the per-type cabinet width limits the run lacked, each a Company settings field (no company value; set per project). Never guessed.
+             */
+            settings?: components["schemas"]["NotCheckedSettingOut"][];
             /**
              * Status
              * @enum {string}

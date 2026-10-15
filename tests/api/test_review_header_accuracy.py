@@ -24,6 +24,7 @@ from alembic import command
 from app.db.session import session_factory
 from app.main import API_PREFIX
 from app.models import CanonicalObservation, EvidenceSupportingCandidate, ObservationCandidate
+from app.models.review import ReviewAction
 from app.models.verdicts import FindingEvidence, VerdictInput
 from app.review.evidence_actions import (
     confirm_candidate_reading,
@@ -32,7 +33,9 @@ from app.review.evidence_actions import (
 )
 from app.review.review_items import whole_percent
 from eval.correction_rate import correction_rate, reviewed_readings
+from tests.api.test_review_item_actions import _act, _items, _save_all_row_widths
 from tests.api.test_review_items import _client
+from tests.api.test_slot_rows import _package_rows, _run_current_checks
 from tests.app.postgres_fixture import alembic_config
 from tests.review.test_held_reading_actions import (
     _held_rows,
@@ -200,6 +203,55 @@ def test_answers_on_another_revision_are_never_counted(session: Session, tmp_pat
     assert len(reviewed_readings(session, revision_id=_revision(session, package_id).id)) == 1
     assert reviewed_readings(session, revision_id=uuid4()) == []
     assert _header(session, project_id, package_id)["readings_checked"] == 1
+
+
+def test_an_agree_on_a_failure_is_a_decision_never_an_answer_on_a_reading(
+    session: Session, tmp_path: Path
+) -> None:
+    """Input: a person agrees with a FAIL, and says a by-hand result is right. Outcome: both are
+    decisions on a result, not answers about one AI reading, so the accuracy counts neither."""
+    project_id, package_id, anchors = _package_rows(
+        session, unsealed_all=True, wall_source="readers"
+    )
+    _save_all_row_widths(session, project_id, package_id, anchors[0])
+    _run_current_checks(session, package_id, tmp_path)
+    session.commit()
+    client = _client(session, project_id)
+    listed = _items(client, project_id, package_id)
+    failure = listed["failures"][0]
+    agreed = _act(
+        client,
+        project_id,
+        package_id,
+        failure["key"],
+        "agree",
+        {"expected_finding_id": failure["finding_id"]},
+    )
+    assert agreed.status_code == 201, agreed.text
+    by_hand = [
+        item
+        for item in listed["items"]
+        if "checked_right" in item["actions"] and item["finding_id"] is not None
+    ]
+    for item in by_hand[:1]:
+        answered = _act(
+            client,
+            project_id,
+            package_id,
+            item["key"],
+            "answer",
+            {"answer": "checked_right", "expected_finding_id": item["finding_id"]},
+        )
+        assert answered.status_code == 201, answered.text
+    session.commit()
+
+    assert session.query(ReviewAction).filter_by(action="confirm").count() == 1 + len(by_hand[:1])
+    header = _header(session, project_id, package_id)
+    assert (header["readings_checked"], header["ai_right"], header["ai_right_percent"]) == (
+        0,
+        0,
+        None,
+    )
 
 
 @pytest.mark.parametrize(
