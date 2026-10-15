@@ -55,6 +55,11 @@ architect pairing record id on the row: the width check never reads a pairing, s
 architect-side click dropped the width decision. No timestamp is hashed; one only decides which
 reviewer records were in force when a run was written.
 
+**Never a decision:** a person's answer about a held reading (a `confirm` tagged
+`held-reading-answer`, #1367). It is in the finding's history, but it never stands, is never carried
+and never hides the decision before it: a confirm through a FAIL would otherwise read as the person
+standing behind that FAIL.
+
 **Never carried:** a `correct` (the re-run is what consumes it), or anything from a finding whose
 history has one; an exception whose grant has run out; a confirm or dismiss without the note
 `needs_note` requires; anything from another revision (and so another project). If the latest
@@ -166,11 +171,12 @@ class EffectiveDecision:
 class DecisionRecords:
     """Everything a reader needs to say which decision stands, read in a fixed number of queries.
 
-    - `decisions`: per finding, its own latest action, else the decision it carried;
+    - `decisions`: per finding, its own latest decision, else the decision it carried;
     - `carried`: per finding, the carried decision (even when a later own action replaced it), so a
       history can show it;
     - `corrected`: findings with a `correct` of their own (blocked until a re-run);
-    - `own_actions`: every action recorded on each finding, oldest first;
+    - `own_actions`: every action recorded on each finding, oldest first, the answers about held
+      readings (`ReviewAction.is_decision` false, #1367) included: a history, never a decision;
     - `grants`: the exception grant behind each `except` in `decisions`.
     """
 
@@ -186,8 +192,9 @@ def decision_records(db: Session, finding_ids: Collection[UUID]) -> DecisionReco
 
     Three statements whatever the number of findings: the carry links (with their actions), every
     action on these findings and on the findings the carried actions were recorded on, and the
-    exception grants. A carried decision only stands while it is still the latest action on the
+    exception grants. A carried decision only stands while it is still the latest decision on the
     finding it was recorded on, that finding has no `correct`, and it belongs to the same revision.
+    An answer about a held reading is never a decision (#1367): it is left out of all three.
     """
     ids = set(finding_ids)
     if not ids:
@@ -206,9 +213,12 @@ def decision_records(db: Session, finding_ids: Collection[UUID]) -> DecisionReco
         .where(ReviewAction.finding_id.in_(ids | sources))
         .order_by(ReviewAction.created_at, ReviewAction.id)
     ).all()
+    history: dict[UUID, list[ReviewAction]] = defaultdict(list)
     by_finding: dict[UUID, list[ReviewAction]] = defaultdict(list)
     for action in actions:
-        by_finding[action.finding_id].append(action)
+        history[action.finding_id].append(action)
+        if action.is_decision:
+            by_finding[action.finding_id].append(action)
     corrected_anywhere = {
         identity
         for identity, history in by_finding.items()
@@ -220,6 +230,7 @@ def decision_records(db: Session, finding_ids: Collection[UUID]) -> DecisionReco
         source_history = by_finding.get(action.finding_id, [])
         if (
             action.action in CARRIABLE_ACTIONS
+            and action.is_decision
             and source_history
             and source_history[-1].id == action.id
             and action.finding_id not in corrected_anywhere
@@ -247,7 +258,7 @@ def decision_records(db: Session, finding_ids: Collection[UUID]) -> DecisionReco
         decisions=decisions,
         carried=carried,
         corrected=frozenset(ids & corrected_anywhere),
-        own_actions={identity: tuple(by_finding.get(identity, ())) for identity in ids},
+        own_actions={identity: tuple(history.get(identity, ())) for identity in ids},
         grants=grants,
     )
 
@@ -259,6 +270,7 @@ def decision_holds(finding: Finding, records: DecisionRecords, *, when: datetime
     well: a correction never decides (the re-run consumes it); a confirm or dismiss needs the note
     the rule requires; an exception counts only while its grant is in force at `when`. A carried
     exception is asked about the finding it was granted on, because that is what its scope names.
+    An answer about a held reading (#1367) never holds, whatever the result.
     """
     if finding.id in records.corrected:
         return False
@@ -266,7 +278,7 @@ def decision_holds(finding: Finding, records: DecisionRecords, *, when: datetime
     if decision is None:
         return False
     action = decision.action
-    if action.package_revision_id != finding.package_revision_id:
+    if action.package_revision_id != finding.package_revision_id or not action.is_decision:
         return False
     if action.action in {"confirm", "dismiss"}:
         return not needs_note(finding.outcome, action.action) or bool(

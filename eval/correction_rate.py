@@ -5,6 +5,11 @@ plus ``correct`` evidence actions.  The numerator is the subset of those actions
 ``correction_ledger``.  Finding-level dismissals and exceptions are deliberately absent because
 they judge a finding, not whether an extractor read an observation correctly.
 
+A person's answer about a held reading (#1339) is a ``confirm`` evidence action too, and it is
+counted whatever the result it was recorded through, a PASS or FAIL included (#1367). It carries the
+tag ``held-reading-answer``, which keeps every reader of decisions from taking it as one; this
+metric counts it like any other confirmation, because it judges a reading, not a finding.
+
 Rates are grouped by check type, extractor and extractor version.  Keeping the extractor name
 prevents unrelated readers that both call their version ``1.0`` from being merged.  ``MetricResult``
 keeps the count pair visible and uses an exact ``Fraction``; no reviewed evidence is reported as

@@ -7,11 +7,13 @@ caller owns one transaction containing the entire decision.
 
 A held AI reading (one the checks did not use because the two AI readers did not seal it) is
 confirmed or fixed from the reading itself, for the finding's own countertop row or countertop only,
-while its result waits for a person (`confirm_candidate_reading`, `correct_candidate_reading`,
-#1339). A depth or sink reading is confirmed once and never fixed there.
+while its result is live (`confirm_candidate_reading`, `correct_candidate_reading`, #1339). A depth
+or sink reading is confirmed once and never fixed there. A confirmation is recorded as a `confirm`
+tagged `held-reading-answer`, which is never a decision on its finding (#1367).
 
-Source: ``docs/DESIGN_PRODUCT.md`` section 4 and issues #230, #1339.
-Verification: ``tests/review/test_evidence_actions.py``, ``tests/review/test_held_reading_actions.py``.
+Source: ``docs/DESIGN_PRODUCT.md`` section 4 and issues #230, #1339, #1367.
+Verification: ``tests/review/test_evidence_actions.py``, ``tests/review/test_held_reading_actions.py``,
+``tests/review/test_review_action_tags.py``.
 """
 
 from __future__ import annotations
@@ -37,16 +39,16 @@ from app.models.evidence import (
     ObservationCandidate,
 )
 from app.models.package import PackageRevision
-from app.models.review import ReviewAction, ReviewActionKind, ReviewSession
+from app.models.review import ReviewAction, ReviewActionKind, ReviewActionTag, ReviewSession
 from app.models.verdicts import CheckRun, Finding, FindingEvidence
 from app.review.ledger import record_correction
-from app.review.requirements import NOTE_OUTCOMES
 from app.review.review_items import under_gv_markup, vendor_ink_only
 from app.review.session import refuse_if_superseded
 from evidence.canonical import CorroborationLane, EvidenceStatus
 from units.imperial import format_inches
 from units.measurement import Unit
 from units.normalise import plain_marks
+from vocabulary.drawn_length import DRAWN_LENGTH_DISAGREED
 from vocabulary.semantic_types import DocumentRole
 from workflow.depth_evidence import (
     DEPTH_FIELDS,
@@ -426,14 +428,15 @@ class ReadingDecision:
     the label's first answer was a confirmation, `REJECTED` when it was a fix; reused by every later
     answer about the label). `resulting` is the person's `HUMAN_CONFIRMED` observation citing the
     label. `action` is the `confirm` or `correct` review action on the finding (original →
-    resulting); a fix also wrote its correction-ledger row. A confirmation through a result code
-    already decided writes no action (`None`): see the section's comment.
+    resulting); a fix also wrote its correction-ledger row. A confirmation's action is tagged
+    `held-reading-answer` (and `drawn-length-disagreed` where the label's drawn length disagreed),
+    so it is counted by the correction rate and never stands as a decision on the finding (#1367).
     """
 
     candidate: ObservationCandidate
     resulting: CanonicalObservation
     original: CanonicalObservation
-    action: ReviewAction | None
+    action: ReviewAction
 
 
 @dataclass(frozen=True, slots=True)
@@ -672,6 +675,7 @@ def _act(
     original: CanonicalObservation,
     resulting: CanonicalObservation,
     note: str | None = None,
+    tags: tuple[ReviewActionTag, ...] = (),
 ) -> ReviewAction:
     action = ReviewAction(
         review_session_id=sitting.id,
@@ -682,10 +686,27 @@ def _act(
         note=note,
         original_observation_id=original.id,
         resulting_observation_id=resulting.id,
+        tags=[tag.value for tag in tags],
     )
     db.add(action)
     db.flush()
     return action
+
+
+def answer_tags(candidate: ObservationCandidate) -> tuple[ReviewActionTag, ...]:
+    """The tags a confirmation of this held label is recorded with (#1367).
+
+    Always `held-reading-answer`: the action is an answer about one reading, never a decision on
+    its finding. Plus `drawn-length-disagreed` where the reader held the label because its drawn
+    length did not fit the number both AI readers agreed on (`DRAWN_LENGTH_DISAGREED`). That fact
+    goes in a tag, never in the note: a note on a confirm is what sign-off reads as the person
+    deciding the result (`app/review/requirements.needs_note`).
+    """
+    flags = frozenset(candidate.ambiguity_flags or ())
+    return (
+        ReviewActionTag.HELD_READING_ANSWER,
+        *((ReviewActionTag.DRAWN_LENGTH_DISAGREED,) if DRAWN_LENGTH_DISAGREED in flags else ()),
+    )
 
 
 def confirm_candidate_reading(
@@ -706,9 +727,11 @@ def confirm_candidate_reading(
 
     Writes, in the caller's transaction: the AI's reading as a canonical observation (once per
     label; `RAW_CANDIDATE`), the person's `HUMAN_CONFIRMED` copy of it citing the label (its side
-    from `ReadingSides`), and, while the result waits for a person, a `confirm` review action on the
-    finding with no note, which decides nothing there (none on a result code already decided): the
-    next check run uses the value and code decides PASS or FAIL.
+    from `ReadingSides`), and a `confirm` review action on the finding with no note, tagged
+    `held-reading-answer` (`answer_tags`), whatever the finding's result: the correction rate counts
+    it, and no reader takes it as a decision on the finding, so it never stands behind a PASS or
+    FAIL nor settles a result that waits (#1367). The next check run uses the value and code
+    decides PASS or FAIL.
 
     Refused unless the label is on the finding's own countertop row
     (or tied to its own countertop), is held, has an AI reading in inches that is positively the
@@ -736,10 +759,15 @@ def confirm_candidate_reading(
     with db.begin_nested():
         original = _ai_reading(db, label, answers, EvidenceStatus.RAW_CANDIDATE, principal.id)
         resulting = _new_observation(db, original, value=None)
-        action = (
-            _act(db, sitting, finding, principal, ReviewActionKind.CONFIRM, original, resulting)
-            if finding.outcome in NOTE_OUTCOMES
-            else None
+        action = _act(
+            db,
+            sitting,
+            finding,
+            principal,
+            ReviewActionKind.CONFIRM,
+            original,
+            resulting,
+            tags=answer_tags(label.candidate),
         )
     return ReadingDecision(label.candidate, resulting, original, action)
 

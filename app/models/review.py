@@ -29,12 +29,15 @@ from uuid import UUID
 
 from sqlalchemy import (
     CheckConstraint,
+    ColumnElement,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
     String,
     UniqueConstraint,
+    text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, Immutable, TimestampedUUID, UTCDateTime
@@ -72,8 +75,35 @@ class ExceptionScope(StrEnum):
     PACKAGE = "package"
 
 
+class ReviewActionTag(StrEnum):
+    """What a review action records beside its verb, never a decision of its own (#1367).
+
+    - `held-reading-answer`: a person confirmed the AI's own reading of a number the checks held
+      back (`app/review/evidence_actions.confirm_candidate_reading`). It is an answer about one
+      reading, counted by the correction rate, and **never a decision on the finding it was
+      recorded on**, whatever that finding's result: every reader that asks which decision stands
+      skips it (`is_decision`, `decision_rows`). The next check run uses the value and code decides.
+    - `drawn-length-disagreed`: on such an answer, the label's drawn length did not fit the number
+      both AI readers agreed on (the reader's `drawn-length` hold). Shown in the history; it decides
+      nothing and is never written into the note, which sign-off would read as the person deciding
+      the result (Anant, 2026-10-16, "Separate tag").
+    """
+
+    HELD_READING_ANSWER = "held-reading-answer"
+    DRAWN_LENGTH_DISAGREED = "drawn-length-disagreed"
+
+
 ACTION_VALUES = _sql_values(ReviewActionKind)
 SCOPE_VALUES = _sql_values(ExceptionScope)
+
+#: Tags only an answer about a held reading carries, and only on a `confirm` of a reading.
+TAG_VALUES = ", ".join(f'"{tag.value}"' for tag in ReviewActionTag)
+TAGS_CHECK = (
+    "jsonb_typeof(tags) = 'array' "
+    f"AND tags <@ '[{TAG_VALUES}]'::jsonb "
+    "AND (tags = '[]'::jsonb OR (action = 'confirm' AND original_observation_id IS NOT NULL "
+    "AND tags @> '[\"held-reading-answer\"]'::jsonb))"
+)
 
 
 class ReviewSession(Base, TimestampedUUID):
@@ -146,6 +176,9 @@ class ReviewAction(Base, TimestampedUUID, Immutable):
     )
     """The new HUMAN_CONFIRMED fact produced by an evidence action; never an in-place edit."""
 
+    tags: Mapped[list[str]] = mapped_column(JSONB, default=list, server_default=text("'[]'::jsonb"))
+    """`ReviewActionTag` values (#1367); empty for every decision. Written once, with the row."""
+
     __table_args__ = (
         ForeignKeyConstraint(
             ["review_session_id", "package_revision_id"],
@@ -170,8 +203,20 @@ class ReviewAction(Base, TimestampedUUID, Immutable):
             "AND original_observation_id <> resulting_observation_id)",
             name="review_action_observation_pair",
         ),
+        CheckConstraint(TAGS_CHECK, name="review_action_tags"),
         Index("ix_review_actions_finding_action", "finding_id", "action"),
     )
+
+    @property
+    def is_decision(self) -> bool:
+        """Whether this action may stand as a decision on its finding: every action except a
+        person's answer about a held reading (`ReviewActionTag.HELD_READING_ANSWER`, #1367)."""
+        return ReviewActionTag.HELD_READING_ANSWER.value not in (self.tags or ())
+
+
+def decision_rows() -> ColumnElement[bool]:
+    """SQL twin of `ReviewAction.is_decision`, for a query that reads actions as decisions."""
+    return ~ReviewAction.tags.contains([ReviewActionTag.HELD_READING_ANSWER.value])
 
 
 class CorrectionLedgerEntry(Base, TimestampedUUID, Immutable):
