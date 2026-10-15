@@ -1,8 +1,9 @@
 /**
  * The simple review page's rules (#1343), kept apart from the components so each is tested once.
  *
- * Nothing here decides an outcome. It only orders what the server sent, names it in plain words, and
- * says which one-click answers an item offers. The page never offers a box to type into.
+ * Nothing here decides an outcome or whether the review may be signed: it only orders what the server
+ * sent, names it in plain words, and says which answers an item offers. The one box to type into is
+ * Fix on an AI number: the value the drawing shows, in inches, recorded as a correction.
  */
 
 import { isItemAction } from '@/api/review-items';
@@ -38,7 +39,7 @@ export const ACTION_LABELS: Record<ItemAction, string> = {
   checked_right: 'It is right',
   checked_wrong: 'It is wrong',
   choose_wall: 'Choose walls',
-  confirm_no_countertop: 'Confirm: no countertop',
+  confirm_no_countertop: 'No countertop here',
   there_is_a_countertop: 'There is a countertop',
   answer: 'Answer',
   not_this: 'Not this one',
@@ -70,8 +71,8 @@ function bare(text: string): string {
 }
 
 /**
- * What "Fix" offers: the AIs' own readings that differ from the best guess, once each. The reviewer
- * picks one; nothing is typed. Empty when every AI read the same as the guess.
+ * The AIs' own readings that differ from the best guess, once each: offered in the Fix dialog as a
+ * quick fill for the box. Empty when every AI read the same as the guess.
  */
 export function fixChoices(item: Pick<ReviewItem, 'best_guess' | 'readers'>): { text: string; readers: string[] }[] {
   const guess = item.best_guess ? bare(item.best_guess.text) : null;
@@ -127,9 +128,9 @@ export interface ReviewSummary {
   openNotChecked: NotCheckedItem[];
   /** True when nothing on the page is waiting for a person. */
   nothingNeedsYou: boolean;
-  /** The final cloud PDF may be made: the server says so and the page agrees nothing is open. */
+  /** The server's own answer (`header.can_finalise`): the screen never works readiness out. */
   canFinalise: boolean;
-  /** Why the final cloud PDF is locked, in plain words, or null when it is not. */
+  /** Why the server keeps the final cloud PDF locked, in its own words, or null when it is not. */
   finalBlocked: string | null;
 }
 
@@ -144,16 +145,50 @@ export function summarize(data: ReviewItemsOut): ReviewSummary {
   const openFailures = data.failures.filter((failure) => failure.status === 'open');
   const openNotChecked = data.not_checked.filter((check) => check.status === 'open');
   const nothingNeedsYou = openItems.length === 0 && openFailures.length === 0 && openNotChecked.length === 0;
+  const canFinalise = data.header.can_finalise;
+  const finalBlocked = canFinalise ? null : (data.header.blocked_reason?.trim() || 'The server has not unlocked the final cloud PDF yet.');
+  return { openItems, rechecking, doneItems, openFailures, openNotChecked, nothingNeedsYou, canFinalise, finalBlocked };
+}
 
-  let finalBlocked: string | null = null;
-  if (data.unaccounted.length > 0) finalBlocked = 'Some records are missing from this page. Open the advanced view.';
-  else if (openItems.length > 0) finalBlocked = `${plural(openItems.length, 'item')} still ${openItems.length === 1 ? 'needs' : 'need'} you.`;
-  else if (openFailures.length > 0) finalBlocked = `Agree to ${plural(openFailures.length, 'result')} that will be clouded as wrong.`;
-  else if (openNotChecked.length > 0) finalBlocked = 'Clear the checks that did not run.';
-  else if (rechecking.length > 0) finalBlocked = `Re-checking ${plural(rechecking.length, 'item')}…`;
-  else if (!data.header.can_finalise) finalBlocked = data.header.blocked_reason ?? 'The server has not unlocked the final cloud PDF yet.';
+/**
+ * What is left, counted from the lists the server sent, for the final bar: never a judgment of
+ * whether the review may be signed (that is `header.can_finalise`). Only counts above zero.
+ */
+export function leftWords(data: ReviewItemsOut): string[] {
+  const items = data.items.filter((item) => item.status === 'open').length;
+  const failures = data.failures.filter((failure) => failure.status === 'open').length;
+  const notChecked = data.not_checked.filter((check) => check.status === 'open').length;
+  const rechecking = data.header.rechecking;
+  const words: string[] = [];
+  if (items > 0) words.push(`${plural(items, 'item')} to answer`);
+  if (failures > 0) words.push(`${plural(failures, 'wrong result')} to agree`);
+  if (notChecked > 0) words.push(`${plural(notChecked, 'check')} not run`);
+  if (rechecking > 0) words.push(`${plural(rechecking, 'item')} re-checking`);
+  if (data.unaccounted.length > 0) words.push(`${plural(data.unaccounted.length, 'record')} missing from this page`);
+  return words;
+}
 
-  return { openItems, rechecking, doneItems, openFailures, openNotChecked, nothingNeedsYou, canFinalise: finalBlocked === null, finalBlocked };
+/**
+ * The value a Fix records. The dialog asks for inches, so a bare number ("96 3/4", "42.5") gets its
+ * inch mark; anything else (feet and inches, a unit already written, mm) is sent as typed, and the
+ * server refuses what it cannot record exactly, in its own words.
+ */
+export function fixValue(typed: string): string {
+  const text = typed.trim().replace(/\s+/g, ' ');
+  if (/^\d+(?:\.\d+)?(?: \d+\/\d+)?$|^\d+\/\d+$/.test(text)) return `${text}"`;
+  return text;
+}
+
+/** The open "no countertop?" pages: one choice card for the lot (#1368). */
+export function openNoCountertopPages(items: readonly ReviewItem[]): ReviewItem[] {
+  return orderItems(items.filter((item) => item.kind === 'no_countertop_page' && item.status === 'open'));
+}
+
+/** "p.2, p.4 and p.5". */
+export function pagesWord(pages: readonly (number | null | undefined)[]): string {
+  const named = pages.filter((page): page is number => page != null).map((page) => `p.${page}`);
+  if (named.length <= 1) return named.join('');
+  return `${named.slice(0, -1).join(', ')} and ${named[named.length - 1]}`;
 }
 
 /** A polygon in stored page space (0..1) as numbers; null when it is missing or unreadable. */

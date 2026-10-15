@@ -1,4 +1,4 @@
-import { Check, ChevronDown, FileStack, Loader2, PenLine, X } from 'lucide-react';
+import { Check, FileStack, Loader2, PenLine, X } from 'lucide-react';
 
 import type { ActionExtra, ItemAction, ReviewItem } from '@/api/review-items';
 import {
@@ -7,18 +7,11 @@ import {
   agreeAction,
   detailId,
   disagreeAction,
-  fixChoices,
   readerWord,
 } from '@/lib/review-items';
 import { Button } from '@/components/ui/button';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
+import { ArchitectChoices } from './architect-choices';
+import { FixDialog } from './fix-dialog';
 import { PagePicture, PictureUnavailable, ZoomPicture } from './item-pictures';
 import type { SaveError } from './failures-strip';
 import { WallChoices } from './wall-choices';
@@ -118,8 +111,9 @@ function Guess({ item }: { item: ReviewItem }) {
 const AGREE_ICON = <Check aria-hidden="true" />;
 
 /**
- * An opened item: the drawings, the AI's guess and one-click answers. Nothing here asks the reviewer
- * to type: Fix offers the AIs' other readings to pick from.
+ * An opened item: the drawings, the AI's guess and its answers. A wall or architect question is
+ * answered by clicking one of its choice cards; a number by Confirm, or Fix, which asks for the
+ * value the drawing shows, in inches, recorded as a correction of the AI's reading.
  */
 export function ItemDetail({
   item,
@@ -129,28 +123,40 @@ export function ItemDetail({
   onFixOpenChange,
   onAct,
   onOpenPdfs,
+  onOpenAdvanced,
+  onProposal,
 }: {
   item: ReviewItem;
   /** The action being saved now, or null. */
   busy: ItemAction | null;
   error: SaveError | null;
-  /** The Fix menu, opened by the F key as well as by a click. Uncontrolled when left out. */
+  /** The Fix dialog, opened by the F key as well as by a click. */
   fixOpen?: boolean;
   onFixOpenChange?: (open: boolean) => void;
   onAct: (action: ItemAction, extra?: ActionExtra) => void;
   onOpenPdfs: (item: ReviewItem) => void;
+  onOpenAdvanced?: () => void;
+  /** The proposal the C key sends on an architect question, once its choices load. */
+  onProposal?: (extra: ActionExtra | null) => void;
 }) {
   const walls = item.kind === 'wall_choice';
-  // A wall choice is answered by clicking a layout; it has no separate agree or disagree button.
-  const agree = walls ? null : agreeAction(item);
-  const disagree = disagreeAction(item);
-  const choices = fixChoices(item);
+  const architect = item.kind === 'architect';
+  // A wall or architect question is answered by clicking a card; it has no agree or disagree button.
+  const cards = walls || architect;
+  const agree = cards ? null : agreeAction(item);
+  const disagree = cards ? null : disagreeAction(item);
   const saving = busy !== null;
 
   return (
     <div id={detailId(item.key)} data-slot="item-detail" className="flex flex-col gap-6 border-t border-border bg-muted/30 px-4 pt-5 pb-6 sm:px-6 sm:pl-[3.25rem]">
       <Evidence item={item} />
-      {walls ? <WallChoices item={item} busy={saving} onChoose={(layout) => onAct('choose_wall', { wall_config: layout })} /> : <Guess item={item} />}
+      {walls ? (
+        <WallChoices item={item} busy={saving} onChoose={(layout) => onAct('choose_wall', { wall_config: layout })} />
+      ) : architect ? (
+        <ArchitectChoices item={item} busy={saving} onAnswer={(extra) => onAct('answer', extra)} onProposal={onProposal} onOpenAdvanced={onOpenAdvanced} />
+      ) : (
+        <Guess item={item} />
+      )}
       <NumText text={item.why} className="block max-w-[68ch] text-[13px] leading-5 text-muted-foreground" />
 
       {error && (
@@ -172,34 +178,11 @@ export function ItemDetail({
           </Button>
         )}
         {disagree === 'fix' ? (
-          <DropdownMenu open={fixOpen} onOpenChange={onFixOpenChange}>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" disabled={saving}>
-                {busy === 'fix' ? <Loader2 aria-hidden="true" className="animate-spin motion-reduce:animate-none" /> : <PenLine aria-hidden="true" />}
-                Fix
-                <Kbd>F</Kbd>
-                <ChevronDown aria-hidden="true" className="opacity-60" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="w-72">
-              <DropdownMenuLabel className="text-[13px] font-normal text-muted-foreground">
-                {choices.length > 0 ? 'Use the other reading' : 'No other reading to pick'}
-              </DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              {choices.map((choice) => (
-                <DropdownMenuItem key={choice.text} onSelect={() => onAct('fix', { value: choice.text })} className="flex items-center justify-between gap-3">
-                  <span className="num text-[15px] font-medium">{choice.text}</span>
-                  <span className="text-[13px] text-muted-foreground">read by {choice.readers.join(' and ')}</span>
-                </DropdownMenuItem>
-              ))}
-              {choices.length === 0 && (
-                <DropdownMenuItem onSelect={() => onOpenPdfs(item)}>
-                  <FileStack aria-hidden="true" />
-                  Every AI read this number. Open the PDFs to check it.
-                </DropdownMenuItem>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <Button variant="outline" onClick={() => onFixOpenChange?.(true)} disabled={saving} aria-haspopup="dialog">
+            {busy === 'fix' ? <Loader2 aria-hidden="true" className="animate-spin motion-reduce:animate-none" /> : <PenLine aria-hidden="true" />}
+            Fix
+            <Kbd>F</Kbd>
+          </Button>
         ) : (
           disagree && (
             <Button variant="outline" onClick={() => onAct(disagree)} disabled={saving}>
@@ -214,6 +197,17 @@ export function ItemDetail({
           Open PDFs
           <Kbd>O</Kbd>
         </Button>
+        {disagree === 'fix' && (
+          <FixDialog
+            key={item.key}
+            item={item}
+            open={fixOpen ?? false}
+            onOpenChange={(next) => onFixOpenChange?.(next)}
+            busy={busy === 'fix'}
+            error={fixOpen ? error : null}
+            onSave={(value) => onAct('fix', { value })}
+          />
+        )}
         {item.status === 'rechecking' && (
           <span role="status" className="text-[13px] text-muted-foreground">
             Saved. The check is running again with your answer.

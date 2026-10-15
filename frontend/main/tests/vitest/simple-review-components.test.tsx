@@ -9,9 +9,12 @@ import { ItemRow } from '@/components/simple-review/item-row';
 import { ItemDetail } from '@/components/simple-review/item-detail';
 import { NotCheckedGroup } from '@/components/simple-review/not-checked-group';
 import { FinalBar } from '@/components/simple-review/final-bar';
+import { ChoiceCard } from '@/components/simple-review/choice-card';
+import { PagesChoice } from '@/components/simple-review/pages-choice';
+import type { FinalCloudApi } from '@/api/final-cloud';
 import { LoadError, NothingNeedsYou, ReviewSkeleton, UnaccountedBanner } from '@/components/simple-review/states';
 import { PicturesProvider } from '@/components/simple-review/item-pictures';
-import { summarize } from '@/lib/review-items';
+import { leftWords, summarize } from '@/lib/review-items';
 import { ApiError } from '@/api/client';
 import { allSettled, reviewItems } from './fixtures/review-items';
 
@@ -100,10 +103,12 @@ describe('ItemRow', () => {
 });
 
 describe('ItemDetail', () => {
-  function renderDetail(key: string, onAct = vi.fn(), onOpenPdfs = vi.fn()) {
+  function renderDetail(key: string, extra: Partial<React.ComponentProps<typeof ItemDetail>> = {}) {
+    const onAct = vi.fn();
+    const onOpenPdfs = vi.fn();
     render(
       <PicturesProvider load={pictures}>
-        <ItemDetail item={item(key)} busy={null} error={null} onAct={onAct} onOpenPdfs={onOpenPdfs} />
+        <ItemDetail item={item(key)} busy={null} error={null} onAct={onAct} onOpenPdfs={onOpenPdfs} {...extra} />
       </PicturesProvider>,
     );
     return { onAct, onOpenPdfs };
@@ -134,14 +139,47 @@ describe('ItemDetail', () => {
     expect(screen.getByText('AI 2').parentElement?.textContent).toContain('96 3/4');
   });
 
-  it('Confirm sends one click; Fix offers the other reading to pick, never a box to type in', async () => {
-    const { onAct } = renderDetail('number:cand-101');
+  it('Confirm sends one click; Fix opens the dialog, which says plainly what is recorded (#1368)', async () => {
+    const onFixOpenChange = vi.fn();
+    const { onAct } = renderDetail('number:cand-101', { onFixOpenChange });
     await userEvent.click(screen.getByRole('button', { name: /Confirm/ }));
     expect(onAct).toHaveBeenCalledWith('confirm');
     await userEvent.click(screen.getByRole('button', { name: /Fix/ }));
-    await userEvent.click(await screen.findByRole('menuitem', { name: /96 3\/4"/ }));
+    expect(onFixOpenChange).toHaveBeenCalledWith(true);
+  });
+
+  it('the Fix dialog takes what the drawing shows, in inches, as a correction (#1368)', async () => {
+    const { onAct } = renderDetail('number:cand-101', { fixOpen: true });
+    const dialog = await screen.findByRole('dialog', { name: 'Fix this number' });
+    expect(dialog.textContent).toContain("Type what the drawing shows, in inches. Recorded as a correction of the AI's reading.");
+    const box = within(dialog).getByRole('textbox', { name: 'What the drawing shows' });
+    const save = within(dialog).getByRole('button', { name: 'Save the correction' }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    // The AI's own reading is not a correction: Confirm is the answer for that.
+    await userEvent.type(box, '96 1/4');
+    expect(save.disabled).toBe(true);
+    expect(dialog.textContent).toContain('That is what the AI read');
+    await userEvent.clear(box);
+    await userEvent.type(box, '96 5/8');
+    expect(dialog.textContent).toContain('Recorded as 96 5/8"');
+    await userEvent.click(save);
+    expect(onAct).toHaveBeenCalledWith('fix', { value: '96 5/8"' });
+  });
+
+  it("the Fix dialog offers another AI's reading as a quick fill, never sending it on its own", async () => {
+    const { onAct } = renderDetail('number:cand-101', { fixOpen: true });
+    const dialog = await screen.findByRole('dialog', { name: 'Fix this number' });
+    await userEvent.click(within(dialog).getByRole('button', { name: '96 3/4"' }));
+    expect(onAct).not.toHaveBeenCalled();
+    expect((within(dialog).getByRole('textbox') as HTMLInputElement).value).toBe('96 3/4');
+    await userEvent.keyboard('{Enter}');
     expect(onAct).toHaveBeenCalledWith('fix', { value: '96 3/4"' });
-    expect(document.querySelector('input, textarea')).toBeNull();
+  });
+
+  it('a refused correction is shown inside the dialog, where it was typed', async () => {
+    renderDetail('number:cand-101', { fixOpen: true, error: { message: 'Millimetres are not recorded.', retry: () => {} } });
+    const dialog = await screen.findByRole('dialog', { name: 'Fix this number' });
+    expect(within(dialog).getByRole('alert').textContent).toContain('Millimetres are not recorded.');
   });
 
   it('Open PDFs opens both drawings at this spot', async () => {
@@ -159,15 +197,15 @@ describe('ItemDetail', () => {
 
   it('a no-countertop page offers its two answers', () => {
     renderDetail('page:rec-9');
-    expect(screen.getByRole('button', { name: /Confirm: no countertop/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /No countertop here/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: /There is a countertop/ })).toBeTruthy();
   });
 
-  it('Fix with no other reading says so and points to the PDFs', async () => {
-    const { onOpenPdfs } = renderDetail('number:cand-102');
-    await userEvent.click(screen.getByRole('button', { name: /Fix/ }));
-    await userEvent.click(await screen.findByRole('menuitem', { name: /Open the PDFs/ }));
-    expect(onOpenPdfs).toHaveBeenCalled();
+  it('Fix with no other reading offers no quick fill, only the box', async () => {
+    renderDetail('number:cand-102', { fixOpen: true });
+    const dialog = await screen.findByRole('dialog', { name: 'Fix this number' });
+    expect(within(dialog).queryByText('Another AI read')).toBeNull();
+    expect(within(dialog).getByRole('textbox')).toBeTruthy();
   });
 
   it('a failed save is named, with Retry', async () => {
@@ -207,21 +245,129 @@ describe('NotCheckedGroup', () => {
   });
 });
 
-describe('FinalBar', () => {
-  it('stays locked while anything is open, and says why', () => {
-    render(<FinalBar summary={summarize(data)} final={{ status: 'idle' }} onCreateFinal={() => {}} />);
+describe('FinalBar (#1368)', () => {
+  function finalApi(overrides: Partial<FinalCloudApi> = {}): FinalCloudApi {
+    return {
+      facts: vi.fn(async () => ({ signer: 'Sample Reviewer', carried: [] })),
+      signOff: vi.fn(async () => {}),
+      prepare: vi.fn(async () => 'preparing' as const),
+      status: vi.fn(async () => 'ready' as const),
+      download: vi.fn(async () => new Blob(['%PDF'])),
+      ...overrides,
+    };
+  }
+  function renderBar(source = data, api = finalApi(), approved = false) {
+    const onSigned = vi.fn();
+    render(<FinalBar summary={summarize(source)} left={leftWords(source)} api={api} projectId="proj-demo" packageId="pkg-demo" revision={2} approved={approved} onSigned={onSigned} />);
+    return { api, onSigned };
+  }
+
+  it("stays locked while the server says so: its reason, and what is left in counts", () => {
+    renderBar();
     const button = screen.getByRole('button', { name: 'Create final cloud PDF' }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
-    expect(screen.getByText('6 items still need you.')).toBeTruthy();
+    expect(screen.getByRole('status').textContent).toBe('6 items still need you.');
+    expect(screen.getByText('6 items to answer · 2 wrong results to agree · 6 checks not run · 1 item re-checking')).toBeTruthy();
   });
 
-  it('unlocks once everything is checked', async () => {
-    const onCreateFinal = vi.fn();
-    render(<FinalBar summary={summarize(allSettled())} final={{ status: 'idle' }} onCreateFinal={onCreateFinal} />);
-    const button = screen.getByRole('button', { name: 'Create final cloud PDF' }) as HTMLButtonElement;
-    expect(button.disabled).toBe(false);
-    await userEvent.click(button);
-    expect(onCreateFinal).toHaveBeenCalled();
+  it('follows the server even when the screen shows nothing open', () => {
+    const settled = allSettled();
+    settled.header.can_finalise = false;
+    settled.header.blocked_reason = 'The checks are running again.';
+    renderBar(settled);
+    expect((screen.getByRole('button', { name: 'Create final cloud PDF' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole('status').textContent).toBe('The checks are running again.');
+  });
+
+  it('unlocked: confirms the sign-off first, then signs, makes the PDF and offers the download', async () => {
+    let status: 'preparing' | 'ready' = 'preparing';
+    const api = finalApi({ status: vi.fn(async () => status) });
+    const { onSigned } = renderBar(allSettled(), api);
+    await userEvent.click(screen.getByRole('button', { name: 'Create final cloud PDF' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Sign off and create the final cloud PDF?' });
+    expect(await within(dialog).findByText('Sample Reviewer')).toBeTruthy();
+    expect(dialog.textContent).toContain('This cannot be undone.');
+    expect(api.signOff).not.toHaveBeenCalled();
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Sign off and create' }));
+    expect(api.signOff).toHaveBeenCalledWith('proj-demo', 'pkg-demo', false);
+    expect(onSigned).toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Making the final cloud PDF'));
+    status = 'ready';
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Download final cloud PDF' })).toBeTruthy(), { timeout: 5000 });
+    const createObjectURL = vi.fn(() => 'blob:cloud');
+    Object.assign(URL, { createObjectURL, revokeObjectURL: vi.fn() });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    await userEvent.click(screen.getByRole('button', { name: 'Download final cloud PDF' }));
+    expect(api.download).toHaveBeenCalledWith('proj-demo', 'pkg-demo');
+    expect(click).toHaveBeenCalled();
+    click.mockRestore();
+  });
+
+  it('a refused sign-off says nothing was signed, in the server\'s words', async () => {
+    const api = finalApi({ signOff: vi.fn(async () => { throw new Error('2 results still need a decision.'); }) });
+    renderBar(allSettled(), api);
+    await userEvent.click(screen.getByRole('button', { name: 'Create final cloud PDF' }));
+    const dialog = await screen.findByRole('dialog');
+    await within(dialog).findByText('Sample Reviewer');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Sign off and create' }));
+    expect((await within(dialog).findByRole('alert')).textContent).toBe('Nothing was signed: 2 results still need a decision.');
+  });
+
+  it('answers carried from an earlier revision must be ticked before signing', async () => {
+    const api = finalApi({ facts: vi.fn(async () => ({ signer: null, carried: [{ rowId: 'row-1', label: 'Countertop 1', pageNumber: 3, words: 'walls at both ends', kind: 'wall' as const }] })) });
+    renderBar(allSettled(), api);
+    await userEvent.click(screen.getByRole('button', { name: 'Create final cloud PDF' }));
+    const dialog = await screen.findByRole('dialog');
+    const sign = await within(dialog).findByRole('button', { name: 'Sign off and create' }) as HTMLButtonElement;
+    await waitFor(() => expect(sign.disabled).toBe(true));
+    await userEvent.click(within(dialog).getByRole('checkbox', { name: 'These answers still apply to this revision' }));
+    await userEvent.click(sign);
+    expect(api.signOff).toHaveBeenCalledWith('proj-demo', 'pkg-demo', true);
+  });
+
+  it('a set already signed off shows where its PDF is; a failed one offers Try again without signing again', async () => {
+    const api = finalApi({ status: vi.fn(async () => 'failed' as const) });
+    renderBar(allSettled(), api, true);
+    expect(await screen.findByText('Failed: the final cloud PDF could not be made.')).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(api.prepare).toHaveBeenCalledWith('proj-demo', 'pkg-demo');
+    expect(api.signOff).not.toHaveBeenCalled();
+  });
+});
+
+describe('ChoiceCard and PagesChoice (#1368)', () => {
+  it('a choice says what it leads to; the proposal is pre-selected and labelled, never sent on its own', async () => {
+    const onChoose = vi.fn();
+    render(<ChoiceCard title="Walls at both ends" leadsTo="The width check runs again." proposal="the AI readers" onChoose={onChoose} />);
+    const card = screen.getByRole('button', { name: /Walls at both ends/ });
+    expect(card.getAttribute('aria-pressed')).toBe('true');
+    expect(card.textContent).toContain('AI proposal');
+    expect(card.textContent).toContain('The width check runs again.');
+    expect(onChoose).not.toHaveBeenCalled();
+    await userEvent.click(card);
+    expect(onChoose).toHaveBeenCalledTimes(1);
+  });
+
+  it('"These N pages have no countertop" is one click; any page can say "There is a countertop"', async () => {
+    const pages = reviewItems((draft) => {
+      const second = structuredClone(draft.items.find((entry) => entry.key === 'page:rec-9')!);
+      second.key = 'page:rec-11';
+      second.page = 11;
+      draft.items.push(second);
+    }).items.filter((entry) => entry.kind === 'no_countertop_page');
+    const onConfirmAll = vi.fn();
+    const onThereIsOne = vi.fn();
+    const onLook = vi.fn();
+    render(<PagesChoice pages={pages} busyKey={null} groupKey="group:pages" errors={{}} onConfirmAll={onConfirmAll} onThereIsOne={onThereIsOne} onLook={onLook} />);
+    const all = screen.getByRole('button', { name: /These 2 pages have no countertop/ });
+    expect(all.textContent).toContain('p.9 and p.11');
+    expect(all.textContent).toContain('Nothing on them is checked');
+    await userEvent.click(all);
+    expect(onConfirmAll).toHaveBeenCalledTimes(1);
+    await userEvent.click(screen.getByRole('button', { name: 'There is a countertop on page 11' }));
+    expect(onThereIsOne).toHaveBeenCalledWith(pages[1]);
+    await userEvent.click(screen.getByRole('button', { name: 'Look at page 9' }));
+    expect(onLook).toHaveBeenCalledWith(pages[0]);
   });
 });
 

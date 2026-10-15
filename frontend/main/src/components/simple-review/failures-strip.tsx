@@ -45,7 +45,7 @@ export function FailuresStrip({
           const busy = busyKey === failure.key;
           const error = errors[failure.key];
           return (
-            <li key={failure.key} data-slot="failure-row" className="flex min-h-14 flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2 sm:px-6">
+            <li key={failure.key} data-slot="failure-row" data-entry-key={failure.key} tabIndex={-1} className="flex outline-none focus-visible:bg-accent/60 min-h-14 flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2 sm:px-6">
               <span className="inline-flex shrink-0 basis-full items-center gap-1.5 text-[13px] font-medium text-outcome-fail-fg sm:w-20 sm:basis-auto">
                 <OutcomeIcon outcome="FAIL" size={14} />
                 Wrong

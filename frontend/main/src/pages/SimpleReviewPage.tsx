@@ -3,8 +3,9 @@ import { MessageSquare, MoreHorizontal, SlidersHorizontal } from 'lucide-react';
 
 import { getPackage, ApiError, downloadPagePicture } from '@/api/client';
 import { projectId as configuredProjectId } from '@/api/config';
-import { apiUrl, liveReviewItemsApi, NOT_CHECKED_GROUP, type ActionExtra, type ItemAction, type ReviewFailure, type ReviewItem, type ReviewItemsApi, type ReviewItemsOut } from '@/api/review-items';
-import { agreeAction, disagreeAction, orderItems, proposedWall, summarize } from '@/lib/review-items';
+import { liveFinalCloudApi, type FinalCloudApi } from '@/api/final-cloud';
+import { apiUrl, liveReviewItemsApi, NOT_CHECKED_GROUP, PAGES_GROUP, type ActionExtra, type ItemAction, type ReviewFailure, type ReviewItem, type ReviewItemsApi, type ReviewItemsOut } from '@/api/review-items';
+import { agreeAction, disagreeAction, leftWords, openNoCountertopPages, orderItems, proposedWall, summarize } from '@/lib/review-items';
 import type { AssistantRecords } from '@/lib/assistant';
 import { AssistantPanel, type AssistantNavigation } from '@/components/assistant/assistant-panel';
 import { HeaderActions } from '@/components/shell/ShellHeader';
@@ -18,17 +19,20 @@ import { NotCheckedGroup } from '@/components/simple-review/not-checked-group';
 import { FinalBar } from '@/components/simple-review/final-bar';
 import { LoadError, NothingNeedsYou, ReviewSkeleton, UnaccountedBanner } from '@/components/simple-review/states';
 import { PicturesProvider, type PictureLoader } from '@/components/simple-review/item-pictures';
+import { PagesChoice } from '@/components/simple-review/pages-choice';
+import { ArchitectProvider } from '@/components/simple-review/architect-choices';
+import { liveArchitectLoader, type ArchitectLoader } from '@/components/simple-review/architect-choices-lib';
 
 // "Open PDFs" opens both full drawings side by side (U3, #1355), loaded only when first opened.
 const DualPdfViewer = lazy(() => import('@/components/simple-review/dual-pdf-viewer').then((m) => ({ default: m.DualPdfViewer })));
 
 /**
- * The cloud PDF hooks (W4b, #1340). `draft` null: the server cannot make a draft yet, and the button
- * says so. `final` null: the final PDF is made from the advanced view's sign-off, as today.
+ * The draft cloud PDF hook (W4b, #1340). `draft` null: the server cannot make a draft yet, and the
+ * button says so. The final cloud PDF is `finalCloud` (#1368): the existing sign-off, then the
+ * signed files.
  */
 export interface CloudPdfHooks {
   draft: (() => Promise<void>) | null;
-  final: (() => Promise<void>) | null;
 }
 
 export interface SimpleReviewPageProps {
@@ -38,6 +42,10 @@ export interface SimpleReviewPageProps {
   /** How a stored picture becomes an image. Tests and screenshots pass their own. */
   pictures?: PictureLoader;
   cloud?: CloudPdfHooks;
+  /** Sign-off and the final cloud PDF (#1368). Tests pass their own. */
+  finalCloud?: FinalCloudApi;
+  /** The architect view match and pairing reads behind an architect question (#1368). */
+  architect?: ArchitectLoader;
   /**
    * "Open PDFs" (O): `item` is the spot to open both documents at, null for the whole set. Without
    * it the side-by-side viewer (U3, #1355) opens.
@@ -88,6 +96,10 @@ function errorWords(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function reducedMotion(): boolean {
+  return typeof window === 'undefined' || typeof window.matchMedia !== 'function' || window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
 function isTyping(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   if (target.isContentEditable) return true;
@@ -97,6 +109,23 @@ function isTyping(target: EventTarget | null): boolean {
 
 /** Where the "Not checked" group's busy state and save error are kept (not an API key). */
 const NOT_CHECKED = 'group:not-checked';
+/** Where the "no countertop" pages group's busy state and save error are kept. */
+const PAGES = 'group:no-countertop-pages';
+
+/** What a saved answer is announced as (role=status), in a few plain words. */
+const SAVED_WORDS: Partial<Record<ItemAction, string>> = {
+  confirm: 'Confirmed. The checks run again with this reading.',
+  fix: "Fixed. Recorded as a correction of the AI's reading; the checks run again.",
+  checked_right: 'Saved: checked by hand, right.',
+  checked_wrong: 'Saved: checked by hand, wrong. It will be clouded.',
+  choose_wall: 'Walls saved. The width check runs again.',
+  confirm_no_countertop: 'Saved: no countertop on these pages.',
+  there_is_a_countertop: 'Saved: there is a countertop. It is checked in the next run.',
+  answer: "Saved. The checks run again with the architect's answer.",
+  not_this: 'Saved.',
+  agree: 'Agreed. It will be clouded as wrong.',
+  settle_group: 'Cleared as not checked. They are printed NOT CHECKED.',
+};
 
 const NO_RECORDS: AssistantRecords = {
   rows: [],
@@ -117,7 +146,9 @@ export function SimpleReviewPage({
   packageId,
   api = liveReviewItemsApi,
   pictures,
-  cloud = { draft: null, final: null },
+  cloud = { draft: null },
+  finalCloud = liveFinalCloudApi,
+  architect = liveArchitectLoader,
   onOpenPdfs,
   onOpenAdvanced,
   onTitleChange,
@@ -136,7 +167,7 @@ export function SimpleReviewPage({
   const [load, setLoad] = useState<{ version: number; state: LoadState } | null>(null);
   // The last good answer stays on screen while a reload is in flight, so the list never flashes.
   const [lastGood, setLastGood] = useState<ReviewItemsOut | null>(null);
-  const [title, setTitle] = useState<{ vendor: string; revision: number | null } | null>(null);
+  const [title, setTitle] = useState<{ vendor: string; revision: number | null; approved: boolean } | null>(null);
 
   const [openKey, setOpenKey] = useState<string | null>(null);
   const [activeKey, setActiveKey] = useState<string | null>(null);
@@ -144,7 +175,13 @@ export function SimpleReviewPage({
   const [busy, setBusy] = useState<{ key: string; action: ItemAction } | null>(null);
   const [errors, setErrors] = useState<Record<string, SaveError>>({});
   const [draft, setDraft] = useState<CloudState>({ status: 'idle' });
-  const [final, setFinal] = useState<CloudState>({ status: 'idle' });
+  const [saved, setSaved] = useState<{ words: string; at: number } | null>(null);
+  const [notCheckedOpen, setNotCheckedOpen] = useState(false);
+  // An entry the Assistant asked to open, focused once it is on screen (#1368).
+  const pendingFocus = useRef<string | null>(null);
+  const [focusAsk, setFocusAsk] = useState(0);
+  // The architect proposal each loaded architect question offers, for the C key.
+  const proposals = useRef(new Map<string, ActionExtra | null>());
   const [viewer, setViewer] = useState<{ opening: number; item: ReviewItem | null } | null>(null);
   const [assistantOpen, setAssistantOpen] = useState(() => assistantAvailable && typeof window !== 'undefined' && window.matchMedia('(min-width: 1440px)').matches);
   const [assistantMounted, setAssistantMounted] = useState(assistantOpen);
@@ -174,7 +211,7 @@ export function SimpleReviewPage({
         if (!current) return;
         const vendor = detail.vendor ?? 'Untitled document set';
         const revision = detail.current_revision_number ?? null;
-        setTitle({ vendor, revision });
+        setTitle({ vendor, revision, approved: detail.state === 'APPROVED' });
         onTitleChange?.(vendor, revision);
       },
       () => undefined, // The items still show; the header falls back to a plain name.
@@ -197,7 +234,12 @@ export function SimpleReviewPage({
             : { status: 'loading' };
   const data = state.status === 'ready' ? state.data : null;
   const summary = useMemo(() => (data ? summarize(data) : null), [data]);
-  const ordered = useMemo(() => (data ? orderItems(data.items) : []), [data]);
+  // The open "no countertop?" pages are one choice card of their own; the list holds the rest.
+  const pagesAsked = useMemo(() => (data ? openNoCountertopPages(data.items) : []), [data]);
+  const ordered = useMemo(
+    () => (data ? orderItems(data.items).filter((item) => !(item.kind === 'no_countertop_page' && item.status === 'open')) : []),
+    [data],
+  );
   const reload = useCallback(() => setVersion((n) => n + 1), []);
 
   // The newest list, for Retry: after a 409 the list is reloaded first, and Retry then sends the
@@ -233,12 +275,20 @@ export function SimpleReviewPage({
     });
   }
 
+  function announce(action: ItemAction) {
+    const words = SAVED_WORDS[action];
+    if (words) setSaved({ words, at: Date.now() });
+  }
+
   async function act(key: string, action: ItemAction, findingId: string | null, extra?: ActionExtra) {
     setBusy({ key, action });
-    setFixOpenKey(null);
+    // The Fix dialog stays open until the correction is saved, so a refusal is read where it was typed.
+    if (action !== 'fix') setFixOpenKey(null);
     try {
       await send(key, action, findingId, extra);
       cleared(key);
+      setFixOpenKey(null);
+      announce(action === 'answer' && extra?.architect_view === undefined && extra?.architect_pairing === undefined ? 'not_this' : action);
       reload();
     } catch (error) {
       failed(key, error, () => void act(key, action, findingNow(key, findingId), retried(key, action, extra)));
@@ -260,6 +310,15 @@ export function SimpleReviewPage({
     if (action === 'confirm' && item.kind === 'number' && item.best_guess) {
       // The value the reviewer saw: W2 records exactly the stored value, and refuses another (#1358).
       body = { ...extra, shown_value: item.best_guess.text };
+    }
+    if (action === 'answer' && item.kind === 'architect' && !body?.architect_view && !body?.architect_pairing) {
+      // The C key on an architect question picks its proposal, once its choices have loaded.
+      const proposal = proposals.current.get(item.key) ?? null;
+      if (proposal === null) {
+        setOpenKey(item.key);
+        return;
+      }
+      body = { ...body, ...proposal };
     }
     if (action === 'choose_wall' && !body?.wall_config) {
       // The C key on a wall choice picks the readers' proposal; with none, the reviewer clicks one.
@@ -283,9 +342,26 @@ export function SimpleReviewPage({
     try {
       await send(NOT_CHECKED_GROUP, 'settle_group', null, { expected_keys: keys });
       cleared(NOT_CHECKED);
+      announce('settle_group');
       reload();
     } catch (error) {
       failed(NOT_CHECKED, error, () => void clearNotChecked());
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // "These N pages have no countertop": one group call naming exactly the pages shown (#1358).
+  async function confirmPages() {
+    const keys = openNoCountertopPages(latest.current?.items ?? []).map((item) => item.key);
+    setBusy({ key: PAGES, action: 'confirm_no_countertop' });
+    try {
+      await send(PAGES_GROUP, 'confirm_no_countertop', null, { expected_keys: keys });
+      cleared(PAGES);
+      announce('confirm_no_countertop');
+      reload();
+    } catch (error) {
+      failed(PAGES, error, () => void confirmPages());
     } finally {
       setBusy(null);
     }
@@ -296,19 +372,14 @@ export function SimpleReviewPage({
     else setViewer((now) => ({ opening: (now?.opening ?? 0) + 1, item }));
   }, [onOpenPdfs]);
 
-  async function runCloud(kind: 'draft' | 'final') {
-    const hook = kind === 'draft' ? cloud.draft : cloud.final;
-    const set = kind === 'draft' ? setDraft : setFinal;
-    if (hook === null) {
-      if (kind === 'final') onOpenAdvanced();
-      return;
-    }
-    set({ status: 'working' });
+  async function runDraft() {
+    if (cloud.draft === null) return;
+    setDraft({ status: 'working' });
     try {
-      await hook();
-      set({ status: 'idle' });
+      await cloud.draft();
+      setDraft({ status: 'idle' });
     } catch (error) {
-      set({ status: 'error', message: errorWords(error) });
+      setDraft({ status: 'error', message: errorWords(error) });
     }
   }
 
@@ -387,7 +458,48 @@ export function SimpleReviewPage({
     openQueue: (key) => {
       if (ordered.some((item) => item.key === key)) toggle(key);
     },
+    openReviewItem: (key, page) => openEntry(key, page),
   };
+
+  /**
+   * The Assistant's "open item" (#1354): open the entry, scroll to it and focus it. A list item opens
+   * its detail; a wrong result, a page with no countertop or a check that did not run is scrolled to
+   * (its group opened first); an entry no longer listed opens the drawings at its page instead.
+   */
+  function openEntry(key: string, page: number | null) {
+    const listed = latest.current;
+    if (!listed) return;
+    if (ordered.some((item) => item.key === key)) {
+      setActiveKey(key);
+      setFixOpenKey(null);
+      setOpenKey(key);
+      focusWhenShown(key);
+      return;
+    }
+    if (listed.not_checked.some((entry) => entry.key === key)) setNotCheckedOpen(true);
+    const known = listed.failures.some((entry) => entry.key === key) || listed.not_checked.some((entry) => entry.key === key) || pagesAsked.some((item) => item.key === key);
+    if (known) {
+      focusWhenShown(key);
+      return;
+    }
+    if (page !== null) openPdfs(ordered.find((item) => item.page === page) ?? null);
+  }
+
+  function focusWhenShown(key: string) {
+    pendingFocus.current = key;
+    setFocusAsk((n) => n + 1);
+  }
+
+  // After the render that shows it (an opened item, an opened group), scroll to it and focus it.
+  useEffect(() => {
+    const key = pendingFocus.current;
+    if (key === null) return;
+    const target = rowRefs.current.get(key) ?? document.querySelector<HTMLElement>(`[data-entry-key="${CSS.escape(key)}"]`);
+    if (!target) return;
+    pendingFocus.current = null;
+    target.scrollIntoView?.({ block: 'center', behavior: reducedMotion() ? 'auto' : 'smooth' });
+    target.focus({ preventScroll: true });
+  }, [focusAsk, openKey, notCheckedOpen, data]);
   const opened = ordered.find((item) => item.key === openKey) ?? null;
 
   function toggleAssistant() {
@@ -427,6 +539,8 @@ export function SimpleReviewPage({
                     onFixOpenChange={(next) => setFixOpenKey(next ? item.key : null)}
                     onAct={(action, extra) => actOnItem(item, action, extra)}
                     onOpenPdfs={openPdfs}
+                    onOpenAdvanced={onOpenAdvanced}
+                    onProposal={(extra) => proposals.current.set(item.key, extra)}
                   />
                 </div>
               )}
@@ -439,6 +553,7 @@ export function SimpleReviewPage({
 
   return (
     <PicturesProvider load={pictures ?? livePictures}>
+      <ArchitectProvider projectId={project} packageId={packageId} loader={architect}>
       <div data-tw data-slot="simple-review" className="@container/review flex h-full min-h-0 w-full min-w-0 font-sans text-foreground antialiased">
         <HeaderActions>
           {assistantAvailable && (
@@ -469,7 +584,7 @@ export function SimpleReviewPage({
         </HeaderActions>
 
         <div className="min-w-0 flex-1 overflow-y-auto">
-          <div className="mx-auto flex min-h-full w-full max-w-[60rem] flex-col px-6">
+          <div className="mx-auto flex min-h-full w-full max-w-[60rem] flex-col px-4 sm:px-6">
             {state.status === 'loading' && <ReviewSkeleton />}
             {state.status === 'error' && !data && <LoadError error={state.error} onRetry={reload} />}
             {data && summary && (
@@ -479,21 +594,35 @@ export function SimpleReviewPage({
                   revision={title?.revision ?? data.revision_number}
                   header={data.header}
                   onOpenPdfs={() => openPdfs(opened)}
-                  onDraftCloud={cloud.draft ? () => void runCloud('draft') : null}
+                  onDraftCloud={cloud.draft ? () => void runDraft() : null}
                   draft={draft}
                 />
                 {data.unaccounted.length > 0 && <UnaccountedBanner count={data.unaccounted.length} onOpenAdvanced={onOpenAdvanced} />}
 
-                <div className="flex flex-col gap-8 pt-2">
+                <p role="status" aria-live="polite" data-slot="saved-notice" className="sr-only">
+                  {saved?.words ?? ''}
+                </p>
+
+                <div className="flex flex-col gap-10 pt-2">
                   <FailuresStrip failures={data.failures} busyKey={busy?.key ?? null} errors={errors} onAgree={agree} />
 
-                  {summary.nothingNeedsYou && <NothingNeedsYou checked={checked.length} />}
+                  {summary.nothingNeedsYou && pagesAsked.length === 0 && <NothingNeedsYou checked={checked.length} />}
+
+                  <PagesChoice
+                    pages={pagesAsked}
+                    busyKey={busy?.key ?? null}
+                    groupKey={PAGES}
+                    errors={errors}
+                    onConfirmAll={() => void confirmPages()}
+                    onThereIsOne={(page) => actOnItem(page, 'there_is_a_countertop')}
+                    onLook={(page) => openPdfs(page)}
+                  />
 
                   {needsYou.length > 0 && (
                     <section aria-labelledby="needs-you-title" className="flex flex-col gap-3">
                       <div className="flex items-baseline justify-between gap-4">
                         <h2 id="needs-you-title" className="text-[20px] leading-7 font-semibold tracking-[-0.01em]">
-                          Needs you <span className="num ml-1 text-[15px] font-normal text-muted-foreground">{summary.openItems.length}</span>
+                          Needs you <span className="num ml-1 text-[15px] font-normal text-muted-foreground">{needsYou.filter((item) => item.status === 'open').length}</span>
                         </h2>
                         <p className="hidden text-[13px] text-muted-foreground md:block">
                           <span className="num">J</span>/<span className="num">K</span> to move, <span className="num">Enter</span> to open
@@ -509,6 +638,8 @@ export function SimpleReviewPage({
                   )}
 
                   <NotCheckedGroup
+                    open={notCheckedOpen}
+                    onOpenChange={setNotCheckedOpen}
                     items={data.not_checked}
                     note={data.not_checked_note}
                     busy={busy?.key === NOT_CHECKED}
@@ -527,7 +658,16 @@ export function SimpleReviewPage({
                 </div>
 
                 <div className="flex-1" />
-                <FinalBar summary={summary} final={final} onCreateFinal={() => void runCloud('final')} />
+                <FinalBar
+                  summary={summary}
+                  left={leftWords(data)}
+                  api={finalCloud}
+                  projectId={project}
+                  packageId={packageId}
+                  revision={title?.revision ?? data.revision_number}
+                  approved={title?.approved ?? false}
+                  onSigned={reload}
+                />
               </>
             )}
           </div>
@@ -552,6 +692,7 @@ export function SimpleReviewPage({
           <DualPdfViewer key={viewer.opening} projectId={project} packageId={packageId} item={viewer.item} onClose={() => setViewer(null)} />
         </Suspense>
       )}
+      </ArchitectProvider>
     </PicturesProvider>
   );
 }
