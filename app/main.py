@@ -140,6 +140,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         company_settings,
         confirmations,
         countertop_runs,
+        depth_again,
         distribution,
         documents,
         drawing_parts,
@@ -173,6 +174,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(revisions.router, prefix=API_PREFIX)
     # Run the reading again after the AI account or the AI budget stopped it (#1206).
     app.include_router(reading_again.router, prefix=API_PREFIX)
+    # Read the depths again on a set already read, with the depth and sink reader (#1308).
+    app.include_router(depth_again.router, prefix=API_PREFIX)
     # Reviewer-entered values and the request to check them. Ordinary control-plane
     # writes: it enqueues rather than running anything, because it may not import the
     # code that does — see the module docstring and tests/api/test_no_heavy_work.py.

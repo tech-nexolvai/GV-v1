@@ -24,7 +24,10 @@ two try answers from two different readers; one that does not is a fault (`TRY_A
   countertop item has a width result, its row's or its own (#1245; report only). Like the other
   width lines, that one is **silent on a package whose checks do not include the countertop width
   rule** (a cabinet package): its countertops get no width result there by design, so none is
-  missing.
+  missing. On a package with several countertops, every countertop has a live result of its own
+  for each of the six depth and sink checks, or is named on that check's held whole-package
+  result (#1305; `workflow/several_countertops.missing_own_results`, #1201's own split; report
+  only). A package with one countertop, or none known, gets no such line.
 * (b) two judgments: no PASS or FAIL rests on a one-judgment architect pairing (the pairing the
   result recorded in its own note, checked against the record it names; `AUTOMATIC_SOURCES`) or
   on a value with only one reading on record; no PASS rests on a reading flagged
@@ -108,6 +111,12 @@ from workflow.pariksha_gates import (
     nina_hold_code,
 )
 from workflow.part_operands import CountertopScope, countertop_scopes, manual_run_pages
+from workflow.several_countertops import (
+    WHOLE_PACKAGE_RULE_IDS,
+    PackageCountertops,
+    missing_own_results,
+    package_countertops,
+)
 from workflow.slot_row_scope import (
     NO_ROW_FLAG,
     SlotRow,
@@ -669,6 +678,71 @@ def _item_width_coverage(
                 f"{countertop.label} has no live width result: no countertop row's width check, "
                 "and no width check of its own, belongs to it.",
                 (("item", str(countertop.item_id)), ("page", str(countertop.page_number))),
+            )
+        )
+    return items
+
+
+def _own_depth_and_sink_coverage(
+    live: Sequence[_Live], countertops: PackageCountertops, rules_in_scope: Sequence[str]
+) -> list[RunCheckItem]:
+    """On a package with several countertops, each countertop with no live result of one of the six
+    depth and sink checks (#1305): none of its own, and not named on the check's held
+    whole-package result. Which countertops get their own result is #1201's split, not a second
+    one (`missing_own_results`). One item per countertop, listing the checks it lost.
+
+    **Report only**, like every coverage line: nothing is held or changed. A check with no live
+    result at all is left to `rule-without-result`, so it is not reported once per countertop too.
+    A package with one countertop, or none known, gets nothing here.
+    """
+    if not countertops.several:
+        return []
+    lost: dict[int, list[str]] = defaultdict(list)
+    for rule_id in rules_in_scope:
+        if rule_id not in WHOLE_PACKAGE_RULE_IDS:
+            continue
+        results = [entry.finding for entry in live if entry.rule_id == rule_id]
+        if not results:
+            continue
+        missing = missing_own_results(
+            countertops,
+            item_ids={f.scope_item_id for f in results if f.scope_item_id is not None},
+            row_ids={
+                f.scope_row_candidate_id for f in results if f.scope_row_candidate_id is not None
+            },
+            whole_package_notes=[
+                note
+                for f in results
+                if f.scope_item_id is None and f.scope_row_candidate_id is None
+                for note in f.notes or ()
+            ],
+        )
+        for countertop in missing:
+            lost[id(countertop)].append(rule_id)
+    items: list[RunCheckItem] = []
+    for countertop in countertops.countertops:
+        rules = lost.get(id(countertop))
+        if not rules:
+            continue
+        scope: tuple[tuple[str, str], ...] = ()
+        if countertop.item_id is not None:
+            scope += (("item", str(countertop.item_id)),)
+        if countertop.row_id is not None:
+            scope += (("row", str(countertop.row_id)),)
+        which = (
+            "one of the depth and sink checks"
+            if len(rules) == 1
+            else f"{len(rules)} of the depth and sink checks"
+        )
+        items.append(
+            RunCheckItem(
+                Check.COVERAGE,
+                "countertop-without-depth-or-sink-result",
+                Agent.NINA,
+                Action.RERUN,
+                f"{countertop.name} has no live result of its own for {which}, and no held "
+                f"whole-package result names it: {', '.join(rules)}. Re-run the checks.",
+                (*scope, *(("rule", rule_id) for rule_id in rules)),
             )
         )
     return items
@@ -1623,6 +1697,13 @@ def run_check(session: Session, package_revision_id: UUID) -> RunCheckReport:
 
     seen = _inputs(live, inputs)
     items = _coverage(live, rules_in_scope)
+    several = (
+        package_countertops(session, package_revision_id)
+        if countertops and WHOLE_PACKAGE_RULE_IDS.intersection(rules_in_scope)
+        else None
+    )
+    if several is not None:
+        items += _own_depth_and_sink_coverage(live, several, rules_in_scope)
     items += _two_judgments(session, live, inputs, values, {row.anchor.id: row for row in rows})
     items += seen.items
     items += _contract_gates(live, inputs, values)
@@ -1639,6 +1720,8 @@ def run_check(session: Session, package_revision_id: UUID) -> RunCheckReport:
         "recorded inputs": sum(len(inputs.get(entry.run.id, ())) for entry in live),
         "values behind decisions": len(values),
     }
+    if several is not None:
+        examined["countertops"] = several.count
     if reading is not None:
         unchosen = reading[1]
         manual = countertop_scopes(session, package_revision_id)

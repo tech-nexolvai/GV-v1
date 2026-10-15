@@ -158,12 +158,19 @@ def plain_stop_reason(error: BaseException) -> str | None:
     By what the error says of itself (`needs_a_person`, `credit_too_low`), never by its class:
     this module may not import `extraction/` (#208), and the reader's account refusal
     (`ProviderAccountRefused`) is where those are set. The outbox uses it to park such work.
+
+    **Or a refusal that carries its own sentence for a person** (`plain_reason`, #1308: "Read
+    depths again" refused by the worker, `workflow.depth_again.DepthsAgainRefused`): no retry
+    changes it, so the work is parked with that sentence, which the screen shows.
     """
     seen: set[int] = set()
     current: BaseException | None = error
     while current is not None and id(current) not in seen:
         if getattr(current, "needs_a_person", False) is True:
             return CREDIT_TOO_LOW if getattr(current, "credit_too_low", False) else OUT_OF_CREDIT
+        sentence = getattr(current, "plain_reason", None)
+        if isinstance(sentence, str) and sentence.strip():
+            return sentence
         seen.add(id(current))
         current = current.__cause__ or current.__context__
     return None

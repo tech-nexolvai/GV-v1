@@ -1276,6 +1276,27 @@ export function readAgain(projectId: string, packageId: string) {
   return request<ReadingAgain>(`/projects/${projectId}/packages/${packageId}/reading-again`, { method: 'POST' });
 }
 
+export type ReadDepthsAgainStatus = components['schemas']['ReadDepthsAgainStatusOut'];
+export type ReadDepthsAgain = components['schemas']['ReadDepthsAgainOut'];
+
+/**
+ * Whether "Read depths again" is offered on this drawing set (#1308): only with the depth and sink
+ * reader switched on, why it cannot be asked now, about how many questions it would ask, and what
+ * became of the last request.
+ */
+export function getReadDepthsAgain(projectId: string, packageId: string) {
+  return request<ReadDepthsAgainStatus>(`/projects/${projectId}/packages/${packageId}/read-depths-again`);
+}
+
+/**
+ * Read the depths and sinks again on a drawing set already read (#1308): a paid action, queued for the
+ * worker. Only Bala's suggestions and the depth and sink reader run, then the checks again. Refused
+ * with the plain reason when it cannot run now.
+ */
+export function readDepthsAgain(projectId: string, packageId: string) {
+  return request<ReadDepthsAgain>(`/projects/${projectId}/packages/${packageId}/read-depths-again`, { method: 'POST' });
+}
+
 export function prepareSignedExports(projectId: string, packageId: string) {
   return request<SignedExportStatus>(`/projects/${projectId}/packages/${packageId}/signed-exports`, { method: 'POST' });
 }

@@ -1326,6 +1326,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/read-depths-again": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Whether the depths can be read again on this drawing set, and about how many questions
+         * @description The action's status for the package's current revision. Reads only.
+         */
+        get: operations["depths_again_status_api_v1_projects__project_id__packages__package_id__read_depths_again_get"];
+        put?: never;
+        /**
+         * Read the depths and sinks again on a drawing set that was already read (paid)
+         * @description Queue "Read depths again". Refused (409) with the plain reason when it cannot run now.
+         */
+        post: operations["read_depths_again_api_v1_projects__project_id__packages__package_id__read_depths_again_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/reading-again": {
         parameters: {
             query?: never;
@@ -3809,6 +3833,59 @@ export interface components {
             view: ("plan" | "section" | "side" | "front" | "detail") | null;
         };
         /**
+         * DepthsAgainEstimateOut
+         * @description About how many questions reading depths again would ask, before a person starts it.
+         */
+        DepthsAgainEstimateOut: {
+            /**
+             * Basis
+             * @description How the estimate was made, in plain words.
+             */
+            basis: string;
+            /** Countertops */
+            countertops: number;
+            /**
+             * Pages
+             * @description Pages holding a countertop: the pages the reader reads.
+             */
+            pages: number;
+            /**
+             * Questions High
+             * @description About how many questions (each reader asked is one); equal to questions_low when an earlier depth reading of the set says exactly.
+             */
+            questions_high: number;
+            /** Questions Low */
+            questions_low: number;
+            /**
+             * Stored Answers
+             * @description Of those, how many already have a stored answer, reused at no cost.
+             */
+            stored_answers: number;
+        };
+        /**
+         * DepthsAgainLastOut
+         * @description What became of the newest request.
+         */
+        DepthsAgainLastOut: {
+            /**
+             * Asked At
+             * Format: date-time
+             */
+            asked_at: string;
+            /**
+             * Request Id
+             * Format: uuid
+             */
+            request_id: string;
+            /** Sentence */
+            sentence: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "waiting" | "not_read" | "read" | "stopped" | "failed";
+        };
+        /**
          * DiscriminatorOut
          * @description A judgement about the drawing that decides which variant of a rule applies.
          */
@@ -5906,6 +5983,53 @@ export interface components {
          * @enum {string}
          */
         PublicationTarget: "development" | "production";
+        /**
+         * ReadDepthsAgainOut
+         * @description The queued request.
+         */
+        ReadDepthsAgainOut: {
+            /**
+             * Accepted Id
+             * Format: uuid
+             * @description The enqueued work, not a workflow run.
+             */
+            accepted_id: string;
+            /**
+             * Package Revision Id
+             * Format: uuid
+             */
+            package_revision_id: string;
+        };
+        /**
+         * ReadDepthsAgainStatusOut
+         * @description Whether "Read depths again" is offered on this set, and what it would do.
+         */
+        ReadDepthsAgainStatusOut: {
+            /**
+             * Budget Left Usd
+             * @description What the depth and sink reader may still spend on this set, in US dollars rounded down to the cent: the worker's own spend cap. Spending stops there.
+             */
+            budget_left_usd?: string | null;
+            /** Can Ask */
+            can_ask: boolean;
+            /**
+             * Checks
+             * @description The checks the depth and sink reader fills: the action is offered on these.
+             */
+            checks?: string[];
+            estimate?: components["schemas"]["DepthsAgainEstimateOut"] | null;
+            last?: components["schemas"]["DepthsAgainLastOut"] | null;
+            /**
+             * Refused
+             * @description Why it cannot be asked now.
+             */
+            refused?: string | null;
+            /**
+             * Switched On
+             * @description The depth and sink reader's switch (GV_DEPTH_READER). Off, the action is not offered at all.
+             */
+            switched_on: boolean;
+        };
         /**
          * ReadingActivityItemOut
          * @description One item of the reading's activity, in the state its newest event gives it (#1238).
@@ -9830,6 +9954,70 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PartOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    depths_again_status_api_v1_projects__project_id__packages__package_id__read_depths_again_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadDepthsAgainStatusOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_depths_again_api_v1_projects__project_id__packages__package_id__read_depths_again_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadDepthsAgainOut"];
                 };
             };
             /** @description Validation Error */

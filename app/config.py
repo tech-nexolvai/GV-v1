@@ -150,10 +150,18 @@ class Settings(BaseSettings):
     # trial run, say). Unset (the default) the page-scaled budget alone applies. It can only lower
     # the limit: at most `ai_budget_maximum_usd`, which replaced the old fixed $5 ceiling.
     claude_reader_budget_usd: Decimal | None = Field(default=None, gt=0, allow_inf_nan=False)
+    # Optional: a fixed amount for one drawing set in place of the page-scaled budget (a proof
+    # run's). The worker reads the same variable (`workflow.stages.ai_budget_from_environment`);
+    # the API reads it to say how much of a set's budget is left (#1308). Unset: page-scaled.
+    ai_budget_per_set_usd: Decimal | None = Field(default=None, gt=0, allow_inf_nan=False)
     # How hard both Claude readers think before answering (#1051), stated on every call so a run
     # never depends on a model's own default (Opus 5.5's is `medium`). Accuracy first: `high`.
     # Kept in step with `extraction/slot_reader/claude_output.py` `CLAUDE_EFFORTS`.
     claude_reader_effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
+    # The depth and sink reader (#1290): read by the worker from `GV_DEPTH_READER` when a set is
+    # matched. The API reads the same switch to offer "Read depths again" (#1308) only when it is
+    # on. Off by default; unset or empty is off, as the worker reads it.
+    depth_reader: bool = False
     # A re-run reuses a reader's stored answer to the identical question (same document version,
     # model, prompt id, pictures and packet) instead of asking again (#1112): $0 and repeatable.
     # Off for a proof run that must ask every question again.
@@ -255,6 +263,21 @@ class Settings(BaseSettings):
                 + ", ".join(sorted(TRY_AGAIN_GATE_NAMES))
             )
         return ",".join(sorted(set(names)))
+
+    @field_validator("depth_reader", mode="before")
+    @classmethod
+    def _depth_switch_as_the_worker_reads_it(cls, value: object) -> object:
+        """`GV_DEPTH_READER` read exactly as the worker reads it
+        (`extraction.depth.read.depth_reader_enabled`, which this module may not import): unset or
+        empty is off, and an unknown word is refused, never read as on."""
+        if not isinstance(value, str):
+            return value
+        raw = value.strip().lower()
+        if raw in ("", "0", "false", "off", "no"):
+            return False
+        if raw in ("1", "true", "on", "yes"):
+            return True
+        raise ValueError(f"GV_DEPTH_READER must be true or false, not {raw!r}")
 
     @field_validator("run_edge_tolerance")
     @classmethod

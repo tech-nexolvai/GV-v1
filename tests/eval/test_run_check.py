@@ -404,6 +404,80 @@ def test_a_countertop_row_with_no_width_result_points_to_nina(
     assert ("row", str(anchors[0])) in item.ids
 
 
+#: A countertop of a package with several that lost one of its six depth and sink results (#1305).
+OWN_RESULT = "countertop-without-depth-or-sink-result"
+
+
+def _own_depth_and_sink(
+    session: Session, revision_id: UUID, row: UUID
+) -> list[tuple[Finding, CheckRun, str]]:
+    """The live results of the six depth and sink checks scoped to this countertop row."""
+    return [
+        (finding, run, rule)
+        for finding, run, rule in _live(session, revision_id)
+        if rule in WHOLE_PACKAGE_RULE_IDS and finding.scope_row_candidate_id == row
+    ]
+
+
+def test_a_countertop_row_that_lost_its_depth_and_sink_results_points_to_nina(
+    session: Session, tmp_path: Path
+) -> None:
+    """Two countertop rows, each with its own six depth and sink results (#1201). Seeded fault:
+    the second row's six are gone, nothing replaced them, and the first row still has its own, so
+    no rule is without a result. The run check names the second row, and only it (#1305)."""
+    revision_id, anchors = _rows(session, tmp_path)
+    assert run_check(session, revision_id).items == ()
+    lost = _own_depth_and_sink(session, revision_id, anchors[1])
+    assert sorted(rule for _finding, _run, rule in lost) == sorted(WHOLE_PACKAGE_RULE_IDS)
+    for _finding, run, _rule in lost:
+        _supersede(session, run)
+
+    item = _only(run_check(session, revision_id), OWN_RESULT)
+    assert item.check is Check.COVERAGE
+    assert item.agent is Agent.NINA
+    assert item.action is Action.RERUN
+    assert ("row", str(anchors[1])) in item.ids and ("row", str(anchors[0])) not in item.ids
+    assert {value for kind, value in item.ids if kind == "rule"} == set(WHOLE_PACKAGE_RULE_IDS)
+    assert item.found.startswith(
+        "Countertop row on page 2 has no live result of its own for 6 of the depth and sink "
+        "checks, and no held whole-package result names it: "
+    ), item.found
+
+
+def test_one_lost_depth_result_is_named_for_its_own_row_and_check_only(
+    session: Session, tmp_path: Path
+) -> None:
+    revision_id, anchors = _rows(session, tmp_path)
+    ((_finding, run, _rule),) = [
+        entry
+        for entry in _own_depth_and_sink(session, revision_id, anchors[0])
+        if entry[2] == "CT-DEPTH-001"
+    ]
+    _supersede(session, run)
+
+    item = _only(run_check(session, revision_id), OWN_RESULT)
+    assert ("row", str(anchors[0])) in item.ids and ("row", str(anchors[1])) not in item.ids
+    assert [value for kind, value in item.ids if kind == "rule"] == ["CT-DEPTH-001"]
+    assert item.found == (
+        "Countertop row on page 1 has no live result of its own for one of the depth and sink "
+        "checks, and no held whole-package result names it: CT-DEPTH-001. Re-run the checks."
+    )
+
+
+def test_one_countertop_row_needs_no_result_of_its_own(session: Session, tmp_path: Path) -> None:
+    """One countertop: its depth and sink results are whole-package, as before #1201, and a lost
+    one is the rule's only result, which the rule line already reports. Nothing new (#1305)."""
+    revision_id, _anchors = _rows(session, tmp_path, row_pages=(0,), run=False)
+    _listed_record(session, revision_id, reason="synthetic: only a wall elevation is drawn")
+    _run(session, revision_id, tmp_path)
+    assert run_check(session, revision_id).items == ()
+    finding, run = _live_for(session, revision_id, "CT-DEPTH-001")
+    assert finding.scope_row_candidate_id is None and finding.scope_item_id is None
+    _supersede(session, run)
+
+    _only(run_check(session, revision_id), "rule-without-result")
+
+
 def test_an_abstention_with_no_reason_is_held(session: Session, tmp_path: Path) -> None:
     revision_id, _anchors = _rows(session, tmp_path)
     _finding, run = _live_for(session, revision_id, "CT-DEPTH-001")
@@ -855,10 +929,20 @@ def test_a_page_the_reviewer_says_has_a_countertop_needs_its_result(
     )
     session.flush()
 
-    item = _only(run_check(session, revision_id), "blocking-page-without-result")
+    report = run_check(session, revision_id)
+    # The answer also makes the page a second countertop (#1201), and the six depth and sink checks
+    # ran once for the one countertop there was: each countertop now lacks its own result (#1305).
+    assert _codes(report) == {"blocking-page-without-result", OWN_RESULT}
+    (item,) = [item for item in report.items if item.code == "blocking-page-without-result"]
     assert item.check is Check.UNREAD_PAGES
     assert item.agent is Agent.NINA
     assert item.action is Action.RERUN
+    own = [item for item in report.items if item.code == OWN_RESULT]
+    assert [item.found.split(" has no live")[0] for item in own] == [
+        "Countertop row on page 1",
+        "Countertop row on page 2",
+    ]
+    assert all(item.action is Action.RERUN for item in own)
 
     _run(session, revision_id, tmp_path)
     assert run_check(session, revision_id).items == ()
