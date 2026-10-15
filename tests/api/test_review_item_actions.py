@@ -718,23 +718,7 @@ def test_an_architect_answer_goes_through_the_pairing_post_and_rechecks(
     assert response.json()["rechecking"] is True
 
 
-def test_a_depth_reading_is_501_until_it_is_wired(
-    session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    project_id, package_id = _held_page(session, tmp_path)
-    client = _client(session, project_id)
-    item = _first_by_hand(_items(client, project_id, package_id))
-    _pretend_kind(monkeypatch, str(item["key"]), "depth_reading", ["confirm", "not_this"])
-
-    response = _act(
-        client,
-        project_id,
-        package_id,
-        str(item["key"]),
-        "confirm",
-        {"expected_finding_id": item["finding_id"]},
-    )
-    assert response.status_code == 501, response.text
+# Depth and sink readings (Confirm, Not this; no 501 any more): `tests/api/test_review_item_depth.py`.
 
 
 # --- the coalesced re-check -------------------------------------------------------------------------

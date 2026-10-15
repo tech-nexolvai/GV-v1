@@ -150,6 +150,28 @@ describe('SimpleReviewPage (#1343)', () => {
     await waitFor(() => expect(loads).toBe(before + 1));
   });
 
+  it('Confirm on a depth reading sends the value it showed, like a number (#1360)', async () => {
+    current = reviewItems((draft) => {
+      draft.items.push({
+        ...structuredClone(draft.items[0]),
+        key: 'depth:find-30:cand-301',
+        kind: 'depth_reading',
+        what: 'Sink cut-out depth',
+        why: 'Both AI readers read 21" for the sink cut-out depth on the section, but only its drawn length checks it.',
+        best_guess: { text: '21"', value: null, source: 'agreed_text' },
+        readers: [],
+        actions: ['confirm', 'not_this'],
+        finding_id: 'find-30',
+        candidate_id: 'cand-301',
+      });
+    });
+    renderPage();
+    await screen.findByTestId('ai-read-line');
+    await userEvent.click(rowButton(/Sink cut-out depth/));
+    await userEvent.click(screen.getByRole('button', { name: /^Confirm/ }));
+    await waitFor(() => expect(posted).toEqual([{ key: 'depth:find-30:cand-301', action: 'confirm', body: { expected_finding_id: 'find-30', shown_value: '21"' } }]));
+  });
+
   it('a stale item (409) reloads the list first, and Retry sends the finding now on screen', async () => {
     server.use(http.post(`${API}/review-items/:key/:action`, () => HttpResponse.json({ error: 'stale', message: 'The finding was replaced.', request_id: 'req-9' }, { status: 409 }), { once: true }));
     renderPage();
