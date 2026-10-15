@@ -430,7 +430,9 @@ describe('SimpleReviewPage (#1343)', () => {
     const user = userEvent.setup();
     await user.keyboard('j');
     await user.keyboard('o');
-    const dialog = await screen.findByRole('dialog', { name: 'Both drawings' });
+    // The viewer is lazy-loaded: its first import took ~0.9 s on CI (main), at the edge of the
+    // default 1 s wait, and failed this test twice on #1378's runs. Give the first load room.
+    const dialog = await screen.findByRole('dialog', { name: 'Both drawings' }, { timeout: 5000 });
     expect(dialog.textContent).toContain('Opened at Overall countertop width');
     await waitFor(() => expect(within(screen.getByRole('region', { name: /Vendor/ })).getByTestId('page-counter').textContent).toBe('3 / 5'));
     expect(within(screen.getByRole('region', { name: /Architect/ })).getByTestId('page-counter').textContent).toBe('12 / 14');
