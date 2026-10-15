@@ -15,9 +15,15 @@ from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
 from alembic import command
-from app.api.slot_rows import SlotRowReviewIn, list_slot_rows, review_slot_row
+from app.api.slot_rows import (
+    TYPED_WIDTH_CLOSED,
+    SlotRowReviewIn,
+    list_slot_rows,
+    review_slot_row,
+)
 from app.auth.roles import Principal, Role
 from app.db.session import session_factory
+from app.evidence.confirm import observation_from_candidate
 from app.models import (
     CanonicalObservation,
     Document,
@@ -54,6 +60,7 @@ from tests.app.postgres_fixture import alembic_config
 from tests.workflow.test_stages import _publish_rulebook
 from vocabulary.semantic_types import ProductType
 from vocabulary.wall_layouts import VENDOR_WALLS_PASS_REASON
+from workflow.row_answers import slot_position, width_semantic
 from workflow.slot_row_evidence import _canonical_for_candidate, _domain_observation
 from workflow.stages import LAYOUT_PROMPT_ID, DatabaseStages
 
@@ -91,10 +98,13 @@ def _package_rows(
     sealed_layout: str = "back_left_right",
     field_cuts: int = 2,
     walls_confirmed: bool | tuple[int, ...] = False,
+    unsealed_proposal: bool = True,
 ) -> tuple[UUID, UUID, dict[int, UUID]]:
     """`slot_flags(page_index, row_offset, slot)` adds flags (e.g. a `slot-box:`) to a slot.
 
-    `row_pages` are the page indexes (of 0 and 1) that get rows; `()` makes a run with none."""
+    `row_pages` are the page indexes (of 0 and 1) that get rows; `()` makes a run with none.
+    `unsealed_proposal=False` leaves the unsealed slot with no form proposal, as the Claude-mode
+    reader stores a label it held (#1339)."""
     _publish_rulebook(session)
     project = Project(name="row-scoped API tests")
     session.add(project)
@@ -220,6 +230,9 @@ def _package_rows(
                 session.flush()
                 if slot == "0":
                     anchors.setdefault(page_index, candidate.id)
+                unsealed = unsealed_all or (page_index == unsealed_page and slot == "0")
+                if unsealed and not unsealed_proposal:
+                    continue
                 session.add(
                     MeasurementProposal(
                         package_revision_id=revision.id,
@@ -313,7 +326,11 @@ def test_confirming_an_ai_wall_is_required_and_only_attaches_to_that_row(
     assert session.query(SlotRowReviewDecision).count() == 1
 
 
-def test_typed_missing_width_is_saved_only_on_the_selected_row(session: Session) -> None:
+def test_a_typed_missing_width_is_refused_and_a_wall_is_saved_only_on_its_row(
+    session: Session,
+) -> None:
+    """#1339 (confirm-only): the AI's suggestion for a held width is shown, a typed width is
+    refused, and a wall choice is saved on the selected row only."""
     project_id, package_id, anchors = _package_rows(session, unsealed_page=0)
     principal = Principal(
         id="anant (synthetic test)",
@@ -329,30 +346,32 @@ def test_typed_missing_width_is_saved_only_on_the_selected_row(session: Session)
     assert piece.needs_value
     assert piece.suggestion is not None
 
-    saved = review_slot_row(
+    with pytest.raises(HTTPException) as refused:
+        review_slot_row(
+            principal,
+            principal,
+            session,
+            project_id,
+            package_id,
+            anchors[0],
+            SlotRowReviewIn(
+                wall_config="back_left_right",
+                measurements={"piece_widths:0": "21 in"},
+            ),
+        )
+    assert refused.value.status_code == 422
+    assert refused.value.detail == TYPED_WIDTH_CLOSED
+    assert session.query(SlotRowReviewDecision).count() == 0
+
+    review_slot_row(
         principal,
         principal,
         session,
         project_id,
         package_id,
         anchors[0],
-        SlotRowReviewIn(
-            wall_config="back_left_right",
-            measurements={"piece_widths:0": "21 in"},
-        ),
+        SlotRowReviewIn(wall_config="back_left_right"),
     )
-    saved_piece = next(value for value in saved.values if value.key == "piece_widths:0")
-    assert saved_piece.value == "21 in"
-    assert saved_piece.source == "reviewer"
-
-    rows = {
-        row.page_number: row
-        for row in list_slot_rows(principal, session, project_id, package_id).rows
-    }
-    assert rows[1].decision_id is not None
-    assert rows[2].decision_id is None
-    assert rows[2].wall_config is None
-    assert session.query(SlotRowReviewDecision).count() == 1
     refreshed = list_slot_rows(principal, session, project_id, package_id)
     by_page = {row.page_number: row for row in refreshed.rows}
     assert by_page[1].confirmed_by == "anant (synthetic test)"
@@ -362,7 +381,7 @@ def test_typed_missing_width_is_saved_only_on_the_selected_row(session: Session)
     assert session.query(SlotRowReviewDecision).count() == 1
 
 
-def test_reviewer_can_correct_a_typed_width_with_a_new_immutable_snapshot(
+def test_a_reviewer_corrects_a_wall_choice_with_a_new_immutable_snapshot(
     session: Session,
 ) -> None:
     project_id, package_id, anchors = _package_rows(session, unsealed_page=0)
@@ -378,10 +397,7 @@ def test_reviewer_can_correct_a_typed_width_with_a_new_immutable_snapshot(
         project_id,
         package_id,
         anchors[0],
-        SlotRowReviewIn(
-            wall_config="back_left_right",
-            measurements={"piece_widths:0": "21 in"},
-        ),
+        SlotRowReviewIn(wall_config="back_left_right"),
     )
     prior_id = first.decision_id
 
@@ -392,17 +408,17 @@ def test_reviewer_can_correct_a_typed_width_with_a_new_immutable_snapshot(
         project_id,
         package_id,
         anchors[0],
-        SlotRowReviewIn(measurements={"piece_widths:0": "22 in"}),
+        SlotRowReviewIn(wall_config="back_only"),
     )
 
-    piece = next(value for value in corrected.values if value.key == "piece_widths:0")
-    assert piece.value == "22 in"
+    assert corrected.wall_config == "back_only"
     assert corrected.decision_id != prior_id
     decisions = (
         session.query(SlotRowReviewDecision).order_by(SlotRowReviewDecision.created_at).all()
     )
     assert len(decisions) == 2
     assert decisions[-1].supersedes_id == prior_id
+    assert all(decision.measurements == {} for decision in decisions)
 
 
 def _row_holds(session: Session, revision_id: UUID) -> set[UUID]:
@@ -455,6 +471,45 @@ def _run_current_checks(session: Session, package_id: UUID, root: Path) -> list[
     )
 
 
+def _confirm_row_readings(
+    session: Session, row_id: UUID, *, actor: str = "anant (synthetic test)"
+) -> list[CanonicalObservation]:
+    """A person confirming the AI's own reading of every label the readers held on this row, as
+    `app/review/evidence_actions.confirm_candidate_reading` writes it (#1339). Widths are never
+    typed for a row any more (confirm-only)."""
+    anchor = session.get_one(ObservationCandidate, row_id)
+    rank = next(flag for flag in anchor.ambiguity_flags if flag.startswith("row-rank:"))
+    confirmed: list[CanonicalObservation] = []
+    for candidate in session.scalars(
+        select(ObservationCandidate)
+        .where(
+            ObservationCandidate.extraction_run_id == anchor.extraction_run_id,
+            ObservationCandidate.page_id == anchor.page_id,
+        )
+        .order_by(ObservationCandidate.created_at, ObservationCandidate.id)
+    ).all():
+        flags = candidate.ambiguity_flags or []
+        is_slot, position = slot_position(candidate)
+        if (
+            not is_slot
+            or rank not in flags
+            or "slot-reader" not in flags
+            or candidate.corroboration_status == "CORROBORATED"
+        ):
+            continue
+        made = observation_from_candidate(
+            session,
+            candidate,
+            semantic_type=width_semantic(position).value,
+            status=EvidenceStatus.HUMAN_CONFIRMED,
+            actor=actor,
+        )
+        assert isinstance(made, CanonicalObservation), made
+        confirmed.append(made)
+    session.flush()
+    return confirmed
+
+
 def _save_all_row_widths(
     session: Session,
     project_id: UUID,
@@ -463,6 +518,11 @@ def _save_all_row_widths(
     *,
     wall_config: str | None = None,
 ) -> None:
+    """Every held width of the row confirmed by a person from the AI's own reading (#1339), and the
+    walls chosen when `wall_config` is given. Before #1339 this typed the widths."""
+    _confirm_row_readings(session, row_id)
+    if wall_config is None:
+        return
     principal = Principal(
         id="anant (synthetic test)",
         roles=frozenset({Role.REVIEWER}),
@@ -475,10 +535,7 @@ def _save_all_row_widths(
         project_id,
         package_id,
         row_id,
-        SlotRowReviewIn(
-            wall_config=wall_config,
-            measurements={"countertop_width": "40 in", "piece_widths:0": "20 in"},
-        ),
+        SlotRowReviewIn(wall_config=wall_config),
     )
 
 
@@ -1355,32 +1412,21 @@ def test_a_fail_resting_on_a_reading_with_no_drawn_length_witness_is_unchanged(
     assert not any("Drawn length not checked" in note for note in by_row[anchors[0]].notes or ())
 
 
-def test_values_the_reviewer_typed_are_not_readings_and_never_need_the_witness(
+def test_readings_a_person_confirmed_never_need_the_witness(
     session: Session, tmp_path: Path
 ) -> None:
-    """#1107 (3). Input: a row whose unsealed readings carry the flag, every width typed by the
-    reviewer for that row. Outcome: an automatic PASS — typed values are not readings."""
-    project_id, package_id, anchors = _package_rows(
+    """#1107 (3), #1339. Input: a row whose unsealed readings carry the flag, every one confirmed by
+    a person for that row. Outcome: an automatic PASS: a person's confirmation is the second
+    judgment, so the drawn-length witness is not asked for."""
+    _project_id, package_id, anchors = _package_rows(
         session,
         unsealed_all=True,
         wall_source="readers",
         walls_confirmed=True,
+        widths_add_up=True,
         slot_flags=lambda _page, _offset, _slot: [NO_WITNESS],
     )
-    principal = Principal(
-        id="synthetic reviewer",
-        roles=frozenset({Role.REVIEWER}),
-        projects=frozenset({project_id}),
-    )
-    review_slot_row(
-        principal,
-        principal,
-        session,
-        project_id,
-        package_id,
-        anchors[0],
-        SlotRowReviewIn(measurements={"countertop_width": "22 in", "piece_widths:0": "20 in"}),
-    )
+    _confirm_row_readings(session, anchors[0])
 
     by_row = {
         finding.scope_row_candidate_id: finding
@@ -1445,8 +1491,8 @@ def test_a_reading_with_the_files_own_text_among_its_sources_never_needs_the_cli
     assert by_row[anchors[0]].outcome == "PASS", by_row[anchors[0]].reason
 
 
-def test_a_typed_squeezed_width_is_refused_with_a_suggestion(session: Session) -> None:
-    """#1199: a typed `163/8"` width is never saved as 20 3/8."""
+def test_a_typed_squeezed_width_is_refused_like_any_typed_width(session: Session) -> None:
+    """#1199, #1339: a typed `163/8"` width is never saved; no width is typed for a row."""
     project_id, package_id, anchors = _package_rows(session, unsealed_page=0)
     principal = Principal(
         id="anant (synthetic test)",
@@ -1469,7 +1515,7 @@ def test_a_typed_squeezed_width_is_refused_with_a_suggestion(session: Session) -
         )
 
     assert refused.value.status_code == 422
-    assert 'did you mean 16 3/8"?' in str(refused.value.detail)
+    assert refused.value.detail == TYPED_WIDTH_CLOSED
     assert session.query(SlotRowReviewDecision).count() == 0
 
 

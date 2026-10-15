@@ -28,7 +28,6 @@ from sqlalchemy.orm import Session
 
 from alembic import command
 from app.api.dependencies import get_session
-from app.api.slot_rows import SlotRowReviewIn, review_slot_row
 from app.auth import Principal, Role, authenticate
 from app.config import Settings
 from app.db.session import session_factory
@@ -333,21 +332,32 @@ def test_a_change_on_one_row_asks_only_that_row_again(
     project_id, package_id, anchors = _two_decided_rows(session, tmp_path)
     revision = _revision_of(session, package_id)
     if change == "value":
-        review_slot_row(
-            _principal(project_id),
-            _principal(project_id),
+        # A person fixes one of the row's readings (#1339): a correction on its live result.
+        from app.review.evidence_actions import correct_candidate_reading
+        from app.review.session import open_session
+        from app.review.wall_cases import latest_width_findings
+        from workflow.row_answers import own_slot_labels
+        from workflow.slot_row_scope import slot_rows
+
+        (row,) = [row for row in slot_rows(session, revision.id) if row.anchor.id == anchors[0]]
+        finding = latest_width_findings(session, revision.id, [anchors[0]])[anchors[0]]
+        correct_candidate_reading(
             session,
-            project_id,
-            package_id,
-            anchors[0],
-            SlotRowReviewIn(measurements={"countertop_width": "41 in", "piece_widths:0": "20 in"}),
+            principal=_principal(project_id),
+            review_session_id=open_session(
+                session, package_revision_id=revision.id, reviewer="second reviewer"
+            ).id,
+            finding_id=finding.id,
+            candidate_id=own_slot_labels(row)[None].id,
+            corrected_value="41 in",
         )
+        session.commit()
     elif change == "walls":
         _save_all_row_widths(session, project_id, package_id, anchors[0], wall_config="back_only")
     else:
-        # A new decision record superseding the last, with the same typed widths (#1177): the
-        # widths are compared by value, the record that holds them is not.
-        _save_all_row_widths(session, project_id, package_id, anchors[0])
+        # Nothing new from a person (#1177; since #1339 widths are confirmed, not typed): the
+        # re-run's results are the same, so every decision carries.
+        pass
 
     _run_current_checks(session, package_id, tmp_path)
     if change == "the same values again":

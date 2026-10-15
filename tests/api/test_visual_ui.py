@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -21,7 +22,12 @@ from app.db.session import session_factory
 from app.main import API_PREFIX, create_app
 from app.models import Approval, ModelInvocation, Package, PackageRevision
 from app.review.approval import approval_readiness
-from tests.api.test_slot_rows import _package_rows, _run_current_checks, _save_all_row_widths
+from tests.api.test_slot_rows import (
+    _confirm_row_readings,
+    _package_rows,
+    _run_current_checks,
+    _save_all_row_widths,
+)
 from tests.app.postgres_fixture import alembic_config
 
 pytest_plugins = ("tests.app.postgres_fixture",)
@@ -53,20 +59,15 @@ def _client(session: Session, project_id: UUID) -> TestClient:
 def _save_widths(
     session: Session, project_id: UUID, package_id: UUID, row_id: UUID, overall: int
 ) -> None:
-    principal = Principal(
-        id="reviewer", roles=frozenset({Role.REVIEWER}), projects=frozenset({project_id})
+    """A person confirms the row's held readings (#1339): the AI read `overall` and a 20" piece.
+    Widths are never typed for a row any more."""
+    _ = (project_id, package_id)
+    confirmed = _confirm_row_readings(session, row_id, actor="reviewer")
+    values = sorted(
+        Fraction(observation.value_numerator, observation.value_denominator)
+        for observation in confirmed
     )
-    review_slot_row(
-        principal,
-        principal,
-        session,
-        project_id,
-        package_id,
-        row_id,
-        SlotRowReviewIn(
-            measurements={"countertop_width": f"{overall} in", "piece_widths:0": "20 in"}
-        ),
-    )
+    assert values == sorted([Fraction(overall), Fraction(20)]), values
 
 
 def test_checked_countertop_values_are_the_recorded_exact_inputs(
@@ -218,7 +219,11 @@ def test_a_wall_at_one_end_is_labelled_and_takes_one_field_cut(
 ) -> None:
     """#1138: the countertop results name the layout in words and need one inch, not two."""
     project_id, package_id, anchors = _package_rows(
-        session, unsealed_all=True, wall_source="readers", sealed_layout="back_and_left"
+        session,
+        unsealed_all=True,
+        wall_source="readers",
+        sealed_layout="back_and_left",
+        overall_override=21,
     )
     principal = Principal(
         id="reviewer", roles=frozenset({Role.REVIEWER}), projects=frozenset({project_id})

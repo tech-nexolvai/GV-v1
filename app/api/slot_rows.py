@@ -32,7 +32,6 @@ from app.lifecycle.carry_forward import wall_answer_origins
 from app.models import ObservationCandidate, SlotRowReviewDecision
 from app.models.verdicts import Finding
 from app.review.row_location import RowLocation, architect_locations, row_location
-from app.review.sizes import NOT_ABOVE_ZERO, typed_negative
 from app.review.wall_cases import (
     current_field_cut,
     field_cut_changed,
@@ -43,7 +42,6 @@ from app.review.wall_cases import (
 )
 from app.schemas.visual_ui import WallCasesOut
 from units.imperial import format_inches
-from units.normalise import UnitNormalisationError, normalise_to_inches, typed_fraction_refusal
 from verdict.outcomes import Outcome
 from vocabulary.reviewer_reasons import reviewer_reason
 from vocabulary.semantic_types import SemanticType
@@ -63,6 +61,7 @@ from workflow.architect_pairing_records import (
 )
 from workflow.countertop_runs import published_wall_layouts
 from workflow.layout_proposals import WALL_INK_FLAG, WALL_WORDS_FLAG
+from workflow.row_answers import row_hold_after_people
 from workflow.slot_row_scope import (
     SlotRow,
     candidate_is_sealed,
@@ -73,6 +72,12 @@ from workflow.slot_row_scope import (
 from workflow.wall_cases import is_every_wall_case
 
 router = APIRouter(tags=["slot-reader rows"])
+
+#: Why a typed width is refused (confirm-only, 2026-10-15, #1339).
+TYPED_WIDTH_CLOSED: Final = (
+    "Widths are no longer typed for a countertop row. Confirm or fix the AI's reading of that "
+    "number instead; where the AI read no number, check the row by hand."
+)
 
 
 class SlotRowValueOut(BaseModel):
@@ -420,12 +425,23 @@ def review_slot_row(
 ) -> SlotRowOut:
     revision = _revision(session, project_id, package_id)
     row = _current_row(session, revision.id, row_id)
-    if row.held_reason is not None and not (
+    # A row whose only hold was "incomplete" is released once people have answered every label the
+    # readers held (#1339): its walls can then be chosen like any other row's.
+    held = row_hold_after_people(session, row)
+    if held is not None and not (
         row.wall_confirmation_allowed and body.wall_config is not None and not body.measurements
     ):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"This row cannot be checked until the hold is resolved: {row.held_reason}",
+            detail=f"This row cannot be checked until the hold is resolved: {held}",
+        )
+    if body.measurements:
+        # Confirm-only (2026-10-15, #1339): a width drawn on the vendor's drawing is never typed. A
+        # person confirms or fixes the AI's reading of that label; with no reading, the row is
+        # checked by hand.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=TYPED_WIDTH_CLOSED,
         )
     layouts = published_wall_layouts(session)
     if body.wall_config is not None and body.wall_config not in layouts:
@@ -433,79 +449,21 @@ def review_slot_row(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Choose one of the published wall layouts for this countertop row.",
         )
+    if SemanticType.WALL_CONFIG.value not in body.model_fields_set:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Choose this row's wall layout before saving.",
+        )
     current = latest_row_decision(session, row_id)
-    listed = _row_out(session, row, layouts)
-    locked = {
-        value.key for value in listed.values if not value.needs_value and value.source != "reviewer"
-    }
-    if set(body.measurements) & locked:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="A reader-sealed width cannot be replaced here; correct only a reviewer-entered width.",
-        )
-    allowed_editable = {
-        value.key for value in listed.values if value.needs_value or value.source == "reviewer"
-    }
-    if set(body.measurements) - allowed_editable:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="A width can only be entered for a missing value or corrected reviewer value in this row.",
-        )
-
-    normalized: dict[str, object] = {}
-    for key, text in body.measurements.items():
-        if typed_negative(text):
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail=f"{key.replace('_', ' ').capitalize()}: {NOT_ABOVE_ZERO}",
-            )
-        # `163/8"` typed would be saved as 20 3/8 (#1199): refused, with the split as a suggestion.
-        odd = typed_fraction_refusal(text)
-        if odd is not None:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail=f"{key.replace('_', ' ').capitalize()}: {odd}",
-            )
-        try:
-            measurement = normalise_to_inches(text)
-        except (UnitNormalisationError, ValueError) as error:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail=f"Enter a valid width for {key.replace('_', ' ')}.",
-            ) from error
-        if measurement.exact <= 0:
-            # Every value on a row is a width; zero or less is a mistake that could pass (#1182).
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail=f"{key.replace('_', ' ').capitalize()}: {NOT_ABOVE_ZERO}",
-            )
-        normalized[key] = {
-            "numerator": measurement.exact.numerator,
-            "denominator": measurement.exact.denominator,
-            "unit": "in",
-            "display": text,
-        }
-
-    if (
-        body.wall_config is None
-        and SemanticType.WALL_CONFIG.value not in body.model_fields_set
-        and current is not None
-    ):
-        wall_config = current.wall_config
-    else:
-        wall_config = body.wall_config
-    if not body.measurements and SemanticType.WALL_CONFIG.value not in body.model_fields_set:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="Choose this row's wall layout or enter a missing width before saving.",
-        )
+    wall_config = body.wall_config
 
     decision = SlotRowReviewDecision(
         id=uuid4(),
         row_candidate_id=row_id,
         supersedes_id=None if current is None else current.id,
         wall_config=wall_config,
-        measurements=normalized if current is None else {**current.measurements, **normalized},
+        # Kept exactly as recorded before (append-only); a value typed there counts for nothing.
+        measurements={} if current is None else current.measurements,
         confirmed_by=principal.id,
     )
     session.add(decision)
