@@ -31,8 +31,8 @@ export function NotCheckedGroup({
 
   return (
     <section aria-labelledby="not-checked-title" data-slot="not-checked-group" className="rounded-xl border border-dashed border-border">
-      <div className="flex min-h-14 flex-wrap items-center gap-x-4 gap-y-2 px-6 py-2">
-        <h2 id="not-checked-title" className="min-w-0 flex-1">
+      <div className="flex min-h-14 flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2 sm:px-6">
+        <h2 id="not-checked-title" className="min-w-0 basis-full sm:basis-auto sm:flex-1">
           <button
             type="button"
             aria-expanded={open}
@@ -49,7 +49,7 @@ export function NotCheckedGroup({
           </button>
         </h2>
         {waiting > 0 ? (
-          <Button size="sm" variant="outline" onClick={onClearAll} disabled={busy}>
+          <Button size="sm" variant="outline" onClick={onClearAll} disabled={busy} className="ml-7 sm:ml-0">
             {busy && <Loader2 aria-hidden="true" className="animate-spin motion-reduce:animate-none" />}
             Clear all as not checked
           </Button>
@@ -72,7 +72,7 @@ export function NotCheckedGroup({
       >
         <ul id="not-checked-list" hidden={!open} className="min-h-0 overflow-hidden border-t border-dashed border-border">
           {items.map((item) => (
-            <li key={item.key} className="flex h-11 items-center gap-3 px-6 pl-[3.25rem] text-[13px] text-muted-foreground">
+            <li key={item.key} className="flex h-11 items-center gap-3 px-4 pl-11 sm:px-6 sm:pl-[3.25rem] text-[13px] text-muted-foreground">
               <span className="min-w-0 flex-1 truncate">
                 <span className="text-foreground">{item.check}</span>
                 <span className="ml-2">{item.countertop?.label ?? item.row_label ?? `Page ${item.page}`}</span>

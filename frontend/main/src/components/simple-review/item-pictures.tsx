@@ -87,23 +87,35 @@ export function PagePicture({
   className?: string;
 }) {
   const [state, retry] = usePicture({ kind: 'page', page: pageRef.page_number, documentVersionId: pageRef.document_version_id });
+  // The page's own size, read from the picture once it loads: the ring is drawn in the same
+  // coordinates as the page, so it stays on the spot whatever box the page is fitted into.
+  const [natural, setNatural] = useState<{ url: string; w: number; h: number } | null>(null);
   const points = pointsOf(pageRef);
   const ring = points ? ringOf(points) : null;
   if (state.status === 'error') return <Unavailable onRetry={retry}>This page's picture could not be loaded: {state.message}</Unavailable>;
+  const size = state.status === 'ready' && natural?.url === state.url ? natural : null;
   return (
     <div role="img" aria-label={label} className={cn('flex h-full items-center justify-center overflow-hidden rounded-lg border border-border bg-white p-2', className)}>
-      {state.status === 'loading' ? (
-        <Skeleton className="h-full min-h-32 w-full" />
+      {state.status === 'ready' && size === null && (
+        <img
+          src={state.url}
+          alt=""
+          className="hidden"
+          onLoad={(event) => setNatural({ url: state.url, w: event.currentTarget.naturalWidth || 1000, h: event.currentTarget.naturalHeight || 1000 })}
+        />
+      )}
+      {size === null ? (
+        <Skeleton className="h-full min-h-24 w-full" />
       ) : (
-        <span className="relative inline-block max-h-full">
-          <img src={state.url} alt="" draggable={false} className="block max-h-[inherit] w-auto max-w-full select-none" style={{ maxHeight: 'inherit' }} />
+        <svg viewBox={`0 0 ${size.w} ${size.h}`} preserveAspectRatio="xMidYMid meet" className="size-full">
+          <image href={state.status === 'ready' ? state.url : ''} width={size.w} height={size.h} />
           {ring && (
-            <svg aria-hidden="true" viewBox="0 0 1 1" preserveAspectRatio="none" className="pointer-events-none absolute inset-0 size-full overflow-visible">
-              <ellipse cx={ring.cx} cy={ring.cy} rx={ring.rx} ry={ring.ry} fill="none" stroke="#ffffff" strokeWidth={6} vectorEffect="non-scaling-stroke" />
-              <ellipse data-slot="spot-ring" cx={ring.cx} cy={ring.cy} rx={ring.rx} ry={ring.ry} fill="none" stroke="var(--outcome-review)" strokeWidth={2.5} vectorEffect="non-scaling-stroke" />
-            </svg>
+            <g aria-hidden="true" fill="none">
+              <ellipse cx={ring.cx * size.w} cy={ring.cy * size.h} rx={ring.rx * size.w} ry={ring.ry * size.h} stroke="#ffffff" strokeWidth={6} vectorEffect="non-scaling-stroke" />
+              <ellipse data-slot="spot-ring" cx={ring.cx * size.w} cy={ring.cy * size.h} rx={ring.rx * size.w} ry={ring.ry * size.h} stroke="var(--outcome-review)" strokeWidth={2.5} vectorEffect="non-scaling-stroke" />
+            </g>
           )}
-        </span>
+        </svg>
       )}
     </div>
   );

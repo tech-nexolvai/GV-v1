@@ -35,7 +35,7 @@ export function FailuresStrip({
       className="overflow-hidden rounded-xl border border-outcome-fail-fg/35 bg-background"
     >
       <h2 id="failures-strip-title" className="sr-only">Will be clouded as wrong</h2>
-      <div aria-hidden="true" className="flex h-12 items-center gap-2 border-b border-outcome-fail-fg/20 bg-outcome-fail-bg px-6 text-[15px] font-medium text-outcome-fail-fg">
+      <div aria-hidden="true" className="flex h-12 items-center gap-2 border-b border-outcome-fail-fg/20 bg-outcome-fail-bg px-4 sm:px-6 text-[15px] font-medium text-outcome-fail-fg">
         <OutcomeIcon outcome="FAIL" size={16} />
         Will be clouded as wrong
         <span className="num ml-auto text-[13px] font-normal">{open > 0 ? `${open} to agree` : 'All agreed'}</span>
@@ -45,8 +45,8 @@ export function FailuresStrip({
           const busy = busyKey === failure.key;
           const error = errors[failure.key];
           return (
-            <li key={failure.key} data-slot="failure-row" className="flex min-h-14 flex-wrap items-center gap-x-4 gap-y-1 px-6 py-2">
-              <span className="inline-flex w-20 shrink-0 items-center gap-1.5 text-[13px] font-medium text-outcome-fail-fg">
+            <li key={failure.key} data-slot="failure-row" className="flex min-h-14 flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2 sm:px-6">
+              <span className="inline-flex shrink-0 basis-full items-center gap-1.5 text-[13px] font-medium text-outcome-fail-fg sm:w-20 sm:basis-auto">
                 <OutcomeIcon outcome="FAIL" size={14} />
                 Wrong
               </span>
@@ -69,7 +69,7 @@ export function FailuresStrip({
                 </span>
               )}
               {error && (
-                <p role="alert" className="flex basis-full items-center gap-2 text-[13px] text-outcome-fail-fg">
+                <p role="alert" className="flex basis-full flex-wrap items-center gap-2 text-[13px] text-outcome-fail-fg">
                   {error.message}
                   <Button size="xs" variant="ghost" onClick={error.retry}>Retry</Button>
                 </p>

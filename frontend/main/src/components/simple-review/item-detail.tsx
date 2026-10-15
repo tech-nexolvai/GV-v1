@@ -47,7 +47,7 @@ function Evidence({ item }: { item: ReviewItem }) {
             <figcaption className="text-[13px] text-muted-foreground">
               Vendor page <span className="num">{item.page}</span>
             </figcaption>
-            <div className="h-32 max-h-32">
+            <div className="h-40">
               {item.vendor_ref ? (
                 <PagePicture pageRef={item.vendor_ref} label={`Vendor page ${item.page}, the number ringed`} />
               ) : (
@@ -66,7 +66,7 @@ function Evidence({ item }: { item: ReviewItem }) {
               'Architect page'
             )}
           </figcaption>
-          <div className={hasZoom ? 'h-32 max-h-32' : 'h-72 max-h-72'}>
+          <div className={hasZoom ? 'h-40' : 'h-72'}>
             {architect ? (
               <PagePicture pageRef={architect} label={`Architect page ${architect.page_number}, the matching spot ringed`} />
             ) : (
@@ -144,7 +144,7 @@ export function ItemDetail({
   const saving = busy !== null;
 
   return (
-    <div id={detailId(item.key)} data-slot="item-detail" className="flex flex-col gap-6 border-t border-border bg-muted/30 px-6 pt-5 pb-6 pl-[3.25rem]">
+    <div id={detailId(item.key)} data-slot="item-detail" className="flex flex-col gap-6 border-t border-border bg-muted/30 px-4 pt-5 pb-6 sm:px-6 sm:pl-[3.25rem]">
       <Evidence item={item} />
       <Guess item={item} />
       <NumText text={item.why} className="block max-w-[68ch] text-[13px] leading-5 text-muted-foreground" />

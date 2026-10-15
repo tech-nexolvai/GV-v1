@@ -26,7 +26,7 @@ export function readerWord(reader: string): string {
 export const GUESS_SOURCE_WORDS: Record<BestGuess['source'], string> = {
   pdf_text: "Printed in the PDF's own text",
   agreed_text: 'Both AIs read this',
-  suggestion: "The AIs' best guess",
+  suggestion: "Picked from the AIs' readings",
 };
 
 /** The button words for each answer. Each says what happens when it is pressed. */
@@ -84,7 +84,8 @@ export function pageWord(page: number): string {
 
 /** The thing an item is about: its countertop, else its row, else its page. */
 export function placeWord(item: Pick<ReviewItem, 'countertop' | 'row_label' | 'page'>): string {
-  return item.countertop?.label ?? item.row_label ?? `Page ${item.page}`;
+  // With neither, the page number beside it already says where.
+  return item.countertop?.label ?? item.row_label ?? '';
 }
 
 export function statusRank(status: ReviewStatus): number {

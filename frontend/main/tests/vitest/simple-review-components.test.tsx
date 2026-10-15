@@ -106,6 +106,9 @@ describe('ItemDetail', () => {
     expect(await screen.findByRole('img', { name: /Vendor page 3, the number ringed/ })).toBeTruthy();
     expect(screen.getByRole('img', { name: /Architect page 12/ })).toBeTruthy();
     expect(await screen.findByRole('img', { name: /Close-up/ })).toBeTruthy();
+    // Each page is drawn once its own size is known; the ring is drawn in the page's coordinates.
+    await waitFor(() => expect(document.querySelectorAll('img.hidden')).toHaveLength(2));
+    document.querySelectorAll('img.hidden').forEach((img) => fireEvent.load(img));
     await waitFor(() => expect(document.querySelectorAll('[data-slot="spot-ring"]')).toHaveLength(2));
   });
 
@@ -119,7 +122,7 @@ describe('ItemDetail', () => {
     const guess = screen.getByTestId('best-guess');
     expect(guess.textContent).toBe('96 1/4"');
     expect(guess.className).toContain('num');
-    expect(screen.getByText("The AIs' best guess")).toBeTruthy();
+    expect(screen.getByText("Picked from the AIs' readings")).toBeTruthy();
     expect(screen.getByText('AI 2').parentElement?.textContent).toContain('96 3/4');
   });
 

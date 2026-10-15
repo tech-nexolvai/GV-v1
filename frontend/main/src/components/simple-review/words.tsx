@@ -56,7 +56,7 @@ export function Kbd({ children }: { children: string }) {
   return (
     <kbd
       aria-hidden="true"
-      className="num ml-1 hidden h-5 min-w-5 items-center justify-center rounded border border-current/25 px-1 text-[12px] leading-none opacity-70 lg:inline-flex"
+      className="ml-1 hidden h-5 min-w-5 font-sans items-center justify-center rounded border border-current/25 px-1 text-[12px] leading-none opacity-70 lg:inline-flex"
     >
       {children}
     </kbd>
