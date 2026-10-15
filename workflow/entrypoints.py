@@ -280,14 +280,24 @@ def run_worker(settings: Settings, *, factory: sessionmaker[Session]) -> int:
     # `workflow/sutradhar.py:build_stages`, so every route and setting the deployment states reaches
     # this worker too; before, it had fallen 12 arguments behind (the store and 6 of the 19) and read
     # without the rest. Only the store is its own. A partial reader or picture configuration is refused here as it is there.
+    store = LocalStore(Path(storage_root))
     try:
-        stages = build_stages(store=LocalStore(Path(storage_root)), settings=settings)
+        stages = build_stages(store=store, settings=settings)
     except ValueError as error:
         logger.error("cannot start the worker: %s", error)
         return EXIT_MISCONFIGURED
     # `register`'s six-stage graph is unchanged (frozen): it cannot hand a revision to a person and
     # take it back. Never run this worker's dispatcher beside `make worker` on one outbox.
-    worker = build_worker(settings, factory=factory, stages=stages)  # type: ignore[arg-type]
+    # `run_checks` builds its stages per run, with the run's discriminators, from the same store and
+    # settings (#1359): one check run per revision at a time, `workflow/run_checks_worker.py`.
+    from functools import partial
+
+    worker = build_worker(
+        settings,
+        factory=factory,
+        stages=stages,  # type: ignore[arg-type]
+        run_checks_stages=partial(build_stages, store=store, settings=settings),
+    )
     logger.info("worker starting")
     worker.start()
     logger.info("worker stopped")
