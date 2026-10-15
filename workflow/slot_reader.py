@@ -579,6 +579,13 @@ _PROTOTYPE_ROWS_DPI: Final = 150
 _CLOSE_UP_MARGIN_PT: Final = Decimal(12)
 _CLOSE_UP_MARGIN_FRACTION: Final = Decimal("0.15")
 _ZERO_PT: Final = Decimal(0)
+#: A stacked fraction's close-up keeps at least this much room past the fraction's own glyphs, on
+#: every side (#1315): a pen stroke reaches about 0.25 pt past its path's box, so the whole stroke
+#: shows with white beyond it. A small fraction on a narrow piece can rise above the span's label
+#: band, and a close-up cut at the band showed half its numerator (AI Sets 2 and 3, 15 Oct 2026);
+#: every stacked fraction both readers read right that day had at least 1.9 pt of room. A
+#: fraction that already has the room is cut exactly as before.
+_STACKED_ROOM_PT: Final = Decimal("1.5")
 
 
 def _span_view_png(page: SlotPage, owner: PlannedOwner) -> bytes:
@@ -667,7 +674,11 @@ def _row_x_px(page: SlotPage, plan: SlotPlan) -> tuple[int, int]:
 
 
 def _row_area_png(
-    rendered: RenderedPage, row_x: tuple[int, int], span: tuple[int, int, int, int]
+    rendered: RenderedPage,
+    row_x: tuple[int, int],
+    span: tuple[int, int, int, int],
+    *,
+    clear: tuple[int, int, int, int] | None = None,
 ) -> bytes:
     """Picture 1 of the grounded Claude label question (#1213): the drawing around the row, at
     about 150 dpi, with the asked span's label band boxed in thin magenta.
@@ -675,6 +686,11 @@ def _row_area_png(
     `row_x` is the row's reach and `span` the span's label box, both in page pixels. It replaced
     the whole page at about 100 dpi (`_span_view_png`), which cost about 2,500 picture tokens a
     question and whose box covered narrow labels. The box never supplies a value.
+
+    `clear` (#1315) is the span's stacked fraction, when it has one (`_stacked_glyphs`): the box is
+    then drawn around the band and the fraction together, so it never crosses the fraction's own
+    glyphs; a fraction inside the band leaves the picture exactly as before. The area shown is
+    always measured from the band.
     """
     from PIL import Image, ImageDraw
 
@@ -696,8 +712,18 @@ def _row_area_png(
     draw = ImageDraw.Draw(image)
     pad_x = _at_label_dpi(_ROW_AREA_BOX_PAD_X_PX, dpi)
     pad_y = _at_label_dpi(_ROW_AREA_BOX_PAD_Y_PX, dpi)
-    box_left, box_top = span[0] - left - pad_x, span[1] - top - pad_y
-    box_right, box_bottom = span[2] - left + pad_x, span[3] - top + pad_y
+    boxed = (
+        span
+        if clear is None
+        else (
+            min(span[0], clear[0]),
+            min(span[1], clear[1]),
+            max(span[2], clear[2]),
+            max(span[3], clear[3]),
+        )
+    )
+    box_left, box_top = boxed[0] - left - pad_x, boxed[1] - top - pad_y
+    box_right, box_bottom = boxed[2] - left + pad_x, boxed[3] - top + pad_y
     # Magenta, named in the question (`claude-slot-span-v5`): never a colour of the reviewer's.
     for step in range(_at_label_dpi(_ROW_AREA_BOX_THICKNESS_PX, dpi)):
         draw.rectangle(
@@ -760,7 +786,30 @@ def _marked_close_up_png(
     return encode_png(canvas.width, canvas.height, canvas.tobytes())
 
 
-def _claude_span_plan(page: SlotPage, plan: SlotPlan) -> SlotPlan:
+def _stacked_glyphs(
+    owner: PlannedOwner, height: Decimal, geometry: FractionBarGeometry | None
+) -> Box | None:
+    """Where the owner's stacked fractions are drawn (#1315): the union of its label runs set as
+    stacked text or, with `geometry`, found by the fraction-bar detector; `None` when it has none.
+
+    `owner` is code's plan of the row (`plan_slots`), whose label runs are the printed ones, not
+    the Claude span that replaces them."""
+    boxes = [
+        label.box
+        for label in owner.labels
+        if label.text_stacked or (geometry is not None and _stacked_by_bar(label, height, geometry))
+    ]
+    if not boxes:
+        return None
+    found = boxes[0]
+    for box in boxes[1:]:
+        found = found.union(box)
+    return found
+
+
+def _claude_span_plan(
+    page: SlotPage, plan: SlotPlan, *, fraction_bar: FractionBarGeometry | None = None
+) -> SlotPlan:
     """Give Claude exactly one code-defined label span per chosen slot, even if OCR found 0 or >1.
 
     The span is the candidate's tick-to-tick label band, not an AI-provided location. Replacing
@@ -771,18 +820,32 @@ def _claude_span_plan(page: SlotPage, plan: SlotPlan) -> SlotPlan:
     cut at its ticks showed the readers only "1/2" of a printed 1 1/2 (proof run 2026-10-08).
     Which span is meant is shown by Picture 1's magenta box and Picture 2's two end marks
     (`_row_area_png`, `_marked_close_up_png`, #1213), never by the close-up's edges.
+
+    A stacked fraction that reaches past that cut (`_stacked_glyphs`, with `fraction_bar` the
+    run's bar lengths) widens it to hold the whole fraction and `_STACKED_ROOM_PT` around it
+    (#1315): a small fraction on a narrow piece rises above its band. Every other label is cut
+    exactly as before. The ink check, the evidence crop and the drawn-length check use this same
+    cut, so code checks the ink the readers are shown.
     """
     if plan.row is None:
         return plan
+    height = page.rows.ink.height
 
     def one_span(owner: PlannedOwner) -> PlannedOwner:
         band = owner.band
         margin = max(_CLOSE_UP_MARGIN_PT, _CLOSE_UP_MARGIN_FRACTION * (band.x1 - band.x0))
+        left, top, right, bottom = band.x0 - margin, band.top, band.x1 + margin, band.bottom
+        stacked = _stacked_glyphs(owner, height, fraction_bar)
+        if stacked is not None:
+            left = min(left, stacked.x0 - _STACKED_ROOM_PT)
+            top = min(top, stacked.top - _STACKED_ROOM_PT)
+            right = max(right, stacked.x1 + _STACKED_ROOM_PT)
+            bottom = max(bottom, stacked.bottom + _STACKED_ROOM_PT)
         crop = Box(
-            max(_ZERO_PT, band.x0 - margin),
-            band.top,
-            min(page.rows.ink.width, band.x1 + margin),
-            band.bottom,
+            max(_ZERO_PT, left),
+            max(_ZERO_PT, top),
+            min(page.rows.ink.width, right),
+            min(height, bottom),
         )
         label = PlannedLabel(
             box=band,
@@ -1640,7 +1703,21 @@ def read_slot_pages(
             if runtime.claude_row_reader
             else set()
         )
-        # The grounded Claude label question's Picture 1 shows the drawing around the row (#1213).
+        # The grounded Claude label question's Picture 1 shows the drawing around the row (#1213),
+        # its box kept clear of each span's stacked fraction (#1315), found on code's plan.
+        stacked_px = (
+            {
+                owner.index: _pixels(page.rows, stacked, page.rendered)
+                for owner in (
+                    *source_plan.slots,
+                    *((source_plan.overall,) if source_plan.overall is not None else ()),
+                )
+                if (stacked := _stacked_glyphs(owner, page.rows.ink.height, runtime.fraction_bar))
+                is not None
+            }
+            if runtime.claude_row_reader
+            else {}
+        )
         row_x = (
             _row_x_px(page, plan)
             if runtime.claude_row_reader and any(owner.labels for owner in owners)
@@ -1678,7 +1755,9 @@ def read_slot_pages(
                     # the span's ends marked, shrunk to the readers' limit when wider; the
                     # packet stores exactly these. `crops[key]` keeps the close-up's box as cut.
                     assert row_x is not None and close_up_limit is not None
-                    view_png = _row_area_png(page.rendered, row_x, box_px)
+                    view_png = _row_area_png(
+                        page.rendered, row_x, box_px, clear=stacked_px.get(owner.index)
+                    )
                     png = _marked_close_up_png(
                         page.rendered, crop_px, box_px, max_long_edge=close_up_limit
                     )
@@ -1805,7 +1884,11 @@ def read_slot_pages(
             selected_row=selected_row,
             row_choice_made=runtime.claude_row_reader and bool(candidates),
         )
-        plan = _claude_span_plan(page, source_plan) if runtime.claude_row_reader else source_plan
+        plan = (
+            _claude_span_plan(page, source_plan, fraction_bar=runtime.fraction_bar)
+            if runtime.claude_row_reader
+            else source_plan
+        )
         owners = [*plan.slots, *([plan.overall] if plan.overall is not None else [])]
         page_candidate_ids = {_owner_candidate_key(owner.index): uuid4() for owner in owners}
         owner_candidate_ids[page.page_index] = page_candidate_ids
@@ -1959,7 +2042,7 @@ def read_slot_pages(
                 selected_row=partner,
                 row_choice_made=True,
             )
-            chain_plan = _claude_span_plan(page, chain_source)
+            chain_plan = _claude_span_plan(page, chain_source, fraction_bar=runtime.fraction_bar)
             if _counter_break_row_hold(page, chain_plan, (), runtime) is not None:
                 continue
             chain_ids = {

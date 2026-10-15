@@ -20,6 +20,7 @@ from dataclasses import replace
 from decimal import Decimal
 from io import BytesIO
 from types import SimpleNamespace
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -28,11 +29,13 @@ from PIL import Image
 from evidence.coordinates import PageTransform
 from evidence.crop import RenderedPage, _crop_rgb, decode_rgb_png
 from extraction.form_reader.bedrock import AttemptUsage
-from extraction.geometry.rows import MEASURED_SETTINGS
+from extraction.geometry.rows import MEASURED_SETTINGS, Box
+from extraction.glyph_bands import FractionBarGeometry
 from extraction.slot_reader.claude_output import long_edge_limit, png_size
-from extraction.slot_reader.runs import E2_CROP_SETTINGS, SlotPlan, plan_slots
+from extraction.slot_reader.runs import E2_CROP_SETTINGS, Lane, PlannedLabel, SlotPlan, plan_slots
 from tests.workflow.test_slot_reader import (
     DPI,
+    FRACTION_ENV,
     OPUS,
     SONNET,
     FakeReaders,
@@ -51,6 +54,7 @@ from workflow.slot_reader import (
     _row_x_px,
     _span_view_png,
     _upright_png,
+    fraction_bar_from_environment,
     read_slot_pages,
 )
 
@@ -427,3 +431,249 @@ def test_the_other_readers_keep_today_s_pictures() -> None:
         assert store.objects[packet["images"]["close_up"]["storage_key"]] in plain
     width, height, _rgb = decode_rgb_png(asked[0])
     assert width >= 1 and height >= 1
+
+
+# ---------------------------------------------------------------------------------------------
+# #1315: a stacked fraction's close-up holds the whole fraction, and Picture 1's box stays off it
+# ---------------------------------------------------------------------------------------------
+#
+# **Why.** The close-up is cut at the span's label band (`_claude_span_plan`). A small stacked
+# fraction on a narrow piece can rise above that band, so the close-up cut the top off its
+# numerator, and Picture 1's magenta box, drawn around the band, crossed the fraction's own glyphs.
+# Both readers then answered "not readable" and the whole row was held. Only a stacked fraction's
+# pictures may change; every other label's stay byte for byte as they are.
+
+#: The room the close-up keeps around a stacked fraction's glyphs (`_STACKED_ROOM_PT`).
+STACKED_ROOM = Decimal("1.5")
+
+
+def _geometry() -> FractionBarGeometry:
+    return fraction_bar_from_environment(FRACTION_ENV)
+
+
+def _source_plan(page: SlotPage) -> SlotPlan:
+    return plan_slots(
+        page.rows.candidates.rows,
+        page.rows.ink,
+        settings=E2_CROP_SETTINGS,
+        row_settings=MEASURED_SETTINGS,
+    )
+
+
+def _stacked_label(band: Box, *, rise: Decimal, by_bar: bool = False) -> PlannedLabel:
+    """A small stacked fraction (`3` over `4`, 9 pt tall) at the band's middle whose numerator rises
+    `rise` points above the band's top. Set as text (`text_stacked`), or drawn as strokes that the
+    fraction-bar detector finds (`by_bar`)."""
+    middle = (band.x0 + band.x1) / 2
+    top = band.top - rise
+    numerator = Box(middle - Decimal("1.25"), top, middle + Decimal("1.25"), top + Decimal("3.5"))
+    bar = Box(
+        middle - Decimal("1.75"),
+        top + Decimal("4.2"),
+        middle + Decimal("1.75"),
+        top + Decimal("4.2"),
+    )
+    denominator = Box(
+        middle - Decimal("1.25"), top + Decimal(5), middle + Decimal("1.25"), top + Decimal("8.5")
+    )
+    box = numerator.union(bar).union(denominator)
+    return PlannedLabel(
+        box=box,
+        crop=box,
+        lane=Lane.GLYPHS,
+        text=None,
+        text_stacked=not by_bar,
+        has_digit=True,
+        touches_edge=False,
+        ambiguous_slot=False,
+        crowded=False,
+        ticks_in_crop=True,
+        path_boxes=(numerator, bar, denominator) if by_bar else (),
+    )
+
+
+def _with_stacked_piece(plan: SlotPlan, label: PlannedLabel, piece: int = 1) -> SlotPlan:
+    slots = tuple(
+        replace(owner, labels=(label,)) if owner.index == piece else owner for owner in plan.slots
+    )
+    return replace(plan, slots=slots)
+
+
+def _inside(inner: Box, outer: Box) -> bool:
+    return (
+        outer.x0 <= inner.x0
+        and outer.top <= inner.top
+        and inner.x1 <= outer.x1
+        and inner.bottom <= outer.bottom
+    )
+
+
+@pytest.mark.parametrize("by_bar", [False, True], ids=["set-as-text", "found-by-the-bar"])
+def test_a_stacked_fraction_rising_above_the_band_is_inside_its_close_up_with_room(
+    by_bar: bool,
+) -> None:
+    """Input: piece 1's label is a stacked fraction whose numerator rises 3 pt above the band.
+    Outcome: the close-up is cut from 1.5 pt above the fraction's top to the band's bottom, so the whole fraction and the room around it are in the picture.
+    """
+    page = slot_page(named_sheet())
+    source = _source_plan(page)
+    band = source.slots[1].band
+    label = _stacked_label(band, rise=Decimal(3), by_bar=by_bar)
+    assert label.box.top < band.top, "the made-up fraction really rises above the band"
+
+    span = _claude_span_plan(page, _with_stacked_piece(source, label), fraction_bar=_geometry())
+
+    crop = span.slots[1].labels[0].crop
+    room = Box(
+        label.box.x0 - STACKED_ROOM,
+        label.box.top - STACKED_ROOM,
+        label.box.x1 + STACKED_ROOM,
+        label.box.bottom + STACKED_ROOM,
+    )
+    assert _inside(room, crop)
+    assert crop.top == label.box.top - STACKED_ROOM
+    assert crop.bottom == band.bottom, "the band already leaves room below"
+    assert span.slots[1].labels[0].box == band, "the span itself is still the band"
+
+
+def test_the_marked_close_up_of_a_stacked_fraction_shows_its_whole_numerator() -> None:
+    """The picture sent is cut from the taller crop: its first drawn row is the room above the
+    fraction, not the middle of the numerator."""
+    page = slot_page(named_sheet())
+    source = _source_plan(page)
+    label = _stacked_label(source.slots[1].band, rise=Decimal(3))
+
+    span = _claude_span_plan(page, _with_stacked_piece(source, label), fraction_bar=_geometry())
+
+    owner = span.slots[1]
+    crop_px = _pixels(page.rows, owner.labels[0].crop, page.rendered)
+    band_px = _pixels(page.rows, owner.band, page.rendered)
+    label_px = _pixels(page.rows, label.box, page.rendered)
+    assert crop_px[1] < label_px[1] < band_px[1]
+    close_up = pixels(_marked_close_up_png(page.rendered, crop_px, band_px, max_long_edge=2576))
+    scale = 2 if crop_px[2] - crop_px[0] < 300 else 1
+    strip = round(18 * DPI / 300)
+    assert close_up.height == scale * (crop_px[3] - crop_px[1] + 2 * strip)
+
+
+def test_picture_1_s_box_never_crosses_a_stacked_fraction_s_glyphs() -> None:
+    """Input: a narrow span whose stacked fraction is wider than the span and rises above its
+    band. Outcome: the magenta box encloses the fraction, 6 px clear of it (at 300 dpi), so no
+    magenta pixel lies on the fraction; the area shown is the same as before."""
+    page = fake_page(3000, 2000)
+    span = (1490, 1000, 1510, 1100)
+    fraction = (1470, 985, 1530, 1040)  # 60 px wide over a 20 px span, 15 px above the band
+
+    before = pixels(_row_area_png(page, (1000, 2000), span))
+    after = pixels(_row_area_png(page, (1000, 2000), span, clear=fraction))
+
+    assert after.size == before.size
+
+    def magenta(image: Image.Image, x: int, y: int) -> bool:
+        red, green, blue = image.getpixel((x, y))  # type: ignore[misc]
+        return red > 180 and green < 60 and blue > 150
+
+    # Area origin (850, 550); sent at half size.
+    left, top = (fraction[0] - 850) // 2, (fraction[1] - 550) // 2
+    right, bottom = (fraction[2] - 850) // 2, (fraction[3] - 550) // 2
+    assert any(
+        magenta(before, x, y) for x in range(left, right + 1) for y in range(top, bottom + 1)
+    ), "today's box crosses the fraction"
+    assert not any(
+        magenta(after, x, y) for x in range(left, right + 1) for y in range(top, bottom + 1)
+    )
+    # The box still stands around it: magenta just outside each side of the fraction.
+    middle_y = (fraction[1] + fraction[3]) // 2 - 550
+    middle_x = (fraction[0] + fraction[2]) // 2 - 850
+    assert magenta(after, (fraction[0] - 850 - 6 - 3) // 2, middle_y // 2)
+    assert magenta(after, (fraction[2] - 850 + 6 + 3) // 2, middle_y // 2)
+    assert magenta(after, middle_x // 2, (fraction[1] - 550 - 8 - 3) // 2)
+
+
+def test_labels_that_are_not_stacked_keep_today_s_crop_and_box() -> None:
+    """No stacked fraction on the row: every span's close-up is cut exactly as before, and a
+    `clear` box inside the band leaves Picture 1 byte for byte as it was."""
+    page = slot_page(named_sheet())
+    source = _source_plan(page)
+
+    span = _claude_span_plan(page, source, fraction_bar=_geometry())
+
+    for owner in (*span.slots, *((span.overall,) if span.overall is not None else ())):
+        band = owner.band
+        margin = max(Decimal(12), Decimal("0.15") * (band.x1 - band.x0))
+        assert owner.labels[0].crop == Box(
+            max(Decimal(0), band.x0 - margin),
+            band.top,
+            min(page.rows.ink.width, band.x1 + margin),
+            band.bottom,
+        )
+    fake = fake_page(3000, 2000)
+    band_px = (1200, 1000, 1300, 1100)
+    today = _row_area_png(fake, (1000, 2000), band_px)
+    assert _row_area_png(fake, (1000, 2000), band_px, clear=None) == today
+    assert _row_area_png(fake, (1000, 2000), band_px, clear=(1220, 1010, 1280, 1090)) == today
+
+
+def test_a_stacked_fraction_already_inside_its_band_with_room_keeps_today_s_crop() -> None:
+    """Only a fraction that lacks the room changes: one well inside the band is cut as before."""
+    page = slot_page(named_sheet())
+    source = _source_plan(page)
+    band = source.slots[1].band
+    inside = _stacked_label(band, rise=-(STACKED_ROOM + 1))
+    assert band.top + STACKED_ROOM < inside.box.top and inside.box.bottom < band.bottom
+
+    plain = _claude_span_plan(page, source, fraction_bar=_geometry())
+    stacked = _claude_span_plan(page, _with_stacked_piece(source, inside), fraction_bar=_geometry())
+
+    assert stacked.slots[1].labels[0].crop == plain.slots[1].labels[0].crop
+
+
+def test_read_slot_pages_sends_the_stacked_span_its_taller_close_up_and_every_other_span_today_s(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Through the product's own reading: the stacked piece is sent a close-up cut from the room
+    above its fraction to the band's bottom, and a Picture 1 with no magenta on the fraction;
+    every other span is sent exactly today's two pictures."""
+    page = slot_page(named_sheet())
+    source = _source_plan(page)
+    label = _stacked_label(source.slots[1].band, rise=Decimal(3))
+
+    def with_fraction(*args: Any, **kwargs: Any) -> SlotPlan:
+        return _with_stacked_piece(plan_slots(*args, **kwargs), label)
+
+    monkeypatch.setattr("workflow.slot_reader.plan_slots", with_fraction)
+    readers = FakeReaders(lambda _model, _png: '2"')
+
+    read_slot_pages([page], runtime=claude_runtime(readers), record_attempt=lambda _a: None)
+
+    plan = _with_stacked_piece(source, label)
+    row_x = _row_x_px(page, _claude_span_plan(page, plan))  # the spans' bands, as the product
+    sent = {pictures for _model, pictures in readers.span_pictures}
+    assert len(sent) == len(plan.slots) + (plan.overall is not None)
+    for owner in (*plan.slots, *((plan.overall,) if plan.overall is not None else ())):
+        band = owner.band
+        margin = max(Decimal(12), Decimal("0.15") * (band.x1 - band.x0))
+        band_px = _pixels(page.rows, band, page.rendered)
+        top = min(band.top, label.box.top - STACKED_ROOM) if owner.index == 1 else band.top
+        crop_px = _pixels(
+            page.rows,
+            Box(max(Decimal(0), band.x0 - margin), top, band.x1 + margin, band.bottom),
+            page.rendered,
+        )
+        close_up = _marked_close_up_png(page.rendered, crop_px, band_px, max_long_edge=2576)
+        views = [view for view, close in sent if close == close_up]
+        assert len(views) == 1, f"span {owner.index}: its close-up as expected"
+        if owner.index != 1:
+            assert views[0] == _row_area_png(page.rendered, row_x, band_px), "today's box"
+            continue
+        view = pixels(views[0])
+        area_left = max(0, row_x[0] - max(round(150 * DPI / 300), 6 * (row_x[1] - row_x[0]) // 100))
+        area_top = max(0, band_px[1] - round(450 * DPI / 300))
+        label_px = _pixels(page.rows, label.box, page.rendered)
+        shrink = max(1, round(2 * DPI / 300))
+        for x in range(label_px[0], label_px[2] + 1):
+            for y in range(label_px[1], label_px[3] + 1):
+                red, green, blue = view.getpixel(  # type: ignore[misc]
+                    ((x - area_left) // shrink, (y - area_top) // shrink)
+                )
+                assert not (red > 180 and green < 60 and blue > 150), (x, y)
