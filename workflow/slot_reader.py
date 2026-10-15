@@ -2612,23 +2612,24 @@ _OTHER_LINES_SHOWN: Final = 3
 
 @dataclass(frozen=True, slots=True)
 class _LineTry:
-    """A page the line finder tries again (#1309): why, which lines are in dispute, and the other
-    lines where code sees printed numbers (only when that switch is on)."""
+    """A page the line finder tries again (#1309): why, the lines its readers named, the other lines
+    where code sees printed numbers (only when that switch is on), and the lines `each-line-alone`
+    shows one by one."""
 
     page: SlotPage
     gate: str
     because: str
     disputed: tuple[int, ...]
     others: tuple[int, ...]
+    alone: tuple[int, ...]
 
     def shown(self, change: str) -> tuple[int, ...] | None:
         """The lines a try shows, or `None` when this try cannot change anything for the page."""
         if change == "tie-break-disputed-lines":
             return self.disputed if len(self.disputed) >= 2 else None
-        lines = tuple(sorted({*self.disputed, *self.others}))
         if change == "other-numbered-lines":
-            return lines if self.others else None
-        return lines if len(lines) >= 2 else None
+            return tuple(sorted({*self.disputed, *self.others})) if self.others else None
+        return self.alone if len(self.alone) >= 2 else None
 
 
 def _line_try(
@@ -2637,34 +2638,60 @@ def _line_try(
     candidates: Sequence[CountertopRowCandidate],
     runtime: SlotReaderRuntime,
 ) -> _LineTry | None:
-    """Whether the page's first round may be tried again, and how (#1309): the two readers each
-    named a different numbered line (`two-readers-agree`), or both named one that Rekha's gate
-    stopped (`row-has-printed-numbers`), and that gate is switched on. Any other answer (a reader
-    missing, unsure, "no countertop", "not among the lines") is not tried again."""
+    """Whether the page's first round may be tried again, and how (#1309).
+
+    * `two-readers-agree`: both readers answered and did not agree on what the product takes
+      without a person (one line, or "no countertop" from both): two different lines, a line and
+      "not among the lines" or "unsure", both "not among the lines", both unsure. `because` is the
+      stop's own code (`_line_stop_code`). `each-line-alone` then shows every candidate line.
+    * `row-has-printed-numbers`: both named one line and Rekha's gate stopped it. Lines other than
+      that one are shown only with the `other-numbered-lines` switch.
+
+    A reader with no answer, or both saying "no countertop", is never tried again; nor is a page no
+    try could change (for example one stopped line and no other numbered line to show)."""
     gates = runtime.try_again_gates
+    readers = runtime.form.reader_ids
     choices = [answer for answer in asked_rows if isinstance(answer, RowChoiceAnswer)]
-    if not candidates or len(choices) != len(runtime.form.reader_ids):
+    if not candidates or len(choices) != len(readers):
         return None
-    _choice, _number, _row, gate = _choose_row(page, asked_rows, candidates, runtime)
-    picked = {choice.row for choice in choices}
-    lines = all(choice.row > 0 and choice.kind in (None, "row") for choice in choices)
-    if lines and len(picked) > 1 and REKHA_READERS_AGREE in gates:
-        name, because, disputed = "two-readers-agree", "readers-differ", tuple(sorted(picked))
-    elif gate is not None and gate.stopped and REKHA_PRINTED_NUMBERS in gates:
-        name, because, disputed = "row-has-printed-numbers", gate.code, tuple(sorted(picked))
+    _choice, number, _row, gate = _choose_row(page, asked_rows, candidates, runtime)
+    named = tuple(
+        sorted(
+            {
+                choice.row
+                for choice in choices
+                if choice.row > 0 and choice.kind in (None, "row") and choice.row <= len(candidates)
+            }
+        )
+    )
+    picks = _row_picks(readers, asked_rows)  # type: ignore[arg-type]
+    kinds, _also = _row_kinds_and_also(readers, asked_rows)  # type: ignore[arg-type]
+    if gate is not None and gate.stopped:
+        if REKHA_PRINTED_NUMBERS not in gates:
+            return None
+        name, because = "row-has-printed-numbers", gate.code
+    elif number == 0 and gate is None:
+        because = _line_stop_code(picks, kinds, None)
+        if because == "no-countertop" or REKHA_READERS_AGREE not in gates:
+            return None
+        name = "two-readers-agree"
     else:
         return None
     others = (
         tuple(
-            number
-            for number, row in enumerate(candidates, start=1)
-            if number not in disputed and numbered_pieces(row)
+            line
+            for line, row in enumerate(candidates, start=1)
+            if line not in named and numbered_pieces(row)
         )[:_OTHER_LINES_SHOWN]
         if REKHA_OTHER_LINES in gates
         else ()
     )
-    tried = _LineTry(page, name, because, disputed, others)
-    # A page no try could change (one line stopped, no other numbered line shown) is not tried.
+    alone = (
+        tuple(range(1, len(candidates) + 1))
+        if name == "two-readers-agree"
+        else tuple(sorted({*named, *others}))
+    )
+    tried = _LineTry(page, name, because, named, others, alone)
     return tried if any(tried.shown(change) is not None for change in REKHA_CHANGES) else None
 
 
@@ -2685,6 +2712,8 @@ def _rekha_tries(
 ]:
     """The line finder's tries (#1309): up to three, in `REKHA_CHANGES` order, one batch per try.
 
+    Tried (`_line_try`): a page whose two readers did not agree (two lines, a line and "not among
+    the lines" or "unsure", both "not among the lines"), or whose agreed line Rekha's gate stopped.
     Each try asks both readers the try-again question (`slot-row-tiebreak-v1`) with a picture of
     only the lines it shows (`_focused_rows_png`). A page is settled by the first try on which both
     readers name the same line *and* Rekha's gate passes it (`_choose_row`, exactly as the first

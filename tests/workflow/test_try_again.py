@@ -893,3 +893,57 @@ def test_a_realistic_cap_funds_a_try_pair_at_its_worst_case(pages: int) -> None:
         guard = TryAgainGuard(try_again_allowance(cap), rates, BatchSpendGuard(cap, rates))
         for model in (OPUS, SONNET):
             guard.reserve(model, _reserved_input_tokens(build(model)), 3000)  # never refused
+
+
+# --- the line finder: every kind of split -----------------------------------------------------------
+
+
+def test_a_line_and_not_among_the_lines_is_tried_with_the_other_numbered_lines() -> None:
+    """One reader names line 1, the other says none of the lines is the row: one line is in
+    dispute, so the tie-break is not made; the numbered lines are shown, and both now name line 1."""
+    page = _two_row_page()
+    readers = TryReaders(
+        page,
+        rows=lambda model: _row(1) if model == OPUS else _row(0, "not_among_boxes"),
+        tie_break=lambda _m, _png: _row(1),
+    )
+    result, attempts = _read(page, readers)
+
+    keys = {
+        a.question_packet["question_id"] for a in attempts if a.prompt_id == ROW_TIEBREAK_PROMPT_ID
+    }
+    assert keys == {"p0:row-choice:again2"}
+    assert result.row_try_again == (
+        TryRecord("rekha", "two-readers-agree", "readers-differ", "other-numbered-lines", "helped"),
+    )
+    assert result.plan.row is not None and result.row_choice_number == 1
+    assert result.row_first_picks == ((OPUS, 1), (SONNET, 0))
+
+
+def test_both_not_among_the_lines_is_tried_and_each_line_alone_needs_no_switch() -> None:
+    page = _two_row_page()
+    none_of_them = TryReaders(
+        page, rows=lambda _m: _row(0, "not_among_boxes"), tie_break=lambda _m, _png: _row(2)
+    )
+    result, attempts = _read(page, none_of_them, frozenset({REKHA_READERS_AGREE}))
+
+    (packet,) = {
+        json.dumps(a.question_packet["try_again"], sort_keys=True): a.question_packet
+        for a in attempts
+        if a.prompt_id == ROW_TIEBREAK_PROMPT_ID
+    }.values()
+    assert packet["try_again"]["change"] == "each-line-alone"
+    assert packet["try_again"]["because"] == "not-among-lines"
+    assert packet["shown_rows"] == [1, 2]
+    assert result.row_choice_number == 2 and result.row_try_again[0].helped
+
+
+def test_both_no_countertop_or_a_missing_reader_is_never_tried_again() -> None:
+    page = _two_row_page()
+    for rows in (
+        lambda _m: _row(0, "no_countertop"),
+        lambda model: _row(1) if model == OPUS else {"row": "x"},  # malformed twice: no answer
+    ):
+        readers = TryReaders(page, rows=rows)
+        result, _attempts = _read(page, readers)
+        assert readers.tie_break_requests == [] and result.row_try_again == ()
