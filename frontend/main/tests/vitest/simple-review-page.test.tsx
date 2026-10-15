@@ -88,15 +88,40 @@ describe('SimpleReviewPage (#1343)', () => {
     await waitFor(() => expect(loads).toBe(before + 1));
   });
 
-  it('a refused save is named on the item, with Retry', async () => {
-    server.use(http.post(`${API}/review-items/:key/:action`, () => HttpResponse.json({ error: 'stale', message: 'This item changed since you opened it.', request_id: 'req-9' }, { status: 409 })));
+  it('a stale item (409) reloads the list first, and Retry sends the finding now on screen', async () => {
+    server.use(http.post(`${API}/review-items/:key/:action`, () => HttpResponse.json({ error: 'stale', message: 'The finding was replaced.', request_id: 'req-9' }, { status: 409 }), { once: true }));
+    renderPage();
+    await screen.findByTestId('ai-read-line');
+    await userEvent.click(rowButton(/Overall countertop width.*Countertop 1/));
+    // The re-check replaced the finding under the reviewer.
+    current = reviewItems((draft) => { draft.items[0].finding_id = 'find-3-new'; });
+    const before = loads;
+    await userEvent.click(screen.getByRole('button', { name: /^Confirm/ }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('changed since you opened it');
+    await waitFor(() => expect(loads).toBe(before + 1));
+    await userEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(posted).toEqual([{ key: 'number:cand-101', action: 'confirm', body: { expected_finding_id: 'find-3-new' } }]));
+  });
+
+  it('an answer W3 cannot save yet (501) says so; a real 404 says not found', async () => {
+    server.use(http.post(`${API}/review-items/:key/:action`, () => HttpResponse.json({ error: 'not_implemented', message: 'Numbers wait for W2.', request_id: 'req-5' }, { status: 501 }), { once: true }));
     renderPage();
     await screen.findByTestId('ai-read-line');
     await userEvent.click(rowButton(/Overall countertop width.*Countertop 1/));
     await userEvent.click(screen.getByRole('button', { name: /^Confirm/ }));
-    const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toContain('This item changed since you opened it.');
-    expect(within(alert).getByRole('button', { name: 'Retry' })).toBeTruthy();
+    expect((await screen.findByRole('alert')).textContent).toContain('This answer cannot be saved yet: Numbers wait for W2.');
+    server.use(http.post(`${API}/review-items/:key/:action`, () => HttpResponse.json({ error: 'not_found', message: 'No such item.', request_id: 'req-6' }, { status: 404 }), { once: true }));
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Not found: No such item.'));
+  });
+
+  it('the other one-click answers go to W3 "answer", naming the answer', async () => {
+    renderPage();
+    await screen.findByTestId('ai-read-line');
+    await userEvent.click(rowButton(/Check this countertop by hand/));
+    await userEvent.click(screen.getByRole('button', { name: /It is wrong/ }));
+    await waitFor(() => expect(posted).toEqual([{ key: 'countertop:find-5', action: 'answer', body: { expected_finding_id: 'find-5', answer: 'checked_wrong' } }]));
   });
 
   it('keyboard: J and K move, Enter opens, C confirms, F fixes, O opens the PDFs, Esc closes', async () => {
@@ -128,7 +153,10 @@ describe('SimpleReviewPage (#1343)', () => {
     await userEvent.click(within(screen.getByRole('region', { name: 'Will be clouded as wrong' })).getAllByRole('button', { name: /Agree/ })[0]);
     await waitFor(() => expect(posted[0]).toEqual({ key: 'failure:find-10', action: 'agree', body: { expected_finding_id: 'find-10' } }));
     await userEvent.click(screen.getByRole('button', { name: 'Clear all as not checked' }));
-    await waitFor(() => expect(posted[1]).toEqual({ key: 'not-checked', action: 'settle_group', body: { expected_finding_id: null } }));
+    // One call per unchecked result, each with its own key and finding.
+    await waitFor(() => expect(posted.slice(1)).toEqual(
+      ['d1', 'd2', 'd3', 'd4', 'd5', 'd6'].map((id) => ({ key: `not-checked:find-${id}`, action: 'clear-not-checked', body: { expected_finding_id: `find-${id}` } })),
+    ));
   });
 
   it('when everything is checked: "Nothing needs you" and the final cloud PDF unlocks', async () => {
@@ -152,7 +180,7 @@ describe('SimpleReviewPage (#1343)', () => {
   });
 
   it('a record missing from the page shows the red banner, which opens the advanced view', async () => {
-    current = reviewItems((draft) => { draft.unaccounted = [{ kind: 'finding', id: 'find-x' }]; });
+    current = reviewItems((draft) => { draft.unaccounted = [{ kind: 'finding', finding_id: 'find-x', why: 'Synthetic: not placed.' }]; });
     const { onOpenAdvanced } = renderPage();
     const banner = await screen.findByRole('alert');
     await userEvent.click(within(banner).getByRole('button', { name: /advanced view/i }));

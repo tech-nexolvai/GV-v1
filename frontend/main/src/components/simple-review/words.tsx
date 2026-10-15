@@ -1,13 +1,15 @@
-import { Loader2 } from 'lucide-react';
+import { Check, Loader2, UserCheck } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
-import { decidedWord, splitNumbers } from '@/lib/review-items';
+import { decidedWord, pageWord, splitNumbers } from '@/lib/review-items';
 import type { ReviewStatus } from '@/api/review-items';
 import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
 
 /**
  * Where an item stands: always a glyph and a word, the colour only a second signal. Open is amber
- * ("Needs you"), done is green, re-checking is grey and turning (still when motion is reduced).
+ * ("Needs you"), re-checking is grey and turning (still when motion is reduced), and done is a plain
+ * grey check. Done is never the green PASS glyph: a person's answer is not a check's outcome, and the
+ * PASS and FAIL glyphs only ever show an outcome the API recorded.
  */
 export function StatusWord({ status, decidedBy = null, className }: { status: ReviewStatus; decidedBy?: string | null; className?: string }) {
   if (status === 'rechecking') {
@@ -20,8 +22,8 @@ export function StatusWord({ status, decidedBy = null, className }: { status: Re
   }
   if (status === 'done') {
     return (
-      <span data-slot="status-word" data-status={status} className={cn('inline-flex items-center gap-1.5 text-[13px] text-outcome-pass-fg', className)}>
-        <OutcomeIcon outcome="PASS" size={14} />
+      <span data-slot="status-word" data-status={status} className={cn('inline-flex items-center gap-1.5 text-[13px] text-muted-foreground', className)}>
+        {decidedBy === 'REVIEWER' ? <UserCheck aria-hidden="true" className="size-3.5" /> : <Check aria-hidden="true" className="size-3.5" />}
         {decidedWord(decidedBy)}
       </span>
     );
@@ -32,6 +34,12 @@ export function StatusWord({ status, decidedBy = null, className }: { status: Re
       Needs you
     </span>
   );
+}
+
+/** The page an item is on, in the number face; plain words when the page was not recorded. */
+export function PageTag({ page, className }: { page: number | null | undefined; className?: string }) {
+  if (page == null) return <span className={cn('shrink-0 text-[13px] text-muted-foreground', className)}>page not recorded</span>;
+  return <span className={cn('num shrink-0 text-[13px] text-muted-foreground', className)}>{pageWord(page)}</span>;
 }
 
 /** Plain words with every number in it set in the number face (tabular Plex Mono). */

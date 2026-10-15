@@ -86,8 +86,16 @@ describe('ItemRow', () => {
   it('says done and re-checking with a glyph and a word', () => {
     const { rerender } = render(<ItemRow item={item('number:cand-090')} open={false} active={false} onToggle={() => {}} />);
     expect(screen.getByText('Checked by you')).toBeTruthy();
+    // A person's answer is not an outcome: never the green PASS glyph.
+    expect(document.querySelector('[data-outcome-icon="PASS"]')).toBeNull();
     rerender(<ItemRow item={item('number:cand-120')} open={false} active={false} onToggle={() => {}} />);
     expect(screen.getByText('Re-checking')).toBeTruthy();
+  });
+
+  it('a missing page says so in words, never "p.null"', () => {
+    render(<ItemRow item={{ ...item('number:cand-101'), page: null, countertop: null, row_label: null }} open={false} active={false} onToggle={() => {}} />);
+    expect(screen.getByText('page not recorded')).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/null|undefined/);
   });
 });
 
@@ -226,6 +234,7 @@ describe('page states', () => {
   it('empty says nothing needs you', () => {
     render(<NothingNeedsYou checked={7} />);
     expect(screen.getByRole('status').textContent).toContain('Nothing needs you');
+    expect(document.querySelector('[data-outcome-icon]')).toBeNull();
   });
 
   it('an error is named, with the request id, and Retry', async () => {

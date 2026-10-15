@@ -1,10 +1,10 @@
 import { Check, Loader2 } from 'lucide-react';
 
 import type { ReviewFailure } from '@/api/review-items';
-import { pageWord } from '@/lib/review-items';
+import { whereWord } from '@/lib/review-items';
 import { Button } from '@/components/ui/button';
 import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
-import { NumText } from './words';
+import { NumText, PageTag } from './words';
 
 export interface SaveError {
   message: string;
@@ -52,13 +52,13 @@ export function FailuresStrip({
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-[15px] text-foreground">
-                  {failure.countertop?.label ?? failure.row_label ?? `Page ${failure.page}`}
-                  <span className="num ml-2 text-[13px] text-muted-foreground">{pageWord(failure.page)}</span>
+                  {whereWord(failure)}
+                  <PageTag page={failure.page} className="ml-2" />
                 </span>
                 <NumText text={failure.why} className="block text-[13px] leading-5 text-muted-foreground" />
               </span>
               {failure.status === 'open' && failure.actions.includes('agree') ? (
-                <Button size="sm" variant="outline" disabled={busy} onClick={() => onAgree(failure)} aria-label={`Agree: ${failure.countertop?.label ?? failure.row_label ?? `page ${failure.page}`} is wrong`}>
+                <Button size="sm" variant="outline" disabled={busy} onClick={() => onAgree(failure)} aria-label={`Agree: ${whereWord(failure)} is wrong`}>
                   {busy ? <Loader2 aria-hidden="true" className="animate-spin motion-reduce:animate-none" /> : <Check aria-hidden="true" />}
                   Agree
                 </Button>

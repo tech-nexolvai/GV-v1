@@ -1,9 +1,8 @@
-import { CircleAlert, RotateCcw } from 'lucide-react';
+import { CheckCheck, CircleAlert, RotateCcw } from 'lucide-react';
 
 import { ApiError } from '@/api/client';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
-import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
 
 /** While the items load: the page's own shape in grey, so nothing jumps when they arrive. */
 export function ReviewSkeleton() {
@@ -33,7 +32,7 @@ export function ReviewSkeleton() {
 export function NothingNeedsYou({ checked }: { checked: number }) {
   return (
     <div role="status" data-slot="nothing-needs-you" className="flex flex-col items-center gap-2 rounded-xl border border-border px-6 py-12 text-center">
-      <OutcomeIcon outcome="PASS" size={28} className="text-outcome-pass-fg" />
+      <CheckCheck aria-hidden="true" className="size-7 text-muted-foreground" />
       <p className="text-[20px] leading-7 font-semibold text-foreground">Nothing needs you</p>
       <p className="max-w-[52ch] text-[15px] leading-6 text-muted-foreground">
         {checked > 0 ? (
@@ -54,7 +53,7 @@ export function LoadError({ error, onRetry }: { error: Error; onRetry: () => voi
   return (
     <div role="alert" className="mt-8 flex flex-col items-start gap-3 rounded-xl border border-outcome-fail-fg/40 bg-outcome-fail-bg px-6 py-5">
       <p className="flex items-center gap-2 text-[15px] font-medium text-outcome-fail-fg">
-        <OutcomeIcon outcome="FAIL" size={16} />
+        <CircleAlert aria-hidden="true" className="size-4" />
         This review's items could not be loaded
       </p>
       <p className="text-[13px] leading-5 text-foreground">{error.message}</p>

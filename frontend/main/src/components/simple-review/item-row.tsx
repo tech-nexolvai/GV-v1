@@ -3,8 +3,8 @@ import { ChevronRight } from 'lucide-react';
 
 import type { ReviewItem } from '@/api/review-items';
 import { cn } from '@/lib/utils';
-import { detailId, pageWord, placeWord } from '@/lib/review-items';
-import { StatusWord } from './words';
+import { detailId, placeWord } from '@/lib/review-items';
+import { PageTag, StatusWord } from './words';
 
 /** What the guess column says when the AI has no number to offer. */
 function noGuessWord(item: Pick<ReviewItem, 'kind' | 'status'>): string {
@@ -56,7 +56,7 @@ export const ItemRow = forwardRef<HTMLButtonElement, {
         <span className="flex min-w-0 flex-1 items-baseline gap-3">
           <span className={cn('truncate text-[15px] font-medium', item.status === 'done' ? 'text-muted-foreground' : 'text-foreground')}>{item.what}</span>
           <span className="hidden truncate text-[13px] text-muted-foreground md:inline">{placeWord(item)}</span>
-          <span className="num shrink-0 text-[13px] text-muted-foreground">{pageWord(item.page)}</span>
+          <PageTag page={item.page} />
         </span>
         <span className="flex shrink-0 items-center justify-between gap-3 sm:justify-end">
           {item.best_guess ? (

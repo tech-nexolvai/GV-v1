@@ -5,6 +5,7 @@
  * says which one-click answers an item offers. The page never offers a box to type into.
  */
 
+import { isItemAction } from '@/api/review-items';
 import type {
   BestGuess,
   ItemAction,
@@ -50,12 +51,12 @@ const DISAGREE: readonly ItemAction[] = ['fix', 'checked_wrong', 'there_is_a_cou
 
 export function agreeAction(item: Pick<ReviewItem, 'actions' | 'status'>): ItemAction | null {
   if (item.status !== 'open') return null;
-  return item.actions.find((action) => AGREE.includes(action)) ?? null;
+  return item.actions.filter(isItemAction).find((action) => AGREE.includes(action)) ?? null;
 }
 
 export function disagreeAction(item: Pick<ReviewItem, 'actions' | 'status'>): ItemAction | null {
   if (item.status !== 'open') return null;
-  return item.actions.find((action) => DISAGREE.includes(action)) ?? null;
+  return item.actions.filter(isItemAction).find((action) => DISAGREE.includes(action)) ?? null;
 }
 
 function bare(text: string): string {
@@ -69,7 +70,7 @@ function bare(text: string): string {
 export function fixChoices(item: Pick<ReviewItem, 'best_guess' | 'readers'>): { text: string; readers: string[] }[] {
   const guess = item.best_guess ? bare(item.best_guess.text) : null;
   const choices = new Map<string, string[]>();
-  for (const reading of item.readers) {
+  for (const reading of item.readers ?? []) {
     const text = bare(reading.text);
     if (!text || text === guess) continue;
     choices.set(text, [...(choices.get(text) ?? []), readerWord(reading.reader)]);
@@ -77,15 +78,27 @@ export function fixChoices(item: Pick<ReviewItem, 'best_guess' | 'readers'>): { 
   return [...choices].map(([text, readers]) => ({ text: `${text}"`, readers }));
 }
 
+/** Where a failure or an unchecked result is, in words; never "page null". */
+export function whereWord(entry: { countertop?: { label: string } | null; row_label?: string | null; page?: number | null }): string {
+  if (entry.countertop?.label) return entry.countertop.label;
+  if (entry.row_label) return entry.row_label;
+  return entry.page != null ? `Page ${entry.page}` : 'Place not recorded';
+}
+
 /** "p.13": the page, short, for a line of the list. */
-export function pageWord(page: number): string {
-  return `p.${page}`;
+export function pageWord(page: number | null | undefined): string {
+  return page == null ? '' : `p.${page}`;
 }
 
 /** The thing an item is about: its countertop, else its row, else its page. */
-export function placeWord(item: Pick<ReviewItem, 'countertop' | 'row_label' | 'page'>): string {
+export function placeWord(item: Pick<ReviewItem, 'countertop' | 'row_label'>): string {
   // With neither, the page number beside it already says where.
   return item.countertop?.label ?? item.row_label ?? '';
+}
+
+/** Items on no page sort last. */
+function pageOrder(page: number | null | undefined): number {
+  return page ?? Number.MAX_SAFE_INTEGER;
 }
 
 export function statusRank(status: ReviewStatus): number {
@@ -93,10 +106,10 @@ export function statusRank(status: ReviewStatus): number {
 }
 
 /** Open first, then re-checking, then done; by page within each, as the server sent them otherwise. */
-export function orderItems<T extends { status: ReviewStatus; page: number }>(items: readonly T[]): T[] {
+export function orderItems<T extends { status: ReviewStatus; page?: number | null }>(items: readonly T[]): T[] {
   return items
     .map((item, index) => ({ item, index }))
-    .sort((a, b) => statusRank(a.item.status) - statusRank(b.item.status) || a.item.page - b.item.page || a.index - b.index)
+    .sort((a, b) => statusRank(a.item.status) - statusRank(b.item.status) || pageOrder(a.item.page) - pageOrder(b.item.page) || a.index - b.index)
     .map(({ item }) => item);
 }
 

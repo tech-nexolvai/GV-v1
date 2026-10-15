@@ -6,6 +6,8 @@ import {
   disagreeAction,
   fixChoices,
   orderItems,
+  pageWord,
+  whereWord,
   pointsOf,
   ringOf,
   splitNumbers,
@@ -75,7 +77,7 @@ describe('simple review rules', () => {
 
   it('a record missing from the page locks the final PDF', () => {
     const missing = allSettled();
-    missing.unaccounted = [{ kind: 'finding', id: 'find-x' }];
+    missing.unaccounted = [{ kind: 'finding', finding_id: 'find-x', why: 'Synthetic: not placed.' }];
     expect(summarize(missing).canFinalise).toBe(false);
   });
 
@@ -87,6 +89,12 @@ describe('simple review rules', () => {
     expect(ring.rx).toBeGreaterThan(0.1);
     expect(ringOf([[0.5, 0.5], [0.501, 0.5], [0.501, 0.501]]).rx).toBe(0.03);
     expect(pointsOf({ polygon: [['0.x', '0.x'], ['1', '1'], ['0', '1']] })).toBeNull();
+  });
+
+  it('never says "p.null": a missing page or place has plain words', () => {
+    expect(pageWord(null)).toBe('');
+    expect(whereWord({ countertop: null, row_label: null, page: null })).toBe('Place not recorded');
+    expect(whereWord({ page: 4 })).toBe('Page 4');
   });
 
   it('splits numbers out of plain words so they can use the number face', () => {

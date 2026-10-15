@@ -79,9 +79,21 @@ function useLivePictures(project: string | null, packageId: string): PictureLoad
   }, [project, packageId]);
 }
 
+/** A failed save in words. 501 is W3's "not built yet"; 404 and 409 keep their own meaning. */
 function errorWords(error: unknown): string {
-  if (error instanceof ApiError && error.status === 404 && error.code === 'http_error') return 'This answer cannot be saved on this server yet.';
+  if (error instanceof ApiError) {
+    if (error.status === 501) return `This answer cannot be saved yet: ${error.message}`;
+    if (error.status === 404) return `Not found: ${error.message}`;
+    if (error.status === 409) return `This item changed since you opened it, so the list was reloaded. Look again, then Retry. (${error.message})`;
+  }
   return error instanceof Error ? error.message : String(error);
+}
+
+/** What the viewer's pill says: the item's own state, or "All pages" for the whole set. */
+function viewerWord(item: ReviewItem | null): Pick<ViewerTarget, 'tone' | 'glyph' | 'word'> {
+  if (item === null) return { tone: 'missing', glyph: 'NO_APPLICABLE_RULE', word: 'All pages' };
+  if (item.status === 'open') return { tone: 'review', glyph: 'REVIEW_REQUIRED', word: 'Needs you' };
+  return { tone: 'missing', glyph: 'NO_APPLICABLE_RULE', word: item.status === 'rechecking' ? 'Re-checking' : 'Checked' };
 }
 
 function viewerTarget(item: ReviewItem | null, fallbackPage: number): ViewerTarget {
@@ -89,14 +101,12 @@ function viewerTarget(item: ReviewItem | null, fallbackPage: number): ViewerTarg
   const architect = item?.architect_ref?.location ?? null;
   return {
     key: item?.key ?? 'set',
-    label: item ? item.what : 'This drawing set',
+    label: item ? item.what : 'All pages',
     page: vendor?.page_number ?? item?.page ?? fallbackPage,
     documentVersionId: vendor?.document_version_id ?? null,
     outline: pointsOf(vendor),
     findingId: item?.finding_id ?? null,
-    tone: 'review',
-    glyph: 'REVIEW_REQUIRED',
-    word: 'Needs you',
+    ...viewerWord(item),
     needsYou: item?.status === 'open',
     row: null,
     marks: [],
@@ -113,6 +123,9 @@ function isTyping(target: EventTarget | null): boolean {
   if (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return true;
   return target.closest('[role="menu"], [role="dialog"], [role="listbox"]') !== null;
 }
+
+/** Where the "Not checked" group's busy state and save error are kept (not an API key). */
+const NOT_CHECKED = 'group:not-checked';
 
 const NO_RECORDS: AssistantRecords = {
   rows: [],
@@ -216,28 +229,72 @@ export function SimpleReviewPage({
   const ordered = useMemo(() => (data ? orderItems(data.items) : []), [data]);
   const reload = useCallback(() => setVersion((n) => n + 1), []);
 
-  async function act(key: string, action: ItemAction, findingId: string | null, value?: string) {
+  // The newest list, for Retry: after a 409 the list is reloaded first, and Retry then sends the
+  // finding the reviewer now sees, never the stale one that was refused.
+  const latest = useRef<ReviewItemsOut | null>(null);
+  useEffect(() => {
+    latest.current = data;
+  }, [data]);
+
+  function findingNow(key: string, fallback: string | null): string | null {
+    const now = latest.current;
+    if (!now) return fallback;
+    const entry = [...now.items, ...now.failures, ...now.not_checked].find((candidate) => candidate.key === key);
+    return entry ? (entry.finding_id ?? null) : fallback;
+  }
+
+  async function send(key: string, action: ItemAction, findingId: string | null, value?: string) {
     if (project === null) return;
+    await api.act(project, packageId, key, action, value === undefined ? { expected_finding_id: findingId } : { expected_finding_id: findingId, value });
+  }
+
+  function failed(errorKey: string, error: unknown, retry: () => void) {
+    // A stale item: reload the list now, so what the reviewer looks at before Retry is current.
+    if (error instanceof ApiError && error.status === 409) reload();
+    setErrors((all) => ({ ...all, [errorKey]: { message: errorWords(error), retry } }));
+  }
+
+  function cleared(errorKey: string) {
+    setErrors((all) => {
+      const rest = { ...all };
+      delete rest[errorKey];
+      return rest;
+    });
+  }
+
+  async function act(key: string, action: ItemAction, findingId: string | null, value?: string) {
     setBusy({ key, action });
     setFixOpenKey(null);
     try {
-      await api.act(project, packageId, key, action, value === undefined ? { expected_finding_id: findingId } : { expected_finding_id: findingId, value });
-      setErrors((all) => {
-        const rest = { ...all };
-        delete rest[key];
-        return rest;
-      });
+      await send(key, action, findingId, value);
+      cleared(key);
       reload();
     } catch (error) {
-      setErrors((all) => ({ ...all, [key]: { message: errorWords(error), retry: () => void act(key, action, findingId, value) } }));
+      failed(key, error, () => void act(key, action, findingNow(key, findingId), value));
     } finally {
       setBusy(null);
     }
   }
 
-  const actOnItem = (item: ReviewItem, action: ItemAction, value?: string) => void act(item.key, action, item.finding_id, value);
+  const actOnItem = (item: ReviewItem, action: ItemAction, value?: string) => void act(item.key, action, item.finding_id ?? null, value);
   const agree = (failure: ReviewFailure) => void act(failure.key, 'agree', failure.finding_id);
-  const clearNotChecked = () => void act('not-checked', 'settle_group', null);
+
+  // "Clear all as not checked": one call per unchecked result, each with its own key and finding, as
+  // W3 records every decision on its own (#1351). Stops at the first refusal and names it.
+  async function clearNotChecked() {
+    const rows = (latest.current?.not_checked ?? []).filter((row) => row.status === 'open');
+    setBusy({ key: NOT_CHECKED, action: 'settle_group' });
+    try {
+      for (const row of rows) await send(row.key, 'settle_group', findingNow(row.key, row.finding_id));
+      cleared(NOT_CHECKED);
+      reload();
+    } catch (error) {
+      failed(NOT_CHECKED, error, () => void clearNotChecked());
+      reload();
+    } finally {
+      setBusy(null);
+    }
+  }
 
   const openPdfs = useCallback((item: ReviewItem | null) => {
     if (onOpenPdfs) onOpenPdfs(item);
@@ -459,9 +516,9 @@ export function SimpleReviewPage({
                   <NotCheckedGroup
                     items={data.not_checked}
                     note={data.not_checked_note}
-                    busy={busy?.key === 'not-checked'}
-                    error={errors['not-checked'] ?? null}
-                    onClearAll={clearNotChecked}
+                    busy={busy?.key === NOT_CHECKED}
+                    error={errors[NOT_CHECKED] ?? null}
+                    onClearAll={() => void clearNotChecked()}
                   />
 
                   {checked.length > 0 && (
@@ -488,7 +545,7 @@ export function SimpleReviewPage({
             setName={name}
             open={assistantOpen}
             records={NO_RECORDS}
-            context={opened ? { page_number: opened.page, record_id: opened.finding_id } : null}
+            context={opened && opened.page != null ? { page_number: opened.page, record_id: opened.finding_id ?? null } : null}
             nav={assistantNav}
             onClose={() => setAssistantOpen(false)}
           />

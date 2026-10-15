@@ -26,18 +26,19 @@ import { Kbd, NumText } from './words';
 /** The pictures side by side: the close-up large, the vendor page and the architect page beside it. */
 function Evidence({ item }: { item: ReviewItem }) {
   const architect = item.architect_ref?.location ?? null;
-  const hasZoom = item.zoom_ref !== null;
+  const hasZoom = Boolean(item.zoom_ref);
+  const page = item.vendor_ref?.page_number ?? item.page;
   return (
     <div className="grid gap-4 md:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
       <figure className="flex min-w-0 flex-col gap-2">
         <figcaption className="text-[13px] text-muted-foreground">{hasZoom ? 'Close-up' : 'Vendor page'}</figcaption>
         <div className="h-72">
-          {item.zoom_ref !== null ? (
-            <ZoomPicture path={item.zoom_ref} label={`Close-up of the number on page ${item.page}`} />
+          {item.zoom_ref ? (
+            <ZoomPicture path={item.zoom_ref} label={`Close-up of the number on page ${page}`} />
           ) : item.vendor_ref ? (
-            <PagePicture pageRef={item.vendor_ref} label={`Vendor page ${item.page}, the spot ringed`} />
+            <PagePicture pageRef={item.vendor_ref} label={`Vendor page ${page}, the spot ringed`} />
           ) : (
-            <PictureUnavailable>No spot is stored for this item. Open the PDFs to look at page {item.page}.</PictureUnavailable>
+            <PictureUnavailable>No spot is stored for this item. Open the PDFs to look at the drawing.</PictureUnavailable>
           )}
         </div>
       </figure>
@@ -45,11 +46,11 @@ function Evidence({ item }: { item: ReviewItem }) {
         {hasZoom && (
           <figure className="flex min-w-0 flex-col gap-2">
             <figcaption className="text-[13px] text-muted-foreground">
-              Vendor page <span className="num">{item.page}</span>
+              Vendor page <span className="num">{page}</span>
             </figcaption>
             <div className="h-40">
               {item.vendor_ref ? (
-                <PagePicture pageRef={item.vendor_ref} label={`Vendor page ${item.page}, the number ringed`} />
+                <PagePicture pageRef={item.vendor_ref} label={`Vendor page ${page}, the number ringed`} />
               ) : (
                 <PictureUnavailable>No spot is stored on this page.</PictureUnavailable>
               )}
@@ -99,9 +100,9 @@ function Guess({ item }: { item: ReviewItem }) {
         </span>
         <span className="text-[13px] text-muted-foreground">{GUESS_SOURCE_WORDS[item.best_guess.source]}</span>
       </div>
-      {item.readers.length > 0 && (
+      {(item.readers ?? []).length > 0 && (
         <dl className="flex gap-6 pb-6 text-[13px]">
-          {item.readers.map((reading) => (
+          {(item.readers ?? []).map((reading) => (
             <div key={reading.reader} className="flex flex-col gap-0.5">
               <dt className="text-muted-foreground">{readerWord(reading.reader)}</dt>
               <dd className="num text-[15px] text-foreground">{reading.text}</dd>

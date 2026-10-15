@@ -3,10 +3,11 @@ import { Check, ChevronRight, Loader2 } from 'lucide-react';
 
 import type { NotCheckedItem } from '@/api/review-items';
 import { cn } from '@/lib/utils';
-import { pageWord } from '@/lib/review-items';
+import { whereWord } from '@/lib/review-items';
 import { Button } from '@/components/ui/button';
 import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
 import type { SaveError } from './failures-strip';
+import { PageTag } from './words';
 
 /**
  * The checks that never ran (the reader they need is off). Quiet and closed by default: they are not
@@ -75,9 +76,9 @@ export function NotCheckedGroup({
             <li key={item.key} className="flex h-11 items-center gap-3 px-4 pl-11 sm:px-6 sm:pl-[3.25rem] text-[13px] text-muted-foreground">
               <span className="min-w-0 flex-1 truncate">
                 <span className="text-foreground">{item.check}</span>
-                <span className="ml-2">{item.countertop?.label ?? item.row_label ?? `Page ${item.page}`}</span>
+                <span className="ml-2">{whereWord(item)}</span>
               </span>
-              <span className="num shrink-0">{pageWord(item.page)}</span>
+              <PageTag page={item.page} />
             </li>
           ))}
         </ul>
