@@ -73,12 +73,6 @@ is exact arithmetic against a tolerance — never an LLM judgment. Primary safet
   the reviewer's numbers baked into the vendor Snapshot stamp (#742). The alternative, a person
   confirming every AI-read number, was offered and declined. Revisit after the post-quota re-run
   (#716).
-- **GV's green tick beside a vendor number keeps the number held; only the words change (Anant,
-  2026-10-15, #1198).** Code can name the tick exactly (a small green filled check glyph), but a
-  tick is still GV's ink, and GV's markup is the answer key, never a reading source. The reason says
-  "GV ticked this number (round 2), so it is shown to you" only where the tick is GV's one mark at
-  that number (and, for a row, at every held number of the row); otherwise the general "covered by
-  reviewer markup". Production drawings carry no GV marks.
 
 ## OPEN — must-fix / to resolve
 - **Rule engine can't yet express the real first rules.** Typed op set lacks aggregate/variable-input
