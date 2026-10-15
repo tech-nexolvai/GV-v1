@@ -391,6 +391,20 @@ function drawnSingle(quantity: Quantity): boolean {
 }
 
 /**
+ * A drawn number typed before typing them stopped (#1303 review). It no longer counts, but a reading
+ * that differs from it makes the check wait for a person, so its AI reading is never put in the field
+ * or confirmed by Save: only the field's own Confirm button confirms it.
+ */
+function typedBeforeDrawn(quantity: Quantity | undefined, saved: Record<string, SavedQuantity>): boolean {
+  return quantity !== undefined && drawnSingle(quantity) && (saved[quantity.key]?.values.length ?? 0) > 0;
+}
+
+/** `4 in`: a saved value written the way a reading is, so the two can be compared exactly. */
+function typedAsReading(saved: SavedQuantity): string {
+  return mixedQuantity(saved.values[0]);
+}
+
+/**
  * The value column of a drawn number (#1251): no box. GV's rule (Anant, 2026-10-12) is that people
  * confirm readings and do not type numbers drawn on the vendor's or the architect's drawing.
  *
@@ -406,6 +420,7 @@ function drawnSingle(quantity: Quantity): boolean {
 function ConfirmOnlyValue({
   value,
   typedBefore,
+  aiReadings,
   confirmedHere,
   pagesElsewhere,
   readingsBelow,
@@ -414,6 +429,8 @@ function ConfirmOnlyValue({
   value: string;
   /** The value typed before typing drawn numbers stopped, kept on record but no longer counted, or null. */
   typedBefore: SavedQuantity | null;
+  /** The AI's readings proposed for this field on this page, to compare with a value typed before. */
+  aiReadings: string[];
   /** The readings confirmed for this field on the page in view. */
   confirmedHere: string[];
   /** Other pages holding a confirmed reading for this field. */
@@ -427,12 +444,33 @@ function ConfirmOnlyValue({
       Drawn on: {whereToFind}
     </p>
   ) : null;
+  const typedText = typedBefore ? typedAsReading(typedBefore) : null;
+  const typedDay = typedBefore ? settingDate(typedBefore.values[0].set_at) : null;
+  // A reading that differs from the value typed before (#1303 review): the check never lets either
+  // decide alone, and Save never confirms the AI's one for this field.
+  const otherAi = [...new Set(aiReadings.filter((reading) => reading.trim() !== typedText))];
+  const differs =
+    typedBefore && value && value !== typedText ? (
+      <p className="text-xs text-muted-foreground" data-part="typed-differs">
+        The confirmed reading (<span className="num">{value}</span>) differs from the value typed {typedDay} (
+        <span className="num">{typedText}</span>), so the check waits: a person decides which is right.
+      </p>
+    ) : typedBefore && !value && otherAi.length > 0 ? (
+      <p className="text-xs text-muted-foreground" data-part="typed-differs">
+        The AI read <span className="num">{otherAi.join(', ')}</span> here, which differs from the value typed {typedDay}{' '}
+        (<span className="num">{typedText}</span>). Save does not confirm it: confirm it under the field if it is right,
+        and the check then waits for a person to decide between the two.
+      </p>
+    ) : null;
   const typed = typedBefore ? (
-    <p className="text-xs text-muted-foreground" data-part="typed-before">
-      Typed {settingDate(typedBefore.values[0].set_at)}: <span className="num">{savedText(typedBefore.values[0])}</span>,
-      before drawn numbers stopped being typed. It no longer counts: a number drawn on the drawing must come from a
-      confirmed reading. It is kept on record and cannot be changed here.
-    </p>
+    <>
+      <p className="text-xs text-muted-foreground" data-part="typed-before">
+        Typed {typedDay}: <span className="num">{savedText(typedBefore.values[0])}</span>, before drawn numbers stopped
+        being typed. It no longer counts: a number drawn on the drawing must come from a confirmed reading. It is kept
+        on record and cannot be changed here.
+      </p>
+      {differs}
+    </>
   ) : null;
   if (value) {
     const pages = pagesElsewhere.join(', ');
@@ -747,6 +785,9 @@ export function MeasurementPanel({
         }
         for (const field of required.proposed_readings ?? []) {
           if (field.many) continue;
+          // A drawn field typed before keeps its AI reading out of the field (#1303 review).
+          const target = required.quantities.find((quantity) => quantity.key === field.field_key);
+          if (typedBeforeDrawn(target, savedQuantities)) continue;
           const pageValues = field.values.filter(
             (reading) => reading.page_index === selectedPageNumber - 1,
           );
@@ -1039,9 +1080,12 @@ export function MeasurementPanel({
   async function confirmAcceptedProposals(): Promise<Set<string>> {
     if (signedOff || !packageId || !needed) return new Set();
     const confirmed = new Set<string>();
+    const saved = savedQuantitiesByKey(needed.saved_measurements);
     for (const [key, candidateIds] of Object.entries(aiFilled)) {
       const quantity = needed.quantities.find((item) => item.key === key);
       if (!quantity || candidateIds.length === 0) continue;
+      // Never through Save for a drawn field typed before (#1303 review): its own Confirm button only.
+      if (typedBeforeDrawn(quantity, saved)) continue;
       const proposal = needed.proposed_readings.find((item) => item.field_key === key);
       // Sparse form proposals remain editable suggestions. Do not confirm them as a complete
       // evidence list; the reviewer can fill the blank positions first, and the confirmed run
@@ -1145,8 +1189,15 @@ export function MeasurementPanel({
       const classifications = classificationEntries(needed.quantities, runs);
       // A drawn number whose reading could not be confirmed is not typed in its place (#1251), so
       // it is said rather than lost: the rest still saves, and the field keeps its reading to confirm.
+      const typedBefore = savedQuantitiesByKey(needed.saved_measurements);
       const unconfirmedDrawn = needed.quantities
-        .filter((quantity) => drawnSingle(quantity) && quantity.key in aiFilled && !confirmedFromDrawing.has(quantity.key))
+        .filter(
+          (quantity) =>
+            drawnSingle(quantity) &&
+            quantity.key in aiFilled &&
+            !confirmedFromDrawing.has(quantity.key) &&
+            !typedBeforeDrawn(quantity, typedBefore),
+        )
         .map(fieldLabel);
 
       // A setting typed from a found passage sends that passage as its citation, and the server
@@ -1243,6 +1294,9 @@ export function MeasurementPanel({
         } else {
           if (reviewerEditedSingles.has(assignment.field_key)) continue;
           if ((singles[assignment.field_key] ?? '').trim()) continue;
+          // A drawn field typed before keeps its AI reading out of the field (#1303 review).
+          const target = needed.quantities.find((quantity) => quantity.key === assignment.field_key);
+          if (typedBeforeDrawn(target, savedQuantitiesByKey(needed.saved_measurements))) continue;
           filledSingles[assignment.field_key] = values[0] ?? '';
         }
         marks[assignment.field_key] = assignment.values.map((reading) => reading.candidate_id);
@@ -1653,6 +1707,15 @@ export function MeasurementPanel({
               <ConfirmOnlyValue
                 value={(singles[quantity.key] ?? '').trim()}
                 typedBefore={savedQuantities[quantity.key]?.values.length === 1 ? savedQuantities[quantity.key] : null}
+                aiReadings={[
+                  ...(needed.proposed_readings ?? [])
+                    .filter((proposed) => proposed.field_key === quantity.key)
+                    .flatMap((proposed) => proposed.values.filter((reading) => reading.page_index === selectedPageNumber - 1))
+                    .map((reading) => reading.value),
+                  ...(proposal?.assignments ?? [])
+                    .filter((assignment) => assignment.field_key === quantity.key)
+                    .flatMap((assignment) => assignment.values.map((reading) => reading.value)),
+                ]}
                 confirmedHere={(readingsByKey[quantity.key] ?? []).map((reading) => reading.value)}
                 pagesElsewhere={(quantity.confirmed_pages ?? []).filter((page) => page !== selectedPageNumber)}
                 readingsBelow={review.state !== 'agreed' && candidates.some((candidate) => candidate.source === quantity.source)}
