@@ -21,20 +21,32 @@ ACCEPT on all three AI sets.
    captions) join the view beside them. A view's heading is never needed, because vendors' view
    titles are often wrong (a "plan view" caption under a front elevation).
 2. **The boxes.** Code's ranked candidate rows (`extraction/geometry/rows.py`) are kept in rank
-   order, at most `boxes_per_item` per item, after dropping the ones that cannot be a dimension
-   line with printed numbers (`junk_reason`): the same line found twice, a line whose labels are
-   only words or a title block's fields, a row of material tags such as `AB-12`, and a line whose
-   only "labels" are marks too small to be printed characters (the speckle of a stone top, a
-   faucet's outline, hatching). **Every candidate that is not boxed is listed with its reason**;
-   nothing vanishes.
+   order, at most `boxes_per_item` per item. Rows that cannot be a dimension line are dropped
+   (`junk_reason`, looking only at the label each slot takes): the same line found twice, a row of
+   material tags such as `AB-12`, and a row whose labels are mostly words (a note, a title block's
+   fields). An inch mark printed apart counts with its number, and a number with a qualifier
+   (`36" REF`, `C/L`) is a number. A row whose only "labels" are marks smaller than the drawing's
+   own printed characters (a stone's speckle, a faucet's outline, hatching) is **never dropped,
+   only ranked after the drawing's other rows**: "smaller" is measured against the drawing's own
+   label size (`label_size`), so a drawing pasted small keeps its numbers. A drawing with rows is
+   never left without a box. **Every candidate that is not boxed, or is ranked last, is listed
+   with its reason**; nothing vanishes.
 3. **The pictures** (`build_item_pictures`). One picture per view (V1 is the view holding the
    item's best-ranked box; then the other views that hold a box or a dimension row, at most
    `views_per_item`), rendered from the vector at the largest dpi that keeps the picture within
    the readers' limits (`long_edge_px`, `front_tokens` for V1 and `other_tokens` for the rest,
-   capped at `max_dpi`). Anything outside the vendor's drawing is painted white. Each box is drawn
-   round its line *and all its own labels*, with its edges moved off any other printed text, so a
-   box border never runs through its own numbers; its number tag sits beside the box on blank
-   paper, or in the white margin on the left with a dotted leader when no blank spot is near.
+   capped at `max_dpi`), and one item's pictures together within `question_tokens`: other views
+   shrink or are left out with a note, V1 never. Every picture is checked to fit each of
+   `reader_models` unresized; a view that cannot is refused (`PictureTooLarge`), never sent
+   oversize. Each box is drawn round its line *and all its own labels*, so a box border never runs
+   through its own numbers, and each edge is moved to the nearest place that crosses no other
+   printed text where one exists. Its number tag sits beside the box on blank paper (never on ink
+   or a label), or in the white margin on the left, inside the picture, with a dotted leader drawn
+   at the height that crosses the least printed text.
+
+The tags are drawn in Pillow's built-in typeface (`ImageFont.load_default(size=...)`, as the row
+picture's are); a test pins its pixels, so a Pillow that draws them differently fails loudly
+instead of quietly changing every picture's bytes.
 
 **Never a source of reading.** Rows are built from the vendor's pasted drawing only, with every
 coloured mark dropped before the row builder sees it (`extraction/rows.py`), so GV's markup can
@@ -69,7 +81,7 @@ from extraction.geometry.rows import (
     SlotLabel,
 )
 from extraction.slot_reader.bedrock import ROW_BOX_COLOURS
-from extraction.slot_reader.claude_output import visual_tokens
+from extraction.slot_reader.claude_output import picture_fits, visual_tokens
 
 __all__ = [
     "ITEM_PICTURES_ENV",
@@ -84,6 +96,7 @@ __all__ = [
     "ItemPictureSettings",
     "ItemView",
     "LabelSort",
+    "PictureTooLarge",
     "RowNote",
     "RowReason",
     "build_item_map",
@@ -91,6 +104,7 @@ __all__ = [
     "item_frames",
     "item_pictures_enabled",
     "junk_reason",
+    "label_size",
     "label_sort",
     "pdf_item_pictures",
     "view_regions",
@@ -124,9 +138,12 @@ class ItemPictureSettings:
     """Two rows whose first and last ticks are this close..."""
     duplicate_y_pt: Decimal
     """...and whose lines are this close are one line found twice."""
-    character_minimum_pt: Decimal
-    """A run of pen strokes is a printed character only when its box is at least this big both
-    ways: a stone's speckle, a faucet's outline and hatching are smaller."""
+    small_mark_fraction: Decimal
+    """A run of pen strokes is smaller than a printed character when its box's shorter side is
+    under this part of the drawing's own label size (`label_size_quantile`): a stone's speckle,
+    a faucet's outline and hatching are. Relative, so a drawing pasted small keeps its numbers."""
+    label_size_quantile: Decimal
+    """The drawing's own label size: this quantile of the shorter sides of its rows' labels."""
     boxes_per_item: int
     frame_line_fraction: Decimal
     """A stroke spanning this much of its drawing's width or height is the drawing's border or a
@@ -155,6 +172,13 @@ class ItemPictureSettings:
     """The most visual tokens V1 may cost (the readers' limit: 4784)."""
     other_tokens: int
     """The most visual tokens each other view may cost."""
+    question_tokens: int
+    """The most visual tokens all of one item's pictures may cost together (one question): the
+    other views shrink to fit, or are left out with a reason; V1 is never left out."""
+    view_minimum_tokens: int
+    """A view that would have to shrink below this many tokens to fit is left out instead."""
+    reader_models: tuple[str, ...]
+    """The readers every picture must fit unresized (`claude_output.picture_fits`)."""
     gutter_px: int
     """The white margin on the left of every picture, for the view tag and leader tags."""
     box_px: int
@@ -171,7 +195,8 @@ class ItemPictureSettings:
 MEASURED_ITEM_SETTINGS: Final = ItemPictureSettings(
     duplicate_end_pt=Decimal(2),
     duplicate_y_pt=Decimal(3),
-    character_minimum_pt=Decimal("3.5"),
+    small_mark_fraction=Decimal("0.5"),
+    label_size_quantile=Decimal("0.9"),
     boxes_per_item=6,
     frame_line_fraction=Decimal("0.6"),
     gap_pt=Decimal(10),
@@ -187,11 +212,14 @@ MEASURED_ITEM_SETTINGS: Final = ItemPictureSettings(
     long_edge_px=2576,
     front_tokens=4784,
     other_tokens=2392,
+    question_tokens=9600,
+    view_minimum_tokens=600,
+    reader_models=("anthropic.claude-opus-5-5", "anthropic.claude-sonnet-5-5"),
     gutter_px=64,
     box_px=3,
     clearance_fraction=Decimal("0.4"),
     clearance_minimum_px=5,
-    clearance_search=4,
+    clearance_search=12,
     tag_px=40,
 )
 
@@ -222,29 +250,84 @@ class LabelSort(StrEnum):
 _TAG: Final = re.compile(r"[A-Z]{1,5}[- ]?\d+[A-Z0-9.\-]*")
 #: Two separators between digits (`01.07.2025`, `4/3/2026`): a date, not a fraction.
 _DATE: Final = re.compile(r"\d+[./]\d+[./]\d+")
-#: Words a dimension label carries beside its number (`95"(5EQ)`, `4"+1" Filler`, `52" VIF`).
+#: Words a dimension label carries beside its number or alone (`95"(5EQ)`, `4"+1" Filler`,
+#: `52" VIF`, `36" REF`, `C/L`): a qualifier, never what makes a label "words".
 _DIMENSION_WORDS: Final = frozenset(
-    {"EQ", "VIF", "TYP", "CL", "MM", "FILLER", "FIELD", "CUT", "INCLUDING", "SCRIBE", "X", "CLR"}
+    {
+        "EQ",
+        "VIF",
+        "TYP",
+        "CL",
+        "C/L",
+        "REF",
+        "MIN",
+        "MAX",
+        "NIC",
+        "MM",
+        "FILLER",
+        "FIELD",
+        "CUT",
+        "INCLUDING",
+        "SCRIBE",
+        "X",
+        "CLR",
+    }
 )
+#: A printed measurement inside a label: inches or feet marks, a fraction, or millimetres with
+#: inches in brackets (`36"`, `2'-0"`, `5/8`, `[24]`).
+_MEASUREMENT: Final = re.compile(r"\d\s*[\"'\u201d\u2019]|\d+\s*/\s*\d+|\[\s*\d")
+#: Inch and foot marks printed as a label of their own, beside the number they belong to.
+_MARKS_ONLY: Final = re.compile(r"[\"'\u201d\u2019`]+")
 
 
-def label_sort(label: SlotLabel, settings: ItemPictureSettings) -> LabelSort:
-    """What one label looks like: a number, a tag, words, or marks of some size. Never a value."""
+def label_sort(
+    label: SlotLabel, settings: ItemPictureSettings, reference: Decimal | None = None
+) -> LabelSort:
+    """What one label looks like: a number, a tag, words, or marks of some size. Never a value.
+
+    `reference` is the drawing's own label size (`label_size`): pen strokes are "small marks" only
+    against it, so the same row pasted at any scale is sorted the same. Without one, no run of
+    pen strokes is called small.
+    """
     if label.kind is LabelKind.GLYPHS:
-        small = min(label.box.width, label.box.height) < settings.character_minimum_pt
+        small = reference is not None and (
+            min(label.box.width, label.box.height) < settings.small_mark_fraction * reference
+        )
         return LabelSort.SMALL_MARKS if small else LabelSort.CHARACTERS
     if label.stacked:
         return LabelSort.STACKED
     text = " ".join(label.lines).upper().strip()
+    if _MARKS_ONLY.fullmatch(text):
+        return LabelSort.NUMBER  # the inch mark of the number printed beside it
     if _TAG.fullmatch(text) and '"' not in text:
         return LabelSort.TAG
     if _DATE.search(text):
         return LabelSort.WORDS
+    if _MEASUREMENT.search(text):
+        return LabelSort.NUMBER  # a measurement, whatever qualifier is printed with it
+    tokens = [token for token in re.split(r"[\s()\[\],+]+", text) if token]
+    if tokens and all(token in _DIMENSION_WORDS for token in tokens):
+        return LabelSort.NUMBER
     words = [word for word in re.sub(r"[^A-Z ]", " ", text).split() if word not in _DIMENSION_WORDS]
     letters = sum(len(word) for word in words)
-    if text in _DIMENSION_WORDS or (any(ch.isdigit() for ch in text) and letters <= 1):
+    if any(ch.isdigit() for ch in text) and letters <= 1:
         return LabelSort.NUMBER
     return LabelSort.WORDS
+
+
+def label_size(
+    candidates: Iterable[CountertopRowCandidate], settings: ItemPictureSettings
+) -> Decimal | None:
+    """One drawing's own label size: the `label_size_quantile` of the shorter sides of its rows'
+    own labels. `None` when its rows carry no label."""
+    sides = sorted(
+        min(label.box.width, label.box.height)
+        for candidate in candidates
+        for label in _own_labels(candidate)
+    )
+    if not sides:
+        return None
+    return sides[int(settings.label_size_quantile * (len(sides) - 1))]
 
 
 class RowReason(StrEnum):
@@ -255,6 +338,7 @@ class RowReason(StrEnum):
     TAGS = "material-tags"
     WORDS = "words"
     SMALL_MARKS = "small-marks"
+    """Not dropped: ranked after every other row of its drawing (it may still be boxed)."""
     OUTSIDE = "outside-drawing"
     BEYOND = "beyond-boxes"
 
@@ -274,11 +358,14 @@ def junk_reason(
     candidate: CountertopRowCandidate,
     kept: Sequence[tuple[int, CountertopRowCandidate]],
     settings: ItemPictureSettings,
+    reference: Decimal | None = None,
 ) -> tuple[RowReason, str] | None:
     """Why `candidate` cannot be a dimension line with printed numbers, or `None` when it may be.
 
-    `kept` are the better-ranked rows already kept, with their page ranks. Only the shape of the
-    row and its labels is looked at; no value is read and no row is chosen.
+    `kept` are the better-ranked rows already kept, with their page ranks; `reference` the
+    drawing's own label size (`label_size`). Only the shape of the row and of its own labels (the
+    label each slot takes) is looked at; no value is read and no row is chosen. `SMALL_MARKS` is
+    never a drop: such a row is ranked after the drawing's other rows (`build_item_map`).
     """
     for rank, other in kept:
         if (
@@ -287,7 +374,7 @@ def junk_reason(
             and abs(other.y - candidate.y) <= settings.duplicate_y_pt
         ):
             return RowReason.DUPLICATE, f"the same line as the row ranked {rank}, found twice"
-    sorts = [label_sort(label, settings) for label in _labels(candidate)]
+    sorts = [label_sort(label, settings, reference) for label in _own_labels(candidate)]
     count = {sort: sorts.count(sort) for sort in LabelSort}
     numbers = count[LabelSort.NUMBER] + count[LabelSort.STACKED]
     marks = count[LabelSort.CHARACTERS] + count[LabelSort.SMALL_MARKS]
@@ -306,8 +393,8 @@ def junk_reason(
         return (
             RowReason.SMALL_MARKS,
             (
-                "no printed number on the line: only marks smaller than a printed character "
-                "(a stone's speckle, a faucet, hatching)"
+                "ranked last: its only labels are marks smaller than this drawing's printed "
+                "characters (a stone's speckle, a faucet, hatching)"
             ),
         )
     return None
@@ -549,6 +636,9 @@ class ItemMap:
     """Every candidate row that is not boxed, with its reason: none vanishes."""
     notes: tuple[str, ...]
     """Drawings with no row, and anything else a person should know about the page."""
+    ranked_last: tuple[RowNote, ...] = ()
+    """Rows kept but ranked after their drawing's other rows (small marks only, or every row of a
+    drawing that would otherwise have no box), with the reason. A row here may still be boxed."""
 
     @property
     def boxed(self) -> tuple[BoxedRow, ...]:
@@ -635,8 +725,7 @@ def build_item_map(
     slack = settings.duplicate_end_pt
     notes: list[str] = []
     row_notes: list[RowNote] = []
-    kept: list[tuple[int, CountertopRowCandidate]] = []
-    by_frame: dict[int, list[tuple[int, CountertopRowCandidate]]] = {}
+    placed: dict[int, list[tuple[int, CountertopRowCandidate]]] = {}
     for rank, candidate in enumerate(rows.candidates, start=1):
         holding = [
             index for index, frame in enumerate(frames) if _contains(frame.box, candidate, slack)
@@ -649,12 +738,56 @@ def build_item_map(
         frame_index = min(
             holding, key=lambda index: (frames[index].box.width * frames[index].box.height, index)
         )
-        reason = junk_reason(candidate, kept, settings)
-        if reason is not None:
-            row_notes.append(RowNote(rank, candidate, reason[0], reason[1]))
+        placed.setdefault(frame_index, []).append((rank, candidate))
+    references = {
+        index: label_size((candidate for _rank, candidate in found), settings)
+        for index, found in placed.items()
+    }
+    kept: list[tuple[int, CountertopRowCandidate]] = []
+    by_frame: dict[int, list[tuple[int, CountertopRowCandidate]]] = {}
+    last: dict[int, list[RowNote]] = {}
+    dropped: dict[int, list[RowNote]] = {}
+    frame_of = {rank: index for index, found in placed.items() for rank, _c in found}
+    for rank, candidate in enumerate(rows.candidates, start=1):
+        if rank not in frame_of:
             continue
-        kept.append((rank, candidate))
-        by_frame.setdefault(frame_index, []).append((rank, candidate))
+        frame_index = frame_of[rank]
+        reason = junk_reason(candidate, kept, settings, references[frame_index])
+        if reason is None:
+            kept.append((rank, candidate))
+            by_frame.setdefault(frame_index, []).append((rank, candidate))
+        elif reason[0] is RowReason.SMALL_MARKS:
+            kept.append((rank, candidate))
+            last.setdefault(frame_index, []).append(RowNote(rank, candidate, *reason))
+        else:
+            dropped.setdefault(frame_index, []).append(RowNote(rank, candidate, *reason))
+    demoted: list[RowNote] = []
+    for frame_index in placed:
+        ranked_last = last.get(frame_index, [])
+        by_frame.setdefault(frame_index, []).extend(
+            (note.rank, note.candidate) for note in ranked_last
+        )
+        demoted.extend(ranked_last)
+        if not by_frame[frame_index]:
+            # Never a drawing with rows and no box: its dropped rows are boxed after all.
+            fallback = [
+                note
+                for note in dropped.get(frame_index, [])
+                if note.reason is not RowReason.DUPLICATE
+            ]
+            by_frame[frame_index] = [(note.rank, note.candidate) for note in fallback]
+            demoted.extend(fallback)
+            if fallback:
+                notes.append(
+                    f"drawing {frame_index + 1}: every row looked like something other than a "
+                    "dimension line, so they are boxed anyway, in rank order, for the person to see"
+                )
+            dropped[frame_index] = [
+                note for note in dropped.get(frame_index, []) if note not in fallback
+            ]
+        if not by_frame[frame_index]:
+            del by_frame[frame_index]
+        row_notes.extend(dropped.get(frame_index, []))
 
     for index, frame in enumerate(frames):
         if index not in by_frame:
@@ -681,7 +814,7 @@ def build_item_map(
                     rank,
                     candidate,
                     RowReason.BEYOND,
-                    f"ranked below the {settings.boxes_per_item} rows kept on this drawing",
+                    f"below the {settings.boxes_per_item} rows boxed on this drawing",
                 )
             )
         regions = [_rect(view) for view in view_regions(ink, frame.box, settings)]
@@ -692,9 +825,10 @@ def build_item_map(
         for rank, _candidate in rows_here:
             holds.setdefault(_place_in_view(bands[rank], regions), []).append(rank)
         boxed_ranks = {rank for rank, _candidate in boxed_rows}
+        order_of = {rank: position for position, (rank, _c) in enumerate(rows_here)}
         with_boxes = sorted(
             (view for view, ranks in holds.items() if boxed_ranks & set(ranks)),
-            key=lambda view: min(rank for rank in holds[view] if rank in boxed_ranks),
+            key=lambda view: min(order_of[rank] for rank in holds[view] if rank in boxed_ranks),
         )
         with_rows = sorted(
             (view for view in holds if view not in with_boxes), key=lambda view: min(holds[view])
@@ -721,7 +855,7 @@ def build_item_map(
             tag = f"V{tag_number}"
             region = regions[view]
             numbers: list[int] = []
-            for rank in holds.get(view, []):
+            for rank in sorted(holds.get(view, []), key=lambda rank: order_of[rank]):
                 region = _union(region, _with_overall(candidates[rank], bands[rank]))
                 if rank in boxed_ranks:
                     number += 1
@@ -755,7 +889,8 @@ def build_item_map(
             views.append(ItemView(tag, _box(region), tuple(numbers), why))
         items.append(Item(item_number, frame, tuple(views), tuple(boxed), tuple(left_out)))
     row_notes.sort(key=lambda note: note.rank)
-    return ItemMap(page_index, tuple(items), tuple(row_notes), tuple(notes))
+    demoted.sort(key=lambda note: note.rank)
+    return ItemMap(page_index, tuple(items), tuple(row_notes), tuple(notes), tuple(demoted))
 
 
 def _where(rect: _Rect) -> str:
@@ -800,16 +935,32 @@ class ItemPicture:
     """Each box number with its rectangle in the picture's own pixels."""
     tags: tuple[tuple[int, PixelBox, bool], ...]
     """Each box number's tag in the picture's pixels, and whether a leader joins it to its box."""
+    edges_crossing_text: tuple[int, ...] = ()
+    """The boxes whose border still crosses another row's or a note's printed text (never its
+    own labels): no clear place was found within `clearance_search` clearances."""
+    leaders_crossing_text: tuple[int, ...] = ()
+    """The boxes whose tag's leader crosses printed text on its way to the box."""
 
 
 @dataclass(frozen=True, slots=True)
 class ItemPictureSet:
     item_map: ItemMap
     pictures: tuple[ItemPicture, ...]
+    notes: tuple[str, ...] = ()
+    """Views left out to keep one item's pictures within `question_tokens`, with their boxes."""
 
     @property
     def tokens(self) -> int:
         return sum(picture.tokens for picture in self.pictures)
+
+    def item_tokens(self, item: int) -> int:
+        """What one item's pictures cost together: one question's pictures."""
+        return sum(picture.tokens for picture in self.pictures if picture.item == item)
+
+
+class PictureTooLarge(ValueError):
+    """A view that cannot be drawn within the readers' limits at any allowed dpi: refused, never
+    sent resized."""
 
 
 def _place(page: ItemPage, dpi: int) -> Callable[[float, float], tuple[int, int]]:
@@ -836,13 +987,18 @@ def _pixel_box(rect: _Rect, place: Callable[[float, float], tuple[int, int]]) ->
 
 
 def _fits(width: int, height: int, tokens: int, settings: ItemPictureSettings) -> bool:
-    return max(width, height) <= settings.long_edge_px and visual_tokens(width, height) <= tokens
+    return (
+        max(width, height) <= settings.long_edge_px
+        and visual_tokens(width, height) <= tokens
+        and all(picture_fits(width, height, model) for model in settings.reader_models)
+    )
 
 
 def _dpi(
     region: _Rect, page: ItemPage, tokens: int, settings: ItemPictureSettings
 ) -> tuple[int, PixelBox]:
-    """The largest dpi (at most `max_dpi`) whose picture fits the readers' limits."""
+    """The largest dpi (at most `max_dpi`) whose picture fits the readers' limits and `tokens`.
+    Refused (`PictureTooLarge`) when not even `min_dpi` fits."""
     width_pt, height_pt = region[2] - region[0], region[3] - region[1]
     gutter = settings.gutter_px
     side = max(width_pt, height_pt, 1.0)
@@ -851,13 +1007,16 @@ def _dpi(
         int(72 * (settings.long_edge_px - gutter) / side),
         int(72 * 28 * (tokens / max(1.0, width_pt * height_pt)) ** 0.5),
     )
-    dpi = max(settings.min_dpi, estimate + 2)
-    while True:
+    dpi = max(settings.min_dpi, min(settings.max_dpi, estimate + 2))
+    while dpi >= settings.min_dpi:
         box = _pixel_box(region, _place(page, dpi))
-        width, height = box[2] - box[0] + gutter, box[3] - box[1]
-        if _fits(width, height, tokens, settings) or dpi <= settings.min_dpi:
+        if _fits(box[2] - box[0] + gutter, box[3] - box[1], tokens, settings):
             return dpi, box
         dpi -= 1
+    raise PictureTooLarge(
+        f"a {width_pt:.0f} x {height_pt:.0f} pt view does not fit {tokens} tokens and "
+        f"{settings.long_edge_px} px even at {settings.min_dpi} dpi"
+    )
 
 
 @functools.lru_cache(maxsize=64)
@@ -937,42 +1096,54 @@ def _crosses(edge: PixelBox, obstacles: Iterable[PixelBox]) -> bool:
     )
 
 
+def _edges(box: PixelBox, thick: int) -> tuple[PixelBox, ...]:
+    left, top, right, bottom = box
+    return (
+        (left, top, right, top + thick),
+        (left, bottom - thick, right, bottom),
+        (left, top, left + thick, bottom),
+        (right - thick, top, right, bottom),
+    )
+
+
 def _box_round(
     band: PixelBox, label_height: int, obstacles: Sequence[PixelBox], settings: ItemPictureSettings
 ) -> PixelBox:
-    """A box round `band` (the row and all its own labels), each edge at least the clearance
-    outside it and moved further out, up to `clearance_search` clearances, until it crosses no
-    other printed text. Own labels are inside `band`, so the box never crosses them."""
+    """A box round `band` (the row and all its own labels). Each edge stands the clearance outside
+    the band, or the nearest place from there out to `clearance_search` clearances, then back in
+    to one pixel outside the band, where it crosses no other printed text. Own labels are inside
+    `band`, so whatever is chosen, the box never crosses them."""
     clear = max(
         settings.clearance_minimum_px, round(float(settings.clearance_fraction) * label_height)
     )
     thick = settings.box_px
     reach = clear * settings.clearance_search
+    offsets = [*range(clear, reach + 1), *range(clear - 1, 0, -1)]
     left, top, right, bottom = (
         band[0] - clear - thick,
         band[1] - clear - thick,
         band[2] + clear + thick,
         band[3] + clear + thick,
     )
-    for step in range(reach - clear + 1):
-        edge = (left - step, top, left - step + thick, bottom)
-        if not _crosses(edge, obstacles):
-            left -= step
+    for offset in offsets:
+        x = band[0] - offset - thick
+        if not _crosses((x, top, x + thick, bottom), obstacles):
+            left = x
             break
-    for step in range(reach - clear + 1):
-        edge = (right + step - thick, top, right + step, bottom)
-        if not _crosses(edge, obstacles):
-            right += step
+    for offset in offsets:
+        x = band[2] + offset + thick
+        if not _crosses((x - thick, top, x, bottom), obstacles):
+            right = x
             break
-    for step in range(reach - clear + 1):
-        edge = (left, top - step, right, top - step + thick)
-        if not _crosses(edge, obstacles):
-            top -= step
+    for offset in offsets:
+        y = band[1] - offset - thick
+        if not _crosses((left, y, right, y + thick), obstacles):
+            top = y
             break
-    for step in range(reach - clear + 1):
-        edge = (left, bottom + step - thick, right, bottom + step)
-        if not _crosses(edge, obstacles):
-            bottom += step
+    for offset in offsets:
+        y = band[3] + offset + thick
+        if not _crosses((left, y - thick, right, y), obstacles):
+            bottom = y
             break
     return (left, top, right, bottom)
 
@@ -1015,35 +1186,47 @@ def _picture(
     canvas.fill((gutter, 0, canvas.width, max(0, frame[1])), _WHITE)
     canvas.fill((gutter, min(height, frame[3]), canvas.width, height), _WHITE)
 
-    boxed = [row for row in item.boxed if row.view == view.tag]
-    printed: list[tuple[int, PixelBox]] = [
-        (id(character), local(_rect(character.box))) for character in page.ink.characters
-    ]
+    def on_picture(box: PixelBox) -> bool:
+        return box[2] > gutter and box[0] < canvas.width and box[3] > 0 and box[1] < height
+
+    printed: list[tuple[int, PixelBox]] = []
+    for character in page.ink.characters:
+        printed.append((id(character), local(_rect(character.box))))
     for candidate in (*page.rows.candidates, *page.rows.rejected):
         for label in _labels(candidate):
             printed.append((id(label), local(_rect(label.box))))
         if candidate.overall is not None:
             for label in candidate.overall.labels:
                 printed.append((id(label), local(_rect(label.box))))
+    printed = [(key, box) for key, box in printed if on_picture(box)]
+
+    boxed = [row for row in item.boxed if row.view == view.tag]
     boxes: list[tuple[int, PixelBox]] = []
+    crossing: list[int] = []
     for row in boxed:
         own = {id(label) for label in _own_labels(row.candidate)}
         band = local(_rect(row.band))
         own_boxes = [local(_rect(label.box)) for label in _own_labels(row.candidate)]
-        own_chars = [
-            box
-            for key, box in printed
-            if key not in own and _crosses(box, [band]) and _inside_px(box, band)
-        ]
         heights = [box[3] - box[1] for box in own_boxes] or [band[3] - band[1]]
         label_height = int(statistics.median(heights))
-        obstacles = [box for key, box in printed if key not in own and box not in own_chars]
-        boxes.append((row.number, _box_round(band, label_height, obstacles, settings)))
+        # Text lying wholly inside the band is inside the box whatever happens: not an obstacle.
+        obstacles = [box for key, box in printed if key not in own and not _inside_px(box, band)]
+        rect = _box_round(band, label_height, obstacles, settings)
+        boxes.append((row.number, rect))
+        if any(_crosses(edge, obstacles) for edge in _edges(rect, settings.box_px)):
+            crossing.append(row.number)
     for number, rect in boxes:
         canvas.outline(rect, settings.box_px, _BOX_COLOURS[(number - 1) % len(_BOX_COLOURS)])
 
-    tags = _place_tags(canvas, boxes, settings)
+    text = [box for _key, box in printed]
+    tags, leaders_crossing = _place_tags(canvas, boxes, text, settings)
     canvas.text(8, 8, view.tag, settings.tag_px // 2, _VIEW_TAG)
+    for model in settings.reader_models:
+        if not picture_fits(canvas.width, canvas.height, model):
+            raise PictureTooLarge(
+                f"view {view.tag} came out {canvas.width}x{canvas.height} px, which {model} "
+                "would resize"
+            )
     return ItemPicture(
         item=item.number,
         tag=view.tag,
@@ -1055,6 +1238,8 @@ def _picture(
         region_px=box_px,
         boxes=tuple(boxes),
         tags=tuple(tags),
+        edges_crossing_text=tuple(crossing),
+        leaders_crossing_text=tuple(leaders_crossing),
     )
 
 
@@ -1068,19 +1253,26 @@ def _inside_px(inner: PixelBox, outer: PixelBox) -> bool:
 
 
 def _place_tags(
-    canvas: _Canvas, boxes: Sequence[tuple[int, PixelBox]], settings: ItemPictureSettings
-) -> list[tuple[int, PixelBox, bool]]:
-    """Each box's number tag: beside its box on blank paper when there is a blank spot (left,
-    right, above, below), else in the left margin with a dotted leader to the box. A tag never
-    covers ink, another box or another tag."""
+    canvas: _Canvas,
+    boxes: Sequence[tuple[int, PixelBox]],
+    text: Sequence[PixelBox],
+    settings: ItemPictureSettings,
+) -> tuple[list[tuple[int, PixelBox, bool]], list[int]]:
+    """Each box's number tag, and the boxes whose leader crosses printed text.
+
+    A tag goes beside its box, or in a blank corner inside it, on blank paper when there is a spot
+    that covers no ink, no printed text, no box line, no other box and no other tag. Otherwise it goes in
+    the white margin on the left, inside the picture, with a dotted leader to the box drawn at the
+    height (within the box) where it crosses the least printed text and then the least ink."""
     size = settings.tag_px
     gap = 4
     placed: list[tuple[int, PixelBox, bool]] = []
+    crossing: list[int] = []
     taken: list[PixelBox] = []
     outlines = [rect for _number, rect in boxes]
+    text_height = size - 12
     for number, rect in boxes:
         digits = str(number)
-        text_height = size - 12
         text_width, _mask = _text_mask(digits, text_height)
         width = max(size, text_width + 12)
         middle = (rect[1] + rect[3]) // 2 - size // 2
@@ -1099,6 +1291,11 @@ def _place_tags(
             (rect[0] - gap - width, rect[3] + gap),
             (rect[2] + gap, rect[1] - gap - size),
             (rect[2] + gap, rect[3] + gap),
+            # inside its own box, in a blank corner
+            (rect[0] + settings.box_px + gap, rect[1] + settings.box_px + gap),
+            (rect[2] - settings.box_px - gap - width, rect[1] + settings.box_px + gap),
+            (rect[0] + settings.box_px + gap, rect[3] - settings.box_px - gap - size),
+            (rect[2] - settings.box_px - gap - width, rect[3] - settings.box_px - gap - size),
         ]
         chosen: PixelBox | None = None
         for x, y in spots:
@@ -1109,37 +1306,64 @@ def _place_tags(
                 and spot[1] >= 0
                 and spot[3] <= canvas.height
                 and not _crosses(spot, taken)
-                and not _crosses(spot, outlines)
+                and not _crosses(spot, [outline for outline in outlines if outline != rect])
+                and not _crosses(spot, _edges(rect, settings.box_px))
+                and not _crosses(spot, text)
                 and canvas.dark(spot) == 0
             ):
                 chosen = spot
                 break
-        leader = chosen is None
-        if chosen is None:
-            y = max(0, min(canvas.height - size, middle))
-            spot = (4, y, 4 + min(width, settings.gutter_px - 8), y + size)
-            while _crosses(spot, taken) and spot[3] < canvas.height:
-                spot = (spot[0], spot[3] + gap, spot[2], spot[3] + gap + size)
-            chosen = spot
         colour = _BOX_COLOURS[(number - 1) % len(_BOX_COLOURS)]
+        leader_y: int | None = None
+        if chosen is None:
+            tag_width = min(width, settings.gutter_px - 8)
+            low = max(rect[1] + settings.box_px, size // 2)
+            high = min(rect[3] - settings.box_px, canvas.height - size + size // 2)
+            heights = list(range(low, high + 1, 2)) or [
+                max(size // 2, min(canvas.height - size + size // 2, (rect[1] + rect[3]) // 2))
+            ]
+            centre = (rect[1] + rect[3]) // 2
+
+            def cost(
+                y: int, rect: PixelBox = rect, tag_width: int = tag_width, centre: int = centre
+            ) -> tuple[int, int, int]:
+                path = (4 + tag_width, y - 1, rect[0], y + 1)
+                return (
+                    sum(1 for box in text if _crosses(path, [box])),
+                    canvas.dark(path) if path[0] < path[2] else 0,
+                    abs(y - centre),
+                )
+
+            for y in sorted(heights, key=lambda y: (cost(y), y)):
+                spot = (4, y - size // 2, 4 + tag_width, y - size // 2 + size)
+                if not _crosses(spot, taken):
+                    chosen, leader_y = spot, y
+                    break
+            if chosen is None:  # every height taken: the first free place down the margin
+                y = heights[0]
+                spot = (4, y - size // 2, 4 + tag_width, y - size // 2 + size)
+                while _crosses(spot, taken) and spot[3] + gap + size <= canvas.height:
+                    spot = (spot[0], spot[3] + gap, spot[2], spot[3] + gap + size)
+                chosen, leader_y = spot, (spot[1] + spot[3]) // 2
         canvas.fill(chosen, colour)
-        tag_width, _mask = _text_mask(digits, text_height)
         canvas.text(
-            chosen[0] + (chosen[2] - chosen[0] - tag_width) // 2,
+            chosen[0] + (chosen[2] - chosen[0] - text_width) // 2,
             chosen[1] + 6,
             digits,
             text_height,
             _WHITE,
         )
-        if leader:
-            y = (chosen[1] + chosen[3]) // 2
+        if leader_y is not None:
+            path = (chosen[2], leader_y - 1, rect[0], leader_y + 1)
+            if any(_crosses(path, [box]) for box in text):
+                crossing.append(number)
             x = chosen[2]
             while x < rect[0]:
-                canvas.fill((x, y - 1, min(rect[0], x + 6), y + 1), colour)
+                canvas.fill((x, leader_y - 1, min(rect[0], x + 6), leader_y + 1), colour)
                 x += 12
         taken.append(chosen)
-        placed.append((number, chosen, leader))
-    return placed
+        placed.append((number, chosen, leader_y is not None))
+    return placed, crossing
 
 
 def build_item_pictures(
@@ -1149,22 +1373,29 @@ def build_item_pictures(
     render: RegionRenderer,
     settings: ItemPictureSettings,
 ) -> ItemPictureSet:
-    """Every item's pictures, V1 first: V1 within `front_tokens`, every other view within
-    `other_tokens`. `render` draws a page region (in `render_page`'s pixels at a dpi) from the
-    vector; the stage renders the vendor's drawing only."""
-    pictures = [
-        _picture(
-            page,
-            item,
-            view,
-            settings.front_tokens if position == 0 else settings.other_tokens,
-            render,
-            settings,
-        )
-        for item in item_map.items
-        for position, view in enumerate(item.views)
-    ]
-    return ItemPictureSet(item_map, tuple(pictures))
+    """Every item's pictures, V1 first. V1 is drawn within `front_tokens` and is never left out;
+    each other view within `other_tokens` and what is left of the item's `question_tokens`, or
+    left out with a note naming its boxes when less than `view_minimum_tokens` is left. Every
+    picture fits each of `reader_models` unresized, or the build is refused (`PictureTooLarge`).
+    `render` draws a page region (in `render_page`'s pixels at a dpi) from the vector; the stage
+    renders the vendor's drawing only."""
+    pictures: list[ItemPicture] = []
+    notes: list[str] = []
+    for item in item_map.items:
+        left = settings.question_tokens
+        for position, view in enumerate(item.views):
+            limit = settings.front_tokens if position == 0 else min(settings.other_tokens, left)
+            if position > 0 and limit < settings.view_minimum_tokens:
+                notes.append(
+                    f"item {item.number}: view {view.tag} is left out to keep the item's pictures "
+                    f"within {settings.question_tokens} tokens"
+                    + (f"; its boxes {list(view.boxes)} are not shown" if view.boxes else "")
+                )
+                continue
+            picture = _picture(page, item, view, limit, render, settings)
+            pictures.append(picture)
+            left -= picture.tokens
+    return ItemPictureSet(item_map, tuple(pictures), tuple(notes))
 
 
 def pdf_item_pictures(

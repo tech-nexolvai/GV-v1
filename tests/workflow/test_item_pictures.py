@@ -199,12 +199,60 @@ def test_a_text_label_is_sorted_by_its_shape(text: str, sort: LabelSort) -> None
     assert label_sort(_text(0, 0, text), SETTINGS) is sort
 
 
-def test_pen_strokes_are_characters_only_at_a_printed_size() -> None:
-    """Speckle and a faucet's outline are thinner than any printed character; a pen-stroke `10"`
-    is not."""
-    assert label_sort(_marks(0, 0, 6, 1.3), SETTINGS) is LabelSort.SMALL_MARKS
-    assert label_sort(_marks(0, 0, 1, 5.5), SETTINGS) is LabelSort.SMALL_MARKS
-    assert label_sort(_marks(0, 0, 7, 6.5, strokes=3), SETTINGS) is LabelSort.CHARACTERS
+def test_pen_strokes_are_small_marks_only_against_the_drawings_own_label_size() -> None:
+    """Against a drawing whose labels are about 7 pt, speckle (1.3 pt) and a faucet's outline
+    (1 pt across) are small marks and a pen-stroke `10"` (6.5 pt) is not. Without a label size
+    nothing is called small."""
+    reference = D(7)
+    assert label_sort(_marks(0, 0, 6, 1.3), SETTINGS, reference) is LabelSort.SMALL_MARKS
+    assert label_sort(_marks(0, 0, 1, 5.5), SETTINGS, reference) is LabelSort.SMALL_MARKS
+    assert label_sort(_marks(0, 0, 7, 6.5, 3), SETTINGS, reference) is LabelSort.CHARACTERS
+    assert label_sort(_marks(0, 0, 6, 1.3), SETTINGS) is LabelSort.CHARACTERS
+
+
+def test_a_drawing_pasted_small_keeps_its_numbers() -> None:
+    """The same item at 0.6 of its size: its pen-stroke numbers (about 3.2 pt, under any fixed
+    3.5 pt bar) are still characters against the drawing's own label size, its row is still
+    boxed first, and the faucet's speckle row still ranks after it."""
+
+    def drawing(scale: float) -> tuple[CountertopRowCandidate, CountertopRowCandidate]:
+        def pt(value: float) -> float:
+            return round(value * scale, 3)
+
+        row = _row(
+            pt(300),
+            [pt(100), pt(110), pt(250), pt(260)],
+            [
+                _marks(pt(101), pt(291), pt(8), pt(5.3), 4),
+                _marks(pt(170), pt(291), pt(12), pt(6.5), 5),
+                _marks(pt(251), pt(291), pt(8), pt(5.3), 4),
+            ],
+        )
+        faucet = _row(
+            pt(240),
+            [pt(150), pt(165), pt(180), pt(195)],
+            [_marks(pt(151), pt(238), pt(5), pt(1.3)), _marks(pt(166), pt(238), pt(5), pt(1.3))],
+        )
+        return faucet, row
+
+    for scale in (1.0, 0.6):
+        faucet, row = drawing(scale)
+        frame = ItemFrame(Box(D(0), D(0), D(600), D(500)), "pasted drawing")
+        item_map = build_item_map(0, _rows(faucet, row), _ink(), [frame], SETTINGS)
+        assert [boxed.rank for boxed in item_map.boxed] == [2, 1], scale
+        assert [(note.rank, note.reason) for note in item_map.ranked_last] == [
+            (1, RowReason.SMALL_MARKS)
+        ]
+        assert not item_map.row_notes
+
+
+def test_a_drawing_with_rows_is_never_left_without_a_box() -> None:
+    """Every row of the drawing is a word row: they are boxed anyway, in rank order, and said."""
+    notes = _row(420, [100, 160, 220], [_text(110, 411, "PROJECT NAME"), _text(170, 411, "SHEET")])
+    frame = ItemFrame(Box(D(0), D(0), D(600), D(500)), "pasted drawing")
+    item_map = build_item_map(0, _rows(notes), _ink(), [frame], SETTINGS)
+    assert [row.rank for row in item_map.boxed] == [1]
+    assert any("boxed anyway" in note for note in item_map.notes)
 
 
 def test_a_row_found_twice_is_dropped_as_a_duplicate() -> None:
@@ -224,7 +272,30 @@ def test_rows_that_cannot_carry_printed_numbers_are_dropped_with_their_reason() 
     )
     assert junk_reason(tags, [], SETTINGS)[0] is RowReason.TAGS  # type: ignore[index]
     assert junk_reason(notes, [], SETTINGS)[0] is RowReason.WORDS  # type: ignore[index]
-    assert junk_reason(speckle, [], SETTINGS)[0] is RowReason.SMALL_MARKS  # type: ignore[index]
+    assert junk_reason(speckle, [], SETTINGS, D(7))[0] is RowReason.SMALL_MARKS  # type: ignore[index]
+
+
+def test_only_the_rows_own_labels_count_and_an_inch_mark_belongs_to_its_number() -> None:
+    """`4` | `"` | `A`: a number, its inch mark printed apart, and one letter. Not a word row.
+    Words the builder found for a slot further away (another line's) do not count."""
+    row = _row(
+        300,
+        [100, 140, 180, 220],
+        [_text(110, 291, "4"), _text(150, 291, '"'), _text(190, 291, "A")],
+    )
+    assert junk_reason(row, [], SETTINGS) is None
+    far = replace(
+        row.slots[0],
+        labels=(row.slots[0].labels[0], _text(110, 260, "PROJECT NAME"), _text(110, 250, "SHEET")),
+    )
+    assert junk_reason(replace(row, slots=(far, *row.slots[1:])), [], SETTINGS) is None
+
+
+@pytest.mark.parametrize("text", ['36" REF', "C/L", "2'-0\" TYP", "[24] MIN"])
+def test_a_number_with_a_qualifier_is_a_number(text: str) -> None:
+    assert label_sort(_text(0, 0, text), SETTINGS) is LabelSort.NUMBER
+    row = _row(300, [100, 140, 180], [_text(110, 291, text), _text(150, 291, text)])
+    assert junk_reason(row, [], SETTINGS) is None
 
 
 def test_a_dimension_row_is_kept_whether_its_numbers_are_text_or_pen_strokes() -> None:
@@ -431,6 +502,148 @@ def test_on_blank_paper_the_tag_sits_beside_its_box_without_a_leader() -> None:
     ((_n, box),) = picture.boxes
     assert not leader
     assert not (tag[0] < box[2] and box[0] < tag[2] and tag[1] < box[3] and box[1] < tag[3])
+
+
+def _pixels(picture, box: Box) -> tuple[int, int, int, int]:  # type: ignore[no-untyped-def]
+    scale = picture.dpi / 72
+    left, top = picture.region_px[0], picture.region_px[1]
+    return (
+        round(float(box.x0) * scale) - left + SETTINGS.gutter_px,
+        round(float(box.top) * scale) - top,
+        round(float(box.x1) * scale) - left + SETTINGS.gutter_px,
+        round(float(box.bottom) * scale) - top,
+    )
+
+
+def _overlap(first: tuple[int, int, int, int], second: tuple[int, int, int, int]) -> bool:
+    return (
+        first[0] < second[2]
+        and second[0] < first[2]
+        and first[1] < second[3]
+        and second[1] < first[3]
+    )
+
+
+def test_no_tag_sits_on_a_label_and_no_border_crosses_its_own_labels() -> None:
+    """Two rows close together, so the second's labels lie just under the first's box: neither
+    tag covers any label, and neither border crosses its own labels."""
+    upper = _piece_row(300)
+    lower = _row(
+        316,
+        [105, 180, 255],
+        [_text(130, 308, '12"'), _text(200, 308, '12"')],
+    )
+    frame = ItemFrame(Box(D(50), D(150), D(350), D(480)), "pasted drawing")
+    rows = _rows(upper, lower)
+    ink = _ink()
+    item_map = build_item_map(0, rows, ink, [frame], SETTINGS)
+    (picture,) = build_item_pictures(
+        _page(rows, ink), item_map, render=_blank, settings=SETTINGS
+    ).pictures
+    labels = [
+        _pixels(picture, label.box)
+        for row in (upper, lower)
+        for slot in row.slots
+        for label in slot.labels
+    ]
+    for _number, tag, _leader in picture.tags:
+        assert not any(_overlap(tag, label) for label in labels)
+    for (number, box), row in zip(picture.boxes, (upper, lower), strict=True):
+        edges = [
+            (box[0], box[1], box[2], box[1] + SETTINGS.box_px),
+            (box[0], box[3] - SETTINGS.box_px, box[2], box[3]),
+            (box[0], box[1], box[0] + SETTINGS.box_px, box[3]),
+            (box[2] - SETTINGS.box_px, box[1], box[2], box[3]),
+        ]
+        own = [_pixels(picture, slot.label.box) for slot in row.slots if slot.label is not None]
+        assert not any(_overlap(edge, label) for edge in edges for label in own), number
+
+
+def test_a_leader_tag_stays_inside_the_picture() -> None:
+    """On a grey page every tag goes to the margin; a row at the very bottom of its drawing still
+    gets a tag wholly inside the picture."""
+    bottom = _row(470, [100, 180, 260], [_text(120, 462, '12"'), _text(200, 462, '12"')])
+    frame = ItemFrame(Box(D(50), D(150), D(350), D(480)), "pasted drawing")
+    rows = _rows(_piece_row(300), bottom)
+    ink = _ink()
+    item_map = build_item_map(0, rows, ink, [frame], SETTINGS)
+    (picture,) = build_item_pictures(
+        _page(rows, ink), item_map, render=_flat, settings=SETTINGS
+    ).pictures
+    for _number, tag, leader in picture.tags:
+        assert leader
+        assert 0 <= tag[0] and tag[2] <= picture.width and 0 <= tag[1] and tag[3] <= picture.height
+
+
+def _three_views() -> tuple[PageRows, PageInk]:
+    """Three squares far apart, each holding one dimension row: three views of one drawing."""
+
+    def square(x0: int, top: int) -> list[InkLine]:
+        lines = [InkLine(D(x0), D(y), D(x0 + 100), D(y)) for y in (top, top + 50, top + 100)]
+        lines += [InkLine(D(x), D(top), D(x), D(top + 100)) for x in range(x0, x0 + 101, 10)]
+        return lines
+
+    ink = PageInk(
+        width=D(600),
+        height=D(600),
+        lines=tuple(square(50, 50) + square(350, 50) + square(50, 350)),
+        curves=(),
+        characters=(),
+        drawing_boxes=(),
+    )
+    rows = _rows(
+        _row(160, [50, 100, 150], [_text(60, 151, '12"'), _text(110, 151, '12"')]),
+        _row(160, [350, 400, 450], [_text(360, 151, '13"'), _text(410, 151, '13"')]),
+        _row(460, [50, 100, 150], [_text(60, 451, '14"'), _text(110, 451, '14"')]),
+    )
+    return rows, ink
+
+
+def test_one_items_pictures_stay_within_the_question_cap_and_v1_is_never_left_out() -> None:
+    rows, ink = _three_views()
+    frame = ItemFrame(Box(D(0), D(0), D(600), D(600)), "pasted drawing")
+    item_map = build_item_map(0, rows, ink, [frame], SETTINGS)
+    assert [view.tag for item in item_map.items for view in item.views] == ["V1", "V2", "V3"]
+
+    full = build_item_pictures(_page(rows, ink), item_map, render=_blank, settings=SETTINGS)
+    assert full.item_tokens(1) <= SETTINGS.question_tokens
+    assert [picture.tag for picture in full.pictures] == ["V1", "V2", "V3"]
+
+    first, second, _third = full.pictures
+    cap = first.tokens + second.tokens + SETTINGS.view_minimum_tokens - 1
+    tight = replace(SETTINGS, question_tokens=cap)
+    capped = build_item_pictures(_page(rows, ink), item_map, render=_blank, settings=tight)
+    assert capped.pictures[0].tag == "V1"
+    assert capped.item_tokens(1) <= cap
+    assert [picture.tag for picture in capped.pictures] == ["V1", "V2"]
+    (note,) = capped.notes
+    assert "V3" in note and "[3]" in note
+
+
+def test_a_view_that_cannot_fit_is_refused_not_sent_oversize() -> None:
+    from workflow.item_pictures import PictureTooLarge
+
+    stubborn = replace(SETTINGS, min_dpi=2000, max_dpi=2000)
+    frame = ItemFrame(Box(D(50), D(150), D(350), D(480)), "pasted drawing")
+    rows, ink = _rows(_piece_row(300)), _ink()
+    item_map = build_item_map(0, rows, ink, [frame], stubborn)
+    with pytest.raises(PictureTooLarge, match="even at 2000 dpi"):
+        build_item_pictures(_page(rows, ink), item_map, render=_blank, settings=stubborn)
+
+
+def test_the_tag_typeface_is_pinned() -> None:
+    """The tags are drawn in Pillow's built-in typeface (`ImageFont.load_default(size=...)`), the
+    one the row picture already uses. Its pixels are pinned here: a Pillow that draws them
+    differently would change every picture's bytes, and so must fail loudly, not drift."""
+    import hashlib
+
+    from workflow.item_pictures import _text_mask
+
+    width, mask = _text_mask("0123456789V", 28)
+    assert (width, hashlib.sha256(repr(mask).encode()).hexdigest()) == (
+        178,
+        "f024f3a89f99bf2908366ea9442e22ff31ede6cf847a224a20b2f6ae516b491d",
+    )
 
 
 def test_a_renderer_that_returns_the_wrong_size_is_refused() -> None:
