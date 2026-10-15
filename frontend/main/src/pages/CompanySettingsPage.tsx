@@ -5,7 +5,8 @@
  * Many checks need numbers that are on no drawing — the usual cabinet depth, a side panel's
  * thickness, the sink clearance, the filler limits. They are GV's house rules, the same on every job,
  * so they belong here rather than being typed again for each project. Anyone may look; only an admin
- * can save, because a standard changes every future check on every project. A project's own values
+ * can save, because a standard changes every future check on every project. The server says whether
+ * the caller may save (`can_save`, #1369); anyone else sees the values without boxes or Save. A project's own values
  * (its sink, cabinet width limits, overrides) are saved by its reviewers in the Projects section.
  */
 
@@ -53,6 +54,8 @@ export function CompanySettingsPage({ focus, project }: {
   }, [attempt]);
 
   const changes = changedValues(drafts);
+  // Only what the server says (#1369): a missing answer shows no boxes rather than ones it would refuse.
+  const canSave = current?.can_save === true;
   const unclear = changes.filter((change) => unitHint(change.value) !== null);
 
   // A link to one field (#1369): once both lists are on screen, open the page on that field. Each link
@@ -114,23 +117,27 @@ export function CompanySettingsPage({ focus, project }: {
       ) : (
         <>
           <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
-            Set once here, these apply to every project. Only an admin can change GV&apos;s standards.
+            Set once here, these apply to every project.
             <InfoTip label="About company settings">
               <p>These are GV&apos;s standards only. Any of them can still be set differently for one project, under Projects below.</p>
               <p>Overhang, backsplash, side panel and cabinet depth are project defaults: empty until GV sets them, and a value set for a project wins. The cabinet width limits and the sink are entered per project, under Projects below.</p>
               <p>A check whose number is set nowhere says &ldquo;not found&rdquo; rather than guessing. Only an admin can save.</p>
             </InfoTip>
           </p>
+          {!canSave && (
+            <p className="text-sm" data-part="read-only">Only an admin can change GV standards.</p>
+          )}
           <CompanySettingsList
             settings={current.settings}
             drafts={drafts}
             saving={saving}
+            readOnly={!canSave}
             onDraft={(name, value) => {
               setSaved(false);
               setDrafts((prior) => ({ ...prior, [name]: value }));
             }}
           />
-          <div className="flex flex-wrap items-center gap-3">
+          {canSave && <div className="flex flex-wrap items-center gap-3">
             <Button type="button" disabled={saving || changes.length === 0 || unclear.length > 0} onClick={() => void save()}>
               {saving ? 'Saving…' : changes.length === 0 ? 'No changes to save' : `Save ${changes.length} change${changes.length === 1 ? '' : 's'}`}
             </Button>
@@ -138,7 +145,7 @@ export function CompanySettingsPage({ focus, project }: {
             <span role="status" className={cn('text-sm', error && 'text-destructive')} data-part="save-status">
               {error ?? (saved ? 'Saved. Every project now starts from these numbers.' : '')}
             </span>
-          </div>
+          </div>}
         </>
       )}
       <ProjectSettingsSection onSettled={onProjectsSettled} />

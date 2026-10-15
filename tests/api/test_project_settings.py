@@ -325,3 +325,24 @@ def test_the_projects_sink_card_is_shown_with_its_project(session: Session) -> N
 
     sink = _one(client.get(URL), project_id)["sink"]
     assert (sink["model_name"], sink["inside_width"]["text"]) == ("Test sink", '28"')
+
+
+@pytest.mark.parametrize(
+    ("role", "may_save"), [("admin", True), ("reviewer", True), ("rule_admin", False)]
+)
+def test_can_save_says_what_the_project_save_route_allows(
+    session: Session, role: str, may_save: bool
+) -> None:
+    """#1369: each project says whether the caller may save it, from the same checks the save route
+    uses (project access and `Action.ENTER_VALUES`). The save is still checked by the server."""
+    project_id = _project(session)
+    client = _client(session, role=role, projects=(project_id,))
+
+    assert _one(client.get(URL), project_id)["can_save"] is may_save
+
+    saved = client.post(
+        f"{URL}/{project_id}", json={"values": [{"name": "countertop_overhang", "value": '1"'}]}
+    )
+    assert (saved.status_code == 201) is may_save, saved.text
+    if may_save:
+        assert saved.json()["can_save"] is True

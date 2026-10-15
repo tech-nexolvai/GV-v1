@@ -32,7 +32,9 @@ The rulebook's own defaults stay beneath, and a company value replaces only the 
 name (`workflow/stages._layered`).
 
 **Who.** Anyone signed in may read; only an admin may save (`Action.MANAGE_COMPANY_STANDARDS`): a
-company standard changes every future verdict on every project.
+company standard changes every future verdict on every project. Since #1369 the read says whether the
+caller may save (`can_save`), from the same checks the save route makes, so the page shows read-only
+values to everyone else. It only hides controls: every save is still checked by the server.
 
 ## Projects (#1341)
 
@@ -134,6 +136,12 @@ class CompanySettingsOut(BaseModel):
     version: int | None = Field(
         default=None, description="The company layer's current version, or null before the first."
     )
+    can_save: bool = Field(
+        description=(
+            "True when the caller may save GV's standards (admins only). Read-only: the save route "
+            "still checks it."
+        )
+    )
 
 
 class CompanyValueIn(BaseModel):
@@ -186,7 +194,18 @@ def _declared(rules: list[Rule]) -> dict[str, tuple[ParameterScope, list[str]]]:
     return declared
 
 
-def _settings(session: Session) -> CompanySettingsOut:
+def may_save_company(principal: Principal) -> bool:
+    """The check `save_company_settings` makes (`require_action`), asked without refusing (#1369)."""
+    return principal.may(Action.MANAGE_COMPANY_STANDARDS)
+
+
+def may_save_project(principal: Principal, project_id: UUID) -> bool:
+    """The two checks `save_project_settings` makes — project access and `Action.ENTER_VALUES` —
+    asked without refusing (#1369)."""
+    return principal.belongs_to(project_id) and principal.may(Action.ENTER_VALUES)
+
+
+def _settings(session: Session, principal: Principal) -> CompanySettingsOut:
     rules = _published_rules(session)
     version, company = _company_set(session)
     defaults = declared_defaults(rules, when=datetime.now(UTC)).parameters
@@ -220,7 +239,9 @@ def _settings(session: Session) -> CompanySettingsOut:
                 kind="project_default" if name in PROJECT_DEFAULTS else "standard",
             )
         )
-    return CompanySettingsOut(settings=settings, version=version)
+    return CompanySettingsOut(
+        settings=settings, version=version, can_save=may_save_company(principal)
+    )
 
 
 @router.get(
@@ -229,10 +250,10 @@ def _settings(session: Session) -> CompanySettingsOut:
     summary="GV's standard numbers, which every project starts from",
 )
 def read_company_settings(
-    _principal: Annotated[Principal, Depends(require_role(*READERS))],
+    principal: Annotated[Principal, Depends(require_role(*READERS))],
     session: Annotated[Session, Depends(get_session)],
 ) -> CompanySettingsOut:
-    return _settings(session)
+    return _settings(session, principal)
 
 
 @router.post(
@@ -300,7 +321,7 @@ def save_company_settings(
     except Exception:
         session.rollback()
         raise
-    return _settings(session)
+    return _settings(session, principal)
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -393,6 +414,12 @@ class ProjectSettingsOut(BaseModel):
     version: int | None = Field(description="The project layer's current version, or null.")
     settings: list[ProjectSettingOut]
     sink: SinkEntryOut | None = Field(description="The project's sink card, or null until entered.")
+    can_save: bool = Field(
+        description=(
+            "True when the caller may save this project's values (its reviewers and admins). "
+            "Read-only: the save route still checks it."
+        )
+    )
 
 
 class ProjectsSettingsOut(BaseModel):
@@ -449,7 +476,9 @@ def _project_set(
     return stored.version, dict(from_rows(stored, rows).parameters), {row.name: row for row in rows}
 
 
-def _project_settings(session: Session, project: Project, rules: list[Rule]) -> ProjectSettingsOut:
+def _project_settings(
+    session: Session, project: Project, rules: list[Rule], principal: Principal
+) -> ProjectSettingsOut:
     _version, company = _company_set(session)
     defaults = declared_defaults(rules, when=datetime.now(UTC)).parameters
     version, values, rows = _project_set(session, project.id)
@@ -508,6 +537,7 @@ def _project_settings(session: Session, project: Project, rules: list[Rule]) -> 
         version=version,
         settings=settings,
         sink=_read_sink(session, project.id).sink,
+        can_save=may_save_project(principal, project.id),
     )
 
 
@@ -528,7 +558,7 @@ def read_project_settings(
         select(Project).where(Project.id.in_(principal.projects)).order_by(Project.name, Project.id)
     ).all()
     return ProjectsSettingsOut(
-        projects=[_project_settings(session, project, rules) for project in projects]
+        projects=[_project_settings(session, project, rules, principal) for project in projects]
     )
 
 
@@ -611,4 +641,4 @@ def save_project_settings(
     except Exception:
         session.rollback()
         raise
-    return _project_settings(session, project, rules)
+    return _project_settings(session, project, rules, principal)

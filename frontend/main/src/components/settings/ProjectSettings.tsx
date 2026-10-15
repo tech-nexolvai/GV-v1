@@ -7,6 +7,8 @@
  * a box for a new value, and the project's sink card. Reviewers and admins in the project may save;
  * GV's standards above stay admin-only (Anant, 2026-10-15). Settings no drawing set of the job is
  * checked with (the cabinet width limits on a countertop-only job) sit apart, still settable.
+ * A project the server says the caller cannot save (`can_save`, #1369) shows its values only: no
+ * boxes, no Save, no sink button. The server still checks every save.
  */
 import { useEffect, useId, useState } from 'react';
 
@@ -109,11 +111,13 @@ function SettingRows({
   drafts,
   saving,
   onDraft,
+  readOnly,
 }: {
   settings: readonly ProjectSetting[];
   drafts: Record<string, Draft>;
   saving: boolean;
   onDraft: (name: string, draft: Draft) => void;
+  readOnly: boolean;
 }) {
   const idPrefix = useId();
   return (
@@ -137,8 +141,15 @@ function SettingRows({
                 Used by: {setting.checks.map((check) => check.name).join(' · ')}
               </span>
             </th>
-            <td role="cell" className="px-3 py-2 max-sm:py-0"><InUse setting={setting} /></td>
             <td role="cell" className="px-3 py-2 max-sm:py-0">
+              {/* Read-only, the value takes a link's focus (#1369), so "Not checked" still lands on its row. */}
+              {readOnly ? (
+                <div data-setting-field={setting.name} tabIndex={-1}><InUse setting={setting} /></div>
+              ) : (
+                <InUse setting={setting} />
+              )}
+            </td>
+            {!readOnly && <td role="cell" className="px-3 py-2 max-sm:py-0">
               <div className="flex flex-col gap-1.5">
                 <Input
                   type="text"
@@ -169,7 +180,7 @@ function SettingRows({
                   </select>
                 )}
               </div>
-            </td>
+            </td>}
           </tr>
         );
       })}
@@ -177,12 +188,13 @@ function SettingRows({
   );
 }
 
-function SettingsTable({ label, settings, drafts, saving, onDraft }: {
+function SettingsTable({ label, settings, drafts, saving, onDraft, readOnly }: {
   label: string;
   settings: readonly ProjectSetting[];
   drafts: Record<string, Draft>;
   saving: boolean;
   onDraft: (name: string, draft: Draft) => void;
+  readOnly: boolean;
 }) {
   return (
     <div className="overflow-x-auto rounded-lg border">
@@ -192,11 +204,11 @@ function SettingsTable({ label, settings, drafts, saving, onDraft }: {
           <tr className="border-b">
             <th scope="col" className="px-3 py-2 font-medium">Setting · what it is for</th>
             <th scope="col" className="px-3 py-2 font-medium">In use · from</th>
-            <th scope="col" className="px-3 py-2 font-medium">New value</th>
+            {!readOnly && <th scope="col" className="px-3 py-2 font-medium">New value</th>}
           </tr>
         </thead>
         <tbody role="rowgroup" className="max-sm:block">
-          <SettingRows settings={settings} drafts={drafts} saving={saving} onDraft={onDraft} />
+          <SettingRows settings={settings} drafts={drafts} saving={saving} onDraft={onDraft} readOnly={readOnly} />
         </tbody>
       </table>
     </div>
@@ -225,6 +237,8 @@ function ProjectBlock({ initial }: { initial: Project }) {
   const [editingSink, setEditingSink] = useState(false);
 
   const changes = projectChanges(drafts);
+  // Only what the server says (#1369): a missing answer shows no boxes rather than ones it would refuse.
+  const readOnly = project.can_save !== true;
   const needsSource = changes
     .map((change) => project.settings.find((setting) => setting.name === change.name))
     .filter((setting): setting is ProjectSetting => setting !== undefined && setting.sources.length > 1 && !drafts[setting.name]?.source);
@@ -263,8 +277,9 @@ function ProjectBlock({ initial }: { initial: Project }) {
         <h3 id={titleId} className="text-base font-semibold">{project.name}</h3>
         <p className="text-sm text-muted-foreground">
           {project.product_types.length > 0 ? `Drawing sets for: ${project.product_types.join(', ')}. ` : ''}
-          Reviewers and admins in this project can change these. A value typed for one package on Measurements still wins for that package.
+          {readOnly ? '' : 'Reviewers and admins in this project can change these. '}A value typed for one package on Measurements still wins for that package.
         </p>
+        {readOnly && <p className="text-sm" data-part="read-only">Only reviewers on this project can change these.</p>}
       </div>
 
       <div className="flex flex-col gap-2 rounded-lg border p-3" data-part="sink">
@@ -282,29 +297,29 @@ function ProjectBlock({ initial }: { initial: Project }) {
         ) : (
           <>
             {project.sink ? <SinkSummary sink={project.sink} /> : <p className="text-sm">No sink entered for this job yet.</p>}
-            <div>
+            {!readOnly && <div>
               <Button size="sm" variant="outline" onClick={() => setEditingSink(true)}>
                 {project.sink ? 'Change the sink' : 'Enter the sink'}
               </Button>
-            </div>
+            </div>}
           </>
         )}
       </div>
 
-      <SettingsTable label={`${project.name} settings`} settings={used} drafts={drafts} saving={saving} onDraft={onDraft} />
+      <SettingsTable label={`${project.name} settings`} settings={used} drafts={drafts} saving={saving} onDraft={onDraft} readOnly={readOnly} />
       {apart.length > 0 && (
         <details className="rounded-lg border p-3">
           <summary className="cursor-pointer text-sm">
             Not used by this project&apos;s drawing sets ({apart.length})
           </summary>
           <p className="my-2 text-xs text-muted-foreground">
-            No drawing set of this job is checked with these yet (for example the cabinet width limits on a countertop-only job). They can still be set.
+            No drawing set of this job is checked with these yet (for example the cabinet width limits on a countertop-only job).{readOnly ? '' : ' They can still be set.'}
           </p>
-          <SettingsTable label={`${project.name} settings not used yet`} settings={apart} drafts={drafts} saving={saving} onDraft={onDraft} />
+          <SettingsTable label={`${project.name} settings not used yet`} settings={apart} drafts={drafts} saving={saving} onDraft={onDraft} readOnly={readOnly} />
         </details>
       )}
 
-      <div className="flex flex-wrap items-center gap-3">
+      {!readOnly && <div className="flex flex-wrap items-center gap-3">
         <Button type="button" disabled={saving || changes.length === 0 || needsSource.length > 0 || unclear.length > 0} onClick={() => void save()}>
           {saving ? 'Saving…' : changes.length === 0 ? 'No changes to save' : `Save ${changes.length} change${changes.length === 1 ? '' : 's'}`}
         </Button>
@@ -315,7 +330,7 @@ function ProjectBlock({ initial }: { initial: Project }) {
         <span role="status" className={cn('text-sm', error && 'text-destructive')} data-part="save-status">
           {error ?? (saved ? 'Saved. Run the checks again to use these values.' : '')}
         </span>
-      </div>
+      </div>}
     </section>
   );
 }

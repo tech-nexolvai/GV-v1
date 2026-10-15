@@ -2798,6 +2798,11 @@
       },
       "CompanySettingsOut": {
         "properties": {
+          "can_save": {
+            "description": "True when the caller may save GV's standards (admins only). Read-only: the save route still checks it.",
+            "title": "Can Save",
+            "type": "boolean"
+          },
           "settings": {
             "items": {
               "$ref": "#/components/schemas/CompanySettingOut"
@@ -2819,7 +2824,8 @@
           }
         },
         "required": [
-          "settings"
+          "settings",
+          "can_save"
         ],
         "title": "CompanySettingsOut",
         "type": "object"
@@ -8463,6 +8469,11 @@
       },
       "ProjectSettingsOut": {
         "properties": {
+          "can_save": {
+            "description": "True when the caller may save this project's values (its reviewers and admins). Read-only: the save route still checks it.",
+            "title": "Can Save",
+            "type": "boolean"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -8517,7 +8528,8 @@
           "product_types",
           "version",
           "settings",
-          "sink"
+          "sink",
+          "can_save"
         ],
         "title": "ProjectSettingsOut",
         "type": "object"

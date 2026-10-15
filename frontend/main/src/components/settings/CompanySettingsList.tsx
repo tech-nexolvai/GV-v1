@@ -77,17 +77,22 @@ function Provenance({ setting }: { setting: CompanySetting }) {
  * rulebook's default, or nothing), the checks that read it, and a box for a new value. A blank box
  * leaves the value as it is. Above it, how many GV has set. Every one of them can still be set
  * differently for one project, in that review's Measurements, so the table does not suggest a lock.
+ *
+ * `readOnly` (#1369): for someone the server says cannot save, the values only, with no boxes. The
+ * server still checks every save; this only stops offering a box that would be refused.
  */
 export function CompanySettingsList({
   settings,
   drafts,
   saving,
   onDraft,
+  readOnly = false,
 }: {
   settings: readonly CompanySetting[];
   drafts: Record<string, string>;
   saving: boolean;
   onDraft: (name: string, value: string) => void;
+  readOnly?: boolean;
 }) {
   const counts = settingCounts(settings);
   return (
@@ -115,7 +120,7 @@ export function CompanySettingsList({
           <thead className="bg-muted/50 text-left">
             <tr className="border-b">
               <th scope="col" className="px-3 py-2 font-medium">Setting</th>
-              <th scope="col" className="px-3 py-2 font-medium">In use · new value</th>
+              <th scope="col" className="px-3 py-2 font-medium">{readOnly ? 'In use' : 'In use · new value'}</th>
               <th scope="col" className="hidden px-3 py-2 font-medium lg:table-cell">Used by</th>
             </tr>
           </thead>
@@ -129,9 +134,13 @@ export function CompanySettingsList({
                 data-source={setting.in_use_from ?? 'none'}
               >
                 <th scope="row" className="min-w-40 px-3 py-2 text-left font-normal">
-                  <label className="font-medium" htmlFor={`company-${setting.name}`}>
-                    {settingLabel(setting.name)}
-                  </label>{' '}
+                  {readOnly ? (
+                    <span className="font-medium">{settingLabel(setting.name)}</span>
+                  ) : (
+                    <label className="font-medium" htmlFor={`company-${setting.name}`}>
+                      {settingLabel(setting.name)}
+                    </label>
+                  )}{' '}
                   <code className="text-xs text-muted-foreground">{setting.name}</code>
                   {setting.kind === 'project_default' && (
                     <span className="block text-xs text-muted-foreground" data-part="project-default">
@@ -142,8 +151,15 @@ export function CompanySettingsList({
                 <td className="px-3 py-2">
                   {/* One line (#1155): the value, where it comes from, "?" for the story behind it, the box. */}
                   {/* In columns from a tablet up, so the boxes line up row under row; wrapping on a phone. */}
-                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 sm:grid sm:grid-cols-[minmax(6rem,max-content)_8rem_2.75rem_8rem]">
-                    <span className="num whitespace-nowrap" aria-hidden="true">{setting.in_use ?? '—'}</span>
+                  <div className={cn('flex flex-wrap items-center gap-x-2 gap-y-1 sm:grid', readOnly ? 'sm:grid-cols-[minmax(6rem,max-content)_8rem_2.75rem]' : 'sm:grid-cols-[minmax(6rem,max-content)_8rem_2.75rem_8rem]')}>
+                    {/* Read-only, the value itself takes a link's focus (#1369), so "Not checked" still lands here. */}
+                    <span
+                      className="num whitespace-nowrap"
+                      aria-hidden="true"
+                      {...(readOnly ? { 'data-setting-field': setting.name, tabIndex: -1 } : {})}
+                    >
+                      {setting.in_use ?? '—'}
+                    </span>
                     <span aria-hidden="true"><SourceBadge setting={setting} /></span>
                     {/* An empty cell keeps the box in its column when there is no "?". */}
                     {/* The "?" centred in a 44 px column, so its invisible finger target never covers the box. */}
@@ -154,7 +170,7 @@ export function CompanySettingsList({
                     )}
                     {/* The same facts as one sentence, for a screen reader. */}
                     <span className="sr-only" id={`company-${setting.name}-now`}>{inUseSentence(setting)}</span>
-                    <Input
+                    {!readOnly && <Input
                       id={`company-${setting.name}`}
                       type="text"
                       className="num h-8 w-32"
@@ -165,7 +181,7 @@ export function CompanySettingsList({
                       value={drafts[setting.name] ?? ''}
                       disabled={saving}
                       onChange={(event) => onDraft(setting.name, event.target.value)}
-                    />
+                    />}
                   </div>
                   {hint && <p id={`company-${setting.name}-hint`} className="mt-1 text-xs text-destructive">{hint}</p>}
                 </td>

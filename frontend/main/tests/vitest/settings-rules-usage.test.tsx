@@ -34,6 +34,7 @@ beforeEach(() => {
 
 const SETTINGS = {
   version: 3,
+  can_save: true,
   settings: [
     { name: 'filler_min', scope: 'global', rule_ids: ['CHECK-FILLER'], rulebook_default: '1 in', rulebook_note: 'Synthetic note on the default.', company_value: null, company_set_by: null, company_set_at: null, in_use: '1 in', in_use_from: 'rulebook' },
     { name: 'sink_clearance', scope: 'project', rule_ids: ['CHECK-SINK-A', 'CHECK-SINK-B'], rulebook_default: '1/4 in', rulebook_note: null, company_value: '3/8 in', company_set_by: 'Synthetic Admin', company_set_at: '2026-10-01T10:00:00Z', in_use: '3/8 in', in_use_from: 'company' },

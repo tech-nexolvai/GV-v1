@@ -199,3 +199,24 @@ def test_a_save_is_audited_under_the_person_who_made_it(session: Session) -> Non
         if event.target_type == "company_standards"
     ]
     assert [event.actor for event in events] == ["a admin"]
+
+
+@pytest.mark.parametrize(
+    ("role", "may_save"), [("admin", True), ("reviewer", False), ("rule_admin", False)]
+)
+def test_can_save_says_what_the_save_route_allows(
+    session: Session, role: str, may_save: bool
+) -> None:
+    """#1369: the page hides Save for people who cannot save. `can_save` comes from the same check the
+    save route uses, so it never promises a save the server then refuses (or hides one it allows).
+    The server stays the authority: the save below is still checked as before."""
+    client = _client(session, role=role)
+
+    read = client.get(URL)
+    assert read.status_code == 200, read.text
+    assert read.json()["can_save"] is may_save
+
+    saved = client.post(URL, json={"values": [{"name": "back_offset_minimum", "value": '2"'}]})
+    assert (saved.status_code == 201) is may_save, saved.text
+    if may_save:
+        assert saved.json()["can_save"] is True
