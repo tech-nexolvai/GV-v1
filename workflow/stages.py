@@ -109,7 +109,6 @@ from app.models.runs import (
     ModelInvocation,
     ModelInvocationOutcome,
     TaskRun,
-    WorkflowRun,
 )
 from app.models.verdicts import CheckRun, OutputArtifact, OutputArtifactKind
 from app.models.verdicts import Finding as FindingRow
@@ -440,6 +439,9 @@ from workflow.reading_watch import (
 )
 from workflow.redline_outputs import render_evidence_grounded_redline
 from workflow.review import ENGINE_VERSION, PageResult
+from workflow.set_spend import UNMETERED_PROMPT_FAMILIES
+from workflow.set_spend import depth_cap_usd as _depth_cap_usd
+from workflow.set_spend import remaining_claude_budget as _remaining_claude_budget
 from workflow.several_countertops import (
     WHOLE_PACKAGE_RULE_IDS,
     CountertopHolds,
@@ -994,14 +996,6 @@ LAYOUT_MODEL_ENV = "GV_BEDROCK_LAYOUT_MODEL"
 LAYOUT_PROMPT_ID = "layout-discriminator-v1"
 LAYOUT_TEMPLATE_ID = "closed-question-page-v1"
 
-#: Recorded calls that are not reading spend (#1221), by prompt family: every version of the
-#: layout classifier's prompt and of the reading assignment's. They record every call since #1221,
-#: but they never counted towards the drawing set's AI budget, and phase 1 changes no behaviour:
-#: `stage_spend_so_far` leaves them out until the shared budget (Sutra step 3,
-#: `docs/decisions/SUTRA_HARNESS.md`) decides how they count. A family rather than exact ids, so a
-#: new prompt version cannot start counting by accident. The assignment's rows belong to a package
-#: revision, never to a run, so naming it is a safety net.
-UNMETERED_PROMPT_FAMILIES: Final = ("layout-discriminator-", "reading-assignment-")
 UNCONFIGURED_LAYOUT_MODEL_ID = "layout-reader-unconfigured"
 
 #: How many individual refusals a stage payload carries, before it reports only the count.
@@ -3167,6 +3161,11 @@ class DatabaseStages:
             "checks_queued": checks is not None,
         }
 
+    def _ai_budget_fixed_usd(self) -> Decimal | None:
+        """The fixed amount stated for a drawing set, in dollars, or `None` (page-scaled)."""
+        fixed = self._ai_budget_fixed_micros
+        return None if fixed is None else Decimal(fixed) / 1_000_000
+
     def read_depths_again(
         self, session: Session, package_revision_id: UUID, request: str
     ) -> dict[str, object]:
@@ -3193,8 +3192,8 @@ class DatabaseStages:
         from workflow.depth_again import (
             CLOSED,
             NO_COUNTERTOP,
-            UNPRICED,
             DepthsAgainRefused,
+            SpendLimits,
             countertops_by_drawing,
             refusal,
         )
@@ -3209,13 +3208,14 @@ class DatabaseStages:
                 runtime is not None and runtime.claude_row_reader and self._form_reader is not None
             ),
             reuse_answers=runtime is not None and runtime.reuse_answers,
+            limits=SpendLimits(
+                budget=self._ai_budget,
+                fixed_usd=self._ai_budget_fixed_usd(),
+                claude_ceiling_usd=None if runtime is None else runtime.spend_cap_usd,
+            ),
         )
         if why is not None:
             raise DepthsAgainRefused(why)
-        with session.no_autoflush:
-            _spent, unpriced = _revision_spend(session, package_revision_id)
-        if unpriced:
-            raise DepthsAgainRefused(UNPRICED)
         bala = self._bala_items(session, package_revision_id)
         if not countertops_by_drawing(session, package_revision_id):
             raise DepthsAgainRefused(NO_COUNTERTOP)
@@ -3228,16 +3228,15 @@ class DatabaseStages:
         if revision.state in CLOSED_STATES:
             raise DepthsAgainRefused(CLOSED)
         checks = _queue_checks_after_reading(session, package_revision_id)
+        kept = (
+            " The earlier complete reading is still used."
+            if depth.get("kept_earlier")
+            else " The values not read are held, each with this reason."
+        )
         if depth.get("stopped") == "budget":
-            reason = (
-                "Stopped: this drawing set's AI budget was reached. The values not read are held, "
-                "each with this reason."
-            )
+            reason = f"Stopped: this drawing set's AI budget was reached.{kept}"
         elif depth.get("stopped") == "account":
-            reason = (
-                "Stopped: the AI provider account refused the calls. The values not read are "
-                "held, each with this reason."
-            )
+            reason = f"Stopped: the AI provider account refused the calls.{kept}"
         elif depth.get("ran") is not True:
             reason = str(depth.get("reason"))
         else:
@@ -6725,8 +6724,8 @@ class DatabaseStages:
         )
         from extraction.reader import UnreadablePdf
         from extraction.slot_reader.anthropic import BatchSpendGuard
-        from workflow.depth_again import again_hash
-        from workflow.depth_evidence import DEPTH_EXTRACTOR, DEPTH_READER_VERSION
+        from workflow.depth_again import STOPPED_KEEPS_EARLIER, again_hash
+        from workflow.depth_evidence import DEPTH_EXTRACTOR, DEPTH_READER_VERSION, latest_depth_run
         from workflow.depth_evidence import RUN_FAILED as DEPTH_RUN_FAILED
         from workflow.depth_reader import (
             countertops_by_drawing,
@@ -6883,25 +6882,14 @@ class DatabaseStages:
                 not_prepared[page.id] = (
                     f"code could not prepare this page for the reader: {kind}{error}"
                 )
-        budget_micros = (
-            self._ai_budget_fixed_micros
-            if self._ai_budget_fixed_micros is not None
-            else _micros(
-                self._ai_budget.for_pages(_revision_page_count(session, package_revision_id))
-            )
-        )
-        spent_micros, unpriced = _revision_spend(session, package_revision_id)
         # The smaller of the configured Claude ceiling and what the set's budget has left, as the
-        # slot reader takes it.
-        cap_usd = _remaining_claude_budget(
-            (
-                Decimal(budget_micros) / 1_000_000
-                if runtime.spend_cap_usd is None
-                else min(runtime.spend_cap_usd, Decimal(budget_micros) / 1_000_000)
-            ),
-            cap_micros=budget_micros,
-            spent_micros=spent_micros,
-            unpriced_calls=unpriced,
+        # slot reader takes it; the API's "budget left" is the same function (#1308).
+        cap_usd = _depth_cap_usd(
+            session,
+            package_revision_id,
+            budget=self._ai_budget,
+            fixed_usd=self._ai_budget_fixed_usd(),
+            claude_ceiling_usd=runtime.spend_cap_usd,
         )
         stop = ReadingStop()
         recorder = self._call_ledger(session, task_run.id, reader_version=DEPTH_READER_VERSION)
@@ -6934,6 +6922,9 @@ class DatabaseStages:
             )
         except Exception as error:  # noqa: BLE001 - recorded and reported, never a value
             failure = f"{type(error).__name__}: {error}"
+        # A request's reading that stops part way never replaces a complete earlier one (#1308
+        # review): the earlier good reading, looked up before this run exists.
+        earlier_good = None if again is None else latest_depth_run(session, package_revision_id)
         try:
             with session.begin_nested():
                 run = open_extraction_run(
@@ -6979,6 +6970,31 @@ class DatabaseStages:
                 written = persisted.as_payload()
             except Exception as error:  # noqa: BLE001 - recorded and reported, never a value
                 failure = f"its readings could not be saved: {type(error).__name__}: {error}"
+        kept_earlier: str | None = None
+        if failure is None and stop.cause is not None and earlier_good is not None:
+            # Stopped by the budget or the account with a complete earlier reading on record: this
+            # one is kept, marked failed with why, so the checks and a person's decisions keep
+            # using the earlier one (`depth_evidence.depth_operands` says so on each countertop).
+            stopped = STOPPED_KEEPS_EARLIER.format(
+                why=(
+                    "this drawing set's AI budget was reached"
+                    if stop.cause == "budget"
+                    else "the AI provider account refused the calls"
+                )
+            )
+            try:
+                with session.begin_nested():
+                    persist_page_notes(
+                        session,
+                        package_revision_id,
+                        run,
+                        by_id,
+                        dict.fromkeys(by_id, stopped),
+                        failed=True,
+                    )
+                kept_earlier = str(earlier_good.id)
+            except Exception as error:  # noqa: BLE001 - recorded and reported, never a value
+                failure = f"its stop could not be noted: {type(error).__name__}: {error}"
         if failure is not None:
             try:
                 with session.begin_nested():
@@ -7010,6 +7026,7 @@ class DatabaseStages:
             "kinds_settled": sum(view.kind is not None for view in reading.views),
             "questions": reading.questions_asked,
             "stopped": stop.cause,
+            "kept_earlier": kept_earlier,
             "cap_usd": str(cap_usd),
             "spend": spent,
             **written,
@@ -9315,65 +9332,6 @@ def _stopped_at_budget(
     ]
     already = {page.page_id for page in unread}
     return kept, [*unread, *(page for page in listed if page.page_id not in already)]
-
-
-def _revision_page_count(session: Session, package_revision_id: UUID) -> int:
-    """How many pages the revision's documents hold: the drawing set's page-scaled budget's pages."""
-    return int(
-        session.scalar(
-            select(func.coalesce(func.sum(DocumentVersion.page_count), 0))
-            .join(
-                PackageRevisionDocument,
-                PackageRevisionDocument.document_version_id == DocumentVersion.id,
-            )
-            .where(PackageRevisionDocument.package_revision_id == package_revision_id)
-        )
-        or 0
-    )
-
-
-def _revision_spend(session: Session, package_revision_id: UUID) -> tuple[int, int]:
-    """What every reader of this revision has spent, in micros, and how many calls had no price.
-
-    Every call recorded under any run of the revision's workflow runs, the call ledger's own runs
-    included (a twin row costs nothing, so each call counts once). The layout classifier's and the
-    assignment's rows are not reading spend (`UNMETERED_PROMPT_FAMILIES`), as for the stage's meter.
-    """
-    spent, unpriced = session.execute(
-        select(
-            func.coalesce(func.sum(ModelInvocation.cost_micros), 0),
-            func.count().filter(ModelInvocation.cost_micros.is_(None)),
-        )
-        .join(ExtractionRun, ModelInvocation.extraction_run_id == ExtractionRun.id)
-        .join(TaskRun, TaskRun.id == ExtractionRun.task_run_id)
-        .join(WorkflowRun, WorkflowRun.id == TaskRun.workflow_run_id)
-        .where(WorkflowRun.package_revision_id == package_revision_id)
-        .where(
-            not_(
-                or_(
-                    *(
-                        ModelInvocation.prompt_id.startswith(family, autoescape=True)
-                        for family in UNMETERED_PROMPT_FAMILIES
-                    )
-                )
-            )
-        )
-    ).one()
-    return int(spent or 0), int(unpriced or 0)
-
-
-def _remaining_claude_budget(
-    requested_usd: Decimal,
-    *,
-    cap_micros: int,
-    spent_micros: int,
-    unpriced_calls: int,
-) -> Decimal:
-    """Claude's cap is bounded by both its per-set limit and the set-wide invocation meter."""
-    if unpriced_calls:
-        return Decimal(0)
-    remaining = Decimal(max(0, cap_micros - spent_micros)) / Decimal(1_000_000)
-    return min(requested_usd, remaining)
 
 
 def _layout_discriminators(session: Session) -> tuple[DiscriminatorNeed, ...]:

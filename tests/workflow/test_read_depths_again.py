@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 from app.db.session import session_factory
 from app.evidence.confirm import confirm_candidate_type
 from app.models import ObservationCandidate, OutboxEntry, PackageState
-from app.models.runs import ExtractionRun, ModelInvocation
+from app.models.runs import ExtractionRun, ModelInvocation, TaskRun
 from app.models.verdicts import CheckRun
 from extraction.depth.prompts import (
     VIEW_KIND_PROMPT,
@@ -44,10 +44,14 @@ from tests.workflow.test_depth_evidence import _Set
 from tests.workflow.test_depth_reader import _match_stage_run
 from workflow.depth_again import (
     AGAIN_MARK,
+    BUDGET_USED_UP,
+    CLOSED,
+    MAX_TRIES,
     NEEDS_CLAUDE,
     NEEDS_REUSE,
     READ_DEPTHS_AGAIN_WORKFLOW,
     SWITCHED_OFF,
+    UNPRICED,
     DepthsAgainRefused,
     estimate,
     last_request,
@@ -406,15 +410,11 @@ def test_a_second_request_reuses_every_stored_answer_and_pays_for_nothing(
     assert (shown.questions_low, shown.questions_high, shown.stored_answers) == (4, 4, 4)
 
 
-def test_a_spend_cap_stops_it_and_says_why(
-    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    sheet = _read_set(session, store)
-    _view_kind_reading(monkeypatch, sheet, views=2)
-    # Everything the set may spend is spent already: the cap left is nothing.
+def _spent(session: Session, run: ExtractionRun, micros: int | None) -> None:
+    """A recorded call of the set that cost `micros` (`None`: a call with no price)."""
     session.add(
         ModelInvocation(
-            extraction_run_id=sheet.run.id,
+            extraction_run_id=run.id,
             model_id=CLAUDE_PAIR[0],
             prompt_id="claude-slot-span-v5",
             template_id="claude-slot-span-v5",
@@ -422,23 +422,130 @@ def test_a_spend_cap_stops_it_and_says_why(
             output_tokens=1,
             latency_ms=1,
             outcome="ok",
-            cost_micros=50_000_000,
+            cost_micros=micros,
         )
     )
     session.flush()
+
+
+def test_a_used_up_budget_is_refused_before_anything_is_asked(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sheet = _read_set(session, store)
+    # No depth reading yet, so every question would be new; and everything the set may spend is
+    # spent already.
+    run = sheet.run
+    workflow_run = session.get_one(TaskRun, run.task_run_id).workflow_run_id
+    ledger = TaskRun(
+        workflow_run_id=workflow_run,
+        idempotency_key=f"synthetic-{uuid4()}",
+        task_type="extract_pages",
+        attempt=1,
+        outcome="SUCCEEDED",
+    )
+    session.add(ledger)
+    session.flush()
+    slot_run = ExtractionRun(
+        task_run_id=ledger.id, extractor="synthetic", extractor_version="synthetic", config_hash="x"
+    )
+    session.add(slot_run)
+    session.delete(run)
+    session.flush()
+    _spent(session, slot_run, 50_000_000)
+    ran = _view_kind_reading(monkeypatch, sheet, views=2)
     clients = _Answering()
 
-    result = _stages(store, clients).read_depths_again(session, sheet.revision.id, str(uuid4()))
+    with pytest.raises(DepthsAgainRefused) as refused:
+        _stages(store, clients).read_depths_again(session, sheet.revision.id, str(uuid4()))
+
+    assert refused.value.plain_reason == BUDGET_USED_UP
+    assert ran == [] and clients.calls == 0 and _again_runs(session, sheet) == []
+
+
+def test_an_unpriced_call_is_refused_before_anything_is_asked(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sheet = _read_set(session, store)
+    _spent(session, sheet.run, None)
+    ran = _view_kind_reading(monkeypatch, sheet)
+
+    with pytest.raises(DepthsAgainRefused) as refused:
+        _stages(store, _MustNotBeCalled()).read_depths_again(
+            session, sheet.revision.id, str(uuid4())
+        )
+
+    assert refused.value.plain_reason == UNPRICED and ran == []
+
+
+def test_a_review_signed_off_while_its_depths_are_read_keeps_nothing_of_it(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import extraction.depth.read as read_module
+
+    sheet = _read_set(session, store)
+    _view_kind_reading(monkeypatch, sheet, views=1)
+    reading = read_module.read_depth
+
+    def signed_off_meanwhile(*args: Any, **kwargs: Any) -> DepthReading:
+        found = reading(*args, **kwargs)
+        sheet.revision.state = PackageState.APPROVED.value
+        session.flush()
+        return found
+
+    monkeypatch.setattr(read_module, "read_depth", signed_off_meanwhile)
+
+    with pytest.raises(DepthsAgainRefused) as refused:
+        _stages(store, _Answering()).read_depths_again(session, sheet.revision.id, str(uuid4()))
+
+    assert refused.value.plain_reason == CLOSED
+    assert not session.scalars(
+        select(OutboxEntry).where(OutboxEntry.workflow == "run_checks")
+    ).all()
+
+
+def test_a_reading_stopped_by_the_cap_never_replaces_a_complete_earlier_one(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sheet = _read_set(session, store)
+    link = sheet.link()
+    first = sheet.reading(
+        CT010,
+        24,
+        CONFIRM_ONLY,
+        link=link,
+        view="p0:v1.1",
+        confirmed_by="drawn-length-only",
+        answers=False,
+    )
+    confirm_candidate_type(session, candidate_id=first.id, semantic_type=CT010, confirmed_by=ACTOR)
+    assert sheet.operands().operands["countertop_depth"].value.exact == 24  # type: ignore[union-attr]
+    _view_kind_reading(monkeypatch, sheet, views=2)
+    clients = _Answering()
+
+    # A cent is left: not refused up front, but no question fits, so the reading stops at once.
+    result = _stages(store, clients, ceiling=Decimal("0.01")).read_depths_again(
+        session, sheet.revision.id, str(uuid4())
+    )
 
     assert clients.calls == 0
     depth = result["depth"]
     assert isinstance(depth, dict) and depth["stopped"] == "budget"
-    assert "AI budget" in str(result["reason"])
+    assert depth["kept_earlier"] == str(sheet.run.id)
+    assert "AI budget" in str(result["reason"]) and "earlier complete reading" in str(
+        result["reason"]
+    )
     (run,) = _again_runs(session, sheet)
-    refused = session.scalars(
+    outcomes = session.scalars(
         select(ModelInvocation.outcome).where(ModelInvocation.extraction_run_id == run.id)
     ).all()
-    assert "budget_refused" in refused
+    assert "budget_refused" in outcomes
+    # The earlier reading and the person's confirmation are still what the check uses.
+    found = sheet.operands()
+    operand = found.operands["countertop_depth"]
+    assert operand.status.value == "HUMAN_CONFIRMED" and operand.value.exact == 24  # type: ignore[union-attr]
+    assert any("this earlier one is used" in note for note in found.notes)
+    # And the estimate counts from the complete reading, never the stopped one.
+    assert estimate(session, sheet.revision.id).basis.startswith("The last complete")
 
 
 def test_a_run_with_no_countertop_after_bala_is_refused_with_why(
@@ -548,7 +655,7 @@ def test_the_estimate_before_any_depth_reading_is_per_countertop(
 
     assert (shown.pages, shown.countertops) == (1, 1)
     assert (shown.questions_low, shown.questions_high, shown.stored_answers) == (6, 12, 0)
-    assert "both readers" in shown.basis
+    assert "both readers" in shown.basis and shown.basis.startswith("At least 6 to 12")
 
 
 def test_the_status_of_a_request_says_what_happened(
@@ -607,3 +714,54 @@ def test_the_api_reads_the_switch_exactly_as_the_worker_does(
     except ValueError:
         api = "refused"
     assert api == worker
+
+
+def test_a_request_tried_again_and_again_says_so_and_stops_blocking(
+    session: Session, store: LocalStore
+) -> None:
+    from workflow.depth_again import request_waiting
+    from workflow.outbox import enqueue
+
+    sheet = _read_set(session, store)
+    entry = enqueue(
+        session,
+        workflow=READ_DEPTHS_AGAIN_WORKFLOW,
+        payload={"package_revision_id": str(sheet.revision.id)},
+    )
+    session.flush()
+    row = session.get_one(OutboxEntry, entry)
+
+    row.attempts = MAX_TRIES - 1
+    session.flush()
+    told = last_request(session, sheet.revision.id)
+    assert told is not None and told.state == "waiting" and "Tried 2 times" in told.sentence
+    assert request_waiting(session, sheet.revision.id)
+
+    row.attempts = MAX_TRIES
+    session.flush()
+    told = last_request(session, sheet.revision.id)
+    assert told is not None and told.state == "not_read" and "Ask again" in told.sentence
+    assert not request_waiting(session, sheet.revision.id)
+
+
+def test_an_unexpected_failure_is_parked_with_why_never_retried_for_ever(
+    session: Session,
+) -> None:
+    from workflow import sutradhar
+
+    class Breaks:
+        def read_depths_again(self, *_: object) -> dict[str, object]:
+            raise RuntimeError("the store could not be read")
+
+    with pytest.raises(DepthsAgainRefused) as refused:
+        sutradhar.consume(
+            session,
+            workflow=READ_DEPTHS_AGAIN_WORKFLOW,
+            payload={"package_revision_id": str(uuid4())},
+            idempotency_key=str(uuid4()),
+            stages_factory=lambda **_: Breaks(),
+        )
+
+    assert refused.value.plain_reason == (
+        "Depths were not read again: RuntimeError: the store could not be read"
+    )

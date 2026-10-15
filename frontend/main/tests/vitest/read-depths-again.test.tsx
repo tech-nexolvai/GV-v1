@@ -27,13 +27,14 @@ const ON: ReadDepthsAgainStatus = {
   can_ask: true,
   refused: null,
   checks: ['CT-DEPTH-001', 'CT-SINK-CUTOUT-WIDTH-001'],
+  budget_left_usd: '2.97',
   estimate: {
     pages: 3,
     countertops: 2,
     questions_low: 12,
     questions_high: 24,
     stored_answers: 0,
-    basis: 'About 6 to 12 questions for each countertop.',
+    basis: 'At least 6 to 12 questions for each countertop.',
   },
   last: null,
 };
@@ -69,7 +70,7 @@ beforeEach(() => {
 
 describe('Read depths again (#1308)', () => {
   it('is not shown when the depth and sink reader is switched off', async () => {
-    vi.mocked(getReadDepthsAgain).mockResolvedValue({ switched_on: false, can_ask: false, refused: null, checks: [], estimate: null, last: null });
+    vi.mocked(getReadDepthsAgain).mockResolvedValue({ switched_on: false, can_ask: false, refused: null, checks: [], estimate: null, budget_left_usd: null, last: null });
     render(<NeedsValues finding={finding('CT-DEPTH-001')} packageId="package-1" onSaved={() => {}} />);
 
     await vi.waitFor(() => expect(getReadDepthsAgain).toHaveBeenCalledWith('project-1', 'package-1'));
@@ -94,8 +95,9 @@ describe('Read depths again (#1308)', () => {
     expect(readDepthsAgain).not.toHaveBeenCalled();
     const dialog = await screen.findByRole('dialog', { name: 'Read depths again?' });
     expect(dialog.textContent).toContain('This costs money');
-    expect(dialog.textContent).toContain('About 12 to 24 questions');
+    expect(dialog.textContent).toContain('At least 12 to 24 questions');
     expect(dialog.textContent).toContain('2 countertops on 3 pages');
+    expect(dialog.textContent).toContain("Spending stops at this drawing set's AI budget: $2.97 left.");
 
     await user.click(screen.getByRole('button', { name: 'Read depths again (costs money)' }));
 

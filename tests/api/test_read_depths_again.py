@@ -26,6 +26,7 @@ from app.lifecycle.side_states import enter_needs_input
 from app.lifecycle.states import begin, transition
 from app.main import API_PREFIX, create_app
 from app.models import OutboxEntry, Package, PackageRevision, PackageState, Project
+from app.models.runs import ExtractionRun, ModelInvocation, TaskRun, WorkflowRun
 from tests.app.postgres_fixture import alembic_config
 from workflow.depth_again import (
     ALREADY_ASKED,
@@ -35,6 +36,7 @@ from workflow.depth_again import (
     NO_COUNTERTOP,
     READ_DEPTHS_AGAIN_WORKFLOW,
     SWITCHED_OFF,
+    UNPRICED,
     DepthsAgainRefused,
 )
 from workflow.outbox import OutboxDispatchError, dispatch_committed
@@ -220,6 +222,8 @@ def test_switched_on_it_shows_an_estimate_queues_once_and_audits_who_asked(
     assert shown["switched_on"] is True and shown["can_ask"] is True and shown["refused"] is None
     assert set(shown["estimate"]) >= {"questions_low", "questions_high", "stored_answers", "basis"}
     assert "CT-DEPTH-001" in shown["checks"]
+    # No page and nothing spent: the page-scaled budget's minimum is left (the worker's own cap).
+    assert shown["budget_left_usd"] == "3.00"
 
     answer = _ask(session, revision)
 
@@ -312,3 +316,75 @@ def test_a_request_the_worker_refuses_is_parked_and_says_why(
     # Parked, it no longer blocks a new request.
     assert shown["can_ask"] is True
     assert len(stages.asked) == 1
+
+
+def test_a_call_with_no_price_is_refused_with_the_reason(session: Session) -> None:
+    revision = _read(session)
+    workflow = WorkflowRun(package_revision_id=revision.id, engine_run_id=str(uuid4()))
+    session.add(workflow)
+    session.flush()
+    task = TaskRun(
+        workflow_run_id=workflow.id,
+        idempotency_key=f"synthetic-{uuid4()}",
+        task_type="extract_pages",
+        attempt=1,
+        outcome="SUCCEEDED",
+    )
+    session.add(task)
+    session.flush()
+    run = ExtractionRun(
+        task_run_id=task.id, extractor="synthetic", extractor_version="synthetic", config_hash="x"
+    )
+    session.add(run)
+    session.flush()
+    session.add(
+        ModelInvocation(
+            extraction_run_id=run.id,
+            model_id="synthetic-model",
+            prompt_id="claude-slot-span-v5",
+            template_id="claude-slot-span-v5",
+            input_tokens=1,
+            output_tokens=1,
+            latency_ms=1,
+            outcome="ok",
+            cost_micros=None,
+        )
+    )
+    session.commit()
+
+    shown = _status(session, revision).json()
+    answer = _ask(session, revision)
+
+    assert shown["can_ask"] is False and shown["refused"] == UNPRICED
+    assert shown["budget_left_usd"] == "0.00"
+    assert answer.status_code == 409 and answer.json()["message"] == UNPRICED
+    assert _rows(session) == []
+
+
+class _Breaks(_Stages):
+    def read_depths_again(
+        self, session: Session, revision_id: UUID, request: str
+    ) -> dict[str, object]:
+        self.asked.append((revision_id, request))
+        raise RuntimeError("synthetic failure")
+
+
+def test_a_request_that_fails_unexpectedly_is_parked_and_says_why(
+    factory: sessionmaker[Session], session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    revision = _read(session)
+    assert _ask(session, revision).status_code == 202
+    stages = _Breaks(refuse=None)
+    start = _worker(factory, monkeypatch, stages)
+
+    with pytest.raises(OutboxDispatchError):
+        dispatch_committed(factory, start)
+    assert dispatch_committed(factory, start) == 0, "parked, not retried for ever"
+
+    session.expire_all()
+    shown = _status(session, revision).json()
+    assert shown["last"]["state"] == "not_read"
+    assert (
+        shown["last"]["sentence"] == "Depths were not read again: RuntimeError: synthetic failure"
+    )
+    assert shown["can_ask"] is True and len(stages.asked) == 1

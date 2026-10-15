@@ -5,7 +5,7 @@
  * Shown only when the server says the reader is switched on (`GV_DEPTH_READER`) and the check is one
  * the reader fills. It costs money, so it always asks first: what will be read, about how many
  * questions, how many already have a stored answer (free), and that spending stops at the drawing
- * set's AI budget. Refused requests and the last request's outcome are said in the server's words.
+ * set's AI budget, with what is left of it in dollars. Refused requests and the last request's outcome are said in the server's words.
  * Nothing here decides a check: the checks run again once the depths are read.
  */
 import { useEffect, useState } from 'react';
@@ -125,7 +125,14 @@ export function ReadDepthsAgain({ packageId, checkId }: { packageId: string; che
             </div>
           )}
           <p className="text-sm font-medium" data-slot="read-depths-again-cost">
-            This costs money: every new question is a paid AI call. Spending stops at this drawing set&apos;s AI budget.
+            This costs money: every new question is a paid AI call. Spending stops at this drawing set&apos;s AI budget
+            {status.budget_left_usd != null ? (
+              <>
+                : <span className="num">${status.budget_left_usd}</span> left.
+              </>
+            ) : (
+              '.'
+            )}
           </p>
           {error && (
             <p role="alert" className="text-sm text-outcome-fail-fg">

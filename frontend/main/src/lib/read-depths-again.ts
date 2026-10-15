@@ -24,9 +24,12 @@ export function forgetReadDepthsAgain(): void {
   statuses.clear();
 }
 
-/** About how many questions, in words. */
+/**
+ * About how many questions, in words: exactly as many as the last complete reading asked, or, before
+ * any, at least the range per countertop (other views on the pages are asked about too).
+ */
 export function questionsWords(estimate: NonNullable<ReadDepthsAgainStatus['estimate']>): string {
   const { questions_low: low, questions_high: high } = estimate;
   if (low === high) return `About ${low} ${low === 1 ? 'question' : 'questions'}`;
-  return `About ${low} to ${high} questions`;
+  return `At least ${low} to ${high} questions`;
 }

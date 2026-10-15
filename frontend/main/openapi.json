@@ -8233,6 +8233,18 @@
       "ReadDepthsAgainStatusOut": {
         "description": "Whether \"Read depths again\" is offered on this set, and what it would do.",
         "properties": {
+          "budget_left_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the depth and sink reader may still spend on this set, in US dollars rounded down to the cent: the worker's own spend cap. Spending stops there.",
+            "title": "Budget Left Usd"
+          },
           "can_ask": {
             "title": "Can Ask",
             "type": "boolean"

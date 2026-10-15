@@ -139,6 +139,10 @@ class Settings(BaseSettings):
     # trial run, say). Unset (the default) the page-scaled budget alone applies. It can only lower
     # the limit: at most `ai_budget_maximum_usd`, which replaced the old fixed $5 ceiling.
     claude_reader_budget_usd: Decimal | None = Field(default=None, gt=0, allow_inf_nan=False)
+    # Optional: a fixed amount for one drawing set in place of the page-scaled budget (a proof
+    # run's). The worker reads the same variable (`workflow.stages.ai_budget_from_environment`);
+    # the API reads it to say how much of a set's budget is left (#1308). Unset: page-scaled.
+    ai_budget_per_set_usd: Decimal | None = Field(default=None, gt=0, allow_inf_nan=False)
     # How hard both Claude readers think before answering (#1051), stated on every call so a run
     # never depends on a model's own default (Opus 5.5's is `medium`). Accuracy first: `high`.
     # Kept in step with `extraction/slot_reader/claude_output.py` `CLAUDE_EFFORTS`.

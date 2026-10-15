@@ -6005,6 +6005,11 @@ export interface components {
          * @description Whether "Read depths again" is offered on this set, and what it would do.
          */
         ReadDepthsAgainStatusOut: {
+            /**
+             * Budget Left Usd
+             * @description What the depth and sink reader may still spend on this set, in US dollars rounded down to the cent: the worker's own spend cap. Spending stops there.
+             */
+            budget_left_usd?: string | null;
             /** Can Ask */
             can_ask: boolean;
             /**

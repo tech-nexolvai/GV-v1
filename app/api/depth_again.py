@@ -14,7 +14,9 @@ and the reader, then the checks again (`DatabaseStages.read_depths_again`).
 
 **A paid action, refused unless it can run as the reader's first run does**: the switch, the
 Claude readers and stored answers reused must be on, and the set must be with the reviewer (not
-being read or checked, not signed off). One request at a time per set. Audited as a reviewer
+being read or checked, not signed off). It is also refused when a call had no price, or when the
+set's AI budget is used up while a question has no stored answer: it could only stop part way.
+`GET` says how much of the budget is left (the worker's own cap). One request at a time per set. Audited as a reviewer
 action, and only someone who may start a review may ask.
 
 This module reads nothing and imports no reader (`tests/api/test_no_heavy_work.py`).
@@ -39,9 +41,12 @@ from app.audit.events import AuditCategory, emit
 from app.auth import Action, Principal, require_action, require_project_access
 from app.config import Settings
 from app.models import PackageRevision
+from workflow.ai_budget import ai_budget_from_settings
 from workflow.depth_again import (
     ALREADY_ASKED,
     READ_DEPTHS_AGAIN_WORKFLOW,
+    SpendLimits,
+    budget_left_usd,
     estimate,
     last_request,
     refusal,
@@ -92,6 +97,11 @@ class ReadDepthsAgainStatusOut(BaseModel):
         description="The checks the depth and sink reader fills: the action is offered on these.",
     )
     estimate: DepthsAgainEstimateOut | None = None
+    budget_left_usd: str | None = Field(
+        default=None,
+        description="What the depth and sink reader may still spend on this set, in US dollars "
+        "rounded down to the cent: the worker's own spend cap. Spending stops there.",
+    )
     last: DepthsAgainLastOut | None = None
 
 
@@ -102,13 +112,25 @@ class ReadDepthsAgainOut(BaseModel):
     package_revision_id: UUID
 
 
+def _limits(settings: Settings) -> SpendLimits:
+    """The worker's spend settings, as this API process states them."""
+    return SpendLimits(
+        budget=ai_budget_from_settings(settings),
+        fixed_usd=settings.ai_budget_per_set_usd,
+        claude_ceiling_usd=settings.claude_reader_budget_usd,
+    )
+
+
 def _why_not(session: Session, settings: Settings, revision: PackageRevision) -> str | None:
+    """Why it cannot be asked now: the worker's own refusal (switches, state, an unpriced call,
+    a used-up budget), or a request already waiting."""
     why = refusal(
         session,
         revision,
         switched_on=settings.depth_reader,
         claude_readers=settings.claude_reader_enabled,
         reuse_answers=settings.reader_reuse_answers,
+        limits=_limits(settings),
     )
     if why is None and request_waiting(session, revision.id):
         return ALREADY_ASKED
@@ -152,6 +174,7 @@ def depths_again_status(
         can_ask=why is None,
         refused=why,
         checks=sorted(DEPTH_RULE_IDS),
+        budget_left_usd=str(budget_left_usd(session, revision.id, _limits(settings))),
         estimate=DepthsAgainEstimateOut(
             pages=shown.pages,
             countertops=shown.countertops,

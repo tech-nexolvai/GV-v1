@@ -949,10 +949,21 @@ def consume(
         # A person asked to read the depths again (#1308): Bala and the depth and sink reader only,
         # on the same revision, as a run of this request's own. A refusal is raised with its
         # sentence, and the outbox parks the request with it.
-        stages = (stages_factory or build_stages)(timings=timings)
-        read: Mapping[str, object] = stages.read_depths_again(  # type: ignore[attr-defined]
-            session, revision_id, idempotency_key
-        )
+        from workflow.depth_again import DepthsAgainRefused
+
+        try:
+            stages = (stages_factory or build_stages)(timings=timings)
+            read: Mapping[str, object] = stages.read_depths_again(  # type: ignore[attr-defined]
+                session, revision_id, idempotency_key
+            )
+        except DepthsAgainRefused:
+            raise
+        except Exception as error:
+            # Never retried for ever behind "reading now" (#1308 review): parked at once with
+            # why. Asking again costs nothing for the answers already paid for (stored answers).
+            raise DepthsAgainRefused(
+                f"Depths were not read again: {type(error).__name__}: {error}"[:900]
+            ) from error
         return read
     if workflow == CUT_PART_PICTURES_WORKFLOW:
         # A person added a part (#897): cut its picture, and any other still missing.

@@ -36,6 +36,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import ROUND_DOWN, Decimal
 from typing import Final, Literal
 from uuid import UUID
 
@@ -60,9 +61,15 @@ from app.models.package import package_product
 from app.models.runs import ModelInvocation, ModelInvocationOutcome
 from rules.semantic_types import ProductType
 from vocabulary.part_kinds import PartKind
+from workflow.ai_budget import AiBudget
 from workflow.bala_items import BALA_SOURCE
 from workflow.depth_evidence import RUN_FAILED, depth_runs
-from workflow.slot_row_scope import latest_slot_reader_run, slot_rows_and_unchosen_pages
+from workflow.set_spend import depth_cap_usd, revision_spend
+from workflow.slot_row_scope import (
+    budget_limit,
+    latest_slot_reader_run,
+    slot_rows_and_unchosen_pages,
+)
 
 __all__ = [
     "AGAIN_MARK",
@@ -74,7 +81,9 @@ __all__ = [
     "DepthsAgain",
     "DepthsAgainEstimate",
     "DepthsAgainRefused",
+    "SpendLimits",
     "again_hash",
+    "budget_left_usd",
     "countertops_by_drawing",
     "estimate",
     "last_request",
@@ -119,6 +128,21 @@ UNPRICED: Final = (
     "A call on this drawing set had no price, so no more calls can be made: an admin must fix "
     "the model rates first."
 )
+BUDGET_USED_UP: Final = (
+    "This drawing set's AI budget is used up, and some questions have no stored answer, so "
+    "reading depths again would stop before it finished. Ask an admin to raise the AI budget for "
+    "a drawing set first."
+)
+#: The reason on each page of a request's reading that stopped part way while a complete earlier
+#: reading is on record: the reading is kept, marked failed, and the earlier one is used (#1308).
+STOPPED_KEEPS_EARLIER: Final = (
+    "the depth reading stopped before it finished ({why}), so the earlier complete reading is "
+    "still used"
+)
+#: How many times the outbox may try a request before it no longer blocks a new one (#1308
+#: review): every failure the worker can name is parked at once, so this is only for one it
+#: cannot, such as a failure to commit.
+MAX_TRIES: Final = 3
 
 #: Where a reading has handed the revision to a person, so depths may be read again.
 READ_STATES: Final = frozenset({PackageState.AWAITING_REVIEW, PackageState.NEEDS_INPUT})
@@ -128,6 +152,29 @@ READ_STATES: Final = frozenset({PackageState.AWAITING_REVIEW, PackageState.NEEDS
 #: asked of both readers. An estimate only: views code does not cut apart take none, and every
 #: other view on the page takes a kind question.
 QUESTIONS_PER_COUNTERTOP: Final = (2 * 3, 2 * 6)
+
+
+@dataclass(frozen=True, slots=True)
+class SpendLimits:
+    """The settings the depth reader's spend cap is made from (`workflow.set_spend.depth_cap_usd`):
+    the page-scaled budget, a fixed amount stated for a set, and the Claude readers' ceiling."""
+
+    budget: AiBudget
+    fixed_usd: Decimal | None
+    claude_ceiling_usd: Decimal | None
+
+
+def budget_left_usd(session: Session, revision_id: UUID, limits: SpendLimits) -> Decimal:
+    """What the depth and sink reader may still spend on this set, in dollars, rounded down to the
+    cent: the worker's own cap."""
+    left = depth_cap_usd(
+        session,
+        revision_id,
+        budget=limits.budget,
+        fixed_usd=limits.fixed_usd,
+        claude_ceiling_usd=limits.claude_ceiling_usd,
+    )
+    return left.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
 
 
 class DepthsAgainRefused(Exception):
@@ -154,11 +201,14 @@ def refusal(
     switched_on: bool,
     claude_readers: bool,
     reuse_answers: bool,
+    limits: SpendLimits,
 ) -> str | None:
     """Why depths may not be read again on this revision now, or `None` when they may.
 
     Asked by the API before the work is queued and by the worker before anything is read, so a
-    setting changed in between is still honoured.
+    setting changed in between is still honoured. **Nothing is asked that could only stop part
+    way** (#1308 review): a set whose calls were not all priced, or whose budget is used up while
+    a question has no stored answer, is refused before anything is read or paid.
     """
     if not switched_on:
         return SWITCHED_OFF
@@ -173,6 +223,13 @@ def refusal(
     product = package_product(session.get_one(Package, revision.package_id))
     if product not in (None, ProductType.COUNTERTOP):
         return NOT_COUNTERTOPS
+    _spent, unpriced = revision_spend(session, revision.id)
+    if unpriced or budget_limit(session, revision.id) == "unpriced":
+        return UNPRICED
+    if budget_left_usd(session, revision.id, limits) <= 0:
+        shown = estimate(session, revision.id)
+        if shown.questions_high > shown.stored_answers:
+            return BUDGET_USED_UP
     return None
 
 
@@ -262,13 +319,46 @@ def _asked(session: Session, run_id: UUID) -> tuple[int, int]:
     return int(asked or 0), int(answered or 0)
 
 
+def _refused(session: Session, run_id: UUID) -> set[str]:
+    """The refusals that stopped a depth reading part way: the budget, or the provider account."""
+    return set(
+        session.scalars(
+            select(ModelInvocation.outcome).where(
+                ModelInvocation.extraction_run_id == run_id,
+                ModelInvocation.outcome.in_(
+                    (
+                        ModelInvocationOutcome.BUDGET_REFUSED.value,
+                        ModelInvocationOutcome.ACCOUNT_REFUSED.value,
+                    )
+                ),
+            )
+        )
+    )
+
+
+def _failed_reason(session: Session, run_id: UUID) -> str | None:
+    """Why a depth reading is marked failed, or `None` when it is not."""
+    reason = session.scalars(
+        select(ObservationCandidate.review_reason)
+        .where(
+            ObservationCandidate.extraction_run_id == run_id,
+            ObservationCandidate.ambiguity_flags.contains([RUN_FAILED]),
+        )
+        .limit(1)
+    ).first()
+    if reason is None:
+        return None
+    return reason or "the depth reading failed"
+
+
 def estimate(session: Session, revision_id: UUID) -> DepthsAgainEstimate:
     """About how many questions reading depths again would ask, and how many cost nothing.
 
-    After an earlier depth reading of the set: the questions it asked, and how many of them have an
-    accepted stored answer (an identical question reuses it at no cost). Before any: a range per
-    countertop (`QUESTIONS_PER_COUNTERTOP`), from Bala's countertops, or from the countertop rows
-    read where Bala has not suggested any yet (Bala runs first).
+    After a complete earlier depth reading of the set (not failed, not stopped part way): the
+    questions it asked, and how many of them have an accepted stored answer (an identical question
+    reuses it at no cost). Before any: at least a range per countertop
+    (`QUESTIONS_PER_COUNTERTOP`), from Bala's countertops, or from the countertop rows read where
+    Bala has not suggested any yet (Bala runs first).
     """
     by_drawing = countertops_by_drawing(session, revision_id)
     countertops = len({proposal for found in by_drawing.values() for proposal in found})
@@ -285,9 +375,16 @@ def estimate(session: Session, revision_id: UUID) -> DepthsAgainEstimate:
         countertops = len(rows)
         pages = len({row.page_number for row in rows})
         from_rows = True
-    runs = depth_runs(session, revision_id)
-    if runs:
-        asked, answered = _asked(session, runs[0].id)
+    complete = next(
+        (
+            run
+            for run in depth_runs(session, revision_id)
+            if _failed_reason(session, run.id) is None and not _refused(session, run.id)
+        ),
+        None,
+    )
+    if complete is not None:
+        asked, answered = _asked(session, complete.id)
         return DepthsAgainEstimate(
             pages=pages,
             countertops=countertops,
@@ -295,15 +392,16 @@ def estimate(session: Session, revision_id: UUID) -> DepthsAgainEstimate:
             questions_high=asked,
             stored_answers=answered,
             basis=(
-                f"The last depth reading of this set asked {asked} questions; {answered} of them "
-                "have a stored answer, reused at no cost. Only a new or changed question is paid "
-                "for."
+                f"The last complete depth reading of this set asked {asked} questions; {answered} "
+                "of them have a stored answer, reused at no cost. Only a new or changed question "
+                "is paid for."
             ),
         )
     low, high = QUESTIONS_PER_COUNTERTOP
     basis = (
-        f"About {low} to {high} questions for each countertop: what its view shows, what its "
-        "dimensions are, and one to four numbers, each asked of both readers."
+        f"At least {low} to {high} questions for each countertop: what its view shows, what its "
+        "dimensions are, and one to four numbers, each asked of both readers. Every other view on "
+        "these pages is also asked what it shows."
     )
     if from_rows:
         basis += " Bala suggests the countertops first, from the countertop rows already read."
@@ -332,7 +430,8 @@ class DepthsAgain:
 
 def request_waiting(session: Session, revision_id: UUID) -> bool:
     """Whether a request for this revision is queued and not yet handed over or parked: one at a
-    time, so a second is refused (`ALREADY_ASKED`)."""
+    time, so a second is refused (`ALREADY_ASKED`). A request tried `MAX_TRIES` times without
+    finishing no longer blocks a new one."""
     return (
         session.scalar(
             select(OutboxEntry.id)
@@ -340,6 +439,7 @@ def request_waiting(session: Session, revision_id: UUID) -> bool:
                 OutboxEntry.workflow == READ_DEPTHS_AGAIN_WORKFLOW,
                 OutboxEntry.dispatched_at.is_(None),
                 OutboxEntry.abandoned_at.is_(None),
+                OutboxEntry.attempts < MAX_TRIES,
                 OutboxEntry.payload["package_revision_id"].astext == str(revision_id),
             )
             .limit(1)
@@ -376,19 +476,22 @@ def last_request(session: Session, revision_id: UUID) -> DepthsAgain | None:
         None,
     )
     if run is None:
-        if entry.dispatched_at is None:
-            return told("waiting", "Waiting to start, or reading now.")
-        return told("not_read", "No depth reading was recorded for this request.")
-    failed = session.scalars(
-        select(ObservationCandidate.review_reason)
-        .where(
-            ObservationCandidate.extraction_run_id == run.id,
-            ObservationCandidate.ambiguity_flags.contains([RUN_FAILED]),
-        )
-        .limit(1)
-    ).first()
-    if failed is not None:
-        return told("failed", failed or "The depth reading failed.")
+        if entry.dispatched_at is not None:
+            return told("not_read", "No depth reading was recorded for this request.")
+        if entry.attempts >= MAX_TRIES:
+            return told(
+                "not_read",
+                f"Tried {entry.attempts} times without finishing. Ask again to try once more; "
+                "answers already paid for are reused at no cost.",
+            )
+        if entry.attempts:
+            return told(
+                "waiting",
+                f"Tried {entry.attempts} times without finishing; it is tried again.",
+            )
+        return told("waiting", "Waiting to start, or reading now.")
+    failed = _failed_reason(session, run.id)
+    refused = _refused(session, run.id)
     asked, _answered = _asked(session, run.id)
     reused = sum(
         1
@@ -399,30 +502,20 @@ def last_request(session: Session, revision_id: UUID) -> DepthsAgain | None:
         )
         if isinstance(packet, dict) and "reused_from" in packet
     )
-    refused = set(
-        session.scalars(
-            select(ModelInvocation.outcome).where(
-                ModelInvocation.extraction_run_id == run.id,
-                ModelInvocation.outcome.in_(
-                    (
-                        ModelInvocationOutcome.BUDGET_REFUSED.value,
-                        ModelInvocationOutcome.ACCOUNT_REFUSED.value,
-                    )
-                ),
-            )
-        )
-    )
     counted = f"{asked} questions, {reused} answered from stored answers at no cost"
+    kept = (
+        " The earlier complete reading is still used."
+        if failed is not None
+        else " The values not read are held, each with this reason."
+    )
     if ModelInvocationOutcome.ACCOUNT_REFUSED.value in refused:
         return told(
-            "stopped",
-            f"Stopped: the AI provider account refused the calls ({counted}). The values not "
-            "read are held, each with this reason.",
+            "stopped", f"Stopped: the AI provider account refused the calls ({counted}).{kept}"
         )
     if ModelInvocationOutcome.BUDGET_REFUSED.value in refused:
         return told(
-            "stopped",
-            f"Stopped: this drawing set's AI budget was reached ({counted}). The values not "
-            "read are held, each with this reason.",
+            "stopped", f"Stopped: this drawing set's AI budget was reached ({counted}).{kept}"
         )
+    if failed is not None:
+        return told("failed", failed)
     return told("read", f"Depths read again: {counted}.")
