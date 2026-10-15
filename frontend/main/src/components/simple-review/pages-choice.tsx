@@ -59,7 +59,8 @@ export function PagesChoice({
   const many = pages.length > 1;
   const saving = busyKey !== null && (busyKey === groupKey || [...pages, ...toDecide].some((page) => page.key === busyKey));
   const groupError = errors[groupKey];
-  const title = many ? `These ${pages.length} pages have no countertop` : `Page ${pages[0].page ?? ''} has no countertop`.trim();
+  // No page may be proposed at all (every listed page is "Decide this page"): never read pages[0] then.
+  const title = many ? `These ${pages.length} pages have no countertop` : pages.length === 1 ? `Page ${pages[0].page ?? ''} has no countertop`.trim() : '';
 
   return (
     <section aria-labelledby="pages-choice-title" data-slot="pages-choice" data-entry-key="no-countertop-pages" tabIndex={-1} className="flex flex-col gap-3 rounded-xl outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50">
