@@ -74,6 +74,7 @@ from app.evidence.record import (
     record_unreadable_page,
 )
 from app.evidence.sides import has_separate_architect_file
+from app.lifecycle.closed import CLOSED_STATES
 from app.models.document import (
     Document,
     DocumentKind,
@@ -3163,6 +3164,89 @@ class DatabaseStages:
             "pairings_carried": 0 if carried is None else carried.pairings,
             "pairings_held": 0 if carried is None else carried.pairings_held,
             "pairings_not_placed": 0 if carried is None else carried.pairings_not_placed,
+            "checks_queued": checks is not None,
+        }
+
+    def read_depths_again(
+        self, session: Session, package_revision_id: UUID, request: str
+    ) -> dict[str, object]:
+        """ "Read depths again" (#1308): Bala's suggestions and the depth and sink reader on a set
+        that was already read, then the checks again. Never the set itself.
+
+        `request` is the asking outbox row's id: the reading made for it is a run of its own
+        (`_depth_pass(again=...)`), so a redelivered request reads nothing again. Everything else is
+        the reader's own: the Claude pair, stored answers reused, the spend cap of what the set's
+        AI budget has left, every call through the call ledger (`workflow/depth_again.py`).
+
+        **Refused, never silent** (`DepthsAgainRefused`, parked by the outbox with the sentence):
+        the switch, the Claude readers or stored answers off; a set signed off, being read or
+        checked; a set whose calls were not all priced; no countertop to read once Bala has run; a
+        reading that could not be recorded. A set signed off while its depths were read keeps
+        nothing of this reading (its paid answers stay in the call ledger, reused if asked again).
+
+        **The package's state is not moved**: the set stays with the reviewer
+        (`AWAITING_REVIEW` or `NEEDS_INPUT`), and the checks are queued again as after "Read the
+        unread pages" (`_queue_checks_after_reading`): only where they ran before, with the layout
+        answers the reviewer confirmed. Sign-off waits for them (`app/review/approval.py` counts a
+        depth reading newer than the checks).
+        """
+        from workflow.depth_again import (
+            CLOSED,
+            NO_COUNTERTOP,
+            UNPRICED,
+            DepthsAgainRefused,
+            countertops_by_drawing,
+            refusal,
+        )
+
+        revision = session.get_one(PackageRevision, package_revision_id)
+        runtime = self._slot_reader
+        why = refusal(
+            session,
+            revision,
+            switched_on=self._depth_reader,
+            claude_readers=(
+                runtime is not None and runtime.claude_row_reader and self._form_reader is not None
+            ),
+            reuse_answers=runtime is not None and runtime.reuse_answers,
+        )
+        if why is not None:
+            raise DepthsAgainRefused(why)
+        with session.no_autoflush:
+            _spent, unpriced = _revision_spend(session, package_revision_id)
+        if unpriced:
+            raise DepthsAgainRefused(UNPRICED)
+        bala = self._bala_items(session, package_revision_id)
+        if not countertops_by_drawing(session, package_revision_id):
+            raise DepthsAgainRefused(NO_COUNTERTOP)
+        depth = self._depth_pass(session, package_revision_id, again=request)
+        if "run" not in depth:
+            raise DepthsAgainRefused(f"Depths were not read again: {depth.get('reason')}.")
+        # Signed off while the depths were read? Then nothing of this reading is added. Locked to
+        # the commit, so a sign-off after it sees a depth reading newer than the checks.
+        session.refresh(revision, with_for_update=True)
+        if revision.state in CLOSED_STATES:
+            raise DepthsAgainRefused(CLOSED)
+        checks = _queue_checks_after_reading(session, package_revision_id)
+        if depth.get("stopped") == "budget":
+            reason = (
+                "Stopped: this drawing set's AI budget was reached. The values not read are held, "
+                "each with this reason."
+            )
+        elif depth.get("stopped") == "account":
+            reason = (
+                "Stopped: the AI provider account refused the calls. The values not read are "
+                "held, each with this reason."
+            )
+        elif depth.get("ran") is not True:
+            reason = str(depth.get("reason"))
+        else:
+            reason = "Depths read again."
+        return {
+            "ran": depth.get("ran") is True,
+            "reason": reason,
+            "bala": bala,
+            "depth": depth,
             "checks_queued": checks is not None,
         }
 
@@ -6610,13 +6694,19 @@ class DatabaseStages:
         )
         return payload
 
-    def _depth_pass(self, session: Session, package_revision_id: UUID) -> dict[str, object]:
+    def _depth_pass(
+        self, session: Session, package_revision_id: UUID, *, again: str | None = None
+    ) -> dict[str, object]:
         """Read each countertop's plan and section views, once, after Bala (#1290).
 
         `workflow/depth_reader.py` says what is read and written. Here:
 
         * **once per stage run**: a run already recorded under this stage's task run is reported and
           nothing is prepared or asked again;
+        * **or once per request** (`again`, #1308: "Read depths again", the request's outbox id): a
+          run of its own, recorded under the same task run with `;again=<request>`
+          (`workflow.depth_again.again_hash`), read whatever the stage run recorded; a redelivered
+          request finds its run and reads nothing again;
         * the pages that hold one of Bala's countertops, read by the slot reader's Claude pair through
           the shared route, under the reader's **own** stop;
         * **one spend guard for the whole reading** (its three rounds of questions reserve against one
@@ -6635,6 +6725,7 @@ class DatabaseStages:
         )
         from extraction.reader import UnreadablePdf
         from extraction.slot_reader.anthropic import BatchSpendGuard
+        from workflow.depth_again import again_hash
         from workflow.depth_evidence import DEPTH_EXTRACTOR, DEPTH_READER_VERSION
         from workflow.depth_evidence import RUN_FAILED as DEPTH_RUN_FAILED
         from workflow.depth_reader import (
@@ -6702,14 +6793,32 @@ class DatabaseStages:
             ),
             None,
         )
-        if recorded is not None:
+        if again is not None:
+            # A request's own run (#1308): whatever this stage run recorded, read again once.
+            config_hash = again_hash(base_hash, again)
+            mine = session.scalars(
+                select(ExtractionRun).where(
+                    ExtractionRun.task_run_id == task_run.id,
+                    ExtractionRun.extractor == DEPTH_EXTRACTOR,
+                    ExtractionRun.extractor_version == DEPTH_READER_VERSION,
+                    ExtractionRun.config_hash == config_hash,
+                )
+            ).first()
+            if mine is not None:
+                return {
+                    "ran": True,
+                    "run": str(mine.id),
+                    "reason": "this request's depth reading is already recorded",
+                }
+        elif recorded is not None:
             # Checked before anything is prepared or asked: a redelivered stage reads nothing again.
             return {
                 "ran": True,
                 "run": str(recorded.id),
                 "reason": "this stage's depth reading is already recorded",
             }
-        config_hash = base_hash if not earlier else f"{base_hash};retry={len(earlier)}"
+        else:
+            config_hash = base_hash if not earlier else f"{base_hash};retry={len(earlier)}"
         countertops = countertops_by_drawing(session, package_revision_id)
         if not countertops:
             return {"ran": False, "reason": "Bala filed no countertop, so there is nothing to read"}

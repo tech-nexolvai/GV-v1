@@ -893,6 +893,7 @@ def consume(
     `stages_factory` builds the stages each piece of work needs; left out, it is `build_stages`.
     `process_package_revision` has no consumer here and is refused like any other unknown name.
     """
+    from workflow.depth_again import READ_DEPTHS_AGAIN_WORKFLOW
     from workflow.part_pictures import CUT_PART_PICTURES_WORKFLOW
     from workflow.slot_row_scope import READ_UNREAD_PAGES_WORKFLOW
     from workflow.vendor_page_pictures import RENDER_VENDOR_PAGE_PICTURES_WORKFLOW
@@ -944,6 +945,15 @@ def consume(
         # A person asked to read the pages the AI budget stopped (#1206), on the same revision.
         stages = (stages_factory or build_stages)(timings=timings)
         return stages.read_unread_pages(session, revision_id)  # type: ignore[attr-defined]
+    if workflow == READ_DEPTHS_AGAIN_WORKFLOW:
+        # A person asked to read the depths again (#1308): Bala and the depth and sink reader only,
+        # on the same revision, as a run of this request's own. A refusal is raised with its
+        # sentence, and the outbox parks the request with it.
+        stages = (stages_factory or build_stages)(timings=timings)
+        read: Mapping[str, object] = stages.read_depths_again(  # type: ignore[attr-defined]
+            session, revision_id, idempotency_key
+        )
+        return read
     if workflow == CUT_PART_PICTURES_WORKFLOW:
         # A person added a part (#897): cut its picture, and any other still missing.
         return cut_part_pictures(session, revision_id, stages_factory=stages_factory)
