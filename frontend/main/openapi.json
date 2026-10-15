@@ -1139,6 +1139,58 @@
         "title": "ArchitectPairingRecordOut",
         "type": "object"
       },
+      "ArchitectRegionOut": {
+        "description": "One architect's drawing on a page: where the viewer zooms the architect side to.",
+        "properties": {
+          "bbox": {
+            "$ref": "#/components/schemas/BoundsOut"
+          },
+          "heading": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Heading"
+          },
+          "polygon": {
+            "items": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Polygon",
+            "type": "array"
+          },
+          "role_confirmed": {
+            "title": "Role Confirmed",
+            "type": "boolean"
+          },
+          "tag": {
+            "title": "Tag",
+            "type": "string"
+          },
+          "view_id": {
+            "format": "uuid",
+            "title": "View Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "view_id",
+          "tag",
+          "role_confirmed",
+          "heading",
+          "polygon",
+          "bbox"
+        ],
+        "title": "ArchitectRegionOut",
+        "type": "object"
+      },
       "ArchitectResultOut": {
         "description": "The vendor-vs-architect check (CT-ARCH-WIDTH-001) for one countertop row (#1054).\n\n`finding_id` and `outcome` are null when nothing was compared for this row; then\n`not_compared_reason` says why, and no reviewer decision is needed for it. Values are the ones\nthe recorded check used, never recomputed.",
         "properties": {
@@ -1966,6 +2018,35 @@
           "typed_characters"
         ],
         "title": "BlankPageProofOut",
+        "type": "object"
+      },
+      "BoundsOut": {
+        "description": "The smallest box around a region, in stored space (exact decimal text).",
+        "properties": {
+          "x0": {
+            "title": "X0",
+            "type": "string"
+          },
+          "x1": {
+            "title": "X1",
+            "type": "string"
+          },
+          "y0": {
+            "title": "Y0",
+            "type": "string"
+          },
+          "y1": {
+            "title": "Y1",
+            "type": "string"
+          }
+        },
+        "required": [
+          "x0",
+          "y0",
+          "x1",
+          "y1"
+        ],
+        "title": "BoundsOut",
         "type": "object"
       },
       "CabinetInput": {
@@ -7089,6 +7170,39 @@
         "title": "PageChangeOut",
         "type": "object"
       },
+      "PagePictureOut": {
+        "properties": {
+          "dpi": {
+            "title": "Dpi",
+            "type": "integer"
+          },
+          "height_px": {
+            "title": "Height Px",
+            "type": "integer"
+          },
+          "media_type": {
+            "title": "Media Type",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          },
+          "width_px": {
+            "title": "Width Px",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "url",
+          "media_type",
+          "dpi",
+          "width_px",
+          "height_px"
+        ],
+        "title": "PagePictureOut",
+        "type": "object"
+      },
       "PagePicturesQueuedOut": {
         "properties": {
           "queued": {
@@ -8981,6 +9095,66 @@
         "title": "ReviewActionPage",
         "type": "object"
       },
+      "ReviewDocumentOut": {
+        "properties": {
+          "document_id": {
+            "format": "uuid",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "document_version_id": {
+            "format": "uuid",
+            "title": "Document Version Id",
+            "type": "string"
+          },
+          "file_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Name"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "page_count": {
+            "title": "Page Count",
+            "type": "integer"
+          },
+          "pages": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewPageOut"
+            },
+            "title": "Pages",
+            "type": "array"
+          },
+          "side": {
+            "enum": [
+              "vendor",
+              "architect",
+              "other"
+            ],
+            "title": "Side",
+            "type": "string"
+          }
+        },
+        "required": [
+          "document_id",
+          "document_version_id",
+          "kind",
+          "side",
+          "file_name",
+          "page_count",
+          "pages"
+        ],
+        "title": "ReviewDocumentOut",
+        "type": "object"
+      },
       "ReviewExceptionOut": {
         "description": "A granted exception, with the terms a later reader needs.",
         "properties": {
@@ -9032,6 +9206,103 @@
           "created_at"
         ],
         "title": "ReviewExceptionOut",
+        "type": "object"
+      },
+      "ReviewPageOut": {
+        "properties": {
+          "architect_regions": {
+            "items": {
+              "$ref": "#/components/schemas/ArchitectRegionOut"
+            },
+            "title": "Architect Regions",
+            "type": "array"
+          },
+          "page_id": {
+            "format": "uuid",
+            "title": "Page Id",
+            "type": "string"
+          },
+          "page_number": {
+            "title": "Page Number",
+            "type": "integer"
+          },
+          "picture": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PagePictureOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "picture_status": {
+            "enum": [
+              "ready",
+              "not_ready",
+              "render_failed"
+            ],
+            "title": "Picture Status",
+            "type": "string"
+          },
+          "sheet_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sheet Number"
+          }
+        },
+        "required": [
+          "page_id",
+          "page_number",
+          "sheet_number",
+          "picture_status",
+          "picture",
+          "architect_regions"
+        ],
+        "title": "ReviewPageOut",
+        "type": "object"
+      },
+      "ReviewPagesOut": {
+        "properties": {
+          "combined_set": {
+            "title": "Combined Set",
+            "type": "boolean"
+          },
+          "documents": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewDocumentOut"
+            },
+            "title": "Documents",
+            "type": "array"
+          },
+          "package_revision_id": {
+            "format": "uuid",
+            "title": "Package Revision Id",
+            "type": "string"
+          },
+          "pages_without_pictures": {
+            "title": "Pages Without Pictures",
+            "type": "integer"
+          },
+          "revision_number": {
+            "title": "Revision Number",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "package_revision_id",
+          "revision_number",
+          "combined_set",
+          "pages_without_pictures",
+          "documents"
+        ],
+        "title": "ReviewPagesOut",
         "type": "object"
       },
       "ReviewSessionOut": {
@@ -15655,6 +15926,60 @@
         "summary": "Confirm that a listed page has no countertop, or say there is one",
         "tags": [
           "visual reviewer"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/pages": {
+      "get": {
+        "description": "Every document of the latest revision, vendor first, with each page's picture readiness.",
+        "operationId": "review_pages_api_v1_projects__project_id__packages__package_id__pages_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewPagesOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Both drawings' pages and their pictures, for the side-by-side viewer",
+        "tags": [
+          "drawings"
         ]
       }
     },
