@@ -134,6 +134,24 @@ def test_the_old_five_dollar_ceiling_is_gone_and_the_maximum_bounds_the_claude_c
     assert raised.claude_reader_budget_usd == Decimal(60)
 
 
+def test_the_claude_ceiling_is_one_function_for_the_worker_and_the_screen() -> None:
+    """#1317: unstated, the admin's maximum; stated, the lower of it and the maximum. The worker's
+    readers (`workflow.slot_reader`) and the "Read depths again" screen use this same function."""
+    from app.config import Settings
+    from workflow.ai_budget import AiBudget, ai_budget_from_settings, claude_ceiling
+    from workflow.slot_reader import _claude_ceiling
+
+    url = "postgresql+psycopg://unused@localhost/unused"
+    unstated = Settings(database_url=url, ai_budget_per_set_usd=Decimal(40))
+    lower = Settings(database_url=url, claude_reader_budget_usd=Decimal(5))
+    for settings, expected in ((unstated, Decimal(25)), (lower, Decimal(5))):
+        budget = ai_budget_from_settings(settings)
+        assert claude_ceiling(settings, budget) == _claude_ceiling(settings, budget) == expected
+    # A stand-in settings object stating more than the maximum is still capped at it.
+    over = type("Over", (), {"claude_reader_budget_usd": Decimal(60)})()
+    assert claude_ceiling(over, AiBudget()) == Decimal(25)
+
+
 # ---------------------------------------------------------------------------
 # The setting
 # ---------------------------------------------------------------------------

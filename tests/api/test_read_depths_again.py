@@ -8,11 +8,14 @@ no network, no model.
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
+from decimal import ROUND_DOWN, Decimal
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -27,9 +30,18 @@ from app.lifecycle.states import begin, transition
 from app.main import API_PREFIX, create_app
 from app.models import OutboxEntry, Package, PackageRevision, PackageState, Project
 from app.models.runs import ExtractionRun, ModelInvocation, TaskRun, WorkflowRun
+from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
+from tests.workflow.test_read_depths_again import (
+    _MustNotBeCalled,
+    _read_set,
+    _spent_reading_the_set,
+    _stages,
+)
+from tests.workflow.test_slot_reader import FRACTION_ENV
 from workflow.depth_again import (
     ALREADY_ASKED,
+    BUDGET_USED_UP,
     BUSY,
     NEEDS_CLAUDE,
     NEEDS_REUSE,
@@ -39,7 +51,11 @@ from workflow.depth_again import (
     UNPRICED,
     DepthsAgainRefused,
 )
+from workflow.depth_evidence import CLAUDE_PAIR
 from workflow.outbox import OutboxDispatchError, dispatch_committed
+from workflow.set_spend import depth_cap_usd
+from workflow.slot_reader import configured_slot_reader
+from workflow.stages import AI_BUDGET_ENV, DatabaseStages
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -63,15 +79,18 @@ def session(factory: sessionmaker[Session]) -> Iterator[Session]:
         opened.close()
 
 
+def _settings(switches: Mapping[str, object]) -> Settings:
+    # The switches are set past validation: turning the Claude readers on for real needs the form
+    # reader's whole configuration and a key, none of which this route reads.
+    return Settings(database_url="postgresql+psycopg://gv:gv@localhost:5433/gv").model_copy(
+        update=dict(switches)
+    )
+
+
 def _client(
     session: Session, project_id: UUID, roles: frozenset[Role], switches: Mapping[str, object]
 ) -> TestClient:
-    # The switches are set past validation: turning the Claude readers on for real needs the form
-    # reader's whole configuration and a key, none of which this route reads.
-    settings = Settings(database_url="postgresql+psycopg://gv:gv@localhost:5433/gv").model_copy(
-        update=dict(switches)
-    )
-    app = create_app(settings)
+    app = create_app(_settings(switches))
     app.dependency_overrides[authenticate] = lambda: Principal(
         id="synthetic reviewer", roles=roles, projects=frozenset({project_id})
     )
@@ -388,3 +407,95 @@ def test_a_request_that_fails_unexpectedly_is_parked_and_says_why(
         shown["last"]["sentence"] == "Depths were not read again: RuntimeError: synthetic failure"
     )
     assert shown["can_ask"] is True and len(stages.asked) == 1
+
+
+# --- #1317: the budget left shown is the worker's own cap -----------------------------------------
+
+#: A fixed amount for one drawing set above the admin's maximum, and the settings the worker needs
+#: to build the Claude readers (with a made-up key: no client built from it is ever called).
+OVER_THE_MAXIMUM = {
+    **ON,
+    "ai_budget_per_set_usd": Decimal(40),
+    "ai_budget_maximum_usd": Decimal(25),
+    "form_reader_enabled": True,
+    "slot_reader_enabled": True,
+    "openrouter_api_key": SecretStr("synthetic-not-a-key"),
+    "claude_reader_model_rpm": dict.fromkeys(CLAUDE_PAIR, 60),
+}
+
+
+@pytest.fixture
+def store(tmp_path: Path) -> LocalStore:
+    return LocalStore(root=tmp_path, ticket_secret=b"synthetic-test-only")
+
+
+def _worker_stages(
+    switches: Mapping[str, object], store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> DatabaseStages:
+    """The worker's stages from the same settings, as `workflow.sutradhar.build_stages` makes
+    them: the Claude readers' ceiling from `configured_slot_reader`, the fixed amount for a set
+    from `GV_AI_BUDGET_PER_SET_USD`. Every client fails the test if it is called."""
+    settings = _settings(switches)
+    monkeypatch.setenv(AI_BUDGET_ENV, str(settings.ai_budget_per_set_usd))
+    form = _stages(store, _MustNotBeCalled())._form_reader
+    runtime = configured_slot_reader(settings, form, environ=FRACTION_ENV)
+    assert runtime is not None and runtime.spend_cap_usd is not None
+    return _stages(store, _MustNotBeCalled(), ceiling=runtime.spend_cap_usd)
+
+
+def _worker_cap(session: Session, stages: DatabaseStages, revision_id: UUID) -> str:
+    """The depth reader's spend cap exactly as the worker builds it (`_depth_pass`), in cents."""
+    assert stages._slot_reader is not None
+    cap = depth_cap_usd(
+        session,
+        revision_id,
+        budget=stages._ai_budget,
+        fixed_usd=stages._ai_budget_fixed_usd(),
+        claude_ceiling_usd=stages._slot_reader.spend_cap_usd,
+    )
+    return str(cap.quantize(Decimal("0.01"), rounding=ROUND_DOWN))
+
+
+def test_the_budget_left_shown_is_the_worker_s_own_cap(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fixed $40 for a set with the admin's maximum at $25: the screen showed $40 left while
+    the worker stops at $25. Both now say $25."""
+    sheet = _read_set(session, store)
+    worker = _worker_stages(OVER_THE_MAXIMUM, store, monkeypatch)
+
+    shown = _status(session, sheet.revision, OVER_THE_MAXIMUM).json()
+
+    assert shown["budget_left_usd"] == _worker_cap(session, worker, sheet.revision.id) == "25.00"
+    assert shown["can_ask"] is True
+
+    # More than the ceiling spent already, less than the set's $40: the ceiling is what one
+    # reading may spend, so what the set has left is the cap, the same both ways.
+    _spent_reading_the_set(session, sheet, 30_000_000)
+    shown = _status(session, sheet.revision, OVER_THE_MAXIMUM).json()
+
+    assert shown["budget_left_usd"] == _worker_cap(session, worker, sheet.revision.id) == "10.00"
+    assert shown["can_ask"] is True
+
+
+def test_a_used_up_budget_is_refused_up_front_with_the_worker_s_own_reason(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sheet = _read_set(session, store)
+    # No depth reading yet, so every question would be new; and the set's whole $40 is spent.
+    session.delete(sheet.run)
+    session.flush()
+    _spent_reading_the_set(session, sheet, 40_000_000)
+    worker = _worker_stages(OVER_THE_MAXIMUM, store, monkeypatch)
+
+    shown = _status(session, sheet.revision, OVER_THE_MAXIMUM).json()
+    answer = _ask(session, sheet.revision, OVER_THE_MAXIMUM)
+    with pytest.raises(DepthsAgainRefused) as refused:
+        worker.read_depths_again(session, sheet.revision.id, str(uuid4()))
+
+    assert shown["budget_left_usd"] == _worker_cap(session, worker, sheet.revision.id) == "0.00"
+    assert shown["can_ask"] is False
+    assert answer.status_code == 409
+    assert shown["refused"] == answer.json()["message"] == refused.value.plain_reason
+    assert refused.value.plain_reason == BUDGET_USED_UP
+    assert _rows(session) == []

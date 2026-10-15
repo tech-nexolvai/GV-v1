@@ -41,7 +41,7 @@ from app.audit.events import AuditCategory, emit
 from app.auth import Action, Principal, require_action, require_project_access
 from app.config import Settings
 from app.models import PackageRevision
-from workflow.ai_budget import ai_budget_from_settings
+from workflow.ai_budget import ai_budget_from_settings, claude_ceiling
 from workflow.depth_again import (
     ALREADY_ASKED,
     READ_DEPTHS_AGAIN_WORKFLOW,
@@ -113,11 +113,16 @@ class ReadDepthsAgainOut(BaseModel):
 
 
 def _limits(settings: Settings) -> SpendLimits:
-    """The worker's spend settings, as this API process states them."""
+    """The worker's spend settings, as this API process states them.
+
+    The Claude readers' ceiling is built by the worker's own function (`claude_ceiling`, #1317):
+    the stated ceiling, or else the admin's maximum for a drawing set. Passing the stated setting
+    as it is showed a fixed $40 for a set as $40 left while the worker stops at the $25 maximum."""
+    budget = ai_budget_from_settings(settings)
     return SpendLimits(
-        budget=ai_budget_from_settings(settings),
+        budget=budget,
         fixed_usd=settings.ai_budget_per_set_usd,
-        claude_ceiling_usd=settings.claude_reader_budget_usd,
+        claude_ceiling_usd=claude_ceiling(settings, budget),
     )
 
 
