@@ -8,8 +8,8 @@ and beat a reading.
 What stays typable: the reviewer's own entries (`USER_INPUT`, e.g. the site width), the typed lists
 (cabinet runs, #1205), and the settings, including the sink's spec-sheet size.
 
-Values typed before this change stay in the database (append-only) and still count; nothing new of
-that kind can be typed.
+Values typed before this change stay in the database (append-only); nothing new of that kind can be
+typed. Since #1303 they no longer count (`tests/api/test_typed_drawn_stops_counting.py`).
 """
 
 from __future__ import annotations
@@ -277,13 +277,30 @@ def test_the_form_marks_drawn_single_values_confirm_only(session: Session) -> No
     assert confirm_only["USER_INPUT:cabinet_category"] is False
 
 
-def _counted_depth(session: Session, package: UUID) -> Fraction:
-    """The countertop depth the checks would use from the reviewer's values today."""
-    value = operands_for(session, _revision(session, package).id)["CT-DEPTH-001"][
-        "countertop_depth"
-    ].value
-    assert isinstance(value, Measurement)
-    return value.exact
+def _counted_depth(session: Session, package: UUID) -> Fraction | None:
+    """The countertop depth the checks would use from the reviewer's values today, if any."""
+    operand = (
+        operands_for(session, _revision(session, package).id)
+        .get("CT-DEPTH-001", {})
+        .get("countertop_depth")
+    )
+    if operand is None:
+        return None
+    assert isinstance(operand.value, Measurement)
+    return operand.value.exact
+
+
+def _stored_depths(session: Session) -> list[Fraction]:
+    """Every countertop depth ever stored as typed, oldest first: the append-only record."""
+    from app.models.parameters import ParameterValue as StoredParameterValue
+
+    rows = session.scalars(
+        select(StoredParameterValue)
+        .join(StoredParameterSet, StoredParameterSet.id == StoredParameterValue.parameter_set_id)
+        .where(StoredParameterValue.name == "CT-DEPTH-001:countertop_depth")
+        .order_by(StoredParameterSet.version)
+    ).all()
+    return [Fraction(row.numerator, row.denominator) for row in rows]
 
 
 def _typed_before(session: Session, package: UUID) -> None:
@@ -309,10 +326,11 @@ def _typed_before(session: Session, package: UUID) -> None:
     session.commit()
 
 
-def test_a_value_typed_before_the_rule_still_counts_and_survives_later_saves(
+def test_a_value_typed_before_the_rule_survives_later_saves_but_no_longer_counts(
     session: Session,
 ) -> None:
-    """Append-only: nothing typed earlier is removed, and a later save carries it forward."""
+    """Append-only: nothing typed earlier is removed, and a later save carries it forward. Since
+    #1303 it is no longer a check operand; the form still shows it."""
     _publish(session, *ALL_RULES)
     package = _package(session)
     _typed_before(session, package)
@@ -325,7 +343,8 @@ def test_a_value_typed_before_the_rule_still_counts_and_survives_later_saves(
     assert later.status_code == 201, later.text
     assert _run_sets(session) == 2  # a new version, carrying the earlier depth forward
 
-    assert _counted_depth(session, package) == Fraction(51, 2)
+    assert _stored_depths(session) == [Fraction(51, 2), Fraction(51, 2)]
+    assert _counted_depth(session, package) is None
 
     form = _client(session).get(f"/api/v1/projects/{PROJECT}/packages/{package}/required-inputs")
     saved = {q["key"]: q for q in form.json()["saved_measurements"]}
@@ -345,7 +364,7 @@ def test_a_value_typed_before_cannot_be_replaced_by_typing(session: Session) -> 
     )
 
     assert response.status_code == 422, response.text
-    assert _counted_depth(session, package) == Fraction(51, 2)
+    assert _stored_depths(session) == [Fraction(51, 2)]
 
 
 # **Only what a published check declares, in the shape it declares, can be typed** (#1253 review).

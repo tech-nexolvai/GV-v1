@@ -11,6 +11,7 @@ import pathlib
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from fractions import Fraction
+from uuid import UUID
 
 import pytest
 import yaml
@@ -31,16 +32,18 @@ from app.models import (
 )
 from app.models.parameters import to_rows
 from app.verdicts.rulebook import from_row
+from evidence.canonical import EvidenceStatus
 from rules.parameters import ParameterLayer, Provenance
 from rules.parameters import ParameterSet as InMemoryParameterSet
 from rules.parameters import ParameterValue as InMemoryParameterValue
 from rules.schema import Quantity, Rule
 from rules.snapshot import publish
 from tests.app.postgres_fixture import alembic_config
-from units.measurement import Unit
+from units.measurement import Measurement, Unit
 from units.normalise import normalise_to_inches
+from verdict.operands import VerdictOperand
 from workflow.classifications import record_classifications
-from workflow.measurements import operands_for, run_parameters_for
+from workflow.measurements import drawn_input, operands_for, run_parameters_for
 from workflow.stages import DatabaseStages
 
 pytest_plugins = ("tests.app.postgres_fixture",)
@@ -108,6 +111,66 @@ MEASUREMENTS: dict[str, str | tuple[str, ...]] = {
     "CT-SINK-CABINET-WIDTH-001:cutout_width": '29 1/2"',
     "CT-SINK-CABINET-WIDTH-001:clearance_right": '2 1/2"',
 }
+
+
+def _declared() -> dict[tuple[str, str], str]:
+    """Each rule input the rulebook declares drawn (`drawn_input`, #1251), with its drawing."""
+    drawn: dict[tuple[str, str], str] = {}
+    for path in sorted(RULEBOOK.glob("*.yaml")):
+        rule = Rule.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
+        for name, selector in rule.inputs.items():
+            if drawn_input(selector):
+                drawn[(rule.id, name)] = str(selector.source.value)
+    return drawn
+
+
+#: The drawn numbers among `MEASUREMENTS`, by rule input, with the drawing each is on. **These are
+#: never typed** (#1251), and one typed before no longer counts (#1303): a confirmed reading supplies
+#: them, so the tests hand them to the checks as one would (`reviewer_operands`).
+DRAWN_INPUTS: dict[tuple[str, str], str] = _declared()
+
+#: What the reviewer types on Measurements by design: the site width and the lists.
+TYPED_MEASUREMENTS: dict[str, str | tuple[str, ...]] = {
+    key: value
+    for key, value in MEASUREMENTS.items()
+    if tuple(key.split(":", 1)) not in DRAWN_INPUTS
+}
+
+
+def confirmed_readings(
+    values: dict[str, str | tuple[str, ...]],
+) -> dict[str, dict[str, VerdictOperand]]:
+    """The drawn numbers in `values`, as a confirmed reading hands them to a check (#1303)."""
+    operands: dict[str, dict[str, VerdictOperand]] = {}
+    for key, text in values.items():
+        rule_id, name = key.split(":", 1)
+        source = DRAWN_INPUTS.get((rule_id, name))
+        if source is None or not isinstance(text, str):
+            continue
+        operands.setdefault(rule_id, {})[name] = VerdictOperand(
+            name=name,
+            value=Measurement(normalise_to_inches(text).exact, Unit.INCH, text),
+            status=EvidenceStatus.HUMAN_CONFIRMED,
+            source=source,
+            evidence_ref="test:confirmed-reading",
+        )
+    return operands
+
+
+def reviewer_operands(
+    session: Session,
+    revision_id: UUID,
+    drawn: dict[str, str | tuple[str, ...]] = MEASUREMENTS,
+) -> dict[str, dict[str, VerdictOperand]]:
+    """What the checks receive: the reviewer's typed values (`operands_for`) and, for each drawn
+    number in `drawn`, its confirmed reading."""
+    operands = {
+        rule_id: dict(inputs) for rule_id, inputs in operands_for(session, revision_id).items()
+    }
+    for rule_id, inputs in confirmed_readings(drawn).items():
+        operands.setdefault(rule_id, {}).update(inputs)
+    return operands
+
 
 PROJECT_PARAMETERS = {
     # The distribution bounds. **v2 of CAB-FILLER-001 carries no defaults** — CLIENT_FACTS Q21 has
@@ -269,7 +332,7 @@ def filled(session: Session) -> PackageRevision:
     revision = _revision(session)
     _publish_rulebook(session)
     _store(session, revision, ParameterLayer.PROJECT, PROJECT_PARAMETERS)
-    _store(session, revision, ParameterLayer.RUN, {**RUN_PARAMETERS, **MEASUREMENTS})
+    _store(session, revision, ParameterLayer.RUN, {**RUN_PARAMETERS, **TYPED_MEASUREMENTS})
     # The one reviewer input that is not a dimension (#684). It goes to its own table because a
     # category has no unit and `parameter_values` is numeric to the column level.
     record_classifications(
@@ -296,7 +359,7 @@ def test_every_check_that_can_decide_does(session: Session, filled: PackageRevis
     made this fail at `9 == 8` while the rule itself was working correctly. What matters is that
     every published rule produced a finding, which is the same property either way.
     """
-    operands = operands_for(session, filled.id)
+    operands = reviewer_operands(session, filled.id)
     DatabaseStages(operands=operands, discriminators=DISCRIMINATORS).run_checks(session, filled.id)
 
     outcomes = _outcomes(session, filled)
@@ -324,7 +387,7 @@ def test_any_check_that_cannot_decide_says_why_in_client_terms(
     answer. This test stays as a guard for the next genuinely client-blocked rule: the message must
     tell a reviewer who to ask, which is the difference between a useful abstention and a dead end.
     """
-    operands = operands_for(session, filled.id)
+    operands = reviewer_operands(session, filled.id)
     DatabaseStages(operands=operands, discriminators=DISCRIMINATORS).run_checks(session, filled.id)
 
     rows = session.execute(
@@ -391,7 +454,7 @@ def test_without_a_discriminator_a_variant_rule_cannot_decide(
     arithmetic, which abstains on unequal fillers *that have to move* with the numbers in hand.
     It decides here, with no discriminator stated, and that is the change working.
     """
-    operands = operands_for(session, filled.id)
+    operands = reviewer_operands(session, filled.id)
     DatabaseStages(operands=operands).run_checks(session, filled.id)
 
     outcomes = _outcomes(session, filled)
@@ -410,7 +473,7 @@ def test_the_sink_cabinet_check_is_not_run_on_a_back_only_package(
     three-wall deck's, and on any other layout nothing was checked. NO_APPLICABLE_RULE says that;
     a PASS would say the cabinet was checked and fine.
     """
-    operands = operands_for(session, filled.id)
+    operands = reviewer_operands(session, filled.id)
     DatabaseStages(
         operands=operands, discriminators={**DISCRIMINATORS, "wall_config": "back_only"}
     ).run_checks(session, filled.id)
@@ -462,7 +525,6 @@ def test_the_client_leads_worked_example_produces_his_answer_through_run_checks(
         {
             **RUN_PARAMETERS,
             "CAB-FILLER-001:field_width": '82"',
-            "CAB-FILLER-001:design_width": '90"',
             "CAB-FILLER-001:architectural_fillers": CLIENT_LEAD_FILLERS,
             "CAB-FILLER-001:shop_fillers": CLIENT_LEAD_FILLERS,
             "CAB-FILLER-001:architectural_cabinets": CLIENT_LEAD_CABINETS,
@@ -479,7 +541,7 @@ def test_the_client_leads_worked_example_produces_his_answer_through_run_checks(
     )
     session.flush()
 
-    operands = operands_for(session, revision.id)
+    operands = reviewer_operands(session, revision.id, drawn={"CAB-FILLER-001:design_width": '90"'})
     DatabaseStages(operands=operands, discriminators=DISCRIMINATORS).run_checks(
         session, revision.id
     )
@@ -543,7 +605,6 @@ def test_the_equipment_cabinet_a_reviewer_named_is_the_one_that_holds(
         {
             **RUN_PARAMETERS,
             "CAB-FILLER-001:field_width": '82"',
-            "CAB-FILLER-001:design_width": '90"',
             "CAB-FILLER-001:architectural_fillers": CLIENT_LEAD_FILLERS,
             "CAB-FILLER-001:shop_fillers": CLIENT_LEAD_FILLERS,
             "CAB-FILLER-001:architectural_cabinets": CLIENT_LEAD_CABINETS,
@@ -560,7 +621,7 @@ def test_the_equipment_cabinet_a_reviewer_named_is_the_one_that_holds(
     )
     session.flush()
 
-    operands = operands_for(session, revision.id)
+    operands = reviewer_operands(session, revision.id, drawn={"CAB-FILLER-001:design_width": '90"'})
     DatabaseStages(operands=operands, discriminators=DISCRIMINATORS).run_checks(
         session, revision.id
     )

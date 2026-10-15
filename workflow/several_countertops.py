@@ -3,8 +3,9 @@
 **The gap.** The five depth and sink checks (`workflow/depth_evidence.DEPTH_RULE_IDS`) run once for
 each countertop only when the depth and sink reader is on and a countertop's run has been decided
 (`workflow/stages.py`). Otherwise each runs **once for the whole package**, and so does
-CT-SINK-CABINET-WIDTH-001, always. Such a result has one value per input: a number typed on the
-form before #1253, an ordinary drawn label a person confirmed, or a project setting. With two
+CT-SINK-CABINET-WIDTH-001, always. Such a result has one value per input: an ordinary drawn label a
+person confirmed, or a project setting (a number typed on the form before #1253 no longer counts
+since #1303). With two
 countertops of different depths, one countertop's 25" could PASS the whole package while the other
 countertop's 30" was never looked at.
 

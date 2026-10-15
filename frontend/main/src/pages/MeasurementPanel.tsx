@@ -391,33 +391,46 @@ function drawnSingle(quantity: Quantity): boolean {
 }
 
 /**
+ * A drawn number typed before typing them stopped (#1303 review). It no longer counts, but a reading
+ * that differs from it makes the check wait for a person, so its AI reading is never put in the field
+ * or confirmed by Save: only the field's own Confirm button confirms it.
+ */
+function typedBeforeDrawn(quantity: Quantity | undefined, saved: Record<string, SavedQuantity>): boolean {
+  return quantity !== undefined && drawnSingle(quantity) && (saved[quantity.key]?.values.length ?? 0) > 0;
+}
+
+/** `4 in`: a saved value written the way a reading is, so the two can be compared exactly. */
+function typedAsReading(saved: SavedQuantity): string {
+  return mixedQuantity(saved.values[0]);
+}
+
+/**
  * The value column of a drawn number (#1251): no box. GV's rule (Anant, 2026-10-12) is that people
  * confirm readings and do not type numbers drawn on the vendor's or the architect's drawing.
  *
  * Every line here says only what the screen knows (#1253 review):
- * - a value typed before typing drawn numbers stopped is what the checks use (it is kept and still
- *   counts), so it is shown, with the day it was typed (#1262), even after a reading of the same field
- *   is confirmed. Typed for only some of the checks the field feeds, it names those checks, and what
- *   each other check uses: the confirmed reading, a different typed value, or nothing yet (#1262);
- * - otherwise the reading the field holds (a confirmed reading, or an AI proposal that Save confirms),
- *   and any other page a reading is confirmed on: two readings make the check wait (#1262);
+ * - the reading the field holds (a confirmed reading, or an AI proposal that Save confirms), and any
+ *   other page a reading is confirmed on: two readings make the check wait (#1262);
  * - with none: two readings confirmed on this page, a reading confirmed on another page, AI readings
- *   to confirm below, or none yet. It never claims a drawing was not supplied: nothing here knows that.
+ *   to confirm below, or none yet. It never claims a drawing was not supplied: nothing here knows that;
+ * - a value typed before typing drawn numbers stopped stays on record and is shown, with the day it was
+ *   typed (#1262), but no longer counts (#1303, decided 2026-10-15): the checks use a confirmed reading,
+ *   or wait for one, exactly as if it had never been typed.
  */
 function ConfirmOnlyValue({
   value,
   typedBefore,
-  checks,
+  aiReadings,
   confirmedHere,
   pagesElsewhere,
   readingsBelow,
   whereToFind,
 }: {
   value: string;
-  /** The value typed before typing drawn numbers stopped, which the checks holding it still use, or null. */
+  /** The value typed before typing drawn numbers stopped, kept on record but no longer counted, or null. */
   typedBefore: SavedQuantity | null;
-  /** Every check (rule id) this field feeds, each once, in the form's order. */
-  checks: string[];
+  /** The AI's readings proposed for this field on this page, to compare with a value typed before. */
+  aiReadings: string[];
   /** The readings confirmed for this field on the page in view. */
   confirmedHere: string[];
   /** Other pages holding a confirmed reading for this field. */
@@ -431,44 +444,39 @@ function ConfirmOnlyValue({
       Drawn on: {whereToFind}
     </p>
   ) : null;
-  const readingConfirmed = confirmedHere.length > 0 || pagesElsewhere.length > 0;
-  if (typedBefore) {
-    const held = typedBefore.held_by ?? [];
-    const differs = typedBefore.differs_for ?? [];
-    // Typed for only some of the checks (#1262): the others hold a different typed value or nothing.
-    const partly = !typedBefore.complete && held.length > 0;
-    const untyped = checks.filter((check) => !held.includes(check) && !differs.includes(check));
-    return (
-      <div className="flex flex-col gap-0.5 text-sm" data-part="confirm-only">
-        <p className="num font-medium">{savedText(typedBefore.values[0])}</p>
-        <p className="text-xs text-muted-foreground" data-part="typed-before">
-          Typed {settingDate(typedBefore.values[0].set_at)}, before drawn numbers stopped being typed. It still counts; it
-          cannot be changed here.
-        </p>
-        {partly ? (
-          <p className="text-xs text-muted-foreground" data-part="typed-before-checks">
-            Only {checkWords(held)} still {held.length === 1 ? 'uses' : 'use'} this typed value.
-            {untyped.length > 0 &&
-              (readingConfirmed
-                ? ` ${capitalised(checkWords(untyped))} ${untyped.length === 1 ? 'uses' : 'use'} the confirmed reading instead.`
-                : ` ${capitalised(checkWords(untyped))} ${untyped.length === 1 ? 'waits' : 'wait'} for a reading to be confirmed.`)}
-            {differs.length > 0 && ` ${capitalised(checkWords(differs))} ${differs.length === 1 ? 'uses' : 'use'} a different typed value.`}
-          </p>
-        ) : (
-          readingConfirmed && (
-            <p className="text-xs text-muted-foreground" data-part="typed-before-wins">
-              A reading confirmed for this field does not replace it: the checks still use the typed value.
-            </p>
-          )
-        )}
-      </div>
-    );
-  }
+  const typedText = typedBefore ? typedAsReading(typedBefore) : null;
+  const typedDay = typedBefore ? settingDate(typedBefore.values[0].set_at) : null;
+  // A reading that differs from the value typed before (#1303 review): the check never lets either
+  // decide alone, and Save never confirms the AI's one for this field.
+  const otherAi = [...new Set(aiReadings.filter((reading) => reading.trim() !== typedText))];
+  const differs =
+    typedBefore && value && value !== typedText ? (
+      <p className="text-xs text-muted-foreground" data-part="typed-differs">
+        The confirmed reading (<span className="num">{value}</span>) differs from the value typed {typedDay} (
+        <span className="num">{typedText}</span>), so the check waits: a person decides which is right.
+      </p>
+    ) : typedBefore && !value && otherAi.length > 0 ? (
+      <p className="text-xs text-muted-foreground" data-part="typed-differs">
+        The AI read <span className="num">{otherAi.join(', ')}</span> here, which differs from the value typed {typedDay}{' '}
+        (<span className="num">{typedText}</span>). Save does not confirm it: confirm it under the field if it is right,
+        and the check then waits for a person to decide between the two.
+      </p>
+    ) : null;
+  const typed = typedBefore ? (
+    <>
+      <p className="text-xs text-muted-foreground" data-part="typed-before">
+        Typed {typedDay}: <span className="num">{savedText(typedBefore.values[0])}</span>, before drawn numbers stopped
+        being typed. It no longer counts: a number drawn on the drawing must come from a confirmed reading. It is kept
+        on record and cannot be changed here.
+      </p>
+      {differs}
+    </>
+  ) : null;
   if (value) {
     const pages = pagesElsewhere.join(', ');
     return (
       <div className="flex flex-col gap-0.5 text-sm" data-part="confirm-only">
-        <p className="num font-medium">{value}</p>
+        <p className="num font-medium" data-part="confirm-only-value">{value}</p>
         {/* A reading confirmed on another page too (#1262): if the numbers differ, the check waits. */}
         {pagesElsewhere.length > 0 && (
           <p className="text-xs text-muted-foreground" data-part="also-confirmed">
@@ -476,6 +484,7 @@ function ConfirmOnlyValue({
             number, the check sees two readings and waits.
           </p>
         )}
+        {typed}
       </div>
     );
   }
@@ -499,19 +508,10 @@ function ConfirmOnlyValue({
     <div className="flex flex-col gap-0.5 text-sm" data-part="confirm-only">
       <p className="font-medium">{status}</p>
       <p className="text-xs text-muted-foreground">{next}</p>
+      {typed}
       {where}
     </div>
   );
-}
-
-/** "check A" or "checks A, B and C": the checks a typed value reaches, by rule id (#1262). */
-function checkWords(checks: readonly string[]): string {
-  if (checks.length === 1) return `check ${checks[0]}`;
-  return `checks ${checks.slice(0, -1).join(', ')} and ${checks[checks.length - 1]}`;
-}
-
-function capitalised(words: string): string {
-  return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 function fieldLabel(quantity: Quantity): string {
@@ -757,7 +757,9 @@ export function MeasurementPanel({
 
       setSingles((prior) => {
         const next = { ...prior };
-        for (const quantity of required.quantities.filter((q) => !q.many)) {
+        // A drawn number typed before typing them stopped no longer counts (#1303): it is shown as a
+        // note under its field, never as the field's value, which a confirmed reading or a proposal fills.
+        for (const quantity of required.quantities.filter((q) => !q.many && !drawnSingle(q))) {
           const saved = savedQuantities[quantity.key];
           if (
             saved?.values.length === 1 &&
@@ -783,6 +785,9 @@ export function MeasurementPanel({
         }
         for (const field of required.proposed_readings ?? []) {
           if (field.many) continue;
+          // A drawn field typed before keeps its AI reading out of the field (#1303 review).
+          const target = required.quantities.find((quantity) => quantity.key === field.field_key);
+          if (typedBeforeDrawn(target, savedQuantities)) continue;
           const pageValues = field.values.filter(
             (reading) => reading.page_index === selectedPageNumber - 1,
           );
@@ -1014,14 +1019,12 @@ export function MeasurementPanel({
         });
       } else {
         // A reviewer-entered value has priority in the editable form; do not erase it behind their
-        // back merely because they later confirm an AI proposal.
-        // A drawn number typed before typing them stopped is what the checks still use (#1251), so the field
-        // keeps showing it; the confirmed reading does not replace it (#1253 review).
-        const typedEarlier = drawnSingle(target) && savedQuantitiesByKey(needed.saved_measurements)[target.key];
+        // back merely because they later confirm an AI proposal. A drawn number typed before typing
+        // them stopped no longer counts (#1303), so the confirmed reading is what the field shows.
         setSingles((prior) => {
           const readingCount =
             needed.confirmed_readings.filter((item) => item.key === key).length + 1;
-          if (reviewerEditedSingles.has(target.key) || typedEarlier) return prior;
+          if (reviewerEditedSingles.has(target.key)) return prior;
           return { ...prior, [target.key]: readingCount === 1 ? reading.value : '' };
         });
       }
@@ -1077,9 +1080,12 @@ export function MeasurementPanel({
   async function confirmAcceptedProposals(): Promise<Set<string>> {
     if (signedOff || !packageId || !needed) return new Set();
     const confirmed = new Set<string>();
+    const saved = savedQuantitiesByKey(needed.saved_measurements);
     for (const [key, candidateIds] of Object.entries(aiFilled)) {
       const quantity = needed.quantities.find((item) => item.key === key);
       if (!quantity || candidateIds.length === 0) continue;
+      // Never through Save for a drawn field typed before (#1303 review): its own Confirm button only.
+      if (typedBeforeDrawn(quantity, saved)) continue;
       const proposal = needed.proposed_readings.find((item) => item.field_key === key);
       // Sparse form proposals remain editable suggestions. Do not confirm them as a complete
       // evidence list; the reviewer can fill the blank positions first, and the confirmed run
@@ -1183,8 +1189,15 @@ export function MeasurementPanel({
       const classifications = classificationEntries(needed.quantities, runs);
       // A drawn number whose reading could not be confirmed is not typed in its place (#1251), so
       // it is said rather than lost: the rest still saves, and the field keeps its reading to confirm.
+      const typedBefore = savedQuantitiesByKey(needed.saved_measurements);
       const unconfirmedDrawn = needed.quantities
-        .filter((quantity) => drawnSingle(quantity) && quantity.key in aiFilled && !confirmedFromDrawing.has(quantity.key))
+        .filter(
+          (quantity) =>
+            drawnSingle(quantity) &&
+            quantity.key in aiFilled &&
+            !confirmedFromDrawing.has(quantity.key) &&
+            !typedBeforeDrawn(quantity, typedBefore),
+        )
         .map(fieldLabel);
 
       // A setting typed from a found passage sends that passage as its citation, and the server
@@ -1281,6 +1294,9 @@ export function MeasurementPanel({
         } else {
           if (reviewerEditedSingles.has(assignment.field_key)) continue;
           if ((singles[assignment.field_key] ?? '').trim()) continue;
+          // A drawn field typed before keeps its AI reading out of the field (#1303 review).
+          const target = needed.quantities.find((quantity) => quantity.key === assignment.field_key);
+          if (typedBeforeDrawn(target, savedQuantitiesByKey(needed.saved_measurements))) continue;
           filledSingles[assignment.field_key] = values[0] ?? '';
         }
         marks[assignment.field_key] = assignment.values.map((reading) => reading.candidate_id);
@@ -1519,7 +1535,8 @@ export function MeasurementPanel({
   /** Whether a box shows exactly what was typed and saved: then it is a person's value, with a name and a date. */
   const showsSavedValue = (quantity: Quantity): boolean => {
     const saved = savedQuantities[quantity.key];
-    if (!saved) return false;
+    // A drawn number's typed value no longer counts (#1303), so its field never shows it as the value.
+    if (!saved || drawnSingle(quantity)) return false;
     return showsSaved(quantity.many ? (runs[quantity.key] ?? []) : (singles[quantity.key] ?? ''), savedTexts(saved));
   };
   /** Each reading the form could have been filled from, by id, with what the evidence path says. */
@@ -1690,7 +1707,15 @@ export function MeasurementPanel({
               <ConfirmOnlyValue
                 value={(singles[quantity.key] ?? '').trim()}
                 typedBefore={savedQuantities[quantity.key]?.values.length === 1 ? savedQuantities[quantity.key] : null}
-                checks={[...new Set(quantity.consumers.flatMap((consumer) => (consumer.rule_id ? [consumer.rule_id] : [])))]}
+                aiReadings={[
+                  ...(needed.proposed_readings ?? [])
+                    .filter((proposed) => proposed.field_key === quantity.key)
+                    .flatMap((proposed) => proposed.values.filter((reading) => reading.page_index === selectedPageNumber - 1))
+                    .map((reading) => reading.value),
+                  ...(proposal?.assignments ?? [])
+                    .filter((assignment) => assignment.field_key === quantity.key)
+                    .flatMap((assignment) => assignment.values.map((reading) => reading.value)),
+                ]}
                 confirmedHere={(readingsByKey[quantity.key] ?? []).map((reading) => reading.value)}
                 pagesElsewhere={(quantity.confirmed_pages ?? []).filter((page) => page !== selectedPageNumber)}
                 readingsBelow={review.state !== 'agreed' && candidates.some((candidate) => candidate.source === quantity.source)}
@@ -1806,7 +1831,7 @@ export function MeasurementPanel({
           </div>
         </div>
         {review.reason && review.state !== 'empty' && <Hint>{review.reason}</Hint>}
-        {/* A drawn number has no box to replace its saved value: its column says what still counts. */}
+        {/* A drawn number has no box to replace its saved value: its column shows it as no longer counting (#1303). */}
         {savedQuantities[quantity.key] && !drawnSingle(quantity) && (
           <SavedValueNote
             texts={savedTexts(savedQuantities[quantity.key])}

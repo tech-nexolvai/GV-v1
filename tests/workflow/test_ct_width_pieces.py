@@ -1,9 +1,10 @@
 """The width check on a real database: pieces from the form, the company field cut, a project override.
 
 Verification for #991 through `DatabaseStages.run_checks`, the path a review actually takes: the
-rulebook published by `scripts/run_checks.py`, values stored as the Measure form stores them, and
-the field cut resolved through the same layers (`declared_defaults` → company → project) a live run
-uses. Made-up numbers with the shape of the first real verdict; no client value.
+rulebook published by `scripts/run_checks.py`, the pieces stored as the Measure form stores them,
+the overall width as a confirmed reading hands it over (a drawn number is never typed, #1251, and
+one typed before no longer counts, #1303), and the field cut resolved through the same layers
+(`declared_defaults` → company → project) a live run uses. Made-up numbers with the shape of the first real verdict; no client value.
 """
 
 from __future__ import annotations
@@ -21,8 +22,13 @@ from rules.parameters import ParameterLayer
 from rules.schema import Rule
 from rules.snapshot import publish
 from scripts.run_checks import _publish_rulebook
-from tests.workflow.test_full_coverage import RULEBOOK, _revision, _store, _upgrade
-from workflow.measurements import operands_for
+from tests.workflow.test_full_coverage import (
+    RULEBOOK,
+    _revision,
+    _store,
+    _upgrade,
+    reviewer_operands,
+)
 from workflow.stages import DatabaseStages
 
 pytest_plugins = ("tests.app.postgres_fixture",)
@@ -57,9 +63,12 @@ def _width_finding(session: Session, revision: PackageRevision) -> Finding:
     return found[0]
 
 
-def _check(session: Session, revision: PackageRevision) -> Finding:
+def _check(session: Session, revision: PackageRevision, overall: str) -> Finding:
     DatabaseStages(
-        operands=operands_for(session, revision.id), discriminators=WALLS_BOTH_ENDS
+        operands=reviewer_operands(
+            session, revision.id, drawn={"CT-WIDTH-001:countertop_width": overall}
+        ),
+        discriminators=WALLS_BOTH_ENDS,
     ).run_checks(session, revision.id)
     return _width_finding(session, revision)
 
@@ -73,10 +82,10 @@ def test_form_pieces_and_the_company_field_cut_fail_the_wrong_overall(session: S
         session,
         revision,
         ParameterLayer.RUN,
-        {"CT-WIDTH-001:countertop_width": WRONG_OVERALL, "CT-WIDTH-001:piece_widths": PIECES},
+        {"CT-WIDTH-001:piece_widths": PIECES},
     )
 
-    finding = _check(session, revision)
+    finding = _check(session, revision, WRONG_OVERALL)
 
     assert finding.outcome == "FAIL"
     assert finding.reason == "41 1/4 in != 42 3/8 in"
@@ -94,10 +103,10 @@ def test_a_project_field_cut_replaces_the_company_standard(session: Session) -> 
         session,
         revision,
         ParameterLayer.RUN,
-        {"CT-WIDTH-001:countertop_width": '41 5/8"', "CT-WIDTH-001:piece_widths": PIECES},
+        {"CT-WIDTH-001:piece_widths": PIECES},
     )
 
-    finding = _check(session, revision)
+    finding = _check(session, revision, '41 5/8"')
 
     assert finding.outcome == "PASS"
     notes = " | ".join(finding.notes or ())

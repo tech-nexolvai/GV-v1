@@ -970,28 +970,28 @@ def test_a_decision_on_advisory_evidence_breaks_the_advisory_gate(
 
 
 def _filled_by_the_reviewer(session: Session) -> UUID:
-    """`tests/workflow/test_full_coverage.py`'s revision: no product stated, every value typed by
-    the reviewer, list inputs (cabinets, fillers, categories) included; every check that can decide
-    passes."""
+    """`tests/workflow/test_full_coverage.py`'s revision: no product stated, every value the
+    reviewer types typed, list inputs (cabinets, fillers, categories) included, and every drawn
+    number as its confirmed reading (#1303); every check that can decide passes."""
     from rules.parameters import ParameterLayer
     from tests.workflow.test_full_coverage import (
         CABINET_TYPES,
         DISCRIMINATORS,
-        MEASUREMENTS,
         PROJECT_PARAMETERS,
         RUN_PARAMETERS,
+        TYPED_MEASUREMENTS,
         _publish_rulebook,
         _revision,
         _store,
+        reviewer_operands,
     )
     from workflow.classifications import record_classifications
-    from workflow.measurements import operands_for
     from workflow.stages import DatabaseStages
 
     revision = _revision(session)
     _publish_rulebook(session)
     _store(session, revision, ParameterLayer.PROJECT, PROJECT_PARAMETERS)
-    _store(session, revision, ParameterLayer.RUN, {**RUN_PARAMETERS, **MEASUREMENTS})
+    _store(session, revision, ParameterLayer.RUN, {**RUN_PARAMETERS, **TYPED_MEASUREMENTS})
     record_classifications(
         session,
         package_revision_id=revision.id,
@@ -1002,7 +1002,7 @@ def _filled_by_the_reviewer(session: Session) -> UUID:
     )
     session.flush()
     DatabaseStages(
-        operands=operands_for(session, revision.id), discriminators=DISCRIMINATORS
+        operands=reviewer_operands(session, revision.id), discriminators=DISCRIMINATORS
     ).run_checks(session, revision.id)
     return revision.id
 
