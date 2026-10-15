@@ -579,12 +579,12 @@ _PROTOTYPE_ROWS_DPI: Final = 150
 _CLOSE_UP_MARGIN_PT: Final = Decimal(12)
 _CLOSE_UP_MARGIN_FRACTION: Final = Decimal("0.15")
 _ZERO_PT: Final = Decimal(0)
-#: A stacked fraction's close-up keeps at least this much room past the fraction's own glyphs, on
-#: every side (#1315): a pen stroke reaches about 0.25 pt past its path's box, so the whole stroke
-#: shows with white beyond it. A small fraction on a narrow piece can rise above the span's label
-#: band, and a close-up cut at the band showed half its numerator (AI Sets 2 and 3, 15 Oct 2026);
-#: every stacked fraction both readers read right that day had at least 1.9 pt of room. A
-#: fraction that already has the room is cut exactly as before.
+#: A stacked fraction the close-up's cut goes through gets this much room past its own glyphs
+#: (#1315): a pen stroke reaches about 0.25 pt past its path's box, so the whole stroke shows with
+#: white beyond it. A small fraction on a narrow piece can rise above the span's label band, and
+#: a close-up cut at the band showed half its numerator (AI Sets 2 and 3, 15 Oct 2026). Only a
+#: fraction the cut goes through changes: one inside the cut, however close to its edge, is cut
+#: exactly as before (a wider change moved readers on narrow pieces, measured the same day).
 _STACKED_ROOM_PT: Final = Decimal("1.5")
 
 
@@ -687,7 +687,8 @@ def _row_area_png(
     the whole page at about 100 dpi (`_span_view_png`), which cost about 2,500 picture tokens a
     question and whose box covered narrow labels. The box never supplies a value.
 
-    `clear` (#1315) is the span's stacked fraction, when it has one (`_stacked_glyphs`): the box
+    `clear` (#1315) is the span's stacked fraction, when the close-up's cut goes through it
+    (`_cut_fraction`): the box
     then rises above, or drops below, a fraction that pokes out of the band, so its top and bottom
     never cross the fraction; it never grows wider, because code's label run on a narrow piece can
     hold the neighbour's fraction too, and a box around both pointed a reader at the neighbour (AI
@@ -804,6 +805,35 @@ def _stacked_glyphs(
     return found
 
 
+def _band_crop(page: SlotPage, band: Box) -> Box:
+    """The close-up's cut for a span's band (#1020): past each end, the band's top to bottom."""
+    margin = max(_CLOSE_UP_MARGIN_PT, _CLOSE_UP_MARGIN_FRACTION * (band.x1 - band.x0))
+    return Box(
+        max(_ZERO_PT, band.x0 - margin),
+        band.top,
+        min(page.rows.ink.width, band.x1 + margin),
+        band.bottom,
+    )
+
+
+def _cut_fraction(
+    page: SlotPage, owner: PlannedOwner, fraction_bar: FractionBarGeometry | None
+) -> Box | None:
+    """The owner's stacked fraction when the band's cut (`_band_crop`) goes through it (#1315);
+    `None` when it has none, or when the whole fraction is inside the cut."""
+    stacked = _stacked_glyphs(owner, page.rows.ink.height, fraction_bar)
+    if stacked is None:
+        return None
+    crop = _band_crop(page, owner.band)
+    inside = (
+        crop.x0 <= stacked.x0
+        and crop.top <= stacked.top
+        and stacked.x1 <= crop.x1
+        and stacked.bottom <= crop.bottom
+    )
+    return None if inside else stacked
+
+
 def _claude_span_plan(
     page: SlotPage, plan: SlotPlan, *, fraction_bar: FractionBarGeometry | None = None
 ) -> SlotPlan:
@@ -818,32 +848,25 @@ def _claude_span_plan(
     Which span is meant is shown by Picture 1's magenta box and Picture 2's two end marks
     (`_row_area_png`, `_marked_close_up_png`, #1213), never by the close-up's edges.
 
-    A stacked fraction that reaches past that cut (`_stacked_glyphs`, with `fraction_bar` the
-    run's bar lengths) widens it to hold the whole fraction and `_STACKED_ROOM_PT` around it
-    (#1315): a small fraction on a narrow piece rises above its band. Every other label is cut
-    exactly as before. The ink check, the evidence crop and the drawn-length check use this same
+    A stacked fraction the cut goes through (`_cut_fraction`, with `fraction_bar` the run's bar
+    lengths) widens it to hold the whole fraction and `_STACKED_ROOM_PT` around it (#1315): a small
+    fraction on a narrow piece rises above its band. Every other label is cut exactly as before. The ink check, the evidence crop and the drawn-length check use this same
     cut, so code checks the ink the readers are shown.
     """
     if plan.row is None:
         return plan
-    height = page.rows.ink.height
 
     def one_span(owner: PlannedOwner) -> PlannedOwner:
         band = owner.band
-        margin = max(_CLOSE_UP_MARGIN_PT, _CLOSE_UP_MARGIN_FRACTION * (band.x1 - band.x0))
-        left, top, right, bottom = band.x0 - margin, band.top, band.x1 + margin, band.bottom
-        stacked = _stacked_glyphs(owner, height, fraction_bar)
-        if stacked is not None:
-            left = min(left, stacked.x0 - _STACKED_ROOM_PT)
-            top = min(top, stacked.top - _STACKED_ROOM_PT)
-            right = max(right, stacked.x1 + _STACKED_ROOM_PT)
-            bottom = max(bottom, stacked.bottom + _STACKED_ROOM_PT)
-        crop = Box(
-            max(_ZERO_PT, left),
-            max(_ZERO_PT, top),
-            min(page.rows.ink.width, right),
-            min(height, bottom),
-        )
+        crop = _band_crop(page, band)
+        cut = _cut_fraction(page, owner, fraction_bar)
+        if cut is not None:
+            crop = Box(
+                max(_ZERO_PT, min(crop.x0, cut.x0 - _STACKED_ROOM_PT)),
+                max(_ZERO_PT, min(crop.top, cut.top - _STACKED_ROOM_PT)),
+                min(page.rows.ink.width, max(crop.x1, cut.x1 + _STACKED_ROOM_PT)),
+                min(page.rows.ink.height, max(crop.bottom, cut.bottom + _STACKED_ROOM_PT)),
+            )
         label = PlannedLabel(
             box=band,
             crop=crop,
@@ -1701,16 +1724,16 @@ def read_slot_pages(
             else set()
         )
         # The grounded Claude label question's Picture 1 shows the drawing around the row (#1213),
-        # its box kept clear of each span's stacked fraction (#1315), found on code's plan.
+        # its box rising or dropping clear of a stacked fraction the band's cut goes through
+        # (#1315), found on code's plan.
         stacked_px = (
             {
-                owner.index: _pixels(page.rows, stacked, page.rendered)
+                owner.index: _pixels(page.rows, cut, page.rendered)
                 for owner in (
                     *source_plan.slots,
                     *((source_plan.overall,) if source_plan.overall is not None else ()),
                 )
-                if (stacked := _stacked_glyphs(owner, page.rows.ink.height, runtime.fraction_bar))
-                is not None
+                if (cut := _cut_fraction(page, owner, runtime.fraction_bar)) is not None
             }
             if runtime.claude_row_reader
             else {}

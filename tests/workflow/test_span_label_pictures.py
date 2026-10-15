@@ -48,6 +48,7 @@ from workflow.slot_reader import (
     SlotPage,
     _claude_span_plan,
     _crop_png,
+    _cut_fraction,
     _marked_close_up_png,
     _pixels,
     _row_area_png,
@@ -627,18 +628,22 @@ def test_labels_that_are_not_stacked_keep_today_s_crop_and_box() -> None:
     assert _row_area_png(fake, (1000, 2000), band_px, clear=(1220, 1010, 1280, 1090)) == today
 
 
-def test_a_stacked_fraction_already_inside_its_band_with_room_keeps_today_s_crop() -> None:
-    """Only a fraction that lacks the room changes: one well inside the band is cut as before."""
+@pytest.mark.parametrize("inside_by", [Decimal("0.5"), STACKED_ROOM + 1], ids=["tight", "roomy"])
+def test_a_stacked_fraction_inside_today_s_cut_keeps_today_s_pictures(inside_by: Decimal) -> None:
+    """Only a fraction the cut goes through changes. One inside the band, even 0.5 pt from its top
+    (less than the room a cut fraction gets), keeps today's crop and today's box."""
     page = slot_page(named_sheet())
     source = _source_plan(page)
     band = source.slots[1].band
-    inside = _stacked_label(band, rise=-(STACKED_ROOM + 1))
-    assert band.top + STACKED_ROOM < inside.box.top and inside.box.bottom < band.bottom
+    inside = _stacked_label(band, rise=-inside_by)
+    assert band.top < inside.box.top and inside.box.bottom < band.bottom
 
     plain = _claude_span_plan(page, source, fraction_bar=_geometry())
     stacked = _claude_span_plan(page, _with_stacked_piece(source, inside), fraction_bar=_geometry())
 
     assert stacked.slots[1].labels[0].crop == plain.slots[1].labels[0].crop
+    owner = _with_stacked_piece(source, inside).slots[1]
+    assert _cut_fraction(page, owner, _geometry()) is None, "so Picture 1 gets no `clear` box"
 
 
 def test_read_slot_pages_sends_the_stacked_span_its_taller_close_up_and_every_other_span_today_s(
