@@ -6,7 +6,7 @@ evidence gate qualifies each reading and the unchanged engine decides the publis
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from uuid import UUID
 
@@ -244,15 +244,26 @@ def part_operands(
     observations: Mapping[UUID, tuple[DomainObservation, tuple[str, UUID]]],
     *,
     scope_item_id: UUID | None = None,
+    depth_readings: Collection[UUID] = frozenset(),
 ) -> PartOperands:
     """The run-owned widths (`_run_operands`) and, for one countertop, its depth and sink values.
+
+    `depth_readings` are the observations standing on the depth and sink reader's readings, which
+    are never a part's width; a width linked to one is refused with a reason that says so.
 
     **The depth and sink checks (#1290)** are filled only for one countertop (`scope_item_id`), from
     the depth reader's readings tied to it (`workflow/depth_evidence.py`), and every one of their
     inputs is owned: no form value, no unscoped reading, and no other countertop's reading can fill
     them. The check stage scopes them to a countertop only when `GV_DEPTH_READER` is on.
     """
-    result = _run_operands(session, revision_id, rules, observations, scope_item_id=scope_item_id)
+    result = _run_operands(
+        session,
+        revision_id,
+        rules,
+        observations,
+        scope_item_id=scope_item_id,
+        depth_readings=depth_readings,
+    )
     if scope_item_id is None:
         return result
     for rule in rules:
@@ -277,6 +288,7 @@ def _run_operands(
     observations: Mapping[UUID, tuple[DomainObservation, tuple[str, UUID]]],
     *,
     scope_item_id: UUID | None = None,
+    depth_readings: Collection[UUID] = frozenset(),
 ) -> PartOperands:
     """Select one complete run for this revision, or explicitly withhold its owned inputs.
 
@@ -414,6 +426,13 @@ def _run_operands(
                 prefix + f"{label}'s reading is not on the same vendor drawing and "
                 "document revision as its countertop.",
                 ambiguous=True,
+            )
+        if found is None and reading.id in depth_readings:
+            return refuse(
+                prefix + f"{label}'s width is linked to a reading from the depth and sink reader. "
+                "That reader reads a countertop's depth and its sink cut-out, never a part's width, "
+                "so the reading is not used here. Link the part to its own width on Measurements.",
+                ambiguous=reading.status == "CONFLICTING",
             )
         if found is None:
             return refuse(

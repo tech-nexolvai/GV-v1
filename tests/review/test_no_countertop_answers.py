@@ -238,7 +238,17 @@ def test_there_is_a_countertop_makes_the_page_a_blocking_split_item(
     assert finding.outcome == "REVIEW_REQUIRED"
     assert finding.reason == said
     readiness = approval_readiness(session, revision.id)
-    assert readiness.blocking_finding_ids == (finding.id,)
+    # The whole-package depth and sink results ask again as well (#1297): the package now has a
+    # third countertop, so a decision made when it had two no longer covers them.
+    held_again = {
+        f.id
+        for f in _live(session, revision.id)
+        if f.scope_row_candidate_id is None
+        and f.scope_item_id is None
+        and (f.reason or "").startswith("This package has 3 countertops")
+    }
+    assert len(held_again) == 6
+    assert set(readiness.blocking_finding_ids) == {finding.id} | held_again
     assert readiness.unchecked_countertop_pages == ()
     _decide(session, revision.id)
     session.commit()

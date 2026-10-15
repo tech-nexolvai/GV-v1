@@ -782,9 +782,20 @@ def test_codes_item_changes_no_finding_beside_a_persons_run(
             operands={"CT-WIDTH-001": form_widths()},
         ).run_checks(session, assembly.revision.id)
 
-    assert _live_findings(session, with_code.revision.id) == _live_findings(
-        session, without.revision.id
-    )
+    # Code's item is a second countertop, so the six whole-package depth and sink results hold
+    # (#1297): one value must not stand for both. Every other finding is exactly the same.
+    with_codes = _live_findings(session, with_code.revision.id)
+    without_codes = _live_findings(session, without.revision.id)
+    held = [row for row in with_codes if row[4].startswith("This package has 2 countertops")]
+    assert len(held) == 6 and {row[2] for row in held} == {"REVIEW_REQUIRED"}
+    assert {row[1] for row in held} == {"None"}, "only whole-package results are held"
+    snapshots = {row[0] for row in held}
+
+    def rest(rows: list[tuple[str, ...]]) -> list[tuple[str, ...]]:
+        return [row for row in rows if not (row[1] == "None" and row[0] in snapshots)]
+
+    assert rest(with_codes) == rest(without_codes)
+    assert len(rest(without_codes)) == len(without_codes) - 6
 
 
 def test_a_persons_run_on_codes_item_makes_it_a_checked_countertop(

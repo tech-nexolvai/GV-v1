@@ -167,16 +167,34 @@ def test_the_plan_lists_the_rules_its_row_s_results_and_what_they_wait_on(
     assert all(finding.scope == "row" for finding in entry.findings)
     assert countertops_by_row(session, built.revision.id) == {anchor: entry.countertop}
     assert other not in countertops_by_row(session, built.revision.id)
-    # A rule whose whole-package result waits on values lists them; a rule that does not, none.
+    # The package has two countertop rows, so the whole-package depth result is held (#1297): no
+    # value can clear it, and it lists none (one countertop's: the next test).
     depth = next(rule for rule in entry.rules if rule.rule_id == "CT-DEPTH-001")
     assert depth.resolved and depth.findings == ()
-    assert "countertop_overhang" in {missing.key for missing in depth.missing}
+    assert depth.missing == ()
     assert width.missing == ()
     # The width rule's variant is chosen per row from that row's walls: the plan takes the version
     # and the variant from the row's own result, and does not say it waits for the walls.
     assert width.resolved and width.waits_for is None
     assert width.version is not None
     assert width.variant == row_width_variant(session, row_width.finding_id)
+
+
+def test_one_countertop_s_whole_package_result_lists_what_it_waits_on(
+    session: Session, store: LocalStore
+) -> None:
+    """A package with one countertop: its whole-package depth result waits on the job's settings,
+    and the plan lists them."""
+    built = _Revision(session)
+    anchor = built.row(built.run(), page=0)
+    propose_items(session, built.revision.id)
+    _confirm_bala_countertop(session, anchor)
+    _checked(session, store, built)
+
+    (entry,) = check_plan_for(session, built.revision.id).items
+    depth = next(rule for rule in entry.rules if rule.rule_id == "CT-DEPTH-001")
+
+    assert "countertop_overhang" in {missing.key for missing in depth.missing}
 
 
 def test_a_countertop_with_no_row_says_so_and_lists_no_row_s_results(
