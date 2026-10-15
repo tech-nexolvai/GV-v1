@@ -365,7 +365,6 @@ def test_the_switch_must_be_a_yes_or_no() -> None:
 
 def test_a_view_lies_in_the_drawing_holding_its_centre_and_most_of_it() -> None:
     from evidence.coordinates import StoredPoint
-
     from workflow.depth_reader import drawings_holding
 
     def box(x0: str, y0: str, x1: str, y1: str) -> tuple[Decimal, Decimal, Decimal, Decimal]:
