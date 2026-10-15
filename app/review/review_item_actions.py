@@ -81,6 +81,7 @@ __all__ = [
     "NUMBERS_NOT_YET",
     "PAGES_GROUP",
     "ItemRefused",
+    "JobValueIn",
     "ReviewItemActionIn",
     "ReviewItemActionOut",
     "answer_name",
@@ -148,6 +149,15 @@ class ItemRefused(Exception):
         super().__init__(detail)
         self.status_code = status_code
         self.detail = detail
+
+
+class JobValueIn(BaseModel):
+    """One of this job's values, typed on the Not-checked group (#1403)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(max_length=100, description="The setting's name (`countertop_overhang`).")
+    value: str = Field(max_length=64, description='With its unit, e.g. `1 1/2"`.')
 
 
 class ReviewItemActionIn(BaseModel):
@@ -220,6 +230,15 @@ class ReviewItemActionIn(BaseModel):
         description=(
             "With a group key (`not-checked`, `no-countertop-pages`): the open keys the screen "
             "showed. Required for a group (422 without); 409 when the group differs now (#1358)."
+        ),
+    )
+    job_values: list[JobValueIn] | None = Field(
+        default=None,
+        max_length=50,
+        description=(
+            "With `not-checked` and the answer `job_values` (#1403): this job's values the "
+            "not-checked checks wait for. Saved through the project's settings (Company settings → "
+            "Projects), then the checks run again (coalesced)."
         ),
     )
 

@@ -6194,6 +6194,30 @@
         "title": "ItemPlanOut",
         "type": "object"
       },
+      "JobValueIn": {
+        "additionalProperties": false,
+        "description": "One of this job's values, typed on the Not-checked group (#1403).",
+        "properties": {
+          "name": {
+            "description": "The setting's name (`countertop_overhang`).",
+            "maxLength": 100,
+            "title": "Name",
+            "type": "string"
+          },
+          "value": {
+            "description": "With its unit, e.g. `1 1/2\"`.",
+            "maxLength": 64,
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "value"
+        ],
+        "title": "JobValueIn",
+        "type": "object"
+      },
       "LayoutProposalOut": {
         "description": "A model-proposed discriminator answer, still waiting for reviewer confirmation.",
         "properties": {
@@ -10305,6 +10329,22 @@
             "description": "With a group key (`not-checked`, `no-countertop-pages`): the open keys the screen showed. Required for a group (422 without); 409 when the group differs now (#1358).",
             "title": "Expected Keys"
           },
+          "job_values": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/JobValueIn"
+                },
+                "maxItems": 50,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With `not-checked` and the answer `job_values` (#1403): this job's values the not-checked checks wait for. Saved through the project's settings (Company settings \u2192 Projects), then the checks run again (coalesced).",
+            "title": "Job Values"
+          },
           "shown_value": {
             "anyOf": [
               {
@@ -10664,6 +10704,12 @@
       },
       "ReviewItemsOut": {
         "properties": {
+          "can_save_job_values": {
+            "default": false,
+            "description": "True when the caller may save this project's values (#1403): the not-checked group's 'Enter this job's values' form. The same checks as Company settings \u2192 Projects (`may_save_project`); read-only otherwise. The server still checks every save.",
+            "title": "Can Save Job Values",
+            "type": "boolean"
+          },
           "failures": {
             "items": {
               "$ref": "#/components/schemas/FailureOut"
@@ -19145,7 +19191,7 @@
     },
     "/api/v1/projects/{project_id}/packages/{package_id}/review-items/{key}/{action}": {
       "post": {
-        "description": "One answer. URL actions: `confirm | fix | answer | agree | clear-not-checked`.\n\n`answer` carries the answer's own name in the body: `{\"answer\": \"checked_right\"}`,\n`{\"answer\": \"checked_wrong\"}`, `{\"answer\": \"choose_wall\", \"wall_config\": \"...\"}`,\n`{\"answer\": \"confirm_no_countertop\"}`, `{\"answer\": \"there_is_a_countertop\"}`, or for an\narchitect item `{\"architect_view\": {...}}` / `{\"architect_pairing\": {...}}`. `confirm` on a\nnumber names the value shown (`shown_value`).\n\nGroup keys: `not-checked` with `clear-not-checked` dismisses every open \"Not checked\" result in\none transaction; `no-countertop-pages` with `answer` `confirm_no_countertop` confirms every\nlisted page at once. Both require `expected_keys` (409 when the group changed).\n\n201 when something was recorded; 200 when the answer was already recorded (nothing new).",
+        "description": "One answer. URL actions: `confirm | fix | answer | agree | clear-not-checked`.\n\n`answer` carries the answer's own name in the body: `{\"answer\": \"checked_right\"}`,\n`{\"answer\": \"checked_wrong\"}`, `{\"answer\": \"choose_wall\", \"wall_config\": \"...\"}`,\n`{\"answer\": \"confirm_no_countertop\"}`, `{\"answer\": \"there_is_a_countertop\"}`, or for an\narchitect item `{\"architect_view\": {...}}` / `{\"architect_pairing\": {...}}`. `confirm` on a\nnumber names the value shown (`shown_value`).\n\nGroup keys: `not-checked` with `clear-not-checked` dismisses every open \"Not checked\" result in\none transaction; `no-countertop-pages` with `answer` `confirm_no_countertop` confirms every\nlisted page at once. Both require `expected_keys` (409 when the group changed).\n`not-checked` with `answer` `job_values` and `job_values: [{name, value}]` saves this job's\nvalues through the project's settings (Company settings \u2192 Projects) and queues one coalesced\nre-check (#1403); it needs no `expected_keys`, because the values belong to the project.\n\n201 when something was recorded; 200 when the answer was already recorded (nothing new).",
         "operationId": "answer_review_item_api_v1_projects__project_id__packages__package_id__review_items__key___action__post",
         "parameters": [
           {

@@ -11,6 +11,7 @@ import type {
   BestGuess,
   ItemAction,
   NotCheckedItem,
+  NotCheckedSetting,
   PageRef,
   ReviewFailure,
   ReviewItem,
@@ -47,6 +48,7 @@ export const ACTION_LABELS: Record<ItemAction, string> = {
   agree: 'Agree',
   settle_group: 'Clear all as not checked',
   mark_cabinets: 'Save marks',
+  job_values: 'Save and check again',
 };
 
 /** The answer that agrees with the AI (the C key), and the one that disagrees (the F key). */
@@ -248,4 +250,28 @@ export function splitNumbers(text: string): { text: string; number: boolean }[] 
 /** The element id of an item's opened detail, for `aria-controls`. */
 export function detailId(key: string): string {
   return `item-detail-${key.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+}
+
+/**
+ * What the open checks still wait for: the settings the API names and none has been saved since
+ * (`set_now`), in the list's order, and how many countertops (or checks, for a whole-set check) wait.
+ */
+export function jobValuesWaiting(items: readonly NotCheckedItem[]): { settings: NotCheckedSetting[]; countertops: number | null; checks: number } {
+  const settings: NotCheckedSetting[] = [];
+  const waiting = items.filter((item) => item.status === 'open' && (item.settings ?? []).some((setting) => !setting.set_now));
+  for (const item of waiting) {
+    for (const setting of item.settings ?? []) {
+      if (!setting.set_now && !settings.some((seen) => seen.key === setting.key)) settings.push(setting);
+    }
+  }
+  const everyOnACountertop = waiting.every((item) => item.countertop);
+  const countertops = everyOnACountertop ? new Set(waiting.map((item) => item.countertop!.item_id)).size : null;
+  return { settings, countertops, checks: waiting.length };
+}
+
+/** A typed value in inches (`24`, `1 1/2`, `0.75`, `3/4`, with or without `"`), with its inch mark; null otherwise. */
+export function inchValue(typed: string): string | null {
+  const text = typed.trim().replace(/\s+/g, ' ').replace(/\s*(?:"|in|inch|inches)$/i, '');
+  if (!/^\d+(?:\.\d+)?(?: \d+\/\d+)?$|^\d+\/\d+$/.test(text)) return null;
+  return `${text}"`;
 }

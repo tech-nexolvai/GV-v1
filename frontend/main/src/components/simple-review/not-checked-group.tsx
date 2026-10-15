@@ -1,11 +1,12 @@
-import { Fragment, useState } from 'react';
+import { Fragment, useState, type FormEvent } from 'react';
 import { Check, ChevronRight, Loader2 } from 'lucide-react';
 
 import type { NotCheckedItem, NotCheckedSetting } from '@/api/review-items';
 import { formatRoute } from '@/app/route';
 import { cn } from '@/lib/utils';
-import { whereWord } from '@/lib/review-items';
+import { inchValue, jobValuesWaiting, whereWord } from '@/lib/review-items';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
 import type { SaveError } from './failures-strip';
 import { PageTag } from './words';
@@ -17,6 +18,11 @@ import { PageTag } from './words';
  * when the API names it: the screen never works out which setting a check needs. Saving a setting
  * does not re-run the check, so one the API says is set now (`set_now`, #1382) is not linked again:
  * the line says it was set after this check ran, and to run the checks again.
+ *
+ * **This job's values (#1403).** The values the open checks still wait for (as the API names them)
+ * are summed up in one line, with the full list folded under "Show all N", and entered here, once,
+ * in inches: they are per job (the GC's or the client's), saved on the project like Company settings
+ * → Projects saves them, and the checks run again. Someone who may not save sees a read-only line.
  */
 export function NotCheckedGroup({
   items,
@@ -26,7 +32,13 @@ export function NotCheckedGroup({
   onClearAll,
   open: controlledOpen,
   onOpenChange,
+  canSaveJobValues = false,
+  onSaveJobValues,
 }: {
+  /** Whether the caller may save this project's values (`can_save_job_values`, #1403). */
+  canSaveJobValues?: boolean;
+  /** Save this job's values (inches, with the inch mark) and run the checks again. */
+  onSaveJobValues?: (values: JobValue[]) => void;
   /** Open from outside (the Assistant's "open item"); uncontrolled when left out. */
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -45,6 +57,7 @@ export function NotCheckedGroup({
   };
   if (items.length === 0) return null;
   const waiting = items.filter((item) => item.status === 'open').length;
+  const job = jobValuesWaiting(items);
 
   return (
     <section aria-labelledby="not-checked-title" data-slot="not-checked-group" className="rounded-xl border border-dashed border-border">
@@ -75,6 +88,16 @@ export function NotCheckedGroup({
             <Check aria-hidden="true" className="size-3.5" />
             Cleared as not checked
           </span>
+        )}
+        {job.settings.length > 0 && (
+          <JobValues
+            job={job}
+            total={items.length}
+            busy={busy}
+            canSave={canSaveJobValues && onSaveJobValues !== undefined}
+            onShowAll={() => setOpen(() => true)}
+            onSave={(values) => onSaveJobValues?.(values)}
+          />
         )}
         {note && <p className="basis-full pl-7 text-[13px] leading-5 text-muted-foreground">{note}</p>}
         {error && (
@@ -162,5 +185,115 @@ function UnsetLinks({ settings }: { settings: readonly NotCheckedSetting[] }) {
         </Fragment>
       ))}
     </span>
+  );
+}
+
+/** One of this job's values as sent: its setting's name and the inches typed, with the inch mark. */
+export interface JobValue {
+  name: string;
+  value: string;
+}
+
+function JobValues({
+  job,
+  total,
+  busy,
+  canSave,
+  onShowAll,
+  onSave,
+}: {
+  job: ReturnType<typeof jobValuesWaiting>;
+  total: number;
+  busy: boolean;
+  canSave: boolean;
+  onShowAll: () => void;
+  onSave: (values: JobValue[]) => void;
+}) {
+  const [formOpen, setFormOpen] = useState(false);
+  const [typed, setTyped] = useState<Record<string, string>>({});
+  const [problem, setProblem] = useState<string | null>(null);
+  const count = job.countertops ?? job.checks;
+  const noun = job.countertops === null ? 'check' : 'countertop';
+  const values = job.settings.length === 1 ? "this job's value" : `this job's ${job.settings.length} values`;
+  const line = `${count} ${noun}${count === 1 ? ' is' : 's are'} waiting for ${values}: ${job.settings.map((setting) => setting.name).join(' · ')}`;
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    const out: JobValue[] = [];
+    for (const setting of job.settings) {
+      const text = (typed[setting.key] ?? '').trim();
+      if (text === '') continue;
+      const value = inchValue(text);
+      if (value === null) {
+        setProblem(`${setting.name}: type inches, e.g. 1 1/2`);
+        return;
+      }
+      out.push({ name: setting.key, value });
+    }
+    if (out.length === 0) {
+      setProblem('Type at least one value.');
+      return;
+    }
+    setProblem(null);
+    onSave(out);
+  }
+
+  return (
+    <div className="flex basis-full flex-col gap-2 pl-7" data-part="job-values">
+      <p className="text-[13px] leading-5 text-foreground">
+        <span data-testid="job-values-summary">{line}</span>{' '}
+        <button type="button" onClick={onShowAll} className={LINK}>
+          Show all {total}
+        </button>
+      </p>
+      {!canSave ? (
+        <p className="text-[13px] text-muted-foreground">Only this project&apos;s reviewers can enter its values.</p>
+      ) : !formOpen ? (
+        <div>
+          <Button size="sm" variant="outline" onClick={() => setFormOpen(true)}>
+            Enter this job&apos;s values
+          </Button>
+        </div>
+      ) : (
+        <form onSubmit={submit} className="flex flex-col gap-2" aria-label="This job's values">
+          <p className="text-[13px] text-muted-foreground">From the drawings&apos; sections or the GC&apos;s spec for this job.</p>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {job.settings.map((setting) => (
+              <label key={setting.key} className="flex items-center gap-2 text-[13px]">
+                <span className="min-w-40 text-foreground">{setting.name}</span>
+                <span className="relative">
+                  <Input
+                    aria-label={setting.name}
+                    inputMode="decimal"
+                    autoComplete="off"
+                    value={typed[setting.key] ?? ''}
+                    onChange={(event) => setTyped((all) => ({ ...all, [setting.key]: event.target.value }))}
+                    className="num h-8 w-28 pr-6"
+                    placeholder="1 1/2"
+                  />
+                  <span aria-hidden="true" className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 text-muted-foreground">
+                    in
+                  </span>
+                </span>
+              </label>
+            ))}
+          </div>
+          {problem && (
+            <p role="alert" className="text-[13px] text-outcome-fail-fg">
+              {problem}
+            </p>
+          )}
+          <div className="flex gap-2">
+            <Button size="sm" type="submit" disabled={busy}>
+              {busy && <Loader2 aria-hidden="true" className="animate-spin motion-reduce:animate-none" />}
+              Save and check again
+            </Button>
+            <Button size="sm" variant="ghost" type="button" onClick={() => setFormOpen(false)}>
+              Cancel
+            </Button>
+          </div>
+        </form>
+      )}
+    </div>
   );
 }

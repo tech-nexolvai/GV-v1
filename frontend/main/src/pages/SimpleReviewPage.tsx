@@ -16,7 +16,7 @@ import { ReviewHeader, type CloudState } from '@/components/simple-review/review
 import { FailuresStrip, type SaveError } from '@/components/simple-review/failures-strip';
 import { ItemRow } from '@/components/simple-review/item-row';
 import { ItemDetail } from '@/components/simple-review/item-detail';
-import { NotCheckedGroup } from '@/components/simple-review/not-checked-group';
+import { NotCheckedGroup, type JobValue } from '@/components/simple-review/not-checked-group';
 import { FinalBar } from '@/components/simple-review/final-bar';
 import { LoadError, NothingNeedsYou, ReviewSkeleton, UnaccountedBanner } from '@/components/simple-review/states';
 import { PicturesProvider, type PictureLoader } from '@/components/simple-review/item-pictures';
@@ -136,6 +136,7 @@ const SAVED_WORDS: Partial<Record<ItemAction, string>> = {
   not_this: 'Saved.',
   agree: 'Agreed. It will be clouded as wrong.',
   settle_group: 'Cleared as not checked. They are printed NOT CHECKED.',
+  job_values: "Saved on this job. The checks run again with this job's values.",
 };
 
 const NO_RECORDS: AssistantRecords = {
@@ -411,6 +412,21 @@ export function SimpleReviewPage({
       reload();
     } catch (error) {
       failed(NOT_CHECKED, error, () => void clearNotChecked());
+    } finally {
+      finish();
+    }
+  }
+
+  // "Enter this job's values" (#1403): saved on the project, then the checks run again (coalesced).
+  async function saveJobValues(values: JobValue[]) {
+    if (!begin({ key: NOT_CHECKED, action: 'job_values' })) return;
+    try {
+      await send(NOT_CHECKED_GROUP, 'job_values', null, { job_values: values });
+      cleared(NOT_CHECKED);
+      announce('job_values');
+      reload();
+    } catch (error) {
+      failed(NOT_CHECKED, error, () => void saveJobValues(values));
     } finally {
       finish();
     }
@@ -753,6 +769,8 @@ export function SimpleReviewPage({
                     busy={busy?.key === NOT_CHECKED}
                     error={errors[NOT_CHECKED] ?? null}
                     onClearAll={() => void clearNotChecked()}
+                    canSaveJobValues={data.can_save_job_values ?? false}
+                    onSaveJobValues={(values) => void saveJobValues(values)}
                   />
 
                   {checked.length > 0 && (

@@ -55,6 +55,7 @@ export const ITEM_ACTIONS = [
   'agree',
   'settle_group',
   'mark_cabinets',
+  'job_values',
 ] as const;
 export type ItemAction = (typeof ITEM_ACTIONS)[number];
 
@@ -78,6 +79,8 @@ export interface ActionBody {
   cabinet_kinds?: string[];
   architect_view?: ArchitectViewAnswer;
   architect_pairing?: ArchitectPairingAnswer;
+  /** This job's values, in inches, saved on the project and checked again (#1403). */
+  job_values?: { name: string; value: string }[];
 }
 
 /** "This view shows the countertop", or "None of these", naming the record the reviewer was shown. */
@@ -168,6 +171,7 @@ const W3_ACTION: Record<ItemAction, 'confirm' | 'fix' | 'answer' | 'agree' | 'cl
   answer: 'answer',
   not_this: 'answer',
   mark_cabinets: 'answer',
+  job_values: 'answer',
 };
 
 /** The URL of a stored picture path that the API hands out (`zoom_ref`). */
