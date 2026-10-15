@@ -332,7 +332,7 @@ def test_a_model_answer_pointing_to_an_item_is_published() -> None:
     [
         "Confirm the guess on page 7",
         "Fix the number on page 7",
-        "Agree with the failure on page 7",
+        "Settle R2",
         "Accept the best guess on page 7",
         "Settle the not checked group on page 7",
     ],
@@ -406,11 +406,31 @@ def test_asking_whether_to_confirm_or_agree_is_judging(question: str) -> None:
         "Explain the guess on page 4",
         "Show me the first item",
         "What would using the guess mean?",
+        # Ordinary requests that are not about accepting a number (re-review of #1354).
+        "take me to the item on page 7",
+        "type of item on page 7?",
+        "select the item on page 7 for me",
+        "pick an item for me to look at",
+        "keep the numbers short",
+        "keep the item list open",
+        "use the item button",
+        "go with me through the items",
     ],
 )
 def test_genuine_questions_are_still_answered(question: str) -> None:
     assert not is_decision_request(question)
     assert _ask(question).mode != "refused"
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["Agree with the failure on page 4", "agree with the failure", "Agree with the failed check"],
+)
+def test_a_refusal_about_a_failure_opens_the_failure(question: str) -> None:
+    answer = _ask(question)
+    assert answer.mode == "refused"
+    item = next(action for action in answer.actions if action.kind == "open_review_item")
+    assert isinstance(item, OpenReviewItemAction) and item.item_key == FAILURE_KEY
 
 
 def test_a_refusal_with_an_item_in_focus_points_to_that_item() -> None:

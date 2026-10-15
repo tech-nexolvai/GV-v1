@@ -92,10 +92,28 @@ _TAKE: Final = re.compile(
     r"^(?:use|take|keep|pick|choose|select|apply|enter|type|trust|adopt|go with|stick with|"
     r"lock in|lock|accept)\b"
 )
+#: Only describing words may sit between the verb and what it acts on ("the AI's best guess",
+#: "piece 2 width", "the overall countertop width"), never "me", "to", "of", "for" …
+_GAP: Final = (
+    r"(?:the |this |that |these |those |its |their |an? |ai's |the ai's |vendor's |my )?"
+    r"(?:(?:best|first|second|third|last|next|top|overall|countertop|piece|row|held|printed|"
+    r"failed|open|same|ai|\d+(?: \d+)*) ){0,3}"
+)
+_VALUE_WORDS: Final = (
+    r"(?:guess|guesses|number|numbers|value|values|width|widths|reading|readings|dimension|"
+    r"dimensions|figure|figures)"
+)
+#: What an accept verb ("use", "take", "type" …) must act on to be a command: a number, an
+#: entry's id, or a value word that ends the clause or is followed by where it is ("on page 7").
+#: Items are not numbers here: "select the item on page 7 for me" asks to navigate.
 _NUMBER_TARGET: Final = re.compile(
-    r"^\s*(?:\d|r\d+\b|(?:the |this |that |these |those |its |their |ai's |the ai's )?"
-    r"(?:[\w']+ ){0,3}(?:guess|guesses|number|numbers|value|values|width|widths|reading|"
-    r"readings|dimension|dimensions|item|items|figure|figures)\b)"
+    rf"^\s*(?:\d|r\d+\b|{_GAP}{_VALUE_WORDS}(?:\s*$|\s+(?:on|for|at|from|in|of|as)\b))"
+)
+#: What the simple review screen's own verbs ("confirm", "fix", "agree" …) must act on: a number,
+#: an entry's id, or a value, item, failure or check, with only describing words before it.
+_ITEM_TARGET: Final = re.compile(
+    rf"^\s*(?:\d|r\d+\b|{_GAP}(?:{_VALUE_WORDS[3:-1]}|item|items|failure|failures|check|"
+    r"checks|result|results)\b)"
 )
 #: The simple review screen's own actions (#1352): with a number-like target they are commands
 #: ("confirm 42 1/2 on page 7", "confirm piece 2 width", "confirm R1", "fix the first item").
@@ -276,7 +294,7 @@ def _clause_is_request(clause: str, message: str = "") -> bool:
     verb = weak.group(0)
     if (
         verb.split()[0] in _ITEM_VERBS
-        and _NUMBER_TARGET.match(rest)
+        and _ITEM_TARGET.match(rest)
         and (verb != "confirm" or not _STATEMENT.search(rest))
     ):
         return True
