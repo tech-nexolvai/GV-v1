@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { StrictMode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ReviewHeader } from '@/components/simple-review/review-header';
@@ -389,6 +390,19 @@ describe('FinalBar (#1368)', () => {
     expect(button.disabled).toBe(true);
     expect(screen.getByRole('status').textContent).toBe('9 items need you · 54 not checked');
     expect(screen.queryByText(/valid reviewer decision/)).toBeNull();
+  });
+
+  it('under StrictMode the sign-off dialog still names the signer and can be confirmed (#1394)', async () => {
+    const api = finalApi();
+    render(
+      <StrictMode>
+        <FinalBar summary={summarize(allSettled())} left={[]} api={api} projectId="proj-demo" packageId="pkg-demo" revision={2} approved={false} onSigned={vi.fn()} />
+      </StrictMode>,
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Create final cloud PDF' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Sign off and create the final cloud PDF?' });
+    expect(await within(dialog).findByText('Sample Reviewer')).toBeTruthy();
+    expect((within(dialog).getByRole('button', { name: 'Sign off and create' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('follows the server even when the screen shows nothing open', () => {

@@ -71,8 +71,12 @@ export function FinalBar({
   const [signError, setSignError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
   const mounted = useRef(true);
-  useEffect(() => () => {
-    mounted.current = false;
+  useEffect(() => {
+    // Set again on every mount: StrictMode (the dev server) mounts, unmounts and mounts again (#1394).
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
   }, []);
 
   const signed = approved || signedNow;

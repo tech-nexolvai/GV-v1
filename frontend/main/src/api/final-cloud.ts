@@ -46,12 +46,15 @@ export interface FinalCloudApi {
 
 export const liveFinalCloudApi: FinalCloudApi = {
   async facts(projectId, packageId) {
-    const [sessions, results] = await Promise.all([
+    const [detail, sessions, results] = await Promise.all([
+      getPackage(projectId, packageId),
       listReviewSessions(projectId),
       getCountertopResults(projectId, packageId).catch(() => null),
     ]);
+    // This package's own revision only: never the newest sitting on another package (#1394).
+    const own = sessions.items.find((item) => item.package_revision_id === detail.current_revision_id);
     return {
-      signer: sessions.items[0]?.reviewer ?? null,
+      signer: own?.reviewer ?? null,
       carried: results
         ? [...carriedWallsDrivingResults(results.items), ...carriedNoCountertopConfirmations(results.pages_without_countertop ?? [])]
         : [],
