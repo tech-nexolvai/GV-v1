@@ -1,11 +1,25 @@
 import { FileSearch, FileX2, Loader2 } from 'lucide-react';
 
 import type { ReviewItem } from '@/api/review-items';
-import { pagesWord } from '@/lib/review-items';
 import { Button } from '@/components/ui/button';
 import { ChoiceCard } from './choice-card';
 import type { SaveError } from './failures-strip';
 import { NumText } from './words';
+
+/** "p.9, p.10 and p.11", each page number in the number face and the words in the word face. */
+function PageList({ pages }: { pages: readonly ReviewItem[] }) {
+  const named = pages.filter((page) => page.page != null);
+  return (
+    <>
+      {named.map((page, index) => (
+        <span key={page.key}>
+          {index > 0 && (index === named.length - 1 ? ' and ' : ', ')}
+          <span className="num">p.{page.page}</span>
+        </span>
+      ))}
+    </>
+  );
+}
 
 /**
  * The pages every AI said have no countertop, as one question (#1368): one click confirms them all
@@ -51,7 +65,7 @@ export function PagesChoice({
         <ChoiceCard
           title={title}
           proposal="every AI reader"
-          leadsTo={<>Confirmed for <span className="num">{pagesWord(pages.map((page) => page.page))}</span>. Nothing on {many ? 'them' : 'it'} is checked, and the cloud PDF lists {many ? 'them' : 'it'} as having no countertop.</>}
+          leadsTo={<>Confirmed for <PageList pages={pages} />. Nothing on {many ? 'them' : 'it'} is checked, and the cloud PDF lists {many ? 'them' : 'it'} as having no countertop.</>}
           busy={busyKey === groupKey}
           disabled={saving}
           onChoose={onConfirmAll}

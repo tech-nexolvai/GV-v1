@@ -29,13 +29,15 @@ export function ReviewSkeleton() {
 }
 
 /** Nothing on the page waits for a person. */
-export function NothingNeedsYou({ checked }: { checked: number }) {
+export function NothingNeedsYou({ checked, signedOff = false }: { checked: number; signedOff?: boolean }) {
   return (
     <div role="status" data-slot="nothing-needs-you" className="flex flex-col items-center gap-2 rounded-xl border border-border px-6 py-12 text-center">
       <CheckCheck aria-hidden="true" className="size-7 text-muted-foreground" />
       <p className="text-[20px] leading-7 font-semibold text-foreground">Nothing needs you</p>
       <p className="max-w-[52ch] text-[15px] leading-6 text-muted-foreground">
-        {checked > 0 ? (
+        {signedOff ? (
+          'This review is signed off. The final cloud PDF is below.'
+        ) : checked > 0 ? (
           <>
             All <span className="num">{checked}</span> items are checked. Create the final cloud PDF below.
           </>

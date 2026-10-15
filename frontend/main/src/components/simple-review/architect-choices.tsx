@@ -190,6 +190,7 @@ export function ArchitectChoices({
                 </span>
               }
               proposal={by}
+              proposalTag={effective.source.includes('ais') ? 'AI proposal' : 'Proposal'}
               leadsTo="These dimensions are compared with the architect's, and the checks run again."
               disabled={!open}
               busy={busy && by !== null}

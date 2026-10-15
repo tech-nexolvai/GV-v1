@@ -3,7 +3,6 @@ import { CheckCheck, CircleAlert, Download, FileCheck2, Loader2, Lock, RotateCcw
 
 import type { FinalCloudApi, SignOffFacts, SignedFilesStatus } from '@/api/final-cloud';
 import type { ReviewSummary } from '@/lib/review-items';
-import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
@@ -160,6 +159,7 @@ export function FinalBar({
   let headline: React.ReactNode;
   let sub: React.ReactNode = null;
   let action: React.ReactNode;
+  const locked = phase.kind === 'unsigned' && !summary.canFinalise;
 
   if (phase.kind === 'error') {
     icon = <CircleAlert aria-hidden="true" className="size-4 text-outcome-fail-fg" />;
@@ -243,12 +243,13 @@ export function FinalBar({
       data-signed={signed || undefined}
       className="sticky bottom-0 z-10 -mx-4 mt-10 border-t border-border bg-background px-4 py-3 shadow-[0_-8px_24px_-16px_rgb(0_0_0/0.25)] sm:-mx-6 sm:px-6 sm:py-4 supports-[backdrop-filter]:bg-background/90 supports-[backdrop-filter]:backdrop-blur"
     >
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
         <div className="flex min-w-0 items-start gap-3">
           <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center">{icon}</span>
           <div className="flex min-w-0 flex-col gap-0.5">
             <p role="status" className="text-[15px] leading-6 font-medium text-foreground">{headline}</p>
-            {sub && <p className={cn('text-[13px] leading-5 text-muted-foreground')}>{sub}</p>}
+            {/* What is left stays on a phone too; the longer sentences are for wider screens. */}
+            {sub && <p className={locked ? 'text-[13px] leading-5 text-muted-foreground' : 'hidden text-[13px] leading-5 text-muted-foreground sm:block'}>{sub}</p>}
           </div>
         </div>
         {action && <div className="flex shrink-0 [&>button]:w-full sm:[&>button]:w-auto">{action}</div>}

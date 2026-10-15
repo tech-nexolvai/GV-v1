@@ -391,7 +391,10 @@ export function SimpleReviewPage({
 
   function focusRow(key: string) {
     setActiveKey(key);
-    rowRefs.current.get(key)?.focus();
+    const row = rowRefs.current.get(key);
+    row?.focus({ preventScroll: true });
+    // Kept clear of the sticky final bar (the row's scroll margin), smoothly unless motion is reduced.
+    row?.scrollIntoView?.({ block: 'nearest', behavior: reducedMotion() ? 'auto' : 'smooth' });
   }
 
   // J/K move, Enter opens, C agrees, F disagrees (Fix opens its menu), O opens the PDFs, Esc closes.
@@ -606,7 +609,7 @@ export function SimpleReviewPage({
                 <div className="flex flex-col gap-10 pt-2">
                   <FailuresStrip failures={data.failures} busyKey={busy?.key ?? null} errors={errors} onAgree={agree} />
 
-                  {summary.nothingNeedsYou && pagesAsked.length === 0 && <NothingNeedsYou checked={checked.length} />}
+                  {summary.nothingNeedsYou && pagesAsked.length === 0 && <NothingNeedsYou checked={checked.length} signedOff={title?.approved ?? false} />}
 
                   <PagesChoice
                     pages={pagesAsked}

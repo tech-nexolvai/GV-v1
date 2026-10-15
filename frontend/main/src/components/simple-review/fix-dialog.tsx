@@ -71,7 +71,7 @@ export function FixDialog({
             {item.best_guess && (
               <span className="flex flex-col items-end gap-0.5">
                 <span className="text-[13px] text-muted-foreground">The AI read</span>
-                <span className="num text-[20px] leading-7 font-semibold text-foreground line-through decoration-muted-foreground/60 decoration-1">{item.best_guess.text}</span>
+                <span className="num text-[20px] leading-7 font-semibold text-foreground">{item.best_guess.text}</span>
               </span>
             )}
           </div>

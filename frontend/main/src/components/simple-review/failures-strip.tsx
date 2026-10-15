@@ -38,7 +38,7 @@ export function FailuresStrip({
       <div aria-hidden="true" className="flex h-12 items-center gap-2 border-b border-outcome-fail-fg/20 bg-outcome-fail-bg px-4 sm:px-6 text-[15px] font-medium text-outcome-fail-fg">
         <OutcomeIcon outcome="FAIL" size={16} />
         Will be clouded as wrong
-        <span className="num ml-auto text-[13px] font-normal">{open > 0 ? `${open} to agree` : 'All agreed'}</span>
+        <span className="ml-auto text-[13px] font-normal">{open > 0 ? <><span className="num">{open}</span> to agree</> : 'All agreed'}</span>
       </div>
       <ul className="divide-y divide-border">
         {failures.map((failure) => {

@@ -338,7 +338,10 @@ describe('SimpleReviewPage (#1343)', () => {
     const choices = await screen.findByRole('group', { name: /Which of the architect's dimensions/ });
     const use = within(choices).getByRole('button', { name: /Use this pairing/ });
     expect(use.textContent).toContain('The overall ↔ the architect\'s 120"');
-    expect(use.textContent).toContain('AI proposal');
+    // Code alone proposed this pairing: a proposal, but not called the AI's.
+    expect(use.textContent).toContain('Proposal');
+    expect(use.textContent).not.toContain('AI proposal');
+    expect(use.textContent).toContain('Proposed by code');
     await userEvent.click(use);
     await waitFor(() => expect(posted[0]?.body).toEqual({
       expected_finding_id: 'find-20',

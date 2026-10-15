@@ -14,6 +14,7 @@ export function ChoiceCard({
   detail,
   result,
   proposal = null,
+  proposalTag = 'AI proposal',
   disabled = false,
   busy = false,
   showKey = false,
@@ -30,6 +31,8 @@ export function ChoiceCard({
   result?: React.ReactNode;
   /** Words for who proposed it ("Both AIs"), or null when it is not the proposal. */
   proposal?: string | null;
+  /** The tag's words: "AI proposal", or "Proposal" when code alone proposed it. */
+  proposalTag?: string;
   disabled?: boolean;
   busy?: boolean;
   /** Shows the C key hint (the proposal of an open item). */
@@ -61,11 +64,11 @@ export function ChoiceCard({
       <span className="flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-1">
         <span className="flex min-w-0 flex-1 flex-col gap-1">
           <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-            <span className="min-w-0 text-[15px] leading-6 font-medium text-foreground">{title}</span>
+            <span className="min-w-0 text-[15px] leading-6 font-medium text-foreground first-letter:uppercase">{title}</span>
             {proposed && (
               <span className="inline-flex h-5 items-center gap-1 rounded-full border border-border bg-muted px-2 text-[12px] leading-none font-medium text-muted-foreground">
                 <Sparkles aria-hidden="true" className="size-3" />
-                AI proposal
+                {proposalTag}
                 <span className="sr-only">: {proposal}</span>
               </span>
             )}
