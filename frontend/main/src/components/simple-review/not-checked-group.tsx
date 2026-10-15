@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { Check, ChevronRight, Loader2 } from 'lucide-react';
 
-import type { NotCheckedItem } from '@/api/review-items';
+import type { NotCheckedItem, NotCheckedSetting } from '@/api/review-items';
+import { formatRoute } from '@/app/route';
 import { cn } from '@/lib/utils';
 import { whereWord } from '@/lib/review-items';
 import { Button } from '@/components/ui/button';
@@ -12,6 +13,10 @@ import { PageTag } from './words';
 /**
  * The checks that never ran (the reader they need is off). Quiet and closed by default: they are not
  * the AI's mistakes, and they are printed NOT CHECKED on the cloud PDF. One click clears them all.
+ * A check whose run also lacked a setting links to that field on Company settings (#1373), only
+ * when the API names it: the screen never works out which setting a check needs. Saving a setting
+ * does not re-run the check, so one the API says is set now (`set_now`, #1382) is not linked again:
+ * the line says it was set after this check ran, and to run the checks again.
  */
 export function NotCheckedGroup({
   items,
@@ -84,10 +89,13 @@ export function NotCheckedGroup({
       >
         <ul id="not-checked-list" hidden={!open} className="min-h-0 overflow-hidden border-t border-dashed border-border">
           {items.map((item) => (
-            <li key={item.key} data-entry-key={item.key} tabIndex={-1} className="flex h-11 outline-none focus-visible:bg-accent/60 items-center gap-3 px-4 pl-11 sm:px-6 sm:pl-[3.25rem] text-[13px] text-muted-foreground">
-              <span className="min-w-0 flex-1 truncate">
-                <span className="text-foreground">{item.check}</span>
-                <span className="ml-2">{whereWord(item)}</span>
+            <li key={item.key} data-entry-key={item.key} tabIndex={-1} className="flex min-h-11 outline-none focus-visible:bg-accent/60 items-center gap-3 px-4 py-2 pl-11 sm:px-6 sm:pl-[3.25rem] text-[13px] text-muted-foreground">
+              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span className="truncate">
+                  <span className="text-foreground">{item.check}</span>
+                  <span className="ml-2">{whereWord(item)}</span>
+                </span>
+                {item.settings && item.settings.length > 0 && <SettingLinks settings={item.settings} />}
               </span>
               <PageTag page={item.page} />
             </li>
@@ -95,5 +103,64 @@ export function NotCheckedGroup({
         </ul>
       </div>
     </section>
+  );
+}
+
+const LINK = 'rounded-sm text-foreground underline underline-offset-2 outline-none hover:text-primary focus-visible:ring-2 focus-visible:ring-ring';
+
+/** `#/settings/company?focus=<key>&project=<id>`: Company settings opened on that project's field. */
+function settingHref(setting: NotCheckedSetting): string {
+  return formatRoute({ page: 'settings', packageId: null, focus: setting.key, project: setting.project_id });
+}
+
+/** "A", "A and B", "A, B and C". */
+function names(settings: readonly NotCheckedSetting[]): string {
+  const all = settings.map((setting) => setting.name);
+  return all.length < 2 ? all.join('') : `${all.slice(0, -1).join(', ')} and ${all[all.length - 1]}`;
+}
+
+/**
+ * What the check's run lacked. One still unset is a link to its field; one set since the run is not
+ * (the field already has a value): it says so, and once none is left unset, to run the checks again.
+ */
+function SettingLinks({ settings }: { settings: readonly NotCheckedSetting[] }) {
+  const unset = settings.filter((setting) => !setting.set_now);
+  const setSince = settings.filter((setting) => setting.set_now);
+  return (
+    <>
+      {unset.length > 0 && <UnsetLinks settings={unset} />}
+      {setSince.length > 0 && (
+        <span>
+          {names(setSince)} {setSince.length === 1 ? 'was' : 'were'} set after this check ran.
+          {unset.length === 0 && ' Run the checks again.'}
+        </span>
+      )}
+    </>
+  );
+}
+
+/** The settings the check waits for, each a link to its field. One reads "Set it in Company settings". */
+function UnsetLinks({ settings }: { settings: readonly NotCheckedSetting[] }) {
+  if (settings.length === 1) {
+    const [setting] = settings;
+    return (
+      <span className="truncate">
+        Needs {setting.name}.{' '}
+        <a href={settingHref(setting)} className={LINK}>Set it in Company settings</a>
+      </span>
+    );
+  }
+  return (
+    <span>
+      Set in Company settings:{' '}
+      {settings.map((setting, index) => (
+        <Fragment key={setting.key}>
+          {index > 0 && ' · '}
+          <a href={settingHref(setting)} aria-label={`Set ${setting.name} in Company settings`} className={LINK}>
+            {setting.name}
+          </a>
+        </Fragment>
+      ))}
+    </span>
   );
 }

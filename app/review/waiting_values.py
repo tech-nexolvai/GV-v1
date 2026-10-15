@@ -39,7 +39,7 @@ Source: issue #1181. Verification: `tests/api/test_waiting_values.py`.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final, Literal, Protocol
 from uuid import UUID
@@ -56,7 +56,7 @@ from app.verdicts.rulebook import UnreadableSnapshot, from_row
 from rules.parameter_sources import SOURCE_GUIDANCE, allowed_sources
 from rules.parameters import ParameterLayer
 from rules.required_inputs import BLOCKED_PARAMETERS
-from rules.schema import Cardinality, Rule
+from rules.schema import Cardinality, ParameterScope, Rule
 from rules.snapshot import SnapshotIntegrityError
 from units.imperial import format_inches
 from units.measurement import Unit
@@ -70,8 +70,11 @@ __all__ = [
     "SETTING_GUIDE",
     "SINK_SETTINGS",
     "WAITING_RULES",
+    "CitingFinding",
     "WaitingFinding",
     "missing_inputs_for",
+    "missing_settings_for",
+    "settings_set_now",
 ]
 
 Scope = Literal["project", "sink", "drawing", "measurements"]
@@ -346,6 +349,162 @@ def _latest_set_ids(
     return company, project, runs
 
 
+@dataclass(frozen=True, slots=True)
+class _OnRecordNow:
+    """The newest company, project and per-revision RUN settings versions, and the values they hold."""
+
+    company: UUID | None
+    project: UUID | None
+    runs: Mapping[UUID, UUID]
+    rows_by_set: Mapping[UUID, Mapping[str, StoredParameterValue]]
+
+    def _row(self, set_id: UUID | None, name: str) -> StoredParameterValue | None:
+        return None if set_id is None else self.rows_by_set.get(set_id, {}).get(name)
+
+    def setting(self, name: str, revision_id: UUID | None) -> SavedInputOut | None:
+        """The value a run would read for setting `name` now: the package's, else the project's,
+        else the company's. With no revision, only the company and project versions are asked."""
+        found: SavedInputOut | None = None
+        for layer, set_id in (
+            (ParameterLayer.GLOBAL.value, self.company),
+            (ParameterLayer.PROJECT.value, self.project),
+            (ParameterLayer.RUN.value, None if revision_id is None else self.runs.get(revision_id)),
+        ):
+            row = self._row(set_id, name)
+            if row is not None:
+                found = _saved(row, layer, setting=True)
+        return found
+
+    def reading(self, key: str, revision_id: UUID) -> SavedInputOut | None:
+        row = self._row(self.runs.get(revision_id), key)
+        return None if row is None else _saved(row, ParameterLayer.RUN.value, setting=False)
+
+
+def _on_record_now(
+    session: Session, project_id: UUID, revision_ids: Sequence[UUID]
+) -> _OnRecordNow:
+    """What a run would read now. One query for the versions' values, whatever the revisions."""
+    company, project, runs = _latest_set_ids(session, project_id, revision_ids)
+    current_ids = [set_id for set_id in (company, project, *runs.values()) if set_id is not None]
+    rows_by_set: dict[UUID, dict[str, StoredParameterValue]] = {}
+    if current_ids:
+        for value in session.scalars(
+            select(StoredParameterValue).where(
+                StoredParameterValue.parameter_set_id.in_(current_ids)
+            )
+        ):
+            rows_by_set.setdefault(value.parameter_set_id, {})[value.name] = value
+    return _OnRecordNow(company, project, runs, rows_by_set)
+
+
+#: The scopes a setting on Company settings is saved for; a RUN-scope setting is one review's.
+_FIELD_SCOPES: Final = frozenset({ParameterScope.GLOBAL, ParameterScope.PROJECT})
+
+
+class CitingFinding(Protocol):
+    """What `missing_settings_for` reads of a result: its rule as run, and the settings it cited."""
+
+    @property
+    def id(self) -> UUID: ...
+    @property
+    def rule_snapshot_id(self) -> UUID: ...
+    @property
+    def parameter_set_versions(self) -> Mapping[str, str]: ...
+
+
+def _rules_and_cited(
+    session: Session, items: Sequence[CitingFinding]
+) -> tuple[dict[UUID, Rule], Callable[[CitingFinding], set[str]]]:
+    """Each result's rule as the run read it, and the setting names in the versions it cited.
+
+    The rule is its own published snapshot, never today's rulebook. A snapshot that will not rebuild
+    is left out (it then asks for nothing): the list of results must still load, and that snapshot's
+    own integrity failure is reported where it is run, not here. Two queries whatever the results.
+    """
+    snapshots: dict[UUID, Rule] = {}
+    for row in session.scalars(
+        select(RuleSnapshot).where(RuleSnapshot.id.in_({item.rule_snapshot_id for item in items}))
+    ):
+        try:
+            snapshots[row.id] = from_row(row).rule
+        except (UnreadableSnapshot, SnapshotIntegrityError):
+            continue
+    cited_hashes = {
+        str(set_id) for item in items for set_id in (item.parameter_set_versions or {}).values()
+    }
+    names_in_set: dict[str, set[str]] = {}
+    for set_hash, name in session.execute(
+        select(StoredParameterSet.set_id, StoredParameterValue.name)
+        .join(StoredParameterValue, StoredParameterValue.parameter_set_id == StoredParameterSet.id)
+        .where(StoredParameterSet.set_id.in_(cited_hashes))
+    ):
+        names_in_set.setdefault(set_hash, set()).add(name)
+
+    def cited(item: CitingFinding) -> set[str]:
+        return set().union(
+            *(names_in_set.get(str(h), set()) for h in (item.parameter_set_versions or {}).values())
+        )
+
+    return snapshots, cited
+
+
+def _settings_missing(rule: Rule, cited: set[str]) -> list[str]:
+    """The settings `rule` declares with no default that none of the cited versions held, by name.
+
+    A setting with no honest source recorded is left out: the save path would refuse it.
+    """
+    return [
+        name
+        for name, declared in sorted(rule.parameters.items())
+        if declared.default is None
+        and name not in cited
+        and name not in BLOCKED_PARAMETERS
+        and allowed_sources(name)
+    ]
+
+
+def missing_settings_for(session: Session, items: Sequence[CitingFinding]) -> dict[UUID, list[str]]:
+    """For each result, the settings its run did not have that Company settings has a field for
+    (#1373), whatever the result's outcome or scope.
+
+    The same test `missing_inputs_for` asks a setting with: declared by the rule as run, with no
+    default, held by none of the settings versions the run cited. Worked out from the rule and the
+    run, never from the reason's words. Only a company or project setting is listed, never the
+    sink's sizes (the project's sink card holds them, not a field) or a setting for one review: the
+    same list the page shows (`app/api/company_settings._project_declared`). A result whose run had
+    every such setting gets an empty list.
+    """
+    if not items:
+        return {}
+    snapshots, cited_by = _rules_and_cited(session, items)
+    found: dict[UUID, list[str]] = {}
+    for item in items:
+        rule = snapshots.get(item.rule_snapshot_id)
+        if rule is None:
+            continue
+        found[item.id] = [
+            name
+            for name in _settings_missing(rule, cited_by(item))
+            if name not in SINK_SETTINGS and rule.parameters[name].scope in _FIELD_SCOPES
+        ]
+    return found
+
+
+def settings_set_now(session: Session, project_id: UUID, names: Iterable[str]) -> frozenset[str]:
+    """Which of `names` the newest company or project settings versions hold now (#1382).
+
+    The waiting card's own lookup (`_on_record_now`), asked for the two layers Company settings
+    saves. A setting a run lacked that is held now was saved since that run: the screen says to run
+    the checks again rather than linking to a field that already has a value. Saving a setting
+    never re-runs a check.
+    """
+    wanted = set(names)
+    if not wanted:
+        return frozenset()
+    now = _on_record_now(session, project_id, ())
+    return frozenset(name for name in wanted if now.setting(name, None) is not None)
+
+
 def missing_inputs_for(
     session: Session, project_id: UUID, items: Sequence[WaitingFinding]
 ) -> dict[UUID, list[MissingInputOut]]:
@@ -368,19 +527,9 @@ def missing_inputs_for(
     if not waiting:
         return {}
 
-    # The rule as the run read it: its own published snapshot, never today's rulebook.
-    # A snapshot that will not rebuild asks for nothing: the list of results must still load, and
-    # that snapshot's own integrity failure is reported where it is run, not here.
-    snapshots: dict[UUID, Rule] = {}
-    for row in session.scalars(
-        select(RuleSnapshot).where(RuleSnapshot.id.in_({item.rule_snapshot_id for item in waiting}))
-    ):
-        try:
-            snapshots[row.id] = from_row(row).rule
-        except (UnreadableSnapshot, SnapshotIntegrityError):
-            continue
+    snapshots, cited_by = _rules_and_cited(session, waiting)
 
-    # What the run had: its qualified operands, and the names in each settings version it cited.
+    # What the run had: its qualified operands.
     had_operands: dict[UUID, set[str]] = {}
     for check_run_id, name in session.execute(
         select(VerdictInput.check_run_id, VerdictInput.operand_name).where(
@@ -388,43 +537,12 @@ def missing_inputs_for(
         )
     ):
         had_operands.setdefault(check_run_id, set()).add(name)
-    cited_hashes = {
-        str(set_id) for item in waiting for set_id in (item.parameter_set_versions or {}).values()
-    }
-    names_in_set: dict[str, set[str]] = {}
-    for set_hash, name in session.execute(
-        select(StoredParameterSet.set_id, StoredParameterValue.name)
-        .join(StoredParameterValue, StoredParameterValue.parameter_set_id == StoredParameterSet.id)
-        .where(StoredParameterSet.set_id.in_(cited_hashes))
-    ):
-        names_in_set.setdefault(set_hash, set()).add(name)
 
     # What is on record now, in the order a run resolves it: company, then project, then package.
-    revision_ids = sorted({item.package_revision_id for item in waiting})
-    company, project, runs = _latest_set_ids(session, project_id, revision_ids)
-    current_ids = [set_id for set_id in (company, project, *runs.values()) if set_id is not None]
-    rows_by_set: dict[UUID, dict[str, StoredParameterValue]] = {}
-    for value in session.scalars(
-        select(StoredParameterValue).where(StoredParameterValue.parameter_set_id.in_(current_ids))
-    ):
-        rows_by_set.setdefault(value.parameter_set_id, {})[value.name] = value
-
-    def setting_now(name: str, revision_id: UUID) -> SavedInputOut | None:
-        found: SavedInputOut | None = None
-        for layer, set_id in (
-            (ParameterLayer.GLOBAL.value, company),
-            (ParameterLayer.PROJECT.value, project),
-            (ParameterLayer.RUN.value, runs.get(revision_id)),
-        ):
-            row = rows_by_set.get(set_id, {}).get(name) if set_id is not None else None
-            if row is not None:
-                found = _saved(row, layer, setting=True)
-        return found
-
-    def reading_now(key: str, revision_id: UUID) -> SavedInputOut | None:
-        set_id = runs.get(revision_id)
-        row = rows_by_set.get(set_id, {}).get(key) if set_id is not None else None
-        return None if row is None else _saved(row, ParameterLayer.RUN.value, setting=False)
+    now = _on_record_now(
+        session, project_id, sorted({item.package_revision_id for item in waiting})
+    )
+    setting_now, reading_now = now.setting, now.reading
 
     answers: dict[UUID, list[MissingInputOut]] = {}
     # A setting is for the job, not for one countertop: among one check's per-countertop results it
@@ -434,18 +552,10 @@ def missing_inputs_for(
         rule = snapshots.get(item.rule_snapshot_id)
         if rule is None:  # pragma: no cover - the foreign key guarantees the snapshot
             continue
-        cited = set().union(
-            *(names_in_set.get(str(h), set()) for h in (item.parameter_set_versions or {}).values())
-        )
         operands = had_operands.get(item.check_run_id, set())
         needs: list[MissingInputOut] = []
         # Settings by name, then drawn values by the client's code: one order on every screen.
-        for name, declared in sorted(rule.parameters.items()):
-            if declared.default is not None or name in cited or name in BLOCKED_PARAMETERS:
-                continue
-            if not allowed_sources(name):
-                # No honest source is recorded for it, so the save path would refuse it: not asked.
-                continue
+        for name in _settings_missing(rule, cited_by(item)):
             if item.scope_item_id is not None:
                 key = (item.package_revision_id, item.rule_id, name)
                 if key in asked_for_countertops:

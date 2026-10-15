@@ -237,6 +237,72 @@ describe('NotCheckedGroup', () => {
     expect(onClearAll).toHaveBeenCalledTimes(1);
   });
 
+  it('links a check to the setting it waits for only when the API names one (#1373)', async () => {
+    const withSettings = reviewItems((draft) => {
+      draft.not_checked[0].settings = [{ key: 'cabinet_depth', name: 'Cabinet depth', project_id: 'proj-demo', set_now: false }];
+      draft.not_checked[2].settings = [
+        { key: 'cabinet_depth', name: 'Cabinet depth', project_id: 'proj-demo', set_now: false },
+        { key: 'countertop_overhang', name: 'Countertop overhang', project_id: 'proj-demo', set_now: false },
+      ];
+    });
+    render(<NotCheckedGroup items={withSettings.not_checked} note={null} busy={false} error={null} onClearAll={() => {}} />);
+    await userEvent.click(screen.getByRole('button', { name: /Not checked/ }));
+    const rows = screen.getAllByRole('listitem');
+    // One setting: "Set it in Company settings", straight to that field of that project.
+    const one = within(rows[0]).getByRole('link', { name: 'Set it in Company settings' });
+    expect(one.getAttribute('href')).toBe('#/settings/company?focus=cabinet_depth&project=proj-demo');
+    expect(rows[0].textContent).toContain('Cabinet depth');
+    // No setting named (a drawn value, the sink card): no link, nothing guessed.
+    expect(within(rows[1]).queryByRole('link')).toBeNull();
+    // Several: one link each, named for its setting.
+    const several = within(rows[2]).getAllByRole('link');
+    expect(several.map((link) => link.getAttribute('href'))).toEqual([
+      '#/settings/company?focus=cabinet_depth&project=proj-demo',
+      '#/settings/company?focus=countertop_overhang&project=proj-demo',
+    ]);
+    expect(within(rows[2]).getByRole('link', { name: 'Set Countertop overhang in Company settings' })).toBeTruthy();
+    expect(screen.getAllByRole('link')).toHaveLength(3);
+  });
+
+  it('says a setting saved since the run was set, with no link, and to run the checks again (#1382)', async () => {
+    const setting = (key: string, name: string, set_now: boolean) => ({ key, name, project_id: 'proj-demo', set_now });
+    const saved = reviewItems((draft) => {
+      draft.not_checked[0].settings = [setting('cabinet_depth', 'Cabinet depth', true)];
+      draft.not_checked[1].settings = [
+        setting('cabinet_depth', 'Cabinet depth', true),
+        setting('countertop_overhang', 'Countertop overhang', false),
+      ];
+      draft.not_checked[2].settings = [
+        setting('cabinet_depth', 'Cabinet depth', true),
+        setting('countertop_overhang', 'Countertop overhang', true),
+      ];
+    });
+    render(<NotCheckedGroup items={saved.not_checked} note={null} busy={false} error={null} onClearAll={() => {}} />);
+    await userEvent.click(screen.getByRole('button', { name: /Not checked/ }));
+    const rows = screen.getAllByRole('listitem');
+    // Set since the run: no link to a field that has a value, and the checks need running again.
+    expect(within(rows[0]).queryByRole('link')).toBeNull();
+    expect(rows[0].textContent).toContain('Cabinet depth was set after this check ran. Run the checks again.');
+    expect(rows[0].textContent).not.toContain('Needs Cabinet depth');
+    // One set, one not: the unset one keeps its link; no "run again" while one is still missing.
+    const link = within(rows[1]).getByRole('link', { name: 'Set it in Company settings' });
+    expect(link.getAttribute('href')).toBe('#/settings/company?focus=countertop_overhang&project=proj-demo');
+    expect(rows[1].textContent).toContain('Needs Countertop overhang.');
+    expect(rows[1].textContent).toContain('Cabinet depth was set after this check ran.');
+    expect(rows[1].textContent).not.toContain('Run the checks again');
+    // Both set: one sentence, no link.
+    expect(within(rows[2]).queryByRole('link')).toBeNull();
+    expect(rows[2].textContent).toContain(
+      'Cabinet depth and Countertop overhang were set after this check ran. Run the checks again.',
+    );
+  });
+
+  it('offers no setting link when the API names none', async () => {
+    render(<NotCheckedGroup items={data.not_checked} note={null} busy={false} error={null} onClearAll={() => {}} />);
+    await userEvent.click(screen.getByRole('button', { name: /Not checked/ }));
+    expect(screen.queryAllByRole('link')).toHaveLength(0);
+  });
+
   it('once cleared it says so, and offers nothing more', () => {
     const cleared = allSettled();
     render(<NotCheckedGroup items={cleared.not_checked} note={cleared.not_checked_note} busy={false} error={null} onClearAll={() => {}} />);
