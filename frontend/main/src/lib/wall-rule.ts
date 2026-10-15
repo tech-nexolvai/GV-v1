@@ -6,9 +6,10 @@
  * wall case's needed overall and result as the width check recorded them (`wall_cases`). Nothing is
  * added or subtracted here; a sum the check did not record is written as its parts ("+1" + 1"").
  */
-import type { CountertopResult } from '@/api/client';
+import type { CountertopResult, ExactValue } from '@/api/client';
 import type { components } from '@/api/schema';
 import type { Outcome } from '@/data/types';
+import { signOf } from '@/lib/countertop-results';
 
 export type WallCases = components['schemas']['WallCasesOut'];
 export type WallCase = components['schemas']['WallCaseOut'];
@@ -93,4 +94,58 @@ export function choiceResult(cases: WallCases | null | undefined, layout: string
  */
 export function fieldCutOf(row: Pick<CountertopResult, 'field_cut_per_end' | 'wall_cases' | 'field_cut_in_force'>): string | null {
   return row.field_cut_in_force ?? row.field_cut_per_end?.display ?? row.wall_cases?.field_cut_per_end?.display ?? null;
+}
+
+/**
+ * What a row needed while its walls are not set (#1329), from the wall cases the width check
+ * recorded — never worked out here:
+ *
+ * - `same`: every case has the row's own result (wrong, or right, whatever the walls). Needed is the
+ *   cases' range ('39 5/8" – 41 5/8"'), the difference is the closest gap with its direction
+ *   ('at least 1/8" short'); one value when every case needs the same overall.
+ * - `mixed`: the cases disagree, so the walls are still needed; each case's needed overall is listed.
+ *
+ * Null when the table's usual Needed and Difference apply: the result used one wall case (walls
+ * set), or there are no recorded cases (held, not checked, or the field cut changed since).
+ */
+export type NeededAcrossWalls =
+  | { kind: 'same'; needed: string; difference: string; outcome: 'PASS' | 'FAIL'; least: ExactValue }
+  | { kind: 'mixed'; needed: string[]; cases: { words: string; needed: string; outcome: Outcome }[] };
+
+type NeededRow = Pick<CountertopResult, 'expected_total' | 'outcome' | 'wall_layout' | 'wall_cases'>;
+
+const WALLS_NOT_SET: ReadonlySet<CountertopResult['wall_layout']['source']> = new Set(['not needed', 'not established']);
+
+export function neededAcrossWalls(row: NeededRow): NeededAcrossWalls | null {
+  if (row.expected_total || !WALLS_NOT_SET.has(row.wall_layout.source)) return null;
+  const recorded = row.wall_cases;
+  const cases = (recorded?.cases ?? []).filter((item) => item.expected_total);
+  if (!recorded || cases.length === 0) return null;
+  const outcome = row.outcome;
+  const same = (outcome === 'PASS' || outcome === 'FAIL') && (recorded.cases ?? []).every((item) => item.outcome === outcome);
+  if (same) {
+    const least = recorded.needed_least;
+    const most = recorded.needed_most;
+    const gap = recorded.closest_gap;
+    const differences = cases.map((item) => item.difference);
+    if (!least || !most || !gap || differences.some((item) => !item)) return null;
+    const one = least.numerator === most.numerator && least.denominator === most.denominator;
+    const signs = new Set(differences.map((item) => signOf(item as ExactValue)));
+    // "At least" only when the cases need different overalls. A vendor's overall that falls between
+    // the cases is short of some and over others: the gap is then "off", with no one direction.
+    const atLeast = one ? '' : 'at least ';
+    const direction = signs.size !== 1 ? 'off' : signs.has(-1) ? 'short' : 'over';
+    return {
+      kind: 'same',
+      needed: one ? least.display : `${least.display} – ${most.display}`,
+      difference: signOf(gap) === 0 ? gap.display : `${atLeast}${gap.display} ${direction}`,
+      outcome,
+      least,
+    };
+  }
+  return {
+    kind: 'mixed',
+    needed: [...new Set(cases.map((item) => item.expected_total!.display))],
+    cases: cases.map((item) => ({ words: item.words, needed: item.expected_total!.display, outcome: item.outcome as Outcome })),
+  };
 }

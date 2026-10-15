@@ -108,6 +108,15 @@ def wall_cases_out(
         return WallCasesOut(unavailable_reason=unreadable)
     per_end = next((case.field_cut_per_end for case in cases if case.field_cut_per_end), None)
     row_width = next((case.row_width for case in cases if case.row_width is not None), None)
+    vendor = _operand(trace, "countertop_width")
+    # #1329: what each case needed against what the vendor wrote, from the two recorded numbers
+    # only (as the row's own difference is), so the table can say it before the walls are set.
+    differences = {
+        case.layout: vendor - case.expected
+        for case in cases
+        if vendor is not None and case.expected is not None
+    }
+    needed = [case.expected for case in cases if case.expected is not None]
     return WallCasesOut(
         cases=tuple(
             WallCaseOut(
@@ -117,12 +126,16 @@ def wall_cases_out(
                 field_cut_total=_exact(case.field_cut_total),
                 expected_total=_exact(case.expected),
                 outcome=case.outcome,
+                difference=_exact(differences.get(case.layout)),
             )
             for case in cases
         ),
-        vendor_wrote=_exact(_operand(trace, "countertop_width")),
+        vendor_wrote=_exact(vendor),
         pieces_add_up_to=_exact(row_width),
         field_cut_per_end=_exact(per_end),
+        needed_least=_exact(min(needed, default=None)),
+        needed_most=_exact(max(needed, default=None)),
+        closest_gap=_exact(min((abs(gap) for gap in differences.values()), default=None)),
     )
 
 
