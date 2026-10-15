@@ -34,13 +34,30 @@ name (`workflow/stages._layered`).
 **Who.** Anyone signed in may read; only an admin may save (`Action.MANAGE_COMPANY_STANDARDS`): a
 company standard changes every future verdict on every project.
 
-Source: issue #812 (#798 Step 1). Verification: tests/api/test_company_settings.py.
+## Projects (#1341)
+
+Anant decided on 2026-10-15 that a project's own values live here too, under **Projects**, so the
+review never has to ask for a setting: each project the caller belongs to, every setting the
+published checks read for it (its overrides, the cabinet width limits on a cabinet job), the value
+in use and where it comes from (the checklist default in the rulebook, GV's standard, or the
+project's own value), and the project's sink card (`app/api/project_sink.py`).
+
+**Reviewers may save these** (`Action.ENTER_VALUES`, as on Measurements); GV's standards above stay
+admin-only. A save goes into a new version of the same PROJECT layer Measurements writes
+(`measurements._store` with carry-forward), with the same source rules (#827), and is audited.
+No new table. The sink's two inside sizes are refused here: the sink card saves them with the
+sink's name. A value typed for one package on Measurements (the RUN layer) still wins for that
+package.
+
+Source: issue #812 (#798 Step 1), #1341. Verification: tests/api/test_company_settings.py,
+tests/api/test_project_settings.py.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Annotated, Final, Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -48,16 +65,21 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_session
-from app.api.measurements import _parse, _published_rules, _store
+from app.api.measurements import _parse, _published_rules, _source, _store
+from app.api.project_sink import DEPTH, WIDTH, SinkEntryOut
+from app.api.project_sink import _read as _read_sink
 from app.api.rules import READERS
 from app.audit.events import AuditCategory, emit
-from app.auth import Action, Principal, require_action, require_role
+from app.auth import Action, Principal, require_action, require_project_access, require_role
+from app.models import Package, Project
 from app.models.parameters import ParameterSet as StoredParameterSet
 from app.models.parameters import ParameterValue as StoredParameterValue
 from app.models.parameters import declared_defaults, from_rows
 from app.review.setting_sizes import refused_size
 from app.schemas.review import optional_in_schema
+from rules.parameter_sources import SOURCE_GUIDANCE, allowed_sources
 from rules.parameters import ParameterLayer, ParameterValue, Provenance, is_rulebook_default
+from rules.required_inputs import BLOCKED_PARAMETERS
 from rules.schema import ParameterScope, Rule
 from units.imperial import format_inches
 from vocabulary.setting_names import setting_name
@@ -279,3 +301,314 @@ def save_company_settings(
         session.rollback()
         raise
     return _settings(session)
+
+
+# ---------------------------------------------------------------------------------------------------
+# Projects (#1341): each project's own values, editable by its reviewers
+# ---------------------------------------------------------------------------------------------------
+
+#: The sink's inside sizes: saved by the project's sink card with the sink's name, never here.
+_SINK_SIZES: Final = frozenset({WIDTH, DEPTH})
+
+#: What each setting is for, in a sentence a new reviewer can act on. A setting missing here shows
+#: no sentence rather than a guessed one; `test_every_value_the_review_settings_step_asks_for_is_listed`
+#: holds the table complete over the published rules.
+PURPOSES: Final[dict[str, str]] = {
+    "back_offset_minimum": "The least stone allowed behind the sink cut-out, to the back edge.",
+    "front_offset_required": "How far the sink cut-out sits from the countertop's front edge.",
+    "sink_cutout_clearance": (
+        "Taken off each side of the sink's inside size to get the cut-out; set by the fabricator."
+    ),
+    "filler_min": "The narrowest filler strip allowed between cabinets or at a wall.",
+    "filler_max": "The widest filler strip allowed before a cabinet must change size instead.",
+    "field_cut": "Extra stone left at each wall end, trimmed on site to fit the wall.",
+    "countertop_overhang": "How far the countertop sticks out past the cabinet front.",
+    "backsplash_thickness": "The backsplash's thickness, which takes up countertop depth at the wall.",
+    "cabinet_side_thickness": "The thickness of a cabinet's side panel, for the sink cabinet's inside.",
+    "cabinet_depth": "Cabinet box plus door, front to back; the countertop depth starts from it.",
+    "single_door_cab_width_min": "The narrowest single-door cabinet this job allows.",
+    "single_door_cab_width_max": "The widest single-door cabinet this job allows.",
+    "double_door_cab_width_min": "The narrowest double-door cabinet this job allows.",
+    "double_door_cab_width_max": "The widest double-door cabinet this job allows.",
+    "drawer_cab_width_min": "The narrowest drawer cabinet this job allows.",
+    "drawer_cab_width_max": "The widest drawer cabinet this job allows.",
+}
+
+
+class CheckOut(BaseModel):
+    id: str
+    name: str = Field(description="The check's plain name, as the rulebook gives it.")
+
+
+class SourceChoiceOut(BaseModel):
+    value: str
+    guidance: str
+
+
+class ProjectValueOut(BaseModel):
+    """The project's own value for one setting, and who set it."""
+
+    text: str
+    set_by: str
+    set_at: datetime
+    source: str = Field(description="Where the person said it came from (#827).")
+    reference: str | None
+
+
+class ProjectSettingOut(BaseModel):
+    """One setting as a project uses it: what it is for, which checks read it, and the value in use."""
+
+    name: str
+    label: str = Field(description="The setting's plain name.")
+    purpose: str | None = Field(description="What the setting is for, in one sentence.")
+    checks: list[CheckOut] = Field(description="The published checks that read it.")
+    applies: bool = Field(
+        description=(
+            "True when a check for one of this project's products reads it (or the project has no "
+            "drawing set with a stated product yet). False: still settable, but no drawing set of "
+            "this project is checked with it — the cabinet width limits on a countertop-only job."
+        )
+    )
+    cabinet_width_limit: bool = Field(description="One of the six cabinet width limits.")
+    sources: list[SourceChoiceOut] = Field(
+        description="Where a value may honestly come from; the person picks when there are several."
+    )
+    rulebook_default: str | None = Field(
+        description="The default the rulebook carries from GV's checklist, or null."
+    )
+    company_value: str | None = Field(description="GV's standard, or null where GV set none.")
+    project_value: ProjectValueOut | None
+    in_use: str | None = Field(
+        description="What this project's checks use now, or null: those checks then wait."
+    )
+    in_use_from: Literal["rulebook", "company", "project"] | None
+
+
+class ProjectSettingsOut(BaseModel):
+    id: UUID
+    name: str
+    product_types: list[str] = Field(
+        description="The products this project's drawing sets are for, as stated at upload."
+    )
+    version: int | None = Field(description="The project layer's current version, or null.")
+    settings: list[ProjectSettingOut]
+    sink: SinkEntryOut | None = Field(description="The project's sink card, or null until entered.")
+
+
+class ProjectsSettingsOut(BaseModel):
+    projects: list[ProjectSettingsOut]
+
+
+class ProjectValueIn(BaseModel):
+    name: str
+    value: str = Field(description='With its unit — `1"`, `25 mm`. A bare number is refused.')
+    source: Provenance | None = Field(
+        default=None, description="Needed only where the setting allows more than one source."
+    )
+    reference: str | None = Field(default=None, max_length=200)
+
+
+class ProjectValuesIn(BaseModel):
+    values: list[ProjectValueIn] = Field(min_length=1)
+
+
+def _project_declared(rules: list[Rule]) -> dict[str, tuple[list[Rule], ParameterScope]]:
+    """Every setting a project may hold: the rules' parameters, less run-only ones and blocked ones."""
+    declared: dict[str, tuple[list[Rule], ParameterScope]] = {}
+    for rule in rules:
+        for name, parameter in rule.parameters.items():
+            if name in BLOCKED_PARAMETERS or name in _SINK_SIZES:
+                continue
+            if parameter.scope not in _COMPANY_SCOPES:
+                continue
+            users, _scope = declared.setdefault(name, ([], parameter.scope))
+            users.append(rule)
+    return declared
+
+
+def _project_set(
+    session: Session, project_id: UUID
+) -> tuple[int | None, dict[str, ParameterValue], dict[str, StoredParameterValue]]:
+    """The project layer's newest version, its values, and their stored rows (for who and source)."""
+    stored = session.execute(
+        select(StoredParameterSet)
+        .where(
+            StoredParameterSet.layer == ParameterLayer.PROJECT.value,
+            StoredParameterSet.project_id == project_id,
+        )
+        .order_by(StoredParameterSet.version.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if stored is None:
+        return None, {}, {}
+    rows = list(
+        session.scalars(
+            select(StoredParameterValue).where(StoredParameterValue.parameter_set_id == stored.id)
+        )
+    )
+    return stored.version, dict(from_rows(stored, rows).parameters), {row.name: row for row in rows}
+
+
+def _project_settings(session: Session, project: Project, rules: list[Rule]) -> ProjectSettingsOut:
+    _version, company = _company_set(session)
+    defaults = declared_defaults(rules, when=datetime.now(UTC)).parameters
+    version, values, rows = _project_set(session, project.id)
+    stated = session.scalars(
+        select(Package.product_type).where(Package.project_id == project.id).distinct()
+    ).all()
+    products = sorted({product for product in stated if product is not None})
+    # No stated product (no drawing set yet, or one from before #994) runs every product's rules.
+    every_product = not products or None in stated
+    settings = []
+    for name, (users, _scope) in sorted(_project_declared(rules).items()):
+        default, standard, own = defaults.get(name), company.get(name), values.get(name)
+        in_use = own or standard or default
+        row = rows.get(name)
+        settings.append(
+            ProjectSettingOut(
+                name=name,
+                label=setting_name(name),
+                purpose=PURPOSES.get(name),
+                checks=[CheckOut(id=rule.id, name=rule.name) for rule in users],
+                applies=every_product or any(rule.product_type.value in products for rule in users),
+                cabinet_width_limit="_cab_width_" in name,
+                sources=[
+                    SourceChoiceOut(value=source.value, guidance=SOURCE_GUIDANCE[source])
+                    for source in allowed_sources(name)
+                ],
+                rulebook_default=None if default is None else _text(default),
+                company_value=None if standard is None else _text(standard),
+                project_value=(
+                    None
+                    if own is None or row is None
+                    else ProjectValueOut(
+                        text=_text(own),
+                        set_by=row.set_by,
+                        set_at=row.set_at,
+                        source=row.provenance,
+                        reference=row.source_reference,
+                    )
+                ),
+                in_use=None if in_use is None else _text(in_use),
+                in_use_from=(
+                    "project"
+                    if own is not None
+                    else (
+                        "company"
+                        if standard is not None
+                        else "rulebook" if default is not None else None
+                    )
+                ),
+            )
+        )
+    return ProjectSettingsOut(
+        id=project.id,
+        name=project.name,
+        product_types=products,
+        version=version,
+        settings=settings,
+        sink=_read_sink(session, project.id).sink,
+    )
+
+
+@router.get(
+    "/company-settings/projects",
+    response_model=ProjectsSettingsOut,
+    summary="Each of your projects' own settings, the value in use and where it comes from",
+)
+def read_project_settings(
+    principal: Annotated[Principal, Depends(require_role(*READERS))],
+    session: Annotated[Session, Depends(get_session)],
+) -> ProjectsSettingsOut:
+    """Only the projects the caller belongs to: every other project is invisible (ADR-0006)."""
+    if not principal.projects:
+        return ProjectsSettingsOut(projects=[])
+    rules = _published_rules(session)
+    projects = session.scalars(
+        select(Project).where(Project.id.in_(principal.projects)).order_by(Project.name, Project.id)
+    ).all()
+    return ProjectsSettingsOut(
+        projects=[_project_settings(session, project, rules) for project in projects]
+    )
+
+
+@router.post(
+    "/company-settings/projects/{project_id}",
+    response_model=ProjectSettingsOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Record a project's own values; every value not sent stays as it was",
+)
+def save_project_settings(
+    principal: Annotated[Principal, Depends(require_project_access)],
+    _: Annotated[Principal, Depends(require_action(Action.ENTER_VALUES))],
+    session: Annotated[Session, Depends(get_session)],
+    project_id: UUID,
+    body: ProjectValuesIn,
+) -> ProjectSettingsOut:
+    """A new version of the project's layer — the one Measurements writes — carrying the rest forward.
+
+    Everything is checked before anything is stored: a name no published check reads, the sink's
+    sizes (the sink card's), a bare number, a zero size or a missing source refuses the whole save.
+    """
+    project = session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    rules = _published_rules(session)
+    declared = _project_declared(rules)
+    values = {}
+    typed = {}
+    sources: dict[str, tuple[Provenance, str | None]] = {}
+    for entry in body.values:
+        if entry.name in _SINK_SIZES:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"{setting_name(entry.name)} is saved on the project's sink card, with the "
+                    "sink's name, not here."
+                ),
+            )
+        if entry.name not in declared:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"{entry.name!r} is not a setting any published check reads for a project.",
+            )
+        label = setting_name(entry.name)
+        values[entry.name] = _parse(entry.value, field=label)
+        too_small = refused_size(entry.name, values[entry.name], label=label)
+        if too_small is not None:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=too_small)
+        reference = (entry.reference or "").strip() or None
+        sources[entry.name] = (_source(entry.name, entry.source), reference)
+        typed[entry.name] = entry.value
+
+    version, _stored = _store(
+        session,
+        project_id=project_id,
+        layer=ParameterLayer.PROJECT,
+        values=values,
+        typed=typed,
+        actor=principal.id,
+        carry_forward=True,
+        sources=sources,
+    )
+    session.flush()
+    saved = session.execute(
+        select(StoredParameterSet.id).where(
+            StoredParameterSet.layer == ParameterLayer.PROJECT.value,
+            StoredParameterSet.project_id == project_id,
+            StoredParameterSet.version == version,
+        )
+    ).scalar_one()
+    emit(
+        session,
+        category=AuditCategory.REVIEW_ACTION,
+        actor=principal.id,
+        target_id=saved,
+        target_type="project_settings",
+    )
+    try:
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    return _project_settings(session, project, rules)
