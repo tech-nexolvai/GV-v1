@@ -1026,8 +1026,10 @@ class ItemViewLink(Base, TimestampedUUID, Immutable):
     countertop. A drawing with two countertops links none of its views: their readings are held,
     with the reason, on each of those countertops.
 
-    **Append-only**: a person's correction is a new row (`judged_by = 'person'`), never an edit.
-    Unique per countertop, page and region, so asking again finds the link already there.
+    **Append-only, and a person's correction is a new row** (`judged_by = 'person'`) that names the
+    link it replaces (`supersedes_id`, on the same page), as `part_confirmations` does: a link is
+    replaced at most once, and the current link of a view is the one nothing replaces. A first link
+    (no `supersedes_id`) is unique per countertop, page and region, so reading again finds it.
     """
 
     __tablename__ = "item_view_links"
@@ -1057,6 +1059,12 @@ class ItemViewLink(Base, TimestampedUUID, Immutable):
     )
     """The depth-reader run that made the link; required unless a person made it."""
 
+    supersedes_id: Mapped[UUID | None] = mapped_column(default=None)
+    """The link this one replaces (a person's correction), or `NULL` for a first link."""
+
+    linked_by: Mapped[str] = mapped_column(String(200))
+    """Who made the link: the reader's own name for code+AIs, the person's for a correction."""
+
     __table_args__ = (
         CheckConstraint(f"view_kind IN ({ITEM_VIEW_KIND_VALUES})", name="item_view_link_kind"),
         CheckConstraint(f"judged_by IN ({ITEM_VIEW_JUDGE_VALUES})", name="item_view_link_judge"),
@@ -1072,12 +1080,25 @@ class ItemViewLink(Base, TimestampedUUID, Immutable):
             "heading_text IS NULL OR heading_text !~ '^[[:space:]]*$'",
             name="item_view_link_heading_not_blank",
         ),
+        CheckConstraint(
+            "supersedes_id IS NULL OR judged_by = 'person'", name="item_view_link_correction"
+        ),
+        CheckConstraint("linked_by !~ '^[[:space:]]*$'", name="item_view_link_actor_not_blank"),
+        # A correction replaces a link on the same page only, and each link at most once.
+        UniqueConstraint("id", "page_id", name="uq_item_view_links_id_page"),
+        ForeignKeyConstraint(
+            ["supersedes_id", "page_id"],
+            ["item_view_links.id", "item_view_links.page_id"],
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("supersedes_id", name="uq_item_view_links_supersedes_id"),
         Index(
             "uq_item_view_links_item_page_region",
             "part_proposal_id",
             "page_id",
             text("md5(region::text)"),
             unique=True,
+            postgresql_where=text("supersedes_id IS NULL"),
         ),
     )
 

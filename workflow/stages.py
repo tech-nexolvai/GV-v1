@@ -108,6 +108,7 @@ from app.models.runs import (
     ModelInvocation,
     ModelInvocationOutcome,
     TaskRun,
+    WorkflowRun,
 )
 from app.models.verdicts import CheckRun, OutputArtifact, OutputArtifactKind
 from app.models.verdicts import Finding as FindingRow
@@ -6603,11 +6604,20 @@ class DatabaseStages:
     def _depth_pass(self, session: Session, package_revision_id: UUID) -> dict[str, object]:
         """Read each countertop's plan and section views, once, after Bala (#1290).
 
-        `workflow/depth_reader.py` says what is read and written. Here: the pages that hold one of
-        Bala's countertops, read by the slot reader's Claude pair through the shared route, under
-        this reader's own stop and a spend cap scaled to those pages; every attempt recorded through
-        the shared call ledger under the reader's own extraction run. Never raises for a page code
-        cannot prepare: that page is named in the report and reads nothing.
+        `workflow/depth_reader.py` says what is read and written. Here:
+
+        * **once per stage run**: a run already recorded under this stage's task run is reported and
+          nothing is prepared or asked again;
+        * the pages that hold one of Bala's countertops, read by the slot reader's Claude pair through
+          the shared route, under the reader's **own** stop;
+        * **one spend guard for the whole reading** (its three rounds of questions reserve against one
+          cap), and the cap is what the drawing set's AI budget has left: its page-scaled budget for
+          all its pages (or the fixed amount stated), less everything its readers already spent;
+        * every attempt recorded through the shared call ledger under the reader's own run;
+        * a page code cannot prepare is held on each countertop of the page with code's reason;
+        * **a failure never stops the package**: the run is kept marked failed (`state:run-failed`,
+          with the reason on each countertop's page), so the checks fall back to an earlier good
+          reading or say the reader failed; the calls made are still recorded.
         """
         from extraction.depth.read import (
             MEASURED_DEPTH_READER_SETTINGS,
@@ -6615,8 +6625,14 @@ class DatabaseStages:
             read_depth,
         )
         from extraction.reader import UnreadablePdf
+        from extraction.slot_reader.anthropic import BatchSpendGuard
         from workflow.depth_evidence import DEPTH_EXTRACTOR, DEPTH_READER_VERSION
-        from workflow.depth_reader import countertops_by_drawing, depth_asker, persist_depth_reading
+        from workflow.depth_reader import (
+            countertops_by_drawing,
+            depth_asker,
+            persist_depth_reading,
+            persist_page_notes,
+        )
 
         runtime = self._slot_reader
         if runtime is None or not runtime.claude_row_reader or self._form_reader is None:
@@ -6636,10 +6652,33 @@ class DatabaseStages:
             task_run = None if run_row is None else session.get(TaskRun, run_row.task_run_id)
         if task_run is None:
             return {"ran": False, "reason": "no stage run to record the depth reading under"}
+        settings = MEASURED_DEPTH_READER_SETTINGS
+        config_hash = (
+            f"dpi={settings.dpi};readers={'|'.join(runtime.form.reader_ids)};"
+            f"effort={settings.effort}"
+        )
+        # The run is opened only once the reading is done, and in the stage's own transaction, so
+        # its being there means this stage run read already (a failed attempt rolled it back).
+        recorded = session.scalar(
+            select(ExtractionRun.id)
+            .where(
+                ExtractionRun.task_run_id == task_run.id,
+                ExtractionRun.extractor == DEPTH_EXTRACTOR,
+                ExtractionRun.extractor_version == DEPTH_READER_VERSION,
+                ExtractionRun.config_hash == config_hash,
+            )
+            .limit(1)
+        )
+        if recorded is not None:
+            # Checked before anything is prepared or asked: a redelivered stage reads nothing again.
+            return {
+                "ran": True,
+                "run": str(recorded),
+                "reason": "this stage's depth reading is already recorded",
+            }
         countertops = countertops_by_drawing(session, package_revision_id)
         if not countertops:
             return {"ran": False, "reason": "Bala filed no countertop, so there is nothing to read"}
-        settings = MEASURED_DEPTH_READER_SETTINGS
         view_pages = dict(
             session.execute(
                 select(DrawingView.id, DrawingView.page_id).where(
@@ -6668,16 +6707,16 @@ class DatabaseStages:
         }
         loaded: dict[UUID, bytes] = {}
         prepared = []
-        notes: list[str] = []
+        not_prepared: dict[UUID, str] = {}
         for page in pages:
             record = records.get(page.document_version_id)
             if record is None:
-                notes.append(f"p{page.index + 1}: its document is not in this revision")
+                not_prepared[page.id] = "its document is not in this revision"
                 continue
             if page.document_version_id not in loaded:
                 data = _fetch(self._store, record[0]) if self._store is not None else b""
                 if hashlib.sha256(data).hexdigest() != record[1]:
-                    notes.append(f"p{page.index + 1}: the stored file does not match its digest")
+                    not_prepared[page.id] = "the stored file does not match its digest"
                     continue
                 loaded[page.document_version_id] = data
             try:
@@ -6693,11 +6732,20 @@ class DatabaseStages:
                     )
                 )
             except (UnreadablePdf, ValueError) as error:
-                notes.append(f"p{page.index + 1}: code could not prepare the page: {error}")
-        cap_micros = (
+                not_prepared[page.id] = f"code could not prepare this page for the reader: {error}"
+        budget_micros = (
             self._ai_budget_fixed_micros
             if self._ai_budget_fixed_micros is not None
-            else _micros(self._ai_budget.for_pages(len(prepared)))
+            else _micros(
+                self._ai_budget.for_pages(_revision_page_count(session, package_revision_id))
+            )
+        )
+        spent_micros, unpriced = _revision_spend(session, package_revision_id)
+        cap_usd = _remaining_claude_budget(
+            Decimal(budget_micros) / 1_000_000,
+            cap_micros=budget_micros,
+            spent_micros=spent_micros,
+            unpriced_calls=unpriced,
         )
         stop = ReadingStop()
         recorder = self._call_ledger(session, task_run.id, reader_version=DEPTH_READER_VERSION)
@@ -6721,7 +6769,7 @@ class DatabaseStages:
             record_attempt=recorder.record,
             stored=stored,
             stop=stop,
-            spend_cap_usd=Decimal(cap_micros) / 1_000_000,
+            spend_guard=BatchSpendGuard(cap_usd, runtime.form.rates),
         )
         failure: str | None = None
         try:
@@ -6729,27 +6777,16 @@ class DatabaseStages:
                 prepared, ask=ask, fraction_bar=runtime.fraction_bar, settings=settings
             )
         except Exception as error:  # noqa: BLE001 - recorded and reported, never a value
-            # **Off by default and never a page's own reading**, so its failure must not stop the
-            # package: every call made so far is recorded below, nothing is written, and each
-            # countertop's checks say the reader has not read the set.
             failure = f"{type(error).__name__}: {error}"
         run = open_extraction_run(
             session,
             task_run_id=task_run.id,
             extractor=DEPTH_EXTRACTOR,
             extractor_version=DEPTH_READER_VERSION,
-            config_hash=(
-                f"dpi={settings.dpi};readers={'|'.join(runtime.form.reader_ids)};"
-                f"effort={settings.effort}"
-            ),
+            config_hash=config_hash,
             dpi=settings.dpi,
         )
-        already = session.scalar(
-            select(ObservationCandidate.id)
-            .where(ObservationCandidate.extraction_run_id == run.id)
-            .limit(1)
-        )
-        meter, self._meter = self._meter, _SpendMeter(cap_micros=cap_micros)
+        meter, self._meter = self._meter, _SpendMeter(cap_micros=_micros(cap_usd))
         try:
             self._record_reader_attempts(
                 session, run.id, recorder.snapshot(), ledgered=recorder.ledgered_in(session)
@@ -6757,40 +6794,52 @@ class DatabaseStages:
             spent = self._meter.as_payload()
         finally:
             self._meter = meter
+        by_id = {page.id: page for page in pages}
+        written: dict[str, object] = {}
+        if failure is None:
+            try:
+                with session.begin_nested():
+                    persisted = persist_depth_reading(
+                        session,
+                        package_revision_id,
+                        run,
+                        reading,
+                        prepared,
+                        {(str(page.document_version_id), page.index): page for page in pages},
+                        dpi=settings.dpi,
+                    )
+                written = persisted.as_payload()
+            except Exception as error:  # noqa: BLE001 - recorded and reported, never a value
+                failure = f"its readings could not be saved: {type(error).__name__}: {error}"
         if failure is not None:
+            persist_page_notes(
+                session,
+                package_revision_id,
+                run,
+                by_id,
+                dict.fromkeys(by_id, f"the depth reading failed, so nothing was read: {failure}"),
+                failed=True,
+            )
             return {
                 "ran": False,
                 "run": str(run.id),
                 "reason": f"the depth reading failed, so nothing was read: {failure}",
                 "spend": spent,
-                "notes": notes,
+                "pages_not_prepared": len(not_prepared),
             }
-        if already is not None:
-            return {
-                "ran": True,
-                "run": str(run.id),
-                "reason": "this stage's depth reading is already recorded",
-            }
-        written = persist_depth_reading(
-            session,
-            package_revision_id,
-            run,
-            reading,
-            prepared,
-            {(str(page.document_version_id), page.index): page for page in pages},
-            dpi=settings.dpi,
-        )
+        persist_page_notes(session, package_revision_id, run, by_id, not_prepared, failed=False)
         return {
             "ran": True,
             "run": str(run.id),
             "pages": len(prepared),
+            "pages_not_prepared": len(not_prepared),
             "views": len(reading.views),
             "kinds_settled": sum(view.kind is not None for view in reading.views),
             "questions": reading.questions_asked,
             "stopped": stop.cause,
+            "cap_usd": str(cap_usd),
             "spend": spent,
-            "notes": notes,
-            **written.as_payload(),
+            **written,
         }
 
     def _code_parts_on(
@@ -8963,6 +9012,51 @@ def _stopped_at_budget(
     ]
     already = {page.page_id for page in unread}
     return kept, [*unread, *(page for page in listed if page.page_id not in already)]
+
+
+def _revision_page_count(session: Session, package_revision_id: UUID) -> int:
+    """How many pages the revision's documents hold: the drawing set's page-scaled budget's pages."""
+    return int(
+        session.scalar(
+            select(func.coalesce(func.sum(DocumentVersion.page_count), 0))
+            .join(
+                PackageRevisionDocument,
+                PackageRevisionDocument.document_version_id == DocumentVersion.id,
+            )
+            .where(PackageRevisionDocument.package_revision_id == package_revision_id)
+        )
+        or 0
+    )
+
+
+def _revision_spend(session: Session, package_revision_id: UUID) -> tuple[int, int]:
+    """What every reader of this revision has spent, in micros, and how many calls had no price.
+
+    Every call recorded under any run of the revision's workflow runs, the call ledger's own runs
+    included (a twin row costs nothing, so each call counts once). The layout classifier's and the
+    assignment's rows are not reading spend (`UNMETERED_PROMPT_FAMILIES`), as for the stage's meter.
+    """
+    spent, unpriced = session.execute(
+        select(
+            func.coalesce(func.sum(ModelInvocation.cost_micros), 0),
+            func.count().filter(ModelInvocation.cost_micros.is_(None)),
+        )
+        .join(ExtractionRun, ModelInvocation.extraction_run_id == ExtractionRun.id)
+        .join(TaskRun, TaskRun.id == ExtractionRun.task_run_id)
+        .join(WorkflowRun, WorkflowRun.id == TaskRun.workflow_run_id)
+        .where(WorkflowRun.package_revision_id == package_revision_id)
+        .where(
+            not_(
+                or_(
+                    *(
+                        ModelInvocation.prompt_id.startswith(family, autoescape=True)
+                        for family in UNMETERED_PROMPT_FAMILIES
+                    )
+                )
+            )
+        )
+    ).one()
+    return int(spent or 0), int(unpriced or 0)
 
 
 def _remaining_claude_budget(

@@ -15,8 +15,11 @@ countertop's plan could fill another countertop's check.
   `elevation` or `detail`), `heading_text` (the vendor's heading, or `NULL`), `judged_by`
   (`code+ais` or `person`) and `extraction_run_id` (the reader's run; required unless a person
   linked it);
-* **unique per countertop, page and region** (`md5(region::text)`), so asking again finds the
-  link already there.
+* `supersedes_id` and `linked_by`: a person's correction is a new row naming the link it
+  replaces, on the same page (a two-column foreign key), each link replaced at most once, as
+  `part_confirmations` does; `linked_by` names who made the link;
+* a **first** link (no `supersedes_id`) is unique per countertop, page and region
+  (`md5(region::text)`), so reading again finds the link already there.
 
 **Append-only**, with the same trigger as every evidence table; a person's correction is a new
 row. Grants are derived from `ROLE_GRANTS` (`SELECT`, `INSERT`). **A downgrade with links stored
@@ -75,6 +78,8 @@ def upgrade() -> None:
         sa.Column("heading_text", sa.String(length=300), nullable=True),
         sa.Column("judged_by", sa.String(length=16), nullable=False),
         sa.Column("extraction_run_id", postgresql.UUID(as_uuid=True), nullable=True),
+        sa.Column("supersedes_id", postgresql.UUID(as_uuid=True), nullable=True),
+        sa.Column("linked_by", sa.String(length=200), nullable=False),
         sa.ForeignKeyConstraint(["part_proposal_id"], ["part_proposals.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["page_id"], ["pages.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["extraction_run_id"], ["extraction_runs.id"], ondelete="RESTRICT"),
@@ -90,6 +95,17 @@ def upgrade() -> None:
             "heading_text IS NULL OR heading_text !~ '^[[:space:]]*$'",
             name="item_view_link_heading_not_blank",
         ),
+        sa.CheckConstraint(
+            "supersedes_id IS NULL OR judged_by = 'person'", name="item_view_link_correction"
+        ),
+        sa.CheckConstraint("linked_by !~ '^[[:space:]]*$'", name="item_view_link_actor_not_blank"),
+        sa.UniqueConstraint("id", "page_id", name="uq_item_view_links_id_page"),
+        sa.ForeignKeyConstraint(
+            ["supersedes_id", "page_id"],
+            ["item_view_links.id", "item_view_links.page_id"],
+            ondelete="RESTRICT",
+        ),
+        sa.UniqueConstraint("supersedes_id", name="uq_item_view_links_supersedes_id"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index("ix_item_view_links_part_proposal_id", "item_view_links", ["part_proposal_id"])
@@ -101,6 +117,7 @@ def upgrade() -> None:
         "item_view_links",
         ["part_proposal_id", "page_id", sa.text("md5(region::text)")],
         unique=True,
+        postgresql_where=sa.text("supersedes_id IS NULL"),
     )
     for table in IMMUTABLE_TABLES:
         # `gv_reject_mutation` is created by 0013 and reused rather than redefined.

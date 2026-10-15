@@ -81,6 +81,7 @@ from extraction.slot_reader.stop import ReadingStop
 from vocabulary.part_kinds import PartKind
 from workflow.bala_items import BALA_SOURCE
 from workflow.depth_evidence import (
+    AGREED_PREFIX,
     CONFIRM_ONLY,
     DEPTH_READER_FLAG,
     FIELD_PREFIX,
@@ -89,10 +90,12 @@ from workflow.depth_evidence import (
     LINK_PREFIX,
     QUALIFIED,
     QUESTION_PREFIX,
+    RUN_FAILED,
     SUPPORT_FLAG,
     UNPLACED_PREFIX,
     VIEW_KIND_PREFIX,
     VIEW_NOTE,
+    current_link,
 )
 from workflow.parts import outline_box
 from workflow.reader_reuse import StoredAnswerSource, reuse_stored_answers
@@ -176,37 +179,42 @@ class DepthPlacement:
     reason: str = ""
 
 
-#: How much of a view must lie in one drawing for it to be that drawing's (#1290). A view's own
-#: dimensions and caption can run a little past the pasted drawing's recorded box (measured on AI
-#: Set 3: up to a hundredth of the page), so whole containment would place none; half is still one.
-VIEW_IN_DRAWING: Final = Decimal("0.5")
+#: How much of a view must lie in one drawing for it to be that drawing's (#1290), and how little
+#: may lie in any other. A view's own dimensions and caption can run a little past the pasted
+#: drawing's recorded box (measured on AI Set 3: about a hundredth of the page), so whole
+#: containment would place none; anything less clear is placed in none.
+VIEW_IN_DRAWING: Final = Decimal("0.9")
+VIEW_IN_ANOTHER: Final = Decimal("0.1")
 
 
 def drawings_holding(
     drawings: Sequence[tuple[UUID, tuple[Decimal, Decimal, Decimal, Decimal]]],
     view: Sequence[StoredPoint],
 ) -> list[UUID] | None:
-    """The drawings the view lies in: its centre inside, and at least half of it overlapping.
+    """The drawing the view lies in: at least 90% of it inside, and under 10% inside any other.
 
-    `None` when the page records no drawing at all (the page is the drawing). The caller places the
-    view only when exactly one drawing holds it.
+    `None` when the page records no drawing at all (the page is the drawing); `[]` when no drawing
+    clearly holds it. The caller places the view only when exactly one drawing holds it.
     """
     if not drawings:
         return None
     left, right = min(p.x for p in view), max(p.x for p in view)
     top, bottom = min(p.y for p in view), max(p.y for p in view)
     area = (right - left) * (bottom - top)
-    middle_x, middle_y = (left + right) / 2, (top + bottom) / 2
-    found: list[UUID] = []
+    if area <= 0:
+        return []
+    shares: list[tuple[UUID, Decimal]] = []
     for drawing_id, (x0, y0, x1, y1) in drawings:
-        if not (x0 <= middle_x <= x1 and y0 <= middle_y <= y1) or area <= 0:
-            continue
         overlap = max(Decimal(0), min(right, x1) - max(left, x0)) * max(
             Decimal(0), min(bottom, y1) - max(top, y0)
         )
-        if overlap / area >= VIEW_IN_DRAWING:
-            found.append(drawing_id)
-    return found
+        shares.append((drawing_id, overlap / area))
+    inside = [drawing for drawing, share in shares if share >= VIEW_IN_DRAWING]
+    if len(inside) != 1:
+        return []
+    if any(share >= VIEW_IN_ANOTHER for drawing, share in shares if drawing != inside[0]):
+        return []
+    return inside
 
 
 def placement_of(
@@ -223,14 +231,20 @@ def placement_of(
         return DepthPlacement(
             None,
             tuple(on_page),
-            "the view does not lie inside exactly one vendor drawing, so which countertop it "
-            "shows is not known.",
+            "the view does not lie clearly inside one vendor drawing (at least nine tenths in it "
+            "and under a tenth in any other), so which countertop it shows is not known.",
         )
     found = countertops.get(holding[0], ())
     if len(found) == 1:
         return DepthPlacement(found[0])
     if not found:
-        return DepthPlacement(None, (), "the drawing holding the view has no countertop.")
+        # Never silent: its readings show, held, on every countertop of the page.
+        return DepthPlacement(
+            None,
+            tuple(on_page),
+            "the drawing holding the view has no countertop, so which countertop it shows is not "
+            "known.",
+        )
     return DepthPlacement(
         None,
         tuple(found),
@@ -251,13 +265,14 @@ def depth_asker(
     record_attempt: Callable[[AttemptUsage], None],
     stored: StoredAnswerSource | None,
     stop: ReadingStop,
-    spend_cap_usd: Decimal | None,
+    spend_guard: object | None,
 ) -> Callable[[Sequence[Asked]], Answers]:
     """The reader's `ask`: a stored answer to the identical question first, then the shared route.
 
     Every attempt, reused or paid, goes to `record_attempt` (the shared `CallLedger`). `stop` is the
     depth reader's own: once tripped, nothing more is sent, and the questions not answered are
-    `NoAnswer` with the reason, which holds their values.
+    `NoAnswer` with the reason, which holds their values. `spend_guard` is **one** guard for the
+    whole reading: the reader asks in three rounds, and each round reserves against the same cap.
     """
 
     def ask(questions: Sequence[Asked]) -> Answers:
@@ -294,7 +309,7 @@ def depth_asker(
                 max_throttle_retries=max_throttle_retries,
                 retry_backoff_seconds=retry_backoff_seconds,
                 record_attempt=record_attempt,
-                spend_cap_usd=spend_cap_usd,
+                spend_guard=spend_guard,  # type: ignore[arg-type]
                 claude_effort=settings.effort,
                 stop=stop,
             )
@@ -420,7 +435,15 @@ def persist_depth_reading(
         kind_word = LINKED_KINDS.get(found.kind) if found.kind is not None else None
         place_flags: list[str] = []
         unplaced_reason = placement.reason
-        if placement.proposal_id is not None:
+        persons = person_link(session, page, region)
+        if persons is not None:
+            # A person said which countertop this view shows: that wins over code's placement.
+            place_flags += [
+                f"{ITEM_PREFIX}{persons.part_proposal_id}",
+                f"{LINK_PREFIX}{persons.id}",
+            ]
+            report.links_reused += 1
+        elif placement.proposal_id is not None:
             place_flags.append(f"{ITEM_PREFIX}{placement.proposal_id}")
             if kind_word is not None:
                 link, reused, why = _link(
@@ -477,6 +500,11 @@ def persist_depth_reading(
                 *view_flags,
                 state,
                 f"{FIELD_PREFIX}{value.field}",
+                *(
+                    (f"{AGREED_PREFIX}{value.agreed_inches}",)
+                    if value.agreed_inches is not None
+                    else ()
+                ),
                 *((f"span:{value.span_number}",) if value.span_number is not None else ()),
                 *(
                     (f"{QUESTION_PREFIX}{prepared_view.key}:n{value.span_number}",)
@@ -548,6 +576,81 @@ def persist_depth_reading(
     return report
 
 
+def persist_page_notes(
+    session: Session,
+    revision_id: UUID,
+    run: ExtractionRun,
+    pages: Mapping[UUID, Page],
+    reasons: Mapping[UUID, str],
+    *,
+    failed: bool,
+) -> int:
+    """One row per page that read nothing, held on each countertop of the page with the reason.
+
+    `failed`: the whole reading failed (`state:run-failed`): the checks then use an earlier good
+    reading, or say the reader failed. Otherwise code could not prepare the page (`view-note`).
+    """
+    countertops = countertops_by_drawing(session, revision_id)
+    view_pages = dict(
+        session.execute(
+            select(DrawingView.id, DrawingView.page_id).where(DrawingView.id.in_(list(countertops)))
+        ).all()
+    )
+    written = 0
+    for page_id, reason in reasons.items():
+        page = pages.get(page_id)
+        if page is None:
+            continue
+        among = sorted(
+            {
+                proposal
+                for view_id, proposals in countertops.items()
+                if view_pages.get(view_id) == page_id
+                for proposal in proposals
+            },
+            key=str,
+        )
+        session.add(
+            ObservationCandidate(
+                document_version_id=page.document_version_id,
+                page_id=page.id,
+                extraction_run_id=run.id,
+                raw_text="",
+                polygon=[[0, 0], [1, 0], [1, 1], [0, 1]],
+                coordinate_space="image",
+                ambiguity_flags=[
+                    DEPTH_READER_FLAG,
+                    RUN_FAILED if failed else VIEW_NOTE,
+                    f"view:p{page.index}",
+                    f"{VIEW_KIND_PREFIX}unsettled",
+                    *(f"{UNPLACED_PREFIX}{proposal}" for proposal in among),
+                ],
+                review_reason=_reason(reason),
+            )
+        )
+        written += 1
+    session.flush()
+    return written
+
+
+#: Who the reader's own links name (`item_view_links.linked_by`).
+READER_ACTOR: Final = "code:depth-reader/v1"
+
+
+def _links_here(session: Session, page: Page, region: Mapping[str, object]) -> list[ItemViewLink]:
+    """The current link of each first link on this page and region (a person's correction wins)."""
+    firsts = [
+        link
+        for link in session.scalars(
+            select(ItemViewLink).where(
+                ItemViewLink.page_id == page.id, ItemViewLink.supersedes_id.is_(None)
+            )
+        )
+        if link.region == region
+    ]
+    return [current_link(session, link) for link in firsts]
+
+
 def _link(
     session: Session,
     proposal_id: UUID,
@@ -560,16 +663,11 @@ def _link(
     """The view's link to its countertop: found again when it is already there, else written.
 
     An earlier link of the same countertop, page and region that names another kind is not
-    overwritten (append-only, unique): the view is then tied to no countertop, with why.
+    overwritten (append-only): the view is then tied to no countertop, with why. A person's link
+    (`person_link`) is looked for first, by the caller.
     """
     existing = [
-        link
-        for link in session.scalars(
-            select(ItemViewLink).where(
-                ItemViewLink.part_proposal_id == proposal_id, ItemViewLink.page_id == page.id
-            )
-        )
-        if link.region == region
+        link for link in _links_here(session, page, region) if link.part_proposal_id == proposal_id
     ]
     if existing:
         link = existing[0]
@@ -592,7 +690,14 @@ def _link(
         heading_text=heading,
         judged_by="code+ais",
         extraction_run_id=run.id,
+        linked_by=READER_ACTOR,
     )
     session.add(link)
     session.flush()
     return link, False, ""
+
+
+def person_link(session: Session, page: Page, region: Mapping[str, object]) -> ItemViewLink | None:
+    """A person's current link for this view, which always wins over code's placement."""
+    people = [link for link in _links_here(session, page, region) if link.judged_by == "person"]
+    return people[0] if len(people) == 1 else None

@@ -22,7 +22,8 @@ from sqlalchemy.orm import Session
 
 from app.db.session import session_factory
 from app.models import ItemViewLink, ObservationCandidate
-from extraction.depth.read import DepthReading, ReaderSays, ValueReading, ViewReading
+from app.models.runs import ModelInvocation, TaskRun, WorkflowRun
+from extraction.depth.read import Asked, DepthReading, ReaderSays, ValueReading, ViewReading
 from extraction.depth.view_kind import ViewKind
 from extraction.geometry.rows import Box
 from extraction.slot_reader.bedrock import CropJob
@@ -86,7 +87,7 @@ def test_a_view_not_inside_exactly_one_drawing_is_held_on_every_countertop_of_it
     drawings = [uuid4(), uuid4()] if holding == "two" else holding
     placed = placement_of(drawings, {}, [first, second])  # type: ignore[arg-type]
     assert placed.proposal_id is None and placed.among == (first, second)
-    assert "exactly one vendor drawing" in placed.reason
+    assert "clearly inside one vendor drawing" in placed.reason
 
 
 # -- what is written -------------------------------------------------------------------------------
@@ -363,7 +364,7 @@ def test_the_switch_must_be_a_yes_or_no() -> None:
         DatabaseStages(depth_reader="yes")  # type: ignore[arg-type]
 
 
-def test_a_view_lies_in_the_drawing_holding_its_centre_and_most_of_it() -> None:
+def test_a_view_lies_in_one_drawing_only_when_nearly_all_of_it_does() -> None:
     from evidence.coordinates import StoredPoint
     from workflow.depth_reader import drawings_holding
 
@@ -377,10 +378,274 @@ def test_a_view_lies_in_the_drawing_holding_its_centre_and_most_of_it() -> None:
     drawings = [(vendor, box("0.5", "0.1", "0.95", "0.7")), (architect, box("0", "0", "0.5", "1"))]
     # A caption running a hundredth past the drawing's box still lies in it.
     assert drawings_holding(drawings, view("0.78", "0.1", "0.96", "0.5")) == [vendor]
-    # Straddling two drawings evenly: in both, so it is placed in neither (`placement_of`).
-    assert sorted(drawings_holding(drawings, view("0.3", "0.2", "0.7", "0.4")) or [], key=str) == (
-        sorted([vendor, architect], key=str)
-    )
+    # 63% in one drawing and 37% in another: in neither (review of #1294).
+    assert drawings_holding(drawings, view("0.315", "0.2", "0.815", "0.4")) == []
+    # Straddling two drawings evenly: in neither.
+    assert drawings_holding(drawings, view("0.3", "0.2", "0.7", "0.4")) == []
     # Mostly outside: in none.
     assert drawings_holding(drawings, view("0.6", "0.65", "0.9", "0.99")) == []
     assert drawings_holding([], view("0.1", "0.1", "0.2", "0.2")) is None
+
+
+def test_a_view_on_a_drawing_with_no_countertop_is_held_on_the_page_s_countertops() -> None:
+    drawing, countertop = uuid4(), uuid4()
+    placed = placement_of([drawing], {}, [countertop])
+    assert placed.proposal_id is None and placed.among == (countertop,)
+    assert "has no countertop" in placed.reason
+
+
+# -- the real `_depth_pass`, with the reading itself made up (review of #1294) ---------------------
+
+
+class _Refusing:
+    def converse(self, **_: object) -> object:
+        from extraction.slot_reader.claude_output import PictureWouldBeResized
+
+        raise PictureWouldBeResized("a test makes no call")
+
+
+class _Clients:
+    def for_current_thread(self) -> _Refusing:
+        return _Refusing()
+
+
+def _claude_stages(store: LocalStore) -> DatabaseStages:
+    from app.runs.rates import load_model_rates
+    from tests.workflow.test_slot_reader import FRACTION_ENV
+    from workflow.form_reader import FormReaderRuntime
+    from workflow.slot_reader import (
+        E2_CROP_SETTINGS,
+        MEASURED_SETTINGS,
+        SlotReaderRuntime,
+        fraction_bar_from_environment,
+    )
+
+    form = FormReaderRuntime(
+        reader_ids=CLAUDE_PAIR,
+        clients=_Clients(),  # type: ignore[arg-type]
+        rates=load_model_rates(
+            Path(__file__).resolve().parents[2] / "deploy" / "model_rates.us-east-1.json"
+        ),
+        calls_per_minute=dict.fromkeys(CLAUDE_PAIR, 6000),
+        max_concurrent_calls=1,
+        max_tokens=3000,
+        max_throttle_retries=0,
+        retry_backoff_seconds=0.001,
+        prompt=None,  # type: ignore[arg-type]
+    )
+    slot = SlotReaderRuntime(
+        form=form,
+        crop_settings=E2_CROP_SETTINGS,
+        row_settings=MEASURED_SETTINGS,
+        fraction_bar=fraction_bar_from_environment(FRACTION_ENV),
+        allow_stacked=True,
+        claude_row_reader=True,
+    )
+    return DatabaseStages(store, form_reader=form, slot_reader=slot, depth_reader=True)
+
+
+def _match_stage_run(session: Session, sheet: _Set) -> None:
+    from workflow.idempotency import stage_idempotency_key
+    from workflow.review import ENGINE_VERSION
+
+    task = session.get_one(TaskRun, sheet.run.task_run_id)
+    session.add(
+        TaskRun(
+            workflow_run_id=task.workflow_run_id,
+            idempotency_key=stage_idempotency_key(
+                package_revision_id=sheet.revision.id, stage="match", engine_version=ENGINE_VERSION
+            ),
+            task_type="match",
+            attempt=1,
+            outcome="RUNNING",
+        )
+    )
+    session.flush()
+
+
+def _fake_reading(
+    monkeypatch: pytest.MonkeyPatch, *, fail: Exception | None = None, rounds: int = 3
+) -> list[int]:
+    """The page is 'prepared' and 'read' by stand-ins; `ask` is the real asker, asked `rounds`
+    times. Returns how many times the reading ran."""
+    import extraction.depth.read as read_module
+
+    ran: list[int] = []
+
+    def prepare(*_: object, **__: object) -> SimpleNamespace:
+        return SimpleNamespace(views=[])
+
+    def read(pages: object, *, ask: object, **_: object) -> DepthReading:
+        ran.append(1)
+        for number in range(rounds):
+            question = SimpleNamespace(pictures=[b"png"], prompt_id="view-kind-v1")
+            ask(  # type: ignore[operator]
+                [Asked(f"p0:v1.{number}:kind", CLAUDE_PAIR[0], 0, question, {})]  # type: ignore[arg-type]
+            )
+        if fail is not None:
+            raise fail
+        return DepthReading(views=(), questions_asked=rounds)
+
+    monkeypatch.setattr(read_module, "prepare_pdf_page", prepare)
+    monkeypatch.setattr(read_module, "read_depth", read)
+    return ran
+
+
+def test_the_three_rounds_share_one_spend_guard_capped_by_what_the_set_has_left(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import workflow.depth_reader as reader_module
+
+    sheet = _Set(session, store)
+    _match_stage_run(session, sheet)
+    session.add(
+        ModelInvocation(
+            extraction_run_id=sheet.run.id,
+            model_id=CLAUDE_PAIR[0],
+            prompt_id="claude-slot-span-v5",
+            template_id="claude-slot-span-v5",
+            input_tokens=1,
+            output_tokens=1,
+            latency_ms=1,
+            outcome="ok",
+            cost_micros=500_000,
+        )
+    )
+    session.flush()
+    guards: list[object] = []
+
+    def capture(jobs: object, **kwargs: object) -> dict[object, object]:
+        guards.append(kwargs["spend_guard"])
+        assert kwargs.get("spend_cap_usd") is None
+        return {}
+
+    monkeypatch.setattr(reader_module, "read_crops_parallel", capture)
+    _fake_reading(monkeypatch)
+    stages = _claude_stages(store)
+
+    result = stages._depth_pass(session, sheet.revision.id)
+
+    assert result["ran"] is True
+    assert len(guards) == 3 and len({id(guard) for guard in guards}) == 1, "one guard, three rounds"
+    budget = stages._ai_budget.for_pages(1)
+    assert guards[0]._maximum_usd == budget - Decimal("0.5")  # type: ignore[attr-defined]
+
+
+def test_a_failed_reading_is_marked_and_the_earlier_good_one_still_counts(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.workflow.test_depth_evidence import _rule
+    from workflow.depth_evidence import depth_operands
+
+    sheet = _Set(session, store)
+    sheet.reading("CT010", 24, QUALIFIED, link=sheet.link())
+    _match_stage_run(session, sheet)
+    _fake_reading(monkeypatch, fail=RuntimeError("the reader broke"))
+
+    result = _claude_stages(store)._depth_pass(session, sheet.revision.id)
+
+    assert result["ran"] is False and "the reader broke" in str(result["reason"])
+    found = depth_operands(session, sheet.revision.id, _rule("CT-DEPTH-001"), sheet.item)
+    assert found.operands["countertop_depth"].value.exact == 24  # type: ignore[union-attr]
+    assert any("failed" in note for note in found.notes)
+
+
+def test_a_reader_that_never_read_well_says_it_failed_on_each_countertop(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.workflow.test_depth_evidence import _rule
+    from workflow.depth_evidence import depth_operands
+
+    sheet = _Set(session, store)
+    session.delete(sheet.run)
+    session.flush()
+    workflow_run = WorkflowRun(package_revision_id=sheet.revision.id, engine_run_id=str(uuid4()))
+    session.add(workflow_run)
+    session.flush()
+    sheet.run = SimpleNamespace(task_run_id=None)  # type: ignore[assignment]
+    from workflow.idempotency import stage_idempotency_key
+    from workflow.review import ENGINE_VERSION
+
+    session.add(
+        TaskRun(
+            workflow_run_id=workflow_run.id,
+            idempotency_key=stage_idempotency_key(
+                package_revision_id=sheet.revision.id, stage="match", engine_version=ENGINE_VERSION
+            ),
+            task_type="match",
+            attempt=1,
+            outcome="RUNNING",
+        )
+    )
+    session.flush()
+    _fake_reading(monkeypatch, fail=RuntimeError("the reader broke"))
+
+    _claude_stages(store)._depth_pass(session, sheet.revision.id)
+
+    found = depth_operands(session, sheet.revision.id, _rule("CT-DEPTH-001"), sheet.item)
+    assert found.missing is not None and "the reader broke" in found.missing
+
+
+def test_a_stage_run_already_recorded_is_not_read_again(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sheet = _Set(session, store)
+    _match_stage_run(session, sheet)
+    ran = _fake_reading(monkeypatch, rounds=0)
+    stages = _claude_stages(store)
+
+    first = stages._depth_pass(session, sheet.revision.id)
+    again = stages._depth_pass(session, sheet.revision.id)
+
+    assert first["ran"] is True and len(ran) == 1
+    assert "already recorded" in str(again["reason"]) and len(ran) == 1
+
+
+def test_a_page_code_cannot_prepare_is_held_on_its_countertops_with_why(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import extraction.depth.read as read_module
+    from tests.workflow.test_depth_evidence import _rule
+    from workflow.depth_evidence import depth_operands
+
+    sheet = _Set(session, store)
+    _match_stage_run(session, sheet)
+    _fake_reading(monkeypatch, rounds=0)
+
+    def refuse(*_: object, **__: object) -> object:
+        raise ValueError("the page is too large")
+
+    monkeypatch.setattr(read_module, "prepare_pdf_page", refuse)
+
+    result = _claude_stages(store)._depth_pass(session, sheet.revision.id)
+
+    assert result["pages_not_prepared"] == 1
+    found = depth_operands(session, sheet.revision.id, _rule("CT-DEPTH-001"), sheet.item)
+    assert found.missing is not None and "the page is too large" in found.missing
+
+
+def test_readings_that_cannot_be_saved_mark_the_reading_failed_and_never_stop_match(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import workflow.depth_reader as reader_module
+
+    sheet = _Set(session, store)
+    _match_stage_run(session, sheet)
+    _fake_reading(monkeypatch, rounds=0)
+
+    def broken(*_: object, **__: object) -> object:
+        raise RuntimeError("a row would not save")
+
+    monkeypatch.setattr(reader_module, "persist_depth_reading", broken)
+
+    result = _claude_stages(store).match(session, sheet.revision.id)
+
+    depth = result["depth"]
+    assert isinstance(depth, dict) and depth["ran"] is False
+    assert "a row would not save" in str(depth["reason"])
+    failed = session.scalars(
+        select(ObservationCandidate).where(
+            ObservationCandidate.ambiguity_flags.contains(["state:run-failed"])
+        )
+    ).all()
+    assert len(failed) == 1 and f"unplaced-among:{sheet.proposal}" in failed[0].ambiguity_flags

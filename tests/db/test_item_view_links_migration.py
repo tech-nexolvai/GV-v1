@@ -97,11 +97,11 @@ def _countertop(engine: Engine) -> dict[str, UUID]:
         ),
         (
             "INSERT INTO workflow_runs (id, package_revision_id, engine_run_id, created_at) "
-            "VALUES (:workflow, :revision, 'synthetic', now())"
+            "VALUES (:workflow, :revision, CAST(:workflow AS text), now())"
         ),
         (
             "INSERT INTO task_runs (id, workflow_run_id, idempotency_key, task_type, attempt, "
-            "outcome, created_at) VALUES (:task, :workflow, 'synthetic-key', 'match', 1, "
+            "outcome, created_at) VALUES (:task, :workflow, CAST(:task AS text), 'match', 1, "
             "'SUCCEEDED', now())"
         ),
         (
@@ -125,24 +125,30 @@ def _link(
     run: bool = True,
     region: dict[str, object] | None = None,
     heading: str | None = "PLAN VIEW",
+    supersedes: UUID | None = None,
+    linked_by: str = "code:depth-reader/v1",
+    page: UUID | None = None,
 ) -> UUID:
     link = uuid4()
     with engine.begin() as connection:
         connection.execute(
             text(
                 "INSERT INTO item_view_links (id, created_at, part_proposal_id, page_id, region, "
-                "view_kind, heading_text, judged_by, extraction_run_id) VALUES (:id, now(), "
-                ":proposal, :page, CAST(:region AS jsonb), :kind, :heading, :judge, :run)"
+                "view_kind, heading_text, judged_by, extraction_run_id, supersedes_id, linked_by) "
+                "VALUES (:id, now(), :proposal, :page, CAST(:region AS jsonb), :kind, :heading, "
+                ":judge, :run, :supersedes, :linked_by)"
             ),
             {
                 "id": link,
                 "proposal": ids["proposal"],
-                "page": ids["page"],
+                "page": page or ids["page"],
                 "region": json.dumps(REGION if region is None else region),
                 "kind": kind,
                 "heading": heading,
                 "judge": judged_by,
                 "run": ids["run"] if run else None,
+                "supersedes": supersedes,
+                "linked_by": linked_by,
             },
         )
     return link
@@ -193,6 +199,7 @@ def test_a_link_is_kept_and_its_checks_refuse_what_it_cannot_say(
         ("item_view_link_run", {"run": False}),
         ("item_view_link_region_stored", {"region": {"space": "image", "points": []}}),
         ("item_view_link_heading_not_blank", {"heading": "  "}),
+        ("item_view_link_actor_not_blank", {"linked_by": " "}),
     )
     for number, (name, change) in enumerate(refused, start=2):
         arguments: dict[str, object] = {"region": {**REGION, "points": [[str(number), "0"]]}}
@@ -207,6 +214,42 @@ def test_one_countertop_page_and_region_is_linked_once(postgres_engine: Engine) 
     _link(postgres_engine, ids)
     with pytest.raises(IntegrityError, match="uq_item_view_links_item_page_region"):
         _link(postgres_engine, ids, kind="section")
+
+
+def test_a_person_s_correction_is_a_new_row_naming_the_link_it_replaces(
+    postgres_engine: Engine,
+) -> None:
+    command.upgrade(_config(postgres_engine), "head")
+    ids = _countertop(postgres_engine)
+    first = _link(postgres_engine, ids)
+    # The same countertop, page and region again, as a person's correction: allowed.
+    corrected = _link(
+        postgres_engine,
+        ids,
+        kind="section",
+        judged_by="person",
+        run=False,
+        supersedes=first,
+        linked_by="reviewer@example.com",
+    )
+    assert corrected != first
+    # A link is replaced at most once.
+    with pytest.raises(IntegrityError, match="uq_item_view_links_supersedes_id"):
+        _link(postgres_engine, ids, judged_by="person", run=False, supersedes=first)
+    # Only a person corrects a link.
+    with pytest.raises(IntegrityError, match="item_view_link_correction"):
+        _link(postgres_engine, ids, supersedes=corrected)
+    # A correction stays on the replaced link's page.
+    other = _countertop(postgres_engine)
+    with pytest.raises(IntegrityError, match="fk_item_view_links_supersedes_id_item_view_links"):
+        _link(
+            postgres_engine,
+            ids,
+            judged_by="person",
+            run=False,
+            supersedes=corrected,
+            page=other["page"],
+        )
 
 
 def test_a_link_is_never_edited_or_deleted(postgres_engine: Engine) -> None:

@@ -124,6 +124,11 @@ QUALIFIED: Final = "state:qualified"
 CONFIRM_ONLY: Final = "state:confirm-only"
 HELD: Final = "state:held"
 VIEW_NOTE: Final = "state:view-note"
+#: A reading that failed as a whole (`workflow/depth_reader.py`): its rows say why, and an earlier
+#: good reading is used instead.
+RUN_FAILED: Final = "state:run-failed"
+#: The two readers' agreed number on a value code held, so a disagreement can still be seen.
+AGREED_PREFIX: Final = "agreed:"
 #: A reader's own row behind a qualified reading (`supports:<id>`, `reader-id:<model>`).
 SUPPORT_FLAG: Final = "depth-reader-support"
 FIELD_PREFIX: Final = "field:"
@@ -167,6 +172,15 @@ UNPLACED: Final = (
 CODE_HELD: Final = "The {what} was not read automatically: {reason}"
 NOTHING: Final = "No {what} was read for this countertop: {reason}"
 NO_VIEW: Final = "no plan or section view of its drawing was found."
+PERSON_EARLIER: Final = (
+    "A person confirmed {earlier} for this countertop's {what} on an earlier reading of this view, "
+    "and the new reading says {now}: held for a person."
+)
+RETYPED_EARLIER: Final = (
+    "A person said earlier that the {earlier} on this view is not the {what}, and the new reading "
+    "of it says {now}: held for a person."
+)
+READER_FAILED: Final = "The depth and sink reader failed on this drawing set: {reason}"
 
 _QUOTES: Final = {"“": '"', "”": '"', "„": '"', "″": '"', "ʺ": '"', "‘": "'", "’": "'", "′": "'"}
 
@@ -192,19 +206,41 @@ class DepthItemOperands:
     notes: tuple[str, ...] = ()
 
 
-def latest_depth_run(session: Session, revision_id: UUID) -> ExtractionRun | None:
-    """The revision's newest depth-reader run, or `None` when the reader never ran on it."""
-    return session.execute(
-        select(ExtractionRun)
-        .join(TaskRun, TaskRun.id == ExtractionRun.task_run_id)
-        .join(WorkflowRun, WorkflowRun.id == TaskRun.workflow_run_id)
-        .where(
-            WorkflowRun.package_revision_id == revision_id,
-            ExtractionRun.extractor == DEPTH_EXTRACTOR,
+def depth_runs(session: Session, revision_id: UUID) -> list[ExtractionRun]:
+    """The revision's depth-reader runs, newest first."""
+    return list(
+        session.scalars(
+            select(ExtractionRun)
+            .join(TaskRun, TaskRun.id == ExtractionRun.task_run_id)
+            .join(WorkflowRun, WorkflowRun.id == TaskRun.workflow_run_id)
+            .where(
+                WorkflowRun.package_revision_id == revision_id,
+                ExtractionRun.extractor == DEPTH_EXTRACTOR,
+            )
+            .order_by(ExtractionRun.created_at.desc(), ExtractionRun.id.desc())
         )
-        .order_by(ExtractionRun.created_at.desc(), ExtractionRun.id.desc())
-        .limit(1)
-    ).scalar_one_or_none()
+    )
+
+
+def _failed(session: Session, run: ExtractionRun) -> bool:
+    return (
+        session.scalar(
+            select(ObservationCandidate.id)
+            .where(
+                ObservationCandidate.extraction_run_id == run.id,
+                ObservationCandidate.ambiguity_flags.contains([RUN_FAILED]),
+            )
+            .limit(1)
+        )
+        is not None
+    )
+
+
+def latest_depth_run(session: Session, revision_id: UUID) -> ExtractionRun | None:
+    """The revision's newest depth-reader run that did not fail, or `None`."""
+    return next(
+        (run for run in depth_runs(session, revision_id) if not _failed(session, run)), None
+    )
 
 
 def _item_proposals(session: Session, item_id: UUID) -> tuple[UUID | None, UUID | None]:
@@ -258,6 +294,27 @@ class _Reading:
     def reason(self) -> str:
         return (self.row.review_reason or "").strip() or "no reason was recorded"
 
+    @property
+    def agreed(self) -> Fraction | None:
+        """The two readers' agreed number: the value, or on a held value the one they agreed."""
+        if self.value is not None:
+            return self.value
+        raw = next(
+            (f.removeprefix(AGREED_PREFIX) for f in self.flags if f.startswith(AGREED_PREFIX)),
+            None,
+        )
+        try:
+            return None if raw is None else Fraction(raw)
+        except (ValueError, ZeroDivisionError):
+            return None
+
+    @property
+    def dimension(self) -> tuple[UUID, frozenset[str]]:
+        """Which printed dimension it is: its page, view and span, the same on every reading."""
+        return self.row.page_id, frozenset(
+            f for f in self.flags if f.startswith(("view:", "span:"))
+        )
+
 
 def _inches(value: Fraction) -> str:
     whole, part = divmod(value, 1)
@@ -270,10 +327,19 @@ def _values(values: Sequence[Fraction]) -> str:
     return " and ".join(_inches(value) for value in sorted(set(values)))
 
 
-def _linked(session: Session, reading: _Reading, proposal_id: UUID, run: ExtractionRun) -> bool:
-    """Whether the reading's view is tied to this countertop by a link that holds."""
-    if f"{ITEM_PREFIX}{proposal_id}" not in reading.flags:
-        return False
+def current_link(session: Session, link: ItemViewLink) -> ItemViewLink:
+    """The link that stands for `link`'s view now: a person's correction replaces it."""
+    seen = {link.id}
+    while True:
+        later = session.scalar(select(ItemViewLink).where(ItemViewLink.supersedes_id == link.id))
+        if later is None or later.id in seen:
+            return link
+        seen.add(later.id)
+        link = later
+
+
+def _linked(session: Session, reading: _Reading, proposal_id: UUID) -> bool:
+    """Whether the reading's view is tied to this countertop by its link as it stands now."""
     link_id = next(
         (f.removeprefix(LINK_PREFIX) for f in reading.flags if f.startswith(LINK_PREFIX)), None
     )
@@ -283,16 +349,26 @@ def _linked(session: Session, reading: _Reading, proposal_id: UUID, run: Extract
         link = session.get(ItemViewLink, UUID(link_id))
     except ValueError:
         return False
-    return (
-        link is not None
-        and link.part_proposal_id == proposal_id
-        and link.page_id == reading.row.page_id
-        and reading.row.extraction_run_id == run.id
-    )
+    if link is None or link.page_id != reading.row.page_id:
+        return False
+    link = current_link(session, link)
+    if link.judged_by != "person" and f"{ITEM_PREFIX}{proposal_id}" not in reading.flags:
+        return False
+    return link.part_proposal_id == proposal_id and link.page_id == reading.row.page_id
 
 
 def _person_types(session: Session, row: ObservationCandidate) -> list[CanonicalObservation]:
-    """Every observation a person confirmed from this reading."""
+    """Every observation a person confirmed from this reading, or from either reader's own row of
+    it: a person's confirmation is never ignored."""
+    ids = [
+        row.id,
+        *session.scalars(
+            select(ObservationCandidate.id).where(
+                ObservationCandidate.extraction_run_id == row.extraction_run_id,
+                ObservationCandidate.ambiguity_flags.contains([SUPPORT_FLAG, f"supports:{row.id}"]),
+            )
+        ),
+    ]
     return list(
         session.scalars(
             select(CanonicalObservation)
@@ -301,9 +377,10 @@ def _person_types(session: Session, row: ObservationCandidate) -> list[Canonical
                 EvidenceSupportingCandidate.canonical_observation_id == CanonicalObservation.id,
             )
             .where(
-                EvidenceSupportingCandidate.candidate_id == row.id,
+                EvidenceSupportingCandidate.candidate_id.in_(ids),
                 CanonicalObservation.status == EvidenceStatus.HUMAN_CONFIRMED.value,
             )
+            .distinct()
             .order_by(CanonicalObservation.created_at, CanonicalObservation.id)
         )
     )
@@ -559,44 +636,93 @@ type _Decision = VerdictOperand | tuple[str, str]
 """An operand, or `("ambiguous" | "missing", why)`."""
 
 
+@dataclass(frozen=True)
+class _Person:
+    """A person's confirmation of one reading of this countertop, on any reading of the set."""
+
+    canonical: CanonicalObservation
+    reading: _Reading
+
+    @property
+    def value(self) -> Fraction:
+        return Fraction(self.canonical.value_numerator, self.canonical.value_denominator)
+
+
+def _text(value: Fraction | None) -> str:
+    return "no number" if value is None else _inches(value)
+
+
 def _decide(
     session: Session,
     name: str,
     semantic: str,
     mine: Sequence[_Reading],
     unplaced: Sequence[_Reading],
+    people: Sequence[_Person],
     notes: list[str],
 ) -> _Decision:
     what = DEPTH_FIELDS[semantic]
     for_field = [reading for reading in mine if reading.field == semantic]
 
-    # A person first: what they confirmed this reading as, and its value.
-    people: list[tuple[CanonicalObservation, _Reading]] = []
-    retyped: set[UUID] = set()
-    for reading in for_field:
-        for canonical in _person_types(session, reading.row):
-            if canonical.semantic_type == semantic:
-                people.append((canonical, reading))
-            else:
-                retyped.add(reading.row.id)
-    if people:
-        values = [Fraction(c.value_numerator, c.value_denominator) for c, _r in people]
+    # **A person first, on any reading of this set (design §9.5).** A person's decision on an
+    # earlier reading carries over to the same dimension read again identically; a new reading
+    # that contradicts it holds for a person.
+    retyped = [
+        p for p in people if p.reading.field == semantic and p.canonical.semantic_type != semantic
+    ]
+    for decision in retyped:
+        for reading in for_field:
+            if reading.dimension == decision.reading.dimension and reading.agreed != decision.value:
+                return (
+                    "ambiguous",
+                    RETYPED_EARLIER.format(
+                        earlier=_inches(decision.value), what=what, now=_text(reading.agreed)
+                    ),
+                )
+    retyped_dimensions = {(p.reading.dimension, p.value) for p in retyped}
+    for_field = [
+        reading
+        for reading in for_field
+        if (reading.dimension, reading.agreed) not in retyped_dimensions
+        and not any(p.reading.row.id == reading.row.id for p in retyped)
+    ]
+    confirmed = [p for p in people if p.canonical.semantic_type == semantic]
+    if confirmed:
+        values = [p.value for p in confirmed]
         if len(set(values)) > 1:
             return ("ambiguous", PEOPLE_DIFFER.format(what=what, values=_values(values)))
-        operand = _sealed(session, people[0][0], name)
+        for decision in confirmed:
+            for reading in (*for_field, *unplaced):
+                if (
+                    reading.field == semantic
+                    and reading.dimension == decision.reading.dimension
+                    and reading.agreed != decision.value
+                ):
+                    return (
+                        "ambiguous",
+                        PERSON_EARLIER.format(
+                            earlier=_inches(decision.value), what=what, now=_text(reading.agreed)
+                        ),
+                    )
+        operand = _sealed(session, confirmed[0].canonical, name)
         if operand is not None:
             notes.append(
                 f"{what.capitalize()}: {_inches(values[0])}, confirmed by a person "
-                f"(observation {people[0][0].id})."
+                f"(observation {confirmed[0].canonical.id})."
             )
             return operand
-    for_field = [reading for reading in for_field if reading.row.id not in retyped]
 
     qualified = [r for r in for_field if QUALIFIED in r.flags and r.value is not None]
     confirm = [r for r in for_field if CONFIRM_ONLY in r.flags and r.value is not None]
-    values = [r.value for r in (*qualified, *confirm) if r.value is not None]
-    if len(set(values)) > 1:
-        return ("ambiguous", TWO_VALUES.format(what=what, values=_values(values)))
+    if qualified or confirm:
+        # **Any other reading that may be this countertop's, with another number, holds both**:
+        # a held value the readers agreed on, or a view on its drawing tied to no one countertop.
+        others = [
+            r for r in (*for_field, *unplaced) if r.field == semantic and r.agreed is not None
+        ]
+        values = [r.agreed for r in (*qualified, *confirm, *others) if r.agreed is not None]
+        if len(set(values)) > 1:
+            return ("ambiguous", TWO_VALUES.format(what=what, values=_values(values)))
     if qualified:
         reading = qualified[0]
         if not answers_on_record(session, reading):
@@ -610,9 +736,12 @@ def _decide(
                     what=what, reason="its reading could not be placed on the page as evidence."
                 ),
             )
+        checks = sorted(
+            f.removeprefix("confirmed-by:") for f in reading.flags if f.startswith("confirmed-by:")
+        )
         notes.append(
             f"{what.capitalize()}: {reading.row.raw_text}, read on the {reading.kind} view by both "
-            f"AI readers and confirmed by code ({', '.join(sorted(f.removeprefix('confirmed-by:') for f in reading.flags if f.startswith('confirmed-by:'))) or 'code'}); "
+            f"AI readers and confirmed by code ({', '.join(checks) or 'code'}); "
             f"reading {reading.row.id}."
         )
         return operand
@@ -635,6 +764,21 @@ def _decide(
     return ("missing", NOTHING.format(what=what, reason=" ".join(views[:2]) if views else NO_VIEW))
 
 
+def _readings(session: Session, run: ExtractionRun) -> list[_Reading]:
+    return [
+        reading
+        for reading in (
+            _Reading(row, frozenset(row.ambiguity_flags or ()))
+            for row in session.scalars(
+                select(ObservationCandidate)
+                .where(ObservationCandidate.extraction_run_id == run.id)
+                .order_by(ObservationCandidate.created_at, ObservationCandidate.id)
+            )
+        )
+        if DEPTH_READER_FLAG in reading.flags
+    ]
+
+
 def depth_operands(
     session: Session, revision_id: UUID, rule: Rule, item_id: UUID
 ) -> DepthItemOperands:
@@ -648,23 +792,33 @@ def depth_operands(
     if not inputs:
         return DepthItemOperands()
     first_what = DEPTH_FIELDS[next(iter(inputs.values()))]
-    run = latest_depth_run(session, revision_id)
-    if run is None:
+    runs = depth_runs(session, revision_id)
+    if not runs:
         return DepthItemOperands(missing=NOT_READ.format(what=first_what))
     proposal_id, view_id = _item_proposals(session, item_id)
     if proposal_id is None or view_id is None:
         return DepthItemOperands(missing=NOT_BALAS.format(what=first_what))
-
-    readings = [
-        _Reading(row, frozenset(row.ambiguity_flags or ()))
-        for row in session.scalars(
-            select(ObservationCandidate)
-            .where(ObservationCandidate.extraction_run_id == run.id)
-            .order_by(ObservationCandidate.created_at, ObservationCandidate.id)
+    failed = [run for run in runs if _failed(session, run)]
+    good = [run for run in runs if run not in failed]
+    if not good:
+        # Every reading failed: each countertop says so, with the reader's own reason.
+        reasons = sorted(
+            {
+                r.reason
+                for r in _readings(session, runs[0])
+                if RUN_FAILED in r.flags
+                and (
+                    f"{UNPLACED_PREFIX}{proposal_id}" in r.flags
+                    or not any(f.startswith(UNPLACED_PREFIX) for f in r.flags)
+                )
+            }
         )
-    ]
-    readings = [r for r in readings if DEPTH_READER_FLAG in r.flags]
-    mine = [r for r in readings if _linked(session, r, proposal_id, run)]
+        return DepthItemOperands(
+            missing=READER_FAILED.format(reason=" ".join(reasons[:1]) or "no reason was recorded")
+        )
+    run = good[0]
+    readings = _readings(session, run)
+    mine = [r for r in readings if _linked(session, r, proposal_id)]
     unplaced = [r for r in readings if f"{UNPLACED_PREFIX}{proposal_id}" in r.flags]
     # Notes on a view that names this countertop but whose link does not hold count as unplaced.
     mine_ids = {r.row.id for r in mine}
@@ -675,9 +829,19 @@ def depth_operands(
         and r.row.id not in mine_ids
         and VIEW_NOTE in r.flags
     ]
+    # A person's decisions on this countertop's readings, on every good reading of the set.
+    people = [
+        _Person(canonical, reading)
+        for earlier in good
+        for reading in (readings if earlier is run else _readings(session, earlier))
+        if _linked(session, reading, proposal_id)
+        for canonical in _person_types(session, reading.row)
+    ]
 
     shared = countertops_by_view(session, revision_id).get(view_id, ())
     notes: list[str] = [f"Depth reader run {run.id}; countertop suggestion {proposal_id}."]
+    if runs[0] is not run:
+        notes.append(f"A later depth reading (run {runs[0].id}) failed; this earlier one is used.")
     operands: dict[str, VerdictOperand] = {}
     ambiguous: dict[str, str] = {}
     missing: list[str] = []
@@ -691,7 +855,7 @@ def depth_operands(
             else:
                 missing.append(why)
             continue
-        decided = _decide(session, name, semantic, mine, unplaced, notes)
+        decided = _decide(session, name, semantic, mine, unplaced, people, notes)
         if isinstance(decided, VerdictOperand):
             operands[name] = decided
         elif decided[0] == "ambiguous":

@@ -162,6 +162,7 @@ class _Set:
             heading_text="PLAN VIEW",
             judged_by="code+ais",
             extraction_run_id=self.run.id,
+            linked_by="code:depth-reader/v1",
         )
         self.session.add(link)
         self.session.flush()
@@ -181,13 +182,22 @@ class _Set:
         answers: bool = True,
         supports: bool = True,
         kind: str = "plan",
+        view: str | None = None,
+        run: ExtractionRun | None = None,
+        agreed: Fraction | int | None = None,
     ) -> ObservationCandidate:
-        """One value the reader wrote, with both readers' answers on record when `answers`."""
+        """One value the reader wrote, with both readers' answers on record when `answers`.
+
+        `view` names the printed dimension (the same on a re-read); `run` the reading it is in."""
+        run = run or self.run
         value = None if inches is None else Fraction(inches)
         text = text if text is not None else (f'{inches}"' if inches is not None else "")
-        question = f"p0:v1.{len(self.session.new) + uuid4().int % 1000}:n1"
+        view = view or f"p0:v1.{uuid4().int % 100000}"
+        question = f"{view}:n1"
         flags = [DEPTH_READER_FLAG, state, f"field:{field}", f"view-kind:{kind}"]
-        flags.append(f"question:{question}")
+        flags += [f"question:{question}", f"view:{view}", "span:1"]
+        if agreed is not None:
+            flags.append(f"agreed:{Fraction(agreed)}")
         if state != HELD:
             flags.append(f"confirmed-by:{confirmed_by}")
         if link is not None:
@@ -196,7 +206,7 @@ class _Set:
         row = ObservationCandidate(
             document_version_id=self.page.document_version_id,
             page_id=self.page.id,
-            extraction_run_id=self.run.id,
+            extraction_run_id=run.id,
             raw_text=text,
             value_numerator=None if value is None or state == HELD else value.numerator,
             value_denominator=None if value is None or state == HELD else value.denominator,
@@ -230,10 +240,37 @@ class _Set:
             self.session.flush()
         if answers:
             for model in CLAUDE_PAIR:
-                self.answer(question, model, text)
+                self.answer(question, model, text, run=run)
         return row
 
-    def answer(self, question: str, model: str, text: str) -> None:
+    def rerun(self) -> ExtractionRun:
+        """A newer depth reading of the same set (a re-read)."""
+        old = self.run
+        task = self.session.get_one(TaskRun, old.task_run_id)
+        newer = TaskRun(
+            workflow_run_id=task.workflow_run_id,
+            idempotency_key=f"synthetic-{uuid4()}",
+            task_type="match",
+            attempt=1,
+            outcome="SUCCEEDED",
+        )
+        self.session.add(newer)
+        self.session.flush()
+        run = ExtractionRun(
+            task_run_id=newer.id,
+            extractor=DEPTH_EXTRACTOR,
+            extractor_version=DEPTH_READER_VERSION,
+            config_hash="synthetic",
+            dpi=300,
+        )
+        self.session.add(run)
+        self.session.flush()
+        self.run = run
+        return run
+
+    def answer(
+        self, question: str, model: str, text: str, run: ExtractionRun | None = None
+    ) -> None:
         body: dict[str, object] = {
             "reader": "depth-reader",
             "document_version_id": str(self.page.document_version_id),
@@ -246,7 +283,7 @@ class _Set:
         ).hexdigest()
         self.session.add(
             ModelInvocation(
-                extraction_run_id=self.run.id,
+                extraction_run_id=(run or self.run).id,
                 model_id=model,
                 prompt_id=DEPTH_SPAN_PROMPT_ID,
                 template_id=DEPTH_SPAN_PROMPT_ID,
@@ -608,3 +645,225 @@ def test_the_scoped_evidence_call_owns_every_depth_input(
     assert scoped.owned["CT-DEPTH-001"] == frozenset({"countertop_depth"})
     assert scoped.operands["CT-DEPTH-001"]["countertop_depth"].value.exact == 24  # type: ignore[union-attr]
     assert "countertop_depth" not in unscoped.operands.get("CT-DEPTH-001", {})
+
+
+# -- review of #1294: a person's decision survives a re-read, conflicts hold ----------------------
+
+
+def test_a_person_s_retype_survives_a_re_read_of_the_same_value(
+    session: Session, store: LocalStore
+) -> None:
+    sheet = _Set(session, store)
+    link = sheet.link()
+    first = sheet.reading(CT010, 24, QUALIFIED, link=link, view="p0:v1.1")
+    confirm_candidate_type(session, candidate_id=first.id, semantic_type=CT012, confirmed_by=ACTOR)
+    sheet.rerun()
+    sheet.reading(CT010, 24, QUALIFIED, link=link, view="p0:v1.1")
+
+    found = sheet.operands()
+
+    assert (
+        found.operands == {}
+    ), "the person said this 24 is not the depth; a re-read cannot undo it"
+
+
+def test_a_re_read_that_contradicts_a_person_s_retype_holds(
+    session: Session, store: LocalStore
+) -> None:
+    sheet = _Set(session, store)
+    link = sheet.link()
+    first = sheet.reading(CT010, 24, QUALIFIED, link=link, view="p0:v1.1")
+    confirm_candidate_type(session, candidate_id=first.id, semantic_type=CT012, confirmed_by=ACTOR)
+    sheet.rerun()
+    sheet.reading(CT010, 25, QUALIFIED, link=link, view="p0:v1.1")
+
+    found = sheet.operands()
+
+    assert found.operands == {}
+    assert "A person said earlier" in found.ambiguous["countertop_depth"]
+
+
+def test_a_person_s_confirmation_carries_over_a_re_read(
+    session: Session, store: LocalStore
+) -> None:
+    sheet = _Set(session, store)
+    link = sheet.link()
+    first = sheet.reading(
+        CT010, 24, CONFIRM_ONLY, link=link, view="p0:v1.1", confirmed_by="drawn-length-only"
+    )
+    confirm_candidate_type(session, candidate_id=first.id, semantic_type=CT010, confirmed_by=ACTOR)
+    sheet.rerun()
+    sheet.reading(
+        CT010, 24, CONFIRM_ONLY, link=link, view="p0:v1.1", confirmed_by="drawn-length-only"
+    )
+
+    operand = sheet.operands().operands["countertop_depth"]
+
+    assert operand.status is EvidenceStatus.HUMAN_CONFIRMED and operand.value.exact == 24  # type: ignore[union-attr]
+
+
+def test_a_re_read_that_contradicts_a_person_s_confirmation_holds(
+    session: Session, store: LocalStore
+) -> None:
+    sheet = _Set(session, store)
+    link = sheet.link()
+    first = sheet.reading(
+        CT010, 24, CONFIRM_ONLY, link=link, view="p0:v1.1", confirmed_by="drawn-length-only"
+    )
+    confirm_candidate_type(session, candidate_id=first.id, semantic_type=CT010, confirmed_by=ACTOR)
+    sheet.rerun()
+    sheet.reading(CT010, 26, QUALIFIED, link=link, view="p0:v1.1")
+
+    found = sheet.operands()
+
+    assert found.operands == {}
+    assert 'A person confirmed 24"' in found.ambiguous["countertop_depth"]
+
+
+def test_confirming_a_reader_s_own_row_confirms_the_reading(
+    session: Session, store: LocalStore
+) -> None:
+    sheet = _Set(session, store)
+    row = sheet.reading(CT010, 24, QUALIFIED, link=sheet.link())
+    child = session.scalars(
+        select(ObservationCandidate).where(
+            ObservationCandidate.ambiguity_flags.contains([f"supports:{row.id}"])
+        )
+    ).first()
+    assert child is not None
+    confirm_candidate_type(session, candidate_id=child.id, semantic_type=CT010, confirmed_by=ACTOR)
+
+    operand = sheet.operands().operands["countertop_depth"]
+
+    assert operand.status is EvidenceStatus.HUMAN_CONFIRMED
+
+
+def test_a_reader_s_own_rows_are_not_listed_for_a_person_to_confirm(
+    session: Session, store: LocalStore
+) -> None:
+    from app.api.confirmations import list_candidates
+    from app.models import Package
+
+    sheet = _Set(session, store)
+    row = sheet.reading(CT010, 24, QUALIFIED, link=sheet.link())
+    package = session.get_one(Package, sheet.revision.package_id)
+
+    listed = list_candidates(
+        None,  # type: ignore[arg-type]
+        session,
+        package.project_id,
+        package.id,
+        page_number=1,
+    )
+
+    assert [candidate.candidate_id for candidate in listed.candidates] == [row.id]
+
+
+def test_an_unplaced_reading_with_another_value_holds_the_tied_one(
+    session: Session, store: LocalStore
+) -> None:
+    sheet = _Set(session, store)
+    sheet.reading(CT010, 24, QUALIFIED, link=sheet.link())
+    sheet.reading(CT010, 26, CONFIRM_ONLY, unplaced=(sheet.proposal, uuid4()))
+
+    found = sheet.operands()
+
+    assert found.operands == {}
+    assert '24" and 26"' in found.ambiguous["countertop_depth"]
+
+
+def test_a_held_reading_the_readers_agreed_differently_holds_the_tied_one(
+    session: Session, store: LocalStore
+) -> None:
+    sheet = _Set(session, store)
+    sheet.reading(CT010, 24, QUALIFIED, link=sheet.link())
+    sheet.reading(CT010, None, HELD, link=sheet.link(), agreed=30, reason="two stones")
+
+    assert sheet.operands().operands == {}
+
+
+def test_a_failed_re_read_falls_back_to_the_earlier_good_one(
+    session: Session, store: LocalStore
+) -> None:
+    sheet = _Set(session, store)
+    sheet.reading(CT010, 24, QUALIFIED, link=sheet.link())
+    failed = sheet.rerun()
+    session.add(
+        ObservationCandidate(
+            document_version_id=sheet.page.document_version_id,
+            page_id=sheet.page.id,
+            extraction_run_id=failed.id,
+            raw_text="",
+            polygon=[[0, 0], [1, 0], [1, 1], [0, 1]],
+            coordinate_space="image",
+            ambiguity_flags=[
+                DEPTH_READER_FLAG,
+                "state:run-failed",
+                f"unplaced-among:{sheet.proposal}",
+            ],
+            review_reason="the depth reading failed, so nothing was read: Boom: no reply",
+        )
+    )
+    session.flush()
+
+    found = sheet.operands()
+
+    assert found.operands["countertop_depth"].value.exact == 24  # type: ignore[union-attr]
+    assert any("failed" in note for note in found.notes)
+
+
+def test_a_reader_that_only_failed_says_so_on_the_countertop(
+    session: Session, store: LocalStore
+) -> None:
+    sheet = _Set(session, store)
+    session.add(
+        ObservationCandidate(
+            document_version_id=sheet.page.document_version_id,
+            page_id=sheet.page.id,
+            extraction_run_id=sheet.run.id,
+            raw_text="",
+            polygon=[[0, 0], [1, 0], [1, 1], [0, 1]],
+            coordinate_space="image",
+            ambiguity_flags=[
+                DEPTH_READER_FLAG,
+                "state:run-failed",
+                f"unplaced-among:{sheet.proposal}",
+            ],
+            review_reason="the depth reading failed, so nothing was read: Boom: no reply",
+        )
+    )
+    session.flush()
+
+    found = sheet.operands()
+
+    assert found.missing is not None and "failed" in found.missing and "Boom" in found.missing
+
+
+def test_a_person_s_correction_of_a_link_moves_the_reading_to_the_other_countertop(
+    session: Session, store: LocalStore
+) -> None:
+    sheet = _Set(session, store)
+    link = sheet.link()
+    sheet.reading(CT010, 24, QUALIFIED, link=link)
+    second = DrawingView(page_id=sheet.page.id, tag="SECOND", region=REGION)
+    session.add(second)
+    session.flush()
+    confirm_view_role(session, view=second, role=ViewRole.SHOP, actor=ACTOR)
+    other_proposal, other_item = _confirmed(session, second, PartKind.COUNTERTOP, "0.20", "0.80")
+    assert sheet.operands().operands, "before the correction the reading is this countertop's"
+    session.add(
+        ItemViewLink(
+            part_proposal_id=other_proposal,
+            page_id=sheet.page.id,
+            region=link.region,
+            view_kind="plan",
+            judged_by="person",
+            supersedes_id=link.id,
+            linked_by=ACTOR,
+        )
+    )
+    session.flush()
+
+    assert sheet.operands().operands == {}
+    moved = depth_operands(session, sheet.revision.id, _rule("CT-DEPTH-001"), other_item)
+    assert moved.operands["countertop_depth"].value.exact == 24  # type: ignore[union-attr]
