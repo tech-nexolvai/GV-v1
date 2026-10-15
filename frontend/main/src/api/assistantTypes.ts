@@ -61,7 +61,9 @@ export type AssistantEvidence =
 /** Navigation the answer offers. Nothing here records a decision. */
 export type AssistantAction =
   | { kind: 'open_page'; page_number: number; label: string }
-  | { kind: 'open_queue_item'; record_id: string; label: string };
+  | { kind: 'open_queue_item'; record_id: string; label: string }
+  /** An entry of the simple review list (#1354): its own key (`ReviewItemOut.key`, `FailureOut.key` …). */
+  | { kind: 'open_review_item'; item_key: string; page_number: number | null; label: string };
 
 export type AssistantMode = 'llm' | 'records_only' | 'refused' | 'disabled';
 

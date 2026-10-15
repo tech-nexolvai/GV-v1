@@ -9,6 +9,7 @@ import type { Finding } from '@/data/types';
 import { ApiError } from '@/api/client';
 import { answerParts, blockersOf, failureWords, historyFor, matchesRecords, plainAnswer, queueKeyFor, resolveEvidence, starterHint, usableActions, type AssistantContext, type AssistantRecords } from '@/lib/assistant';
 import { AssistantPanel, type AssistantNavigation } from '@/components/assistant/assistant-panel';
+import { AnswerView } from '@/components/assistant/assistant-answer';
 
 // Synthetic data only: nothing here comes from a client drawing.
 const x = (numerator: string, denominator: string, display: string) => ({ numerator, denominator, display });
@@ -234,6 +235,18 @@ describe('assistant: rules', () => {
     expect(usableActions([{ kind: 'open_queue_item', record_id: 'row-3', label: 'Open page 3 in the queue' }], records)).toEqual([{ kind: 'open_page', page_number: 3, label: 'Open page 3' }]);
     expect(usableActions([{ kind: 'open_queue_item', record_id: 'ghost', label: 'Ghost' }], records)).toEqual([]);
     expect(usableActions([{ kind: 'open_queue_item', record_id: 'row-7', label: 'Open page 7 in the queue' }], records)).toEqual([{ kind: 'open_queue_item', record_id: 'row-7', label: 'Open page 7 in the queue', queueKey: 'row:row-7' }]);
+  });
+
+  it("the simple review page opens its own list entry; elsewhere it becomes the entry's page (#1368)", async () => {
+    const action = { kind: 'open_review_item' as const, item_key: 'number:cand-1', page_number: 4, label: 'Open this item' };
+    expect(usableActions([action], RECORDS, true)).toEqual([action]);
+    expect(usableActions([action], RECORDS)).toEqual([{ kind: 'open_page', page_number: 4, label: 'Open page 4' }]);
+    expect(usableActions([{ ...action, page_number: null }], RECORDS)).toEqual([]);
+    const openReviewItem = vi.fn();
+    const answer: AssistantAnswer = { text: 'Synthetic: one item is left.', citations: [], evidence: [], actions: [action], suggestions: [], checked: true, mode: 'records_only', model_id: null, sources: [] };
+    render(<AnswerView answer={answer} records={RECORDS} nav={{ openPage: vi.fn(), showRow: vi.fn(), showFinding: vi.fn(), openQueue: vi.fn(), openReviewItem }} reveal={false} latest={false} busy={false} onAsk={vi.fn()} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Open this item' }));
+    expect(openReviewItem).toHaveBeenCalledWith('number:cand-1', 4);
   });
 
   it('says failures in plain words, never the technical text', () => {

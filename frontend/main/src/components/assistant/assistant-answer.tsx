@@ -34,6 +34,8 @@ export interface AssistantNavigation {
   showRow: (row: CountertopResult) => void;
   showFinding: (finding: Finding) => void;
   openQueue: (key: string) => void;
+  /** The simple review page (#1368): open, scroll to and focus one entry of its list. */
+  openReviewItem?: (key: string, page: number | null) => void;
 }
 
 function openCite(target: CiteTarget, nav: AssistantNavigation) {
@@ -387,7 +389,7 @@ export function AnswerView({
   const evidence = resolveEvidence(answer.evidence, records);
   // An action going where a card or list below already goes is the same button twice: left out.
   const offered = offeredByEvidence(evidence, records);
-  const actions = usableActions(answer.actions, records).filter((action) => !offered.has(actionKey(action)));
+  const actions = usableActions(answer.actions, records, nav.openReviewItem !== undefined).filter((action) => !offered.has(actionKey(action)));
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const checked = matchesRecords(answer);
@@ -450,7 +452,11 @@ export function AnswerView({
                   variant="outline"
                   size="sm"
                   className="font-sans"
-                  onClick={() => (action.kind === 'open_page' ? nav.openPage(action.page_number) : nav.openQueue(action.queueKey))}
+                  onClick={() => {
+                    if (action.kind === 'open_page') nav.openPage(action.page_number);
+                    else if (action.kind === 'open_review_item') nav.openReviewItem?.(action.item_key, action.page_number);
+                    else nav.openQueue(action.queueKey);
+                  }}
                 >
                   {action.kind === 'open_page' ? <Ruler aria-hidden="true" /> : <ListChecks aria-hidden="true" />}
                   {action.label}

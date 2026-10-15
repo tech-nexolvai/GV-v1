@@ -4,8 +4,8 @@
  * `GET /projects/{p}/packages/{k}/review-items` is the W1 read API (#1338). Its types come from the
  * generated `schema.d.ts`, so a renamed field stops this page compiling.
  *
- * The writes (Confirm, Fix, Agree, "Clear all as not checked") are the W3 action endpoints, which do
- * not exist yet. They all go through one function, `act`, so W3 only has to change that function.
+ * The writes (Confirm, Fix, Agree, the one-click choices, "Clear all as not checked") are the W3
+ * action endpoints (#1351). They all go through one function, `act`.
  */
 
 import { ApiError, type ErrorEnvelope } from './client';
@@ -32,7 +32,8 @@ export type ReviewItemKind = ReviewItem['kind'];
 export type ReviewStatus = ReviewItem['status'];
 
 /**
- * Every one-click answer the page can send. No action ever carries typed text. The API lists an
+ * Every answer the page can send. Only Fix carries typed text: the value the drawing shows, in
+ * inches, recorded as a correction of the AI's reading (Anant, 2026-10-16). The API lists an
  * item's `actions` as plain strings; `isItemAction` narrows one to this list, and anything else is
  * ignored rather than shown as a button the page cannot name.
  */
@@ -56,9 +57,10 @@ export function isItemAction(action: string): action is ItemAction {
 }
 
 /**
- * What one click sends. `value` is a reading the reviewer picked from the AIs' own readings;
- * `shown_value` is the number a Confirm was shown; `wall_config` is the wall layout clicked;
- * `expected_keys` are the open keys a group click was shown (#1358).
+ * What one answer sends. `value` is the value a Fix records, in inches, as the reviewer typed it
+ * (a correction of the AI's reading); `shown_value` is the number a Confirm was shown; `wall_config`
+ * is the wall layout clicked; `expected_keys` are the open keys a group click was shown (#1358);
+ * `architect_view` and `architect_pairing` are the bodies of the existing architect POSTs (#1368).
  */
 export interface ActionBody {
   expected_finding_id: string | null;
@@ -66,6 +68,20 @@ export interface ActionBody {
   shown_value?: string;
   wall_config?: string;
   expected_keys?: string[];
+  architect_view?: ArchitectViewAnswer;
+  architect_pairing?: ArchitectPairingAnswer;
+}
+
+/** "This view shows the countertop", or "None of these", naming the record the reviewer was shown. */
+export type ArchitectViewAnswer =
+  | { view_id: string; none_of_these?: false; expected_record_id: string }
+  | { view_id?: null; none_of_these: true; expected_record_id: string };
+
+/** The pairing the reviewer accepted; `pairs: []` says nothing on the architect's drawing is comparable. */
+export interface ArchitectPairingAnswer {
+  pairs: { kind: 'overall' | 'piece'; architect_candidate_id: string; vendor_slot_indices: number[] }[];
+  note?: string | null;
+  expected_record_id?: string;
 }
 
 /** The answer-specific part of one click, added to `expected_finding_id`. */

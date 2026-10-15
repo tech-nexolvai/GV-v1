@@ -38,14 +38,14 @@ export function FailuresStrip({
       <div aria-hidden="true" className="flex h-12 items-center gap-2 border-b border-outcome-fail-fg/20 bg-outcome-fail-bg px-4 sm:px-6 text-[15px] font-medium text-outcome-fail-fg">
         <OutcomeIcon outcome="FAIL" size={16} />
         Will be clouded as wrong
-        <span className="num ml-auto text-[13px] font-normal">{open > 0 ? `${open} to agree` : 'All agreed'}</span>
+        <span className="ml-auto text-[13px] font-normal">{open > 0 ? <><span className="num">{open}</span> to agree</> : 'All agreed'}</span>
       </div>
       <ul className="divide-y divide-border">
         {failures.map((failure) => {
           const busy = busyKey === failure.key;
           const error = errors[failure.key];
           return (
-            <li key={failure.key} data-slot="failure-row" className="flex min-h-14 flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2 sm:px-6">
+            <li key={failure.key} data-slot="failure-row" data-entry-key={failure.key} tabIndex={-1} className="flex outline-none focus-visible:bg-accent/60 min-h-14 flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2 sm:px-6">
               <span className="inline-flex shrink-0 basis-full items-center gap-1.5 text-[13px] font-medium text-outcome-fail-fg sm:w-20 sm:basis-auto">
                 <OutcomeIcon outcome="FAIL" size={14} />
                 Wrong

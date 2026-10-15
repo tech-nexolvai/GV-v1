@@ -14,6 +14,10 @@ import {
   ringOf,
   splitNumbers,
   summarize,
+  leftWords,
+  fixValue,
+  pagesWord,
+  openNoCountertopPages,
 } from '@/lib/review-items';
 import { allSettled, reviewItems } from './fixtures/review-items';
 
@@ -72,7 +76,7 @@ describe('simple review rules', () => {
     ]);
   });
 
-  it('the final cloud PDF is locked while anything is open, and says why', () => {
+  it('the final cloud PDF is locked while the server says so, in its own words (#1368)', () => {
     const summary = summarize(data);
     expect(summary.openItems).toHaveLength(6);
     expect(summary.canFinalise).toBe(false);
@@ -80,18 +84,43 @@ describe('simple review rules', () => {
     expect(summary.nothingNeedsYou).toBe(false);
   });
 
-  it('unlocks the final cloud PDF only when the server and the page agree', () => {
+  it('readiness is the server\'s answer, never worked out on the screen (#1368)', () => {
     expect(summarize(allSettled())).toMatchObject({ canFinalise: true, finalBlocked: null, nothingNeedsYou: true });
     const serverSaysNo = allSettled();
     serverSaysNo.header.can_finalise = false;
     serverSaysNo.header.blocked_reason = 'The package is not awaiting review.';
     expect(summarize(serverSaysNo)).toMatchObject({ canFinalise: false, finalBlocked: 'The package is not awaiting review.' });
+    // Items still open on the screen do not lock what the server unlocked, nor the other way round.
+    const serverSaysYes = reviewItems((draft) => { draft.header.can_finalise = true; draft.header.blocked_reason = null; });
+    expect(summarize(serverSaysYes)).toMatchObject({ canFinalise: true, finalBlocked: null });
+    const noWords = allSettled();
+    noWords.header.can_finalise = false;
+    noWords.header.blocked_reason = null;
+    expect(summarize(noWords).finalBlocked).toBe('The server has not unlocked the final cloud PDF yet.');
   });
 
-  it('a record missing from the page locks the final PDF', () => {
+  it('says what is left in counts from the lists, only those above zero (#1368)', () => {
+    expect(leftWords(data)).toEqual(['6 items to answer', '2 wrong results to agree', '6 checks not run', '1 item re-checking']);
     const missing = allSettled();
     missing.unaccounted = [{ kind: 'finding', finding_id: 'find-x', why: 'Synthetic: not placed.' }];
-    expect(summarize(missing).canFinalise).toBe(false);
+    expect(leftWords(missing)).toEqual(['1 record missing from this page']);
+  });
+
+  it('a Fix typed as a bare number is in inches; anything else is sent as typed (#1368)', () => {
+    expect(fixValue(' 96 3/4 ')).toBe('96 3/4"');
+    expect(fixValue('42.5')).toBe('42.5"');
+    expect(fixValue('3/4')).toBe('3/4"');
+    expect(fixValue('96   1/2')).toBe('96 1/2"');
+    expect(fixValue('96 1/2"')).toBe('96 1/2"');
+    expect(fixValue("8' 1/2\"")).toBe("8' 1/2\"");
+    expect(fixValue('1200 mm')).toBe('1200 mm');
+    expect(fixValue('')).toBe('');
+  });
+
+  it('names pages "p.2, p.4 and p.5" and picks the open no-countertop pages (#1368)', () => {
+    expect(pagesWord([2, 4, 5])).toBe('p.2, p.4 and p.5');
+    expect(pagesWord([9])).toBe('p.9');
+    expect(openNoCountertopPages(data.items).map((entry) => entry.key)).toEqual(['page:rec-9']);
   });
 
   it('rings a spot a little larger than the spot, never smaller than 3% of the page', () => {

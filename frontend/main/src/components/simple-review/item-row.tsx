@@ -39,7 +39,7 @@ export const ItemRow = forwardRef<HTMLButtonElement, {
       onClick={onToggle}
       onFocus={onFocus}
       className={cn(
-        'group flex min-h-14 w-full items-center gap-3 px-4 py-2 text-left outline-none sm:h-14 sm:px-6 sm:py-0',
+        'group flex min-h-14 w-full scroll-mt-6 scroll-mb-32 items-center gap-3 px-4 py-2 text-left outline-none sm:h-14 sm:px-6 sm:py-0',
         'transition-colors duration-150 ease-out motion-reduce:transition-none',
         'hover:bg-accent/60 focus-visible:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset',
         active && 'bg-accent/40',

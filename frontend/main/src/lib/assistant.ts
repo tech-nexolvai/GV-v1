@@ -350,18 +350,33 @@ function recordPage(recordId: string, records: Pick<AssistantRecords, 'rows' | '
 
 export type UsableAction =
   | Extract<AssistantAction, { kind: 'open_page' }>
-  | (Extract<AssistantAction, { kind: 'open_queue_item' }> & { queueKey: string });
+  | (Extract<AssistantAction, { kind: 'open_queue_item' }> & { queueKey: string })
+  | Extract<AssistantAction, { kind: 'open_review_item' }>;
 
-export const actionKey = (action: UsableAction) => (action.kind === 'open_page' ? `page:${action.page_number}` : action.queueKey);
+export const actionKey = (action: UsableAction) =>
+  action.kind === 'open_page' ? `page:${action.page_number}` : action.kind === 'open_review_item' ? `review:${action.item_key}` : action.queueKey;
 
 /**
  * The answer's own navigation buttons. A queue item the queue does not list becomes "Open page N"
  * on the drawing when its page is known, and is left out otherwise; so is an unknown record.
  */
-export function usableActions(actions: readonly AssistantAction[], records: Pick<AssistantRecords, 'rows' | 'findings' | 'blocking'>): UsableAction[] {
+export function usableActions(
+  actions: readonly AssistantAction[],
+  records: Pick<AssistantRecords, 'rows' | 'findings' | 'blocking'>,
+  /** True on the simple review page (#1368), which opens its own list entries; elsewhere an entry
+   * becomes "Open page N" when its page is known, and is left out otherwise. */
+  reviewItems = false,
+): UsableAction[] {
   const out: UsableAction[] = [];
   for (const action of actions) {
     let usable: UsableAction | null = action.kind === 'open_page' ? action : null;
+    if (action.kind === 'open_review_item') {
+      usable = reviewItems
+        ? action
+        : action.page_number !== null
+          ? { kind: 'open_page', page_number: action.page_number, label: `Open page ${action.page_number}` }
+          : null;
+    }
     if (action.kind === 'open_queue_item') {
       const queueKey = queueKeyFor(action.record_id, records);
       const page = queueKey ? null : recordPage(action.record_id, records);

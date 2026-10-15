@@ -19,14 +19,25 @@ export function NotCheckedGroup({
   busy,
   error,
   onClearAll,
+  open: controlledOpen,
+  onOpenChange,
 }: {
+  /** Open from outside (the Assistant's "open item"); uncontrolled when left out. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   items: readonly NotCheckedItem[];
   note: string | null;
   busy: boolean;
   error: SaveError | null;
   onClearAll: () => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [ownOpen, setOwnOpen] = useState(false);
+  const open = controlledOpen ?? ownOpen;
+  const setOpen = (next: (value: boolean) => boolean) => {
+    const value = next(open);
+    setOwnOpen(value);
+    onOpenChange?.(value);
+  };
   if (items.length === 0) return null;
   const waiting = items.filter((item) => item.status === 'open').length;
 
@@ -73,7 +84,7 @@ export function NotCheckedGroup({
       >
         <ul id="not-checked-list" hidden={!open} className="min-h-0 overflow-hidden border-t border-dashed border-border">
           {items.map((item) => (
-            <li key={item.key} className="flex h-11 items-center gap-3 px-4 pl-11 sm:px-6 sm:pl-[3.25rem] text-[13px] text-muted-foreground">
+            <li key={item.key} data-entry-key={item.key} tabIndex={-1} className="flex h-11 outline-none focus-visible:bg-accent/60 items-center gap-3 px-4 pl-11 sm:px-6 sm:pl-[3.25rem] text-[13px] text-muted-foreground">
               <span className="min-w-0 flex-1 truncate">
                 <span className="text-foreground">{item.check}</span>
                 <span className="ml-2">{whereWord(item)}</span>
