@@ -101,6 +101,8 @@ export function matchesWords(source: FindingSource): string {
       return 'meets GV rule';
     case 'vendor_arithmetic':
       return 'adds up';
+    case 'cross_view':
+      return 'same on every view';
     default:
       return 'matches architect';
   }

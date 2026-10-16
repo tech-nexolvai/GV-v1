@@ -47,6 +47,7 @@ from app.review.assistant.chat_findings import (
     SET_COVERAGE,
     UPDATE_FINDING,
 )
+from app.review.assistant.ledger import LEDGER_TOOLS
 from app.review.assistant.sandbox import (
     OUTPUTS,
     SCRATCH,
@@ -61,6 +62,7 @@ from app.review.assistant.sandbox import (
 )
 
 __all__ = [
+    "COMPARE_ROUNDS",
     "HELPER_SYSTEM_PROMPT",
     "HELPER_TOOLS",
     "LEAD_SYSTEM_PROMPT",
@@ -108,7 +110,8 @@ review_results reads what GV Review's own checks recorded for this set; report_f
 each difference you find, with boxes so the app crops the evidence, checks it and draws the table \
 (update_finding, drop_finding as you check); set_coverage records the pages you compared (a \
 whole-set answer accounts for every page); dismiss_recorded sets aside a difference GV Review \
-recorded, with your reason; cite backs any other value you state with where it is printed.
+recorded, with your reason; cite backs any other value you state with where it is printed. \
+Record every dimension string with record_string and every value you read with record_reading.
 
 Three GV facts:
 - Measurements are in inches. Answer in inches.
@@ -127,11 +130,12 @@ You are a helper agent working for Claude inside GV Review, on part of one drawi
 countertop and cabinet shop drawings. You share Claude's Linux computer (no internet access): the \
 PDFs read-only in {UPLOADS}, the working folder {SCRATCH}, {OUTPUTS}, and GV's review skill in \
 {SKILLS} (read SKILL.md there when your task is a review). Your tools: bash_tool, view, \
-create_file, str_replace, report_finding and set_coverage.
+create_file, str_replace, report_finding, set_coverage, record_string and record_reading.
 
 Do the task you are given. Record each difference you find with report_finding: both values as \
 printed, and boxes (PDF points of the page as shown, origin top-left) so the app can crop the \
-evidence. Record the pages you compared with set_coverage. Then reply with your report in \
+evidence. Record the pages you compared with set_coverage. Record every dimension string with \
+record_string and every value you read with record_reading (code adds them up). Then reply with your report in \
 markdown: what you found, with page numbers and the values as printed, and what you could not \
 read or did not get to. Measurements are in inches. GV's markup (annotations GV reviewers added to the PDFs) is GV's notes, never the \
 vendor's or the architect's numbers. Never guess a number you cannot read."""
@@ -302,6 +306,35 @@ _RESULTS: Final[Mapping[str, Any]] = {
         },
     },
 }
+#: `revision_diff.COMPARE_ROUNDS_TOOL`, copied: `app/api/` must not import the renderer that module
+#: needs (`tests/api/test_no_heavy_work.py`); a test keeps the two the same.
+COMPARE_ROUNDS: Final[Mapping[str, Any]] = {
+    "name": "compare_rounds",
+    "description": (
+        "Compare two rounds of the vendor's drawing (e.g. 'First set of comments' and 'Second set "
+        "of comments') by code, pixel by pixel with GV's markup removed: where the drawing changed, "
+        "and for this answer's findings on the round-1 page whether their spot changed. Give "
+        "round1_page; round2_page is found from the headings when omitted. Give neither to list "
+        "the round pairs in the set. Zones say WHERE ink changed, not the new value: read the "
+        "number in a zone before saying what the vendor changed."
+    ),
+    "input_schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "round1_page": {"type": "integer", "description": "Page of the earlier round (from 1)"},
+            "round2_page": {"type": "integer", "description": "Page of the later round (from 1)"},
+            "round1_file": {
+                "type": "string",
+                "description": "Upload holding round 1, when the set has 2+ PDFs",
+            },
+            "round2_file": {
+                "type": "string",
+                "description": "Upload holding round 2, when it is a different PDF",
+            },
+        },
+    },
+}
 #: The lead's tools, in a fixed order (the order is part of the cached, replayed prefix).
 LEAD_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     _BASH,
@@ -319,6 +352,8 @@ LEAD_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     SET_COVERAGE,
     DISMISS_RECORDED,
     CITE,
+    *LEDGER_TOOLS,
+    COMPARE_ROUNDS,
 )
 HELPER_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     _BASH,
@@ -327,6 +362,7 @@ HELPER_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     _REPLACE,
     REPORT_FINDING,
     SET_COVERAGE,
+    *LEDGER_TOOLS,
 )
 
 _DEFAULT_LABELS: Final[Mapping[str, str]] = {
@@ -339,6 +375,7 @@ _DEFAULT_LABELS: Final[Mapping[str, str]] = {
     "TaskUpdate": "Updated a task",
     "Agent": "Ran helper agents",
     "review_results": "Read the recorded results",
+    "compare_rounds": "Compared two rounds",
 }
 
 

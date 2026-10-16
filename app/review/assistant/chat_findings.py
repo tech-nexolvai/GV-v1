@@ -41,6 +41,7 @@ from app.review.assistant.sandbox import UPLOADS, ChatWorkspace, SandboxRefused
 
 __all__ = [
     "CITE",
+    "CODE_SOURCES",
     "COVERAGE_CHECK_PREFIX",
     "DISMISS_RECORDED",
     "DROP_FINDING",
@@ -67,6 +68,8 @@ _log = logging.getLogger(__name__)
 CATEGORIES: Final = ("countertop", "cabinet", "other")
 STATUSES: Final = ("different", "check", "same")
 SOURCES: Final = ("architect", "brand_prototype", "rules", "vendor_arithmetic", "gv_review")
+#: Sources only code makes (the reading ledger): never in the tool's enum.
+CODE_SOURCES: Final = ("cross_view", "completeness")
 COVERAGE_STATUSES: Final = ("same", "different", "not_comparable", "not_opened")
 MAX_FINDINGS: Final = 300
 _MAX_ITEM: Final = 160
@@ -453,7 +456,9 @@ class FindingBook:
 
     # ---- findings ----------------------------------------------------------------------------------
 
-    def _fields(self, given: Mapping[str, Any], *, partial: bool) -> dict[str, Any]:
+    def _fields(
+        self, given: Mapping[str, Any], *, partial: bool, sources: Sequence[str] = SOURCES
+    ) -> dict[str, Any]:
         """The finding fields given, checked (`partial`: an update; null clears an optional one)."""
         out: dict[str, Any] = {}
         present = set(given)
@@ -486,7 +491,7 @@ class FindingBook:
                 raise SandboxRefused("verified must be true or false")
             out["verified"] = given["verified"]
         if "source" in present:
-            out["source"] = _choice(given["source"], "source", SOURCES)
+            out["source"] = _choice(given["source"], "source", sources)
         for name, architect in (("arch_box", True), ("vendor_box", False)):
             if name in present:
                 out[name] = self._box(given[name], name, architect=architect)
@@ -558,6 +563,83 @@ class FindingBook:
             if given is not None and why is not None
         ]
         return dict(finding), notes
+
+    def add_code_finding(self, given: Mapping[str, Any]) -> dict[str, Any] | None:
+        """A finding code made (the reading ledger's: `created_by: "ledger"`), added like a lead
+        finding (id, crops, checks). Its `ledger_ids` and `reference_side` are kept. A box that is
+        not on an upload is left out; a finding that still does not fit is skipped (None)."""
+        fields_given = {k: v for k, v in given.items() if k in _FINDING_FIELDS}
+        for name, limit in (("item", _MAX_ITEM), ("why", _MAX_WHY)):
+            value = fields_given.get(name)
+            if isinstance(value, str) and len(" ".join(value.split())) > limit:
+                fields_given[name] = " ".join(value.split())[: limit - 1] + "\u2026"
+        side = given.get("reference_side")
+        if given.get("source") == "cross_view" and side in ("vendor", "architect"):
+            # Both of a cross-view finding's boxes are on the reference side's own file.
+            item = (
+                main_upload(self.listing) if side == "vendor" else _architect_upload(self.listing)
+            )
+            for name in ("arch_box", "vendor_box"):
+                box = fields_given.get(name)
+                if isinstance(box, Mapping) and not box.get("file") and item is not None:
+                    fields_given[name] = {**box, "file": str(item["name"])}
+        for name in ("arch_box", "vendor_box"):
+            box = fields_given.get(name)
+            if isinstance(box, Mapping) and box.get("file") is None:
+                fields_given[name] = {k: v for k, v in box.items() if k != "file"}
+        try:
+            fields = self._fields(fields_given, partial=False, sources=(*SOURCES, *CODE_SOURCES))
+        except SandboxRefused:
+            for name in ("arch_box", "vendor_box"):
+                fields_given.pop(name, None)
+            if self.page_count and int(fields_given.get("page") or 0) > self.page_count:
+                # An architect's page: the item has no vendor page.
+                fields_given = {**fields_given, "vs_page": fields_given["page"], "page": 1}
+            try:
+                fields = self._fields(
+                    fields_given, partial=False, sources=(*SOURCES, *CODE_SOURCES)
+                )
+            except SandboxRefused as refused:
+                _log.warning("assistant chat ledger finding skipped: %s", refused)
+                return None
+        with self._lock:
+            if len(self.findings) >= MAX_FINDINGS:
+                return None
+            self._count += 1
+            finding_id = f"F{self._count}"
+        arch_picture, _why = self._picture(fields.get("arch_box"))
+        vendor_picture, _why = self._picture(fields.get("vendor_box"))
+        finding: dict[str, Any] = {
+            "id": finding_id,
+            "page": fields["page"],
+            "vs_page": fields.get("vs_page"),
+            "item": fields["item"],
+            "category": fields["category"],
+            "architect": fields["architect"],
+            "vendor": fields["vendor"],
+            "status": fields["status"],
+            "why": fields.get("why"),
+            "verified": bool(fields.get("verified")),
+            "arch_box": fields.get("arch_box"),
+            "vendor_box": fields.get("vendor_box"),
+            "source": fields["source"],
+            "parts": fields.get("parts"),
+            "printed_total": fields.get("printed_total"),
+            "rule_check_id": None,
+            "record_id": None,
+            "round": None,
+            "arch_picture_id": arch_picture,
+            "vendor_picture_id": vendor_picture,
+            "created_by": "ledger",
+            "ledger_ids": [str(i) for i in given.get("ledger_ids") or []],
+            "reference_side": side if side in ("vendor", "architect") else None,
+            "sum_text": str(given["sum_text"]) if given.get("sum_text") else None,
+        }
+        if self.checker is not None:
+            finding = self.checker(finding)
+        with self._lock:
+            self.findings[finding_id] = finding
+        return dict(finding)
 
     def _known(self, raw: Mapping[str, Any]) -> str:
         finding_id = raw.get("finding_id")

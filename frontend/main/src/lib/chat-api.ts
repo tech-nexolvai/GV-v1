@@ -154,7 +154,16 @@ export type FindingStatus = 'different' | 'check' | 'same';
  * What the vendor's value was compared with: the architect's drawing (the usual case), the brand's
  * prototype, GV's rules, or the vendor's own numbers adding up ("vendor's own string").
  */
-export type FindingSource = 'architect' | 'brand_prototype' | 'rules' | 'vendor_arithmetic';
+export type FindingSource =
+  | 'architect'
+  | 'brand_prototype'
+  | 'rules'
+  | 'vendor_arithmetic'
+  | 'gv_review'
+  /** Made by code from the reading ledger: one item read differently on two views of the same side. */
+  | 'cross_view'
+  /** Made by code from the reading ledger: an item one side shows and the other never does. */
+  | 'completeness';
 
 /** A spot on a page, in PDF points of the original upload (origin top-left). */
 export interface FindingBox {
@@ -206,6 +215,15 @@ export interface ChatFinding {
   rule_check_id?: string | null;
   /** Chat v3: which round of comments it is from. */
   round?: number | null;
+  /** The reading ledger's entries behind a finding code made from it (S<n>, R<n>). */
+  ledger_ids?: string[] | null;
+  /**
+   * `cross_view`: whose drawings disagree with themselves. `architect` then holds the REFERENCE
+   * view's value and `vendor` this view's value (both on that side's drawings).
+   */
+  reference_side?: 'vendor' | 'architect' | null;
+  /** A ledger sum, written out by code: "12 + 15 1/2 = 27 1/2 ≠ 27 1/4 printed (off 1/4)". */
+  sum_text?: string | null;
 }
 
 /**
@@ -247,7 +265,10 @@ export type RoundStatus = 'fixed_in_later_round' | 'still_wrong' | 'new_in_later
 /** One difference GV Review's own checks recorded that the answer did not include. */
 export interface TrustLeftOut {
   page?: number | null;
-  item: string;
+  /** The screen's shape; the server sends `what` (and `record_id`) instead. */
+  item?: string | null;
+  what?: string | null;
+  record_id?: string | null;
   /** e.g. "architect 30" · vendor 31"" as code wrote it. */
   values?: string | null;
   /** "code rule" or "AI page review". */
@@ -268,12 +289,67 @@ export interface ChatTrust {
     rules?: string[] | null;
     arithmetic?: { checked: number; agrees: number } | null;
   } | null;
-  /** Of the differences GV Review's own checks recorded for this set, how many the answer includes. */
-  gv_checks?: { matched: number; total: number; left_out?: TrustLeftOut[] | null } | null;
+  /**
+   * Of the differences GV Review's own checks recorded for this set, how many the answer includes.
+   * The server sends `recorded` / `included`; `matched` / `total` are the older screen names.
+   */
+  gv_checks?: {
+    matched?: number | null;
+    total?: number | null;
+    recorded?: number | null;
+    included?: number | null;
+    left_out?: TrustLeftOut[] | null;
+  } | null;
+  /** The reading ledger's own "never drop a recorded result" check (whole-set answers). */
+  recorded_results?: {
+    recorded: number;
+    included: number;
+    dismissed?: number | null;
+    missing?: RecordedResult[] | null;
+    /** Of `missing`, the ones `gv_checks` does not count (e.g. the review list's failures). */
+    also_left_out?: RecordedResult[] | null;
+  } | null;
+  /** The reading ledger's counts, all by code. */
+  ledger?: LedgerReport | null;
   /** What it did NOT check, in code's plain words (pen-stroke numbers, pages not opened…). */
   not_checked?: string[] | null;
   /** Rounds of comments: round-1 differences fixed in a later round, still wrong, not in it, and new ones. */
-  rounds?: { fixed: number; still_wrong: number; new: number; not_in_later?: number | null } | null;
+  rounds?: {
+    fixed: number;
+    still_wrong: number;
+    new: number;
+    not_in_later?: number | null;
+    /** compare_rounds: changes nobody asked for (no finding, no GV markup nearby). */
+    unrequested?: number | null;
+    /** The line code wrote for it. */
+    line?: string | null;
+  } | null;
+}
+
+/** A result GV Review recorded (a code FAIL, or an evaluator-checked AI page review difference). */
+export interface RecordedResult {
+  key: string;
+  pages?: number[] | null;
+  what?: string | null;
+  architect?: string | null;
+  vendor?: string | null;
+}
+
+/**
+ * The reading ledger (CONTRACT3 "Ledger"): every dimension string and value the AI recorded, added
+ * up and compared across views by code.
+ */
+export interface LedgerReport {
+  strings: { total: number; add_up: number; off: number; not_a_number: number; vendor_off?: number; architect_off?: number };
+  views: { groups: number; consistent: number; inconsistent: number; not_compared: number; typical_groups?: number };
+  completeness: {
+    compared: boolean;
+    architect_items: number;
+    vendor_items: number;
+    missing_on_vendor: string[];
+    extra_on_vendor: string[];
+    not_looked_at?: string[] | null;
+  };
 }
 
 /**
@@ -338,7 +414,8 @@ export type ChatTool =
   | 'TaskCreate'
   | 'TaskUpdate'
   | 'Agent'
-  | 'review_results';
+  | 'review_results'
+  | 'compare_rounds';
 
 /** One tool the assistant used. `step_start` sends it without its output; `step_end` sends it whole. */
 export interface ChatStep {

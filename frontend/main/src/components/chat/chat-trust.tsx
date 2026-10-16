@@ -8,6 +8,9 @@ import {
   checkCounts,
   checkLines,
   findingChecks,
+  gvChecksOf,
+  ledgerItems,
+  ledgerWords,
   levelCounts,
   notOpenedWords,
   ROUND_WORDS,
@@ -181,8 +184,10 @@ export function TrustSummary({ findings, trust, coverage, coverageStrip }: Trust
   const rated = levels ? levels.confirmed + levels.likely + levels.to_check : 0;
   const counts = checkCounts(findings, trust);
   const rounds = roundCounts(findings, trust);
-  const gv = trust?.gv_checks ?? null;
-  const leftOut = gv?.left_out ?? [];
+  const gv = gvChecksOf(trust);
+  const leftOut = gv?.leftOut ?? [];
+  const ledger = ledgerWords(trust?.ledger);
+  const ledgerNamed = ledgerItems(trust?.ledger);
   const notOpened = notOpenedWords(coverage);
   const notChecked = [...(trust?.not_checked ?? [])];
   if (notOpened && !notChecked.some((line) => line.toLowerCase().includes('not opened'))) notChecked.push(notOpened);
@@ -213,6 +218,25 @@ export function TrustSummary({ findings, trust, coverage, coverageStrip }: Trust
         {coverageStrip ?? (coverage && <p data-slot="chat-trust-coverage" className="tabular-nums">{coverageWords(coverageCounts(coverage))}</p>)}
         {rounds && <p data-slot="chat-trust-rounds" className="text-foreground tabular-nums">{roundWords(rounds)}</p>}
       </div>
+
+      {ledger && (
+        ledgerNamed.length ? (
+          <Disclosure slot="chat-trust-ledger" label={<>Read and checked by code: <span className="text-foreground">{ledger}</span></>}>
+            <ul data-slot="chat-trust-ledger-items" className="grid gap-1 text-[13px]">
+              {ledgerNamed.map((group) => (
+                <li key={group.label} className="min-w-0 break-words">
+                  <span className="text-muted-foreground">{group.label}: </span>
+                  {group.names.join(', ')}
+                </li>
+              ))}
+            </ul>
+          </Disclosure>
+        ) : (
+          <p data-slot="chat-trust-ledger" className="text-xs tabular-nums text-muted-foreground">
+            Read and checked by code: <span className="text-foreground">{ledger}</span>
+          </p>
+        )
+      )}
 
       {gv && (
         leftOut.length ? (

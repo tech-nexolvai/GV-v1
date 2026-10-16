@@ -37,7 +37,20 @@ export const SOURCE_WORDS: Record<FindingSource, string | null> = {
   brand_prototype: 'vs brand prototype',
   rules: 'GV rule',
   vendor_arithmetic: 'vendor’s own string',
+  gv_review: null,
+  cross_view: 'same item, another view',
+  completeness: 'shown on one side only',
 };
+
+/**
+ * The two value columns' names for a finding. A cross-view finding compares two views of the SAME
+ * side's drawings, so its columns are "Reference view" (the governing view) and "This view".
+ */
+export function sideLabels(finding: Pick<ChatFinding, 'source'>): { architect: string; vendor: string } {
+  return finding.source === 'cross_view'
+    ? { architect: 'Reference view', vendor: 'This view' }
+    : { architect: 'Architect', vendor: 'Vendor' };
+}
 
 /** What the small tick means, said on hover and to a screen reader. */
 export function verifiedWords(verified: boolean): string {

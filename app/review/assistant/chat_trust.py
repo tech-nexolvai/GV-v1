@@ -63,6 +63,7 @@ _log = logging.getLogger(__name__)
 
 CHECKS_MODULE: Final = "app.review.assistant.finding_checks"
 SECOND_READ_MODULE: Final = "app.review.assistant.second_read"
+REVISION_DIFF_MODULE: Final = "app.review.assistant.revision_diff"
 #: The outcome word GV Review's records use for a code FAIL (`workflow.findings_composer`).
 _FAIL_WORDS: Final = frozenset({"Needs correction"})
 _PASS_WORDS: Final = frozenset({"Looks right"})
@@ -542,7 +543,8 @@ def accuracy(
     """The share of the answer's checkable claims that independent checks back, by code.
 
     A finding: confirmed 1, likely 0.75, to check 0.4, any check that disagrees 0; a code rule or
-    code arithmetic that agrees, or GV's recorded result quoted as recorded, 1. A cited value:
+    code arithmetic that agrees (the reading ledger's sums included), or GV's recorded result
+    quoted as recorded, 1; the ledger's cross-view and completeness findings score by their level. A cited value:
     printed there 1, pen strokes 0.5, not found 0.2; a fact about the file checked by code 1 (0
     when it is wrong). A whole-set answer is multiplied by the share of pages accounted for. No
     claim to check: n/a."""
@@ -555,6 +557,13 @@ def accuracy(
             points, how = 0.0, against
         elif finding.get("created_by") == "gv_review" and finding.get("status") != "same":
             points, how = 1.0, "GV Review's own recorded result"
+        elif (
+            finding.get("created_by") == "ledger"
+            and finding.get("source") == "vendor_arithmetic"
+            and _arithmetic_agrees(checks, finding.get("status"))
+        ):
+            # The reading ledger's sum: code arithmetic, so it scores as confirmed.
+            points, how = 1.0, "code (the vendor's own arithmetic, from the reading ledger)"
         elif checks.get("rule") == "agrees" or _arithmetic_agrees(checks, finding.get("status")):
             points, how = 1.0, "code (GV's rule or the vendor's own arithmetic)"
         else:
