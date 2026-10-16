@@ -79,7 +79,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from io import BytesIO
-from typing import Final
+from typing import Any, Final
 from uuid import UUID
 
 from pypdf import PageObject, PdfReader, PdfWriter
@@ -1277,7 +1277,13 @@ def _compose(
                 architect_ordered,
                 placements[after_reviewer:],
                 (
-                    page_text_boxes(reader.pages[index], text_angle(entry.transform.rotation))
+                    _Ink(
+                        page_ink(
+                            package.source_pdf,
+                            index,
+                            _sheet(entry, text_angle(entry.transform.rotation)),
+                        )
+                    )
                     if label_layout is LabelLayout.TAGS
                     else None
                 ),
@@ -1433,11 +1439,11 @@ def _overlay(
     reviewer_placements: Sequence[tuple[int, Decimal, tuple[str, ...]]] = (),
     architect: Sequence[_ArchitectPlaced] = (),
     architect_placements: Sequence[tuple[int, Decimal, tuple[str, ...]]] = (),
-    text_boxes: Sequence[_Box] | None = None,
+    ink: _Ink | None = None,
 ) -> PageObject:
     """Build the transparent vector mark and callout page.
 
-    `text_boxes` (the page's own words, `page_text_boxes`) switches the drawing to tags only
+    `ink` (the page's own drawing, `page_ink`) switches the drawing to tags only
     (`LabelLayout.TAGS`); `None` draws the labels exactly as before."""
     left, bottom, right, top = expanded[0]
     canvas, buffer = _canvas(right - left, top - bottom)
@@ -1448,11 +1454,11 @@ def _overlay(
     sheet = _sheet(entry, angle)
     taken: list[tuple[float, float, float, float]] = []
     tags: _Tags | None = None
-    if text_boxes is not None:
+    if ink is not None:
         tags = _Tags(
             sheet,
             angle,
-            tuple(text_boxes),
+            ink.page,
             tuple(
                 _turned_box(polygon_pdf_points(polygon, entry.transform), angle, pad)
                 for polygon, pad in (
@@ -1915,9 +1921,6 @@ _FRAME_REACH: Final = 3.0
 TAG_FONT_SIZE: Final = 7.0
 _TAG_GAP: Final = 1.5
 
-#: A word's width when only its characters are known: a generous average for drawing fonts.
-_CHARACTER_WIDTH: Final = 0.6
-
 
 def _turned_box(points: Sequence[PdfPoint], angle: int, pad: float) -> _Box:
     """The box around `points`, `pad` points out, in the page's visible (turned) frame."""
@@ -1931,65 +1934,66 @@ def _turned_box(points: Sequence[PdfPoint], angle: int, pad: float) -> _Box:
     )
 
 
-def _times(
-    a: Sequence[float], b: Sequence[float]
-) -> tuple[float, float, float, float, float, float]:
-    """Two PDF matrices multiplied, `a` then `b` (row vectors, as the PDF specification does)."""
-    return (
-        a[0] * b[0] + a[1] * b[2],
-        a[0] * b[1] + a[1] * b[3],
-        a[2] * b[0] + a[3] * b[2],
-        a[2] * b[1] + a[3] * b[3],
-        a[4] * b[0] + a[5] * b[2] + b[4],
-        a[4] * b[1] + a[5] * b[3] + b[5],
-    )
+#: The scale the page is drawn at to find its ink (pixels per point), and how dark a pixel must
+#: be to count as ink.
+_INK_SCALE: Final = 2.0
+_INK_DARK: Final = 170
 
 
-def page_text_boxes(page: PageObject, angle: int) -> tuple[_Box, ...]:
-    """Where the page's own words are, as boxes in its visible (turned) frame.
+@dataclass(frozen=True, slots=True)
+class PageInk:
+    """The page's own drawing, as dark pixels, to keep a tag off its words and lines.
 
-    Read from the page's text operators (pypdf), each run's box put through its text and current
-    matrices, so turned and scaled words land where they are drawn. A width is estimated from the
-    characters, generously. Only used to keep a tag off the words: it decides nothing. A page whose
-    text cannot be read gives no boxes, and tags are then kept off the clouds and each other only.
-    """
-    inverse = (360 - angle) % 360
-    boxes: list[_Box] = []
+    Drawn from the source page (pypdfium2), so it sees every mark the page makes: real text, text
+    drawn as pen strokes, dimension lines and hatching. Only used to choose where a tag goes; it
+    decides nothing."""
 
-    def visit(
-        text: str, cm: Sequence[float], tm: Sequence[float], _font: object, size: float
-    ) -> None:
-        words = text.rstrip()
-        if not words.strip() or not size:
-            return
-        matrix = _times(tm, cm)
-        width = len(words) * size * _CHARACTER_WIDTH
-        corners = [
-            (x * matrix[0] + y * matrix[2] + matrix[4], x * matrix[1] + y * matrix[3] + matrix[5])
-            for x in (0.0, width)
-            for y in (-0.25 * size, size)
-        ]
-        turned = [_turn(Decimal(str(x)), Decimal(str(y)), inverse) for x, y in corners]
-        boxes.append(
-            (
-                float(min(x for x, _ in turned)),
-                float(min(y for _, y in turned)),
-                float(max(x for x, _ in turned)),
-                float(max(y for _, y in turned)),
-            )
-        )
+    image: Any
+    sheet: _Box
+
+    def cost(self, box: _Box) -> int:
+        """How many dark pixels of the page are under `box` (in the turned frame)."""
+        height = self.sheet[3] - self.sheet[1]
+        left = int((box[0] - self.sheet[0]) * _INK_SCALE)
+        right = int((box[2] - self.sheet[0]) * _INK_SCALE) + 1
+        top = int((height - (box[3] - self.sheet[1])) * _INK_SCALE)
+        bottom = int((height - (box[1] - self.sheet[1])) * _INK_SCALE) + 1
+        width, tall = self.image.size
+        left, right = max(0, left), min(width, right)
+        top, bottom = max(0, top), min(tall, bottom)
+        if right <= left or bottom <= top:
+            return 0
+        region = self.image.crop((left, top, right, bottom))
+        return int(sum(region.histogram()[:_INK_DARK]))
+
+
+def page_ink(source_pdf: bytes, index: int, sheet: _Box) -> PageInk | None:
+    """Page `index` drawn in grey, its visible sheet (`_sheet`) top-left at the image's. `None` when
+    the page cannot be drawn: tags are then kept off the clouds and each other only."""
+    import pypdfium2 as pdfium  # type: ignore[import-untyped]
 
     try:
-        page.extract_text(visitor_text=visit)
-    except Exception:  # noqa: BLE001 - placement help only; a page pypdf cannot read has no words
-        return ()
-    return tuple(boxes)
+        document = pdfium.PdfDocument(source_pdf)
+        try:
+            image = document[index].render(scale=_INK_SCALE, grayscale=True).to_pil().convert("L")
+        finally:
+            document.close()
+    except Exception:  # noqa: BLE001 - placement help only; a page that cannot be drawn has no ink
+        return None
+    return PageInk(image, sheet)
 
 
 def _overlap(box: _Box, other: _Box) -> float:
     width = min(box[2], other[2]) - max(box[0], other[0])
     height = min(box[3], other[3]) - max(box[1], other[1])
     return width * height if width > 0 and height > 0 else 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class _Ink:
+    """Tags only on this page, with the page's ink when it could be drawn."""
+
+    page: PageInk | None
 
 
 @dataclass(slots=True)
@@ -2003,7 +2007,7 @@ class _Tags:
 
     sheet: _Box
     angle: int
-    words: tuple[_Box, ...]
+    ink: PageInk | None
     clouds: tuple[_Box, ...]
     placed: list[_Box] | None = None
 
@@ -2039,8 +2043,12 @@ class _Tags:
                 box = (x, y, x + width, y + height)
                 if any(_overlap(box, other) > 0 for other in placed):
                     continue
-                cost = sum(_overlap(box, other) for other in self.words) + sum(
-                    _overlap(box, other) for other in self.clouds
+                # Ink in pixels; a cloud's area counts as fully inked, twice over; a further ring
+                # costs a little, so a near spot wins a tie.
+                cost = (
+                    (0 if self.ink is None else self.ink.cost(box))
+                    + 2 * _INK_SCALE**2 * sum(_overlap(box, other) for other in self.clouds)
+                    + (ring * 2 if ring else 0)
                 )
                 if cost == 0:
                     return box

@@ -10,6 +10,7 @@ stay in the margin note and on the summary. The default (`AS_BEFORE`) is unchang
 
 from __future__ import annotations
 
+from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -24,7 +25,7 @@ from reports.redline import (
     RedlinePackage,
     RedlinePage,
     ReportMode,
-    page_text_boxes,
+    page_ink,
     render_redline,
 )
 from storage.local import LocalStore
@@ -149,12 +150,29 @@ def test_the_old_layout_still_writes_the_words_on_the_drawing(tmp_path: Path) ->
 
 
 @pytest.mark.parametrize("rotation", [0, 90, 180, 270])
-def test_the_pages_words_are_found_where_they_are_drawn(rotation: int) -> None:
-    page = PdfReader(BytesIO(_source(rotation))).pages[0]
-    boxes = page_text_boxes(page, rotation)
-    assert len(boxes) == len(NOTES)
-    assert all(box[2] > box[0] and box[3] > box[1] for box in boxes)
-    if rotation == 0:
-        lefts = sorted(round(box[0]) for box in boxes)
-        assert lefts == [40, 120]
-        assert all(155 <= box[1] <= 158 and box[3] >= 165 for box in boxes)
+def test_the_pages_ink_is_found_where_it_is_drawn(rotation: int) -> None:
+    """The page's own drawing (here two notes) is seen where it is, turned with the page; text
+    drawn as pen strokes is ink as well, which word boxes would miss."""
+    from reports.redline import _sheet, _turn
+
+    package = _package(rotation)
+    sheet = _sheet(package.pages[0], rotation)
+    ink = page_ink(package.source_pdf, 0, sheet)
+    assert ink is not None
+
+    def turned(x0: float, y0: float, x1: float, y1: float) -> tuple[float, float, float, float]:
+        corners = [
+            _turn(Decimal(str(x)), Decimal(str(y)), (360 - rotation) % 360)
+            for x in (x0, x1)
+            for y in (y0, y1)
+        ]
+        return (
+            float(min(x for x, _ in corners)),
+            float(min(y for _, y in corners)),
+            float(max(x for x, _ in corners)),
+            float(max(y for _, y in corners)),
+        )
+
+    x, y, _ = NOTES[0]
+    assert ink.cost(turned(x, y, x + 30, y + 7)) > 20, "the note's ink is under its own box"
+    assert ink.cost(turned(x, 20, x + 30, 27)) == 0, "an empty part of the sheet has none"

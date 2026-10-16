@@ -408,12 +408,13 @@ def test_a_reviewer_takes_a_drawing_from_upload_to_a_downloadable_signed_off_rev
     assert redline.status_code == 200, redline.text
     assert redline.headers["content-type"] == "application/pdf"
     assert redline.content.startswith(b"%PDF-"), "the evidence-grounded redline is not a PDF"
-    # The placed label, external callout header and stored-fact note all name this
-    # same finding. The source drawing did not contain any of them.
+    # The external callout header and stored-fact note name this finding; on the drawing itself
+    # only its tag "02" sits by the cloud (a format-3 snapshot, final QA 2026-10-16). The source
+    # drawing did not contain any of them.
     drawing_page_text = " ".join(
         page.extract_text() or "" for page in PdfReader(io.BytesIO(redline.content)).pages
     )
-    assert "02 · CT-DEPTH-001 · PASS" in drawing_page_text
+    assert "02 · CT-DEPTH-001 · PASS" not in drawing_page_text
     assert "02  CT-DEPTH-001 · PASS" in drawing_page_text
     assert "CT-DEPTH-001 · PASS." in drawing_page_text
 
