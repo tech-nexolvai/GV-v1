@@ -334,6 +334,18 @@
             "title": "Clouded",
             "type": "boolean"
           },
+          "evaluator_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The evaluator's reason (or why it could not check); null when not re-checked.",
+            "title": "Evaluator Reason"
+          },
           "key": {
             "description": "`air:<row id>`: stable for this reading.",
             "title": "Key",
@@ -398,6 +410,19 @@
             ],
             "description": "The vendor's number as the AI read it.",
             "title": "Vendor Text"
+          },
+          "verified_by": {
+            "anyOf": [
+              {
+                "const": "evaluator",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`evaluator` when the independent evaluator confirmed this difference; null when it did not or the row was not re-checked.",
+            "title": "Verified By"
           },
           "why": {
             "title": "Why",

@@ -20,9 +20,11 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from decimal import Decimal
+from fractions import Fraction
 from typing import Any, Final
 from uuid import UUID
 
@@ -33,6 +35,17 @@ from app.evidence.record import open_extraction_run
 from app.models import Page
 from app.models.ai_review import AiPageReview, AiPageReviewRow
 from extraction.ai_review.checks import check_rows
+from extraction.ai_review.evaluator import (
+    EVALUATOR_MODEL,
+    EVALUATOR_PROMPT_ID,
+    EvaluatorRead,
+    Recheck,
+    ask_evaluator,
+    decide_recheck,
+    evaluator_packet,
+    evaluator_pictures,
+    evaluator_question,
+)
 from extraction.ai_review.reader import (
     AI_REVIEW_MODEL,
     AI_REVIEW_PROMPT_ID,
@@ -54,6 +67,7 @@ __all__ = [
     "ai_page_review_enabled",
     "configured_client",
     "persist_ai_page_review",
+    "recheck_differences",
     "run_in_stage",
     "spend_guard",
     "stored_answers",
@@ -107,7 +121,9 @@ def spend_guard(rates: object | None, budget: Decimal) -> Any | None:
     return BatchSpendGuard(budget, rates)
 
 
-def stored_answers(session: Session) -> Callable[[Mapping[str, object]], str | None]:
+def stored_answers(
+    session: Session, model_id: str = AI_REVIEW_MODEL, prompt_id: str = AI_REVIEW_PROMPT_ID
+) -> Callable[[Mapping[str, object]], str | None]:
     """The newest accepted stored answer to the identical question, or `None`."""
     from app.models.runs import ModelInvocation, ModelInvocationOutcome
     from workflow.reader_reuse import question_identity
@@ -121,8 +137,8 @@ def stored_answers(session: Session) -> Callable[[Mapping[str, object]], str | N
             select(ModelInvocation.reader_question_packet, ModelInvocation.private_raw_response)
             .where(
                 ModelInvocation.outcome == ModelInvocationOutcome.OK.value,
-                ModelInvocation.model_id == AI_REVIEW_MODEL,
-                ModelInvocation.prompt_id == AI_REVIEW_PROMPT_ID,
+                ModelInvocation.model_id == model_id,
+                ModelInvocation.prompt_id == prompt_id,
                 ModelInvocation.private_raw_response.is_not(None),
                 ModelInvocation.reader_question_packet["document_version_id"].astext == version,
             )
@@ -209,6 +225,105 @@ def _box(box: Any) -> list[str]:
     return [str(box.x0), str(box.top), str(box.x1), str(box.bottom)]
 
 
+@dataclass(frozen=True, slots=True)
+class _Pending:
+    """One `different` row waiting for the evaluator's second look."""
+
+    key: object
+    page_index: int
+    architect_text: str
+    measures: str
+    architect_box_pt: list[str]
+    vendor_box_px: list[int] | None
+    vendor_dpi: int | None
+    vendor_crop_px: list[int] | None
+    architect_inches: Fraction | None
+    vendor_inches: Fraction | None
+    why: str
+
+
+def _recheck(
+    session: Session,
+    *,
+    data: bytes,
+    version_id: UUID,
+    pending: Sequence[_Pending],
+    client: Any | None,
+    guard: Any | None,
+) -> dict[object, tuple[Recheck, tuple[AttemptUsage, ...]]]:
+    """The evaluator's second look at each pending row, decided by code (never raises)."""
+    stored = stored_answers(session, EVALUATOR_MODEL, EVALUATOR_PROMPT_ID)
+    asked: list[tuple[_Pending, Any, str | None]] = []
+    out: dict[object, tuple[Recheck, tuple[AttemptUsage, ...]]] = {}
+
+    def failed(item: _Pending, reason: str) -> None:
+        out[item.key] = (
+            decide_recheck(
+                architect_inches=item.architect_inches,
+                first_vendor_inches=item.vendor_inches,
+                first_why=item.why,
+                answer=None,
+                failure=reason,
+            ),
+            (),
+        )
+
+    for item in pending:
+        if item.vendor_box_px is None or item.vendor_dpi is None:
+            failed(item, "the first reading gave no place for the vendor's number")
+            continue
+        try:
+            architect, vendor = evaluator_pictures(
+                data,
+                item.page_index,
+                architect_box_pt=item.architect_box_pt,
+                vendor_box_px=item.vendor_box_px,
+                vendor_dpi=item.vendor_dpi,
+                vendor_crop_px=item.vendor_crop_px,
+            )
+        except Exception as error:  # noqa: BLE001 - recorded as the row's reason
+            failed(item, f"its close-ups could not be made ({type(error).__name__})")
+            continue
+        question = evaluator_question(
+            item.page_index,
+            architect,
+            vendor,
+            architect_text=item.architect_text,
+            measures=item.measures,
+        )
+        # Stored answers are looked up on this thread (the session is not shared across threads).
+        asked.append((item, question, stored(evaluator_packet(question, str(version_id)))))
+
+    def ask(entry: tuple[_Pending, Any, str | None]) -> EvaluatorRead:
+        _item, question, known = entry
+        return ask_evaluator(
+            question,
+            client=client,
+            document_version_id=str(version_id),
+            spend_guard=guard,
+            stored=known,
+        )
+
+    with ThreadPoolExecutor(max_workers=_PARALLEL) as pool:
+        reads = list(pool.map(ask, asked))
+    for (item, _question, _known), read in zip(asked, reads, strict=True):
+        out[item.key] = (
+            decide_recheck(
+                architect_inches=item.architect_inches,
+                first_vendor_inches=item.vendor_inches,
+                first_why=item.why,
+                answer=read.answer,
+                failure=read.reason,
+            ),
+            read.attempts,
+        )
+    return out
+
+
+def _add_cost(total: int | None, more: int | None) -> int | None:
+    return None if total is None or more is None else total + more
+
+
 def persist_ai_page_review(
     session: Session,
     *,
@@ -283,6 +398,39 @@ def persist_ai_page_review(
     with ThreadPoolExecutor(max_workers=_PARALLEL) as pool:
         reads = dict(zip([q.page_index for q in asked], pool.map(ask, asked), strict=True))
 
+    # Each `different` row gets the evaluator's second look before it is stored (and clouded).
+    decided: dict[int, tuple[list[Any], list[Any]]] = {}
+    pending: list[_Pending] = []
+    for _page, question in questions:
+        if isinstance(question, str):
+            continue
+        read = reads[question.page_index]
+        rows = read.answer.get("rows") if read.answer is not None else None
+        if not isinstance(rows, list):
+            continue
+        checked, dropped = check_rows([d.listed for d in question.dimensions], rows)
+        decided[question.page_index] = (checked, dropped)
+        for row, listed in zip(checked, question.dimensions, strict=True):
+            if row.result == "different":
+                pending.append(
+                    _Pending(
+                        (question.page_index, row.ref),
+                        question.page_index,
+                        row.architect_text,
+                        row.measures,
+                        _box(listed.label_box),
+                        _vendor_px(question, row.vendor_box),
+                        question.vendor.dpi,
+                        list(question.vendor.box_px),
+                        row.architect_inches,
+                        row.vendor_inches,
+                        row.why,
+                    )
+                )
+    rechecks = _recheck(
+        session, data=data, version_id=version_id, pending=pending, client=client, guard=guard
+    )
+
     counts: dict[str, int] = {}
     for page, question in questions:
         if isinstance(question, str):
@@ -303,13 +451,12 @@ def persist_ai_page_review(
             continue
         read = reads[question.page_index]
         cost = _record_attempts(session, run.id, read.attempts, rates)
-        rows = read.answer.get("rows") if read.answer is not None else None
-        status = "done" if isinstance(rows, list) else "failed"
-        checked, dropped = (
-            check_rows([d.listed for d in question.dimensions], rows)
-            if isinstance(rows, list)
-            else ([], [])
-        )
+        status = "done" if question.page_index in decided else "failed"
+        checked, dropped = decided.get(question.page_index, ([], []))
+        for row in checked:
+            found = rechecks.get((question.page_index, row.ref))
+            if found is not None:
+                cost = _add_cost(cost, _record_attempts(session, run.id, found[1], rates))
         review = AiPageReview(
             extraction_run_id=run.id,
             package_revision_id=package_revision_id,
@@ -331,6 +478,8 @@ def persist_ai_page_review(
             zip(checked, question.dimensions if checked else (), strict=True), start=1
         ):
             architect, vendor = row.architect_inches, row.vendor_inches
+            again = rechecks.get((question.page_index, row.ref))
+            recheck = None if again is None else again[0]
             session.add(
                 AiPageReviewRow(
                     review_id=review.id,
@@ -344,13 +493,162 @@ def persist_ai_page_review(
                     vendor_text=row.vendor_text,
                     vendor_numerator=None if vendor is None else vendor.numerator,
                     vendor_denominator=None if vendor is None else vendor.denominator,
-                    result=row.result,
+                    result=row.result if recheck is None else recheck.result,
                     ai_result=row.ai_result,
-                    why=row.why,
+                    why=row.why if recheck is None else recheck.why,
                     vendor_box_px=_vendor_px(question, row.vendor_box),
+                    verified_by=None if recheck is None else recheck.verified_by,
+                    evaluator_reason=None if recheck is None else recheck.evaluator_reason,
+                    evaluator_answer=(
+                        None if recheck is None or recheck.answer is None else dict(recheck.answer)
+                    ),
                 )
             )
         counts[status] = counts.get(status, 0) + 1
+    session.flush()
+    return counts
+
+
+def recheck_differences(
+    session: Session,
+    *,
+    package_revision_id: UUID,
+    version_id: UUID,
+    data: bytes,
+    task_run_id: UUID,
+    client: Any | None,
+    rates: object | None,
+    guard: Any | None,
+) -> dict[str, int]:
+    """The evaluator's second look at the `different` rows already stored for one shop document
+    (readings made before the evaluator existed).
+
+    Append-only: each newest page reading with a `different` row not yet confirmed by the
+    evaluator is written again as a new reading under a run of its own, every row copied and each
+    such row re-decided (the newest reading counts). Its cost is the evaluator's calls. Returns
+    counts: `kept` and `demoted` rows, and `pages` written."""
+    from app.review.ai_review import _latest_reviews
+
+    run = open_extraction_run(
+        session,
+        task_run_id=task_run_id,
+        extractor=AI_PAGE_REVIEW_EXTRACTOR,
+        extractor_version=AI_PAGE_REVIEW_VERSION,
+        config_hash=f"{version_id}:{EVALUATOR_PROMPT_ID}:recheck",
+    )
+    if session.scalar(
+        select(AiPageReview.id).where(AiPageReview.extraction_run_id == run.id).limit(1)
+    ):
+        return {}
+    pages = {
+        page.id: page
+        for page in session.scalars(select(Page).where(Page.document_version_id == version_id))
+    }
+    reviews = [
+        review
+        for review in _latest_reviews(session, [package_revision_id]).get(package_revision_id, [])
+        if review.page_id in pages and review.status == "done"
+    ]
+    rows_by_review: dict[UUID, list[AiPageReviewRow]] = {}
+    for stored_row in session.scalars(
+        select(AiPageReviewRow)
+        .where(AiPageReviewRow.review_id.in_([r.id for r in reviews]))
+        .order_by(AiPageReviewRow.position, AiPageReviewRow.id)
+    ):
+        rows_by_review.setdefault(stored_row.review_id, []).append(stored_row)
+
+    def fraction(numerator: int | None, denominator: int | None) -> Fraction | None:
+        return (
+            None if numerator is None or denominator is None else Fraction(numerator, denominator)
+        )
+
+    pending: list[_Pending] = []
+    chosen: list[AiPageReview] = []
+    for review in sorted(reviews, key=lambda r: pages[r.page_id].index):
+        open_rows = [
+            r
+            for r in rows_by_review.get(review.id, [])
+            if r.result == "different" and r.verified_by is None
+        ]
+        if not open_rows:
+            continue
+        chosen.append(review)
+        for r in open_rows:
+            pending.append(
+                _Pending(
+                    r.id,
+                    pages[review.page_id].index,
+                    r.architect_text,
+                    r.measures,
+                    list(r.architect_box),
+                    r.vendor_box_px,
+                    review.vendor_dpi,
+                    review.vendor_crop_px,
+                    fraction(r.architect_numerator, r.architect_denominator),
+                    fraction(r.vendor_numerator, r.vendor_denominator),
+                    r.why,
+                )
+            )
+    rechecks = _recheck(
+        session, data=data, version_id=version_id, pending=pending, client=client, guard=guard
+    )
+    counts = {"pages": 0, "kept": 0, "demoted": 0}
+    for review in chosen:
+        cost: int | None = 0
+        for r in rows_by_review[review.id]:
+            found = rechecks.get(r.id)
+            if found is not None:
+                cost = _add_cost(cost, _record_attempts(session, run.id, found[1], rates))
+        again = AiPageReview(
+            extraction_run_id=run.id,
+            package_revision_id=package_revision_id,
+            page_id=review.page_id,
+            status="done",
+            reason=None,
+            model_id=review.model_id,
+            prompt_id=review.prompt_id,
+            cost_micros=cost,
+            vendor_dpi=review.vendor_dpi,
+            vendor_crop_px=review.vendor_crop_px,
+            raw_answer=review.raw_answer,
+            dropped=list(review.dropped),
+        )
+        session.add(again)
+        session.flush()
+        for r in rows_by_review[review.id]:
+            found = rechecks.get(r.id)
+            recheck = None if found is None else found[0]
+            if recheck is not None:
+                counts["kept" if recheck.result == "different" else "demoted"] += 1
+            session.add(
+                AiPageReviewRow(
+                    review_id=again.id,
+                    package_revision_id=package_revision_id,
+                    position=r.position,
+                    architect_text=r.architect_text,
+                    architect_numerator=r.architect_numerator,
+                    architect_denominator=r.architect_denominator,
+                    architect_box=r.architect_box,
+                    measures=r.measures,
+                    vendor_text=r.vendor_text,
+                    vendor_numerator=r.vendor_numerator,
+                    vendor_denominator=r.vendor_denominator,
+                    result=r.result if recheck is None else recheck.result,
+                    ai_result=r.ai_result,
+                    why=r.why if recheck is None else recheck.why,
+                    vendor_box_px=r.vendor_box_px,
+                    verified_by=r.verified_by if recheck is None else recheck.verified_by,
+                    evaluator_reason=(
+                        r.evaluator_reason if recheck is None else recheck.evaluator_reason
+                    ),
+                    evaluator_answer=(
+                        r.evaluator_answer
+                        if recheck is None
+                        else (None if recheck.answer is None else dict(recheck.answer))
+                    ),
+                )
+            )
+        counts["pages"] += 1
     session.flush()
     return counts
 

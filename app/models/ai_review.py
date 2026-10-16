@@ -85,8 +85,20 @@ class AiPageReviewRow(Base, TimestampedUUID, Immutable):
     ai_result: Mapped[str | None] = mapped_column(String(16), default=None)
     why: Mapped[str] = mapped_column(Text)
     vendor_box_px: Mapped[list[int] | None] = mapped_column(JSONB(none_as_null=True), default=None)
+    verified_by: Mapped[str | None] = mapped_column(String(16), default=None)
+    """`evaluator` when the independent evaluator confirmed this difference (migration 0104)."""
+    evaluator_reason: Mapped[str | None] = mapped_column(Text, default=None)
+    """The evaluator's reason, or why it could not be asked; `None` when not re-checked."""
+    evaluator_answer: Mapped[dict[str, str] | None] = mapped_column(
+        JSONB(none_as_null=True), default=None
+    )
 
     __table_args__ = (
+        CheckConstraint(
+            "verified_by IS NULL OR (verified_by = 'evaluator' AND result = 'different' "
+            "AND evaluator_reason IS NOT NULL AND evaluator_reason <> '')",
+            name="ai_page_review_row_verified",
+        ),
         CheckConstraint(
             "result IN ('same', 'different', 'not_shown', 'unsure', 'unreadable')",
             name="ai_page_review_row_result",

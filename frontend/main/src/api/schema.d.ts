@@ -2612,6 +2612,11 @@ export interface components {
              */
             clouded: boolean;
             /**
+             * Evaluator Reason
+             * @description The evaluator's reason (or why it could not check); null when not re-checked.
+             */
+            evaluator_reason?: string | null;
+            /**
              * Key
              * @description `air:<row id>`: stable for this reading.
              */
@@ -2644,6 +2649,11 @@ export interface components {
              * @description The vendor's number as the AI read it.
              */
             vendor_text: string | null;
+            /**
+             * Verified By
+             * @description `evaluator` when the independent evaluator confirmed this difference; null when it did not or the row was not re-checked.
+             */
+            verified_by?: "evaluator" | null;
             /** Why */
             why: string;
         };
