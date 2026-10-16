@@ -57,7 +57,7 @@ from app.review.assistant.model import ModelRefused
 from app.review.assistant.placeholders import placeholder_guide
 from app.review.assistant.sandbox import SCRATCH, UPLOADS, SandboxResult, Workspace
 from app.review.assistant.service import AssistantBudget, AssistantRuntime, stream_answer
-from app.runs.rates import ModelRate, ModelRates
+from app.runs.rates import ModelRate, ModelRates, call_cost_micros
 from tests.review.assistant.synthetic import snapshot
 
 SONNET = "anthropic.claude-sonnet-5-5"
@@ -417,9 +417,8 @@ def test_a_decision_request_is_refused_before_any_model_call(workspace: Workspac
 
 
 def test_the_cost_cap_stops_the_loop_cleanly(workspace: Workspace) -> None:
-    # The cap is the first turn's estimate plus 100 micro-dollars: the first call fits; the second
-    # does not (its prompt is longer; the first turn's 2000 prompt tokens are cache reads at 0.1x,
-    # but the first call's $0.005 is spent).
+    # The cap is the first turn's estimate plus 100 micro-dollars: the first call fits and costs
+    # $0.041 (20,000 prompt tokens); the second, mostly cache reads, would still pass the cap.
     first = first_message(
         placeholders=placeholder_guide(snapshot()),
         files=(AgentFiles(name="Made-up vendor set.pdf", kind="the vendor's", pages=3),),
@@ -431,7 +430,9 @@ def test_the_cost_cap_stops_the_loop_cleanly(workspace: Workspace) -> None:
     body = request_body([{"role": "user", "content": first}], final=False)
     estimate = estimate_micros(body, (), SONNET, _rates())
     assert estimate is not None
-    model = ScriptedAgentModel([_turn(_bash("t1", f"pdfinfo '{PDF}'")), _final("unused")])
+    costly = _turn(_bash("t1", f"pdfinfo '{PDF}'"))
+    costly["usage"] = {"input_tokens": 20_000, "output_tokens": 100}
+    model = ScriptedAgentModel([costly, _final("unused")])
     ledger = FakeLedger()
     cap = Decimal(estimate + 100) / 1_000_000
     answer = _answer(
@@ -900,9 +901,9 @@ def test_without_the_sandbox_the_answer_is_from_the_records_with_a_note() -> Non
 
 
 def test_helpers_money_is_shared_by_their_pages(workspace: Workspace) -> None:
-    # $0.40 for the question: after the lead's first call, the helpers share 75% of what is left
-    # (about $0.30) by pages, 3 to 1. A helper's first call is estimated at about $0.13 (its
-    # 12,000-token report allowance), so the 3-page helper can work and the 1-page one cannot.
+    # $0.20 for the question: after the lead's first call, the helpers share 75% of what is left
+    # (about $0.15) by pages, 3 to 1. A helper's first call is estimated at about $0.065 (its
+    # 6,000-token report allowance), so the 3-page helper can work and the 1-page one cannot.
     @dataclass
     class ByPages(DispatchModel):
         def agent_turn(self, body: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -923,7 +924,87 @@ def test_helpers_money_is_shared_by_their_pages(workspace: Workspace) -> None:
             _final("Done; code: page 4."),
         ]
     )
-    answer = _answer(_ask("Which pages differ?", model, workspace, budget=_budget("0.40")))
+    answer = _answer(_ask("Which pages differ?", model, workspace, budget=_budget("0.20")))
     big, small = answer.steps[0].agents
     assert big.ok and small.stopped == "cost_cap"
     assert list(model.helper_bodies) == ["Check pages 1-3"]
+
+
+# ---- helper budget (owner, 2026-10-16): smaller pictures, cache-aware estimate, 6k report ----
+
+
+def test_helpers_see_pictures_at_most_1568_px_and_the_lead_full_size(workspace: Workspace) -> None:
+    from app.review.assistant.agent import HELPER_PICTURE_EDGE_PX
+
+    (workspace.out / "big.png").write_bytes(_png(3000, 2000))
+    tools = _tools(workspace)(snapshot())
+    arguments = {"path": f"{SCRATCH}/big.png", "description": "Look"}
+    helper = run_tool("view", arguments, tools, max_edge=HELPER_PICTURE_EDGE_PX)
+    lead = run_tool("view", arguments, tools)
+    assert HELPER_PICTURE_EDGE_PX == 1568
+    assert helper.pictures == [(1568, 1045)]
+    assert "1568 x 1045 px" in helper.content[0]["text"]
+    assert max(lead.pictures[0]) > 1568
+
+
+def test_helpers_view_at_the_smaller_size_in_a_real_loop(workspace: Workspace) -> None:
+    (workspace.out / "p-01.png").write_bytes(_png(3000, 2000))
+
+    @dataclass
+    class Viewer(DispatchModel):
+        def agent_turn(self, body: Mapping[str, Any]) -> Mapping[str, Any]:
+            if body["system"][0]["text"] != SUB_SYSTEM_PROMPT:
+                self.main_bodies.append(json.loads(json.dumps(body)))
+                return self.main.pop(0)
+            seen = self.helper_bodies.setdefault("h", [])
+            seen.append(json.loads(json.dumps(body)))
+            if len(seen) == 1:
+                return _turn(
+                    _use("v", "view", {"path": f"{SCRATCH}/p-01.png", "description": "Look"})
+                )
+            report = {"summary": "Made-up.", "pages_viewed": [1], "findings": []}
+            return _turn({"type": "text", "text": json.dumps(report)}, stop="end_turn")
+
+    model = Viewer(
+        main=[
+            _turn(_use("a", "Agent", {"description": "P1", "prompt": "Check page 1"})),
+            _final("Done; code: page 4."),
+        ]
+    )
+    _ask("Which pages differ?", model, workspace)
+    first, second = model.helper_bodies["h"]
+    assert first["max_tokens"] == 6000
+    note = second["messages"][-1]["content"][0]["content"][0]["text"]
+    assert "1568 x 1045 px" in note
+
+
+def test_the_estimate_prices_the_cached_prefix_at_the_cache_read_price() -> None:
+    from app.review.assistant.agent import prompt_tokens_upper
+
+    messages: list[dict[str, Any]] = [{"role": "user", "content": [{"type": "text", "text": "x"}]}]
+    first = request_body(messages, final=False)
+    pictures = [(1568, 1045)] * 10
+    before = prompt_tokens_upper(first, pictures)
+    longer = [
+        *messages,
+        {"role": "assistant", "content": [{"type": "text", "text": "y" * 2000}]},
+        {"role": "user", "content": [{"type": "text", "text": "z" * 2000}]},
+    ]
+    second = request_body(longer, final=False)
+    after = prompt_tokens_upper(second, pictures)
+    # The previous turn's real prompt (8,000 tokens, pictures included) is read from the cache at
+    # 0.1x; only what was added since is written at 1.25x, whatever the size of the upper bound.
+    estimate = estimate_micros(
+        second, pictures, SONNET, _rates(), cached_tokens=8000, previous_tokens=before
+    )
+    billed = 800 + -(-(after - before) * 125 // 100)
+    assert estimate == call_cost_micros(_rates(), SONNET, billed, second["max_tokens"])
+    # Without a previous turn everything is a cache write.
+    cold = estimate_micros(first, pictures, SONNET, _rates())
+    assert cold == call_cost_micros(_rates(), SONNET, -(-before * 125 // 100), 4000)
+
+
+def test_the_prompts_render_small_for_helpers_and_sharp_for_checking() -> None:
+    assert "-r 100" in AGENT_SYSTEM_PROMPT
+    assert "130 to 300 dpi" in AGENT_SYSTEM_PROMPT
+    assert "-r 100" in SUB_SYSTEM_PROMPT

@@ -474,18 +474,21 @@ class Viewed:
     original: tuple[int, int] = (0, 0)
 
 
-def _fit(width: int, height: int) -> tuple[int, int]:
-    """The largest size, keeping the shape, that the model reads unresized."""
-    scale = min(1.0, _MAX_EDGE_PX / max(width, height, 1))
+def _fit(width: int, height: int, max_edge: int = _MAX_EDGE_PX) -> tuple[int, int]:
+    """The largest size, keeping the shape, that the model reads unresized and whose long side
+    is at most `max_edge`."""
+    max_edge = min(max_edge, _MAX_EDGE_PX)
+    scale = min(1.0, max_edge / max(width, height, 1))
     while True:
-        w, h = max(1, int(width * scale)), max(1, int(height * scale))
+        w = max(1, min(max_edge, round(width * scale)))
+        h = max(1, min(max_edge, round(height * scale)))
         tiles = -(-w // _TILE_PX) * -(-h // _TILE_PX)
-        if tiles <= _MAX_VISUAL_TOKENS and w <= _MAX_EDGE_PX and h <= _MAX_EDGE_PX:
+        if tiles <= _MAX_VISUAL_TOKENS and w <= max_edge and h <= max_edge:
             return w, h
         scale *= 0.95
 
 
-def _picture(path: Path, shown: str) -> Viewed:
+def _picture(path: Path, shown: str, max_edge: int = _MAX_EDGE_PX) -> Viewed:
     from io import BytesIO
 
     from PIL import Image  # loaded only when a picture is viewed
@@ -502,7 +505,7 @@ def _picture(path: Path, shown: str) -> Viewed:
         raise SandboxRefused("the picture has too many pixels; render it smaller") from None
     except (OSError, ValueError):
         raise SandboxRefused("the file is not a picture this can open") from None
-    size = _fit(*picture.size)
+    size = _fit(*picture.size, max_edge=max_edge)
     if size != picture.size:
         picture = picture.resize(size, Image.Resampling.LANCZOS)
     out = BytesIO()
@@ -560,12 +563,17 @@ def _listing(path: Path, workspace: Workspace) -> Viewed:
     return Viewed(text=f"{workspace.shown(path)}:\n" + ("\n".join(found) or "(empty)"))
 
 
-def view_path(workspace: Workspace, path: str, view_range: object = None) -> Viewed:
-    """The `view` tool: a picture, a text file with numbered lines, or a folder two levels deep."""
+def view_path(
+    workspace: Workspace, path: str, view_range: object = None, max_edge: int | None = None
+) -> Viewed:
+    """The `view` tool: a picture, a text file with numbered lines, or a folder two levels deep.
+
+    `max_edge` shrinks a picture further (helpers see pictures at most 1568 px a side, the lead
+    at the model's full 2576)."""
     real = workspace.resolve(path)
     shown = workspace.shown(real)
     if real.is_dir():
         return _listing(real, workspace)
     if real.suffix.lower() in _IMAGE_SUFFIXES:
-        return _picture(real, shown)
+        return _picture(real, shown, max_edge or _MAX_EDGE_PX)
     return _text(real, shown, view_range)
