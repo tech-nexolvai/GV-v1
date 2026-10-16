@@ -15,7 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from io import BytesIO
@@ -41,6 +41,10 @@ from app.review.reviewer_marks import FrozenReviewerMarks
 from evidence.coordinates import PageTransform
 from reports.redline import (
     NOT_CHECKED,
+    ArchitectAnswer,
+    ArchitectCompare,
+    ArchitectCompareCounts,
+    ArchitectDifference,
     RedlineFinding,
     RedlinePackage,
     RedlinePage,
@@ -59,6 +63,7 @@ from workflow.changed_values import ChangedValues
 __all__ = [
     "NOT_CHECKED",
     "RedlineOutput",
+    "architect_compare_input",
     "redline_marks",
     "render_draft_redline",
     "render_evidence_grounded_redline",
@@ -77,6 +82,114 @@ def redline_marks(frozen: FrozenReviewerMarks) -> tuple[ReviewerMark, ...]:
             unplaced_reason=mark.unplaced_reason,
         )
         for mark in frozen.marks
+    )
+
+
+def _field(value: object, name: str) -> object:
+    """A field of a backend value: a Pydantic model, a dataclass or a plain mapping."""
+    return value.get(name) if isinstance(value, Mapping) else getattr(value, name, None)
+
+
+def _count(counts: object, name: str) -> int:
+    value = _field(counts, name)
+    return value if isinstance(value, int) else 0
+
+
+#: A person's answer on a "different" result, as the review records may spell it.
+_ANSWERS: dict[str, ArchitectAnswer] = {
+    "agree": ArchitectAnswer.AGREED,
+    "agreed": ArchitectAnswer.AGREED,
+    "vendor_wrong": ArchitectAnswer.AGREED,
+    "not_a_difference": ArchitectAnswer.NOT_A_DIFFERENCE,
+    "not_different": ArchitectAnswer.NOT_A_DIFFERENCE,
+}
+
+
+def _vendor_place(vendor_ref: object) -> tuple[str | None, str | None]:
+    """The vendor dimension's place as a finding's evidence reference, or why there is none."""
+    if vendor_ref is None:
+        return None, "the vendor's dimension has no recorded place on the drawing"
+    version, number, polygon = (
+        _field(vendor_ref, "document_version_id"),
+        _field(vendor_ref, "page_number"),
+        _field(vendor_ref, "polygon"),
+    )
+    if version is None or not isinstance(number, int) or number < 1 or not polygon:
+        return None, "the vendor's dimension's recorded place is incomplete"
+    return (
+        json.dumps(
+            {
+                "document_version_id": str(version),
+                "page": number - 1,
+                "polygon": [[str(x), str(y)] for x, y in polygon],  # type: ignore[attr-defined]
+                "space": "stored",
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        None,
+    )
+
+
+def architect_compare_input(
+    items: Iterable[object], counts: object
+) -> tuple[ArchitectCompare | None, tuple[ReviewerMark, ...]]:
+    """The direct compare (`app/review/architect_compare.architect_compare_for_revision`'s items
+    and counts) as the renderer draws it, and the reviewer marks of a person who agreed.
+
+    `None` when the compare has not run (no item), so nothing about it is printed. A "different"
+    result a person agreed with stays clouded and gets the person's mark there (the existing
+    reviewer-mark style); one a person said is not a difference is listed, not clouded. Every
+    other result is only counted. An answer this does not know is refused, never dropped.
+    """
+    listed = list(items)
+    if not listed:
+        return None, ()
+    different: list[ArchitectDifference] = []
+    marks: list[ReviewerMark] = []
+    for item in listed:
+        if _field(item, "result") != "different":
+            continue
+        page, view = _field(item, "page"), _field(item, "view")
+        subject = f"Page {page}" + (f", {view}" if isinstance(view, str) and view else "")
+        place, reason = _vendor_place(_field(item, "vendor_ref"))
+        said = _field(item, "answer")
+        answer = None if said is None else _ANSWERS.get(str(getattr(said, "value", said)))
+        if said is not None and answer is None:
+            raise ValueError(f"unknown answer on an architect compare result: {said!r}")
+        who = _field(item, "answered_by")
+        difference = ArchitectDifference(
+            architect_text=str(_field(item, "architect_text") or "not read"),
+            vendor_text=str(_field(item, "vendor_text") or "not read"),
+            subject=subject,
+            evidence_ref=place,
+            unplaced_reason=reason,
+            answer=answer,
+            answered_by=None if who is None else str(who),
+        )
+        different.append(difference)
+        if answer is ArchitectAnswer.AGREED:
+            marks.append(
+                ReviewerMark(
+                    kind=ReviewerMarkKind.CONFIRMED,
+                    words=f"Agreed by {who}: vendor is wrong",
+                    subject=f"Compared with the architect, {subject}",
+                    details=(difference.words,),
+                    evidence_ref=place,
+                    unplaced_reason=reason,
+                )
+            )
+    return (
+        ArchitectCompare(
+            counts=ArchitectCompareCounts(
+                same=_count(counts, "same"),
+                different=_count(counts, "different"),
+                for_a_person=_count(counts, "unpaired") + _count(counts, "unread"),
+                by_a_rule=_count(counts, "rule"),
+            ),
+            different=tuple(different),
+        ),
+        tuple(marks),
     )
 
 
@@ -105,6 +218,7 @@ def render_evidence_grounded_redline(
     countertop_labels: Sequence[str] = (),
     reviewer_marks: Sequence[ReviewerMark] | None = None,
     not_checked: frozenset[UUID] = frozenset(),
+    architect: ArchitectCompare | None = None,
 ) -> RedlineOutput:
     """Render one internal redline only when a finding has a typed, stored location.
 
@@ -158,6 +272,7 @@ def render_evidence_grounded_redline(
             signed_review=signed_review,
             countertop_labels=countertop_labels,
             reviewer_marks=reviewer_marks,
+            architect=architect,
         ),
         None,
     )
@@ -172,6 +287,7 @@ def render_draft_redline(
     not_checked: frozenset[UUID] = frozenset(),
     changed_values: ChangedValues | None = None,
     reviewer_marks: Sequence[ReviewerMark] | None = None,
+    architect: ArchitectCompare | None = None,
 ) -> RedlineOutput:
     """The draft cloud PDF's drawing pages, before sign-off (#1340): always INTERNAL mode.
 
@@ -206,6 +322,7 @@ def render_draft_redline(
             store,
             changed_values=changed_values,
             reviewer_marks=reviewer_marks,
+            architect=architect,
         ),
         None,
     )

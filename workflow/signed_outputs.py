@@ -33,7 +33,11 @@ from reports.spreadsheet import (
     write_stored_workbook,
 )
 from storage.store import ArtifactStore
-from workflow.redline_outputs import redline_marks, render_evidence_grounded_redline
+from workflow.redline_outputs import (
+    architect_compare_input,
+    redline_marks,
+    render_evidence_grounded_redline,
+)
 
 
 def record_publication_failure(
@@ -102,6 +106,17 @@ def generate_signed_outputs(
     # A format-2 snapshot (#1363) carries a person's marks and the results printed NOT CHECKED;
     # a format-1 snapshot carries neither, and its cloud PDF is drawn exactly as before.
     marks = payload.reviewer_marks
+    # The direct compare frozen at sign-off (`architect_compare`: its items and counts), when the
+    # snapshot has it; a snapshot without it is drawn exactly as before.
+    frozen_compare = getattr(payload, "architect_compare", None)
+    architect, agreed = (
+        (None, ())
+        if frozen_compare is None
+        else architect_compare_input(frozen_compare.items, frozen_compare.counts)
+    )
+    shown_marks = None if marks is None else redline_marks(marks)
+    if agreed:
+        shown_marks = (*(shown_marks or ()), *agreed)
     redline = render_evidence_grounded_redline(
         db,
         store,
@@ -110,8 +125,9 @@ def generate_signed_outputs(
         changed_values=payload.changed_values,
         signed_review=payload.review,
         countertop_labels=countertop_labels,
-        reviewer_marks=None if marks is None else redline_marks(marks),
+        reviewer_marks=shown_marks,
         not_checked=frozenset(() if marks is None else marks.not_checked_finding_ids),
+        architect=architect,
     )
     if redline.artifact is None:
         raise SignedExportRefused(f"signed drawing unavailable: {redline.reason}")
