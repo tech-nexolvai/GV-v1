@@ -360,6 +360,10 @@ class ReviewerMarkKind(StrEnum):
     CHECKED_WRONG = "checked_wrong"
     """A person checked a result by hand and found it wrong on the drawing."""
 
+    NOT_CONFIRMED = "not_confirmed"
+    """A question nobody answered at sign-off (owner decision 2026-10-16: every question is
+    optional): "Not confirmed by a person — <what> (AI: <best guess>)", drawn grey."""
+
 
 #: One glyph per kind, deliberately exhaustive: every mark is a glyph plus words, never colour alone.
 REVIEWER_MARK_GLYPHS: Final[dict[ReviewerMarkKind, str]] = {
@@ -367,6 +371,7 @@ REVIEWER_MARK_GLYPHS: Final[dict[ReviewerMarkKind, str]] = {
     ReviewerMarkKind.FIXED: "✎",
     ReviewerMarkKind.ANSWERED: "✍",
     ReviewerMarkKind.CHECKED_WRONG: "✗",
+    ReviewerMarkKind.NOT_CONFIRMED: "❖",
 }
 
 #: The colour of each kind: only the second signal, after the glyph and the words.
@@ -375,6 +380,7 @@ _REVIEWER_STROKES: Final[dict[ReviewerMarkKind, tuple[float, float, float]]] = {
     ReviewerMarkKind.FIXED: (0.45, 0.15, 0.55),
     ReviewerMarkKind.ANSWERED: (0.25, 0.3, 0.4),
     ReviewerMarkKind.CHECKED_WRONG: (0.8, 0.05, 0.05),
+    ReviewerMarkKind.NOT_CONFIRMED: (0.5, 0.5, 0.5),
 }
 
 #: Glyphs drawn in a standard font that has them, so text extraction reads them back as written.
@@ -743,7 +749,9 @@ def _fact_note(finding: RenderableFinding) -> str:
     comparison = (
         finding.comparison
         if isinstance(finding, RedlineFinding)
-        else finding.trace.comparison if finding.trace is not None else None
+        else finding.trace.comparison
+        if finding.trace is not None
+        else None
     )
     if outcome in (Outcome.FAIL, Outcome.REVIEW_REQUIRED) and comparison:
         parts.append(f"Comparison: {comparison}")

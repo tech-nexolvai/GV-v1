@@ -45,6 +45,9 @@ class ReviewCover:
     """Format 4: each reason once, with the labels of the not-checked results it covers."""
     not_checked_ids: frozenset[UUID] = frozenset()
     """Format 4: the results said in `not_checked`, so they are not listed one by one again."""
+    left_for_person: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    """Format 5 (owner decision 2026-10-16): the questions nobody answered at sign-off, each kind
+    once with the words of every question ("Not confirmed by a person — ... (AI: ...)")."""
 
 
 def clouded_wrong(review: SignedReview) -> tuple[SignedReviewFinding, ...]:
@@ -108,6 +111,23 @@ def review_pdf(review: SignedReview, cover: ReviewCover | None = None) -> bytes:
                 story.append(Paragraph(escape("; ".join(labels)), styles["Normal"]))
             story.append(Spacer(1, 12))
             shown = tuple(f for f in shown if f.finding_id not in cover.not_checked_ids)
+        if cover.left_for_person:
+            # Format 5: every question is optional, so what nobody answered is printed, never
+            # dropped: grouped by kind, each with the AI's best guess or its reason.
+            total = sum(len(lines) for _kind, lines in cover.left_for_person)
+            story.append(Paragraph(f"Left for a person ({total})", styles["Heading2"]))
+            story.append(
+                Paragraph(
+                    "Signed with these questions unanswered. Each is printed as not confirmed "
+                    "by a person; a FAIL stays clouded as wrong.",
+                    styles["Normal"],
+                )
+            )
+            for kind, lines in cover.left_for_person:
+                story.append(Paragraph(escape(f"{kind} ({len(lines)})"), styles["Heading3"]))
+                for text in lines:
+                    story.append(Paragraph(escape(text), styles["Normal"]))
+            story.append(Spacer(1, 12))
     for finding in shown:
         story.append(
             Paragraph(

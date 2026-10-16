@@ -615,7 +615,7 @@
             "type": "array"
           },
           "unconfirmed_no_countertop_pages": {
-            "description": "Page numbers listed with no countertop that no reviewer has confirmed yet (#1191). Sign-off is refused until each has an answer.",
+            "description": "Page numbers listed with no countertop that no reviewer has confirmed yet (#1191). Optional since 2026-10-16: signed unanswered, each is printed as not confirmed by a person.",
             "items": {
               "type": "integer"
             },
@@ -11069,7 +11069,7 @@
                 "type": "null"
               }
             ],
-            "description": "How many of `architect_compare` came out each way, and how many still need a person (sign-off waits for them). `None` when the compare has not run."
+            "description": "How many of `architect_compare` came out each way, and how many a person may still answer (optional). `None` when the compare has not run."
           },
           "blocked_reason": {
             "anyOf": [
@@ -11115,7 +11115,7 @@
             "type": "integer"
           },
           "open": {
-            "description": "Items and failures still waiting for a person.",
+            "description": "Items and failures no person answered yet. Optional (owner decision 2026-10-16): they never hold sign-off; signed unanswered, each is printed as not confirmed.",
             "title": "Open",
             "type": "integer"
           },

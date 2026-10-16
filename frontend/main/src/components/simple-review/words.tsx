@@ -6,8 +6,9 @@ import type { ReviewStatus } from '@/api/review-items';
 import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
 
 /**
- * Where an item stands: always a glyph and a word, the colour only a second signal. Open is amber
- * ("Needs you"), re-checking is grey and turning (still when motion is reduced), and done is a plain
+ * Where an item stands: always a glyph and a word, the colour only a second signal. Open is
+ * "Optional" (every question is optional, owner decision 2026-10-16: left unanswered, it is printed
+ * as not confirmed by a person), re-checking is grey and turning (still when motion is reduced), and done is a plain
  * grey check. Done is never the green PASS glyph: a person's answer is not a check's outcome, and the
  * PASS and FAIL glyphs only ever show an outcome the API recorded.
  */
@@ -43,9 +44,9 @@ export function StatusWord({
     );
   }
   return (
-    <span data-slot="status-word" data-status={status} className={cn('inline-flex items-center gap-1.5 text-[13px] font-medium text-outcome-review-fg', className)}>
+    <span data-slot="status-word" data-status={status} className={cn('inline-flex items-center gap-1.5 text-[13px] font-medium text-foreground', className)}>
       <OutcomeIcon outcome="REVIEW_REQUIRED" size={14} />
-      Needs you
+      Optional
     </span>
   );
 }

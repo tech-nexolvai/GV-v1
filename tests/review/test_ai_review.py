@@ -222,19 +222,20 @@ def test_old_answers_stay_append_only_and_change_nothing(session: Session) -> No
         session.rollback()
 
 
-def test_sign_off_waits_on_open_different_rows() -> None:
+def test_open_architect_questions_no_longer_hold_sign_off() -> None:
+    """Every question is optional (owner decision 2026-10-16): only system states are a reason."""
+    from app.models.package import PackageRevision
     from app.review.approval import _readiness_reason
     from app.review.no_countertop import PagesBlockingSignOff
 
     reason = _readiness_reason(
         has_findings=True,
-        blocked=(),
+        rerun=(),
         pages=PagesBlockingSignOff(),
         inputs_changed=False,
-        revision=None,
-        compare_open=1,
+        revision=PackageRevision(state="AWAITING_REVIEW"),
     )
-    assert reason is not None and "1 number compared with the architect" in reason
+    assert reason is None
 
 
 def test_readiness_ignores_the_ai_review_different_rows(session: Session) -> None:

@@ -35,6 +35,7 @@ from app.models.signed_exports import (
 )
 from app.models.verdicts import CheckRun, Finding, FindingEvidence, VerdictInput
 from app.review.carry_over import decision_records
+from app.review.left_for_person import FrozenLeftForPerson, left_for_person
 from app.review.reviewer_marks import FrozenReviewerMarks, reviewer_marks_for
 from app.review.signed_record import ReviewDisposition, SignedReview, SignedReviewFinding
 from app.schemas.visual_ui import CountertopResultsOut
@@ -87,7 +88,11 @@ class FrozenCountertops(BaseModel):
 #: * 4 (Set 3 QA 2026-10-16): no new field. Its signed cover says the not-checked results nobody
 #:   answered once per reason ("NOT CHECKED (N): grouped by reason"), as the draft does, instead of
 #:   one by one with raw ids. A format-1, -2 or -3 snapshot is drawn exactly as before.
-SNAPSHOT_FORMAT_VERSION = 4
+#: * 5 (owner decision 2026-10-16, every question optional): adds `left_for_person`, every question
+#:   nobody answered at sign-off. Its cloud PDF draws a grey "Not confirmed by a person" mark at each
+#:   one's place and its cover lists them ("Left for a person (N)", grouped by kind). A format-1 to
+#:   format-4 snapshot is drawn exactly as before.
+SNAPSHOT_FORMAT_VERSION = 5
 
 
 class FrozenArchitectCompare(BaseModel):
@@ -138,6 +143,9 @@ class ExportSnapshot(BaseModel):
     """Format 3: whether the old row-by-row architect compare (`GV_ARCH_COMPARE_RECORDS`) was
     switched off at sign-off, frozen so a re-made file never follows a later setting. `None`
     exactly on formats 1 and 2."""
+    left_for_person: FrozenLeftForPerson | None = None
+    """Format 5: every question nobody answered at sign-off, printed "Not confirmed by a person".
+    `None` exactly on formats 1 to 4."""
 
     @model_validator(mode="after")
     def known_format(self) -> ExportSnapshot:
@@ -149,6 +157,8 @@ class ExportSnapshot(BaseModel):
             raise ValueError(
                 "a format-3 snapshot says whether the old compare was off, and only it"
             )
+        if (self.format_version >= 5) != (self.left_for_person is not None):
+            raise ValueError("a format-5 snapshot lists what was left for a person, and only it")
         return self
 
 
@@ -258,7 +268,9 @@ def _columns(row: object) -> dict[str, object]:
         result[column.key] = (
             value.isoformat()
             if isinstance(value, datetime)
-            else str(value) if isinstance(value, UUID) else value
+            else str(value)
+            if isinstance(value, UUID)
+            else value
         )
     return result
 
@@ -579,6 +591,11 @@ def _request_signed_exports(
         architect_compare=_freeze_compare(db, revision.id),
         ai_review=_freeze_ai_review(db, revision.id),
         old_compare_off=_old_compare_off(),
+        # Format 5: every question nobody answered, from the screen's own list, in the same
+        # transaction; printed "Not confirmed by a person", never dropped.
+        left_for_person=(
+            left_for_person(db, revision, package) if SNAPSHOT_FORMAT_VERSION >= 5 else None
+        ),
     )
     encoded = canonical(payload.model_dump(mode="json"))
     snapshot = ApprovalExportSnapshot(
