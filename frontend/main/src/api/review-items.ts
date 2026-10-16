@@ -98,6 +98,71 @@ export function architectCompareCountsOf(data: ReviewItemsOut): ArchitectCompare
 }
 
 /**
+ * "Compared with the architect", the AI page review: per combined sheet, the AI read the vendor's
+ * numbers and set each architect number (read by code) beside the vendor's of the same span. Code
+ * decides `same`/`different` with exact arithmetic; nothing here is ever a pass. Only an open
+ * `different` row needs a person; the others are shown, not blocking. Absent on older packages.
+ *
+ * Hand-written to match the backend contract until the generated `schema.d.ts` carries `ai_review`;
+ * the page only reads these fields, so the generated type can replace this one without a change elsewhere.
+ */
+export type AiReviewResult = 'same' | 'different' | 'not_shown' | 'unsure' | 'unreadable';
+export type AiReviewPageStatus = 'done' | 'running' | 'failed' | 'not_run';
+/** A spot on a stored page, in stored page space (0..1), as strings. */
+export interface AiReviewRef {
+  document_version_id: string;
+  page_number: number;
+  polygon: string[][];
+}
+export interface AiReviewRow {
+  /** `air:<id>`. */
+  key: string;
+  architect_text: string;
+  /** The architect's number exactly, `n/d` inches. */
+  architect_inches: string | null;
+  /** What the number measures, in words (e.g. "overall width"). */
+  measures: string;
+  vendor_text: string | null;
+  vendor_inches: string | null;
+  result: AiReviewResult;
+  why: string;
+  vendor_box: AiReviewRef | null;
+  architect_ref: AiReviewRef | null;
+  /** The W3 answers this row offers (different: agree / not_this). */
+  actions: string[];
+  status: 'open' | 'done';
+  /** The answer given (`agree` / `not_this`) once done. */
+  answer: string | null;
+  answered_by: string | null;
+}
+export interface AiReviewPage {
+  page: number;
+  status: AiReviewPageStatus;
+  cost_usd: string | null;
+  rows: AiReviewRow[];
+  /** Why a failed page could not be read, when the server says. */
+  reason?: string | null;
+}
+export interface AiReviewCounts {
+  same: number;
+  different: number;
+  not_shown: number;
+  unsure: number;
+  unreadable: number;
+  needs_person: number;
+}
+export interface AiReviewOut {
+  pages: AiReviewPage[];
+  counts: AiReviewCounts;
+}
+
+/** The AI page review, or null when this package's answer has none (an older package, or switched off). */
+export function aiReviewOf(data: ReviewItemsOut): AiReviewOut | null {
+  const review = (data as { ai_review?: AiReviewOut | null }).ai_review;
+  return review && Array.isArray(review.pages) ? review : null;
+}
+
+/**
  * Every answer the page can send. Only Fix carries typed text: the value the drawing shows, in
  * inches, recorded as a correction of the AI's reading (Anant, 2026-10-16). The API lists an
  * item's `actions` as plain strings; `isItemAction` narrows one to this list, and anything else is
