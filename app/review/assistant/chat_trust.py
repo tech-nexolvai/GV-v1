@@ -174,9 +174,7 @@ def trust_level(checks: Mapping[str, Any], status: object = None) -> str:
     """CONTRACT3's rule (the checks module's own `trust_level` is used when it is present)."""
     module = load_module(CHECKS_MODULE)
     if module is not None and hasattr(module, "trust_level"):
-        level = str(
-            module.trust_level(checks, status=status if isinstance(status, str) else None)
-        )
+        level = str(module.trust_level(checks, status=status if isinstance(status, str) else None))
         if level in LEVELS:
             return level
     arithmetic = _arithmetic_agrees(checks, status)
