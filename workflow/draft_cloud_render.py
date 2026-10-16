@@ -75,9 +75,11 @@ __all__ = [
     "ai_review_for_draft",
     "architect_compare_for_draft",
     "grouped_by_reason",
+    "old_compare_left_out_words",
     "old_compare_switched_on",
     "open_items",
     "render_draft_cloud",
+    "without_old_compare",
 ]
 
 #: Printed on every page of a draft.
@@ -157,8 +159,15 @@ def open_items(
             # leftover "nothing was compared" row is not an open item, as on the review screen.
             continue
         item = OpenItem(_label(finding, definition.rule_id), _reason(finding))
+        decision = standing.get(finding.id)
         if finding.outcome == Outcome.FAIL.value:
             failures.append(item)
+        elif decision is not None and decision.checked_wrong_by_hand:
+            # A person checked it by hand and found it wrong (#1358): clouded as wrong, counted
+            # here, by the signed record's own mark. The recorded result is unchanged.
+            failures.append(
+                OpenItem(item.label, f"Checked by hand: WRONG by {decision.reviewer}. {item.reason}")
+            )
         elif is_not_checked(finding.outcome, item.reason, standing.get(finding.id)):
             # Settling a check that never ran does not make it checked (decision 1): still
             # printed NOT CHECKED, with who settled it said.
@@ -219,6 +228,28 @@ def old_compare_switched_on() -> bool:
         return bool(getattr(Settings(), OLD_COMPARE_SETTING))  # type: ignore[call-arg]
     except ValidationError:
         return bool(field.default)
+
+
+def old_compare_left_out_words(count: int) -> str:
+    """Said once wherever the old compare's leftover rows are not printed (never silent)."""
+    return (
+        f"{count} result(s) of the old architect check ({OLD_COMPARE_RULE}) left out: the old "
+        f"architect check ({OLD_COMPARE_RULE}) is switched off, so nothing was compared by it. "
+        "The architect is compared by the AI page review instead."
+    )
+
+
+def without_old_compare[Row: tuple[Finding, CheckRun, RuleSnapshot, RuleDefinition]](
+    rows: Sequence[Row],
+) -> tuple[list[Row], int]:
+    """The results in force without the old compare's leftover rows while it is switched off
+    (`GV_ARCH_COMPARE_RECORDS`), and how many were left out. Unchanged while it is on."""
+    from app.review.architect_compare import arch_compare_records_on
+
+    if arch_compare_records_on():
+        return list(rows), 0
+    kept = [row for row in rows if row[3].rule_id != OLD_COMPARE_RULE]
+    return kept, len(rows) - len(kept)
 
 
 def ai_review_for_draft(
@@ -307,7 +338,7 @@ def render_draft_cloud(
     revision = session.get(PackageRevision, package_revision_id)
     if revision is None:
         raise DraftCloudRefused("This package revision no longer exists.")
-    rows = _live_rows(session, package_revision_id)
+    rows, left_out = without_old_compare(_live_rows(session, package_revision_id))
     if not rows:
         raise DraftCloudRefused("There are no results to draw yet. Run the checks first.")
     items = open_items(session, package_revision_id, rows)
@@ -348,6 +379,7 @@ def render_draft_cloud(
         made_at=now(),
         results=len(rows),
         architect=architect,
+        old_compare_left_out=left_out,
     )
     document = with_banner(front, store.get(drawing.artifact.key).read())
 
@@ -408,6 +440,7 @@ def _front_page(
     made_at: datetime,
     results: int,
     architect: ArchitectCompare | None = None,
+    old_compare_left_out: int = 0,
 ) -> bytes:
     width, height = letter
     buffer = BytesIO()
@@ -447,6 +480,8 @@ def _front_page(
         f"{results} result(s) in force. Open items: {len(items.failures)} will be clouded as "
         f"wrong, {len(items.needs_a_person)} need a person, {len(items.not_checked)} not checked."
     )
+    if old_compare_left_out:
+        paragraph(old_compare_left_out_words(old_compare_left_out))
     line("")
     # The AI page review's differences are clouded by themselves; no person answers them
     # (decision 2026-10-16), so they are their own section, never "needs a person".
