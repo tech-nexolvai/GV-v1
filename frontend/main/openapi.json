@@ -3490,6 +3490,108 @@
         "title": "ChangedValuesOut",
         "type": "object"
       },
+      "ChatAccuracyBlock": {
+        "properties": {
+          "accuracy": {
+            "$ref": "#/components/schemas/ChatAccuracyOut"
+          },
+          "type": {
+            "const": "accuracy",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "accuracy"
+        ],
+        "title": "ChatAccuracyBlock",
+        "type": "object"
+      },
+      "ChatAccuracyClaimOut": {
+        "properties": {
+          "claim": {
+            "title": "Claim",
+            "type": "string"
+          },
+          "how": {
+            "title": "How",
+            "type": "string"
+          },
+          "points": {
+            "title": "Points",
+            "type": "number"
+          }
+        },
+        "required": [
+          "claim",
+          "how",
+          "points"
+        ],
+        "title": "ChatAccuracyClaimOut",
+        "type": "object"
+      },
+      "ChatAccuracyOut": {
+        "description": "The answer's accuracy, computed by code (CONTRACT5); `score` null: nothing to check.",
+        "properties": {
+          "breakdown": {
+            "items": {
+              "$ref": "#/components/schemas/ChatAccuracyClaimOut"
+            },
+            "title": "Breakdown",
+            "type": "array"
+          },
+          "claims": {
+            "title": "Claims",
+            "type": "integer"
+          },
+          "coverage_factor": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coverage Factor"
+          },
+          "level": {
+            "enum": [
+              "green",
+              "orange",
+              "yellow",
+              "n/a"
+            ],
+            "title": "Level",
+            "type": "string"
+          },
+          "measured": {
+            "title": "Measured",
+            "type": "string"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
+          }
+        },
+        "required": [
+          "score",
+          "level",
+          "claims",
+          "breakdown",
+          "measured"
+        ],
+        "title": "ChatAccuracyOut",
+        "type": "object"
+      },
       "ChatAgentOut": {
         "description": "One helper the assistant ran (`Agent`).",
         "properties": {
@@ -3627,6 +3729,107 @@
           "package"
         ],
         "type": "string"
+      },
+      "ChatCiteBlock": {
+        "properties": {
+          "cite": {
+            "$ref": "#/components/schemas/ChatCiteOut"
+          },
+          "type": {
+            "const": "cite",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "cite"
+        ],
+        "title": "ChatCiteBlock",
+        "type": "object"
+      },
+      "ChatCiteOut": {
+        "description": "A value the answer states, backed by where it is printed (checked by code).",
+        "properties": {
+          "box": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatBoxOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fact": {
+            "anyOf": [
+              {
+                "enum": [
+                  "page_count",
+                  "file_name"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fact"
+          },
+          "file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "picture_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Picture Id"
+          },
+          "printed": {
+            "description": "match | not_found | no_text | no_box | not_a_number | not_run",
+            "title": "Printed",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "value",
+          "printed"
+        ],
+        "title": "ChatCiteOut",
+        "type": "object"
       },
       "ChatCoverageBlock": {
         "properties": {
@@ -3788,6 +3991,24 @@
           "created_at"
         ],
         "title": "ChatCreatedOut",
+        "type": "object"
+      },
+      "ChatDismissedOut": {
+        "properties": {
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "record_id": {
+            "title": "Record Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "record_id",
+          "reason"
+        ],
+        "title": "ChatDismissedOut",
         "type": "object"
       },
       "ChatFileOut": {
@@ -4012,7 +4233,7 @@
             ]
           },
           "created_by": {
-            "description": "\"lead\" or \"helper:<n>\".",
+            "description": "\"lead\", \"helper:<n>\", or \"gv_review\" (made by code from a recorded result).",
             "title": "Created By",
             "type": "string"
           },
@@ -4062,6 +4283,18 @@
               }
             ],
             "title": "Printed Total"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The difference GV Review recorded that this finding is.",
+            "title": "Record Id"
           },
           "round": {
             "anyOf": [
@@ -4118,7 +4351,8 @@
               "architect",
               "brand_prototype",
               "rules",
-              "vendor_arithmetic"
+              "vendor_arithmetic",
+              "gv_review"
             ],
             "title": "Source",
             "type": "string"
@@ -4218,6 +4452,13 @@
       "ChatGvChecksOut": {
         "description": "Of the differences GV Review's own checks recorded, how many this answer includes.",
         "properties": {
+          "dismissed": {
+            "items": {
+              "$ref": "#/components/schemas/ChatDismissedOut"
+            },
+            "title": "Dismissed",
+            "type": "array"
+          },
           "included": {
             "title": "Included",
             "type": "integer"
@@ -4272,7 +4513,7 @@
       },
       "ChatMessageIn": {
         "additionalProperties": false,
-        "description": "One message from the reviewer, with the model, effort and thinking they picked.",
+        "description": "One message from the reviewer, with the model, effort and thinking they picked.\n\n`mode: full_check` (CONTRACT4) runs the app's own fixed whole-set check instead of a typed\nquestion (`text` is then not needed: the question shown is \"Full check \u00b7 Countertops \u00b7 High\neffort\"). `products`: the products picked in the composer (default: the set's own).",
         "properties": {
           "effort": {
             "enum": [
@@ -4285,15 +4526,44 @@
             "title": "Effort",
             "type": "string"
           },
+          "mode": {
+            "default": "chat",
+            "enum": [
+              "chat",
+              "full_check"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
           "model": {
             "maxLength": 64,
             "minLength": 1,
             "title": "Model",
             "type": "string"
           },
+          "products": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "countertop",
+                    "cabinet"
+                  ],
+                  "type": "string"
+                },
+                "maxItems": 2,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Products"
+          },
           "text": {
+            "default": "",
             "maxLength": 8000,
-            "minLength": 1,
             "title": "Text",
             "type": "string"
           },
@@ -4303,7 +4573,6 @@
           }
         },
         "required": [
-          "text",
           "model",
           "effort",
           "thinking"
@@ -4314,12 +4583,25 @@
       "ChatMessageOut": {
         "description": "A message as stored: the reviewer's question, or the assistant's answer.",
         "properties": {
+          "accuracy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatAccuracyOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The answer's accuracy by code (its `accuracy` block); null on older answers."
+          },
           "blocks": {
             "anyOf": [
               {
                 "items": {
                   "discriminator": {
                     "mapping": {
+                      "accuracy": "#/components/schemas/ChatAccuracyBlock",
+                      "cite": "#/components/schemas/ChatCiteBlock",
                       "coverage": "#/components/schemas/ChatCoverageBlock",
                       "finding": "#/components/schemas/ChatFindingBlock",
                       "finding_dropped": "#/components/schemas/ChatFindingDroppedBlock",
@@ -4351,6 +4633,12 @@
                     },
                     {
                       "$ref": "#/components/schemas/ChatTrustBlock"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChatCiteBlock"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChatAccuracyBlock"
                     }
                   ]
                 },
@@ -4654,6 +4942,17 @@
               }
             ],
             "title": "Page"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
           },
           "source": {
             "enum": [

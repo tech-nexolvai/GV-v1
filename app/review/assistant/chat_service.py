@@ -46,6 +46,7 @@ from app.review.assistant.chat_engine import (
     cost_text,
 )
 from app.review.assistant.chat_feed import MessageFeed
+from app.review.assistant.chat_findings import products_words
 from app.review.assistant.chat_provider import ChatProvider
 from app.review.assistant.chat_request import ChatModel
 from app.review.assistant.chat_store import (
@@ -64,6 +65,7 @@ from app.review.assistant.sandbox import UPLOADS, ChatWorkspace, Sandbox, safe_f
 from app.runs.rates import ModelRates
 
 __all__ = [
+    "FULL_CHECK_INSTRUCTION",
     "ChatRegistry",
     "MessageJob",
     "RunningMessage",
@@ -91,7 +93,8 @@ the tools you have:
 
 type Emit = Callable[[str, dict[str, Any]], None]
 #: Writes the GV review skill for a package revision into a folder (`skills_export`).
-type SkillBuilder = Callable[[Session, UUID, Path], None]
+type SkillBuilder = Callable[..., None]
+"""`(session, revision_id, dest, products=...)`: `products` only when the reviewer picked some."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -342,23 +345,55 @@ def prepare_skill(
     factory: sessionmaker[Session],
     revision_id: UUID | None,
     builder: SkillBuilder | None,
+    products: Sequence[str] | None = None,
 ) -> None:
-    """The GV review skill in the chat's skills folder, built once per chat."""
+    """The GV review skill in the chat's skills folder: built once per chat, and again when the
+    reviewer picks other products (their rules come first in `rules.md`)."""
     skill = workspace.skills
-    if (skill / "SKILL.md").is_file():
+    marker = workspace.root / "skill_products.json"
+    wanted = None if products is None else json.dumps(sorted(products))
+    try:
+        had = marker.read_text(encoding="utf-8") if marker.exists() else None
+    except OSError:
+        had = None
+    if (skill / "SKILL.md").is_file() and (wanted is None or had == wanted):
         return
     skill.mkdir(parents=True, exist_ok=True)
     built = False
     if builder is not None and revision_id is not None:
         try:
             with factory() as session:
-                builder(session, revision_id, skill)
+                if products is None:
+                    builder(session, revision_id, skill)
+                else:
+                    builder(session, revision_id, skill, products=list(products))
             built = (skill / "SKILL.md").is_file()
         except Exception as failed:  # noqa: BLE001 - the chat still works without the skill
             _log.warning("assistant chat skill could not be built: %s", type(failed).__name__)
-    if not built:
+    if built and wanted is not None:
+        marker.write_text(wanted, encoding="utf-8")
+    if not (skill / "SKILL.md").is_file():
         (skill / "SKILL.md").write_text(_FALLBACK_SKILL, encoding="utf-8")
     _readable(skill)
+
+
+#: The full check's own instruction (CONTRACT4): the reviewer presses a button, never types it.
+FULL_CHECK_INSTRUCTION: Final = """Full check of this drawing set (the reviewer pressed Run full check). Read /mnt/skills/gv-review/SKILL.md and rules.md first, and call review_results for the whole set.
+
+Review the WHOLE set: GV's rules for the picked products first, then compare everything on the vendor's drawings with the architect's (brand prototype differences as their own group). Report EVERY item you compare with report_finding, the right ones too (status same), with boxes. Check each finding the app made from GV Review's recorded results. Brief helpers to report findings and set_coverage, and every dimension string they read as a finding with parts and printed_total (source vendor_arithmetic) so the app adds it up. Record every page with set_coverage. Verify leads. End with 2-4 short lines of notes, no tables: the app draws the cloud drawing, the report and the lists."""
+
+
+def full_check_label(products: Sequence[str], effort: str) -> str:
+    """The question a full check shows: "Full check · Countertops · High effort"."""
+    return f"Full check \u00b7 {products_words(products)} \u00b7 {effort.capitalize()} effort"
+
+
+def focus_line(products: Sequence[str]) -> str:
+    words = products_words(products).lower()
+    return (
+        f"Focus for this chat: {words}. GV's rules for them come first in "
+        "/mnt/skills/gv-review/rules.md."
+    )
 
 
 def default_skill_builder() -> SkillBuilder:
@@ -396,6 +431,9 @@ class MessageJob:
     results: ResultsLoader | None
     open_sandbox: Callable[[ChatWorkspace], Sandbox | None]
     skill_builder: SkillBuilder | None = None
+    mode: str = "chat"
+    products: tuple[str, ...] | None = None
+    """The products picked in the composer, else the set's own (`None`: not stated)."""
 
 
 _NO_SANDBOX: Final = (
@@ -457,8 +495,13 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
     # The question is stored before `message_start`, so a chat list read when the screen sees
     # `message_start` already shows the chat, titled by its first question.
     try:
+        shown = (
+            full_check_label(job.products or (), job.effort)
+            if job.mode == "full_check"
+            else job.text
+        )
         with job.factory() as session:
-            add_user_message(session, chat_id=job.chat_id, created_by=job.created_by, text=job.text)
+            add_user_message(session, chat_id=job.chat_id, created_by=job.created_by, text=shown)
             session.commit()
     except Exception:  # noqa: BLE001 - told plainly; nothing was sent
         _log.exception("assistant chat could not store the question")
@@ -510,7 +553,7 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
         _log.warning("assistant chat could not copy the PDFs: %s", type(failed).__name__)
         stop_with("", "error", _NO_UPLOADS)
         return
-    prepare_skill(workspace, job.factory, job.revision_id, job.skill_builder)
+    prepare_skill(workspace, job.factory, job.revision_id, job.skill_builder, job.products)
     sandbox = job.open_sandbox(workspace)
     if sandbox is None:
         stop_with("", "error", _NO_SANDBOX)
@@ -525,7 +568,18 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
         user_content.append(
             {"type": "text", "text": uploaded_files_text(listing, changed=changed and bool(replay))}
         )
-    user_content.append({"type": "text", "text": job.text})
+    focus = None
+    if job.products is not None:
+        marker = workspace.root / "chat_products.json"
+        wanted = json.dumps(list(job.products))
+        before = marker.read_text(encoding="utf-8") if marker.exists() else None
+        if before != wanted or not replay:
+            focus = focus_line(job.products)
+        marker.write_text(wanted, encoding="utf-8")
+    if focus is not None:
+        user_content.append({"type": "text", "text": focus})
+    question = FULL_CHECK_INSTRUCTION if job.mode == "full_check" else job.text
+    user_content.append({"type": "text", "text": question})
 
     def register_file(file_id: str, name: str, size: int, mime: str, sha256: str) -> dict[str, Any]:
         with job.factory() as session:
@@ -563,6 +617,8 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             message_cap_micros=job.message_cap_micros,
             package_cap_micros=job.package_cap_micros,
             rates=job.rates,
+            mode=job.mode,
+            products=job.products or (),
         ),
         provider=job.provider,
         tools=ChatTools(

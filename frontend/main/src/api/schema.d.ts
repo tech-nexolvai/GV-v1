@@ -4141,6 +4141,45 @@ export interface components {
             /** Status */
             status: string;
         };
+        /** ChatAccuracyBlock */
+        ChatAccuracyBlock: {
+            accuracy: components["schemas"]["ChatAccuracyOut"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "accuracy";
+        };
+        /** ChatAccuracyClaimOut */
+        ChatAccuracyClaimOut: {
+            /** Claim */
+            claim: string;
+            /** How */
+            how: string;
+            /** Points */
+            points: number;
+        };
+        /**
+         * ChatAccuracyOut
+         * @description The answer's accuracy, computed by code (CONTRACT5); `score` null: nothing to check.
+         */
+        ChatAccuracyOut: {
+            /** Breakdown */
+            breakdown: components["schemas"]["ChatAccuracyClaimOut"][];
+            /** Claims */
+            claims: number;
+            /** Coverage Factor */
+            coverage_factor?: number | null;
+            /**
+             * Level
+             * @enum {string}
+             */
+            level: "green" | "orange" | "yellow" | "n/a";
+            /** Measured */
+            measured: string;
+            /** Score */
+            score: number | null;
+        };
         /**
          * ChatAgentOut
          * @description One helper the assistant ran (`Agent`).
@@ -4195,6 +4234,39 @@ export interface components {
         };
         /** @enum {string} */
         ChatCapHit: "message" | "package";
+        /** ChatCiteBlock */
+        ChatCiteBlock: {
+            cite: components["schemas"]["ChatCiteOut"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "cite";
+        };
+        /**
+         * ChatCiteOut
+         * @description A value the answer states, backed by where it is printed (checked by code).
+         */
+        ChatCiteOut: {
+            box?: components["schemas"]["ChatBoxOut"] | null;
+            /** Fact */
+            fact?: ("page_count" | "file_name") | null;
+            /** File */
+            file?: string | null;
+            /** Id */
+            id: string;
+            /** Page */
+            page?: number | null;
+            /** Picture Id */
+            picture_id?: string | null;
+            /**
+             * Printed
+             * @description match | not_found | no_text | no_box | not_a_number | not_run
+             */
+            printed: string;
+            /** Value */
+            value: string;
+        };
         /** ChatCoverageBlock */
         ChatCoverageBlock: {
             coverage: components["schemas"]["ChatCoverageOut"];
@@ -4259,6 +4331,13 @@ export interface components {
             id: string;
             /** Title */
             title: string | null;
+        };
+        /** ChatDismissedOut */
+        ChatDismissedOut: {
+            /** Reason */
+            reason: string;
+            /** Record Id */
+            record_id: string;
         };
         /** ChatFileOut */
         ChatFileOut: {
@@ -4366,7 +4445,7 @@ export interface components {
             checks?: components["schemas"]["ChatFindingChecksOut"] | null;
             /**
              * Created By
-             * @description "lead" or "helper:<n>".
+             * @description "lead", "helper:<n>", or "gv_review" (made by code from a recorded result).
              */
             created_by: string;
             /** Id */
@@ -4380,6 +4459,11 @@ export interface components {
             parts?: string[] | null;
             /** Printed Total */
             printed_total?: string | null;
+            /**
+             * Record Id
+             * @description The difference GV Review recorded that this finding is.
+             */
+            record_id?: string | null;
             /** Round */
             round?: number | null;
             /** Round Status */
@@ -4391,7 +4475,7 @@ export interface components {
              * Source
              * @enum {string}
              */
-            source: "architect" | "brand_prototype" | "rules" | "vendor_arithmetic";
+            source: "architect" | "brand_prototype" | "rules" | "vendor_arithmetic" | "gv_review";
             /**
              * Status
              * @enum {string}
@@ -4416,6 +4500,8 @@ export interface components {
          * @description Of the differences GV Review's own checks recorded, how many this answer includes.
          */
         ChatGvChecksOut: {
+            /** Dismissed */
+            dismissed?: components["schemas"]["ChatDismissedOut"][];
             /** Included */
             included: number;
             /** Left Out */
@@ -4436,6 +4522,10 @@ export interface components {
         /**
          * ChatMessageIn
          * @description One message from the reviewer, with the model, effort and thinking they picked.
+         *
+         *     `mode: full_check` (CONTRACT4) runs the app's own fixed whole-set check instead of a typed
+         *     question (`text` is then not needed: the question shown is "Full check · Countertops · High
+         *     effort"). `products`: the products picked in the composer (default: the set's own).
          */
         ChatMessageIn: {
             /**
@@ -4443,9 +4533,20 @@ export interface components {
              * @enum {string}
              */
             effort: "low" | "medium" | "high" | "xhigh" | "max";
+            /**
+             * Mode
+             * @default chat
+             * @enum {string}
+             */
+            mode: "chat" | "full_check";
             /** Model */
             model: string;
-            /** Text */
+            /** Products */
+            products?: ("countertop" | "cabinet")[] | null;
+            /**
+             * Text
+             * @default
+             */
             text: string;
             /** Thinking */
             thinking: boolean;
@@ -4455,8 +4556,10 @@ export interface components {
          * @description A message as stored: the reviewer's question, or the assistant's answer.
          */
         ChatMessageOut: {
+            /** @description The answer's accuracy by code (its `accuracy` block); null on older answers. */
+            accuracy?: components["schemas"]["ChatAccuracyOut"] | null;
             /** Blocks */
-            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"])[] | null;
+            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"])[] | null;
             /** @description With `stopped: cost_cap`: `message` (this answer's cap) or `package` (the drawing set's budget ran out). */
             cap_hit?: components["schemas"]["ChatCapHit"] | null;
             /** Cost Usd */
@@ -4564,6 +4667,8 @@ export interface components {
             id?: string | null;
             /** Page */
             page?: number | null;
+            /** Record Id */
+            record_id?: string | null;
             /**
              * Source
              * @enum {string}

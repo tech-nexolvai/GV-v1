@@ -47,6 +47,11 @@ revision dates); the level of detail (the vendor shows construction, joints, edg
 A vendor set often holds a cover, an index, general notes, plans, elevations, sections and details,
 and sometimes the brand's prototype sheets copied in.
 
+**Label each half of a sheet, not the sheet.** A combined page often holds two or three drawings,
+each under its own heading. An "ARCH SET" or "ID SET" drawing beside a "BRAND PROTOTYPE" drawing on
+the same page is the architect's: compare the vendor with it; the prototype is only a reference.
+Never call a whole page "prototype" because one half is.
+
 ```bash
 pdfinfo F.pdf                                              # pages, page size
 pdftotext -f 3 -l 3 -layout F.pdf - 2>/dev/null | head -60 # one page's words (also text inside stamps)
@@ -192,6 +197,13 @@ this on **every** paired page, including the second round (revision) pages.
 - `source`: `architect`; `brand_prototype` (section 1); `rules` with `rule_check_id` (the check's
   id in `review_results`); `vendor_arithmetic` with `parts` and `printed_total` (a dimension string
   that does not add up). `verified: true` only when you read both values on the drawing yourself.
+- Every other value you state from a drawing (a size, a count, a page count): back it with `cite`
+  (page and box, or `fact` for a file's page count or name), so the app checks it.
+- **Never drop a result GV Review recorded.** Each code FAIL and each AI page review `different` row
+  in `review_results` comes back as a finding (give its `record_id`), or is set aside with
+  `dismiss_recorded` and your reason. The app sends you back if one is missing.
+- Dimension strings: report each one you read as a finding with `parts` and `printed_total`
+  (source `vendor_arithmetic`; status `same` when it adds up): the app adds it up.
 - Sets in rounds (a first and a later submittal): give each finding its `round` (1, 2, ...) and
   name the same item the same way in every round, so the app can link them.
 - Match the question: yes/no or a number, one line; "summarize", one or two lines; a list, a short

@@ -58,6 +58,7 @@ from app.models import (
     PackageRevision,
 )
 from app.models.document import Document, DocumentVersion, PackageRevisionDocument
+from app.models.package import package_product
 from app.review.assistant.chat_contract import (
     AssistantModelOut,
     AssistantModelsOut,
@@ -619,6 +620,12 @@ def _message(
         )
     revision_id = _latest_revision_id(session, package.id)
     factory = _factory(session)
+    own = package_product(package)
+    products = (
+        tuple(body.products)
+        if body.products is not None
+        else (None if own is None else (own.value,))
+    )
     run = registry.claim(chat.id, package.id, uuid4())
     if run is None:
         raise CodedHTTPException(
@@ -654,6 +661,8 @@ def _message(
             results=_results_loader(factory, package.project_id, package.id, revision_id),
             open_sandbox=runtime.open_sandbox,
             skill_builder=runtime.skill_builder(),
+            mode=body.mode,
+            products=products,
         )
     except BaseException:
         registry.release(run)

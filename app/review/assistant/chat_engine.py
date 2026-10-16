@@ -49,6 +49,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
+from pathlib import Path
 from time import monotonic, monotonic_ns
 from typing import Any, Final, Protocol
 from uuid import uuid4
@@ -64,11 +65,13 @@ from app.review.assistant.chat_findings import (
     FINDING_TOOL_NAMES,
     HELPER_FINDING_TOOL_NAMES,
     FindingBook,
+    MarkupFile,
     coverage_note,
     main_upload,
     make_markup_file,
     make_report_file,
     page_ranges,
+    products_words,
     read_listing,
 )
 from app.review.assistant.chat_provider import ChatProvider, ProviderFailure, failure_from
@@ -97,14 +100,17 @@ from app.review.assistant.chat_tools import (
     new_step,
 )
 from app.review.assistant.chat_trust import (
+    CHECKS_MODULE,
     SECOND_READ_MODULE,
     Recorded,
+    accuracy,
     apply_checks,
     cloud_kind,
     load_module,
     recorded_from,
     recorded_missing,
     round_statuses,
+    states_drawing_values,
     trust_report,
     with_second_read,
 )
@@ -125,9 +131,9 @@ _log = logging.getLogger(__name__)
 
 #: Names the system prompts and tools: a change to either is a new id. (chat-v2: the `Agent`
 #: tool's `model` text names Sonnet as the default. chat-v3: helpers run at most at medium effort.
-#: chat-v4: the findings and coverage tools, and the answer-style lines.)
-#: Only the request's prefix changes; a chat's stored messages replay unchanged.
-HARNESS_ID: Final = "chat-v4"
+#: chat-v4: the findings and coverage tools, and the answer-style lines. chat-v5: dismiss_recorded
+#: and cite.) Only the request's prefix changes; a chat's stored messages replay unchanged.
+HARNESS_ID: Final = "chat-v5"
 #: The output allowance of a forced last call (a wrap-up or a final answer at the cap).
 WRAP_UP_MAX_TOKENS: Final = 8000
 FINAL_MAX_TOKENS: Final = 16000
@@ -958,6 +964,19 @@ class ChatEngine:
                 finding, notes = book.update(raw)
                 self._show_finding(finding)
                 text = f"Finding {finding['id']} updated."
+            elif name == "cite":
+                module = load_module(CHECKS_MODULE)
+
+                def printed(path: Path, page: int, box: Mapping[str, Any], value: str) -> str:
+                    if module is None:
+                        return "not_run"
+                    return str(module.printed_at_spot(path, page, box, value))
+
+                cite = book.cite(raw, printed)
+                notes = []
+                index = self._add_block({"type": "cite", "cite": cite})
+                self.emit("cite", {"index": index, "cite": json.loads(json.dumps(cite))})
+                text = f"Cited {cite['id']}: {cite['printed'].replace('_', ' ')}."
             elif name == "dismiss_recorded":
                 record_id, reason = book.dismiss(raw)
                 notes = []
@@ -966,11 +985,11 @@ class ChatEngine:
                 finding_id, reason = book.drop(raw)
                 notes = []
                 with self._lock:
-                    index = self._positions.get(finding_id)
+                    dropped_at = self._positions.get(finding_id)
                     block = {"type": "finding_dropped", "finding_id": finding_id, "reason": reason}
-                    if index is not None:
-                        self.blocks[index] = block
-                self.emit("finding_dropped", {"index": index, **block})
+                    if dropped_at is not None:
+                        self.blocks[dropped_at] = block
+                self.emit("finding_dropped", {"index": dropped_at, **block})
                 text = f"Finding {finding_id} dropped."
             else:
                 coverage = book.set_coverage(raw, by)
@@ -1076,6 +1095,14 @@ class ChatEngine:
                 future.result()
         return left[0]
 
+    def _accuracy(self) -> None:
+        """The answer's accuracy, by code (CONTRACT5): a block and the `accuracy` event."""
+        book = self.book
+        whole_set = book.coverage_used or self.settings.mode == "full_check"
+        score = accuracy(book.live(), list(book.cites), book.coverage_map() if whole_set else None)
+        index = self._add_block({"type": "accuracy", "accuracy": score})
+        self.emit("accuracy", {"index": index, "accuracy": json.loads(json.dumps(score))})
+
     def _trust_phase(self) -> None:
         """After the lead's answer: second reads, round links, then the trust report."""
         book = self.book
@@ -1110,10 +1137,21 @@ class ChatEngine:
         missing = set(recorded_missing(self.book.live(), recorded, self.book.dismissed))
         return [item for item in recorded.differences if item["record_id"] in missing]
 
-    def _coverage_gaps_note(self) -> str | None:
-        """The whole-set guard's note: pages unaccounted for (when coverage was used), and GV
-        Review's recorded differences the answer lost."""
+    def _has_evidence(self) -> bool:
+        return any(f.get("arch_box") or f.get("vendor_box") for f in self.book.live()) or any(
+            cite.get("box") for cite in self.book.cites
+        )
+
+    def _coverage_gaps_note(self, answer: str = "") -> str | None:
+        """The finish check's note: pages unaccounted for (when coverage was used), GV Review's
+        recorded differences the answer lost, and drawing values stated with no evidence."""
         parts: list[str] = []
+        if states_drawing_values(answer) and not self._has_evidence():
+            parts.append(
+                f"{COVERAGE_CHECK_PREFIX} show the evidence: your answer states values read off "
+                "the drawings with no evidence. Back each with report_finding (a comparison) or "
+                "cite (a value), with boxes; then give your answer."
+            )
         if self.book.coverage_used:
             gaps = self.book.coverage_gaps()
             if gaps:
@@ -1125,7 +1163,7 @@ class ChatEngine:
                 for item in missing[:40]
             )
             more = f" and {len(missing) - 40} more" if len(missing) > 40 else ""
-            lead = "" if parts else f"{COVERAGE_CHECK_PREFIX} "
+            lead = "" if parts else f"{COVERAGE_CHECK_PREFIX} "  # one prefix per note
             parts.append(
                 f"{lead}GV Review recorded these differences and your answer neither reports nor "
                 f"dismisses them: {listed}{more}. For each, report_finding with its record_id "
@@ -1165,12 +1203,14 @@ class ChatEngine:
 
     def _full_check_files(self) -> None:
         """Full check: the cloud drawing and the check report, made by code, as chat files."""
-        register = self.tools.register_file
+        register: Callable[[str, str, int, str, str], dict[str, Any]] | None = (
+            self.tools.register_file
+        )
         if register is None:
             return
         book, workspace = self.book, self.tools.workspace
         findings = book.live()
-        report = next(
+        report: dict[str, Any] = next(
             (b["trust"] for b in reversed(self.stored_blocks()) if b.get("type") == "trust"), {}
         )
         counts = {
@@ -1179,7 +1219,7 @@ class ChatEngine:
         }
         coverage = book.coverage_map()["counts"] if book.coverage_used else None
         trust = report.get("counts") or {}
-        products = " and ".join(self.settings.products) or "as the set says"
+        products = products_words(self.settings.products)
         summary = {
             "Drawing set": book.main_file or "",
             "Products": products,
@@ -1202,12 +1242,16 @@ class ChatEngine:
                 f"GV Review's recorded difference {item.get('record_id')} (page {item.get('page')}: "
                 f"{item.get('what')}) is not in this answer."
             )
-        makers = (
-            ("cloud drawing", lambda out: make_markup_file(workspace, findings, out, "AI cloud drawing")),
-            (
-                "check report",
-                lambda out: make_report_file(workspace, summary, findings, not_checked, out),
-            ),
+
+        def drawing(out: Path) -> MarkupFile:
+            return make_markup_file(workspace, findings, out, "AI cloud drawing")
+
+        def checked(out: Path) -> MarkupFile:
+            return make_report_file(workspace, summary, findings, not_checked, out)
+
+        makers: tuple[tuple[str, Callable[[Path], MarkupFile]], ...] = (
+            ("cloud drawing", drawing),
+            ("check report", checked),
         )
         for what, make in makers:
             file_id = str(uuid4())
@@ -1590,7 +1634,7 @@ class ChatEngine:
                     forced = "turn_limit"
                     _append_note(turn, TURN_LIMIT_NOTE)
                 continue
-            note = None if final or calls or guard_sent else self._coverage_gaps_note()
+            note = None if final or calls or guard_sent else self._coverage_gaps_note(reply.text())
             if note is not None and reply.stop_reason == "end_turn":
                 # The whole-set guard: once, and only when the caps leave room for more work.
                 guard_sent = True
@@ -1652,6 +1696,10 @@ class ChatEngine:
                 _log.exception("assistant chat trust report failed")
             if settings.mode == "full_check" and not self.cancel.is_set():
                 self._full_check_files()
+        try:
+            self._accuracy()
+        except Exception:  # noqa: BLE001 - the answer is stored without its score
+            _log.exception("assistant chat accuracy failed")
         if not answered:
             api_content: list[dict[str, Any]] = []
         else:

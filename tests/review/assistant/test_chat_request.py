@@ -445,6 +445,8 @@ def test_the_system_prompt_is_short_and_names_the_skill_and_the_three_facts() ->
         "update_finding",
         "drop_finding",
         "set_coverage",
+        "dismiss_recorded",
+        "cite",
     ]
 
 

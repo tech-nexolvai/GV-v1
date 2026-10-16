@@ -40,6 +40,7 @@ from uuid import uuid4
 from app.review.assistant.sandbox import UPLOADS, ChatWorkspace, SandboxRefused
 
 __all__ = [
+    "CITE",
     "COVERAGE_CHECK_PREFIX",
     "DISMISS_RECORDED",
     "DROP_FINDING",
@@ -49,6 +50,7 @@ __all__ = [
     "SET_COVERAGE",
     "UPDATE_FINDING",
     "FindingBook",
+    "MarkupFile",
     "coverage_note",
     "live_findings",
     "main_upload",
@@ -56,6 +58,7 @@ __all__ = [
     "make_report_file",
     "markup_name",
     "page_ranges",
+    "products_words",
     "read_listing",
 ]
 
@@ -238,10 +241,42 @@ DISMISS_RECORDED: Final[Mapping[str, Any]] = {
         },
     },
 }
+CITE: Final[Mapping[str, Any]] = {
+    "name": "cite",
+    "description": (
+        "Back a value you state outside a finding (a size, a count read off a drawing, a page "
+        "count): where it is printed (page and box), so the app checks it and shows the evidence. "
+        "For a fact about a file itself give `fact` instead of a box."
+    ),
+    "input_schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["value"],
+        "properties": {
+            "value": {"type": "string", "description": "The value as you state it"},
+            "page": {"type": "integer", "minimum": 1},
+            "box": _BOX_SCHEMA,
+            "fact": {
+                "type": "string",
+                "enum": ["page_count", "file_name"],
+                "description": "A fact about the file: its page count, or its name",
+            },
+            "file": {"type": "string", "description": "The upload, when the set has 2+ PDFs"},
+        },
+    },
+}
 FINDING_TOOL_NAMES: Final = frozenset(
-    {"report_finding", "update_finding", "drop_finding", "set_coverage", "dismiss_recorded"}
+    {"report_finding", "update_finding", "drop_finding", "set_coverage", "dismiss_recorded", "cite"}
 )
 HELPER_FINDING_TOOL_NAMES: Final = frozenset({"report_finding", "set_coverage"})
+
+
+_PRODUCT_WORDS: Final = {"countertop": "Countertops", "cabinet": "Cabinets"}
+
+
+def products_words(products: Sequence[str]) -> str:
+    """["countertop", "cabinet"] as "Countertops and Cabinets"."""
+    return " and ".join(_PRODUCT_WORDS.get(p, p) for p in products) or "All products"
 
 
 # ---- uploads -------------------------------------------------------------------------------------
@@ -342,6 +377,8 @@ class FindingBook:
     dismissed: dict[str, str] = field(default_factory=dict)
     """Recorded differences the lead set aside: record id -> its reason."""
     record_ids: frozenset[str] = frozenset()
+    cites: list[dict[str, Any]] = field(default_factory=list)
+    _cites: int = 0
     """The recorded differences this answer must account for (set by the engine)."""
     _count: int = 0
     _lock: threading.Lock = field(default_factory=threading.Lock)
@@ -594,6 +631,77 @@ class FindingBook:
             self.dismissed[record_id] = reason
         return record_id, reason
 
+    def cite(
+        self, raw: object, printed: Callable[[Path, int, Mapping[str, Any], str], str]
+    ) -> dict[str, Any]:
+        """A value the answer states, backed by where it is printed (checked by `printed`) or by
+        a fact about the file (checked here)."""
+        if not isinstance(raw, Mapping):
+            raise SandboxRefused("the tool's input is not an object")
+        unknown = set(raw) - {"value", "page", "box", "fact", "file"}
+        if unknown:
+            raise SandboxRefused(f"unknown argument {min(unknown)!r}")
+        value = _text(raw, "value", _MAX_VALUE)
+        fact = raw.get("fact")
+        names = [str(item["name"]) for item in self.listing]
+        file_name = raw.get("file")
+        if file_name is not None:
+            if not isinstance(file_name, str):
+                raise SandboxRefused("file must be text")
+            file_name = file_name.strip().removeprefix(UPLOADS + "/")
+            if names and file_name not in names:
+                raise SandboxRefused(f"there is no upload {file_name!r}")
+        chosen = file_name or self.main_file
+        with self._lock:
+            self._cites += 1
+            cite_id = f"C{self._cites}"
+        cite: dict[str, Any] = {
+            "id": cite_id,
+            "value": value,
+            "fact": None,
+            "page": None,
+            "box": None,
+            "file": chosen,
+            "picture_id": None,
+            "printed": "not_run",
+        }
+        if fact is not None:
+            cite["fact"] = _choice(fact, "fact", ("page_count", "file_name"))
+            item = next((i for i in self.listing if str(i["name"]) == chosen), None)
+            if cite["fact"] == "file_name":
+                ok = value.removeprefix(UPLOADS + "/") in names
+            else:
+                ok = item is not None and value.strip() == str(item.get("pages"))
+            cite["printed"] = "match" if ok else "not_found"
+            with self._lock:
+                self.cites.append(cite)
+            return dict(cite)
+        given_box = raw.get("box")
+        if isinstance(given_box, Mapping) and file_name and "file" not in given_box:
+            given_box = {**given_box, "file": file_name}
+        box = None if given_box is None else self._box(given_box, "box", architect=False)
+        page = raw.get("page")
+        if box is not None:
+            page = box["page"]
+        elif page is not None:
+            page = _whole(page, "page")
+        cite["page"], cite["box"] = page, box
+        if box is None:
+            cite["printed"] = "no_box"
+            with self._lock:
+                self.cites.append(cite)
+            return dict(cite)
+        cite["picture_id"], _why = self._picture(box)
+        pdf = self.workspace.uploads / str(box["file"])
+        try:
+            cite["printed"] = printed(pdf, int(box["page"]), box, value)
+        except Exception as failed:  # noqa: BLE001 - a check that cannot run is "not run"
+            _log.warning("assistant chat cite check failed: %s", type(failed).__name__)
+            cite["printed"] = "not_run"
+        with self._lock:
+            self.cites.append(cite)
+        return dict(cite)
+
     def seed(self, record: Mapping[str, Any]) -> dict[str, Any] | None:
         """A finding made by code from a difference GV Review recorded (full check): the lead
         checks it (boxes, verified) or drops it with a reason; it is never silently lost."""
@@ -805,4 +913,6 @@ def make_report_file(
     drawing = import_module("app.review.assistant.chat_drawing")
     drawing.check_report_pdf(out, summary, findings, not_checked)
     data = out.read_bytes()
-    return MarkupFile(markup_name(name, "AI check report"), len(data), hashlib.sha256(data).hexdigest())
+    return MarkupFile(
+        markup_name(name, "AI check report"), len(data), hashlib.sha256(data).hexdigest()
+    )

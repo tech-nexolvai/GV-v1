@@ -285,6 +285,23 @@ def test_a_set_with_no_product_stated_lists_every_check(session: Session, local:
     assert "- Note on Filler width, maximum:" in text
 
 
+def test_picked_products_come_first_and_the_others_follow(
+    session: Session, local: Path, tmp_path: Path
+) -> None:
+    """Chat v4: the products picked in the chat lead `rules.md`; the rest follow, labelled."""
+    _project, revision = _revision(session, product="countertop")
+
+    text = rules_markdown(session, revision, ["cabinet"])
+
+    assert "Products picked for this chat: cabinet." in text
+    first_cabinet, other = text.index("### CAB-FILLER-001"), text.index("## Other products")
+    assert first_cabinet < other < text.index("### CT-WIDTH-001")
+    build_skill_folder(session, revision, tmp_path / "gv-review", products=["countertop"])
+    rules = (tmp_path / "gv-review" / "rules.md").read_text(encoding="utf-8")
+    assert "Products picked for this chat: countertop." in rules
+    assert rules.index("### CT-WIDTH-001") < rules.index("## Other products")
+
+
 def test_the_same_records_give_the_same_bytes_and_a_folder_is_rebuilt_in_place(
     session: Session, local: Path, tmp_path: Path
 ) -> None:

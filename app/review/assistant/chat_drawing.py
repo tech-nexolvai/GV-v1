@@ -29,6 +29,8 @@ from pypdf import PdfReader, PdfWriter
 from reportlab.lib.colors import Color, white  # type: ignore[import-untyped]
 from reportlab.pdfgen import canvas  # type: ignore[import-untyped]
 
+from app.review.assistant.chat_trust import cloud_kind, needs_text
+
 __all__ = [
     "MARKUP_TITLE",
     "REPORT_TITLE",
@@ -139,22 +141,6 @@ def _cloud(c: canvas.Canvas, x0: float, y0: float, x1: float, y1: float) -> None
             cx = ax + (bx - ax) * (i + 0.5) / n
             cy = ay + (by - ay) * (i + 0.5) / n
             c.arc(cx - r, cy - r, cx + r, cy + r, start, 180)
-
-
-def cloud_kind(finding: Mapping[str, Any]) -> str | None:
-    """`wrong` (red: a difference its checks do not put in doubt), `check` (amber: to check), or
-    `None` (right: never clouded)."""
-    if finding.get("status") == "same":
-        return None
-    if finding.get("status") == "different" and finding.get("trust_level") != "to_check":
-        return "wrong"
-    return "check"
-
-
-def needs_text(finding: Mapping[str, Any]) -> str:
-    """What the vendor's value needs to be: code's inches when it read the architect's value."""
-    inches = (finding.get("inches") or {}).get("architect")
-    return f'{inches}"' if inches else str(finding.get("architect"))
 
 
 def _note_text(number: int, finding: Mapping[str, Any]) -> str:
@@ -338,10 +324,10 @@ def check_report_pdf(
     trust), then What's wrong, To check, What's right and Not checked."""
     from xml.sax.saxutils import escape
 
-    from reportlab.lib import colors
-    from reportlab.lib.pagesizes import landscape, letter
-    from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.platypus import (
+    from reportlab.lib import colors  # type: ignore[import-untyped]
+    from reportlab.lib.pagesizes import landscape, letter  # type: ignore[import-untyped]
+    from reportlab.lib.styles import getSampleStyleSheet  # type: ignore[import-untyped]
+    from reportlab.platypus import (  # type: ignore[import-untyped]
         PageBreak,
         Paragraph,
         SimpleDocTemplate,
@@ -356,7 +342,9 @@ def check_report_pdf(
     def p(text: object, style: Any = small) -> Any:
         return Paragraph(escape("" if text is None else str(text)), style)
 
-    def table(header: Sequence[str], rows: Sequence[Sequence[object]], widths: Sequence[float]) -> Any:
+    def table(
+        header: Sequence[str], rows: Sequence[Sequence[object]], widths: Sequence[float]
+    ) -> Any:
         data = [[p(h, small) for h in header], *[[p(c) for c in row] for row in rows]]
         grid = Table(data, colWidths=list(widths), repeatRows=1)
         grid.setStyle(
@@ -382,8 +370,16 @@ def check_report_pdf(
             f"What's wrong ({len(wrong)})",
             ["AI", "Page", "Item", "Vendor", "Needs", "Architect", "Source", "Trust"],
             [
-                [number[id(f)], f.get("page"), f.get("item"), f.get("vendor"), needs_text(f),
-                 f.get("architect"), f.get("source"), f.get("trust_level")]
+                [
+                    number[id(f)],
+                    f.get("page"),
+                    f.get("item"),
+                    f.get("vendor"),
+                    needs_text(f),
+                    f.get("architect"),
+                    f.get("source"),
+                    f.get("trust_level"),
+                ]
                 for f in wrong
             ],
             [26, 34, 170, 90, 70, 90, 80, 60],
@@ -392,8 +388,15 @@ def check_report_pdf(
             f"To check ({len(check)})",
             ["AI", "Page", "Item", "Vendor", "Architect", "Why", "Trust"],
             [
-                [number[id(f)], f.get("page"), f.get("item"), f.get("vendor"), f.get("architect"),
-                 f.get("why"), f.get("trust_level")]
+                [
+                    number[id(f)],
+                    f.get("page"),
+                    f.get("item"),
+                    f.get("vendor"),
+                    f.get("architect"),
+                    f.get("why"),
+                    f.get("trust_level"),
+                ]
                 for f in check
             ],
             [26, 34, 170, 90, 90, 150, 60],
@@ -402,9 +405,13 @@ def check_report_pdf(
             f"What's right ({len(right)})",
             ["AI", "Page", "Item", "Value", "Matches"],
             [
-                [number[id(f)], f.get("page"), f.get("item"), f.get("vendor"),
-                 f"{'architect' if f.get('source') == 'architect' else f.get('source')}: "
-                 f"{f.get('architect')}"]
+                [
+                    number[id(f)],
+                    f.get("page"),
+                    f.get("item"),
+                    f.get("vendor"),
+                    f"{f.get('source')}: {f.get('architect')}",
+                ]
                 for f in right
             ],
             [26, 34, 230, 120, 210],
@@ -418,7 +425,13 @@ def check_report_pdf(
     story.insert(len(summary) + 1, PageBreak())
     out.parent.mkdir(parents=True, exist_ok=True)
     document = SimpleDocTemplate(
-        str(out), pagesize=landscape(letter), title=REPORT_TITLE, invariant=1,
-        leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36,
+        str(out),
+        pagesize=landscape(letter),
+        title=REPORT_TITLE,
+        invariant=1,
+        leftMargin=36,
+        rightMargin=36,
+        topMargin=36,
+        bottomMargin=36,
     )
     document.build(story)

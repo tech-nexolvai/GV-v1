@@ -234,9 +234,7 @@ def rules_markdown(
             snapshot.rule
             for snapshot in (store.latest(rule_id) for rule_id in store.rule_ids())
             if snapshot is not None
-            and (
-                picked is not None or product is None or snapshot.rule.product_type is product
-            )
+            and (picked is not None or product is None or snapshot.rule.product_type is product)
         ),
         key=lambda rule: (picked is not None and rule.product_type not in picked, rule.id),
     )
@@ -253,7 +251,7 @@ def rules_markdown(
         names = " and ".join(sorted(item.value for item in picked))
         lines.append(
             f"Products picked for this chat: {names}. Their checks come first; the other "
-            "products' checks follow under \"Other products\".\n"
+            'products\' checks follow under "Other products".\n'
         )
     elif product is None:
         lines.append(
