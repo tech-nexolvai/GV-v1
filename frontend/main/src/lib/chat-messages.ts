@@ -7,7 +7,7 @@
  * message, which then replaces what was built live: a reload and a live answer end up identical.
  */
 
-import type { ChatAgent, ChatBlock, ChatCoverage, ChatEffort, ChatEvent, ChatFile, ChatFinding, ChatMessage, ChatModel, ChatStep, ChatStopped, ChatSummary, ChatTask, ChatTrust } from '@/lib/chat-api';
+import type { ChatAccuracy, ChatAgent, ChatBlock, ChatCite, ChatCoverage, ChatEffort, ChatEvent, ChatFile, ChatFinding, ChatMessage, ChatMode, ChatModel, ChatProduct, ChatStep, ChatStopped, ChatSummary, ChatTask, ChatTrust } from '@/lib/chat-api';
 import { EFFORT_WORDS } from '@/lib/chat-settings';
 
 /** A helper agent while its Agent step runs: `running` until its `agent_end`. */
@@ -49,6 +49,13 @@ export interface ViewMessage {
   coverage?: ChatCoverage | null;
   /** Chat v3: the trust report code built after the answer's checks; absent or null before. */
   trust?: ChatTrust | null;
+  /** Chat v4: how it was asked (a full check, or absent for an ordinary message) and for which products. */
+  mode?: ChatMode | null;
+  products?: ChatProduct[] | null;
+  /** Chat v5: the numbers the answer backed with a spot on a drawing (latest version by id). */
+  cites?: ChatCite[];
+  /** Chat v5: code's accuracy score; absent on older answers (they show no badge). */
+  accuracy?: ChatAccuracy | null;
   cost_usd: string | null;
   stopped: ChatStopped | null;
   error: string | null;
@@ -78,22 +85,31 @@ export function withFinding(findings: readonly ChatFinding[], finding: ChatFindi
     : [...findings, finding];
 }
 
+/** A cite added, or put in place of its earlier version (same id). */
+export function withCite(cites: readonly ChatCite[], cite: ChatCite): ChatCite[] {
+  return cites.some((known) => known.id === cite.id) ? cites.map((known) => (known.id === cite.id ? cite : known)) : [...cites, cite];
+}
+
 /**
  * The findings and coverage a saved message's blocks hold: each finding at its latest version (a
  * later block with the same id replaces it), and the last coverage block. A dropped finding is
  * simply not in the stored blocks; a `finding_dropped` block, if a server ever stores one, removes it.
  */
-export function evidenceOf(blocks: readonly ChatBlock[]): { findings: ChatFinding[]; coverage: ChatCoverage | null; trust: ChatTrust | null } {
+export function evidenceOf(blocks: readonly ChatBlock[]): { findings: ChatFinding[]; coverage: ChatCoverage | null; trust: ChatTrust | null; cites: ChatCite[]; accuracy: ChatAccuracy | null } {
   let findings: ChatFinding[] = [];
   let coverage: ChatCoverage | null = null;
   let trust: ChatTrust | null = null;
+  let cites: ChatCite[] = [];
+  let accuracy: ChatAccuracy | null = null;
   for (const block of blocks as readonly (ChatBlock | { type: 'finding_dropped'; finding_id: string })[]) {
     if (block.type === 'finding' && block.finding?.id) findings = withFinding(findings, block.finding);
     else if (block.type === 'finding_dropped') findings = findings.filter((finding) => finding.id !== block.finding_id);
     else if (block.type === 'coverage' && block.coverage) coverage = block.coverage;
     else if (block.type === 'trust' && block.trust) trust = block.trust;
+    else if (block.type === 'cite' && block.cite?.id) cites = withCite(cites, block.cite);
+    else if (block.type === 'accuracy' && block.accuracy) accuracy = block.accuracy;
   }
-  return { findings, coverage, trust };
+  return { findings, coverage, trust, cites, accuracy };
 }
 
 /** A saved message, as the screen shows it. A saved answer with words but no blocks shows its words. */
@@ -101,7 +117,7 @@ export function fromSaved(message: ChatMessage): ViewMessage {
   const saved = message.blocks ?? [];
   // Findings and coverage are drawn by the screen in their own places, not in the order of the work.
   const shown = saved.filter((block) => block.type === 'thinking' || block.type === 'text' || block.type === 'step');
-  const { findings, coverage, trust } = evidenceOf(saved);
+  const { findings, coverage, trust, cites, accuracy } = evidenceOf(saved);
   const blocks: ViewBlock[] = shown.length
     ? shown.map((block): ViewBlock =>
         block.type === 'thinking' ? { type: 'thinking', text: block.text ?? '', seconds: block.seconds ?? null, live: false }
@@ -123,6 +139,10 @@ export function fromSaved(message: ChatMessage): ViewMessage {
     findings,
     coverage,
     trust,
+    mode: message.mode ?? null,
+    products: message.products ?? null,
+    cites,
+    accuracy: message.accuracy ?? accuracy,
     cost_usd: message.cost_usd ?? null,
     stopped: message.stopped ?? null,
     error: message.error ?? null,
@@ -133,19 +153,28 @@ export function fromSaved(message: ChatMessage): ViewMessage {
   };
 }
 
+/** How a message was asked (chat v4): a full check and its products, and the effort it ran at. */
+export interface AskedAs {
+  mode?: ChatMode | null;
+  products?: ChatProduct[] | null;
+  effort?: ChatEffort | null;
+}
+
 /** The user's question, shown at once before the server has stored it. */
-export function localQuestion(key: string, text: string, now = new Date()): ViewMessage {
+export function localQuestion(key: string, text: string, now = new Date(), asked: AskedAs = {}): ViewMessage {
   return {
-    key, id: null, role: 'user', created_at: now.toISOString(), text, model: null, effort: null, thinking: null,
+    key, id: null, role: 'user', created_at: now.toISOString(), text, model: null, effort: asked.effort ?? null, thinking: null,
     blocks: [], files: [], tasks: null, cost_usd: null, stopped: null, error: null, status: 'done',
+    mode: asked.mode ?? null, products: asked.products ?? null,
   };
 }
 
 /** The answer about to stream in, with the choices it was asked with. */
-export function localAnswer(key: string, choice: { model: string; effort: ChatEffort; thinking: boolean }, now = new Date()): ViewMessage {
+export function localAnswer(key: string, choice: { model: string; effort: ChatEffort; thinking: boolean }, now = new Date(), asked: AskedAs = {}): ViewMessage {
   return {
-    key, id: null, role: 'assistant', created_at: now.toISOString(), text: '', ...choice,
+    key, id: null, role: 'assistant', created_at: now.toISOString(), text: '', model: choice.model, effort: choice.effort, thinking: choice.thinking,
     blocks: [], files: [], tasks: null, cost_usd: null, stopped: null, error: null, status: 'running',
+    mode: asked.mode ?? null, products: asked.products ?? null,
   };
 }
 
@@ -247,6 +276,10 @@ export function applyChatEvent(message: ViewMessage, event: ChatEvent): ViewMess
       return { ...message, coverage: event.data.coverage ?? message.coverage ?? null };
     case 'trust':
       return { ...message, trust: event.data.trust ?? message.trust ?? null };
+    case 'cite':
+      return event.data.cite?.id ? { ...message, cites: withCite(message.cites ?? [], event.data.cite) } : message;
+    case 'accuracy':
+      return { ...message, accuracy: event.data.accuracy ?? message.accuracy ?? null };
     case 'message_end': {
       // The stored message wins; the live task list, files, findings and coverage stay if it somehow
       // left them out.
@@ -259,6 +292,10 @@ export function applyChatEvent(message: ViewMessage, event: ChatEvent): ViewMess
         findings: stored.findings?.length ? stored.findings : message.findings ?? [],
         coverage: stored.coverage ?? message.coverage ?? null,
         trust: stored.trust ?? message.trust ?? null,
+        mode: stored.mode ?? message.mode ?? null,
+        cites: stored.cites?.length ? stored.cites : message.cites ?? [],
+        accuracy: stored.accuracy ?? message.accuracy ?? null,
+        products: stored.products ?? message.products ?? null,
         error: stored.error ?? message.error,
       };
     }
@@ -520,12 +557,11 @@ function capWords(value: string | null | undefined): string | null {
 
 /**
  * Why an answer stopped, in claude.ai's plain words; null when it finished. A money stop names the cap
- * the answer actually ran under (kept with it); `messageCapUsd` (today's setting) is only for answers
- * saved before that was kept.
+ * the answer actually ran under (kept with it). An older answer saved without its cap says "its cost
+ * limit": today's setting may differ from the cap it ran under (#1483: a $5 stop read "$15").
  */
 export function stoppedWords(
   message: Pick<ViewMessage, 'stopped'> & Partial<Pick<ViewMessage, 'cap_hit' | 'message_cap_usd' | 'package_cap_usd'>>,
-  messageCapUsd?: string | null,
 ): string | null {
   switch (message.stopped) {
     case 'cost_cap': {
@@ -533,7 +569,7 @@ export function stoppedWords(
         const budget = capWords(message.package_cap_usd);
         return budget ? `Stopped: this drawing set has used its ${budget} AI budget` : 'Stopped: this drawing set has used its AI budget';
       }
-      const cap = capWords(message.message_cap_usd ?? messageCapUsd);
+      const cap = capWords(message.message_cap_usd);
       return cap ? `Stopped: this answer reached its ${cap} limit` : 'Stopped: this answer reached its cost limit';
     }
     case 'cancelled':

@@ -25,7 +25,7 @@ const ZOOM_STEP = 1.5;
 const clampZoom = (value: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
 
 /** One crop, large, with zoom and pan. */
-function ZoomPane({ src, label }: { src: string; label: string }) {
+export function ZoomPane({ src, label }: { src: string; label: string }) {
   const reduced = useReducedMotion();
   const frame = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; y: number; startX: number; startY: number } | null>(null);
@@ -113,7 +113,7 @@ function ZoomButton({ label, onClick, disabled, children }: { label: string; onC
   );
 }
 
-function NoPicture() {
+export function NoPicture() {
   return (
     <div
       data-slot="chat-evidence-missing"

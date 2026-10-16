@@ -32,12 +32,14 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { ChatComposer } from '@/components/chat/chat-composer';
+import { FullCheckButton, ProductChips } from '@/components/chat/chat-full-check';
 import { ChatList, type ChatListState } from '@/components/chat/chat-list';
 import { AssistantMessage, UserMessage } from '@/components/chat/chat-message';
 import { ApiError } from '@/api/client';
-import { chatFailureWords, isAbort, LIVE_CHAT_API, type Chat, type ChatApi, type ChatEvent, type ChatMessage, type ChatModels } from '@/lib/chat-api';
+import { chatFailureWords, isAbort, LIVE_CHAT_API, type Chat, type ChatApi, type ChatEvent, type ChatMessage, type ChatMode, type ChatModels, type ChatProduct } from '@/lib/chat-api';
+import { confirmWords, effectiveProducts, FULL_CHECK_TEXT, isFullCheck, readProducts, saveProducts, toggleProduct } from '@/lib/chat-full-check';
 import { applyChatEvent, CHAT_STARTERS, chatTitle, dollars, followedAnswer, fromSaved, localAnswer, localQuestion, previousQuestion, settle, type ViewMessage } from '@/lib/chat-messages';
-import { browserStorage, readChoice, resolveChoice, saveChoice, type ChatChoice } from '@/lib/chat-settings';
+import { browserStorage, EFFORT_WORDS, readChoice, resolveChoice, saveChoice, shortModelLabel, type ChatChoice } from '@/lib/chat-settings';
 import { cn } from '@/lib/utils';
 
 /** A chat with nothing in it yet (one value, so effects that follow the messages do not re-run). */
@@ -109,15 +111,17 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   const listed = useRef<ReadonlySet<string> | null>(null);
   // The set's name from the list, for a new chat's greeting (no chat is read for it).
   const [listName, setListName] = useState<string | null>(null);
+  const [listProduct, setListProduct] = useState<ChatProduct | null>(null);
 
   useEffect(() => {
     let current = true;
     api.list(packageId).then(
-      ({ chats, package_name: setName }) => {
+      ({ chats, package_name: setName, product_type: productType }) => {
         listed.current = new Set(chats.map((listedChat) => listedChat.id));
         if (!current) return;
         setList({ status: 'ready', chats });
         if (setName) setListName(setName);
+        if (productType) setListProduct(productType);
       },
       (error: unknown) => current && setList((now) => (now.status === 'ready' ? now : { status: 'error', message: chatFailureWords(error) })),
     );
@@ -199,6 +203,20 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   const failedToLoad = chatId && loadError?.chatId === chatId && !chat ? loadError : null;
   const messages = chatId && thread?.chatId === chatId ? thread.messages : NO_MESSAGES;
   const name = chat?.package_name ?? listName;
+
+  // ── Products (chat v4): Countertop / Cabinet, remembered per drawing set ──
+  const [pickedProducts, setPickedProducts] = useState<{ packageId: string; products: ChatProduct[] } | null>(null);
+  const [rememberedProducts] = useState(() => ({ packageId, products: readProducts(browserStorage(), packageId) }));
+  const products = effectiveProducts(
+    pickedProducts?.packageId === packageId ? pickedProducts.products : null,
+    rememberedProducts.packageId === packageId ? rememberedProducts.products : readProducts(browserStorage(), packageId),
+    chat?.product_type ?? listProduct,
+  );
+  function toggle(product: ChatProduct) {
+    const next = toggleProduct(products, product);
+    setPickedProducts({ packageId, products: next });
+    saveProducts(browserStorage(), packageId, next);
+  }
 
   useEffect(() => {
     if (name) onNameChange?.(name);
@@ -351,7 +369,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
     : null;
   const blocked = unavailable ?? (models.status === 'loading' ? 'Loading the models…' : chatId && !chat ? 'Opening the chat…' : null);
 
-  async function send(text: string) {
+  async function send(text: string, mode: ChatMode = 'chat') {
     const question = text.trim();
     if (!question || runRef.current || blocked || !choice) return;
     counter.current += 1;
@@ -393,7 +411,11 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
     setAtBottom(true);
     setThread((now) => ({
       chatId: sendTo,
-      messages: [...(now?.chatId === sendTo ? now.messages : []), localQuestion(userKey, question), localAnswer(answerKey, choice)],
+      messages: [
+        ...(now?.chatId === sendTo ? now.messages : []),
+        localQuestion(userKey, question, new Date(), { mode, products, effort: choice.effort }),
+        localAnswer(answerKey, choice, new Date(), { mode, products }),
+      ],
     }));
 
     let refusal: unknown = null;
@@ -401,7 +423,11 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
       run,
       answerKey,
       (onEvent, signal) =>
-        api.send(sendTo, { text: question, model: choice.model, effort: choice.effort, thinking: choice.thinking }, onEvent, signal).catch((error: unknown) => {
+        api.send(sendTo, {
+          text: question, model: choice.model, effort: choice.effort, thinking: choice.thinking,
+          ...(mode === 'full_check' ? { mode } : {}),
+          ...(products ? { products } : {}),
+        }, onEvent, signal).catch((error: unknown) => {
           refusal = error;
           throw error;
         }),
@@ -411,7 +437,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
     if (ended === 'refused') {
       // Refused before anything began (busy, too long, offline): the question goes back to the box.
       setThread((now) => (now && now.chatId === sendTo ? { ...now, messages: now.messages.filter((message) => message.key !== userKey && message.key !== answerKey) } : now));
-      setDraft((now) => (now.trim() ? now : question));
+      if (mode === 'chat') setDraft((now) => (now.trim() ? now : question));
       const words = chatFailureWords(refusal);
       setNotice(words);
       setAnnounce(words);
@@ -455,10 +481,17 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
 
   const chatName = chat?.title?.trim() || activeSummary?.title?.trim() || null;
 
+  // ── Full check (chat v4): one button, confirmed with what it will use ──
+  const pickedModel = choice ? modelList.find((model) => model.id === choice.model) ?? null : null;
+  const fullCheckSummary = confirmWords(products, pickedModel ? shortModelLabel(pickedModel) : null, choice ? EFFORT_WORDS[choice.effort] : null, money(cap));
+  const fullCheckBlocked = blocked ?? (running ? 'A message is still running in this chat.' : null);
+  const runFullCheck = () => void send(FULL_CHECK_TEXT, 'full_check');
+
   return (
     <TooltipProvider delayDuration={300}>
       <div data-tw data-slot="chat-page" className="flex min-h-0 w-full min-w-0 flex-1 font-sans text-sm text-foreground antialiased">
         <HeaderActions>
+          {!centred && <FullCheckButton variant="bar" summary={fullCheckSummary} onRun={runFullCheck} blocked={fullCheckBlocked} />}
           <Button variant="ghost" size="sm" asChild>
             <a href={formatRoute({ page: 'review', packageId })} aria-label="Review list">
               <ListChecks /> <span className="hidden sm:inline">Review list</span>
@@ -509,7 +542,12 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                 </div>
               )}
               {chat && chatId && messages.map((message, at) => {
-                if (message.role === 'user') return <UserMessage key={message.key} message={message} />;
+                if (message.role === 'user') {
+                  // A saved full check's bubble names the effort its answer ran at.
+                  const answer = messages[at + 1];
+                  return <UserMessage key={message.key} message={message} effort={message.effort ?? (answer?.role === 'assistant' ? answer.effort : null)} />;
+                }
+                const asked = messages[at - 1];
                 // Retry asks the answer's question again, as a new message (claude.ai's Retry).
                 const question = previousQuestion(messages, message.key);
                 const canRetry = question !== null && !running && !blocked;
@@ -525,6 +563,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                     latest={at === messages.length - 1}
                     makeMarkupPdf={(messageId) => api.markup(chatId, messageId)}
                     fullPageHref={formatRoute({ page: 'review', packageId })}
+                    fullCheck={isFullCheck(message, asked?.role === 'user' ? asked : null)}
                   />
                 );
               })}
@@ -540,6 +579,12 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
             )}
           >
             {centred && <Greeting name={name} />}
+            {centred && (
+              <div className="mb-4 flex flex-col items-center gap-1.5">
+                <FullCheckButton summary={fullCheckSummary} onRun={runFullCheck} blocked={fullCheckBlocked} />
+                <p className="text-center text-xs text-muted-foreground">What’s wrong, what to check and what’s right on every page, with the cloud drawing</p>
+              </div>
+            )}
             {!centred && (
               <button
                 type="button"
@@ -583,6 +628,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                 placeholder={centred ? 'How can I help you today?' : 'Reply to Claude…'}
                 menuFootnote={footnote}
                 textareaRef={textareaRef}
+                leading={<ProductChips products={products} onToggle={toggle} disabled={running} />}
               />
             </div>
             {centred && <Starters disabled={Boolean(blocked)} onAsk={(question) => void send(question)} />}

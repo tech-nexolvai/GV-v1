@@ -188,7 +188,8 @@ export function TrustSummary({ findings, trust, coverage, coverageStrip }: Trust
   if (notOpened && !notChecked.some((line) => line.toLowerCase().includes('not opened'))) notChecked.push(notOpened);
 
   return (
-    <section data-slot="chat-trust" aria-label="Why this can be trusted" className="chat-rise grid min-w-0 gap-2 rounded-xl border bg-card px-3 py-2.5">
+    <section data-slot="chat-trust" aria-label="Why this can be trusted" className="chat-rise grid min-w-0 gap-3 rounded-2xl border bg-card px-4 py-3.5 shadow-[0_1px_2px_rgb(0_0_0/0.03)]">
+      <p aria-hidden="true" className="text-xs font-medium tracking-wide text-muted-foreground">Why you can trust this</p>
       {levels && rated > 0 && (
         <div className="grid gap-1.5">
           <div data-slot="chat-trust-bar" aria-hidden="true" className="flex h-2 w-full overflow-hidden rounded-full bg-muted">

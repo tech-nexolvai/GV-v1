@@ -195,7 +195,8 @@ describe('a saved chat, after a reload', () => {
     renderChat(fakeChatApi({ get: vi.fn(async () => chatOut('c-1', stopped)) }));
     await screen.findAllByRole('article', { name: 'Answer' });
     expect([...document.querySelectorAll('[data-slot="chat-stopped"]')].map((node) => node.textContent)).toEqual([
-      'Stopped: this answer reached its $5 limit',
+      // Saved without its cap: today's $5.00 setting is not named (#1483).
+      'Stopped: this answer reached its cost limit',
       'Something went wrong. Try again.',
       'Stopped after the maximum number of steps',
       'Stopped',

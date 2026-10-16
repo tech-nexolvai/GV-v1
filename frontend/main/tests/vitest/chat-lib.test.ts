@@ -318,13 +318,13 @@ describe('the answer’s words', () => {
   });
 
   it('why it stopped, in claude.ai’s plain words', () => {
-    expect(stoppedWords({ stopped: 'cost_cap' }, '5.00')).toBe('Stopped: this answer reached its $5 limit');
-    expect(stoppedWords({ stopped: 'cost_cap' }, '7.50')).toBe('Stopped: this answer reached its $7.50 limit');
+    // An older answer saved without its cap never names today's setting (#1483).
     expect(stoppedWords({ stopped: 'cost_cap' })).toBe('Stopped: this answer reached its cost limit');
+    expect(stoppedWords({ stopped: 'cost_cap', message_cap_usd: '7.50' })).toBe('Stopped: this answer reached its $7.50 limit');
     // The cap the answer actually ran under (kept with it) wins over today's setting.
-    expect(stoppedWords({ stopped: 'cost_cap', cap_hit: 'message', message_cap_usd: '3.00' }, '5.00')).toBe('Stopped: this answer reached its $3 limit');
+    expect(stoppedWords({ stopped: 'cost_cap', cap_hit: 'message', message_cap_usd: '3.00' })).toBe('Stopped: this answer reached its $3 limit');
     // The drawing set's budget ran out: said as the set's budget, not the answer's limit.
-    expect(stoppedWords({ stopped: 'cost_cap', cap_hit: 'package', message_cap_usd: '5.00', package_cap_usd: '40.00' }, '5.00')).toBe('Stopped: this drawing set has used its $40 AI budget');
+    expect(stoppedWords({ stopped: 'cost_cap', cap_hit: 'package', message_cap_usd: '5.00', package_cap_usd: '40.00' })).toBe('Stopped: this drawing set has used its $40 AI budget');
     expect(stoppedWords({ stopped: 'cost_cap', cap_hit: 'package' })).toBe('Stopped: this drawing set has used its AI budget');
     expect(stoppedWords({ stopped: 'cancelled' })).toBe('Stopped');
     expect(stoppedWords({ stopped: 'error' })).toBe('Something went wrong. Try again.');
