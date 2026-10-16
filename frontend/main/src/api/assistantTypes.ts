@@ -88,6 +88,41 @@ export interface AssistantAnswer {
   not_looked_at_page?: number | null;
   /** Why: `cost_cap`, the question was over its cost cap with the pictures. */
   not_looked_at_reason?: 'cost_cap' | null;
+  /** The tools the assistant used, in order (owner, 2026-10-16); empty or absent for a one-call answer. */
+  steps?: AssistantStep[];
+  /** The assistant's last task list for this answer ("Progress"), if it made one. */
+  plan?: AssistantPlanTask[];
+  /** `cost_cap`: it stopped before finishing at the question's cost cap; the text says so. */
+  stopped?: 'cost_cap' | null;
+}
+
+/** One line of the assistant's task list. */
+export interface AssistantPlanTask {
+  title: string;
+  status: 'pending' | 'in_progress' | 'done';
+}
+
+/** One tool the assistant used: a sandbox command and its output, a picture, the results, its plan, helper agents. */
+export interface AssistantStep {
+  kind: 'bash' | 'view' | 'review_results' | 'plan' | 'delegate';
+  label: string;
+  command?: string | null;
+  path?: string | null;
+  page?: number | null;
+  output?: string | null;
+  ok: boolean;
+  tasks?: AssistantPlanTask[];
+  agents?: AssistantSubAgent[];
+}
+
+/** One helper agent the assistant ran in parallel, with its own steps and short report. */
+export interface AssistantSubAgent {
+  title: string;
+  pages: number[];
+  steps: AssistantStep[];
+  report: string;
+  ok: boolean;
+  stopped?: 'cost_cap' | 'failed' | null;
 }
 
 /**

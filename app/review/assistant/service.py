@@ -41,6 +41,13 @@ from uuid import UUID
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.review.assistant.agent import (
+    MAX_TOOL_TURNS,
+    AgentBudget,
+    AgentTools,
+    first_message,
+    run_agent,
+)
 from app.review.assistant.answers import publish
 from app.review.assistant.contract import (
     STAGE_LABELS,
@@ -89,6 +96,7 @@ from app.runs.rates import ModelRates, call_cost_micros
 
 __all__ = [
     "BUDGET_TEXT",
+    "COST_CAP_TEXT",
     "DISABLED_TEXT",
     "AssistantBudget",
     "AssistantRuntime",
@@ -107,6 +115,10 @@ DISABLED_TEXT: Final = (
 BUDGET_TEXT: Final = (
     "This package has used its assistant budget, so Claude Sonnet was not asked. The suggested "
     "questions still work from the records."
+)
+COST_CAP_TEXT: Final = (
+    "I stopped before finishing: this question reached its cost cap after {steps} step(s), so "
+    "there is no answer yet. Ask a narrower question, for example name the page."
 )
 _BUSY: Final = ErrorEvent(
     code="model_busy",
@@ -142,6 +154,8 @@ class CallLedger(Protocol):
         started_ns: int,
         response: Mapping[str, Any] | None,
         error: BaseException | None,
+        prompt_id: str = ...,
+        template_id: str = ...,
     ) -> None: ...
 
     def before_call(self) -> None:
@@ -170,12 +184,14 @@ class SessionLedger:
         started_ns: int,
         response: Mapping[str, Any] | None,
         error: BaseException | None,
+        prompt_id: str = PROMPT_ID,
+        template_id: str = TEMPLATE_ID,
     ) -> None:
         try:
             BedrockConverseInvocationRecorder(self.session, self.package_revision_id).record(
                 model_id=model_id,
-                prompt_id=PROMPT_ID,
-                template_id=TEMPLATE_ID,
+                prompt_id=prompt_id,
+                template_id=template_id,
                 started_ns=started_ns,
                 response=response,
                 error=error,
@@ -197,6 +213,15 @@ class AssistantRuntime:
     budget_usd: Decimal | None = None
     """The assistant's budget per package revision; `None` is no budget (tests)."""
     question_cap_usd: Decimal | None = None
+    max_tool_turns: int = MAX_TOOL_TURNS
+    """How many turns of tool use the agent gets before it must answer (owner, 2026-10-16)."""
+    agent_model: AssistantModel | None = None
+    """The model that leads the tool-using loop and checks the helpers (Opus 5.5); `None` uses
+    `model`, which then also runs the helper agents (Sonnet 5.5)."""
+    delegate_cap_usd: Decimal | None = None
+    """The cap on a question that runs helper agents (`delegate`); `None` keeps the question cap."""
+    sandbox: str = "off"
+    """Which sandbox the tool-using assistant runs commands in: `auto`, `docker`, `macos`, `off`."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,6 +233,8 @@ class AssistantBudget:
     spent_micros: Callable[[], int]
     """What this package's assistant calls have cost so far, from the recorded calls."""
     rates: ModelRates | None
+    delegate_cap_micros: int | None = None
+    """The cap on one question once it runs helper agents (`None`: the question cap)."""
 
 
 #: Tokens for the API's own framing of a request, on top of what it carries.
@@ -410,8 +437,12 @@ def stream_answer(
     ledger: CallLedger,
     pictures: PagePictureSource | None = None,
     budget: AssistantBudget | None = None,
+    agent_tools: Callable[[ReviewSnapshot], AgentTools | None] | None = None,
 ) -> Iterator[Event]:
-    """The events for one question, in the order the steps happen."""
+    """The events for one question, in the order the steps happen.
+
+    With `agent_tools` (the locked sandbox over this package's PDFs) and a model that can take
+    tools, the question is answered by the tool-using loop (`agent.py`); otherwise by one call."""
     question = request.question
     log = {"question_chars": len(question), "history_turns": len(request.history)}
     yield _stage("records")
@@ -505,6 +536,25 @@ def stream_answer(
     # assistant wrote is not trusted, so it never reaches the prompt.
     asked = tuple(turn for turn in request.history if turn.role == "user")
     history = asked[-runtime.max_history_turns :] if runtime.max_history_turns else ()
+
+    lead = runtime.agent_model or model
+    if agent_tools is not None and callable(getattr(lead, "agent_turn", None)):
+        tools: AgentTools | None = None
+        try:
+            tools = agent_tools(snapshot)
+        except Exception as failed:  # noqa: BLE001 - no sandbox falls back to one call
+            _log.warning(
+                "review assistant could not open its sandbox: %s", type(failed).__name__, extra=log
+            )
+        if tools is not None:
+            try:
+                yield from _agent_answer(
+                    request, snapshot, lead, model, tools, history, ledger, budget, runtime, log
+                )
+            finally:
+                tools.close()
+            return
+
     look: PageLook | None = None
     page = _asked_page(snapshot, request)
     if pictures is not None and page is not None:
@@ -662,3 +712,104 @@ def stream_answer(
             )
         ),
     )
+
+
+def _agent_answer(
+    request: AssistantRequest,
+    snapshot: ReviewSnapshot,
+    model: AssistantModel,
+    helper: AssistantModel,
+    tools: AgentTools,
+    history: tuple[Any, ...],
+    ledger: CallLedger,
+    budget: AssistantBudget | None,
+    runtime: AssistantRuntime,
+    log: Mapping[str, Any],
+) -> Iterator[Event]:
+    """The tool-using answer: the loop, then the same guard and publishing as one call."""
+    question = request.question
+    first = first_message(
+        placeholders=placeholder_guide(snapshot),
+        files=tools.files,
+        question=question,
+        history=history,
+        focus=request.focus,
+        focus_ids=_focus_ids(snapshot, request),
+    )
+    caps = (
+        None
+        if budget is None
+        else AgentBudget(
+            question_cap_micros=budget.question_cap_micros,
+            package_cap_micros=budget.package_cap_micros,
+            spent_micros=budget.spent_micros,
+            rates=budget.rates,
+            delegate_cap_micros=budget.delegate_cap_micros,
+        )
+    )
+    outcome = yield from run_agent(
+        model=model,
+        tools=tools,
+        first=first,
+        ledger=ledger,
+        budget=caps,
+        max_turns=runtime.max_tool_turns,
+        helper_model=helper,
+    )
+    steps = outcome.steps
+    if outcome.stopped == "cost_cap":
+        stopped = _publish_safely(
+            Draft(text=COST_CAP_TEXT.format(steps=len(steps))),
+            snapshot,
+            mode="disabled",
+            question=question,
+        )
+        yield "answer", stopped.model_copy(
+            update={"steps": steps, "stopped": "cost_cap", "plan": outcome.plan}
+        )
+        return
+    if outcome.error is not None:
+        error = outcome.error
+        if isinstance(error, ModelRefused):
+            _log.warning("review assistant agent call refused: %s", error.status, extra=log)
+            yield "error", _ACCOUNT if error.status == 402 else _BUSY
+        else:
+            _log.warning("review assistant agent call failed: %s", type(error).__name__, extra=log)
+            yield "error", _UNAVAILABLE
+        return
+    yield _stage("guard")
+    proposed = outcome.draft
+    if proposed is not None:
+        try:
+            check(proposed, snapshot)
+            answer = publish(
+                proposed,
+                snapshot,
+                mode="llm",
+                question=question,
+                checked=True,
+                model_id=model.model_id,
+            )
+        except GuardRejected as dropped:
+            _log.warning("review assistant agent answer dropped: %s", dropped, extra=log)
+        except Exception as failed:  # noqa: BLE001 - falls back to the records
+            _log.warning(
+                "review assistant agent answer could not be checked: %s",
+                type(failed).__name__,
+                extra=log,
+            )
+        else:
+            yield "answer", answer.model_copy(update={"steps": steps, "plan": outcome.plan})
+            return
+    else:
+        _log.warning("review assistant agent gave no answer: %s", outcome.malformed, extra=log)
+    fallback = fallback_answer(
+        snapshot,
+        question,
+        cited=() if proposed is None else placeholder_keys(proposed.text),
+        focus=request.focus,
+    )
+    published = _publish_safely(
+        _checked_or_plain(fallback, snapshot), snapshot, mode="records_only", question=question
+    )
+    yield "answer", published.model_copy(update={"steps": steps, "plan": outcome.plan})

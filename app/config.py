@@ -96,10 +96,29 @@ class Settings(BaseSettings):
     # architect and vendor halves as pictures), within a budget per package revision and a cap per
     # question (a question over the cap is asked without the pictures).
     review_assistant_page_pictures: bool = True
-    review_assistant_budget_usd: Decimal = Field(default=Decimal("2.00"), ge=0, allow_inf_nan=False)
-    review_assistant_question_cap_usd: Decimal = Field(
-        default=Decimal("0.25"), gt=0, allow_inf_nan=False
+    review_assistant_budget_usd: Decimal = Field(
+        default=Decimal("10.00"), ge=0, allow_inf_nan=False
     )
+    review_assistant_question_cap_usd: Decimal = Field(
+        default=Decimal("0.75"), gt=0, allow_inf_nan=False
+    )
+    # The tool-using assistant (owner, 2026-10-16): it runs read-only commands on this package's
+    # PDFs in a locked sandbox (`app/review/assistant/sandbox.py`) and looks at pictures it renders,
+    # up to `review_assistant_max_tool_turns` turns per question, within the caps above. `auto` uses
+    # the Docker image `gv-assistant-sandbox` when it is built and Docker answers, else macOS
+    # `sandbox-exec`; `off` keeps the one-call assistant.
+    review_assistant_sandbox: Literal["auto", "docker", "macos", "off"] = "auto"
+    # The tool-using loop is led by this model, which also checks the helpers' reports; the helper
+    # agents run on `review_assistant_model`. Agent turns get their own, longer time limit.
+    review_assistant_lead_model: Literal[
+        "anthropic.claude-opus-5-5", "anthropic.claude-sonnet-5-5"
+    ] = "anthropic.claude-opus-5-5"
+    review_assistant_agent_timeout_seconds: int = Field(default=180, ge=1, le=600)
+    # A question that runs helper agents in parallel (`delegate`) may cost up to this instead.
+    review_assistant_delegate_question_cap_usd: Decimal = Field(
+        default=Decimal("3.00"), gt=0, allow_inf_nan=False
+    )
+    review_assistant_max_tool_turns: int = Field(default=12, ge=1, le=20)
     review_assistant_timeout_seconds: int = Field(default=60, ge=1, le=300)
     # How many earlier turns of the conversation are sent with a question (the request takes <= 6).
     review_assistant_max_history_turns: int = Field(default=6, ge=0, le=6)

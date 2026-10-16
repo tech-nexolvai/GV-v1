@@ -365,3 +365,30 @@ class OpenRouterAssistantModel:
                 raise ModelRefused(int(error.status_code)) from None
             raise ModelUnavailable(str(error.status_code)) from None
         return reply
+
+    def agent_turn(self, body: Mapping[str, Any]) -> Mapping[str, Any]:
+        """One turn of the tool-using assistant (`agent.py`): the Messages API body with its tools,
+        sent on the readers' route (the same model map, the same Google Vertex-only, keep-no-data
+        routing, the same sanitized errors). Returns the raw reply, whose `content` keeps its
+        tool calls and thinking blocks so they go back unchanged; a reply that does not name the
+        model asked comes back with `stop_reason: "model_mismatch"` and no content."""
+        openrouter = import_module("extraction.slot_reader.openrouter")
+        anthropic = import_module("extraction.slot_reader.anthropic")
+        request = dict(body)
+        request["model"] = openrouter.OPENROUTER_MODELS[self.model_id]
+        request["provider"] = openrouter._routing()
+        try:
+            payload: Mapping[str, Any] = anthropic.post_json(
+                openrouter.OPENROUTER_MESSAGES_URL,
+                request,
+                headers={"authorization": f"Bearer {self._api_key}"},
+                timeout_seconds=self._timeout_seconds,
+                api="OpenRouter Messages API",
+            )
+        except anthropic.AnthropicRequestError as error:
+            if anthropic.refused_unserved(error):
+                raise ModelRefused(int(error.status_code)) from None
+            raise ModelUnavailable(str(error.status_code)) from None
+        if not openrouter._answered_by(payload.get("model"), self.model_id):
+            return {"stop_reason": "model_mismatch", "content": [], "usage": payload.get("usage")}
+        return payload

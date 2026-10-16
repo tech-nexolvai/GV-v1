@@ -7,6 +7,7 @@ import { cn } from '@/lib/utils';
 import { ASSISTANT_FULL_SCREEN, useMediaQuery } from '@/hooks/use-media-query';
 import { failureWords, focusOf, historyFor, sameContext, starterHint, type AssistantContext, type AssistantRecords, type StarterKind } from '@/lib/assistant';
 import { AnswerView, type AssistantNavigation } from '@/components/assistant/assistant-answer';
+import { AssistantSteps } from '@/components/assistant/assistant-steps';
 
 export type { AssistantNavigation } from '@/components/assistant/assistant-answer';
 
@@ -317,6 +318,7 @@ export function AssistantPanel({
               )}
               {turn.status === 'done' && turn.answer && (
                 <>
+                  <AssistantSteps steps={turn.answer.steps} plan={turn.answer.plan} />
                   <AnswerView
                     answer={turn.answer}
                     records={records}

@@ -19,6 +19,7 @@ __all__ = [
     "MODEL_LABEL",
     "STAGE_LABELS",
     "Action",
+    "AgentStep",
     "AnswerEvent",
     "AssistantInfoOut",
     "AssistantRequest",
@@ -33,8 +34,10 @@ __all__ = [
     "OpenPageAction",
     "OpenQueueItemAction",
     "OpenReviewItemAction",
+    "PlanTask",
     "StageEvent",
     "StageId",
+    "SubAgentRun",
 ]
 
 MAX_QUESTION_LENGTH: Final = 500
@@ -43,10 +46,11 @@ MAX_HISTORY_TURNS: Final = 6
 MAX_HISTORY_TEXT: Final = 2000
 MODEL_LABEL: Final = "Claude Sonnet 5.5"
 
-type StageId = Literal["records", "model", "guard"]
+type StageId = Literal["records", "model", "tool", "guard"]
 STAGE_LABELS: Final[dict[str, str]] = {
     "records": "Reading this review's records",
     "model": "Asking Claude Sonnet",
+    "tool": "Using a tool",
     "guard": "Checking the answer against the records",
 }
 
@@ -150,6 +154,51 @@ Action = Annotated[
 ]
 
 
+class PlanTask(BaseModel):
+    """One line of the assistant's task list (the "Progress" panel, like claude.ai)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    title: str
+    status: Literal["pending", "in_progress", "done"]
+
+
+class AgentStep(BaseModel):
+    """One tool the assistant used for an answer, shown like claude.ai's steps (owner, 2026-10-16):
+    a command it ran in the locked sandbox and its output, a picture it looked at, the recorded
+    results it read, its task list, or the helper agents it ran. Read-only; none changes the
+    review."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["bash", "view", "review_results", "plan", "delegate"]
+    label: str = Field(description="Plain words: 'Ran a command', 'Viewed /out/p-02.png'.")
+    command: str | None = Field(default=None, description="The command it ran (bash only).")
+    path: str | None = Field(default=None, description="The picture it viewed (view only).")
+    page: int | None = Field(default=None, description="The page of results it read, if one.")
+    output: str | None = Field(
+        default=None, description="What the tool answered, cut for the screen; null for a picture."
+    )
+    ok: bool = Field(description="False when the tool refused or the command failed or timed out.")
+    tasks: tuple[PlanTask, ...] = Field(default=(), description="The task list (plan only).")
+    agents: tuple[SubAgentRun, ...] = Field(
+        default=(), description="The helper agents and what each did (delegate only)."
+    )
+
+
+class SubAgentRun(BaseModel):
+    """One helper agent the assistant ran in parallel on some pages, with its steps and report."""
+
+    model_config = ConfigDict(frozen=True)
+
+    title: str
+    pages: tuple[int, ...]
+    steps: tuple[AgentStep, ...]
+    report: str = Field(description="Its short report, as the assistant read it.")
+    ok: bool
+    stopped: Literal["cost_cap", "failed"] | None = None
+
+
 class AnswerEvent(BaseModel):
     """The answer. In `text`, `[[0]]`, `[[1]]` … mark the `citations` entry a sentence rests on."""
 
@@ -172,6 +221,13 @@ class AnswerEvent(BaseModel):
     not_looked_at_reason: Literal["cost_cap"] | None = None
     """Why `not_looked_at_page` was not looked at: `cost_cap`, the question was over its cost cap
     with the pictures."""
+    steps: tuple[AgentStep, ...] = ()
+    """The tools the assistant used for this answer, in order (empty for a one-call answer)."""
+    plan: tuple[PlanTask, ...] = ()
+    """The assistant's last task list for this answer, if it made one."""
+    stopped: Literal["cost_cap"] | None = None
+    """`cost_cap`: the assistant stopped before finishing because the question reached its cost
+    cap; the text says so."""
 
 
 class ErrorEvent(BaseModel):
@@ -196,3 +252,6 @@ class Draft:
     text: str
     evidence: tuple[str, ...] = ()
     actions: tuple[tuple[str, str], ...] = field(default=())
+
+
+AgentStep.model_rebuild()
