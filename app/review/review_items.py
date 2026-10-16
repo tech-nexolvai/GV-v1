@@ -465,6 +465,31 @@ class ReviewHeaderOut(BaseModel):
     blocked_reason: str | None = None
 
 
+class JobValueSuggestionOut(BaseModel):
+    """What the job values reader found for one of this job's values (#1409), shown beside its
+    field in the "Enter this job's values" form. Nothing is saved until the person presses Save."""
+
+    name: str = Field(
+        description="The setting's name (`backsplash_thickness`), the form field's key."
+    )
+    value: str = Field(description="Inches with the inch mark, in the form's own format: `3/4\"`.")
+    page: int = Field(description="The page it is printed on, counted from 1 in its file.")
+    source: Literal["drawing", "two AIs"] = Field(
+        description="`drawing`: code read it from the drawing's own text; `two AIs`: the AI pair."
+    )
+    auto: bool = Field(
+        description=(
+            "True only when both AIs agree and code found the number printed there with its label "
+            "on this job's architect drawing: the form pre-fills it as 'Filled from p.N by two AIs "
+            "and code · Change'. False: a suggestion, never pre-filled."
+        )
+    )
+    location: RowLocation | None = Field(
+        default=None, description="Where to ring it in the side-by-side viewer (Look)."
+    )
+    note: str = Field(default="", description="Why it is only a suggestion, in plain words.")
+
+
 class ReviewItemsOut(BaseModel):
     package_id: UUID
     revision_id: UUID
@@ -476,6 +501,13 @@ class ReviewItemsOut(BaseModel):
     not_checked: list[NotCheckedOut]
     unaccounted: list[UnaccountedOut] = Field(
         description="Must be empty. Anything here is a blocking result the list did not place once."
+    )
+    job_value_suggestions: list[JobValueSuggestionOut] = Field(
+        default_factory=list,
+        description=(
+            "What the job values reader found (#1409), one per value it found: shown beside the "
+            "'Enter this job's values' fields. Empty when the reader has not run or found nothing."
+        ),
     )
     can_save_job_values: bool = Field(
         default=False,
@@ -1331,7 +1363,36 @@ def review_items_for_revision(
         failures=failures,
         not_checked=not_checked,
         unaccounted=unaccounted,
+        job_value_suggestions=_job_value_suggestions(session, revision.id),
     )
+
+
+def _job_value_suggestions(session: Session, revision_id: UUID) -> list[JobValueSuggestionOut]:
+    """The newest job values reading's auto values and suggestions (#1409), in the settings' order."""
+    from workflow.job_values import latest_job_values
+
+    out: list[JobValueSuggestionOut] = []
+    for found in latest_job_values(session, revision_id).values():
+        location = None
+        if found.page_id and found.document_version_id and len(found.polygon) >= 3:
+            location = RowLocation(
+                page_id=UUID(found.page_id),
+                document_version_id=UUID(found.document_version_id),
+                page_number=found.page,
+                polygon=found.polygon,
+            )
+        out.append(
+            JobValueSuggestionOut(
+                name=found.name,
+                value=found.value,
+                page=found.page,
+                source="drawing" if found.source == "drawing" else "two AIs",
+                auto=found.auto,
+                location=location,
+                note=found.note[:300],
+            )
+        )
+    return out
 
 
 def _width_items(

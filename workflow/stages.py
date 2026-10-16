@@ -1866,6 +1866,7 @@ class DatabaseStages:
         depth_reader: bool = False,
         depth_per_row: bool = False,
         depth_stored_answers: Callable[[Session], StoredAnswerSource] | None = None,
+        job_values_reader: bool = False,
         timings: TimingRecorder | None = None,
         architect_reader: ArchitectSettings | None = None,
         architect_pairing: PairingLookup | None = None,
@@ -2072,6 +2073,12 @@ class DatabaseStages:
         self._depth_per_row = depth_per_row
         # Where the depth reader finds stored answers to reuse; the database's by default.
         self._depth_stored_answers = depth_stored_answers
+        # **The job values reader (#1409).** Off unless `GV_JOB_VALUES_READER` is on: `match` then
+        # reads this job's four values from the architect's drawings, once per revision, for the
+        # "Enter this job's values" form (`workflow/job_values.py`). Off, nothing changes.
+        if not isinstance(job_values_reader, bool):
+            raise TypeError("job_values_reader must be a bool")
+        self._job_values_reader = job_values_reader
         self._bounded_agent_planner = (
             _default_bounded_agent_planner
             if (bounded_agent is not None or reading_agent is not None)
@@ -3196,6 +3203,33 @@ class DatabaseStages:
         """The fixed amount stated for a drawing set, in dollars, or `None` (page-scaled)."""
         fixed = self._ai_budget_fixed_micros
         return None if fixed is None else Decimal(fixed) / 1_000_000
+
+    def _job_values_pass(
+        self, session: Session, package_revision_id: UUID, *, request: str | None = None
+    ) -> dict[str, object]:
+        """This job's four values from the architect's drawings, once per revision (#1409).
+
+        `workflow/job_values.py` says what is read and written; a failure never stops the package.
+        """
+        from workflow.job_values import run_job_values
+
+        return run_job_values(self, session, package_revision_id, request=request)
+
+    def read_job_values_again(
+        self, session: Session, package_revision_id: UUID, request: str
+    ) -> dict[str, object]:
+        """Read the job values of a set already read (#1409): the reader only, never the set.
+
+        Queued by `scripts/job_values_queue.py` for a set read before the reader was on. Refused,
+        never silent, when the switch is off; a redelivered request reads nothing again. Nothing is
+        checked again: the values reach the checks only when a person saves them on the form.
+        """
+        if not self._job_values_reader:
+            raise ValueError("the job values reader is off (GV_JOB_VALUES_READER)")
+        read = self._job_values_pass(session, package_revision_id, request=request)
+        if "run" not in read:
+            raise ValueError(f"the job values were not read: {read.get('reason')}")
+        return read
 
     def read_depths_again(
         self, session: Session, package_revision_id: UUID, request: str
@@ -7342,6 +7376,9 @@ class DatabaseStages:
         depth = (
             {"depth": self._depth_pass(session, package_revision_id)} if self._depth_reader else {}
         )
+        # The job values reader, once per revision (#1409); nothing at all when it is off.
+        if self._job_values_reader:
+            depth = {**depth, "job_values": self._job_values_pass(session, package_revision_id)}
         role_summary = _match_role_summary(session, package_revision_id)
         items = _matchable_items(session, package_revision_id)
         if not items:

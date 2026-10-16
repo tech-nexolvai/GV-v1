@@ -75,6 +75,7 @@ from app.models.evidence import (
     ObservationCandidate,
     SlotRowReviewDecision,
 )
+from app.models.job_values import JobValueReading
 from app.models.matching import (
     ApprovalSource,
     ApprovedMatch,
@@ -183,6 +184,7 @@ __all__ = [
     "GoldSet",
     "ItemIdentifier",
     "ItemViewLink",
+    "JobValueReading",
     "LayoutConfirmation",
     "LayoutProposal",
     "LegalHold",

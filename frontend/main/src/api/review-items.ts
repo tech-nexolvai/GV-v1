@@ -20,6 +20,8 @@ export type ReviewFailure = Schemas['FailureOut'];
 export type NotCheckedItem = Schemas['NotCheckedOut'];
 /** A Company settings field a not-checked check waits for (#1373). */
 export type NotCheckedSetting = Schemas['NotCheckedSettingOut'];
+/** What the job values reader found for one of this job's values (#1409): shown beside its field. */
+export type JobValueSuggestion = Schemas['JobValueSuggestionOut'];
 export type UnaccountedRecord = Schemas['UnaccountedOut'];
 export type BestGuess = Schemas['BestGuessOut'];
 export type ReaderText = Schemas['ReaderTextOut'];
