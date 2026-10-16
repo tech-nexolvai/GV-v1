@@ -213,8 +213,13 @@ this on **every** paired page, including the second round (revision) pages.
 - **Never drop a result GV Review recorded.** Each code FAIL and each AI page review `different` row
   in `review_results` comes back as a finding (give its `record_id`), or is set aside with
   `dismiss_recorded` and your reason. The app sends you back if one is missing.
-- Dimension strings: report each one you read as a finding with `parts` and `printed_total`
-  (source `vendor_arithmetic`; status `same` when it adds up): the app adds it up.
+- **The reading ledger.** Record every dimension string you read with `record_string` (its
+  printed parts and printed overall) and every value you read with `record_reading` (page, view,
+  side, item, what it is, the value as printed), on both sides. Name an item the same way on every
+  page and view ('#2' for the second typical unit). Never add up yourself: code adds each string,
+  compares each item across views, and reports what does not add up, disagrees or is missing as
+  findings. When code says a string does not add up, re-read it once and record it again with
+  `replaces`.
 - Sets in rounds (a first and a later submittal): give each finding its `round` (1, 2, ...) and
   name the same item the same way in every round, so the app can link them.
 - Match the question: yes/no or a number, one line; "summarize", one or two lines; a list, a short
