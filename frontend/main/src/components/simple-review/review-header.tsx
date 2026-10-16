@@ -25,7 +25,7 @@ export function ReviewHeader({
   onOpenPdfs,
   onDraftCloud,
   draft,
-  signedOff,
+  signedOff = false,
 }: {
   title: string;
   revision: number | null;
@@ -34,8 +34,8 @@ export function ReviewHeader({
   /** Ask for the draft cloud PDF (W4b); null when it cannot be asked for here: the button says so instead of hiding. */
   onDraftCloud: (() => void) | null;
   draft: CloudState;
-  /** The set is signed off: the draft is no longer made, the final cloud PDF is downloaded instead. */
-  signedOff: boolean;
+  /** The package is signed off: a draft is no longer what is wanted, the final cloud PDF is. */
+  signedOff?: boolean;
 }) {
   const working = draft.status === 'working';
   return (
@@ -87,22 +87,17 @@ export function ReviewHeader({
         <Button
           variant="outline"
           onClick={onDraftCloud ?? undefined}
-          disabled={signedOff || onDraftCloud === null || working}
-          title={
-            signedOff
-              ? 'Signed off: download the final cloud PDF instead.'
-              : onDraftCloud === null
-                ? 'The draft cloud PDF cannot be asked for here: no project is configured.'
-                : 'A draft with every item marked as it stands now. Not signed off.'
-          }
+          disabled={onDraftCloud === null || working || signedOff}
+          aria-describedby={signedOff ? 'draft-signed-note' : undefined}
+          title={signedOff ? 'Signed off: download the final cloud PDF at the bottom of the page instead.' : onDraftCloud === null ? 'The draft cloud PDF cannot be asked for here: no project is configured.' : 'A draft with every item marked as it stands now. Not signed off.'}
         >
           {working ? <Loader2 aria-hidden="true" className="animate-spin motion-reduce:animate-none" /> : <FileText aria-hidden="true" />}
           {working ? 'Making draft…' : 'Draft cloud PDF'}
         </Button>
       </div>
       {signedOff && (
-        <p data-testid="draft-signed-off" className="text-[13px] text-muted-foreground sm:basis-full">
-          Signed off. The draft is no longer made; download the final cloud PDF instead.
+        <p id="draft-signed-note" data-testid="draft-signed-note" className="text-[13px] text-muted-foreground sm:basis-full sm:text-right">
+          Signed off — download the final cloud PDF instead
         </p>
       )}
       {working && (
@@ -120,7 +115,7 @@ export function ReviewHeader({
           <p role="alert" className="text-[13px] text-outcome-fail-fg">
             The draft cloud PDF could not be made: {draft.message}
           </p>
-          {onDraftCloud && !signedOff && (
+          {onDraftCloud && (
             <Button size="sm" variant="outline" onClick={onDraftCloud}>
               <RotateCcw aria-hidden="true" />
               Retry

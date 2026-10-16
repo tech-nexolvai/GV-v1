@@ -870,12 +870,17 @@ export function SimpleReviewPage({
                 <FinalBar
                   summary={summary}
                   left={leftWords(data.header)}
+                  notChecked={data.header.not_checked}
                   api={finalCloud}
                   projectId={project}
                   packageId={packageId}
                   revision={title?.revision ?? data.revision_number}
                   approved={title?.approved ?? false}
-                  onSigned={reload}
+                  onSigned={() => {
+                    // Signed here: the header's draft button follows at once (the package is not read again).
+                    setTitle((now) => (now ? { ...now, approved: true } : now));
+                    reload();
+                  }}
                   onRechecked={reload}
                 />
               </>

@@ -933,28 +933,89 @@ describe('CabinetKinds (#648)', () => {
   });
 });
 
-describe('QA 3: phone width, "Checked by hand: wrong" and sign-off', () => {
-  // jsdom has no layout, so what keeps "There is a countertop" from being clipped at 375 px is pinned
-  // on the classes: the buttons take a full line of their own on a phone and wrap there.
-  it('"Decide this page" buttons wrap on a phone instead of being clipped', () => {
+describe('screen polish (2026-10-16)', () => {
+  it('the page buttons wrap and shrink, so "There is a countertop" is never clipped on a phone', () => {
     const pages = reviewItems((draft) => {
-      draft.items.find((entry) => entry.key === 'page:rec-9')!.proposed_no_countertop = false;
+      const page = draft.items.find((entry) => entry.key === 'page:rec-9')!;
+      const older = structuredClone(page);
+      older.key = 'page:rec-4';
+      older.page = 4;
+      older.proposed_no_countertop = false;
+      draft.items.push(older);
     }).items;
-    render(<PagesChoice pages={[]} toDecide={openPagesToDecide(pages)} busyKey={null} groupKey="group:pages" errors={{}} onConfirmAll={vi.fn()} onThereIsOne={vi.fn()} onNoCountertop={vi.fn()} onLook={vi.fn()} />);
-    const there = screen.getByRole('button', { name: 'There is a countertop on page 9' });
-    const actions = there.parentElement!;
-    expect(actions.getAttribute('data-slot')).toBe('page-decide-actions');
-    const classes = actions.className.split(/\s+/);
-    for (const name of ['flex-wrap', 'min-w-0', 'basis-full', 'sm:basis-auto']) expect(classes).toContain(name);
-    // Never kept at its full one-line width on a phone.
-    expect(classes).not.toContain('shrink-0');
-    for (const button of within(actions).getAllByRole('button')) {
-      expect(button.className.split(/\s+/)).toContain('max-w-full');
+    render(<PagesChoice pages={openNoCountertopPages(pages)} toDecide={openPagesToDecide(pages)} busyKey={null} groupKey="group:pages" errors={{}} onConfirmAll={vi.fn()} onThereIsOne={vi.fn()} onNoCountertop={vi.fn()} onLook={vi.fn()} />);
+    const rows = document.querySelectorAll('[data-slot="page-actions"]');
+    expect(rows.length).toBe(2);
+    for (const actions of rows) {
+      const classes = actions.className.split(/\s+/);
+      expect(classes).toContain('flex-wrap');
+      expect(classes).toContain('min-w-0');
+      expect(classes).toContain('max-w-full');
+      expect(classes).not.toContain('shrink-0');
+      expect(actions.textContent).toContain('There is a countertop');
     }
-    expect(there.className.split(/\s+/)).toContain('whitespace-normal');
-    expect(there.className.split(/\s+/)).not.toContain('whitespace-nowrap');
   });
 
+  it('after sign-off the draft button is off and says to download the final cloud PDF instead', async () => {
+    const onDraft = vi.fn();
+    render(<ReviewHeader title="Sample Stoneworks" revision={2} header={data.header} onOpenPdfs={() => {}} onDraftCloud={onDraft} draft={{ status: 'idle' }} signedOff />);
+    const button = screen.getByRole('button', { name: /Draft cloud PDF/ }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(screen.getByTestId('draft-signed-note').textContent).toBe('Signed off — download the final cloud PDF instead');
+    await userEvent.click(button);
+    expect(onDraft).not.toHaveBeenCalled();
+  });
+
+  it('before sign-off the draft button works and no note is shown', () => {
+    render(<ReviewHeader title="Sample Stoneworks" revision={2} header={data.header} onOpenPdfs={() => {}} onDraftCloud={() => {}} draft={{ status: 'idle' }} signedOff={false} />);
+    expect((screen.getByRole('button', { name: /Draft cloud PDF/ }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByTestId('draft-signed-note')).toBeNull();
+  });
+
+  const api: FinalCloudApi = {
+    facts: vi.fn(async () => ({ signer: 'Sample Reviewer', carried: [] })),
+    signOff: vi.fn(async () => {}),
+    prepare: vi.fn(async () => 'preparing' as const),
+    status: vi.fn(async () => 'ready' as const),
+    download: vi.fn(async () => new Blob(['%PDF'])),
+  };
+  function onlyNotChecked(canFinalise: boolean) {
+    return reviewItems((draft) => {
+      draft.items = draft.items.filter((entry) => entry.status === 'done');
+      draft.failures = [];
+      draft.header = { ...draft.header, open: 0, failures: 0, not_checked: 54, rechecking: 0, can_finalise: canFinalise, blocked_reason: canFinalise ? null : 'Sample reason from the server.' };
+    });
+  }
+
+  it('only not-checked left and the server still locks: says they are printed NOT CHECKED, never "unlocks once these are settled"', () => {
+    const source = onlyNotChecked(false);
+    render(<FinalBar summary={summarize(source)} left={leftWords(source.header)} notChecked={source.header.not_checked} api={api} projectId="proj-demo" packageId="pkg-demo" revision={2} approved={false} onSigned={vi.fn()} />);
+    expect(screen.getByRole('status').textContent).toBe('54 not checked — printed NOT CHECKED on the PDF');
+    expect(screen.queryByText(/unlocks once these are settled/)).toBeNull();
+    // Readiness is still the server's: locked, with its own words.
+    expect((screen.getByRole('button', { name: 'Create final cloud PDF' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('Sample reason from the server.')).toBeTruthy();
+  });
+
+  it('only not-checked left and the server unlocks: the same words, and sign-off is offered', () => {
+    const source = onlyNotChecked(true);
+    render(<FinalBar summary={summarize(source)} left={leftWords(source.header)} notChecked={source.header.not_checked} api={api} projectId="proj-demo" packageId="pkg-demo" revision={2} approved={false} onSigned={vi.fn()} />);
+    expect(screen.getByRole('status').textContent).toBe('54 not checked — printed NOT CHECKED on the PDF');
+    expect(screen.queryByText(/unlocks once these are settled/)).toBeNull();
+    expect((screen.getByRole('button', { name: 'Create final cloud PDF' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('items that need a person still say "unlocks once these are settled"', () => {
+    const source = reviewItems((draft) => {
+      draft.header = { ...draft.header, open: 3, not_checked: 5, rechecking: 0, can_finalise: false };
+    });
+    render(<FinalBar summary={summarize(source)} left={leftWords(source.header)} notChecked={source.header.not_checked} api={api} projectId="proj-demo" packageId="pkg-demo" revision={2} approved={false} onSigned={vi.fn()} />);
+    expect(screen.getByRole('status').textContent).toBe('3 items need you · 5 not checked');
+    expect(screen.getByText('The final cloud PDF unlocks once these are settled.')).toBeTruthy();
+  });
+});
+
+describe('"Checked by hand: wrong" on the screen (QA 3)', () => {
   it('a done item checked by hand as wrong says so, with a glyph and the word, by you or by name', () => {
     const wrong = { ...item('number:cand-090'), checked_wrong_by_hand: true };
     const { rerender } = render(<ItemRow item={wrong} open={false} active={false} onToggle={() => {}} />);
@@ -988,14 +1049,5 @@ describe('QA 3: phone width, "Checked by hand: wrong" and sign-off', () => {
     const listed = document.querySelectorAll('#not-checked-list li');
     expect(listed[0].textContent).toContain('✗Checked by hand: WRONG by Sample Checker');
     expect(listed[1].textContent).not.toContain('Checked by hand');
-  });
-
-  it('after sign-off the draft cloud PDF is no longer offered, and the note says why', () => {
-    const { rerender } = render(<ReviewHeader title="Sample Stoneworks" revision={2} header={data.header} onOpenPdfs={() => {}} onDraftCloud={() => {}} draft={{ status: 'idle' }} signedOff={false} />);
-    expect((screen.getByRole('button', { name: /Draft cloud PDF/ }) as HTMLButtonElement).disabled).toBe(false);
-    expect(screen.queryByText(/Signed off\./)).toBeNull();
-    rerender(<ReviewHeader title="Sample Stoneworks" revision={2} header={data.header} onOpenPdfs={() => {}} onDraftCloud={() => {}} draft={{ status: 'idle' }} signedOff />);
-    expect((screen.getByRole('button', { name: /Draft cloud PDF/ }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText('Signed off. The draft is no longer made; download the final cloud PDF instead.')).toBeTruthy();
   });
 });

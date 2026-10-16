@@ -7,7 +7,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 
 import type { AiReviewOut, AiReviewPage, AiReviewRow, ArchitectCompareEntry, ReviewItemsOut } from '@/api/review-items';
 import { AiReview } from '@/components/simple-review/ai-review';
-import { aiReviewSummary, aiReviewWhyParts } from '@/components/simple-review/ai-review-lib';
+import { aiReviewSummary } from '@/components/simple-review/ai-review-lib';
 import { reviewItems } from './fixtures/review-items';
 
 // Synthetic data only: every number, page, name and span here is invented.
@@ -90,7 +90,7 @@ describe('AiReview', () => {
     expect(screen.queryByRole('list', { name: 'Unsure / unreadable' })).toBeNull();
     await userEvent.click(unsureButton);
     const unsure = screen.getByRole('list', { name: 'Unsure / unreadable' });
-    // The reasons are folded behind Why until opened.
+    // The reasons sit behind each row's Why.
     expect(unsure.textContent).not.toContain(WHY.unsure);
     for (const why of within(unsure).getAllByRole('button', { name: /^Why/ })) await userEvent.click(why);
     expect(unsure.textContent).toContain(WHY.unsure);
@@ -253,46 +253,43 @@ describe('AiReview row layout (QA 2026-10-16)', () => {
   });
 });
 
-describe('AiReview reasons: the AI first, the evaluator on its own line, folded behind Why (QA 3)', () => {
-  const EVAL = 'Both drawings show the sample span at 30 1/2".';
-  it('splits the joined text by the evaluator reason the server sent, adding the full stop', () => {
-    expect(aiReviewWhyParts({ why: `The vendor drew another number Checked again by the evaluator: ${EVAL}`, evaluator_reason: EVAL })).toEqual({
-      ai: 'The vendor drew another number.',
-      evaluator: `Checked again by the evaluator: ${EVAL}`,
-    });
-    // An AI reason that already ends a sentence keeps its own mark.
-    expect(aiReviewWhyParts({ why: `Is this the span? Checked again by the evaluator: ${EVAL}`, evaluator_reason: EVAL }).ai).toBe('Is this the span?');
-  });
+describe('AiReview rows stay short (2026-10-16)', () => {
+  const evaluated = (extra: Partial<AiReviewRow> = {}) =>
+    ({ ...row('e1', 'different'), evaluator_reason: 'The sample span reads 30 1/2 on both looks', verified_by: 'evaluator', ...extra }) as AiReviewRow;
 
-  it('without the joined suffix shows the reason as is, and adds the evaluator only when it is missing', () => {
-    expect(aiReviewWhyParts({ why: 'The vendor drew another number.', evaluator_reason: null })).toEqual({ ai: 'The vendor drew another number.', evaluator: null });
-    expect(aiReviewWhyParts({ why: 'The vendor drew another number', evaluator_reason: undefined })).toEqual({ ai: 'The vendor drew another number', evaluator: null });
-    expect(aiReviewWhyParts({ why: 'The vendor drew another number', evaluator_reason: EVAL })).toEqual({
-      ai: 'The vendor drew another number.',
-      evaluator: `Checked again by the evaluator: ${EVAL}`,
-    });
-    expect(aiReviewWhyParts({ why: `Agreed: ${EVAL} Sample tail.`, evaluator_reason: EVAL })).toEqual({ ai: `Agreed: ${EVAL} Sample tail.`, evaluator: null });
-    expect(aiReviewWhyParts({ why: '', evaluator_reason: EVAL })).toEqual({ ai: null, evaluator: `Checked again by the evaluator: ${EVAL}` });
-  });
-
-  it('a row stays short until Why is opened; Why says what it controls and works from the keyboard', async () => {
-    const joined = row('d9', 'different', { why: `The vendor drew another number Checked again by the evaluator: ${EVAL}`, evaluator_reason: EVAL });
-    render(<AiReview review={{ pages: [page(3, 'done', [joined])], counts: REVIEW.counts }} onLook={() => {}} />);
+  it('shows the numbers, the page and what it measures; the reasons wait behind a closed Why', () => {
+    render(<AiReview review={{ ...REVIEW, pages: [page(3, 'done', [evaluated()])] }} onLook={() => {}} />);
     const listed = within(screen.getByRole('list', { name: 'Different' })).getByRole('listitem');
-    expect(listed.textContent).not.toContain('The vendor drew another number');
+    expect(within(listed).getByTestId('ai-review-line').textContent).toBe('Architect 30" vs vendor 30 1/2" · p.3');
+    expect(listed.textContent).toContain('sample overall width');
+    expect(listed.textContent).not.toContain(WHY.different);
+    expect(listed.textContent).not.toContain('Checked again by the evaluator');
+    expect(within(listed).getByRole('button', { name: /^Why/ }).getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('Why opens the AI reason and the evaluator reason as two sentences on two lines', async () => {
+    render(<AiReview review={{ ...REVIEW, pages: [page(3, 'done', [evaluated()])] }} onLook={() => {}} />);
+    const listed = within(screen.getByRole('list', { name: 'Different' })).getByRole('listitem');
     const why = within(listed).getByRole('button', { name: /^Why/ });
-    expect(why.getAttribute('aria-expanded')).toBe('false');
-    const panel = document.getElementById(why.getAttribute('aria-controls')!)!;
-    expect(panel).toBeTruthy();
-    expect(listed.contains(panel)).toBe(true);
-    why.focus();
-    await userEvent.keyboard('{Enter}');
-    expect(why.getAttribute('aria-expanded')).toBe('true');
-    const [ai, evaluator] = Array.from(panel.querySelectorAll('[data-slot="ai-review-why-part"]')).map((part) => part.textContent);
-    expect(ai).toBe('The vendor drew another number.');
-    expect(evaluator).toBe(`Checked again by the evaluator: ${EVAL}`);
     await userEvent.click(why);
-    expect(why.getAttribute('aria-expanded')).toBe('false');
-    expect(panel.textContent).toBe('');
+    expect(why.getAttribute('aria-expanded')).toBe('true');
+    const reasons = within(listed).getByTestId('ai-review-why');
+    expect(reasons.textContent).toBe('The vendor drew a different number for this span.Checked again by the evaluator: The sample span reads 30 1/2 on both looks.');
+    expect(reasons.querySelector('br')).toBeTruthy();
+    await userEvent.click(why);
+    expect(within(listed).queryByTestId('ai-review-why')).toBeNull();
+  });
+
+  it('adds a full stop to an AI reason that has none, and has no evaluator line when there is none', async () => {
+    render(<AiReview review={{ ...REVIEW, pages: [page(3, 'done', [evaluated({ why: 'No stop here', evaluator_reason: null } as Partial<AiReviewRow>)])] }} onLook={() => {}} />);
+    const listed = within(screen.getByRole('list', { name: 'Different' })).getByRole('listitem');
+    await userEvent.click(within(listed).getByRole('button', { name: /^Why/ }));
+    expect(within(listed).getByTestId('ai-review-why').textContent).toBe('No stop here.');
+  });
+
+  it('a row with no reason at all has no Why', () => {
+    render(<AiReview review={{ ...REVIEW, pages: [page(3, 'done', [row('q1', 'different', { why: '' })])] }} onLook={() => {}} />);
+    const listed = within(screen.getByRole('list', { name: 'Different' })).getByRole('listitem');
+    expect(within(listed).queryByRole('button', { name: /^Why/ })).toBeNull();
   });
 });

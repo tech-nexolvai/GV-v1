@@ -2,7 +2,7 @@ import { useId, useState } from 'react';
 import { ChevronRight, CircleDashed, Equal, FileSearch, HelpCircle, Loader2, Minus } from 'lucide-react';
 
 import type { AiReviewOut, AiReviewPage, AiReviewResult, AiReviewRow } from '@/api/review-items';
-import { aiReviewEntries, aiReviewSummary, aiReviewWhat, aiReviewWhyParts, GROUP_OF, GROUP_TITLE, type AiReviewEntry, type AiReviewGroup } from './ai-review-lib';
+import { aiReviewEntries, aiReviewSummary, aiReviewWhat, GROUP_OF, GROUP_TITLE, type AiReviewEntry, type AiReviewGroup } from './ai-review-lib';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
@@ -28,36 +28,52 @@ function ResultWord({ result }: { result: AiReviewResult }) {
   );
 }
 
-/** The numbers side by side, in the number face, with what they measure and the page. */
+/** The server's words as a sentence, ending with one full stop. */
+function sentence(text: string): string {
+  const trimmed = text.trim();
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
+/** Fields the server sends since the evaluator (#1442) that the hand-written row type does not carry yet. */
+type EvaluatedRow = AiReviewRow & { evaluator_reason?: string | null };
+
+/**
+ * The numbers side by side, in the number face, and the page, on one line; what they measure on a
+ * second. Nothing more: the reasons wait behind Why.
+ */
 function Numbers({ row, page }: { row: AiReviewRow; page: number }) {
   return (
     <span className="block min-w-0 text-[15px] text-foreground [overflow-wrap:anywhere]">
-      Architect <span className="num">{row.architect_text}</span>
-      {row.vendor_text !== null && (
-        <>
-          {' '}
-          vs vendor <span className="num">{row.vendor_text}</span>
-        </>
-      )}
-      <PageTag page={page} className="ml-2" />
+      <span data-testid="ai-review-line" className="block">
+        Architect <span className="num">{row.architect_text}</span>
+        {row.vendor_text !== null && (
+          <>
+            {' '}
+            vs vendor <span className="num">{row.vendor_text}</span>
+          </>
+        )}
+        <span className="text-[13px] text-muted-foreground"> · </span>
+        <PageTag page={page} />
+      </span>
       {row.measures && <NumText text={row.measures} className="block text-[13px] leading-5 text-muted-foreground" />}
     </span>
   );
 }
 
 /**
- * One row: the result, both numbers, Why (the reasons, folded) and Look. No person answers it (decision 2026-10-16): a different
+ * One row: the result, both numbers and Look. No person answers it (decision 2026-10-16): a different
  * row is clouded on the PDF by itself and never holds sign-off, so no answer buttons are offered,
- * whatever the server lists.
+ * whatever the server lists. The AI's reason and the evaluator's are folded behind a small Why.
  */
 function Row({ entry, onLook }: { entry: AiReviewEntry; onLook: (row: AiReviewRow, page: number) => void }) {
   const { row, page } = entry;
   const what = aiReviewWhat(row);
-  const [whyOpen, setWhyOpen] = useState(false);
+  const [open, setOpen] = useState(false);
   const whyId = useId();
-  // The reasons are long: folded behind Why so the row stays the numbers and what they measure (QA 3).
-  const why = row.result !== 'same' ? aiReviewWhyParts(row) : { ai: null, evaluator: null };
-  const hasWhy = why.ai !== null || why.evaluator !== null;
+  const aiWhy = row.result !== 'same' && row.why.trim() ? sentence(row.why) : null;
+  const evaluatorReason = (row as EvaluatedRow).evaluator_reason?.trim();
+  const evaluatorWhy = evaluatorReason ? `Checked again by the evaluator: ${sentence(evaluatorReason)}` : null;
+  const hasWhy = aiWhy !== null || evaluatorWhy !== null;
   return (
     // Sized by the section (`@container/air`), not the window: with the Assistant open the section
     // is narrow on a wide screen. The numbers keep 18rem and drop to their own line (QA 2026-10-16).
@@ -67,21 +83,17 @@ function Row({ entry, onLook }: { entry: AiReviewEntry; onLook: (row: AiReviewRo
       </span>
       <span data-slot="ai-review-numbers" className="min-w-0 max-w-full grow basis-[18rem]">
         <Numbers row={row} page={page} />
-        {hasWhy && (
-          <span id={whyId} data-slot="ai-review-why" className="block">
-            {whyOpen && (
-              <>
-                {why.ai !== null && <NumText text={why.ai} data-slot="ai-review-why-part" className="block text-[13px] leading-5 text-muted-foreground" />}
-                {why.evaluator !== null && <NumText text={why.evaluator} data-slot="ai-review-why-part" className="block text-[13px] leading-5 text-muted-foreground" />}
-              </>
-            )}
+        {hasWhy && open && (
+          <span id={whyId} data-testid="ai-review-why" className="mt-1 block text-[13px] leading-5 text-muted-foreground">
+            {aiWhy && <NumText text={aiWhy} />}
+            {aiWhy && evaluatorWhy && <br />}
+            {evaluatorWhy && <NumText text={evaluatorWhy} />}
           </span>
         )}
       </span>
       <span className="ml-auto flex min-w-0 shrink-0 flex-wrap items-center gap-1">
         {hasWhy && (
-          <Button size="sm" variant="ghost" aria-expanded={whyOpen} aria-controls={whyId} onClick={() => setWhyOpen((now) => !now)}>
-            <ChevronRight aria-hidden="true" className={cn('transition-transform motion-reduce:transition-none', whyOpen && 'rotate-90')} />
+          <Button size="sm" variant="ghost" aria-expanded={open} aria-controls={open ? whyId : undefined} onClick={() => setOpen((now) => !now)} className="text-muted-foreground">
             Why
           </Button>
         )}
