@@ -4,6 +4,113 @@
  */
 
 export interface paths {
+    "/api/v1/assistant/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The chat's models, whether it can answer here, its caps and (per set) its spend */
+        get: operations["assistant_models_api_v1_assistant_models_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/chats/{chat_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One chat and its messages */
+        get: operations["read_chat_api_v1_chats__chat_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/chats/{chat_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Stop the message */
+        post: operations["cancel_message_api_v1_chats__chat_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/chats/{chat_id}/files/{file_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A file the assistant handed over */
+        get: operations["download_file_api_v1_chats__chat_id__files__file_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/chats/{chat_id}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Send a message and stream the answer
+         * @description `message_start`, then thinking, text, steps, helpers, files and usage as they happen, then
+         *     `message_end` with the stored message (`error` first when it failed). The browser going away
+         *     cancels the message, which is still stored.
+         */
+        post: operations["send_message_api_v1_chats__chat_id__messages_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/chats/{chat_id}/pictures/{picture_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A picture the assistant looked at */
+        get: operations["read_picture_api_v1_chats__chat_id__pictures__picture_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/company-settings": {
         parameters: {
             query?: never;
@@ -93,6 +200,24 @@ export interface paths {
         get: operations["list_operations_api_v1_operations_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/packages/{package_id}/chats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The drawing set's saved chats, newest first */
+        get: operations["list_chats_api_v1_packages__package_id__chats_get"];
+        put?: never;
+        /** Start an empty chat about the drawing set */
+        post: operations["start_chat_api_v1_packages__package_id__chats_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3461,6 +3586,46 @@ export interface components {
             /** Starters */
             starters: string[];
         };
+        /** AssistantModelOut */
+        AssistantModelOut: {
+            /** Default */
+            default: boolean;
+            /** Default Effort */
+            default_effort: string;
+            /** Efforts */
+            efforts: string[];
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /**
+             * Thinking
+             * @enum {string}
+             */
+            thinking: "always" | "optional";
+            /** Thinking Off Max Effort */
+            thinking_off_max_effort: string | null;
+        };
+        /** AssistantModelsOut */
+        AssistantModelsOut: {
+            /** Available */
+            available: boolean;
+            /** Message Cap Usd */
+            message_cap_usd: string;
+            /** Models */
+            models: components["schemas"]["AssistantModelOut"][];
+            /** Package Cap Usd */
+            package_cap_usd: string;
+            /** Package Spent Usd */
+            package_spent_usd: string;
+            /**
+             * Provider
+             * @enum {string}
+             */
+            provider: "openrouter" | "anthropic";
+            /** Reason */
+            reason?: string | null;
+        };
         /**
          * AssistantRequest
          * @description A reviewer question. It carries no value, outcome or decision the server would accept.
@@ -3916,6 +4081,131 @@ export interface components {
             status: string;
         };
         /**
+         * ChatAgentOut
+         * @description One helper the assistant ran (`Agent`).
+         */
+        ChatAgentOut: {
+            /** Description */
+            description: string;
+            /** Id */
+            id: string;
+            /**
+             * Model
+             * @description The model it ran on, e.g. claude-sonnet-5-5.
+             */
+            model: string;
+            /**
+             * Ok
+             * @description Null while it runs.
+             */
+            ok?: boolean | null;
+            /** Report */
+            report?: string | null;
+            /** Steps */
+            steps?: components["schemas"]["ChatStepOut"][];
+            /** Stopped */
+            stopped?: ("cost_cap" | "turn_limit" | "cancelled" | "error") | null;
+        };
+        /** ChatCancelOut */
+        ChatCancelOut: {
+            /** Cancelled */
+            cancelled: boolean;
+        };
+        /** ChatCreatedOut */
+        ChatCreatedOut: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Title */
+            title: string | null;
+        };
+        /** ChatFileOut */
+        ChatFileOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Mime */
+            mime: string;
+            /** Name */
+            name: string;
+            /** Size */
+            size: number;
+            /** Url */
+            url: string;
+        };
+        /** ChatListOut */
+        ChatListOut: {
+            /** Chats */
+            chats: components["schemas"]["ChatSummaryOut"][];
+        };
+        /**
+         * ChatMessageIn
+         * @description One message from the reviewer, with the model, effort and thinking they picked.
+         */
+        ChatMessageIn: {
+            /**
+             * Effort
+             * @enum {string}
+             */
+            effort: "low" | "medium" | "high" | "xhigh" | "max";
+            /** Model */
+            model: string;
+            /** Text */
+            text: string;
+            /** Thinking */
+            thinking: boolean;
+        };
+        /**
+         * ChatMessageOut
+         * @description A message as stored: the reviewer's question, or the assistant's answer.
+         */
+        ChatMessageOut: {
+            /** Blocks */
+            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"])[] | null;
+            /** Cost Usd */
+            cost_usd?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Effort */
+            effort?: string | null;
+            /** Error */
+            error?: string | null;
+            /** Files */
+            files?: components["schemas"]["ChatFileOut"][] | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Model */
+            model?: string | null;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "user" | "assistant";
+            stopped?: components["schemas"]["ChatStopped"] | null;
+            /**
+             * Text
+             * @description The question, or the answer's final markdown.
+             */
+            text: string;
+            /** Thinking */
+            thinking?: boolean | null;
+        };
+        /**
          * ChatModelChoice
          * @description One selectable model: the exact Bedrock id, and the name a reviewer reads.
          */
@@ -3934,6 +4224,141 @@ export interface components {
             default?: string | null;
             /** Models */
             models: components["schemas"]["ChatModelChoice"][];
+        };
+        /** ChatOut */
+        ChatOut: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Messages */
+            messages: components["schemas"]["ChatMessageOut"][];
+            /**
+             * Package Id
+             * Format: uuid
+             */
+            package_id: string;
+            /** Package Name */
+            package_name: string;
+            /**
+             * Running
+             * @description True while a message of this chat is being answered (its answer is not stored yet).
+             * @default false
+             */
+            running: boolean;
+            /** Title */
+            title: string | null;
+        };
+        /** ChatStepBlock */
+        ChatStepBlock: {
+            step: components["schemas"]["ChatStepOut"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "step";
+        };
+        /**
+         * ChatStepOut
+         * @description One tool the assistant used: a command and its output, a file or picture it viewed, a file
+         *     it wrote, the files it handed over, its task list, its helpers, or the recorded results.
+         */
+        ChatStepOut: {
+            /** Agents */
+            agents?: components["schemas"]["ChatAgentOut"][] | null;
+            /** Command */
+            command?: string | null;
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /**
+             * Ok
+             * @description Null while it runs.
+             */
+            ok?: boolean | null;
+            /**
+             * Output
+             * @description What the tool answered, cut for the screen.
+             */
+            output?: string | null;
+            /** Path */
+            path?: string | null;
+            /**
+             * Picture Id
+             * @description A picture it viewed: GET /chats/{chat_id}/pictures/{picture_id}.
+             */
+            picture_id?: string | null;
+            /** Seconds */
+            seconds?: number | null;
+            /** Tasks */
+            tasks?: components["schemas"]["ChatTaskOut"][] | null;
+            tool: components["schemas"]["ChatStepTool"];
+        };
+        /** @enum {string} */
+        ChatStepTool: "bash_tool" | "view" | "create_file" | "str_replace" | "present_files" | "TaskCreate" | "TaskUpdate" | "Agent" | "review_results";
+        /** @enum {string} */
+        ChatStopped: "cost_cap" | "cancelled" | "error" | "turn_limit";
+        /** ChatSummaryOut */
+        ChatSummaryOut: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Last Message At */
+            last_message_at: string | null;
+            /** Title */
+            title: string | null;
+            /** Turns */
+            turns: number;
+        };
+        /** ChatTaskOut */
+        ChatTaskOut: {
+            /** Active Form */
+            active_form?: string | null;
+            /** Id */
+            id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "in_progress" | "completed";
+            /** Subject */
+            subject: string;
+        };
+        /** ChatTextBlock */
+        ChatTextBlock: {
+            /** Text */
+            text: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "text";
+        };
+        /** ChatThinkingBlock */
+        ChatThinkingBlock: {
+            /** Seconds */
+            seconds: number;
+            /** Text */
+            text: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "thinking";
         };
         /** CheckOut */
         CheckOut: {
@@ -9712,6 +10137,206 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    assistant_models_api_v1_assistant_models_get: {
+        parameters: {
+            query?: {
+                package_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantModelsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_chat_api_v1_chats__chat_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                chat_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_message_api_v1_chats__chat_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                chat_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatCancelOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_file_api_v1_chats__chat_id__files__file_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                chat_id: string;
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    send_message_api_v1_chats__chat_id__messages_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                chat_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChatMessageIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": unknown;
+                };
+            };
+            /** @description `message_running`: a message is being answered in this chat. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `choice_refused`: a model, effort and thinking the API refuses. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No AI provider key is set (the reason: GET /assistant/models). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    read_picture_api_v1_chats__chat_id__pictures__picture_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                chat_id: string;
+                picture_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     read_company_settings_api_v1_company_settings_get: {
         parameters: {
             query?: never;
@@ -9836,6 +10461,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["OperationOut"][];
+                };
+            };
+        };
+    };
+    list_chats_api_v1_packages__package_id__chats_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatListOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_chat_api_v1_packages__package_id__chats_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatCreatedOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

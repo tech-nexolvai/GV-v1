@@ -15,28 +15,28 @@ from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = [
     "MAX_MESSAGE_TEXT",
-    "CancelOut",
+    "AssistantModelOut",
+    "AssistantModelsOut",
     "ChatAgentOut",
     "ChatBlock",
+    "ChatCancelOut",
     "ChatCreatedOut",
     "ChatFileOut",
     "ChatListOut",
+    "ChatMessageIn",
     "ChatMessageOut",
-    "ChatModelOut",
-    "ChatModelsOut",
     "ChatOut",
+    "ChatStepBlock",
     "ChatStepOut",
     "ChatSummaryOut",
     "ChatTaskOut",
-    "MessageIn",
-    "StepBlock",
-    "TextBlock",
-    "ThinkingBlock",
+    "ChatTextBlock",
+    "ChatThinkingBlock",
 ]
 
 MAX_MESSAGE_TEXT = 8000
 
-type StepTool = Literal[
+type ChatStepTool = Literal[
     "bash_tool",
     "view",
     "create_file",
@@ -47,10 +47,10 @@ type StepTool = Literal[
     "Agent",
     "review_results",
 ]
-type Stopped = Literal["cost_cap", "cancelled", "error", "turn_limit"]
+type ChatStopped = Literal["cost_cap", "cancelled", "error", "turn_limit"]
 
 
-class MessageIn(BaseModel):
+class ChatMessageIn(BaseModel):
     """One message from the reviewer, with the model, effort and thinking they picked."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -91,7 +91,7 @@ class ChatStepOut(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     id: str
-    tool: StepTool
+    tool: ChatStepTool
     label: str
     command: str | None = None
     path: str | None = None
@@ -107,7 +107,7 @@ class ChatStepOut(BaseModel):
     agents: list[ChatAgentOut] | None = None
 
 
-class ThinkingBlock(BaseModel):
+class ChatThinkingBlock(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     type: Literal["thinking"]
@@ -115,21 +115,23 @@ class ThinkingBlock(BaseModel):
     seconds: int
 
 
-class TextBlock(BaseModel):
+class ChatTextBlock(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     type: Literal["text"]
     text: str
 
 
-class StepBlock(BaseModel):
+class ChatStepBlock(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     type: Literal["step"]
     step: ChatStepOut
 
 
-ChatBlock = Annotated[ThinkingBlock | TextBlock | StepBlock, Field(discriminator="type")]
+ChatBlock = Annotated[
+    ChatThinkingBlock | ChatTextBlock | ChatStepBlock, Field(discriminator="type")
+]
 
 
 class ChatFileOut(BaseModel):
@@ -157,7 +159,7 @@ class ChatMessageOut(BaseModel):
     blocks: list[ChatBlock] | None = None
     files: list[ChatFileOut] | None = None
     cost_usd: str | None = None
-    stopped: Stopped | None = None
+    stopped: ChatStopped | None = None
     error: str | None = None
 
 
@@ -201,7 +203,7 @@ class ChatOut(BaseModel):
     )
 
 
-class ChatModelOut(BaseModel):
+class AssistantModelOut(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     id: str
@@ -213,19 +215,19 @@ class ChatModelOut(BaseModel):
     thinking_off_max_effort: str | None
 
 
-class ChatModelsOut(BaseModel):
+class AssistantModelsOut(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     available: bool
     reason: str | None = None
     provider: Literal["openrouter", "anthropic"]
-    models: list[ChatModelOut]
+    models: list[AssistantModelOut]
     message_cap_usd: str
     package_cap_usd: str
     package_spent_usd: str
 
 
-class CancelOut(BaseModel):
+class ChatCancelOut(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     cancelled: bool

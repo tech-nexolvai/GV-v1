@@ -270,13 +270,19 @@ def ai_review_row_for_model(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _ai_review_and_job_values(context: _AssistantContext, page: int | None) -> dict[str, Any]:
+    return ai_review_and_job_values(context.session, context.project_id, context.revision.id, page)
+
+
+def ai_review_and_job_values(
+    session: Session, project_id: UUID, revision_id: UUID, page: int | None
+) -> dict[str, Any]:
     """The AI page review rows (one page) or its per-page summary (whole package), and the job's
     values: the ones typed for the project and what the job values reader found."""
     from app.api.company_settings import _project_set, _text
     from app.review.ai_review import ai_review_for_revision
     from app.review.review_items import _job_value_suggestions
 
-    review = ai_review_for_revision(context.session, context.revision.id)
+    review = ai_review_for_revision(session, revision_id)
     fields = {
         "key",
         "measures",
@@ -305,11 +311,11 @@ def _ai_review_and_job_values(context: _AssistantContext, page: int | None) -> d
             pages.append({"page": sheet.page, "status": sheet.status, **counts, "different": rows})
         else:
             pages.append({"page": sheet.page, "status": sheet.status, "rows": rows})
-    _version, values, _rows = _project_set(context.session, context.project_id)
+    _version, values, _rows = _project_set(session, project_id)
     typed = {name: _text(value) for name, value in sorted(values.items())}
     found = [
         item.model_dump(mode="json", exclude={"location"})
-        for item in _job_value_suggestions(context.session, context.revision.id)
+        for item in _job_value_suggestions(session, revision_id)
         if page is None or item.page == page
     ]
     return {
@@ -377,4 +383,10 @@ def review_assistant_stream(
         yield ServerSentEvent(event=name, data=data)
 
 
-__all__ = ["ai_review_row_for_model", "load_snapshot", "router", "runtime_for"]
+__all__ = [
+    "ai_review_and_job_values",
+    "ai_review_row_for_model",
+    "load_snapshot",
+    "router",
+    "runtime_for",
+]

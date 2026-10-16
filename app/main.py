@@ -136,6 +136,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from app.api import (
         approvals,
         architect_matches,
+        assistant_chats,
         background,
         company_settings,
         confirmations,
@@ -241,6 +242,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(reviewer_chat.router, prefix=API_PREFIX)
     # The review assistant (#1128): answers from one review's records, guarded; points, never decides.
     app.include_router(review_assistant.router, prefix=API_PREFIX)
+    # The chat-first assistant (#1463): saved chats per drawing set, streamed, read-only on the review.
+    app.include_router(assistant_chats.router, prefix=API_PREFIX)
 
     @app.middleware("http")
     async def _request_id(

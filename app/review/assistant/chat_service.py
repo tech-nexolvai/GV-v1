@@ -121,6 +121,9 @@ class RunningMessage:
     def stop(self) -> None:
         """Cancel: the engine stops between steps and mid-stream; running commands are killed."""
         self.cancel.set()
+        engine = self.engine
+        if engine is not None:
+            engine.stop_streams()
         sandbox = self.sandbox
         if sandbox is not None:
             try:
@@ -166,7 +169,9 @@ class ChatRegistry:
 
     def running_spent(self, package_id: UUID, *, exclude: RunningMessage | None = None) -> int:
         with self._lock:
-            runs = [r for r in self._runs.values() if r.package_id == package_id and r is not exclude]
+            runs = [
+                r for r in self._runs.values() if r.package_id == package_id and r is not exclude
+            ]
         return sum(run.spent() for run in runs)
 
 
@@ -346,14 +351,11 @@ def prepare_skill(
     _readable(skill)
 
 
-def default_skill_builder() -> SkillBuilder | None:
-    """The skills builder's `build_skill_folder`, when it is installed."""
-    try:
-        from app.review.assistant import skills_export  # type: ignore[attr-defined]
-    except ImportError:
-        return None
-    builder: SkillBuilder = skills_export.build_skill_folder
-    return builder
+def default_skill_builder() -> SkillBuilder:
+    """The skills builder's `build_skill_folder` (#1465), loaded when a chat first needs it."""
+    from app.review.assistant.skills_export import build_skill_folder
+
+    return build_skill_folder
 
 
 # ---- one message --------------------------------------------------------------------------------
@@ -394,7 +396,9 @@ _NO_UPLOADS: Final = (
     "The drawing set's PDFs could not be copied into the chat's computer. Please ask again; if it "
     "keeps happening, tell your admin."
 )
-_NOT_SAVED: Final = "This message could not be saved, so it was not sent to Claude. Please try again."
+_NOT_SAVED: Final = (
+    "This message could not be saved, so it was not sent to Claude. Please try again."
+)
 
 
 def _budget_used(job: MessageJob) -> str:
@@ -411,7 +415,9 @@ def run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
         _run_message(job, run, emit)
     except Exception:  # noqa: BLE001 - the stream still ends cleanly
         _log.exception("assistant chat message failed before it could be stored")
-        _safe(emit, "error", {"message": "Something went wrong in the assistant. Please ask again."})
+        _safe(
+            emit, "error", {"message": "Something went wrong in the assistant. Please ask again."}
+        )
     finally:
         job.registry.release(run)
 
@@ -437,10 +443,7 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
     )
     try:
         with job.factory() as session:
-            question = add_user_message(
-                session, chat_id=job.chat_id, created_by=job.created_by, text=job.text
-            )
-            first = question.seq == 1
+            add_user_message(session, chat_id=job.chat_id, created_by=job.created_by, text=job.text)
             session.commit()
     except Exception:  # noqa: BLE001 - told plainly; nothing was sent
         _log.exception("assistant chat could not store the question")
@@ -458,7 +461,8 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
                 text=text,
                 blocks=[{"type": "text", "text": text}] if text else [],
                 api_content=[],
-                cost_micros=0,
+                # Nothing was asked yet: what this message spent is what its run spent (nothing).
+                cost_micros=run.spent(),
                 stopped=stopped,
                 error=error,
             )
@@ -487,9 +491,11 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
     with job.factory() as session:
         replay = history(session, job.chat_id)
     user_content: list[dict[str, Any]] = []
-    if first or changed:
+    # The files are listed in the first message the model sees (an earlier message that got no
+    # answer is not in its history), and again when the set's PDFs changed.
+    if not replay or changed:
         user_content.append(
-            {"type": "text", "text": uploaded_files_text(listing, changed=changed and not first)}
+            {"type": "text", "text": uploaded_files_text(listing, changed=changed and bool(replay))}
         )
     user_content.append({"type": "text", "text": job.text})
 

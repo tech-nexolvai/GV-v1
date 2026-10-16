@@ -503,16 +503,17 @@ class MacSandbox:
 
     def _shims(self) -> Path:
         shims = self.workspace.root / "bin"
-        if not shims.exists():
-            shims.mkdir()
-            for name in ("python3", "python"):
-                path = shims / name
-                path.write_text(f'#!/bin/sh\nexec "{self.python}" "$@"\n')
-                path.chmod(0o555)
-            for name in _POPPLER:
-                path = shims / name
-                path.write_text(_MISSING_TOOL.format(name=name))
-                path.chmod(0o555)
+        with self._lock:
+            if not (shims / "python3").exists():
+                shims.mkdir(exist_ok=True)
+                for name in ("python3", "python"):
+                    path = shims / name
+                    path.write_text(f'#!/bin/sh\nexec "{self.python}" "$@"\n')
+                    path.chmod(0o555)
+                for name in _POPPLER:
+                    path = shims / name
+                    path.write_text(_MISSING_TOOL.format(name=name))
+                    path.chmod(0o555)
         return shims
 
     def _python_roots(self) -> list[str]:
@@ -548,7 +549,8 @@ class MacSandbox:
     def run(self, command: str) -> SandboxResult:
         real = self._to_real(check_command(command))
         mounts = self.workspace.mounts
-        profile = self.workspace.root / "profile.sb"
+        # One profile file per command: helpers run commands at the same time.
+        profile = self.workspace.root / f"profile-{uuid.uuid4().hex[:12]}.sb"
         profile.write_text(_profile(self._python_roots(), mounts))
         shims = self._shims()
         defines: list[str] = []
@@ -602,6 +604,7 @@ class MacSandbox:
         finally:
             with self._lock:
                 self._running.discard(process.pid)
+            profile.unlink(missing_ok=True)
         text, cut = cut_output(self._to_shown(_decode(raw)))
         return SandboxResult(output=text, exit_code=process.returncode, truncated=cut)
 

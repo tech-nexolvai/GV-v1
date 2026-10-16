@@ -86,7 +86,7 @@ You have a Linux computer with no internet access:
 - {SCRATCH}: your working folder. Its files stay for the whole chat.
 - {OUTPUTS}: files for the reviewer. Make them here, then hand them over with present_files.
 - {SKILLS}: how GV reviews drawings, and this set's rules (read-only). Read {SKILLS}/SKILL.md \
-before you review or compare drawings.
+first, before you review, compare or mark up drawings.
 
 Your tools: bash_tool runs a command (poppler, and Python with pypdf, pdfplumber, pypdfium2, \
 Pillow, reportlab, matplotlib and openpyxl); view shows you a picture, a text file or a folder; \
@@ -477,7 +477,10 @@ class ChatTools:
             command = check_command(str(given.get("command", "")))
         except SandboxRefused as refused:
             return _refused(step, started, str(refused))
-        result = self.sandbox.run(command)
+        try:
+            result = self.sandbox.run(command)
+        except Exception:  # noqa: BLE001 - the model reads it; the message goes on
+            return _refused(step, started, "the computer could not run this command just now")
         status = (
             "stopped: over its time limit" if result.timed_out else f"exit code {result.exit_code}"
         )

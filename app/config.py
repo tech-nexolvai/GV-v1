@@ -133,8 +133,8 @@ class Settings(BaseSettings):
         default_factory=lambda: Path.home() / "gv-local" / "assistant-chats"
     )
     # What one message may spend, and what all the chats of one drawing set may spend together.
-    assistant_message_cap_usd: Decimal = Field(default=Decimal("5"), gt=0, allow_inf_nan=False)
-    assistant_package_cap_usd: Decimal = Field(default=Decimal("40"), gt=0, allow_inf_nan=False)
+    assistant_message_cap_usd: Decimal = Field(default=Decimal(5), gt=0, allow_inf_nan=False)
+    assistant_package_cap_usd: Decimal = Field(default=Decimal(40), gt=0, allow_inf_nan=False)
     # Tool turns: the lead's per message, and each helper's.
     assistant_lead_max_turns: int = Field(default=40, ge=1, le=100)
     assistant_helper_max_turns: int = Field(default=20, ge=1, le=50)

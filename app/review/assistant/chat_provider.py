@@ -219,15 +219,19 @@ class _SdkStream:
 class AnthropicSdkProvider:
     """The official SDK client for one provider. Holds the key; never shows it."""
 
-    def __init__(self, choice: ProviderChoice, *, timeout_seconds: float) -> None:
+    def __init__(
+        self, choice: ProviderChoice, *, timeout_seconds: float, http_client: Any = None
+    ) -> None:
+        """`http_client` is for tests only (a fake transport: no network)."""
         if choice.key is None:
             raise ValueError("the assistant has no provider key")
         import anthropic
 
         self.name: Provider = choice.name
+        extra: dict[str, Any] = {} if http_client is None else {"http_client": http_client}
         if choice.name == "anthropic":
             self._client = anthropic.Anthropic(
-                api_key=choice.key, timeout=timeout_seconds, max_retries=2
+                api_key=choice.key, timeout=timeout_seconds, max_retries=2, **extra
             )
         else:
             self._client = anthropic.Anthropic(
@@ -235,6 +239,7 @@ class AnthropicSdkProvider:
                 base_url=OPENROUTER_BASE_URL,
                 timeout=timeout_seconds,
                 max_retries=2,
+                **extra,
             )
 
     def __repr__(self) -> str:

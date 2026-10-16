@@ -217,7 +217,14 @@ class _Reply:
 
     @property
     def fell_back(self) -> bool:
-        return any(block.get("type") == "fallback" for block in self.content)
+        """Whether Anthropic's refusal fallback served it: a switch marker in the content, or (a
+        conversation already switched, "sticky") a `fallback_message` among the usage's attempts."""
+        attempts = self.usage.get("iterations")
+        sticky = isinstance(attempts, list) and any(
+            isinstance(item, Mapping) and item.get("type") == "fallback_message"
+            for item in attempts
+        )
+        return sticky or any(block.get("type") == "fallback" for block in self.content)
 
 
 class _Cancelled(Exception):
@@ -388,6 +395,7 @@ class ChatEngine:
         self._lock = threading.RLock()
         self._spent = 0
         self._attempt_blocks: list[int] = []
+        self._streams: set[Any] = set()
         self.task_list = TaskList()
 
     # ---- the screen ------------------------------------------------------------------------------
@@ -542,16 +550,22 @@ class ChatEngine:
             usage: dict[str, Any] = {}
             try:
                 stream = self.provider.open_stream(params)
+                with self._lock:
+                    self._streams.add(stream)
                 try:
                     reply = _accumulate(stream, shown, self.cancel.is_set, usage)
                 finally:
+                    with self._lock:
+                        self._streams.discard(stream)
                     stream.close()
             except _Cancelled:
-                partial = _Reply([], None, None, usage, None)
-                self._record(model, prompt_id, started, partial, None)
-                self._charge(model, usage)
+                self._cancelled_call(model, prompt_id, started, usage)
                 raise
             except Exception as raised:  # noqa: BLE001 - every provider failure is told plainly
+                if self.cancel.is_set():
+                    # Cancel closed the stream under the read: a stop, not a failure.
+                    self._cancelled_call(model, prompt_id, started, usage)
+                    raise _Cancelled from None
                 failure = failure_from(raised)
             if reply is not None and not _names_model(reply, model, self.provider.name):
                 failure = ProviderFailure(
@@ -575,6 +589,23 @@ class ChatEngine:
                     raise _Cancelled
                 continue
             raise failure
+
+    def _cancelled_call(
+        self, model: ChatModel, prompt_id: str, started: int, usage: dict[str, Any]
+    ) -> None:
+        """A call stopped by cancel: recorded and charged for what it used so far."""
+        self._record(model, prompt_id, started, _Reply([], None, None, usage, None), None)
+        self._charge(model, usage)
+
+    def stop_streams(self) -> None:
+        """Close the calls streaming now, so a cancel does not wait for the next event."""
+        with self._lock:
+            streams = list(self._streams)
+        for stream in streams:
+            try:
+                stream.close()
+            except Exception:  # noqa: BLE001 - closing is best effort
+                _log.debug("assistant chat stream did not close on cancel")
 
     def _record(
         self,

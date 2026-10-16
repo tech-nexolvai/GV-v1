@@ -6,8 +6,9 @@ and priced here, so the two can never disagree.
 
 **Route: only what the record says.** A call row holds its model id and prompt id, not the provider
 it was sent through. Where the model id names a Bedrock model (`amazon.*`, `qwen.*`, `mistral.*`, a
-`us.`-style inference profile, a dated `-v1:0` id), the route is Bedrock. The review assistant has
-only ever gone through OpenRouter. The two Claude readers have gone through Anthropic's own API and,
+`us.`-style inference profile, a dated `-v1:0` id), the route is Bedrock. The review assistant's
+side panel has only ever gone through OpenRouter; its chats (#1463) name their provider in the
+prompt id (`review-assistant-chat-anthropic-...` or `...-openrouter-...`). The two Claude readers have gone through Anthropic's own API and,
 since #1094, through OpenRouter, and their rows do not say which: those are `unknown`, never a guess.
 
 **Purpose: from the prompt id.** A model comparison (bake-off) cannot be told from a call's own
@@ -87,7 +88,9 @@ _READING_PROMPTS: Final = (
 def infer_route(model_id: str, prompt_id: str) -> Route:
     """Which provider route a call went through, as far as its record shows; else `unknown`."""
     if prompt_id.startswith("review-assistant"):
-        return "openrouter"
+        # The chat-first assistant (#1463) names its provider in its prompt id; the side panel
+        # has only ever gone through OpenRouter.
+        return "anthropic" if "-anthropic-" in prompt_id else "openrouter"
     bare = _PROFILE.sub("", model_id)
     if bare != model_id or bare.startswith(_BEDROCK_FAMILIES) or _BEDROCK_VERSION.search(bare):
         return "bedrock"

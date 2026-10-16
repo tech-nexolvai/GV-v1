@@ -2472,6 +2472,119 @@
         "title": "AssistantInfoOut",
         "type": "object"
       },
+      "AssistantModelOut": {
+        "properties": {
+          "default": {
+            "title": "Default",
+            "type": "boolean"
+          },
+          "default_effort": {
+            "title": "Default Effort",
+            "type": "string"
+          },
+          "efforts": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Efforts",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "thinking": {
+            "enum": [
+              "always",
+              "optional"
+            ],
+            "title": "Thinking",
+            "type": "string"
+          },
+          "thinking_off_max_effort": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thinking Off Max Effort"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "default",
+          "efforts",
+          "default_effort",
+          "thinking",
+          "thinking_off_max_effort"
+        ],
+        "title": "AssistantModelOut",
+        "type": "object"
+      },
+      "AssistantModelsOut": {
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "message_cap_usd": {
+            "title": "Message Cap Usd",
+            "type": "string"
+          },
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/AssistantModelOut"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "package_cap_usd": {
+            "title": "Package Cap Usd",
+            "type": "string"
+          },
+          "package_spent_usd": {
+            "title": "Package Spent Usd",
+            "type": "string"
+          },
+          "provider": {
+            "enum": [
+              "openrouter",
+              "anthropic"
+            ],
+            "title": "Provider",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "available",
+          "provider",
+          "models",
+          "message_cap_usd",
+          "package_cap_usd",
+          "package_spent_usd"
+        ],
+        "title": "AssistantModelsOut",
+        "type": "object"
+      },
       "AssistantRequest": {
         "additionalProperties": false,
         "description": "A reviewer question. It carries no value, outcome or decision the server would accept.",
@@ -3377,6 +3490,361 @@
         "title": "ChangedValuesOut",
         "type": "object"
       },
+      "ChatAgentOut": {
+        "description": "One helper the assistant ran (`Agent`).",
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "model": {
+            "description": "The model it ran on, e.g. claude-sonnet-5-5.",
+            "title": "Model",
+            "type": "string"
+          },
+          "ok": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null while it runs.",
+            "title": "Ok"
+          },
+          "report": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Report"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/ChatStepOut"
+            },
+            "title": "Steps",
+            "type": "array"
+          },
+          "stopped": {
+            "anyOf": [
+              {
+                "enum": [
+                  "cost_cap",
+                  "turn_limit",
+                  "cancelled",
+                  "error"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stopped"
+          }
+        },
+        "required": [
+          "id",
+          "description",
+          "model"
+        ],
+        "title": "ChatAgentOut",
+        "type": "object"
+      },
+      "ChatCancelOut": {
+        "properties": {
+          "cancelled": {
+            "title": "Cancelled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "cancelled"
+        ],
+        "title": "ChatCancelOut",
+        "type": "object"
+      },
+      "ChatCreatedOut": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "created_at"
+        ],
+        "title": "ChatCreatedOut",
+        "type": "object"
+      },
+      "ChatFileOut": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "mime": {
+            "title": "Mime",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "size",
+          "mime",
+          "url"
+        ],
+        "title": "ChatFileOut",
+        "type": "object"
+      },
+      "ChatListOut": {
+        "properties": {
+          "chats": {
+            "items": {
+              "$ref": "#/components/schemas/ChatSummaryOut"
+            },
+            "title": "Chats",
+            "type": "array"
+          }
+        },
+        "required": [
+          "chats"
+        ],
+        "title": "ChatListOut",
+        "type": "object"
+      },
+      "ChatMessageIn": {
+        "additionalProperties": false,
+        "description": "One message from the reviewer, with the model, effort and thinking they picked.",
+        "properties": {
+          "effort": {
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "title": "Effort",
+            "type": "string"
+          },
+          "model": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Model",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          },
+          "thinking": {
+            "title": "Thinking",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "text",
+          "model",
+          "effort",
+          "thinking"
+        ],
+        "title": "ChatMessageIn",
+        "type": "object"
+      },
+      "ChatMessageOut": {
+        "description": "A message as stored: the reviewer's question, or the assistant's answer.",
+        "properties": {
+          "blocks": {
+            "anyOf": [
+              {
+                "items": {
+                  "discriminator": {
+                    "mapping": {
+                      "step": "#/components/schemas/ChatStepBlock",
+                      "text": "#/components/schemas/ChatTextBlock",
+                      "thinking": "#/components/schemas/ChatThinkingBlock"
+                    },
+                    "propertyName": "type"
+                  },
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ChatThinkingBlock"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChatTextBlock"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChatStepBlock"
+                    }
+                  ]
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blocks"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "effort": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effort"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "files": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ChatFileOut"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Files"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "role": {
+            "enum": [
+              "user",
+              "assistant"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "stopped": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatStopped"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "text": {
+            "description": "The question, or the answer's final markdown.",
+            "title": "Text",
+            "type": "string"
+          },
+          "thinking": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thinking"
+          }
+        },
+        "required": [
+          "id",
+          "role",
+          "created_at",
+          "text"
+        ],
+        "title": "ChatMessageOut",
+        "type": "object"
+      },
       "ChatModelChoice": {
         "additionalProperties": false,
         "description": "One selectable model: the exact Bedrock id, and the name a reviewer reads.",
@@ -3427,6 +3895,356 @@
           "models"
         ],
         "title": "ChatModelsOut",
+        "type": "object"
+      },
+      "ChatOut": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/ChatMessageOut"
+            },
+            "title": "Messages",
+            "type": "array"
+          },
+          "package_id": {
+            "format": "uuid",
+            "title": "Package Id",
+            "type": "string"
+          },
+          "package_name": {
+            "title": "Package Name",
+            "type": "string"
+          },
+          "running": {
+            "default": false,
+            "description": "True while a message of this chat is being answered (its answer is not stored yet).",
+            "title": "Running",
+            "type": "boolean"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "required": [
+          "id",
+          "package_id",
+          "package_name",
+          "title",
+          "created_at",
+          "messages"
+        ],
+        "title": "ChatOut",
+        "type": "object"
+      },
+      "ChatStepBlock": {
+        "properties": {
+          "step": {
+            "$ref": "#/components/schemas/ChatStepOut"
+          },
+          "type": {
+            "const": "step",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "step"
+        ],
+        "title": "ChatStepBlock",
+        "type": "object"
+      },
+      "ChatStepOut": {
+        "description": "One tool the assistant used: a command and its output, a file or picture it viewed, a file\nit wrote, the files it handed over, its task list, its helpers, or the recorded results.",
+        "properties": {
+          "agents": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ChatAgentOut"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agents"
+          },
+          "command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Command"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "ok": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null while it runs.",
+            "title": "Ok"
+          },
+          "output": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the tool answered, cut for the screen.",
+            "title": "Output"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path"
+          },
+          "picture_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A picture it viewed: GET /chats/{chat_id}/pictures/{picture_id}.",
+            "title": "Picture Id"
+          },
+          "seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seconds"
+          },
+          "tasks": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ChatTaskOut"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tasks"
+          },
+          "tool": {
+            "$ref": "#/components/schemas/ChatStepTool"
+          }
+        },
+        "required": [
+          "id",
+          "tool",
+          "label"
+        ],
+        "title": "ChatStepOut",
+        "type": "object"
+      },
+      "ChatStepTool": {
+        "enum": [
+          "bash_tool",
+          "view",
+          "create_file",
+          "str_replace",
+          "present_files",
+          "TaskCreate",
+          "TaskUpdate",
+          "Agent",
+          "review_results"
+        ],
+        "type": "string"
+      },
+      "ChatStopped": {
+        "enum": [
+          "cost_cap",
+          "cancelled",
+          "error",
+          "turn_limit"
+        ],
+        "type": "string"
+      },
+      "ChatSummaryOut": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "last_message_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Message At"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "turns": {
+            "title": "Turns",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "created_at",
+          "last_message_at",
+          "turns"
+        ],
+        "title": "ChatSummaryOut",
+        "type": "object"
+      },
+      "ChatTaskOut": {
+        "properties": {
+          "active_form": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Form"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "in_progress",
+              "completed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "subject",
+          "status"
+        ],
+        "title": "ChatTaskOut",
+        "type": "object"
+      },
+      "ChatTextBlock": {
+        "properties": {
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "type": {
+            "const": "text",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "text"
+        ],
+        "title": "ChatTextBlock",
+        "type": "object"
+      },
+      "ChatThinkingBlock": {
+        "properties": {
+          "seconds": {
+            "title": "Seconds",
+            "type": "integer"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "type": {
+            "const": "thinking",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "text",
+          "seconds"
+        ],
+        "title": "ChatThinkingBlock",
         "type": "object"
       },
       "CheckOut": {
@@ -15698,6 +16516,302 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/assistant/models": {
+      "get": {
+        "operationId": "assistant_models_api_v1_assistant_models_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "package_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Package Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistantModelsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The chat's models, whether it can answer here, its caps and (per set) its spend",
+        "tags": [
+          "assistant chats"
+        ]
+      }
+    },
+    "/api/v1/chats/{chat_id}": {
+      "get": {
+        "operationId": "read_chat_api_v1_chats__chat_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chat_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Chat Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One chat and its messages",
+        "tags": [
+          "assistant chats"
+        ]
+      }
+    },
+    "/api/v1/chats/{chat_id}/cancel": {
+      "post": {
+        "operationId": "cancel_message_api_v1_chats__chat_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chat_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Chat Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatCancelOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stop the message",
+        "tags": [
+          "assistant chats"
+        ]
+      }
+    },
+    "/api/v1/chats/{chat_id}/files/{file_id}": {
+      "get": {
+        "operationId": "download_file_api_v1_chats__chat_id__files__file_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chat_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Chat Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "File Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "A file the assistant handed over",
+        "tags": [
+          "assistant chats"
+        ]
+      }
+    },
+    "/api/v1/chats/{chat_id}/messages": {
+      "post": {
+        "description": "`message_start`, then thinking, text, steps, helpers, files and usage as they happen, then\n`message_end` with the stored message (`error` first when it failed). The browser going away\ncancels the message, which is still stored.",
+        "operationId": "send_message_api_v1_chats__chat_id__messages_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chat_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Chat Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatMessageIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "itemSchema": {
+                  "properties": {
+                    "data": {
+                      "type": "string"
+                    },
+                    "event": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "retry": {
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "description": "`message_running`: a message is being answered in this chat."
+          },
+          "422": {
+            "description": "`choice_refused`: a model, effort and thinking the API refuses."
+          },
+          "503": {
+            "description": "No AI provider key is set (the reason: GET /assistant/models)."
+          }
+        },
+        "summary": "Send a message and stream the answer",
+        "tags": [
+          "assistant chats"
+        ]
+      }
+    },
+    "/api/v1/chats/{chat_id}/pictures/{picture_id}": {
+      "get": {
+        "operationId": "read_picture_api_v1_chats__chat_id__pictures__picture_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chat_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Chat Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "picture_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Picture Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "A picture the assistant looked at",
+        "tags": [
+          "assistant chats"
+        ]
+      }
+    },
     "/api/v1/company-settings": {
       "get": {
         "operationId": "read_company_settings_api_v1_company_settings_get",
@@ -15858,6 +16972,90 @@
         "summary": "Every operation a rule may name, with its signature",
         "tags": [
           "operations"
+        ]
+      }
+    },
+    "/api/v1/packages/{package_id}/chats": {
+      "get": {
+        "operationId": "list_chats_api_v1_packages__package_id__chats_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatListOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The drawing set's saved chats, newest first",
+        "tags": [
+          "assistant chats"
+        ]
+      },
+      "post": {
+        "operationId": "start_chat_api_v1_packages__package_id__chats_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatCreatedOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start an empty chat about the drawing set",
+        "tags": [
+          "assistant chats"
         ]
       }
     },
