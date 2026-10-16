@@ -19,6 +19,7 @@ from __future__ import annotations
 from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Final
 from uuid import UUID
 
 from sqlalchemy import Subquery, and_, func, or_, select, union_all
@@ -64,7 +65,7 @@ from app.review.no_countertop import (
     unchecked_sentence,
     unconfirmed_sentence,
 )
-from app.review.requirements import BLOCKING_OUTCOMES
+from app.review.requirements import BLOCKING_OUTCOMES, NOTE_OUTCOMES
 from app.review.session import complete_session
 from evidence.canonical import EvidenceStatus
 from rules.parameters import ParameterLayer
@@ -245,11 +246,45 @@ def _unaddressed_from_records(
     """Shared decision rule for single-revision and batched readiness reads."""
     if not findings:
         return ()
+    blocked, _ = _open_split(findings, records, when=when)
+    return blocked
+
+
+#: How the reason of every check waiting for values nothing has read yet begins
+#: (`workflow/several_countertops.WAITING`; the same words `reviewer_marks.WAITING` reads).
+_WAITING_FOR: Final = "Waiting for "
+
+
+def _waiting_for_values(finding: Finding) -> bool:
+    """A check that could not run because nothing was read for it: it is printed NOT CHECKED on
+    the draft and the final PDF by itself and never holds sign-off (decision 2026-10-16, "nothing
+    from the reviewer")."""
+    trace_reason = finding.trace.get("reason") if isinstance(finding.trace, dict) else None
+    reason = finding.reason or (trace_reason if isinstance(trace_reason, str) else None) or ""
+    return finding.outcome in NOTE_OUTCOMES and reason.startswith(_WAITING_FOR)
+
+
+def _open_split(
+    findings: tuple[Finding, ...] | list[Finding],
+    records: DecisionRecords,
+    *,
+    when: datetime,
+) -> tuple[tuple[UUID, ...], tuple[UUID, ...]]:
+    """The results sign-off waits on, and the not-checked results nobody settled, which no longer
+    wait (decision 2026-10-16): they are printed NOT CHECKED. A corrected result waiting for its
+    re-run always waits."""
+    if not findings:
+        return (), ()
     required = {finding.id for finding in findings if finding.outcome in BLOCKING_OUTCOMES}
     ids = {finding.id for finding in findings}
     corrected = set(records.corrected) & ids
     addressed = {finding.id for finding in findings if decision_holds(finding, records, when=when)}
-    return tuple(sorted((required | corrected) - addressed, key=str))
+    waiting = {finding.id for finding in findings if _waiting_for_values(finding)} - corrected
+    open_ids = (required | corrected) - addressed
+    return (
+        tuple(sorted(open_ids - waiting, key=str)),
+        tuple(sorted(open_ids & waiting, key=str)),
+    )
 
 
 #: Why sign-off waits when a reviewer changed something the checks read after they last ran (#1137).
@@ -437,6 +472,9 @@ class ApprovalReadiness:
     """Pages listed with no countertop that no reviewer confirmed yet (#1191): sign-off waits."""
     unchecked_countertop_pages: tuple[int, ...] = ()
     """Pages that now need the reviewer but have no result on the live run yet (#1191)."""
+    not_checked_finding_ids: tuple[UUID, ...] = ()
+    """Checks that could not run and nobody settled (decision 2026-10-16): they no longer hold
+    sign-off and are printed NOT CHECKED; the screen still offers to settle them (optional)."""
 
 
 def _readiness_reason(
@@ -503,7 +541,7 @@ def readiness_and_decisions(
     """
     findings = _findings(db, revision_id)
     records = decision_records(db, [finding.id for finding in findings])
-    blocked = _unaddressed_from_records(findings, records, when=utc_now())
+    blocked, not_checked = _open_split(findings, records, when=utc_now())
     revision = db.get(PackageRevision, revision_id)
     if pages is None:
         pages = pages_blocking_sign_off(db, [revision_id])[revision_id]
@@ -535,6 +573,7 @@ def readiness_and_decisions(
             reason,
             pages.unconfirmed,
             pages.unchecked,
+            not_checked,
         ),
         records,
     )

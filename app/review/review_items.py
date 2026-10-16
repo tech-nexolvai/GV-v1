@@ -1085,7 +1085,9 @@ def review_items_for_revision(
     readiness, records = readiness_and_decisions(
         session, revision.id, compare_open=compare_counts.needs_person
     )
-    open_ids = set(readiness.blocking_finding_ids)
+    # A check that could not run no longer holds sign-off (decision 2026-10-16), but is still
+    # offered to settle (optional): it stays open on the list.
+    open_ids = set(readiness.blocking_finding_ids) | set(readiness.not_checked_finding_ids)
     corrected = set(records.corrected)
     live = _live_findings(session, revision.id)
     # Every result sign-off waits on: a blocking outcome, decided or not, and a corrected result

@@ -136,3 +136,25 @@ def test_the_draft_banner_is_a_thin_strip_above_the_pages_content(
                 if char["top"] < float(BANNER_STRIP) - 0.5 and char not in banner
             ]
             assert not below, "nothing of the page itself is in the banner's strip"
+
+
+def test_a_check_that_could_not_run_no_longer_holds_sign_off(
+    session: Session, store: LocalStore
+) -> None:
+    """Decision 2026-10-16 ("nothing from the reviewer"): a check waiting for values nothing has
+    read is printed NOT CHECKED by itself and no longer blocks sign-off. It is still listed as an
+    open NOT CHECKED item on the draft, never as settled by a person."""
+    from app.review.approval import approval_readiness
+    from tests.api.test_draft_cloud import WAITING
+
+    _, revision = _checked(session, store)
+    waiting = session.scalars(select(Finding).where(Finding.reason == WAITING)).one()
+
+    readiness = approval_readiness(session, revision.id)
+
+    assert waiting.id not in readiness.blocking_finding_ids
+    assert readiness.not_checked_finding_ids == (waiting.id,)
+    assert readiness.blocking_findings == 2, "the FAIL and the disagreement still wait"
+    items = open_items(session, revision.id, _live_rows(session, revision.id))
+    assert [item.reason for item in items.not_checked] == [WAITING]
+    assert items.settled == ()

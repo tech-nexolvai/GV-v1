@@ -135,6 +135,9 @@ def open_items(
     """Sort the live results into the front page's lists, from stored rows and sign-off readiness."""
     readiness = approval_readiness(session, package_revision_id)
     blocking = set(readiness.blocking_finding_ids)
+    # Not checked and nobody settled it (decision 2026-10-16): no longer holds sign-off, still an
+    # open NOT CHECKED item here, never "settled by a person".
+    unsettled = set(readiness.not_checked_finding_ids)
     # The standing decision on each result: a person's "Not this" on a depth or sink reading makes
     # its check NOT CHECKED (#1360).
     standing = {
@@ -175,7 +178,11 @@ def open_items(
             # Settling a check that never ran does not make it checked (decision 1): still
             # printed NOT CHECKED, with who settled it said.
             not_checked_ids.add(finding.id)
-            if finding.outcome != Outcome.NO_APPLICABLE_RULE.value and finding.id not in blocking:
+            if (
+                finding.outcome != Outcome.NO_APPLICABLE_RULE.value
+                and finding.id not in blocking
+                and finding.id not in unsettled
+            ):
                 ended = item.reason if item.reason.endswith(".") else f"{item.reason}."
                 # Settled: no longer an open item (#1394), listed apart.
                 settled.append(OpenItem(item.label, f"{ended} {_SETTLED}"))
