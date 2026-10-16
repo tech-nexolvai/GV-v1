@@ -29,6 +29,7 @@ import hashlib
 import json
 import logging
 import math
+import re
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -359,6 +360,12 @@ def _choice(value: object, name: str, allowed: Sequence[str]) -> str:
     return str(value)
 
 
+def _stated_count(value: str) -> int | None:
+    """The one whole number a stated count holds ("60", "60 pages", "60 pp."), else `None`."""
+    numbers = re.findall(r"\d+", value.replace(",", ""))
+    return int(numbers[0]) if len(numbers) == 1 else None
+
+
 @dataclass(slots=True)
 class FindingBook:
     """One message's findings and coverage. Thread-safe (helpers report from their threads)."""
@@ -664,6 +671,7 @@ class FindingBook:
             "file": chosen,
             "picture_id": None,
             "printed": "not_run",
+            "evidence_kind": "inferred",
         }
         if fact is not None:
             cite["fact"] = _choice(fact, "fact", ("page_count", "file_name"))
@@ -671,8 +679,9 @@ class FindingBook:
             if cite["fact"] == "file_name":
                 ok = value.removeprefix(UPLOADS + "/") in names
             else:
-                ok = item is not None and value.strip() == str(item.get("pages"))
+                ok = item is not None and _stated_count(value) == item.get("pages")
             cite["printed"] = "match" if ok else "not_found"
+            cite["evidence_kind"] = "derived" if ok else "inferred"
             with self._lock:
                 self.cites.append(cite)
             return dict(cite)
@@ -688,16 +697,20 @@ class FindingBook:
         cite["page"], cite["box"] = page, box
         if box is None:
             cite["printed"] = "no_box"
+            cite["evidence_kind"] = "inferred"
             with self._lock:
                 self.cites.append(cite)
             return dict(cite)
         cite["picture_id"], _why = self._picture(box)
+        cite["evidence_kind"] = "inferred"
         pdf = self.workspace.uploads / str(box["file"])
         try:
             cite["printed"] = printed(pdf, int(box["page"]), box, value)
         except Exception as failed:  # noqa: BLE001 - a check that cannot run is "not run"
             _log.warning("assistant chat cite check failed: %s", type(failed).__name__)
             cite["printed"] = "not_run"
+        if cite["printed"] == "match":
+            cite["evidence_kind"] = "observed"
         with self._lock:
             self.cites.append(cite)
         return dict(cite)

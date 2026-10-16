@@ -107,6 +107,7 @@ from app.review.assistant.chat_trust import (
     apply_checks,
     cloud_kind,
     load_module,
+    mark_compared,
     recorded_from,
     recorded_missing,
     round_statuses,
@@ -114,6 +115,7 @@ from app.review.assistant.chat_trust import (
     trust_report,
     with_second_read,
 )
+from app.review.assistant.chat_unknowns import unknown_records
 from app.review.assistant.sandbox import SandboxRefused
 from app.runs.rates import ModelRates, call_cost_micros
 
@@ -503,6 +505,8 @@ class ChatEngine:
         self._helpers_started = 0
         self._recorded: Recorded | None = None
         self._recorded_read = False
+        self._unknowns: list[dict[str, Any]] = []
+        """What this answer did not check (`chat_unknowns`), set by the trust phase."""
 
     # ---- the screen ------------------------------------------------------------------------------
 
@@ -1099,7 +1103,12 @@ class ChatEngine:
         """The answer's accuracy, by code (CONTRACT5): a block and the `accuracy` event."""
         book = self.book
         whole_set = book.coverage_used or self.settings.mode == "full_check"
-        score = accuracy(book.live(), list(book.cites), book.coverage_map() if whole_set else None)
+        score = accuracy(
+            book.live(),
+            list(book.cites),
+            book.coverage_map() if whole_set else None,
+            self._unknowns,
+        )
         index = self._add_block({"type": "accuracy", "accuracy": score})
         self.emit("accuracy", {"index": index, "accuracy": json.loads(json.dumps(score))})
 
@@ -1116,12 +1125,31 @@ class ChatEngine:
                 updated = {**finding, "round_status": status}
                 if book.replace(updated):
                     self._show_finding(updated)
+        coverage = book.coverage_map() if book.coverage_used else None
+        # Not seen is not right: a "same" item counts only when both sides were seen (the zoom
+        # log, `seen_log`, once the zoom tool records one; else the lead's own check).
+        for updated in mark_compared(book.live(), coverage, getattr(self, "seen_log", None)):
+            if book.replace(updated):
+                self._show_finding(updated)
+        recorded = self._recorded_checks()
+        self._unknowns = unknown_records(
+            book.live(),
+            coverage,
+            waiting=recorded.waiting,
+            refused_diffs=getattr(self, "refused_diffs", ()),
+        )
+        if self._unknowns:
+            index = self._add_block({"type": "unknowns", "unknowns": self._unknowns})
+            self.emit(
+                "unknowns", {"index": index, "unknowns": json.loads(json.dumps(self._unknowns))}
+            )
         report = trust_report(
             book.live(),
-            book.coverage_map() if book.coverage_used else None,
-            self._recorded_checks(),
+            coverage,
+            recorded,
             second_reads_skipped=skipped,
             dismissed=book.dismissed,
+            unknowns=self._unknowns,
         )
         index = self._add_block({"type": "trust", "trust": report})
         self.emit("trust", {"index": index, "trust": json.loads(json.dumps(report))})

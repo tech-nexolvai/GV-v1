@@ -39,6 +39,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any, Final, Literal
 
+from app.review.assistant import witness
 from units.measurement import Unit
 from units.normalise import (
     UnitNormalisationError,
@@ -58,11 +59,13 @@ __all__ = [
     "printed_at_spot",
     "to_inches",
     "trust_level",
+    "units_check",
 ]
 
 type PrintedResult = Literal["match", "not_found", "no_text", "no_box", "not_a_number"]
 type ArithmeticResult = Literal["adds_up", "does_not_add_up", "not_a_number"]
 type TrustLevel = Literal["confirmed", "likely", "to_check"]
+type UnitsResult = Literal["agrees", "disagrees"]
 
 # ---- inches by code ------------------------------------------------------------------------------
 
@@ -361,12 +364,16 @@ class Checks:
     printed_vendor: PrintedResult
     arithmetic: ArithmeticResult | None
     """`None` unless the finding's source is `vendor_arithmetic`."""
+    units: UnitsResult | None = None
+    """Millimetres and inches written together (`940 [37]`): do they agree? `None`: no side has
+    both."""
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "printed_architect": self.printed_architect,
             "printed_vendor": self.printed_vendor,
             "arithmetic": self.arithmetic,
+            "units": self.units,
         }
 
 
@@ -386,7 +393,41 @@ def check_finding(finding: Mapping[str, Any], pdf_paths: Mapping[str, Path]) -> 
         printed_architect=_side(finding.get("architect"), finding.get("arch_box"), pdf_paths),
         printed_vendor=_side(finding.get("vendor"), finding.get("vendor_box"), pdf_paths),
         arithmetic=arithmetic,
+        units=_both_units(finding),
     )
+
+
+def _both_units(finding: Mapping[str, Any]) -> UnitsResult | None:
+    sides = [units_check(finding.get(side)) for side in ("architect", "vendor")]
+    if "disagrees" in sides:
+        return "disagrees"
+    return "agrees" if "agrees" in sides else None
+
+
+#: Millimetres with the inches beside them in brackets: `940 [37]`, `940 mm (37 1/2")`.
+_DUAL_UNITS: Final = re.compile(
+    r"^(?P<mm>\d+(?:\.\d+)?)\s*(?:mm\.?)?\s*[\[(]\s*(?P<inches>[^\])]+?)\s*[\])]$", re.IGNORECASE
+)
+_MM_PER_INCH: Final = Decimal("25.4")
+
+
+def units_check(text: object) -> UnitsResult | None:
+    """Code's mm-to-inch check on one value written in both units (`940 [37]`): `agrees` when the
+    millimetres are the inches within the inches' own rounding (half their finest step: a whole
+    inch rounds to 1/2", 37 1/2" to 1/4"), `disagrees` when not, `None` when the value is not
+    written in both units or either part is not a number. $0, no PDF."""
+    if not isinstance(text, str):
+        return None
+    dual = _DUAL_UNITS.match(" ".join(plain_marks(text).split()))
+    if dual is None:
+        return None
+    inches = to_inches(dual.group("inches"))
+    if inches is None:
+        return None
+    millimetres = Decimal(dual.group("mm"))
+    step = Fraction(inches).limit_denominator(64).denominator
+    tolerance = Decimal(1) / Decimal(2 * step) + Decimal("0.5") / _MM_PER_INCH
+    return "agrees" if abs(millimetres / _MM_PER_INCH - inches) <= tolerance else "disagrees"
 
 
 def _side(value: object, box: object, pdf_paths: Mapping[str, Path]) -> PrintedResult:
@@ -408,32 +449,15 @@ def _side(value: object, box: object, pdf_paths: Mapping[str, Path]) -> PrintedR
 
 
 def trust_level(checks: Mapping[str, Any], *, status: str | None = None) -> TrustLevel:
-    """Confirmed / Likely / To check from a finding's full checks (CONTRACT3).
+    """Confirmed / Likely / To check from a finding's full checks (CONTRACT3, as changed by the
+    accuracy rules in `witness.py`).
 
-    `checks` holds `printed_architect`, `printed_vendor`, `second_read`, `rule`, `arithmetic` and
-    `lead_checked`. Code backs the finding when both values are printed at their spots, or GV's
-    rule check agrees, or code's arithmetic does. Then:
-
-    - **confirmed**: code backs it AND the second read agrees;
-    - **likely**: two of code backs it, the second read agrees, the lead checked it on the drawing;
-    - **to_check**: anything else, and always when a check disagrees: the second read, the rule
-      check, or (given the finding's `status`) code's arithmetic (`adds_up` on a "different"
-      finding, `does_not_add_up` on a "same" one).
+    `checks` holds `printed_architect`, `printed_vendor`, `second_read`, `rule`, `arithmetic`,
+    `lead_checked` and, when present, `ledger` and `units`. Confirmed needs a non-AI witness (both
+    values printed at their spots, GV's rule check, code's arithmetic, the reading ledger, or the
+    millimetres and inches agreeing) AND an AI reading that agrees (the second read or the lead's
+    check). Two AI readings alone are Likely at best; a non-AI witness alone is Likely. Any check
+    that disagrees (given the finding's `status` for the arithmetic) makes it To check.
     """
-    second = checks.get("second_read")
-    rule = checks.get("rule")
-    arithmetic = checks.get("arithmetic")
-    if second == "disagrees" or rule == "disagrees":
-        return "to_check"
-    if (arithmetic == "adds_up" and status == "different") or (
-        arithmetic == "does_not_add_up" and status == "same"
-    ):
-        return "to_check"
-    printed = checks.get("printed_architect") == "match" and checks.get("printed_vendor") == "match"
-    code_backs = printed or rule == "agrees" or arithmetic in ("adds_up", "does_not_add_up")
-    agrees = second == "agrees"
-    if code_backs and agrees:
-        return "confirmed"
-    if sum((code_backs, agrees, checks.get("lead_checked") is True)) >= 2:
-        return "likely"
-    return "to_check"
+    level = witness.trust_level(checks, status)
+    return "confirmed" if level == "confirmed" else "likely" if level == "likely" else "to_check"

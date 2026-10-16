@@ -599,6 +599,55 @@ def test_values_stated_without_evidence_send_the_lead_back_for_cites(
     assert cites[0]["printed"] == "not_run"  # the checks module is off in this test
     assert [c["printed"] for c in cites[1:]] == ["match", "not_found"]
     accuracy = next(b["accuracy"] for b in outcome.blocks if b["type"] == "accuracy")
-    assert [item["points"] for item in accuracy["breakdown"]] == [0.2, 1.0, 0.0]
-    assert accuracy["score"] == 40 and accuracy["level"] == "yellow"
+    assert [item["points"] for item in accuracy["breakdown"]] == [0.3, 1.0, 0.0]
+    assert accuracy["score"] == 43 and accuracy["level"] == "yellow"
     assert events_named(harness.events, "accuracy")[0]["accuracy"] == accuracy
+
+
+def test_unseen_same_items_and_unopened_pages_become_unknowns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not seen is not right: a "same" item the lead never checked is "Not compared", not scored;
+    it and the page never opened are unknown records (a block and an event before the trust card).
+    """
+    _modules(monkeypatch)
+    workspace_with_pdf(tmp_path)
+    provider = ScriptedProvider(
+        lead=[
+            reply(
+                tool("r1", "report_finding", finding_input()),
+                tool(
+                    "r2",
+                    "report_finding",
+                    finding_input(item="Sink centre", status="same", verified=False),
+                ),
+                tool(
+                    "c1",
+                    "set_coverage",
+                    {"pages": [{"page": 1, "status": "same"}, {"page": 2, "status": "different"}]},
+                ),
+                stop="tool_use",
+            ),
+            reply(text("One difference on page 2.")),
+            # Sent back once for the page not accounted for; it answers the same.
+            reply(text("One difference on page 2; page 3 not opened.")),
+        ]
+    )
+    harness = Harness(tmp_path, provider)
+
+    outcome = harness.run()
+
+    types_ = [block["type"] for block in outcome.blocks]
+    assert types_[-3:] == ["unknowns", "trust", "accuracy"]
+    same = next(b["finding"] for b in outcome.blocks if b.get("finding", {}).get("id") == "F2")
+    assert same["compared"] is False and same["not_compared_why"] == "not_viewed"
+    unknowns = next(b["unknowns"] for b in outcome.blocks if b["type"] == "unknowns")
+    assert [(u["id"], u["page"], u["why"]) for u in unknowns] == [
+        ("U1", 2, "not_opened"),
+        ("U2", 3, "not_opened"),
+    ]
+    assert events_named(harness.events, "unknowns")[0]["unknowns"] == unknowns
+    trust = next(b["trust"] for b in outcome.blocks if b["type"] == "trust")
+    assert trust["not_compared"] == 1 and trust["unknowns"]["total"] == 2
+    score = next(b["accuracy"] for b in outcome.blocks if b["type"] == "accuracy")
+    assert score["claims"] == 1 and score["not_compared"] == 1 and score["unknowns"] == 2
