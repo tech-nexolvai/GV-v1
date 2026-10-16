@@ -127,7 +127,7 @@ Status = Literal["printed", "not_printed", "unsure", "no_answer"]
 class Panel:
     """One architect drawing on a page, as code prepared it at no cost."""
 
-    document: str
+    document_version_id: str
     page_index: int
     panel: int
     role: Role
@@ -192,7 +192,7 @@ class JobValueResult:
     outcome: Outcome
     value: Fraction | None = None
     page_index: int | None = None
-    document: str | None = None
+    document_version_id: str | None = None
     box: Box | None = None
     readings: tuple[ReaderReading, ...] = ()
     choices: tuple[tuple[Fraction, int], ...] = ()
@@ -608,7 +608,7 @@ def combine(
             Outcome.AUTO,
             best.value,
             best.panel.page_index,
-            best.panel.document,
+            best.panel.document_version_id,
             best.box,
             best.readings,
             choices,
@@ -632,7 +632,7 @@ def combine(
                 Outcome.SUGGESTION,
                 find.value,
                 find.panel.page_index,
-                find.panel.document,
+                find.panel.document_version_id,
                 find.box,
                 (ReaderReading("code", "printed", find.text),),
                 choices,
@@ -649,7 +649,7 @@ def combine(
             Outcome.SUGGESTION,
             agreed,
             first.panel.page_index,
-            first.panel.document,
+            first.panel.document_version_id,
             first.box,
             tuple(r for d in [*autos, *suggestions] for r in d.readings),
             choices,
@@ -694,7 +694,7 @@ def form_suggestion(result: JobValueResult) -> dict[str, object] | None:
         "value": None if result.value is None else f'{format_inches(result.value)}"',
         "filled": result.outcome is Outcome.AUTO,
         "page": result.page_index + 1,
-        "document": result.document,
+        "document_version_id": result.document_version_id,
         "box": (
             None
             if result.box is None

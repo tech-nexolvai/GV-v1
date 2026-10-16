@@ -109,7 +109,7 @@ def prepare_set(pdf: Path, *, architect_file: bool) -> list[PreparedPanel]:
         panels += prepare_pdf_panels(
             data,
             index,
-            document=pdf.name,
+            document_version_id=pdf.name,
             architect_file=architect_file,
             settings=MEASURED_JOB_VALUES_SETTINGS,
         )

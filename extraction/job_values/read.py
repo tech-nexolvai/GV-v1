@@ -233,7 +233,7 @@ def prepare_pdf_panels(
     data: bytes,
     page_index: int,
     *,
-    document: str,
+    document_version_id: str,
     architect_file: bool,
     settings: JobValuesSettings,
 ) -> list[PreparedPanel]:
@@ -314,7 +314,7 @@ def prepare_pdf_panels(
             and box.top <= c.box.top
             and c.box.bottom <= box.bottom
         )
-        panel = Panel(document, page_index, number, role, box, chars, ink_of)  # type: ignore[arg-type]
+        panel = Panel(document_version_id, page_index, number, role, box, chars, ink_of)  # type: ignore[arg-type]
         prepared.append(
             PreparedPanel(
                 panel, _picture(rendered, opened.pixels(box)), _view_rank(panel), page_sha
@@ -361,7 +361,7 @@ def question_packet(panel: PreparedPanel, effort: ClaudeEffort) -> dict[str, obj
     """What the question shows and asks, signed: the identity a stored answer is reused by."""
     body: dict[str, object] = {
         "reader": "job-values-reader",
-        "document_version_id": panel.panel.document,
+        "document_version_id": panel.panel.document_version_id,
         "page_index": panel.panel.page_index,
         "source_page_sha256": panel.page_sha256,
         "question_id": f"p{panel.panel.page_index}-d{panel.panel.panel}",
