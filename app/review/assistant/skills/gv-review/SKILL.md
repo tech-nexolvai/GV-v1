@@ -67,8 +67,11 @@ for n, page in enumerate(r.pages, 1):
         print(n, a.get("/Subtype"), a.get("/T"), repr(str(a.get("/Contents") or ""))[:80],
               [round(float(v)) for v in a.get("/Rect")])
 ```
-Build a page map first: page -> whose drawing (architect / vendor / prototype / general), area or
-room, sheet number. Write it to `/home/claude/page_map.md` and keep it up to date.
+**The page map is made for you:** read `/mnt/user-data/set/page_map.json` first (per page and per
+drawing on it: role architect / vendor / brand_prototype / general from GV's typed headings, round,
+area, sheet numbers; boxes in PDF points, origin top-left). It is code's reading of GV's labels: if
+a drawing says otherwise, the drawing wins. Never build your own. `status.json` there says whether
+the pack is ready; until it is, use the uploads (and `zoom`, which works at once).
 
 ## 3. Pair each vendor sheet with the architect's sheet
 
@@ -88,7 +91,7 @@ room, sheet number. Write it to `/home/claude/page_map.md` and keep it up to dat
 - Fractions are usually to 1/16". A stacked fraction (small 1 over a bar over 2) is easy to misread:
   zoom in.
 - On some sets the numbers are drawn as lines (pen strokes), not text: `pdftotext` returns few or no
-  numbers. Then read them from a picture: render the area at 300 dpi and look.
+  numbers. Then read them from a picture: `zoom` on the area (300 dpi for a small one) and look.
 - Abbreviations: EQ (equal), TYP (typical), U.N.O. (unless noted otherwise), VIF (verify in field),
   CL / ℄ (centre line), AFF (above finished floor), CLR (clear), O.C. (on centre), NIC (not in
   contract), BY OTHERS.
@@ -111,8 +114,9 @@ whether GV already flagged an item ("GV flagged: yes / no"). Sets sent by vendor
 usually have no GV markup at all.
 
 **Compare on pictures with GV's markup hidden.** The drawings themselves are `/Stamp` annotations,
-so `pdftoppm -hide-annotations` gives a blank page. Instead make a copy that keeps only the stamps,
-and render that (read the headings from the annotation list first: the copy drops them):
+so `pdftoppm -hide-annotations` gives a blank page. The set pack has a copy that keeps only the
+stamps (`/mnt/user-data/set/<file>_drawings_only.pdf`, its pages and `zoom` use it; its
+`annotations.json` keeps the headings and GV's notes). Made like this, if you ever need it:
 ```python
 import logging; logging.disable(logging.WARNING)
 from pypdf import PdfWriter
@@ -166,27 +170,34 @@ this on **every** paired page, including the second round (revision) pages.
 - **Notes and scope**: "by others", "VIF", "NIC", edge profile, seams, anything the architect notes
   that the vendor dropped or changed.
 
-## 8. Working a big set
+## 8. How much work: scale it to the question
 
-1. `TaskCreate` a short plan; keep it updated with `TaskUpdate`.
-2. `pdfinfo` each file; `pdftotext -layout` page by page to build the page map (section 2).
-3. Make the drawings-only copy (section 5). Render every page once at 100-150 dpi for an overview:
-   `mkdir -p /home/claude/pages && pdftoppm -r 100 -png /home/claude/F_drawings_only.pdf /home/claude/pages/p`.
-4. To read small numbers, render just the area at 300 dpi:
-   `pdftoppm -f 7 -l 7 -r 300 -x 1200 -y 900 -W 1400 -H 1000 -png F_drawings_only.pdf /home/claude/zoom`
-   (`-x -y -W -H` are pixels at that dpi: points x 300 / 72). Then `view` it.
-5. For many pages, split them across helpers (`Agent`, up to 4 at once) **by building or area**, so
-   each helper has both the architect's and the vendor's pages of its areas. Tell each one where
-   the pictures are, to read this file's sections 4, 5, 7, 9 and 10 first, to record each
-   difference with `report_finding` (with boxes) and the pages it compared with `set_coverage`,
-   and to list the pages it opened. Brief them on non-dimension differences and brand prototypes.
-6. **Verify every lead yourself before you state it** (a helper's finding is a lead): open that
-   crop on both drawings and read the numbers, then `update_finding` with `verified: true` (or
-   correct it). A finding you checked and found wrong: `drop_finding`. One you had no time to check
-   stays unverified.
-7. **Whole-set questions cover every page pair** (section 7), yours or a helper's. Record every
-   page with `set_coverage`: same, different, not_comparable (note why) or not_opened (note why).
-   The app sends you back once if a page is not accounted for.
+- **A one-line fact** (a page count, one value): 1-3 tool calls, no helpers.
+- **One item or one page pair** ("is the sink on pages 27-28 the architect's?"): you alone, no
+  helpers. Open only the pages asked (page map, then one `zoom` with every crop you need), report
+  1-3 findings for the items asked (not everything else on the page), cite, answer. Aim for a few
+  turns.
+- **The whole set** ("what did the vendor get wrong?", a full check): helpers, by page pair.
+
+**Batch.** Tool calls of one reply run at the same time: ask for everything you need at once (up to
+4 crops in one `zoom`; several commands in one reply). Never one crop per turn.
+
+## 8a. Working the whole set
+
+1. Read `page_map.json` and look at the contact sheets (`/mnt/user-data/set/contact/`): the set
+   at a glance. `TaskCreate` a short plan.
+2. Split the page pairs across helpers (`Agent`), **3-5 pages per helper, all started in one turn**,
+   each with both drawings of its pages. Brief each in four parts: objective (its pages, what to
+   compare), output (findings with boxes, `set_coverage`), sources (files, skill sections 4, 5, 7,
+   9, 10), boundaries (only its pages, never guess). The app adds the page map of its pages, the
+   pictures, `zoom` and a budget. Mention non-dimension differences and brand prototypes.
+3. **Verify every lead yourself, in batches** (a helper's finding is a lead): one `zoom` call of
+   up to 4 crops checks about 4 findings; then `update_finding` with `verified: true` (or correct it), or
+   `drop_finding` when it is wrong. A finding whose second read agrees and whose ledger adds up
+   needs no re-check from you. One you had no time to check stays unverified.
+4. **Whole-set questions cover every page pair** (section 7). Record every page with
+   `set_coverage`: same, different, not_comparable (note why) or not_opened (note why). The app
+   sends you back once if a page is not accounted for.
 
 ## 9. How to answer
 

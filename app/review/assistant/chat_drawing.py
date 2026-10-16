@@ -33,6 +33,7 @@ from app.review.assistant.chat_trust import cloud_kind, needs_text
 
 __all__ = [
     "MARKUP_TITLE",
+    "PDFIUM_LOCK",
     "REPORT_TITLE",
     "check_report_pdf",
     "cloud_kind",
@@ -57,6 +58,8 @@ _CLOUD_RADIUS: Final = 5.0
 _NOTE_SIZE: Final = 8.0
 _NOTE_CHARS: Final = 110
 _PDFIUM_LOCK: Final = threading.Lock()
+#: The same lock for the set pack and the `zoom` tool (`set_pack.py`).
+PDFIUM_LOCK: Final = _PDFIUM_LOCK
 
 type Box = tuple[float, float, float, float]
 

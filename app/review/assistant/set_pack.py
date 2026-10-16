@@ -1,0 +1,663 @@
+"""The set pack: what code prepares once per drawing set, so the chat agent starts reading at once (#1497).
+
+A whole-set answer used to spend its first turns on set-up (a page map built by hand, a
+drawings-only copy, every page rendered) and its helpers on one `pdftoppm` crop per call. Code does
+that set-up once per upload, in the background, and the agent sees it read-only at
+`/mnt/user-data/set/`:
+
+- `<name>_drawings_only.pdf`: a copy of each PDF that keeps only the pasted drawings (`/Stamp`
+  annotations), so GV's markup is hidden (SKILL.md section 5). A page with no stamps is its own
+  page content, without annotations.
+- `pages/<name>/p-001.png`: every page at 100 dpi, from the drawings-only copy.
+- `contact/<name>-01.png`: contact sheets, nine pages to a picture, each page number stamped.
+- `annotations.json`: every annotation (file, page, kind, author, text, box), GV's headings and
+  notes included: the drawings-only copy drops them.
+- `page_map.json`: per page and per drawing on the sheet: whose drawing it is (architect / vendor
+  / brand_prototype / general) from the heading GV typed above or below it
+  (`vocabulary/panel_headings.py`), its round ("first / second set of comments"), the area or title
+  GV typed ("2. Buffet"; carried to the next pages until another), and sheet numbers printed on
+  the page. It is a hint for the agent, read by code from GV's labels: the drawings decide.
+- `status.json`: `building`, `ready` or `failed`, and the steps done. The agent can work before
+  the pack is ready (the first message never waits); the `zoom` tool makes the drawings-only copy
+  it needs at once if the pack has not made it yet.
+
+**Made once per upload.** The pack's folder is named by a hash of the uploads' names and SHA-256
+(`set-packs/<key>` under the chat root), so every chat on the same PDFs reuses it. Each file is
+written to a temporary name and renamed, so a reader never sees half a file.
+
+**Boxes** in `page_map.json` and `annotations.json` are in PDF points of the page as shown (its
+rotation applied), origin top-left: the units of `pdftotext -bbox`, `report_finding` and `zoom`.
+
+**Loaded by name, never imported**: this module draws with pypdfium2 and Pillow, which `app/api/`
+must not reach by import (`tests/api/test_no_heavy_work.py`); `chat_service` and the `zoom` tool
+load it with `import_module`. pdfium is not thread-safe: every use holds `chat_drawing`'s lock.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import io
+import json
+import logging
+import os
+import re
+import threading
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from decimal import Decimal
+from pathlib import Path
+from typing import Any, Final
+from uuid import uuid4
+
+import pypdfium2 as pdfium  # type: ignore[import-untyped]
+from PIL import Image, ImageDraw, ImageFont
+from pypdf import PdfReader, PdfWriter
+from pypdf.generic import ArrayObject, NameObject
+
+from app.review.assistant.chat_drawing import PDFIUM_LOCK
+from app.review.assistant.page_pictures import fitting_dpi
+from vocabulary.panel_headings import HeadingMeaning, heading_meaning
+
+__all__ = [
+    "PACK_VERSION",
+    "Crop",
+    "build_pack",
+    "crop_picture",
+    "drawings_only",
+    "ensure_pack",
+    "pack_folder",
+    "pack_key",
+]
+
+_log = logging.getLogger(__name__)
+
+#: Changes when what the pack holds changes: an older pack is built again.
+PACK_VERSION: Final = 1
+RENDER_DPI: Final = 100
+#: Contact sheets: pages per picture (3 x 3) and each tile's size, so a sheet is at most 2576 px.
+CONTACT_COLUMNS: Final = 3
+CONTACT_ROWS: Final = 3
+CONTACT_TILE: Final = (850, 620)
+_LABEL_PX: Final = 44
+#: A zoom crop: the longest side the model reads unresized, and the dpi range.
+MAX_CROP_EDGE_PX: Final = 2576
+MIN_CROP_DPI: Final = 72
+MAX_CROP_DPI: Final = 600
+#: GV types its headings and round captions at 24 pt, its notes at 12 pt or less.
+_LABEL_MIN_PT: Final = 14
+#: A section title on a divider page (36 pt).
+_SECTION_MIN_PT: Final = 30
+#: A round caption belongs to a drawing when it is this close to it (points).
+_CAPTION_PT: Final = 60
+_ROUNDS: Final = re.compile(
+    r"\b(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th)\s+(?:set\s+of\s+comments|round|"
+    r"submittal|submission)\b",
+    re.IGNORECASE,
+)
+_ROUND_NUMBER: Final = {
+    "first": 1,
+    "1st": 1,
+    "second": 2,
+    "2nd": 2,
+    "third": 3,
+    "3rd": 3,
+    "fourth": 4,
+    "4th": 4,
+    "fifth": 5,
+    "5th": 5,
+}
+_AREA: Final = re.compile(r"^\s*\d{1,3}\s*[.)]\s*\S")
+_FONT_SIZE: Final = re.compile(r"(\d+(?:\.\d+)?)\s+Tf")
+_SHEET: Final = re.compile(
+    r"\b(?:SHEET|DWG|DRAWING)\s*(?:NO\.?|NUMBER|#)\s*[:.]?\s*([A-Z]{0,4}-?\d{1,4}(?:\.\d{1,3})?)\b"
+    r"|\b((?:A|ID|SD|SH|MW|M|D)-?\d{3}(?:\.\d{1,2})?[A-Z]?)\b"
+)
+_ROLES: Final = {
+    HeadingMeaning.ARCH: "architect",
+    HeadingMeaning.SHOP: "vendor",
+    HeadingMeaning.REFERENCE: "brand_prototype",
+}
+_SAFE: Final = re.compile(r"[^A-Za-z0-9._-]+")
+
+#: Builds running in this process, by pack folder (a second chat on the same set waits for none).
+_running: dict[Path, threading.Thread] = {}
+_running_lock: Final = threading.Lock()
+#: One lock per drawings-only copy, so the build and a `zoom` never write it at once.
+_copy_locks: dict[Path, threading.Lock] = {}
+
+type Box = tuple[float, float, float, float]
+
+
+# ---- where the pack lives ------------------------------------------------------------------------
+
+
+def pack_key(listing: Sequence[Mapping[str, Any]]) -> str:
+    """The pack's name: a hash of the uploads' names and SHA-256, in order."""
+    text = "\n".join(f"{item.get('name')}:{item.get('sha256')}" for item in listing)
+    return hashlib.sha256(f"v{PACK_VERSION}\n{text}".encode()).hexdigest()[:32]
+
+
+def pack_folder(chat_root: Path, listing: Sequence[Mapping[str, Any]]) -> Path:
+    return chat_root / "set-packs" / pack_key(listing)
+
+
+def stem(name: str) -> str:
+    """An upload's name as the pack's file names use it ("AI_Set_3.pdf" -> "AI_Set_3")."""
+    return _SAFE.sub("_", Path(name).stem).strip("._") or "file"
+
+
+def _write_bytes(path: Path, data: bytes) -> None:
+    """Written whole, then renamed into place; readable by the sandbox's unprivileged user."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.chmod(0o755)
+    temporary = path.with_name(f".{path.name}.{uuid4().hex[:8]}.tmp")
+    temporary.write_bytes(data)
+    temporary.chmod(0o644)
+    os.replace(temporary, path)
+
+
+def _write_json(path: Path, value: object) -> None:
+    _write_bytes(path, json.dumps(value, ensure_ascii=False, indent=1).encode("utf-8"))
+
+
+def read_status(folder: Path) -> dict[str, Any]:
+    try:
+        status = json.loads((folder / "status.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return status if isinstance(status, dict) else {}
+
+
+def _set_status(folder: Path, state: str, done: Sequence[str], **more: Any) -> None:
+    _write_json(
+        folder / "status.json",
+        {
+            "state": state,
+            "version": PACK_VERSION,
+            "done": list(done),
+            "updated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            **more,
+        },
+    )
+
+
+# ---- the drawings-only copy ----------------------------------------------------------------------
+
+
+def drawings_only(folder: Path, uploads: Path, name: str) -> Path:
+    """The drawings-only copy of upload `name`, made now if the pack has not made it yet."""
+    out = folder / f"{stem(name)}_drawings_only.pdf"
+    with _running_lock:
+        lock = _copy_locks.setdefault(out, threading.Lock())
+    with lock:
+        if not out.is_file():
+            source = uploads / name
+            if not source.is_file():
+                raise FileNotFoundError(name)
+            logging.getLogger("pypdf").setLevel(logging.ERROR)
+            writer = PdfWriter(clone_from=str(source))
+            for page in writer.pages:
+                if "/Annots" in page:
+                    annotations: Any = page["/Annots"]
+                    keep = [a for a in annotations if a.get_object().get("/Subtype") == "/Stamp"]
+                    page[NameObject("/Annots")] = ArrayObject(keep)
+            buffer = io.BytesIO()
+            writer.write(buffer)
+            _write_bytes(out, buffer.getvalue())
+    return out
+
+
+# ---- annotations and the page map ----------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _Geometry:
+    """A page's boxes and rotation, to turn its drawing-space boxes into shown boxes."""
+
+    llx: float
+    lly: float
+    urx: float
+    ury: float
+    rotation: int
+
+    def shown(self, x: float, y: float) -> tuple[float, float]:
+        if self.rotation == 90:
+            return y - self.lly, x - self.llx
+        if self.rotation == 180:
+            return self.urx - x, y - self.lly
+        if self.rotation == 270:
+            return self.ury - y, self.urx - x
+        return x - self.llx, self.ury - y
+
+    def box(self, rect: Sequence[float]) -> Box:
+        x0, y0, x1, y1 = (float(v) for v in rect)
+        a, b = self.shown(x0, y0), self.shown(x1, y1)
+        return (
+            round(min(a[0], b[0]), 1),
+            round(min(a[1], b[1]), 1),
+            round(max(a[0], b[0]), 1),
+            round(max(a[1], b[1]), 1),
+        )
+
+
+def _geometry(page: Any) -> _Geometry:
+    box = page.cropbox
+    return _Geometry(
+        float(box.left),
+        float(box.bottom),
+        float(box.right),
+        float(box.top),
+        int(page.get("/Rotate", 0) or 0) % 360,
+    )
+
+
+def _font_size(annotation: Mapping[str, Any]) -> float | None:
+    found = _FONT_SIZE.search(str(annotation.get("/DA") or ""))
+    return float(found.group(1)) if found else None
+
+
+def _annotations(name: str, reader: PdfReader) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for number, page in enumerate(reader.pages, start=1):
+        geometry = _geometry(page)
+        for raw in page.get("/Annots") or []:
+            try:
+                annotation = raw.get_object()
+                rect = annotation.get("/Rect")
+                box = geometry.box(rect) if rect is not None and len(rect) == 4 else None
+            except (AttributeError, TypeError, ValueError):
+                continue
+            kind = str(annotation.get("/Subtype") or "").lstrip("/")
+            text = str(annotation.get("/Contents") or "").replace("\r", "\n").strip()
+            out.append(
+                {
+                    "file": name,
+                    "page": number,
+                    "kind": kind,
+                    "author": str(annotation.get("/T") or "") or None,
+                    "text": text[:500] or None,
+                    "font_pt": _font_size(annotation),
+                    "box": box,
+                }
+            )
+    return out
+
+
+def _gap(a: Box, b: Box) -> tuple[float, float]:
+    """Vertical and horizontal gaps between two boxes (0 where they overlap)."""
+    vertical = max(0.0, max(a[1], b[1]) - min(a[3], b[3]))
+    horizontal = max(0.0, max(a[0], b[0]) - min(a[2], b[2]))
+    return vertical, horizontal
+
+
+def _nearest(drawing: Box, labels: Sequence[dict[str, Any]], side: str) -> dict[str, Any] | None:
+    """The label nearest a drawing on one side: `above` it (or inside its upper margin), or
+    `below` it as a caption (or inside its lower margin)."""
+    x0, y0, x1, y1 = drawing
+    margin = (y1 - y0) / 4
+    best: tuple[float, dict[str, Any]] | None = None
+    for label in labels:
+        lx0, ly0, lx1, ly1 = label["box"]
+        if side == "above" and ly0 > y0 + margin:
+            continue
+        if side == "below" and ly1 < y1 - margin:
+            continue
+        vertical = max(0.0, y0 - ly1) if side == "above" else max(0.0, ly0 - y1)
+        horizontal = max(0.0, max(x0, lx0) - min(x1, lx1))
+        score = vertical + horizontal / 2
+        if best is None or score < best[0]:
+            best = (score, label)
+    return None if best is None else best[1]
+
+
+def _headings(
+    stamps: Sequence[dict[str, Any]], labels: Sequence[dict[str, Any]]
+) -> list[dict[str, Any] | None]:
+    """Each drawing's own heading. A page puts its headings above its drawings or below them as
+    captions (`extraction/panels.py`): the side that gives more drawings a heading wins (above
+    on a tie)."""
+    above = [_nearest(stamp["box"], labels, "above") for stamp in stamps]
+    below = [_nearest(stamp["box"], labels, "below") for stamp in stamps]
+    count = sum(1 for found in above if found)
+    return above if count >= sum(1 for found in below if found) else below
+
+
+def _round_of(text: str) -> int | None:
+    found = _ROUNDS.search(text)
+    return _ROUND_NUMBER[found.group(1).lower()] if found else None
+
+
+def _page_entries(
+    name: str, annotations: Sequence[dict[str, Any]], texts: Sequence[str], page_count: int
+) -> list[dict[str, Any]]:
+    by_page: dict[int, list[dict[str, Any]]] = {}
+    for item in annotations:
+        by_page.setdefault(int(item["page"]), []).append(item)
+    entries: list[dict[str, Any]] = []
+    area: str | None = None
+    area_page: int | None = None
+    section: str | None = None
+    for number in range(1, page_count + 1):
+        items = by_page.get(number, [])
+        stamps = [a for a in items if a["kind"] == "Stamp" and a["box"]]
+        labels = [
+            a
+            for a in items
+            if a["kind"] == "FreeText"
+            and a["text"]
+            and a["box"]
+            and (a["font_pt"] or 0) >= _LABEL_MIN_PT
+        ]
+        role_labels = [
+            {**a, "role": _ROLES[meaning]}
+            for a in labels
+            if (meaning := heading_meaning(str(a["text"]))) is not None
+        ]
+        round_labels = [
+            {**a, "round": found} for a in labels if (found := _round_of(str(a["text"])))
+        ]
+        titled = False
+        for label in labels:
+            text = " ".join(str(label["text"]).split())
+            if heading_meaning(text) is not None or _round_of(text) is not None:
+                continue
+            if (label["font_pt"] or 0) >= _SECTION_MIN_PT and not stamps:
+                section, area, area_page, titled = text, None, None, True
+            elif _AREA.match(text) and not titled:
+                area, area_page, titled = text, number, True
+        halves: list[dict[str, Any]] = []
+        ordered = sorted(stamps, key=lambda a: (a["box"][1], a["box"][0]))
+        one_round = {label["round"] for label in round_labels}
+        for stamp, heading in zip(ordered, _headings(ordered, role_labels), strict=True):
+            role = heading["role"] if heading else "general"
+            # A round belongs to the vendor's drawings (never the architect's or a prototype):
+            # its caption right under or over the drawing, or the page's only round.
+            found = None
+            if role in ("vendor", "general"):
+                caption = _headings([stamp], round_labels)[0]
+                gap = None if caption is None else _gap(stamp["box"], caption["box"])
+                if caption is not None and gap is not None and gap[0] <= _CAPTION_PT and not gap[1]:
+                    found = caption["round"]
+                elif len(one_round) == 1:
+                    found = next(iter(one_round))
+            halves.append(
+                {
+                    "box": stamp["box"],
+                    "role": role,
+                    "heading": " ".join(str(heading["text"]).split()) if heading else None,
+                    "round": found,
+                }
+            )
+        roles = sorted({half["role"] for half in halves} - {"general"})
+        rounds = sorted({half["round"] for half in halves if half["round"]})
+        if not halves and round_labels:
+            rounds = sorted({label["round"] for label in round_labels})
+        sheets: list[str] = []
+        for printed in _SHEET.finditer(texts[number - 1] if number - 1 < len(texts) else ""):
+            sheet = printed.group(1) or printed.group(2)
+            if sheet and sheet not in sheets:
+                sheets.append(sheet)
+        entries.append(
+            {
+                "file": name,
+                "page": number,
+                "role": "+".join(roles) if roles else "general",
+                "halves": halves,
+                "rounds": rounds,
+                "section": section,
+                "area": area,
+                "area_from_page": area_page if area is not None and area_page != number else None,
+                "sheet_numbers": sheets[:4],
+                "headings": [
+                    " ".join(str(a["text"]).split())
+                    for a in labels
+                    if heading_meaning(str(a["text"])) is not None
+                ],
+            }
+        )
+    return entries
+
+
+# ---- pictures ------------------------------------------------------------------------------------
+
+
+def _page_texts(pdf: Path) -> list[str]:
+    """Each page's text, the pasted drawings' own text included (flattened in memory)."""
+    texts: list[str] = []
+    with PDFIUM_LOCK:
+        document = pdfium.PdfDocument(str(pdf))
+        try:
+            for index in range(len(document)):
+                page = document[index]
+                try:
+                    pdfium.raw.FPDFPage_Flatten(page.raw, pdfium.raw.FLAT_NORMALDISPLAY)
+                    page.close()
+                    page = document[index]
+                    textpage = page.get_textpage()
+                    texts.append(textpage.get_text_range())
+                    textpage.close()
+                except Exception:  # noqa: BLE001 - a page with no readable text has none
+                    texts.append("")
+                finally:
+                    page.close()
+        finally:
+            document.close()
+    return texts
+
+
+def _render_pages(pdf: Path, out: Path, dpi: int) -> list[Path]:
+    paths: list[Path] = []
+    with PDFIUM_LOCK:
+        count = len(pdfium.PdfDocument(str(pdf)))
+    for index in range(count):
+        with PDFIUM_LOCK:
+            document = pdfium.PdfDocument(str(pdf))
+            try:
+                picture = document[index].render(scale=dpi / 72, may_draw_forms=True).to_pil()
+            finally:
+                document.close()
+        buffer = io.BytesIO()
+        picture.convert("RGB").save(buffer, format="PNG", optimize=True)
+        path = out / f"p-{index + 1:03d}.png"
+        _write_bytes(path, buffer.getvalue())
+        paths.append(path)
+    return paths
+
+
+def _font(size: int) -> ImageFont.ImageFont | ImageFont.FreeTypeFont:
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:  # an older Pillow without sizes
+        return ImageFont.load_default()
+
+
+def _contact_sheets(name: str, pages: Sequence[Path], out: Path) -> list[Path]:
+    per_sheet = CONTACT_COLUMNS * CONTACT_ROWS
+    tile_w, tile_h = CONTACT_TILE
+    font = _font(32)
+    made: list[Path] = []
+    for start in range(0, len(pages), per_sheet):
+        chunk = pages[start : start + per_sheet]
+        rows = -(-len(chunk) // CONTACT_COLUMNS)
+        sheet = Image.new("RGB", (tile_w * CONTACT_COLUMNS, tile_h * rows), "white")
+        draw = ImageDraw.Draw(sheet)
+        for n, path in enumerate(chunk):
+            x, y = (n % CONTACT_COLUMNS) * tile_w, (n // CONTACT_COLUMNS) * tile_h
+            with Image.open(path) as opened:
+                thumb = opened.convert("RGB")
+            thumb.thumbnail((tile_w - 12, tile_h - _LABEL_PX - 8))
+            sheet.paste(thumb, (x + (tile_w - thumb.width) // 2, y + _LABEL_PX))
+            draw.rectangle((x + 2, y + 2, x + tile_w - 3, y + tile_h - 3), outline=(160, 160, 160))
+            draw.rectangle((x + 4, y + 4, x + 150, y + _LABEL_PX - 2), fill=(200, 0, 0))
+            draw.text((x + 12, y + 6), f"p {start + n + 1}", fill="white", font=font)
+        buffer = io.BytesIO()
+        sheet.save(buffer, format="PNG", optimize=True)
+        last = start + len(chunk)
+        path = out / f"{stem(name)}-p{start + 1:03d}-{last:03d}.png"
+        _write_bytes(path, buffer.getvalue())
+        made.append(path)
+    return made
+
+
+# ---- building ------------------------------------------------------------------------------------
+
+_README: Final = """\
+The set pack: made by code from the uploads, read-only. Start here instead of building your own.
+
+page_map.json          per page: whose drawing each pasted drawing is (from GV's typed headings),
+                       its round, the area or title, sheet numbers. A hint: the drawings decide.
+annotations.json       every annotation: file, page, kind, author, text, box (GV's markup and
+                       headings included; the drawings-only copies drop them).
+*_drawings_only.pdf    each PDF with only the pasted drawings kept: GV's markup hidden.
+pages/<file>/p-NNN.png every page at 100 dpi (drawings only). Zoom to read numbers.
+contact/*.png          nine pages per picture, page numbers stamped: the whole set at a glance.
+status.json            building / ready / failed.
+
+Boxes are PDF points of the page as shown, origin top-left (as pdftotext -bbox and zoom use).
+"""
+
+
+def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]) -> None:
+    """Build the whole pack into `folder` (status at each step). Raises on a failure, after
+    `status.json` says `failed`."""
+    folder.mkdir(parents=True, exist_ok=True)
+    folder.chmod(0o755)
+    names = [str(item["name"]) for item in listing]
+    done: list[str] = []
+    _set_status(folder, "building", done, files=names)
+    _write_bytes(folder / "README.txt", _README.encode("utf-8"))
+    try:
+        copies = {name: drawings_only(folder, uploads, name) for name in names}
+        done.append("drawings_only")
+        _set_status(folder, "building", done, files=names)
+        annotations: list[dict[str, Any]] = []
+        page_map: list[dict[str, Any]] = []
+        for name in names:
+            logging.getLogger("pypdf").setLevel(logging.ERROR)
+            reader = PdfReader(str(uploads / name))
+            found = _annotations(name, reader)
+            annotations += found
+            page_map += _page_entries(name, found, _page_texts(copies[name]), len(reader.pages))
+        _write_json(folder / "annotations.json", annotations)
+        _write_json(
+            folder / "page_map.json",
+            {"version": PACK_VERSION, "files": names, "pages": page_map},
+        )
+        done.append("page_map")
+        _set_status(folder, "building", done, files=names)
+        for name in names:
+            pages = _render_pages(copies[name], folder / "pages" / stem(name), RENDER_DPI)
+            _contact_sheets(name, pages, folder / "contact")
+        done += ["pages", "contact_sheets"]
+    except Exception as failed:
+        _set_status(folder, "failed", done, files=names, error=type(failed).__name__)
+        raise
+    _set_status(folder, "ready", done, files=names)
+
+
+def ensure_pack(
+    folder: Path,
+    uploads: Path,
+    listing: Sequence[Mapping[str, Any]],
+    *,
+    background: bool = True,
+) -> threading.Thread | None:
+    """Start building the pack unless it is ready or being built in this process. Returns the
+    building thread (`None` when there is nothing to do, or `background` is false)."""
+    status = read_status(folder)
+    if status.get("state") == "ready" and status.get("version") == PACK_VERSION:
+        return None
+    with _running_lock:
+        running = _running.get(folder)
+        if running is not None and running.is_alive():
+            return running
+        if not listing:
+            return None
+        folder.mkdir(parents=True, exist_ok=True)
+        folder.chmod(0o755)
+        _set_status(folder, "building", [], files=[str(item["name"]) for item in listing])
+
+        def run() -> None:
+            try:
+                build_pack(folder, uploads, listing)
+            except Exception as failed:  # noqa: BLE001 - the chat works without the pack
+                _log.warning("assistant set pack failed: %s", type(failed).__name__)
+            finally:
+                with _running_lock:
+                    _running.pop(folder, None)
+
+        if not background:
+            _running.pop(folder, None)
+        else:
+            thread = threading.Thread(target=run, name="gv-set-pack", daemon=True)
+            _running[folder] = thread
+            thread.start()
+            return thread
+    run()
+    return None
+
+
+# ---- zoom crops ----------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Crop:
+    png: bytes
+    width: int
+    height: int
+    dpi: int
+    box: Box
+    """The box as drawn: clamped to the page."""
+
+
+def crop_dpi(box: Box, wanted: int | None) -> int:
+    """The sharpest dpi at which the box fits the model's picture limit (`fitting_dpi`: up to 300
+    for a small box), or the dpi asked when that is lower."""
+    width, height = box[2] - box[0], box[3] - box[1]
+    fits = fitting_dpi(Decimal(str(width)), Decimal(str(height)))
+    if wanted is not None:
+        fits = min(fits, max(MIN_CROP_DPI, min(MAX_CROP_DPI, wanted)))
+    return fits
+
+
+def crop_picture(pdf: Path, page_number: int, box: Box, dpi: int | None = None) -> Crop:
+    """The area `box` (points, origin top-left, as shown) of a page as a PNG. Raises `ValueError`
+    with a plain reason when the page or the box is not on the page."""
+    with PDFIUM_LOCK:
+        document = pdfium.PdfDocument(str(pdf))
+        try:
+            if not 1 <= page_number <= len(document):
+                raise ValueError(f"there is no page {page_number} (the file has {len(document)})")
+            page = document[page_number - 1]
+            width, height = page.get_size()
+            x0, y0, x1, y1 = box
+            left, top = max(0.0, min(x0, x1)), max(0.0, min(y0, y1))
+            right, bottom = min(width, max(x0, x1)), min(height, max(y0, y1))
+            if right - left < 2 or bottom - top < 2:
+                raise ValueError(
+                    f"the box is not on page {page_number} (the page is "
+                    f"{round(width)} x {round(height)} points, origin top-left)"
+                )
+            clamped = (round(left, 1), round(top, 1), round(right, 1), round(bottom, 1))
+            chosen = crop_dpi(clamped, dpi)
+            scale = min(chosen / 72, MAX_CROP_EDGE_PX / max(right - left, bottom - top))
+            bitmap = page.render(
+                scale=scale,
+                crop=(left, height - bottom, width - right, top),
+                may_draw_forms=True,
+            )
+            picture = bitmap.to_pil().convert("RGB")
+        finally:
+            document.close()
+    if max(picture.size) > MAX_CROP_EDGE_PX:
+        picture.thumbnail((MAX_CROP_EDGE_PX, MAX_CROP_EDGE_PX))
+    buffer = io.BytesIO()
+    picture.save(buffer, format="PNG", optimize=True)
+    return Crop(
+        png=buffer.getvalue(),
+        width=picture.width,
+        height=picture.height,
+        dpi=round(scale * 72),
+        box=clamped,
+    )

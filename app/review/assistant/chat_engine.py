@@ -4,10 +4,14 @@
 (`api_content` of every earlier answer), then this message. Each call streams: thinking and text
 reach the screen as they arrive (`thinking_start`, `thinking_delta`, `thinking_end`, `text_delta`);
 the reply goes back into the history unchanged (thinking blocks included). When the reply asks for
-tools, each runs in order (`step_start`, `step_end`; `tasks` after a task-list change; `file` for a
-handed-over file), the `Agent` calls of one reply together, at most four at once (`agent_start`,
-`agent_step`, `agent_end`); all the results go back in one user message, and the model is asked
-again. Up to `lead_max_turns` turns of tools; then one last call with `tool_choice: none` and a note
+tools, they run (`step_start`, `step_end`; `tasks` after a task-list change; `file` for a
+handed-over file): the read-only ones of one reply (commands, views, zooms, the recorded results)
+at the same time, the others in order; then the `Agent` calls of the reply together, at most
+`max_parallel_agents` at once (`agent_start`, `agent_step`, `agent_end`). All the results go back
+in one user message, in the order asked, and the model is asked again. A helper's reply runs the
+same way (its finding records at the same time too), and the app adds a footer to every helper's
+brief (`chat_tools.helper_footer`: its pages from the set pack's page map, the zoom tool, its
+budget, what to return). Up to `lead_max_turns` turns of tools; then one last call with `tool_choice: none` and a note
 to answer from what it has (`stopped: turn_limit`).
 
 **Money.** Before every call its cost is estimated (an upper bound: text at one token per two
@@ -93,10 +97,13 @@ from app.review.assistant.chat_tools import (
     LEAD_SYSTEM_PROMPT,
     LEAD_TOOLS,
     MAX_AGENTS,
+    MAX_PARALLEL_COMMANDS,
+    PARALLEL_TOOLS,
     ChatTools,
     TaskList,
     ToolResult,
     arguments,
+    helper_footer,
     new_step,
 )
 from app.review.assistant.chat_trust import (
@@ -134,10 +141,16 @@ _log = logging.getLogger(__name__)
 #: Names the system prompts and tools: a change to either is a new id. (chat-v2: the `Agent`
 #: tool's `model` text names Sonnet as the default. chat-v3: helpers run at most at medium effort.
 #: chat-v4: the findings and coverage tools, and the answer-style lines. chat-v5: dismiss_recorded
-#: and cite. chat-v6: record_string and record_reading (the reading ledger) for the lead and the
-#: helpers, and their prompt lines; compare_rounds (the revision diff) for the lead.) Only the request's prefix changes; a chat's stored messages
-#: replay unchanged.
-HARNESS_ID: Final = "chat-v6"
+#: and cite. chat-v7: record_string and record_reading (the reading ledger) for the lead and the
+#: helpers, and their prompt lines; compare_rounds (the revision diff) for the lead. chat-v7: the
+#: zoom tool, the set pack, parallel tools, the helper footer, the four-part Agent brief and the
+#: effort lines.) Only the request's prefix changes; a chat's stored messages replay unchanged.
+HARNESS_ID: Final = "chat-v7"
+#: Helpers one turn may start, at most, whatever the setting says.
+MAX_PARALLEL_AGENTS_LIMIT: Final = 8
+#: The lead's tools that run at the same time within one reply (its finding and ledger tools stay
+#: in order, so the findings table and the ledger keep the order they were recorded in).
+LEAD_PARALLEL_TOOLS: Final = frozenset({"bash_tool", "view", "zoom", "review_results"})
 #: The output allowance of a forced last call (a wrap-up or a final answer at the cap).
 WRAP_UP_MAX_TOKENS: Final = 8000
 FINAL_MAX_TOKENS: Final = 16000
@@ -235,6 +248,8 @@ class EngineSettings:
     package_cap_micros: int
     rates: Callable[[str], ModelRates | None]
     """The price list for a model's price key (`None`: no stated price)."""
+    max_parallel_agents: int = MAX_AGENTS
+    """Helpers one turn runs at once (`GV_ASSISTANT_MAX_PARALLEL_AGENTS`, 1 to 8)."""
     mode: str = "chat"
     """`chat`, or `full_check` (CONTRACT4): GV's recorded differences are made findings at the
     start, and code makes the cloud drawing and the check report at the end."""
@@ -254,6 +269,8 @@ class MessageOutcome:
     cap_hit: str | None = None
     """With `stopped: cost_cap`, which cap stopped it: `message` (this answer's) or `package` (the
     drawing set's budget)."""
+    seen: list[dict[str, Any]] = field(default_factory=list)
+    """Every zoom crop of the answer, the lead's and its helpers' (`ChatTools.seen`)."""
 
 
 # ---- one streamed call ---------------------------------------------------------------------------
@@ -535,6 +552,10 @@ class ChatEngine:
         self.emit("text_delta", {"index": index, "text": text})
 
     # ---- money -----------------------------------------------------------------------------------
+
+    @property
+    def _max_agents(self) -> int:
+        return max(1, min(MAX_PARALLEL_AGENTS_LIMIT, self.settings.max_parallel_agents))
 
     @property
     def spent(self) -> int:
@@ -856,13 +877,15 @@ class ChatEngine:
         }
 
     def _dispatch(
-        self, name: str, raw: object, step: dict[str, Any], *, helper: bool
+        self, name: str, raw: object, step: dict[str, Any], *, helper: bool, by: str = "lead"
     ) -> ToolResult:
         tools = self.tools
         if name == "bash_tool":
             return tools.bash(raw, step)
         if name == "view":
             return tools.view(raw, step, HELPER_PICTURE_EDGE_PX if helper else None)
+        if name == "zoom":
+            return tools.zoom(raw, step, by)
         if name == "create_file":
             return tools.create_file(raw, step)
         if name == "str_replace":
@@ -884,40 +907,80 @@ class ChatEngine:
             is_error=True,
         )
 
+    @staticmethod
+    def _in_turns(
+        calls: Sequence[dict[str, Any]],
+        parallel: Callable[[dict[str, Any]], bool],
+        prepare: Callable[[dict[str, Any]], Callable[[], dict[str, Any]]],
+    ) -> dict[int, dict[str, Any]]:
+        """Each call's result. A run of calls that `parallel` says may run together runs at the
+        same time; any other call runs alone, in its place. `prepare` is called in the order
+        asked (it may show a step) and returns the work."""
+        results: dict[int, dict[str, Any]] = {}
+        group: list[tuple[dict[str, Any], Callable[[], dict[str, Any]]]] = []
+
+        def flush() -> None:
+            if len(group) == 1:
+                call, work = group[0]
+                results[id(call)] = work()
+            elif group:
+                with ThreadPoolExecutor(max_workers=min(len(group), MAX_PARALLEL_COMMANDS)) as pool:
+                    futures = [(call, pool.submit(work)) for call, work in group]
+                    for call, future in futures:
+                        results[id(call)] = future.result()
+            group.clear()
+
+        for call in calls:
+            if parallel(call):
+                group.append((call, prepare(call)))
+                continue
+            flush()
+            results[id(call)] = prepare(call)()
+        flush()
+        return results
+
     def _run_lead_tools(self, reply: _Reply) -> list[dict[str, Any]]:
         calls = reply.tool_uses()
-        results: dict[int, dict[str, Any]] = {}
         agents = [call for call in calls if call.get("name") == "Agent"]
-        for call in calls:
-            if call.get("name") == "Agent":
-                continue
+
+        def prepare(call: dict[str, Any]) -> Callable[[], dict[str, Any]]:
             if self.cancel.is_set():
-                results[id(call)] = self._not_run(call, "the reviewer cancelled the message")
-                continue
+                cancelled = self._not_run(call, "the reviewer cancelled the message")
+                return lambda: cancelled
             name = str(call.get("name"))
             if id(call) in reply.bad_inputs:
-                results[id(call)] = self._not_run(call, "its input was cut off or not valid JSON")
-                continue
+                bad = self._not_run(call, "its input was cut off or not valid JSON")
+                return lambda: bad
             if name in FINDING_TOOL_NAMES:
-                results[id(call)] = self._result(
+                return lambda: self._result(
                     call, self._finding_tool(name, call.get("input"), "lead")
                 )
-                continue
             if name in LEDGER_TOOL_NAMES:
-                results[id(call)] = self._result(
+                return lambda: self._result(
                     call, self._ledger_tool(name, call.get("input"), "lead")
                 )
-                continue
+            # The step shows at once, in the order asked, even when its work runs alongside others.
             step = new_step(str(call.get("id")), name, call.get("input"))
             index = self._add_block({"type": "step", "step": step})
             self.emit("step_start", {"index": index, "step": step})
-            outcome = self._dispatch(name, call.get("input"), step, helper=False)
-            with self._lock:
-                self.blocks[index] = {"type": "step", "step": outcome.step}
-            self.emit("step_end", {"index": index, "step": outcome.step})
-            if name in ("TaskCreate", "TaskUpdate") and outcome.step.get("tasks") is not None:
-                self.emit("tasks", {"tasks": outcome.step["tasks"]})
-            results[id(call)] = self._result(call, outcome)
+
+            def work() -> dict[str, Any]:
+                outcome = self._dispatch(name, call.get("input"), step, helper=False)
+                with self._lock:
+                    self.blocks[index] = {"type": "step", "step": outcome.step}
+                self.emit("step_end", {"index": index, "step": outcome.step})
+                if name in ("TaskCreate", "TaskUpdate") and outcome.step.get("tasks") is not None:
+                    self.emit("tasks", {"tasks": outcome.step["tasks"]})
+                return self._result(call, outcome)
+
+            return work
+
+        results = self._in_turns(
+            [call for call in calls if call.get("name") != "Agent"],
+            lambda call: call.get("name") in LEAD_PARALLEL_TOOLS
+            and id(call) not in reply.bad_inputs,
+            prepare,
+        )
         if agents:
             results.update(self._run_agents(agents))
         return [results[id(call)] for call in calls]
@@ -1639,9 +1702,10 @@ class ChatEngine:
             except SandboxRefused as refused:
                 results[id(call)] = self._not_run(call, f"refused: {refused}")
                 continue
-            if len(accepted) >= MAX_AGENTS:
+            if len(accepted) >= self._max_agents:
                 results[id(call)] = self._not_run(
-                    call, f"at most {MAX_AGENTS} agents run at once; start it again next turn"
+                    call,
+                    f"at most {self._max_agents} agents run at once; start it again next turn",
                 )
                 continue
             with self._lock:
@@ -1699,7 +1763,7 @@ class ChatEngine:
                 }
             self.emit("agent_end", {"step_index": index, "agent": summary})
 
-        with ThreadPoolExecutor(max_workers=MAX_AGENTS) as pool:
+        with ThreadPoolExecutor(max_workers=self._max_agents) as pool:
             for future in [pool.submit(run, n, agent) for n, (_call, agent) in enumerate(accepted)]:
                 future.result()
         with self._lock:
@@ -1738,6 +1802,41 @@ class ChatEngine:
             results[id(call)] = result
         return results
 
+    def _helper_tool(
+        self,
+        agent: _Agent,
+        step_index: int,
+        entry: dict[str, Any],
+        call: dict[str, Any],
+        bad: set[int],
+    ) -> Callable[[], dict[str, Any]]:
+        """One of a helper's tool calls, as work to run (`_in_turns`)."""
+        if self.cancel.is_set():
+            cancelled = self._not_run(call, "the reviewer cancelled the message")
+            return lambda: cancelled
+        if id(call) in bad:
+            cut = self._not_run(call, "its input was cut off")
+            return lambda: cut
+        name = str(call.get("name"))
+        by = f"helper:{agent.number}"
+        if name in HELPER_FINDING_TOOL_NAMES:
+            return lambda: self._result(call, self._finding_tool(name, call.get("input"), by))
+        if name in LEDGER_TOOL_NAMES:
+            return lambda: self._result(call, self._ledger_tool(name, call.get("input"), by))
+
+        def work() -> dict[str, Any]:
+            step = new_step(str(call.get("id")), name, call.get("input"))
+            outcome = self._dispatch(name, call.get("input"), step, helper=True, by=by)
+            with self._lock:
+                entry["steps"].append(outcome.step)
+            self.emit(
+                "agent_step",
+                {"step_index": step_index, "agent_id": agent.call_id, "step": outcome.step},
+            )
+            return self._result(call, outcome)
+
+        return work
+
     def _helper(
         self, agent: _Agent, step_index: int, entry: dict[str, Any], share: _Share
     ) -> tuple[str, bool, str | None]:
@@ -1745,8 +1844,13 @@ class ChatEngine:
         model = agent.model
         effort = helper_effort(self.settings.effort)
         thinking = helper_thinking(model, effort, self.settings.thinking)
+        try:
+            footer = helper_footer(agent.prompt, self.tools.workspace)
+        except Exception:  # noqa: BLE001 - the helper still gets its brief
+            _log.warning("assistant chat helper footer could not be made")
+            footer = ""
         messages: list[dict[str, Any]] = [
-            {"role": "user", "content": [{"type": "text", "text": agent.prompt}]}
+            {"role": "user", "content": [{"type": "text", "text": agent.prompt + footer}]}
         ]
         turns = 0
         wrap: str | None = None
@@ -1826,36 +1930,18 @@ class ChatEngine:
             messages.append({"role": "assistant", "content": content})
             calls = reply.tool_uses()
             if reply.stop_reason == "tool_use" and calls and not final:
-                results: list[dict[str, Any]] = []
-                for call in calls:
-                    if self.cancel.is_set():
-                        results.append(self._not_run(call, "the reviewer cancelled the message"))
-                        continue
-                    if id(call) in reply.bad_inputs:
-                        results.append(self._not_run(call, "its input was cut off"))
-                        continue
-                    name = str(call.get("name"))
-                    if name in HELPER_FINDING_TOOL_NAMES:
-                        by = f"helper:{agent.number}"
-                        results.append(
-                            self._result(call, self._finding_tool(name, call.get("input"), by))
-                        )
-                        continue
-                    if name in LEDGER_TOOL_NAMES:
-                        by = f"helper:{agent.number}"
-                        results.append(
-                            self._result(call, self._ledger_tool(name, call.get("input"), by))
-                        )
-                        continue
-                    step = new_step(str(call.get("id")), name, call.get("input"))
-                    outcome = self._dispatch(name, call.get("input"), step, helper=True)
-                    with self._lock:
-                        entry["steps"].append(outcome.step)
-                    self.emit(
-                        "agent_step",
-                        {"step_index": step_index, "agent_id": agent.call_id, "step": outcome.step},
-                    )
-                    results.append(self._result(call, outcome))
+                bad = reply.bad_inputs
+
+                def parallel(call: dict[str, Any], bad: set[int] = bad) -> bool:
+                    return call.get("name") in PARALLEL_TOOLS and id(call) not in bad
+
+                def prepare(
+                    call: dict[str, Any], bad: set[int] = bad
+                ) -> Callable[[], dict[str, Any]]:
+                    return self._helper_tool(agent, step_index, entry, call, bad)
+
+                done = self._in_turns(calls, parallel, prepare)
+                results = [done[id(call)] for call in calls]
                 messages.append({"role": "user", "content": results})
                 turns += 1
                 continue
@@ -2058,6 +2144,7 @@ class ChatEngine:
             stopped=stopped,
             error=error,
             cap_hit=cap_hit if stopped == "cost_cap" else None,
+            seen=[dict(entry) for entry in self.tools.seen],
         )
 
 
