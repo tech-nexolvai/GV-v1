@@ -675,8 +675,19 @@ def _with_subject(part: str, header_keys: set[str], snapshot: ReviewSnapshot) ->
         return part  # an outcome needs its subject written; the guard refuses it otherwise
     if CONNECTOR.match(part):
         return part  # continues the sentence before, which names the same record (guard)
+    if part.lstrip().startswith("|"):
+        return part  # a table line: its row or header names the subject
     prefix = "- " if part.startswith("- ") else ""
-    return f"{prefix}On {{{key}.page}}, {part[len(prefix) :]}"
+    return f"{prefix}On {{{key}.page}}, {_after_comma(part[len(prefix) :])}"
+
+
+def _after_comma(rest: str) -> str:
+    """The sentence after the code's "On page N,": an ordinary first word loses its capital ("On
+    page 3, the recorded reason …", never "On page 3, The …"); an acronym ("GV", "AI") or a
+    placeholder keeps it."""
+    if len(rest) > 1 and rest[0].isupper() and rest[1].islower():
+        return rest[0].lower() + rest[1:]
+    return rest
 
 
 def render(template: str, snapshot: ReviewSnapshot) -> Rendered:
@@ -732,4 +743,6 @@ def render(template: str, snapshot: ReviewSnapshot) -> Rendered:
     text = re.sub(r"[ \t]+(\n|$)", r"\1", text)
     text = re.sub(r"(?<=\S)[ \t]{2,}(?=\S)", " ", text)
     text = re.sub(r"(\n[ \t]*){3,}", "\n\n", text).strip()
+    # No space before a full stop or comma ("needs correction ." reads as a slip).
+    text = re.sub(r"(?<=[^\s|])[ \t]+(?=[.,;:!?](?:\s|$))", "", text)
     return Rendered(text=text, citations=tuple(citations), groups=tuple(groups))

@@ -3448,9 +3448,16 @@ export interface components {
             keeps_no_data: boolean;
             /**
              * Model Label
+             * @description The model that answers, in words: the lead (Claude Opus 5.5) when the tool-using assistant runs, else Claude Sonnet 5.5.
              * @default Claude Sonnet 5.5
              */
             model_label: string;
+            /**
+             * Reads Drawings
+             * @description True when a question can open this set's drawings (the tool-using assistant, or the page pictures): the footer says 'reads the drawings'.
+             * @default false
+             */
+            reads_drawings: boolean;
             /** Starters */
             starters: string[];
         };

@@ -1,4 +1,4 @@
-import type { AssistantStep } from '@/api/assistantTypes';
+import type { AssistantStep, AssistantStepEvent } from '@/api/assistantTypes';
 
 function plural(count: number, one: string, many: string): string {
   return `${count} ${count === 1 ? one : many}`;
@@ -20,3 +20,42 @@ export function stepsSummary(steps: AssistantStep[]): string {
   return text ? text.charAt(0).toUpperCase() + text.slice(1) : '';
 }
 
+
+// ── Live: the steps so far while the answer is worked out ──
+
+export type LiveEntry =
+  | { kind: 'step'; step: AssistantStep }
+  | { kind: 'agents'; label: string; agents: { description: string; steps: AssistantStep[] }[] };
+
+const RUNNING_AGENTS = /^Running \d+ agents · /;
+
+/** A stage label: "Running N agents · …" opens the helpers' block (once). */
+export function withStage(entries: readonly LiveEntry[], label: string): LiveEntry[] {
+  if (!RUNNING_AGENTS.test(label)) return [...entries];
+  const last = entries[entries.length - 1];
+  if (last?.kind === 'agents' && last.label === label) return [...entries];
+  return [...entries, { kind: 'agents', label, agents: [] }];
+}
+
+/** A finished step: a helper's goes into the running helpers' block; the lead's "Ran N agents" replaces that block. */
+export function withStep(entries: readonly LiveEntry[], event: AssistantStepEvent): LiveEntry[] {
+  const out = [...entries];
+  const openAt = out.map((entry) => entry.kind).lastIndexOf('agents');
+  if (event.agent !== null) {
+    let block = openAt >= 0 ? (out[openAt] as Extract<LiveEntry, { kind: 'agents' }>) : null;
+    if (!block) {
+      block = { kind: 'agents', label: 'Running agents', agents: [] };
+      out.push(block);
+    }
+    const agents = block.agents.some((agent) => agent.description === event.agent)
+      ? block.agents.map((agent) => (agent.description === event.agent ? { ...agent, steps: [...agent.steps, event.step] } : agent))
+      : [...block.agents, { description: event.agent, steps: [event.step] }];
+    out[openAt >= 0 ? openAt : out.length - 1] = { ...block, agents };
+    return out;
+  }
+  if (event.step.kind === 'agents' && openAt >= 0) {
+    out[openAt] = { kind: 'step', step: event.step };
+    return out;
+  }
+  return [...out, { kind: 'step', step: event.step }];
+}

@@ -2447,8 +2447,15 @@
           },
           "model_label": {
             "default": "Claude Sonnet 5.5",
+            "description": "The model that answers, in words: the lead (Claude Opus 5.5) when the tool-using assistant runs, else Claude Sonnet 5.5.",
             "title": "Model Label",
             "type": "string"
+          },
+          "reads_drawings": {
+            "default": false,
+            "description": "True when a question can open this set's drawings (the tool-using assistant, or the page pictures): the footer says 'reads the drawings'.",
+            "title": "Reads Drawings",
+            "type": "boolean"
           },
           "starters": {
             "items": {

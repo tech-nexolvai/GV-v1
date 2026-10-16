@@ -521,7 +521,7 @@ def test_the_tools_have_claude_ai_shapes_and_the_prompt_keeps_the_rules() -> Non
         assert schema["additionalProperties"] is False
     prompt = AGENT_SYSTEM_PROMPT
     assert UPLOADS in prompt and SCRATCH in prompt
-    assert "GV's markup is the reviewer's comments, never the design" in prompt
+    assert "GV's markup is GV's reviewer comments, never the design" in prompt
     assert "never use a number from GV's markup" in prompt
     assert "VERIFY" in prompt and "never contradicted" in prompt
     assert "never use a number from them" in SUB_SYSTEM_PROMPT

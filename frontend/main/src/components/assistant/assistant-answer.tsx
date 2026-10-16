@@ -8,7 +8,9 @@ import { cn } from '@/lib/utils';
 import { formatDelta } from '@/lib/countertop-results';
 import { inchesOf } from '@/lib/countertop-strip';
 import {
+  answerBlocks,
   answerParts,
+  PAGE_MENTION,
   citeOutcome,
   matchesRecords,
   plainAnswer,
@@ -42,6 +44,41 @@ function openCite(target: CiteTarget, nav: AssistantNavigation) {
   if (target.kind === 'row') nav.showRow(target.row);
   else if (target.kind === 'finding') nav.showFinding(target.finding);
   else nav.openPage(target.page);
+}
+
+/** Running text with each "page 34" / "p.34" a link that opens that page on the drawing (like claude.ai's references). */
+function TextWithPages({ text, nav }: { text: string; nav: AssistantNavigation }) {
+  const out: React.ReactNode[] = [];
+  let at = 0;
+  for (const match of text.matchAll(PAGE_MENTION)) {
+    const start = match.index ?? 0;
+    if (start > at) out.push(text.slice(at, start));
+    const page = Number(match[1]);
+    out.push(
+      <button
+        key={start}
+        type="button"
+        data-slot="assistant-page-link"
+        onClick={() => nav.openPage(page)}
+        title={`Open page ${page} on the drawing`}
+        aria-label={`Go to page ${page}`}
+        className="rounded-sm font-medium text-foreground underline decoration-muted-foreground/60 decoration-dotted underline-offset-[3px] hover:decoration-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+      >
+        {match[0]}
+      </button>,
+    );
+    at = start + match[0].length;
+  }
+  if (at < text.length) out.push(text.slice(at));
+  return <>{out}</>;
+}
+
+function Inline({ parts, nav }: { parts: readonly AnswerPart[]; nav: AssistantNavigation }) {
+  return (
+    <>
+      {parts.map((part, index) => (part.kind === 'cite' ? <CiteChip key={index} part={part} nav={nav} /> : <TextWithPages key={index} text={part.text} nav={nav} />))}
+    </>
+  );
 }
 
 // ── Revealing the text ──────────────────────────────────────
@@ -382,10 +419,21 @@ export function AnswerView({
   /** Called once the whole answer is on screen (at once when nothing was revealed gradually). */
   onRevealed?: () => void;
 }) {
-  const parts = answerParts(answer.text, answer.citations, records);
-  const tokens = tokensOf(parts);
-  const shown = useReveal(tokens.length, reveal);
-  const revealing = shown < tokens.length;
+  const blocks = answerBlocks(answer.text).map((block) =>
+    block.kind === 'text' ? { kind: 'text' as const, tokens: tokensOf(answerParts(block.text, answer.citations, records)) } : block,
+  );
+  const total = blocks.reduce((sum, block) => sum + (block.kind === 'text' ? block.tokens.length : 1), 0);
+  const shown = useReveal(total, reveal);
+  const revealing = shown < total;
+  // How much of each block is on screen: the reveal runs through the blocks in order.
+  const visible = blocks.reduce<{ counts: number[]; left: number }>(
+    (acc, block) => {
+      const count = Math.min(acc.left, block.kind === 'text' ? block.tokens.length : 1);
+      return { counts: [...acc.counts, count], left: acc.left - count };
+    },
+    { counts: [], left: shown },
+  ).counts;
+  const lastShown = visible.reduce((at, count, index) => (count > 0 ? index : at), -1);
   const evidence = resolveEvidence(answer.evidence, records);
   // An action going where a card or list below already goes is the same button twice: left out.
   const offered = offeredByEvidence(evidence, records);
@@ -417,12 +465,56 @@ export function AnswerView({
     // One column that may shrink: an auto column would grow to the longest one-line (truncated) reason
     // and push the lists past the panel's edge.
     <div data-slot="assistant-answer" data-mode={answer.mode} className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-3">
-      <p className="leading-relaxed break-words whitespace-pre-line">
-        {visibleParts(tokens, shown).map((part, index) =>
-          part.kind === 'cite' ? <CiteChip key={index} part={part} nav={nav} /> : part.text,
-        )}
-        {revealing && <span aria-hidden="true" className="ml-0.5 inline-block h-[15px] w-[7px] animate-pulse bg-foreground align-[-2px]" />}
-      </p>
+      {blocks.map((block, index) => {
+        if (visible[index] <= 0) return null;
+        if (block.kind === 'list') {
+          return (
+            <ul key={index} aria-label="Answer list" className="ml-1 list-disc space-y-1 pl-5 leading-relaxed marker:text-muted-foreground">
+              {block.items.map((item, at) => (
+                <li key={at} className="break-words">
+                  <Inline parts={answerParts(item, answer.citations, records)} nav={nav} />
+                </li>
+              ))}
+            </ul>
+          );
+        }
+        if (block.kind === 'table') {
+          return (
+            <div key={index} className="overflow-x-auto rounded-lg border">
+              <table className="w-full border-collapse text-left text-[13px]">
+                <thead className="bg-muted/60">
+                  <tr>
+                    {block.header.map((cell, at) => (
+                      <th key={at} scope="col" className="border-b px-3 py-1.5 font-medium">
+                        <Inline parts={answerParts(cell, answer.citations, records)} nav={nav} />
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {block.rows.map((row, at) => (
+                    <tr key={at} className="border-b last:border-b-0">
+                      {row.map((cell, col) => (
+                        <td key={col} className="px-3 py-1.5 align-top">
+                          <Inline parts={answerParts(cell, answer.citations, records)} nav={nav} />
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          );
+        }
+        const text = visibleParts(block.tokens, visible[index]);
+        if (!text.length || (text.length === 1 && text[0].kind === 'text' && !text[0].text.trim())) return null;
+        return (
+          <p key={index} className="leading-relaxed break-words whitespace-pre-line">
+            <Inline parts={text} nav={nav} />
+            {revealing && index === lastShown && <span aria-hidden="true" className="ml-0.5 inline-block h-[15px] w-[7px] animate-pulse bg-foreground align-[-2px]" />}
+          </p>
+        );
+      })}
 
       {!revealing && (
         <>

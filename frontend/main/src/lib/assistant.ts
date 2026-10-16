@@ -106,9 +106,9 @@ export function citeOutcome(target: CiteTarget): { outcome: Outcome; word: strin
   return null;
 }
 
-/** The chip's words: `p4`, or the citation's own label when it names no page. */
+/** The chip's words: `p.4` (claude.ai's page reference), or the citation's own label when it names no page. */
 function chipLabel(citation: AssistantCitation, target: CiteTarget): string {
-  return target.page !== null ? `p${target.page}` : citation.label;
+  return target.page !== null ? `p.${target.page}` : citation.label;
 }
 
 /** The answer text cut at its `[[n]]` markers. A marker with no citation, or an unknown id, is dropped. */
@@ -125,10 +125,12 @@ export function answerParts(text: string, citations: readonly AssistantCitation[
     if (citation && target) parts.push({ kind: 'cite', index, label: chipLabel(citation, target), target });
   }
   if (at < text.length) parts.push({ kind: 'text', text: text.slice(at) });
-  // Two text parts meet where a marker was dropped; join them so a word is never split in two.
+  // Two text parts meet where a marker was dropped; join them so a word is never split in two, and
+  // leave no space before a full stop ("needs correction ." reads as a slip).
   return parts.reduce<AnswerPart[]>((joined, part) => {
     const last = joined[joined.length - 1];
-    if (part.kind === 'text' && last?.kind === 'text') joined[joined.length - 1] = { kind: 'text', text: last.text + part.text };
+    if (part.kind === 'text' && last?.kind === 'text')
+      joined[joined.length - 1] = { kind: 'text', text: (/^[.,;:!?]/.test(part.text) ? last.text.replace(/[ \t]+$/, '') : last.text) + part.text };
     else joined.push(part);
     return joined;
   }, []);
@@ -502,3 +504,58 @@ export function offeredByEvidence(evidence: readonly ResolvedEvidence[], records
   }
   return offered;
 }
+
+/** One block of an answer: running text, a "- " list, or a markdown table ("| a | b |" lines with a "|---|" line). */
+export type AnswerBlock = { kind: 'text'; text: string } | { kind: 'table'; header: string[]; rows: string[][] } | { kind: 'list'; items: string[] };
+
+const LIST_LINE = /^\s*[-•*]\s+/;
+
+const TABLE_LINE = /^\s*\|.*\|\s*$/;
+const RULE_LINE = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
+
+function cells(line: string): string[] {
+  return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((cell) => cell.trim());
+}
+
+/** The answer cut into text and tables. A run of "|" lines is a table only with its "|---|" rule under the header. */
+export function answerBlocks(text: string): AnswerBlock[] {
+  const lines = text.split('\n');
+  const blocks: AnswerBlock[] = [];
+  let buffer: string[] = [];
+  const flush = () => {
+    if (buffer.length) blocks.push({ kind: 'text', text: buffer.join('\n') });
+    buffer = [];
+  };
+  for (let at = 0; at < lines.length; ) {
+    if (TABLE_LINE.test(lines[at]) && at + 1 < lines.length && RULE_LINE.test(lines[at + 1]) && lines[at + 1].includes('-')) {
+      flush();
+      const header = cells(lines[at]);
+      const rows: string[][] = [];
+      at += 2;
+      while (at < lines.length && TABLE_LINE.test(lines[at])) {
+        const row = cells(lines[at]);
+        rows.push(header.map((_, index) => row[index] ?? ''));
+        at += 1;
+      }
+      blocks.push({ kind: 'table', header, rows });
+      continue;
+    }
+    if (LIST_LINE.test(lines[at])) {
+      flush();
+      const items: string[] = [];
+      while (at < lines.length && LIST_LINE.test(lines[at])) {
+        items.push(lines[at].replace(LIST_LINE, ''));
+        at += 1;
+      }
+      blocks.push({ kind: 'list', items });
+      continue;
+    }
+    buffer.push(lines[at]);
+    at += 1;
+  }
+  flush();
+  return blocks.filter((block) => block.kind !== 'text' || block.text.trim());
+}
+
+/** "page 34", "p.34", "p. 34" in the answer's own words: each opens that page on the drawing. */
+export const PAGE_MENTION = /\b(?:page|p\.)\s?(\d{1,4})\b/gi;
