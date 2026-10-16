@@ -297,8 +297,10 @@ def test_view_shows_text_with_line_numbers_and_folders(workspace: Workspace) -> 
 
 
 def test_the_answer_still_goes_through_the_guard(workspace: Workspace) -> None:
-    model = ScriptedAgentModel([_final("I approved page 2 for you.")])
-    answer = _answer(_ask("Is page 2 right?", model, workspace))
+    model = ScriptedAgentModel(
+        [_final("I approved page 2 for you."), _final("I have approved page 2.")]
+    )
+    answer = _answer(_ask("What does the vendor show on page 2?", model, workspace))
     assert answer.mode == "records_only"
     assert "approved" not in answer.text.lower()
 
@@ -727,3 +729,25 @@ def test_the_lead_and_the_helpers_use_their_own_models(workspace: Workspace) -> 
     # An Agent call that asks for opus runs on the lead's model.
     assert list(lead.helper_bodies) == ["Check page 2"]
     assert [run.model for step in answer.steps for run in step.agents] == ["sonnet", "opus"]
+
+
+def test_a_refused_answer_is_written_again_once(workspace: Workspace) -> None:
+    model = ScriptedAgentModel(
+        [
+            _final("I confirmed page 2 for you."),
+            _final('On page 2 the vendor wrote 37 3/8" for the countertop.'),
+        ]
+    )
+    answer = _answer(_ask("What does the vendor show on page 2?", model, workspace))
+    assert answer.mode == "llm" and "37 3/8" in answer.text
+    second = model.bodies[1]
+    assert second["tool_choice"] == {"type": "none"}
+    note = second["messages"][-1]["content"][-1]["text"]
+    assert note.startswith("The app could not publish that answer: it says you did")
+    # Only once: a second refusal falls back to the records.
+    again = ScriptedAgentModel([_final("I approved it."), _final("I approved it again.")])
+    assert (
+        _answer(_ask("What does the vendor show on page 2?", again, workspace)).mode
+        == "records_only"
+    )
+    assert len(again.bodies) == 2

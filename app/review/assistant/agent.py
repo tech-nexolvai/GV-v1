@@ -103,13 +103,15 @@ AGENT_TEMPLATE_ID: Final = "review-assistant-agent-answer-v2"
 SUB_PROMPT_ID: Final = "review-assistant-subagent-v2"
 SUB_TEMPLATE_ID: Final = "review-assistant-subagent-report-v2"
 MAX_TOOL_TURNS: Final = 12
-MAX_SUB_TURNS: Final = 10
+MAX_SUB_TURNS: Final = 14
 MAX_SUB_AGENTS: Final = 4
 MAX_OUTPUT_TOKENS: Final = 4000
+#: A helper's report lists every finding on its pages, so it gets more room.
+SUB_MAX_OUTPUT_TOKENS: Final = 12_000
 AGENT_EFFORT: Final = "medium"
 #: What the screen shows of one tool's output; the model gets up to the sandbox's 20 KB.
 _SHOWN_OUTPUT_CHARS: Final = 4000
-_RESULTS_CHARS: Final = 20_000
+_RESULTS_CHARS: Final = 40_000
 _PIXELS_PER_TOKEN: Final = 750
 _TEXT_BYTES_PER_TOKEN: Final = 2
 _REQUEST_OVERHEAD_TOKENS: Final = 500
@@ -152,16 +154,20 @@ say everything it needs: which pages, what to compare, where the rendered pictur
 report each finding with its page, the architect's and the vendor's values, whether GV flagged \
 it, and how sure it is. A helper's report is a lead, not a fact.
 
-COMPARING THE VENDOR WITH THE ARCHITECT (for example "which ones are wrong?"): add tasks; read \
-`review_results` for what code already found; render every page once into {SCRATCH} \
-(`pdftoppm -r 130 -png F {SCRATCH}/p`); give helpers the pages by project or area; then VERIFY \
-every item a helper flags on the pictures yourself (view that page) before you report it, and \
-drop what you cannot confirm. Report each item as one "- " line: the page(s) and item, what the \
+COMPARING THE VENDOR WITH THE ARCHITECT (for example "which ones are wrong?"): this means the \
+WHOLE set, page by page, not only what code already flagged. Code's results (`review_results`: \
+its failures and the AI page review's differences) are where you start, never the whole answer: \
+much of the set is not compared by code. So: add tasks; read `review_results`; list the pages \
+and their headings (`pdftotext`) to group them by project or area; render every page once into \
+{SCRATCH} (`pdftoppm -r 130 -png F {SCRATCH}/p`); give up to 4 helpers the pages by project or \
+area (one `Agent` call each, in one turn), each told to compare every architect dimension, tag \
+and note with the vendor's drawing on its pages; then VERIFY every item a helper flags on the \
+pictures yourself (view that page) before you report it, and drop what you cannot confirm. Report each item as one "- " line: the page(s) and item, what the \
 architect's drawing says, what the vendor drew, which side looks wrong (or "needs a person to \
 check"), and whether GV already flagged it. Countertop items first, then other millwork.
 
-Start with the cheapest step that can answer (text before pictures, one page before all), and stop \
-as soon as you can answer. Never guess a number you cannot read: say you cannot make it out.
+For other questions, start with the cheapest step that can answer (text before pictures, one \
+page before all), and stop as soon as you can answer. Never guess a number you cannot read: say you cannot make it out.
 
 HARD RULES (an answer that breaks one is thrown away):
 1. You never take or claim an action. You cannot approve, sign off, confirm, fix, agree, mark, \
@@ -204,8 +210,10 @@ You are a helper agent in GV Review, working for the review assistant on part of
 countertop and cabinet shop drawings. A sheet may carry the architect's drawing and the vendor's \
 drawing side by side. The PDFs are in {UPLOADS} (read-only); {SCRATCH} is shared scratch \
 (pictures may already be rendered there); there is no network. `bash_tool` runs one command (60 s \
-limit); `view` looks at a picture, a text file or a folder. Do exactly the task you are given, \
-then stop.
+limit); `view` looks at a picture, a text file or a folder. Do exactly the task you are given: \
+look at EVERY page it gives you (you may view several pictures in one turn), compare every \
+architect dimension, tag and note on them with the vendor's drawing, and only then report. If \
+you run short of turns, say which pages you did not reach.
 
 Rules: never guess a number you cannot read (say "unreadable"); GV's coloured markup, clouds and \
 annotations are the reviewer's comments, never the design and never the vendor's drawing: never \
@@ -513,13 +521,16 @@ def _results(raw: object, tools: AgentTools) -> _Ran:
     except SandboxRefused as refused:
         return _refused("review_results", "Could not read the results", str(refused))
     scoped = tools.snapshot if page is None else _page_snapshot(tools.snapshot, page)
-    document: dict[str, Any] = {"records": json.loads(prompt_records(scoped))}
+    # The AI page review and the job values first, then the records: a long package's records are
+    # what the length cut takes, never the AI review's differences.
+    document: dict[str, Any] = {}
     if tools.extra_results is not None:
         try:
             document.update(tools.extra_results(page))
         except Exception as failed:  # noqa: BLE001 - the records still answer
             _log.warning("review assistant extra results failed: %s", type(failed).__name__)
             document["ai_review_and_job_values"] = "could not be read"
+    document["records"] = json.loads(prompt_records(scoped))
     text, _ = cut_output(
         json.dumps(document, ensure_ascii=False, default=str, separators=(",", ":")),
         _RESULTS_CHARS,
@@ -683,6 +694,7 @@ def request_body(
     system: str = AGENT_SYSTEM_PROMPT,
     tools: Sequence[Mapping[str, Any]] = TOOLS,
     schema: Mapping[str, object] = ANSWER_SCHEMA,
+    max_tokens: int = MAX_OUTPUT_TOKENS,
 ) -> dict[str, Any]:
     """The Messages API body for one turn (the model and route are added by the model adapter).
 
@@ -695,7 +707,7 @@ def request_body(
     if listed:
         listed[-1]["cache_control"] = _EPHEMERAL
     return {
-        "max_tokens": MAX_OUTPUT_TOKENS,
+        "max_tokens": max_tokens,
         "system": [{"type": "text", "text": system, "cache_control": _EPHEMERAL}],
         "messages": _with_breakpoint(messages),
         "tools": listed,
@@ -834,11 +846,13 @@ class AgentBudget:
 class _Spend:
     """This question's spend across the lead and its helpers, shared by threads."""
 
-    def __init__(self, budget: AgentBudget | None) -> None:
+    def __init__(self, budget: AgentBudget | None, session_lock: Any = None) -> None:
         self.budget = budget
         self.cap = 0 if budget is None else budget.question_cap_micros
         self.spent = 0
-        self._lock = threading.RLock()
+        # The package's spend is read from the request's database session, which the call recorder
+        # also uses: one lock for both, since helpers run in their own threads.
+        self._lock = session_lock if session_lock is not None else threading.RLock()
 
     def fits(self, estimate: int | None, *, own: int = 0, limit: int | None = None) -> bool:
         """Whether a call estimated at `estimate` stays under every cap that applies."""
@@ -883,14 +897,14 @@ class _LockedLedger:
 
     def __init__(self, ledger: Any) -> None:
         self._ledger = ledger
-        self._lock = threading.Lock()
+        self.lock = threading.RLock()
 
     def before_call(self) -> None:
-        with self._lock:
+        with self.lock:
             self._ledger.before_call()
 
     def record(self, **kwargs: Any) -> None:
-        with self._lock:
+        with self.lock:
             self._ledger.record(**kwargs)
 
 
@@ -927,8 +941,14 @@ def _loop(
     template_id: str,
     limit: int | None = None,
     label: str = "",
+    review: Callable[[Mapping[str, Any]], str | None] | None = None,
+    max_tokens: int = MAX_OUTPUT_TOKENS,
 ) -> Generator[_Event, None, _LoopEnd]:
-    """One agent's turns: ask, run the tools it calls, ask again, until it answers or must stop."""
+    """One agent's turns: ask, run the tools it calls, ask again, until it answers or must stop.
+
+    `review` looks at a finished answer: when it returns a note (the app could not publish the
+    answer, and why), the model is asked once more, without tools, to write it again."""
+    rewrites = 1 if review is not None else 0
     messages: list[dict[str, Any]] = [{"role": "user", "content": first}]
     pictures: list[tuple[int, int]] = []
     own = 0
@@ -936,7 +956,9 @@ def _loop(
     cached = 0
     while True:
         final = turn >= max_turns
-        body = request_body(messages, final=final, system=system, tools=tools, schema=schema)
+        body = request_body(
+            messages, final=final, system=system, tools=tools, schema=schema, max_tokens=max_tokens
+        )
         rates = None if spend.budget is None else spend.budget.rates
         estimate = estimate_micros(body, pictures, model.model_id, rates, cached_tokens=cached)
         if not spend.fits(estimate, own=own, limit=limit):
@@ -1002,7 +1024,14 @@ def _loop(
             continue
         if stop != "end_turn":
             return _LoopEnd(malformed=f"stop-{stop}")
-        return _LoopEnd(payload=payload)
+        note = review(payload) if review is not None and rewrites else None
+        if note is None or not isinstance(content, list):
+            return _LoopEnd(payload=payload)
+        rewrites -= 1
+        messages.append({"role": "assistant", "content": content})
+        messages.append({"role": "user", "content": [{"type": "text", "text": note}]})
+        turn = max_turns
+        yield _stage(label + "Rewriting the answer to keep the rules", "model")
 
 
 def _one_by_one(run: Callable[[str, object], _Ran], label: str = "") -> _TurnRunner:
@@ -1124,6 +1153,7 @@ def _run_agents(
                     template_id=SUB_TEMPLATE_ID,
                     limit=limit,
                     label=label,
+                    max_tokens=SUB_MAX_OUTPUT_TOKENS,
                 ),
                 events.put,
             )
@@ -1131,6 +1161,11 @@ def _run_agents(
             _log.warning("review assistant helper agent failed: %s", type(failed).__name__)
             end = _LoopEnd(error=failed)
         report = _report_text(end.payload)
+        if report is None:
+            _log.warning(
+                "review assistant helper agent gave no report: %s",
+                end.stopped or end.malformed or type(end.error).__name__,
+            )
         stopped: Literal["cost_cap", "failed"] | None = (
             "cost_cap" if end.stopped == "cost_cap" else (None if report else "failed")
         )
@@ -1206,6 +1241,22 @@ def _run_agents(
     return out
 
 
+#: The guard's reasons in plain words, for the one rewrite.
+_GUARD_HINTS: Final[Mapping[str, str]] = {
+    "action-claim": "it says you did, will do or can do a reviewer's action (approve, sign, "
+    "confirm, fix, agree, mark, accept, reject, record, clear, resolve, cloud...). Write what you "
+    "saw instead: 'I checked', 'I can see', 'the drawing shows', never 'I confirmed'.",
+    "advice-to-decide": "it advises the reviewer to decide (approve, sign, accept, reject, send "
+    "back).",
+    "readiness-in-own-words": "it says in your own words whether sign-off is ready; use "
+    "{signoff.status}.",
+    "outcome-in-own-words": "it writes a result in your own words (pass, fail, needs correction, looks "
+    "right, within tolerance, nothing wrong). Quote recorded results through their placeholders, "
+    "and describe differences you see as 'differs' or 'does not match'.",
+    "shape": "it was not the JSON answer object asked for.",
+}
+
+
 @dataclass(frozen=True, slots=True)
 class AgentOutcome:
     """How the loop ended: a draft to check, a clean stop at the cost cap, or a failure."""
@@ -1228,13 +1279,16 @@ def run_agent(
     budget: AgentBudget | None,
     max_turns: int = MAX_TOOL_TURNS,
     helper_model: Any | None = None,
+    check: Callable[[Draft], str | None] | None = None,
 ) -> Generator[_Event, None, AgentOutcome]:
     """The lead's events (`stage`); its result is the generator's return value.
 
     `model` leads and checks the helpers' reports (Opus 5.5 in production); helpers run on
-    `helper_model` (Sonnet 5.5) unless an `Agent` call asks for opus."""
-    spend = _Spend(budget)
+    `helper_model` (Sonnet 5.5) unless an `Agent` call asks for opus. `check` is the app's guard
+    on a finished answer (the reason code it refuses it for, or `None`): a refused answer is
+    written again once, with the reason in plain words."""
     locked = _LockedLedger(ledger)
+    spend = _Spend(budget, session_lock=locked.lock)
     steps: list[AgentStep] = []
     task_list = _TaskList()
     models = {"sonnet": helper_model or model, "opus": model}
@@ -1267,10 +1321,27 @@ def run_agent(
             turn_steps.extend(outcome.step for outcome in ran if outcome.step is not None)
         return [by_id[id(call)] for call in calls], turn_steps
 
+    def review(payload: Mapping[str, Any]) -> str | None:
+        if check is None:
+            return None
+        try:
+            reason = check(parse_answer(_final_text(payload)))
+        except MalformedAnswer:
+            reason = "shape"
+        if reason is None:
+            return None
+        return (
+            "The app could not publish that answer: "
+            + _GUARD_HINTS.get(reason, f"it broke one of the hard rules ({reason}).")
+            + " Write the same answer again, as the JSON object, keeping every hard rule. The "
+            "reviewer has not seen it. Do not mention this note."
+        )
+
     end = yield from _loop(
         model=model,
         first=first,
         run_turn=run_turn,
+        review=review,
         ledger=locked,
         spend=spend,
         max_turns=max_turns,

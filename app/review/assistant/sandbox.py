@@ -206,6 +206,17 @@ def _decode(raw: bytes | None) -> str:
     return (raw or b"").decode("utf-8", errors="replace")
 
 
+#: What the `docker` command itself needs to find the daemon. These reach the Docker CLI on the
+#: host, never the container: `docker run` passes a container only the `--env` it is given.
+_DOCKER_CLI_VARIABLES: Final = ("PATH", "HOME", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG")
+
+
+def _docker_cli_env() -> dict[str, str]:
+    env = {name: os.environ[name] for name in _DOCKER_CLI_VARIABLES if name in os.environ}
+    env.setdefault("PATH", "/usr/bin:/bin:/usr/local/bin")
+    return env
+
+
 @dataclass(slots=True)
 class DockerSandbox:
     """One `docker run` per command in the locked image."""
@@ -265,7 +276,7 @@ class DockerSandbox:
                 capture_output=True,
                 timeout=self.timeout_seconds,
                 check=False,
-                env={"PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/local/bin")},
+                env=_docker_cli_env(),
             )
         except subprocess.TimeoutExpired as expired:
             subprocess.run(
@@ -408,6 +419,7 @@ def docker_image_ready(image: str = DOCKER_IMAGE, docker: str = "docker") -> boo
     try:
         done = subprocess.run(
             [docker, "image", "inspect", image],
+            env=_docker_cli_env(),
             capture_output=True,
             timeout=10,
             check=False,

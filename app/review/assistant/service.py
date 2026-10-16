@@ -714,6 +714,15 @@ def stream_answer(
     )
 
 
+def _guard_reason(draft: Draft, snapshot: ReviewSnapshot) -> str | None:
+    """The guard's reason code for refusing `draft`, or `None` when it passes."""
+    try:
+        check(draft, snapshot)
+    except GuardRejected as rejected:
+        return str(rejected)
+    return None
+
+
 def _agent_answer(
     request: AssistantRequest,
     snapshot: ReviewSnapshot,
@@ -755,6 +764,7 @@ def _agent_answer(
         budget=caps,
         max_turns=runtime.max_tool_turns,
         helper_model=helper,
+        check=lambda draft: _guard_reason(draft, snapshot),
     )
     steps = outcome.steps
     if outcome.stopped == "cost_cap":
