@@ -17,7 +17,8 @@ cap, or the drawing set's spend plus it the set's cap: first with one final, sma
 answer now from what it has, else with no call; the answer says so (`stopped: cost_cap`).
 
 **Helpers always report.** A helper runs on Sonnet when the lead is Opus (else on the lead's model)
-unless the lead names one, and has `helper_max_turns` turns. The helpers the lead starts in one turn
+unless the lead names one, at the lead's effort but never above `HELPER_MAX_EFFORT` (medium), and
+has `helper_max_turns` turns. The helpers the lead starts in one turn
 may together spend `HELPER_SHARE_PERCENT` of what is left of the message cap at that moment; the rest
 stays for the lead to check their reports and answer. Near any of these limits a helper is told
 "wrap up now: report what you found and what you did not get to" and gets one final call without
@@ -63,6 +64,7 @@ from app.review.assistant.chat_request import (
     LEAD_MAX_TOKENS,
     ChatModel,
     call_params,
+    helper_effort,
     helper_thinking,
     inline_pictures,
     picture_sizes,
@@ -96,9 +98,9 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 #: Names the system prompts and tools: a change to either is a new id. (chat-v2: the `Agent`
-#: tool's `model` text names Sonnet as the default.) Only the request's prefix changes; a chat's
-#: stored messages replay unchanged.
-HARNESS_ID: Final = "chat-v2"
+#: tool's `model` text names Sonnet as the default. chat-v3: helpers run at most at medium effort.)
+#: Only the request's prefix changes; a chat's stored messages replay unchanged.
+HARNESS_ID: Final = "chat-v3"
 #: The output allowance of a forced last call (a wrap-up or a final answer at the cap).
 WRAP_UP_MAX_TOKENS: Final = 8000
 FINAL_MAX_TOKENS: Final = 16000
@@ -562,6 +564,7 @@ class ChatEngine:
         self,
         *,
         model: ChatModel,
+        effort: str,
         thinking: Mapping[str, str],
         system: str,
         tools: Sequence[Mapping[str, Any]],
@@ -587,7 +590,7 @@ class ChatEngine:
             params = call_params(
                 provider=self.provider.name,
                 model=model,
-                effort=self.settings.effort,
+                effort=effort,
                 thinking=thinking,
                 system=system,
                 tools=tools,
@@ -947,7 +950,8 @@ class ChatEngine:
     ) -> tuple[str, bool, str | None]:
         """One helper's loop. Always returns a report: (report, ok, stopped)."""
         model = agent.model
-        thinking = helper_thinking(model, self.settings.effort, self.settings.thinking)
+        effort = helper_effort(self.settings.effort)
+        thinking = helper_thinking(model, effort, self.settings.thinking)
         messages: list[dict[str, Any]] = [
             {"role": "user", "content": [{"type": "text", "text": agent.prompt}]}
         ]
@@ -990,6 +994,7 @@ class ChatEngine:
             try:
                 reply = self._call(
                     model=model,
+                    effort=effort,
                     thinking=thinking,
                     system=HELPER_SYSTEM_PROMPT,
                     tools=HELPER_TOOLS,
@@ -1119,6 +1124,7 @@ class ChatEngine:
             try:
                 reply = self._call(
                     model=model,
+                    effort=settings.effort,
                     thinking=thinking,
                     system=LEAD_SYSTEM_PROMPT,
                     tools=LEAD_TOOLS,
