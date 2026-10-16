@@ -26,10 +26,13 @@ from app.review.assistant.chat_provider import (
     failure_from,
 )
 from app.review.assistant.chat_request import (
+    EFFORTS,
+    HELPER_MAX_EFFORT,
     MODELS,
     ChoiceRefused,
     call_params,
     check_choice,
+    helper_effort,
     helper_thinking,
     inline_pictures,
     thinking_config,
@@ -162,6 +165,51 @@ def test_a_helper_on_another_model_never_gets_a_setting_it_refuses() -> None:
     assert helper_thinking(opus, "high", False) == {"type": "adaptive", "display": "summarized"}
     assert helper_thinking(sonnet, "high", False) == {"type": "between_tools"}
     assert helper_thinking(sonnet, "max", False) == {"type": "adaptive", "display": "summarized"}
+
+
+@pytest.mark.parametrize(
+    ("lead", "helper"),
+    [
+        ("low", "low"),
+        ("medium", "medium"),
+        ("high", "medium"),
+        ("xhigh", "medium"),
+        ("max", "medium"),
+    ],
+)
+def test_a_helper_thinks_at_the_leads_effort_but_never_above_medium(lead: str, helper: str) -> None:
+    assert HELPER_MAX_EFFORT == "medium"
+    assert helper_effort(lead) == helper
+
+
+def _accepted(model: str, effort: str, setting: dict[str, str]) -> bool:
+    """Anthropic's rules: adaptive everywhere; Sonnet 5.5's `between_tools` and Haiku 5.5's
+    `disabled` only at effort high or below; Opus 5.5 never thinks off."""
+    if setting == {"type": "adaptive", "display": "summarized"}:
+        return True
+    off = effort in ("low", "medium", "high")
+    if setting == {"type": "between_tools"}:
+        return model == "claude-sonnet-5-5" and off
+    if setting == {"type": "disabled"}:
+        return model == "claude-haiku-5-5" and off
+    return False
+
+
+@pytest.mark.parametrize("model", sorted(MODELS))
+@pytest.mark.parametrize("effort", EFFORTS)
+@pytest.mark.parametrize("on", [True, False])
+def test_a_helpers_thinking_is_accepted_for_its_model_at_its_effort(
+    model: str, effort: str, on: bool
+) -> None:
+    chosen = MODELS[model]
+    # At any effort it is given, and at the effort a helper actually runs at under that lead.
+    assert _accepted(model, effort, helper_thinking(chosen, effort, on))
+    capped = helper_effort(effort)
+    setting = helper_thinking(chosen, capped, on)
+    assert _accepted(model, capped, setting)
+    # Under the cap, a helper whose model can think off follows the lead's "thinking off".
+    if not on and chosen.thinking_off is not None:
+        assert setting == dict(chosen.thinking_off)
 
 
 def test_pictures_are_put_back_the_same_way_every_time() -> None:

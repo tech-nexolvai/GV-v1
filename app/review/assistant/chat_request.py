@@ -9,7 +9,9 @@ are, following Anthropic's rules for each model (CONTRACT, "Models, effort, thin
 | Claude Sonnet 5.5 | the same | `{"type": "between_tools"}`, effort `high` or below |
 | Claude Haiku 5.5 | the same | `{"type": "disabled"}`, effort `high` or below |
 
-Effort goes in `output_config.effort`. No `budget_tokens`, no `temperature`; `tool_choice` is
+Effort goes in `output_config.effort`. A helper's effort is the lead's, but never above
+`HELPER_MAX_EFFORT` (medium): Anthropic's advice is low or medium effort for subagents, and a helper
+at the lead's high effort spent most of a message's money thinking. No `budget_tokens`, no `temperature`; `tool_choice` is
 `auto`, or `none` for a forced final answer. Opus 5.5 and Sonnet 5.5 on Anthropic's own API carry the
 server-side refusal fallback (`fallbacks: "default"`, beta `server-side-fallback-2026-07-01`);
 Haiku 5.5 has no server-side fallback, and OpenRouter takes neither (its keep-no-data routing block
@@ -37,6 +39,7 @@ __all__ = [
     "DEFAULT_MODEL",
     "EFFORTS",
     "FALLBACK_BETA",
+    "HELPER_MAX_EFFORT",
     "HELPER_MAX_TOKENS",
     "LEAD_MAX_TOKENS",
     "MODELS",
@@ -46,6 +49,7 @@ __all__ = [
     "Provider",
     "call_params",
     "check_choice",
+    "helper_effort",
     "helper_thinking",
     "inline_pictures",
     "picture_sizes",
@@ -62,6 +66,8 @@ DEFAULT_MODEL: Final = "claude-opus-5-5"
 DEFAULT_EFFORT: Final = "high"
 LEAD_MAX_TOKENS: Final = 64000
 HELPER_MAX_TOKENS: Final = 32000
+#: The highest effort a helper runs at; the lead keeps the reviewer's pick (`helper_effort`).
+HELPER_MAX_EFFORT: Final = "medium"
 #: The server-side refusal fallback's `"default"` form (Anthropic's own API only).
 FALLBACK_BETA: Final = "server-side-fallback-2026-07-01"
 #: OpenRouter's Anthropic-compatible endpoint; the SDK adds `/v1/messages`.
@@ -161,9 +167,16 @@ def thinking_config(model: ChatModel, thinking: bool) -> dict[str, str]:
     return dict(model.thinking_off)
 
 
+def helper_effort(lead_effort: str) -> str:
+    """A helper's effort: the lead's, or `HELPER_MAX_EFFORT` when the lead's is higher (lead low:
+    low; lead medium, high, xhigh or max: medium)."""
+    return min(lead_effort, HELPER_MAX_EFFORT, key=EFFORTS.index)
+
+
 def helper_thinking(model: ChatModel, effort: str, thinking: bool) -> dict[str, str]:
-    """A helper's `thinking`: the lead's choice where the helper's model takes it, else adaptive
-    (a helper may run on another model, which may not take thinking off at that effort)."""
+    """A helper's `thinking` at the helper's own effort (`helper_effort`): the lead's choice where
+    the helper's model takes it, else adaptive (a helper may run on another model, which may not
+    take thinking off at that effort)."""
     if not thinking and model.thinking_off is not None and effort in _THINKING_OFF_EFFORTS:
         return dict(model.thinking_off)
     return {"type": "adaptive", "display": "summarized"}

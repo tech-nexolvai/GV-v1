@@ -235,7 +235,7 @@ def test_a_tool_turn_runs_the_tool_and_sends_the_reply_back_unchanged(tmp_path: 
     assert [b["type"] for b in outcome.blocks] == ["thinking", "text", "step", "text"]
     assert len(harness.ledger.rows) == 2
     assert {row["prompt_id"] for row in harness.ledger.rows} == {
-        "review-assistant-chat-anthropic-chat-v2"
+        "review-assistant-chat-anthropic-chat-v3"
     }
 
 
@@ -414,10 +414,11 @@ def test_helpers_run_together_and_their_reports_go_back_to_the_lead(tmp_path: Pa
     results = _sent(provider.lead_calls[1])["messages"][-1]["content"]
     assert [r["tool_use_id"] for r in results] == ["ag1", "ag2"]
     assert "Page 4: sink differs." in results[0]["content"][0]["text"]
-    # An Opus lead's helpers run on Sonnet by default, with the lead's effort.
+    # An Opus lead's helpers run on Sonnet by default, at medium effort under a high-effort lead.
     helper_call = _sent(provider.helper_calls["Check pages 6-9"][0])
     assert helper_call["model"] == SONNET and helper_call["max_tokens"] == 32000
-    assert helper_call["output_config"] == {"effort": "high"}
+    assert helper_call["output_config"] == {"effort": "medium"}
+    assert _sent(provider.lead_calls[0])["output_config"] == {"effort": "high"}
     assert [t["name"] for t in helper_call["tools"]] == [
         "bash_tool",
         "view",
@@ -572,6 +573,72 @@ def test_a_model_the_lead_names_for_a_helper_is_used(tmp_path: Path) -> None:
 
     assert _sent(provider.helper_calls[task][0])["model"] == OPUS
     assert events_named(harness.events, "agent_end")[0]["agent"]["ok"] is True
+
+
+@pytest.mark.parametrize(
+    ("lead_model", "helper_model", "lead_effort", "helper_effort", "thinking_on"),
+    [
+        ("claude-opus-5-5", SONNET, "low", "low", True),
+        ("claude-opus-5-5", SONNET, "medium", "medium", True),
+        ("claude-opus-5-5", SONNET, "high", "medium", True),
+        ("claude-opus-5-5", SONNET, "xhigh", "medium", True),
+        ("claude-opus-5-5", SONNET, "max", "medium", True),
+        ("claude-sonnet-5-5", SONNET, "high", "medium", False),
+        ("claude-haiku-5-5", "claude-haiku-5-5", "high", "medium", False),
+    ],
+)
+def test_helpers_think_at_most_at_medium_and_the_lead_keeps_its_effort(
+    tmp_path: Path,
+    lead_model: str,
+    helper_model: str,
+    lead_effort: str,
+    helper_effort: str,
+    thinking_on: bool,
+) -> None:
+    task = "Check pages 1-5"
+    provider = ScriptedProvider(
+        lead=[
+            reply(
+                tool("ag1", "Agent", {"description": "Pages 1-5", "prompt": task}),
+                stop="tool_use",
+                model=lead_model,
+            ),
+            reply(text("Done."), model=lead_model),
+        ],
+        helpers={
+            task: [
+                reply(
+                    tool("h1", "bash_tool", {"command": "pdftotext", "description": "Read"}),
+                    stop="tool_use",
+                    model=helper_model,
+                ),
+                reply(text("Page 4: sink differs."), model=helper_model),
+            ]
+        },
+    )
+    harness = Harness(
+        tmp_path, provider, model=lead_model, effort=lead_effort, thinking_on=thinking_on
+    )
+
+    outcome = harness.run()
+
+    assert outcome.stopped is None
+    lead_calls = [_sent(raw) for raw in provider.lead_calls]
+    helper_calls = [_sent(raw) for raw in provider.helper_calls[task]]
+    assert len(lead_calls) == 2 and len(helper_calls) == 2
+    # The reviewer's pick goes straight into every lead call; every helper call is capped.
+    assert all(call["output_config"] == {"effort": lead_effort} for call in lead_calls)
+    assert all(call["output_config"] == {"effort": helper_effort} for call in helper_calls)
+    lead_model_row = MODELS[lead_model]
+    if thinking_on:
+        assert lead_calls[0]["thinking"] == {"type": "adaptive", "display": "summarized"}
+        assert helper_calls[0]["thinking"] == {"type": "adaptive", "display": "summarized"}
+    else:
+        # Thinking off at the lead's high effort, and still off for the helper at medium.
+        assert lead_calls[0]["thinking"] == dict(lead_model_row.thinking_off or {})
+        assert helper_calls[0]["thinking"] == dict(MODELS[helper_model].thinking_off or {})
+    # Effort is a request setting, never part of the stored history a later turn replays.
+    assert "output_config" not in json.dumps(outcome.api_content)
 
 
 def test_helpers_stop_at_their_share_and_the_lead_keeps_the_rest(tmp_path: Path) -> None:
