@@ -5,7 +5,7 @@ import { getPackage, ApiError, downloadPagePicture } from '@/api/client';
 import { projectId as configuredProjectId } from '@/api/config';
 import { liveDraftCloudApi, makeDraftCloud, type DraftCloudApi } from '@/api/draft-cloud';
 import { liveFinalCloudApi, type FinalCloudApi } from '@/api/final-cloud';
-import { apiUrl, architectCompareCountsOf, architectCompareOf, liveReviewItemsApi, NOT_CHECKED_GROUP, NOT_COMPARED_GROUP, PAGES_GROUP, type ActionExtra, type ArchitectCompareEntry, type ItemAction, type JobValueSuggestion, type ReviewFailure, type ReviewItem, type ReviewItemsApi, type ReviewItemsOut } from '@/api/review-items';
+import { aiReviewOf, apiUrl, architectCompareCountsOf, architectCompareOf, liveReviewItemsApi, NOT_CHECKED_GROUP, NOT_COMPARED_GROUP, PAGES_GROUP, type ActionExtra, type AiReviewRow, type ArchitectCompareEntry, type ItemAction, type JobValueSuggestion, type ReviewFailure, type ReviewItem, type ReviewItemsApi, type ReviewItemsOut } from '@/api/review-items';
 import { agreeAction, disagreeAction, leftWords, openNoCountertopPages, openPagesToDecide, orderItems, proposedWall, summarize, whereWord } from '@/lib/review-items';
 import type { AssistantRecords } from '@/lib/assistant';
 import { AssistantPanel, type AssistantNavigation } from '@/components/assistant/assistant-panel';
@@ -27,6 +27,8 @@ import { RecordedNumbersPanel, type RecordedPanelSubject } from '@/components/si
 import { liveRecordedNumbers, type RecordedNumbersLoader } from '@/components/simple-review/recorded-numbers-lib';
 import type { ViewerItem } from '@/components/simple-review/dual-pdf-viewer';
 import { ArchitectCompare } from '@/components/simple-review/architect-compare';
+import { AiReview } from '@/components/simple-review/ai-review';
+import { aiReviewEntries, aiReviewWhat } from '@/components/simple-review/ai-review-lib';
 import { compareWhat, notComparedKeys } from '@/components/simple-review/architect-compare-lib';
 
 // "Open PDFs" opens both full drawings side by side (U3, #1355), loaded only when first opened.
@@ -499,6 +501,21 @@ export function SimpleReviewPage({
     else setViewer((now) => ({ opening: (now?.opening ?? 0) + 1, item: at, recorded: null }));
   }
 
+  // An AI page review row's Look: both drawings at its page, the vendor's number ringed when recorded.
+  function lookAtAiRow(row: AiReviewRow, page: number) {
+    const location = row.architect_ref ? { ...row.architect_ref, page_id: '', coordinate_space: 'stored' } : null;
+    const at: ViewerItem = {
+      key: row.key,
+      page: row.vendor_box?.page_number ?? page,
+      what: aiReviewWhat(row),
+      status: row.status,
+      vendor_ref: row.vendor_box ? { ...row.vendor_box, page_id: '', coordinate_space: 'stored' } : null,
+      architect_ref: { location, reason: location ? null : "No spot on the architect's drawing was recorded for this number." },
+    };
+    if (onOpenPdfs) onOpenPdfs(at);
+    else setViewer((now) => ({ opening: (now?.opening ?? 0) + 1, item: at, recorded: null }));
+  }
+
   // A job value's Look (#1409): the side-by-side viewer at the page the reader found it on, ringed.
   function lookAtJobValue(found: JobValueSuggestion, name: string) {
     const at: ViewerItem = { key: `job-value:${found.name}`, page: found.page, what: `${name} ${found.value}`, status: 'open', vendor_ref: null, architect_ref: { location: found.location ?? null, reason: found.location ? null : 'The reader recorded no spot for this value.' } };
@@ -633,7 +650,8 @@ export function SimpleReviewPage({
       return;
     }
     if (listed.not_checked.some((entry) => entry.key === key)) setNotCheckedOpen(true);
-    const known = architectCompareOf(listed).some((entry) => entry.key === key) || listed.failures.some((entry) => entry.key === key) || listed.not_checked.some((entry) => entry.key === key) || pagesAsked.some((item) => item.key === key) || pagesToDecide.some((item) => item.key === key);
+    const aiListed = aiReviewOf(listed);
+    const known = (aiListed !== null && aiReviewEntries(aiListed).some((entry) => entry.row.key === key)) || architectCompareOf(listed).some((entry) => entry.key === key) || listed.failures.some((entry) => entry.key === key) || listed.not_checked.some((entry) => entry.key === key) || pagesAsked.some((item) => item.key === key) || pagesToDecide.some((item) => item.key === key);
     if (known) {
       focusWhenShown(key);
       return;
@@ -763,8 +781,18 @@ export function SimpleReviewPage({
                 </p>
 
                 <div className="flex flex-col gap-10 pt-2">
-                  {/* First: every architect number set beside the vendor's. Hidden for older packages. */}
-                  <ArchitectCompare
+                  {/* First: the AI page review, every architect number beside the vendor's. Hidden when absent. */}
+                  <AiReview
+                    review={aiReviewOf(data)}
+                    onLook={lookAtAiRow}
+                    busyKey={busy?.key ?? null}
+                    errors={errors}
+                    // An AI review row names no finding: the key is what W3 checks.
+                    onAct={(row, action) => void act(row.key, action, null)}
+                  />
+
+                  {/* The old direct compare, only for a package with no AI page review (#1421). */}
+                  {aiReviewOf(data) === null && <ArchitectCompare
                     entries={architectCompareOf(data)}
                     counts={architectCompareCountsOf(data)}
                     onLook={lookAtCompare}
@@ -774,7 +802,7 @@ export function SimpleReviewPage({
                     onAct={(entry, action) => void act(entry.key, action, null)}
                     groupKey={NOT_COMPARED}
                     onClearNotCompared={() => void clearNotCompared()}
-                  />
+                  />}
 
                   <FailuresStrip
                     failures={data.failures}

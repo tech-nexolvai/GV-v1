@@ -1,0 +1,223 @@
+import { useId, useState } from 'react';
+import { Check, ChevronRight, CircleDashed, Equal, FileSearch, HelpCircle, Loader2, Minus, X } from 'lucide-react';
+
+import { isItemAction, type AiReviewOut, type AiReviewPage, type AiReviewResult, type AiReviewRow, type ItemAction } from '@/api/review-items';
+import { ANSWER_WORDS, aiReviewEntries, aiReviewSummary, aiReviewWhat, answeredWord, GROUP_OF, GROUP_TITLE, type AiReviewEntry, type AiReviewGroup } from './ai-review-lib';
+import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
+import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
+import { NumText, PageTag } from './words';
+import type { SaveError } from './failures-strip';
+
+/** The glyph and word for one result: never colour alone. Only Different is coloured; the rest are calm greys. */
+function ResultWord({ result }: { result: AiReviewResult }) {
+  if (result === 'different') {
+    return (
+      <span data-slot="ai-review-word" className="inline-flex items-center gap-1.5 text-[13px] font-medium text-outcome-fail-fg">
+        <OutcomeIcon outcome="FAIL" size={14} />
+        Different
+      </span>
+    );
+  }
+  const [Glyph, word] =
+    result === 'same' ? [Equal, 'Same'] : result === 'not_shown' ? [Minus, 'Not shown'] : result === 'unsure' ? [HelpCircle, 'Unsure'] : [CircleDashed, 'Unreadable'];
+  return (
+    <span data-slot="ai-review-word" className="inline-flex items-center gap-1.5 text-[13px] text-muted-foreground">
+      <Glyph aria-hidden="true" className="size-3.5" />
+      {word}
+    </span>
+  );
+}
+
+/** The numbers side by side, in the number face, with what they measure and the page. */
+function Numbers({ row, page }: { row: AiReviewRow; page: number }) {
+  return (
+    <span className="block min-w-0 break-words text-[15px] text-foreground">
+      Architect <span className="num">{row.architect_text}</span>
+      {row.vendor_text !== null && (
+        <>
+          {' '}
+          vs vendor <span className="num">{row.vendor_text}</span>
+        </>
+      )}
+      <PageTag page={page} className="ml-2" />
+      {row.measures && <NumText text={row.measures} className="block text-[13px] leading-5 text-muted-foreground" />}
+    </span>
+  );
+}
+
+/** What the rows need from the page: who is saving, what failed, and how to answer. */
+interface Answers {
+  busyKey: string | null;
+  errors: Readonly<Record<string, SaveError>>;
+  onAct: (row: AiReviewRow, action: ItemAction) => void;
+}
+
+function Row({ entry, onLook, answers }: { entry: AiReviewEntry; onLook: (row: AiReviewRow, page: number) => void; answers: Answers }) {
+  const { row, page } = entry;
+  const what = aiReviewWhat(row);
+  // Only the answers the server lists, and only ones this page can name; none once answered.
+  const offered = row.status === 'open' ? row.actions.filter(isItemAction).filter((action) => action in ANSWER_WORDS) : [];
+  const busy = answers.busyKey === row.key;
+  const error = answers.errors[row.key];
+  return (
+    <li data-slot="ai-review-row" data-entry-key={row.key} data-result={row.result} tabIndex={-1} className="flex min-h-14 flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2 outline-none focus-visible:bg-accent/60 sm:px-6">
+      <span className="shrink-0 basis-full sm:w-28 sm:basis-auto">
+        <ResultWord result={row.result} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <Numbers row={row} page={page} />
+        {row.result !== 'same' && row.why && <NumText text={row.why} className="block text-[13px] leading-5 text-muted-foreground" />}
+      </span>
+      <span className="flex min-w-0 shrink-0 flex-wrap items-center gap-1">
+        <Button size="sm" variant="ghost" onClick={() => onLook(row, page)} aria-label={`Look at ${what}, page ${page}`}>
+          <FileSearch aria-hidden="true" />
+          Look
+        </Button>
+        {offered.map((action) => (
+          <Button key={action} size="sm" variant="outline" disabled={answers.busyKey !== null} onClick={() => answers.onAct(row, action)} aria-label={`${ANSWER_WORDS[action]}: ${what}`}>
+            {busy ? <Loader2 aria-hidden="true" className="animate-spin motion-reduce:animate-none" /> : action === 'agree' ? <X aria-hidden="true" /> : <Check aria-hidden="true" />}
+            {ANSWER_WORDS[action]}
+          </Button>
+        ))}
+        {row.status === 'done' && row.result === 'different' && (
+          <span data-testid="ai-review-answered" className="inline-flex items-center gap-1.5 text-[13px] text-muted-foreground">
+            <Check aria-hidden="true" className="size-3.5" />
+            {answeredWord(row.answer)}
+            {row.answered_by ? ` · ${row.answered_by}` : ''}
+          </span>
+        )}
+      </span>
+      {error && (
+        <p role="alert" className="flex basis-full flex-wrap items-center gap-2 text-[13px] text-outcome-fail-fg">
+          {error.message}
+          <Button size="xs" variant="ghost" onClick={error.retry}>Retry</Button>
+        </p>
+      )}
+    </li>
+  );
+}
+
+function Group({ group, entries, defaultOpen, onLook, answers }: { group: AiReviewGroup; entries: readonly AiReviewEntry[]; defaultOpen: boolean; onLook: (row: AiReviewRow, page: number) => void; answers: Answers }) {
+  const [open, setOpen] = useState(defaultOpen);
+  const listId = useId();
+  if (entries.length === 0) return null;
+  const title = GROUP_TITLE[group];
+  return (
+    <div data-slot="ai-review-group" data-group={group} className="border-t border-border first:border-t-0">
+      <h3>
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls={listId}
+          onClick={() => setOpen((now) => !now)}
+          className="flex min-h-11 w-full items-center gap-2 px-4 text-left text-[15px] font-medium outline-none focus-visible:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring sm:px-6"
+        >
+          <ChevronRight aria-hidden="true" className={cn('size-4 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none', open && 'rotate-90')} />
+          {title}
+          <span className="num text-[13px] font-normal text-muted-foreground">{entries.length}</span>
+          {!open && <span className="ml-auto text-[13px] font-normal text-muted-foreground">Show</span>}
+        </button>
+      </h3>
+      {open && (
+        <ul id={listId} aria-label={title} className="divide-y divide-border border-t border-border">
+          {entries.map((entry) => (
+            <Row key={entry.row.key} entry={entry} onLook={onLook} answers={answers} />
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** A page still being read, one that failed, or one not read: in plain words, never silent. */
+function PageLine({ page }: { page: AiReviewPage }) {
+  if (page.status === 'running') {
+    return (
+      <li role="status" className="flex items-center gap-1.5">
+        <Loader2 aria-hidden="true" className="size-3.5 shrink-0 animate-spin motion-reduce:animate-none" />
+        <span>
+          AI is reading page <span className="num">{page.page}</span>…
+        </span>
+      </li>
+    );
+  }
+  if (page.status === 'failed') {
+    return (
+      <li className="flex items-start gap-1.5">
+        <OutcomeIcon outcome="REVIEW_REQUIRED" size={14} className="mt-0.5 shrink-0" />
+        <span className="min-w-0 break-words">
+          Couldn't read page <span className="num">{page.page}</span>
+          {page.reason ? <>: <NumText text={page.reason} /></> : '.'}
+        </span>
+      </li>
+    );
+  }
+  return (
+    <li className="flex items-center gap-1.5">
+      <Minus aria-hidden="true" className="size-3.5 shrink-0" />
+      <span>
+        Page <span className="num">{page.page}</span> was not read by the AI.
+      </span>
+    </li>
+  );
+}
+
+/**
+ * "Compared with the architect", the AI page review: per sheet, every architect number set beside
+ * the vendor's of the same span. Different rows are open with two answers; unsure and unreadable ones
+ * are open but need nothing; same and not-shown rows are folded. Pages still being read, or that
+ * could not be read, are said in words. Look opens both drawings at the row. Hidden when absent.
+ * It works nothing out itself: results, counts and answers are the server's.
+ */
+export function AiReview({
+  review,
+  onLook,
+  busyKey = null,
+  errors = {},
+  onAct = () => undefined,
+}: {
+  review: AiReviewOut | null;
+  onLook: (row: AiReviewRow, page: number) => void;
+  busyKey?: string | null;
+  errors?: Readonly<Record<string, SaveError>>;
+  onAct?: (row: AiReviewRow, action: ItemAction) => void;
+}) {
+  if (!review || review.pages.length === 0) return null;
+  const entries = aiReviewEntries(review);
+  const answers: Answers = { busyKey, errors, onAct };
+  const by = (group: AiReviewGroup) => entries.filter((entry) => GROUP_OF[entry.row.result] === group);
+  const notDone = review.pages.filter((page) => page.status !== 'done');
+  const groups: { group: AiReviewGroup; open: boolean }[] = [
+    { group: 'different', open: true },
+    { group: 'unsure', open: true },
+    { group: 'same', open: false },
+    { group: 'not_shown', open: false },
+  ];
+  return (
+    <section aria-labelledby="ai-review-title" data-slot="ai-review" className="flex min-w-0 flex-col gap-3">
+      <div className="flex flex-col gap-1">
+        <h2 id="ai-review-title" className="text-[20px] leading-7 font-semibold tracking-[-0.01em]">
+          Compared with the architect
+        </h2>
+        <p data-testid="ai-review-summary" className="text-[13px] text-muted-foreground">
+          <NumText text={aiReviewSummary(review)} />
+        </p>
+        {notDone.length > 0 && (
+          <ul data-testid="ai-review-pages" className="flex flex-col gap-1 text-[13px] text-muted-foreground">
+            {notDone.map((page) => (
+              <PageLine key={page.page} page={page} />
+            ))}
+          </ul>
+        )}
+      </div>
+      {entries.length > 0 && (
+        <div className="overflow-hidden rounded-xl border border-border">
+          {groups.map(({ group, open }) => (
+            <Group key={group} group={group} entries={by(group)} defaultOpen={open} onLook={onLook} answers={answers} />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
