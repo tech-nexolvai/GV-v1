@@ -122,6 +122,28 @@ class Settings(BaseSettings):
     review_assistant_timeout_seconds: int = Field(default=60, ge=1, le=300)
     # How many earlier turns of the conversation are sent with a question (the request takes <= 6).
     review_assistant_max_history_turns: int = Field(default=6, ge=0, le=6)
+    # The chat-first assistant (#1463): saved chats per drawing set, the model, effort and thinking
+    # the reviewer picks, claude.ai's tools in a locked sandbox. `auto` uses Anthropic's own API
+    # when `ANTHROPIC_API_KEY` is set, else OpenRouter's keep-no-data route (`OPENROUTER_API_KEY`);
+    # `anthropic` / `openrouter` force one. With neither key the chat says it cannot answer.
+    assistant_provider: Literal["auto", "anthropic", "openrouter"] = "auto"
+    # Each chat's folder: the set's PDFs, its home, its outputs, the pictures it looked at and the
+    # files it handed over. Client data stays on this machine.
+    assistant_chat_root: Path = Field(
+        default_factory=lambda: Path.home() / "gv-local" / "assistant-chats"
+    )
+    # What one message may spend, and what all the chats of one drawing set may spend together.
+    assistant_message_cap_usd: Decimal = Field(default=Decimal("5"), gt=0, allow_inf_nan=False)
+    assistant_package_cap_usd: Decimal = Field(default=Decimal("40"), gt=0, allow_inf_nan=False)
+    # Tool turns: the lead's per message, and each helper's.
+    assistant_lead_max_turns: int = Field(default=40, ge=1, le=100)
+    assistant_helper_max_turns: int = Field(default=20, ge=1, le=50)
+    # One sandbox command's time limit, and which sandbox runs it (`auto`: the Docker image
+    # `gv-assistant-sandbox` when built and Docker answers, else macOS `sandbox-exec`).
+    assistant_command_timeout_seconds: int = Field(default=120, ge=5, le=900)
+    assistant_sandbox: Literal["auto", "docker", "macos"] = "auto"
+    # One model call's time limit (a streamed call with long thinking can take minutes).
+    assistant_call_timeout_seconds: int = Field(default=900, ge=30, le=3600)
     # The Usage page can show what OpenRouter reports this key has used (all projects using the
     # key), beside the recorded total (#1165): a free, read-only request with `OPENROUTER_API_KEY`.
     # Off by default, and off whenever no key is set.

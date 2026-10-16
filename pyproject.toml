@@ -87,6 +87,10 @@ platform = [
     # the day the SDK reorganises its own requirements.
     "opentelemetry-api",
     "opentelemetry-sdk",
+    # MIT. The official Anthropic SDK, for the chat-first assistant's streamed calls (#1463), to
+    # Anthropic's own API or, pointed at OpenRouter's Anthropic-compatible endpoint, to OpenRouter.
+    # 1.15 is the first release with `fallbacks` and `thinking: between_tools` typed.
+    "anthropic>=1.15,<2",
 ]
 
 # Phase 7 — reports and redlines. Licences checked when D2.1 (#225) first imported them:
