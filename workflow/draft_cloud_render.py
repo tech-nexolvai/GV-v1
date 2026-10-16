@@ -46,7 +46,13 @@ from app.models.rules import RuleDefinition, RuleSnapshot
 from app.models.verdicts import CheckRun, Finding, OutputArtifact, OutputArtifactKind
 from app.review.approval import approval_readiness
 from app.review.reviewer_marks import is_not_checked, live_decisions, reviewer_marks_for
-from reports.redline import ArchitectCompare, ReviewerMark
+from reports.redline import (
+    AI_REVIEW_NOTE,
+    ARCHITECT_DIFFERENT_GLYPH,
+    AiReviewCounts,
+    ArchitectCompare,
+    ReviewerMark,
+)
 from storage.store import ArtifactStore
 from verdict.outcomes import Outcome
 from workflow.draft_cloud import (
@@ -140,7 +146,16 @@ def open_items(
     not_checked: list[OpenItem] = []
     settled: list[OpenItem] = []
     not_checked_ids: set[UUID] = set()
+    # The very switch the review screen and sign-off read (`arch_compare_records_on`), so the
+    # front page and the screen count the same rows.
+    from app.review.architect_compare import arch_compare_records_on
+
+    old_compare = arch_compare_records_on()
     for finding, _run, _snapshot, definition in rows:
+        if definition.rule_id == OLD_COMPARE_RULE and not old_compare:
+            # The old row-by-row compare is switched off (`GV_ARCH_COMPARE_RECORDS`): its
+            # leftover "nothing was compared" row is not an open item, as on the review screen.
+            continue
         item = OpenItem(_label(finding, definition.rule_id), _reason(finding))
         if finding.outcome == Outcome.FAIL.value:
             failures.append(item)
@@ -182,6 +197,9 @@ ARCHITECT_COMPARE_MODULE: Final = "app.review.architect_compare"
 
 #: Where the AI page review's rows are read (the same function the review items use).
 AI_REVIEW_MODULE: Final = "app.review.ai_review"
+
+#: The old architect check's rule; its rows are open items only while the old compare is on.
+OLD_COMPARE_RULE: Final = "CT-ARCH-WIDTH-001"
 
 #: The setting that switches the old direct-compare pipeline on (`GV_ARCH_COMPARE_RECORDS`).
 OLD_COMPARE_SETTING: Final = "arch_compare_records"
@@ -329,6 +347,7 @@ def render_draft_cloud(
         requested_by=requested_by,
         made_at=now(),
         results=len(rows),
+        architect=architect,
     )
     document = with_banner(front, store.get(drawing.artifact.key).read())
 
@@ -388,6 +407,7 @@ def _front_page(
     requested_by: str,
     made_at: datetime,
     results: int,
+    architect: ArchitectCompare | None = None,
 ) -> bytes:
     width, height = letter
     buffer = BytesIO()
@@ -428,9 +448,22 @@ def _front_page(
         f"wrong, {len(items.needs_a_person)} need a person, {len(items.not_checked)} not checked."
     )
     line("")
+    # The AI page review's differences are clouded by themselves; no person answers them
+    # (decision 2026-10-16), so they are their own section, never "needs a person".
+    ai = (
+        architect
+        if architect is not None and isinstance(architect.counts, AiReviewCounts)
+        else None
+    )
+    nobody = (
+        "None. No result is waiting for a person; the AI differences below are clouded by "
+        "themselves."
+        if ai is not None and ai.different
+        else "None. Nothing is waiting for a person."
+    )
     for title, entries, empty in (
         ("Will be clouded as wrong", items.failures, "None. No result is wrong."),
-        ("Needs a person", items.needs_a_person, "None. Nothing is waiting for a person."),
+        ("Needs a person", items.needs_a_person, nobody),
     ):
         line(f"{title} ({len(entries)})", font="Helvetica-Bold", at=12.0)
         if not entries:
@@ -438,6 +471,19 @@ def _front_page(
         for entry in entries:
             paragraph(entry.label)
             paragraph(entry.reason, "    ")
+        line("")
+    if ai is not None:
+        line(
+            f"Compared with the architect (AI read) ({len(ai.different)} different)",
+            font="Helvetica-Bold",
+            at=12.0,
+        )
+        paragraph(ai.counts.line)
+        paragraph(AI_REVIEW_NOTE)
+        for number, difference in enumerate(ai.different, start=1):
+            # The front page is plain Helvetica, which has no ✗: the heading says "different".
+            words = difference.words.removeprefix(f"{ARCHITECT_DIFFERENT_GLYPH} ")
+            paragraph(f"A{number} {words} \u2014 {difference.subject}")
         line("")
     line(f"{NOT_CHECKED} ({len(items.not_checked)})", font="Helvetica-Bold", at=12.0)
     if not items.not_checked:

@@ -1,4 +1,4 @@
-import { CheckCheck, CircleAlert, RotateCcw } from 'lucide-react';
+import { CheckCheck, CircleAlert, Lock, RotateCcw } from 'lucide-react';
 
 import { ApiError } from '@/api/client';
 import { Button } from '@/components/ui/button';
@@ -28,8 +28,20 @@ export function ReviewSkeleton() {
   );
 }
 
-/** Nothing on the page waits for a person. */
-export function NothingNeedsYou({ checked, signedOff = false }: { checked: number; signedOff?: boolean }) {
+/**
+ * Nothing on the page waits for a person. While the server still blocks sign-off (`blocked`, its own
+ * words), it never says "Nothing needs you": it says nothing is left to answer and why sign-off waits.
+ */
+export function NothingNeedsYou({ checked, signedOff = false, blocked = null }: { checked: number; signedOff?: boolean; blocked?: string | null }) {
+  if (blocked && !signedOff) {
+    return (
+      <div role="status" data-slot="nothing-needs-you" data-blocked="" className="flex flex-col items-center gap-2 rounded-xl border border-border px-6 py-12 text-center">
+        <Lock aria-hidden="true" className="size-7 text-muted-foreground" />
+        <p className="text-[20px] leading-7 font-semibold text-foreground">Nothing to answer, but sign-off is waiting</p>
+        <p className="max-w-[52ch] text-[15px] leading-6 text-muted-foreground">{blocked}</p>
+      </div>
+    );
+  }
   return (
     <div role="status" data-slot="nothing-needs-you" className="flex flex-col items-center gap-2 rounded-xl border border-border px-6 py-12 text-center">
       <CheckCheck aria-hidden="true" className="size-7 text-muted-foreground" />

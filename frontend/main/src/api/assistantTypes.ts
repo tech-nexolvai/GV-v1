@@ -84,6 +84,10 @@ export interface AssistantAnswer {
   sources: string[];
   /** The page whose two drawings the model was shown for this answer (#1431), else null or absent. */
   looked_at_page?: number | null;
+  /** The page the question was about whose pictures were not shown to the model (QA 2026-10-16), else null or absent. */
+  not_looked_at_page?: number | null;
+  /** Why: `cost_cap`, the question was over its cost cap with the pictures. */
+  not_looked_at_reason?: 'cost_cap' | null;
 }
 
 /**

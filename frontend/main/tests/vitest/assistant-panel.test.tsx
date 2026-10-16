@@ -415,6 +415,19 @@ describe('assistant panel', () => {
     expect(document.querySelectorAll('[data-slot="assistant-looked-at"]')).toHaveLength(1);
   });
 
+  it('says when it answered without looking at the page, and why (QA 2026-10-16)', async () => {
+    const user = userEvent.setup();
+    server.replies.push([
+      { event: 'answer', data: answer({ text: 'Records-only answer.', looked_at_page: null, not_looked_at_page: 4, not_looked_at_reason: 'cost_cap' }) },
+    ]);
+    mount();
+    await user.type(composer(), 'One{Enter}');
+    await screen.findByText('Records-only answer.');
+    const line = thread().getByText('Answered without looking at page 4: cost cap');
+    expect(line.getAttribute('data-slot')).toBe('assistant-not-looked-at');
+    expect(document.querySelectorAll('[data-slot="assistant-looked-at"]')).toHaveLength(0);
+  });
+
   it('marks every AI-written answer as an AI reading, never a code-written one (2026-10-16)', async () => {
     const user = userEvent.setup();
     server.replies.push(

@@ -332,6 +332,12 @@ export function AssistantPanel({
                       Looked at page {turn.answer.looked_at_page}
                     </p>
                   )}
+                  {turn.answer.looked_at_page == null && turn.answer.not_looked_at_page != null && (
+                    <p data-slot="assistant-not-looked-at" className="text-xs text-muted-foreground">
+                      Answered without looking at page {turn.answer.not_looked_at_page}
+                      {turn.answer.not_looked_at_reason === 'cost_cap' ? ': cost cap' : ''}
+                    </p>
+                  )}
                   {turn.answer.mode === 'llm' && (
                     <p data-slot="assistant-ai-reading" className="text-xs text-muted-foreground">
                       AI reading of the drawing — not a decision
