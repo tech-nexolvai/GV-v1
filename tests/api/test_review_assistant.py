@@ -244,6 +244,9 @@ def test_off_a_starter_is_answered_from_the_records(postgres_engine) -> None:  #
         "looked_at_page",
         "not_looked_at_page",
         "not_looked_at_reason",
+        "steps",
+        "stopped",
+        "plan",
     }
     assert answer["looked_at_page"] is None, "no model looked at a page for a records answer"
     assert answer["not_looked_at_page"] is None, "no page was asked about, so none was left out"
