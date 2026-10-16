@@ -3,7 +3,8 @@ import { NumText } from './words';
 
 /**
  * What to check on a countertop checked by hand: each piece (what the AI read, or why it could not),
- * the overall the pieces must add up to, and the walls note when one was recorded. Every word and
+ * the overall the pieces must add up to, and the walls note when one was recorded. A row held as a
+ * whole says its reason once at the top; its stored pieces show their inches tagged "not used". Every word and
  * number is the server's, from the stored records; nothing is added up or decided here.
  */
 export function WhatToCheckBlock({ block }: { block: WhatToCheck }) {
@@ -13,6 +14,11 @@ export function WhatToCheckBlock({ block }: { block: WhatToCheck }) {
       <h3 id="what-to-check-title" className="text-[13px] font-semibold text-foreground">
         What to check
       </h3>
+      {block.row_reason && (
+        <p data-testid="what-to-check-row-reason" className="text-[13px] leading-5 font-medium text-outcome-review-fg">
+          {block.row_reason}
+        </p>
+      )}
       {pieces.length > 0 ? (
         <ul className="flex flex-col divide-y divide-border rounded-lg border border-border bg-background text-[13px]">
           {pieces.map((piece, index) => (
@@ -28,7 +34,13 @@ export function WhatToCheckBlock({ block }: { block: WhatToCheck }) {
               </span>
               {piece.kind && <span className="text-muted-foreground">{piece.kind}</span>}
               {piece.value ? (
-                <span className="num font-medium text-foreground">{piece.value}</span>
+                <>
+                  <span className="num font-medium text-foreground">{piece.value}</span>
+                  {piece.mm && <span className="num text-muted-foreground">{piece.mm}</span>}
+                  {piece.not_used && (
+                    <span className="rounded border border-border px-1.5 text-xs leading-4 text-muted-foreground">not used</span>
+                  )}
+                </>
               ) : (
                 <span className="text-outcome-review-fg">Couldn't read</span>
               )}

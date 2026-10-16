@@ -6184,6 +6184,17 @@ export interface components {
              */
             kind?: string | null;
             /**
+             * Mm
+             * @description The millimetres printed with the inches, e.g. `457 mm` for a `457 [18]` label: shown muted beside the value, which is the inches. Null when none was printed.
+             */
+            mm?: string | null;
+            /**
+             * Not Used
+             * @description True when the row is held as a whole: the value is what is stored for the piece, but the check does not use it (the row's reason is the block's `row_reason`).
+             * @default false
+             */
+            not_used: boolean;
+            /**
              * Note
              * @description Why it could not be read, or why a read value is not confirmed yet, in plain words. Null for a confirmed reading.
              */
@@ -9185,6 +9196,11 @@ export interface components {
             overall_note?: string | null;
             /** Pieces */
             pieces?: components["schemas"]["PieceToCheckOut"][];
+            /**
+             * Row Reason
+             * @description Why the whole row is held (a tall appliance, a split row, stone into pockets, ...), said once for the block in plain words; null when only numbers are held.
+             */
+            row_reason?: string | null;
             /**
              * Rule
              * @description The plain rule: what the pieces should add up to.
