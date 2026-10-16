@@ -102,6 +102,7 @@ from app.review.depth_readings import depth_readings_for
 from app.review.requirements import BLOCKING_OUTCOMES
 from app.review.reviewed_readings import ReviewedReading, reviewed_readings
 from app.review.row_location import RowLocation
+from app.review.signed_record import ReviewDisposition
 from app.review.waiting_values import missing_settings_for, settings_set_now
 from app.review.wall_cases import unavailable_reason
 from app.schemas.findings import DepthReadingOut
@@ -396,6 +397,14 @@ class ReviewItemOut(BaseModel):
     status: Status
     decided_by: str | None = None
     decided_at: datetime | None = None
+    checked_wrong_by_hand: bool = Field(
+        default=False,
+        description=(
+            'True when the standing answer is "Checked by hand: wrong" (#1358), read from the '
+            "signed record's own mark (`ReviewDisposition.checked_wrong_by_hand`), never from words. "
+            'The screen then says "Checked by hand: WRONG"; the result stays as recorded.'
+        ),
+    )
     finding_id: UUID | None = None
     row_id: UUID | None = None
     candidate_id: UUID | None = None
@@ -472,6 +481,14 @@ class FailureOut(BaseModel):
     status: Status
     decided_by: str | None = None
     decided_at: datetime | None = None
+    checked_wrong_by_hand: bool = Field(
+        default=False,
+        description=(
+            'True when the standing answer is "Checked by hand: wrong" (#1358), read from the '
+            "signed record's own mark (`ReviewDisposition.checked_wrong_by_hand`), never from words. "
+            'The screen then says "Checked by hand: WRONG"; the result stays as recorded.'
+        ),
+    )
 
 
 class NotCheckedOut(BaseModel):
@@ -497,6 +514,14 @@ class NotCheckedOut(BaseModel):
     status: Status
     decided_by: str | None = None
     decided_at: datetime | None = None
+    checked_wrong_by_hand: bool = Field(
+        default=False,
+        description=(
+            'True when the standing answer is "Checked by hand: wrong" (#1358), read from the '
+            "signed record's own mark (`ReviewDisposition.checked_wrong_by_hand`), never from words. "
+            'The screen then says "Checked by hand: WRONG"; the result stays as recorded.'
+        ),
+    )
 
 
 class UnaccountedOut(BaseModel):
@@ -1469,6 +1494,16 @@ def review_items_for_revision(
     )
 
     numbers = [candidate for row in rows for candidate in row.candidates if _slot(candidate) != -1]
+    # "Checked by hand: wrong" (#1358): the signed record's own mark on the standing decision,
+    # so the screen, the draft cover and the cloud PDF all count the same answer.
+    wrong = {
+        finding_id
+        for finding_id, decision in records.decisions.items()
+        if _checked_wrong(decision.action)
+    }
+    items = [_marked_wrong(item, wrong) for item in items]
+    failures = [_marked_wrong(item, wrong) for item in failures]
+    not_checked = [_marked_wrong(item, wrong) for item in not_checked]
     everything: list[ReviewItemOut | FailureOut | NotCheckedOut] = [
         *items,
         *failures,
@@ -2015,6 +2050,26 @@ def _walls_only_open(result: CountertopResultOut, row: SlotRow | None, finding: 
         # The check ran on a layout: the walls are not the question.
         return False
     return not _answer_used(row, finding)
+
+
+def _checked_wrong(action: object) -> bool:
+    """Whether a stored review action is "Checked by hand: wrong" (#1358), by the signed record's
+    own mark (`ReviewDisposition.checked_wrong_by_hand`), never by matching the words."""
+    return ReviewDisposition(
+        action_id=action.id,  # type: ignore[attr-defined]
+        action=action.action,  # type: ignore[attr-defined]
+        reviewer=action.actor,  # type: ignore[attr-defined]
+        at=action.created_at,  # type: ignore[attr-defined]
+        note=action.note,  # type: ignore[attr-defined]
+    ).checked_wrong_by_hand
+
+
+def _marked_wrong[Out: (ReviewItemOut, FailureOut, NotCheckedOut)](
+    item: Out, wrong: set[UUID]
+) -> Out:
+    if item.status == "done" and item.finding_id is not None and item.finding_id in wrong:
+        return item.model_copy(update={"checked_wrong_by_hand": True})
+    return item
 
 
 def _answer_newer(row: SlotRow | None, finding: Finding) -> bool:

@@ -1492,6 +1492,8 @@ def _refuse_while_checks_run(session: Session, revision: PackageRevision) -> Non
         .where(
             OutboxEntry.workflow == RUN_CHECKS_WORKFLOW,
             OutboxEntry.dispatched_at.is_(None),
+            # An abandoned run is never handed to the worker: it is not running (QA 2026-10-16).
+            OutboxEntry.abandoned_at.is_(None),
             OutboxEntry.payload["package_revision_id"].astext == str(revision.id),
         )
         .limit(1)
