@@ -75,6 +75,26 @@ export function drivenStream() {
   };
 }
 
+/** A fake follow of a running message (#1479), driven like `drivenStream`. */
+export function drivenFollow() {
+  let handler: (event: ChatEvent) => void = () => {};
+  let resolve: (message: ChatMessage) => void = () => {};
+  const follow = vi.fn<ChatApi['follow']>((_chatId, _messageId, onEvent, signal) =>
+    new Promise<ChatMessage>((done, failed) => {
+      handler = onEvent;
+      resolve = done;
+      signal?.addEventListener('abort', () => failed(new DOMException('The stream was stopped', 'AbortError')));
+    }));
+  return {
+    follow,
+    emit: (...events: ChatEvent[]) => events.forEach((event) => handler(event)),
+    end: (message: ChatMessage) => {
+      handler({ event: 'message_end', data: { message } });
+      resolve(message);
+    },
+  };
+}
+
 export function fakeChatApi(change: Partial<ChatApi> = {}): ChatApi & { [K in keyof ChatApi]: ReturnType<typeof vi.fn> & ChatApi[K] } {
   return {
     models: vi.fn(async () => modelsOut()),
@@ -82,6 +102,7 @@ export function fakeChatApi(change: Partial<ChatApi> = {}): ChatApi & { [K in ke
     create: vi.fn(async () => ({ id: 'c-new', title: null, created_at: '2026-10-17T10:00:00Z' })),
     get: vi.fn(async (id: string) => chatOut(id)),
     send: vi.fn(async () => SAVED_ANSWER),
+    follow: vi.fn(async () => SAVED_ANSWER),
     cancel: vi.fn(async () => ({ cancelled: true })),
     ...change,
   } as never;

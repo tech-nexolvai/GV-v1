@@ -5,7 +5,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError } from '@/api/client';
-import { chatEventOf, chatFailureWords, chatPaths, streamChatMessage, type ChatEvent, type ChatMessage } from '@/lib/chat-api';
+import { chatEventOf, chatFailureWords, chatPaths, followChatMessage, streamChatMessage, type ChatEvent, type ChatMessage } from '@/lib/chat-api';
 
 const STORED: ChatMessage = {
   id: 'm-2', role: 'assistant', created_at: '2026-10-17T10:00:00Z', text: 'Two items differ.',
@@ -123,5 +123,23 @@ describe('chat paths', () => {
   it('the models path carries the drawing set when there is one', () => {
     expect(chatPaths.models('pkg 1')).toBe('/api/v1/assistant/models?package_id=pkg%201');
     expect(chatPaths.models()).toBe('/api/v1/assistant/models');
+  });
+});
+
+describe('following a running message (#1479)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('GETs the message\'s events and reads them exactly like the send stream', async () => {
+    const { response } = streamed(EVERY_EVENT);
+    const fetch = vi.fn(async () => response);
+    vi.stubGlobal('fetch', fetch);
+    const events: ChatEvent[] = [];
+    const message = await followChatMessage('c1', 'm-2', (event) => events.push(event));
+    expect(message).toEqual(STORED);
+    expect(events.map((event) => event.event)).toEqual(EVERY_EVENT.map((chunk) => chunk.split('\n')[0].replace('event: ', '')));
+    const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(chatPaths.events('c1', 'm-2'));
+    expect(url.endsWith('/chats/c1/messages/m-2/events')).toBe(true);
+    expect(init.method ?? 'GET').toBe('GET');
   });
 });
