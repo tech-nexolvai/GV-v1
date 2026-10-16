@@ -2515,6 +2515,138 @@ export interface components {
             /** Values Agreed */
             values_agreed: (boolean | null)[];
         };
+        /** AiReviewCountsOut */
+        AiReviewCountsOut: {
+            /**
+             * Different
+             * @default 0
+             */
+            different: number;
+            /**
+             * Needs Person
+             * @description Open `different` rows: sign-off waits.
+             * @default 0
+             */
+            needs_person: number;
+            /**
+             * Not Shown
+             * @default 0
+             */
+            not_shown: number;
+            /**
+             * Same
+             * @default 0
+             */
+            same: number;
+            /**
+             * Unreadable
+             * @default 0
+             */
+            unreadable: number;
+            /**
+             * Unsure
+             * @default 0
+             */
+            unsure: number;
+        };
+        /** AiReviewOut */
+        AiReviewOut: {
+            counts?: components["schemas"]["AiReviewCountsOut"];
+            /** Pages */
+            pages?: components["schemas"]["AiReviewPageOut"][];
+        };
+        /** AiReviewPageOut */
+        AiReviewPageOut: {
+            /**
+             * Cost Usd
+             * @description What its AI call cost; null when unpriced.
+             */
+            cost_usd: string | null;
+            /**
+             * Page
+             * @description The sheet, from 1.
+             */
+            page: number;
+            /**
+             * Reason
+             * @description Why the page failed or was not run.
+             */
+            reason?: string | null;
+            /** Rows */
+            rows?: components["schemas"]["AiReviewRowOut"][];
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "done" | "running" | "failed" | "not_run";
+        };
+        /** AiReviewRowOut */
+        AiReviewRowOut: {
+            /**
+             * Actions
+             * @description `agree` (the vendor is wrong) and `not_this` (not a difference) on an open `different` row; empty otherwise.
+             */
+            actions?: string[];
+            /**
+             * Answer
+             * @description The newest answer, as the action is named: `agree` (the vendor is wrong) | `not_this` (not a difference).
+             */
+            answer?: string | null;
+            /** Answered By */
+            answered_by?: string | null;
+            /**
+             * Architect Inches
+             * @description Exact inches `n/d`; null when held.
+             */
+            architect_inches: string | null;
+            architect_ref: components["schemas"]["RowLocation"] | null;
+            /**
+             * Architect Text
+             * @description As printed, read by code.
+             */
+            architect_text: string;
+            /**
+             * Clouded
+             * @description True on a `different` row unless a person answered `not_a_difference`.
+             * @default false
+             */
+            clouded: boolean;
+            /**
+             * Key
+             * @description `air:<row id>`: stable for this reading.
+             */
+            key: string;
+            /**
+             * Measures
+             * @description What the AI says the dimension measures.
+             */
+            measures: string;
+            /**
+             * Result
+             * @enum {string}
+             */
+            result: "same" | "different" | "not_shown" | "unsure" | "unreadable";
+            /**
+             * Status
+             * @default done
+             * @enum {string}
+             */
+            status: "open" | "done";
+            /** @description Where the vendor's number is printed (the AI's box); null when not placed. */
+            vendor_box: components["schemas"]["RowLocation"] | null;
+            /**
+             * Vendor Inches
+             * @description Exact inches `n/d`, parsed by code.
+             */
+            vendor_inches: string | null;
+            /**
+             * Vendor Text
+             * @description The vendor's number as the AI read it.
+             */
+            vendor_text: string | null;
+            /** Why */
+            why: string;
+        };
         /**
          * ApplicabilityOut
          * @description What a rule applies to: one discriminator and its branches, or everything of its type.
@@ -7764,6 +7896,8 @@ export interface components {
         };
         /** ReviewItemsOut */
         ReviewItemsOut: {
+            /** @description The AI page review (decision 2026-10-16): per combined sheet, every architect dimension code read with the vendor's number for the same span as the AI read it, decided by code. Only open `different` rows wait for a person (`agree` / `not_this`). No pages when it has not run. */
+            ai_review?: components["schemas"]["AiReviewOut"];
             /**
              * Architect Compare
              * @description Compared with the architect (#1418): every dimension the architect printed, exactly once, with the vendor's number for the same span and what code decided: same, different (REVIEW, clouded), rule (a published rule's result shown instead), unpaired or unread ('?'). Empty when the compare has not run.

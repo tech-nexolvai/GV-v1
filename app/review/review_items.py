@@ -90,6 +90,7 @@ from app.models.evidence import (
     ItemClassification,
     ObservationCandidate,
 )
+from app.review.ai_review import AiReviewOut, ai_review_for_revision
 from app.review.approval import readiness_and_decisions
 from app.review.architect_compare import (
     ArchitectCompareCountsOut,
@@ -615,6 +616,15 @@ class ReviewItemsOut(BaseModel):
             "'Enter this job's values' fields. Empty when the reader has not run or found nothing."
         ),
     )
+    ai_review: AiReviewOut = Field(
+        default_factory=AiReviewOut,
+        description=(
+            "The AI page review (decision 2026-10-16): per combined sheet, every architect "
+            "dimension code read with the vendor's number for the same span as the AI read it, "
+            "decided by code. Only open `different` rows wait for a person (`agree` / `not_this`). "
+            "No pages when it has not run."
+        ),
+    )
     architect_compare: list[ArchitectCompareOut] = Field(
         default_factory=list,
         description=(
@@ -1044,8 +1054,12 @@ def review_items_for_revision(
     projection = _countertop_results_for_revision(session, package_id, revision)
     # Read once: the compare it shows is the one sign-off readiness waits on (#1418).
     compared, compare_counts = architect_compare_for_revision(session, revision.id)
+    # The AI page review's open `different` rows wait for a person too (decision 2026-10-16).
+    ai_review = ai_review_for_revision(session, revision.id)
     readiness, records = readiness_and_decisions(
-        session, revision.id, compare_open=compare_counts.needs_person
+        session,
+        revision.id,
+        compare_open=compare_counts.needs_person + ai_review.counts.needs_person,
     )
     open_ids = set(readiness.blocking_finding_ids)
     corrected = set(records.corrected)
@@ -1507,6 +1521,7 @@ def review_items_for_revision(
         unaccounted=unaccounted,
         job_value_suggestions=_job_value_suggestions(session, revision.id),
         architect_compare=compared,
+        ai_review=ai_review,
     )
 
 

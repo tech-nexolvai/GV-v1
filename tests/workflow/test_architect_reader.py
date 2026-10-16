@@ -332,10 +332,12 @@ def test_code_never_confirms_over_a_persons_earlier_confirmation(
 
 
 def test_reading_a_combined_sheet_stores_the_direct_compare_once_per_architect_dimension(
-    session: Session, store: LocalStore
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """#1418: with the architect reader on, every architect dimension of the sheet gets one
-    compare record; with it off, none."""
+    compare record; with it off, none. The old compare is switched on here
+    (`GV_ARCH_COMPARE_RECORDS`, off by default since the AI page review replaced it)."""
+    monkeypatch.setenv("GV_ARCH_COMPARE_RECORDS", "1")
     from app.models.architect_compare import ArchitectCompareRecord
 
     revision = _upload(session, store, combined_sheet())

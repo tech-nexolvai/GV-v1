@@ -65,6 +65,7 @@ from app.api.visual_countertops import (
 from app.auth import Action, Principal, require_action, require_project_access
 from app.models import Package, PackageRevision
 from app.models.review import ReviewActionKind
+from app.review import ai_review
 from app.review import architect_compare as compare
 from app.review import review_item_actions as actions
 from app.review.cabinet_run_answer import CabinetRunRefused, cabinet_run_answer
@@ -194,6 +195,10 @@ def answer_review_item(
     """
     try:
         revision, listed = actions.current_items(session, project_id, package_id)
+        if key.startswith(ai_review.AI_KEY_PREFIX):
+            return _answer_ai_review(
+                session, principal, project_id, package_id, revision, key, action, body, response
+            )
         if key.startswith(compare.KEY_PREFIX) or key == compare.NOT_COMPARED_GROUP:
             return _answer_compare(
                 session, principal, project_id, package_id, revision, key, action, body, response
@@ -363,6 +368,48 @@ def _answer_compare(
         key=key,
         action=name,
         recorded=compare.ANSWER_NOTES[stored],
+        review_session_id=None,
+        rechecking=checks_pending(session, revision),
+        review_items=review_items_for_revision(
+            session, project_id=project_id, package_id=package_id, revision=revision
+        ),
+    )
+
+
+def _answer_ai_review(
+    session: Session,
+    principal: Principal,
+    project_id: UUID,
+    package_id: UUID,
+    revision: PackageRevision,
+    key: str,
+    action: str,
+    body: actions.ReviewItemActionIn,
+    response: Response,
+) -> actions.ReviewItemActionOut:
+    """An answer on an AI page review row (`air:<id>`, decision 2026-10-16): `agree` (the vendor
+    is wrong) or `not_this` (not a difference) on a different row, as the URL action or as
+    `answer` with the name in the body. Its own append-only row; the review row is never edited."""
+    name = action.strip().lower().replace("-", "_")
+    if name == "answer":
+        if body.answer is None:
+            raise _unprocessable('Say which answer in the body, e.g. {"answer": "not_this"}.')
+        name = body.answer.strip().lower().replace("-", "_")
+    try:
+        written = ai_review.record_ai_review_answer(
+            session, revision_id=revision.id, key=key, answer=name, actor=principal.id
+        )
+        session.commit()
+    except ai_review.AiReviewRefused as refused:
+        session.rollback()
+        raise HTTPException(status_code=refused.status, detail=refused.detail) from refused
+    if not written:
+        response.status_code = status.HTTP_200_OK
+    session.refresh(revision)
+    return actions.ReviewItemActionOut(
+        key=key,
+        action=name,
+        recorded=ai_review.AI_REVIEW_ANSWER_NOTES[ai_review.AI_REVIEW_SENT_AS[name]],
         review_session_id=None,
         rechecking=checks_pending(session, revision),
         review_items=review_items_for_revision(

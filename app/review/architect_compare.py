@@ -51,6 +51,7 @@ from workflow.slot_row_scope import candidate_is_sealed, candidate_value
 __all__ = [
     "ANSWERS_FOR",
     "ANSWER_NOTES",
+    "ARCH_COMPARE_RECORDS_ENV",
     "KEY_PREFIX",
     "NOT_COMPARED_GROUP",
     "SENT_AS",
@@ -58,6 +59,7 @@ __all__ = [
     "ArchitectCompareOut",
     "CompareRefused",
     "CompareResult",
+    "arch_compare_records_on",
     "architect_compare_for_revision",
     "architect_compare_many",
     "open_architect_compare",
@@ -66,6 +68,20 @@ __all__ = [
 ]
 
 _Box = tuple[Decimal, Decimal, Decimal, Decimal]
+
+#: The direct compare's switch (decision 2026-10-16: the AI page review replaced it). Off by
+#: default: the worker stores no new records, and the review shows none and waits on none. Records
+#: already stored stay in the database; nothing is deleted.
+ARCH_COMPARE_RECORDS_ENV: Final = "GV_ARCH_COMPARE_RECORDS"
+
+
+def arch_compare_records_on(environ: Mapping[str, str] | None = None) -> bool:
+    """Whether `GV_ARCH_COMPARE_RECORDS` switches the old direct compare on. Unset is off."""
+    import os
+
+    raw = (os.environ if environ is None else environ).get(ARCH_COMPARE_RECORDS_ENV, "")
+    return raw.strip().lower() in ("1", "true", "on", "yes")
+
 
 CompareResult = Literal["same", "different", "rule", "unpaired", "unread"]
 
@@ -537,9 +553,11 @@ def architect_compare_many(
     """`architect_compare_for_revision` for a page of revisions, with a bounded query plan (#1426):
     one statement when none of them has a compare record, and a fixed handful otherwise (the
     records, their pages, the slot-reader runs and labels, the live results and the answers),
-    whatever the number of revisions or records. Revisions without a record are left out."""
+    whatever the number of revisions or records. Revisions without a record are left out. Switched
+    off (`GV_ARCH_COMPARE_RECORDS`, the default), nothing: the old section shows nothing and blocks
+    nothing."""
     ids = list(dict.fromkeys(revision_ids))
-    if not ids:
+    if not ids or not arch_compare_records_on():
         return {}
     by_revision = _latest_records(session, ids)
     if not by_revision:

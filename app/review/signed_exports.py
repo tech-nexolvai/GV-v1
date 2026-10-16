@@ -92,6 +92,15 @@ class FrozenArchitectCompare(BaseModel):
     counts: dict[str, Any]
 
 
+class FrozenAiReview(BaseModel):
+    """The AI page review as the review showed it at sign-off (decision 2026-10-16), as plain
+    JSON: each page with its rows, and the counts. The signed cloud PDF prints it from here."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    pages: tuple[dict[str, Any], ...]
+    counts: dict[str, Any]
+
+
 class ExportSnapshot(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     format_version: int = 1
@@ -115,6 +124,8 @@ class ExportSnapshot(BaseModel):
     architect_compare: FrozenArchitectCompare | None = None
     """The numbers compared with the architect at sign-off (#1418); `None` when the compare had
     not run, or on a snapshot frozen before it."""
+    ai_review: FrozenAiReview | None = None
+    """The AI page review at sign-off; `None` when it had not run, or on an older snapshot."""
 
     @model_validator(mode="after")
     def known_format(self) -> ExportSnapshot:
@@ -134,6 +145,18 @@ def _freeze_compare(db: Session, revision_id: UUID) -> FrozenArchitectCompare | 
     return FrozenArchitectCompare(
         items=tuple(item.model_dump(mode="json") for item in items),
         counts=counts.model_dump(mode="json"),
+    )
+
+
+def _freeze_ai_review(db: Session, revision_id: UUID) -> FrozenAiReview | None:
+    from app.review.ai_review import ai_review_for_revision
+
+    review = ai_review_for_revision(db, revision_id)
+    if not review.pages:
+        return None
+    return FrozenAiReview(
+        pages=tuple(page.model_dump(mode="json") for page in review.pages),
+        counts=review.counts.model_dump(mode="json"),
     )
 
 
@@ -530,6 +553,7 @@ def _request_signed_exports(
             until=approval.created_at,
         ),
         architect_compare=_freeze_compare(db, revision.id),
+        ai_review=_freeze_ai_review(db, revision.id),
     )
     encoded = canonical(payload.model_dump(mode="json"))
     snapshot = ApprovalExportSnapshot(

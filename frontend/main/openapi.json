@@ -158,6 +158,267 @@
         "title": "AgreementFactsOut",
         "type": "object"
       },
+      "AiReviewCountsOut": {
+        "properties": {
+          "different": {
+            "default": 0,
+            "title": "Different",
+            "type": "integer"
+          },
+          "needs_person": {
+            "default": 0,
+            "description": "Open `different` rows: sign-off waits.",
+            "title": "Needs Person",
+            "type": "integer"
+          },
+          "not_shown": {
+            "default": 0,
+            "title": "Not Shown",
+            "type": "integer"
+          },
+          "same": {
+            "default": 0,
+            "title": "Same",
+            "type": "integer"
+          },
+          "unreadable": {
+            "default": 0,
+            "title": "Unreadable",
+            "type": "integer"
+          },
+          "unsure": {
+            "default": 0,
+            "title": "Unsure",
+            "type": "integer"
+          }
+        },
+        "title": "AiReviewCountsOut",
+        "type": "object"
+      },
+      "AiReviewOut": {
+        "properties": {
+          "counts": {
+            "$ref": "#/components/schemas/AiReviewCountsOut"
+          },
+          "pages": {
+            "items": {
+              "$ref": "#/components/schemas/AiReviewPageOut"
+            },
+            "title": "Pages",
+            "type": "array"
+          }
+        },
+        "title": "AiReviewOut",
+        "type": "object"
+      },
+      "AiReviewPageOut": {
+        "properties": {
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What its AI call cost; null when unpriced.",
+            "title": "Cost Usd"
+          },
+          "page": {
+            "description": "The sheet, from 1.",
+            "title": "Page",
+            "type": "integer"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why the page failed or was not run.",
+            "title": "Reason"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/AiReviewRowOut"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "done",
+              "running",
+              "failed",
+              "not_run"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "page",
+          "status",
+          "cost_usd"
+        ],
+        "title": "AiReviewPageOut",
+        "type": "object"
+      },
+      "AiReviewRowOut": {
+        "properties": {
+          "actions": {
+            "description": "`agree` (the vendor is wrong) and `not_this` (not a difference) on an open `different` row; empty otherwise.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Actions",
+            "type": "array"
+          },
+          "answer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The newest answer, as the action is named: `agree` (the vendor is wrong) | `not_this` (not a difference).",
+            "title": "Answer"
+          },
+          "answered_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answered By"
+          },
+          "architect_inches": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Exact inches `n/d`; null when held.",
+            "title": "Architect Inches"
+          },
+          "architect_ref": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RowLocation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "architect_text": {
+            "description": "As printed, read by code.",
+            "title": "Architect Text",
+            "type": "string"
+          },
+          "clouded": {
+            "default": false,
+            "description": "True on a `different` row unless a person answered `not_a_difference`.",
+            "title": "Clouded",
+            "type": "boolean"
+          },
+          "key": {
+            "description": "`air:<row id>`: stable for this reading.",
+            "title": "Key",
+            "type": "string"
+          },
+          "measures": {
+            "description": "What the AI says the dimension measures.",
+            "title": "Measures",
+            "type": "string"
+          },
+          "result": {
+            "enum": [
+              "same",
+              "different",
+              "not_shown",
+              "unsure",
+              "unreadable"
+            ],
+            "title": "Result",
+            "type": "string"
+          },
+          "status": {
+            "default": "done",
+            "enum": [
+              "open",
+              "done"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "vendor_box": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RowLocation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where the vendor's number is printed (the AI's box); null when not placed."
+          },
+          "vendor_inches": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Exact inches `n/d`, parsed by code.",
+            "title": "Vendor Inches"
+          },
+          "vendor_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The vendor's number as the AI read it.",
+            "title": "Vendor Text"
+          },
+          "why": {
+            "title": "Why",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "architect_text",
+          "architect_inches",
+          "measures",
+          "vendor_text",
+          "vendor_inches",
+          "result",
+          "why",
+          "vendor_box",
+          "architect_ref"
+        ],
+        "title": "AiReviewRowOut",
+        "type": "object"
+      },
       "ApplicabilityOut": {
         "additionalProperties": false,
         "description": "What a rule applies to: one discriminator and its branches, or everything of its type.",
@@ -11376,6 +11637,10 @@
       },
       "ReviewItemsOut": {
         "properties": {
+          "ai_review": {
+            "$ref": "#/components/schemas/AiReviewOut",
+            "description": "The AI page review (decision 2026-10-16): per combined sheet, every architect dimension code read with the vendor's number for the same span as the AI read it, decided by code. Only open `different` rows wait for a person (`agree` / `not_this`). No pages when it has not run."
+          },
           "architect_compare": {
             "description": "Compared with the architect (#1418): every dimension the architect printed, exactly once, with the vendor's number for the same span and what code decided: same, different (REVIEW, clouded), rule (a published rule's result shown instead), unpaired or unread ('?'). Empty when the compare has not run.",
             "items": {
