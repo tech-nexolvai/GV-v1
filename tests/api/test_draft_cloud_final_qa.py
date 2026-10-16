@@ -128,7 +128,9 @@ def test_the_draft_banner_is_a_thin_strip_above_the_pages_content(
         assert len(pdf.pages) >= 2
         for page in pdf.pages:
             banner = [char for char in page.chars if char["fontname"].endswith("Helvetica-Bold")]
-            words = "".join(char["text"] for char in banner if char["bottom"] <= float(BANNER_STRIP) + 0.5)
+            words = "".join(
+                char["text"] for char in banner if char["bottom"] <= float(BANNER_STRIP) + 0.5
+            )
             assert "DRAFT" in words, "the banner is in the strip at the very top"
             below = [
                 char
