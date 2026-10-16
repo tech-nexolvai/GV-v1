@@ -1221,6 +1221,13 @@ def test_the_worker_carries_answers_right_after_reading_the_pages(
     monkeypatch.setattr(sutradhar, "hunt_package_values", lambda *_args: {})
     monkeypatch.setattr(sutradhar, "propose_measurements", lambda *_args: {})
     monkeypatch.setattr(side_states, "enter_needs_input", lambda *_args, **_kwargs: None)
+    from workflow import after_reading
+
+    monkeypatch.setattr(
+        after_reading,
+        "queue_after_reading",
+        lambda *_args: after_reading.AfterReading(False, False, "nothing (stubbed)"),
+    )
     from app.runs import reading_progress
 
     monkeypatch.setattr(reading_progress, "side_engine", lambda *_args: None)

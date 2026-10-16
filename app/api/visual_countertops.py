@@ -120,6 +120,7 @@ from workflow.architect_row_plan import (
 from workflow.item_plan import LiveCountertop, PlannedFinding, check_plan_for, countertops_by_row
 from workflow.pariksha_gates import stopped_by_rekha
 from workflow.part_operands import reviewer_owned_pages
+from workflow.row_answers import answered_labels
 from workflow.slot_row_scope import (
     ROW_CHOICE_SPLIT,
     SlotRow,
@@ -391,6 +392,7 @@ def _row_values(
     verdict_inputs: dict[str, VerdictInput],
     slot_locations: dict[UUID, RowLocation] | None = None,
     crops: _StoredCrops | None = None,
+    answers: Mapping[UUID, Any] | None = None,
 ) -> tuple[
     Fraction | None,
     list[CountertopPieceOut],
@@ -406,6 +408,17 @@ def _row_values(
     """
     slot_locations = slot_locations or {}
     crops = crops or _StoredCrops()
+    # A person's answer about a held label (W2 confirm or fix, Set 3 QA): what the width check
+    # counts for it (`workflow/row_answers.answered_labels`), shown where no result used it yet.
+    answers = answers or {}
+
+    def answered(position: int | None) -> Fraction | None:
+        candidate = candidates.get(position)
+        if candidate is None or claims.get(position) != 1 or candidate.id not in answers:
+            return None
+        answer = answers[candidate.id]
+        return Fraction(answer.value_numerator, answer.value_denominator)
+
     claims: dict[int | None, int] = {}
     candidates: dict[int | None, Any] = {}
     for candidate in row.candidates:
@@ -455,6 +468,8 @@ def _row_values(
             else None
         )
         if overall is None:
+            overall = answered(None)
+        if overall is None:
             overall_crop = None
     pieces: list[CountertopPieceOut] = []
     for index in range(row.piece_count):
@@ -467,7 +482,10 @@ def _row_values(
         candidate = candidates.get(index)
         if recorded is None and candidate is not None and candidate_is_sealed(candidate):
             recorded = candidate_value(candidate)
-        source, kind = _source_and_kind(candidate, False)
+        person = answered(index) if recorded is None else None
+        if person is not None:
+            recorded = person
+        source, kind = _source_and_kind(candidate, person is not None)
         if recorded_input is not None:
             source = "typed" if recorded_input.evidence_status == "HUMAN_CONFIRMED" else "sealed"
         pieces.append(
@@ -1059,6 +1077,7 @@ def _countertop_results_for_revision(
     # results already loaded, so the statement count does not change.
     current = current_field_cut(session, revision.id) if rows else None
     in_force = field_cut_text(current)
+    answers = answered_labels(session, rows) if rows else {}
     items: list[CountertopResultOut] = []
     for row in rows:
         finding = finding_by_row.get(row.anchor.id)
@@ -1068,6 +1087,7 @@ def _countertop_results_for_revision(
             {} if finding is None else verdict_inputs_by_finding.get(finding.check_run_id, {}),
             slot_locations,
             crops,
+            answers,
         )
         decision = None if finding is None else decisions.get(finding.id)
         drawn_length_note = _drawn_length_note(
