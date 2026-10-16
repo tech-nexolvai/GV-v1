@@ -49,8 +49,8 @@ from collections.abc import Callable, Generator, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from decimal import Decimal
-from time import monotonic_ns
+from decimal import ROUND_CEILING, Decimal
+from time import monotonic_ns, sleep
 from typing import Any, Final, Literal
 
 from pydantic import BaseModel
@@ -81,6 +81,7 @@ from app.runs.rates import ModelRates, call_cost_micros
 __all__ = [
     "AGENT_PROMPT_ID",
     "AGENT_SYSTEM_PROMPT",
+    "HELPER_PICTURE_EDGE_PX",
     "MAX_SUB_AGENTS",
     "MAX_TOOL_TURNS",
     "SUB_PROMPT_ID",
@@ -96,6 +97,7 @@ __all__ = [
     "first_message",
     "left_out",
     "pages_mentioned",
+    "prompt_tokens_upper",
     "request_body",
     "required_mentions",
     "run_agent",
@@ -117,7 +119,12 @@ _LEAD_CONTINUE_TURNS: Final = 3
 MAX_SUB_AGENTS: Final = 4
 MAX_OUTPUT_TOKENS: Final = 4000
 #: A helper's report lists every finding on its pages, so it gets more room.
-SUB_MAX_OUTPUT_TOKENS: Final = 12_000
+SUB_MAX_OUTPUT_TOKENS: Final = 6000
+#: The longest side of a picture a helper is shown (Anthropic's suggested size, about 2,100
+#: tokens for a sheet): helpers look at many pages; the lead's checks keep the full 2576.
+HELPER_PICTURE_EDGE_PX: Final = 1568
+#: How long a helper waits before asking again after the provider failed its call.
+_RETRY_WAIT_SECONDS: Final = 3.0
 AGENT_EFFORT: Final = "medium"
 #: What the screen shows of one tool's output; the model gets up to the sandbox's 20 KB.
 _SHOWN_OUTPUT_CHARS: Final = 4000
@@ -172,8 +179,10 @@ COMPARING THE VENDOR WITH THE ARCHITECT (for example "which ones are wrong?"): t
 WHOLE set, page by page, not only what code already flagged. Code's results (`review_results`: \
 its failures and the AI page review's differences) are where you start, never the whole answer: \
 much of the set is not compared by code. So: add tasks; read `review_results`; list the pages \
-and their headings (`pdftotext`) to group them by project or area; render every page once into \
-{SCRATCH} (`pdftoppm -r 130 -png F {SCRATCH}/p`); give up to 4 helpers the pages by project or \
+and their headings (`pdftotext`) to group them by project or area; render every page once for \
+the helpers at 100 dpi (`mkdir -p {SCRATCH}/pages && pdftoppm -r 100 -png F \
+{SCRATCH}/pages/p`), and tell them where; for your own checks render the page or the area you \
+need at 130 to 300 dpi; give up to 4 helpers the pages by project or \
 area (one `Agent` call each, in one turn), each told to compare every architect dimension, tag \
 and note with the vendor's drawing on its pages; then VERIFY the helpers' leads on the pictures \
 yourself (view those pages), the most important first. Report a lead you checked as yours; one \
@@ -233,7 +242,8 @@ drawing side by side. The PDFs are in {UPLOADS} (read-only); {SCRATCH} is shared
 limit); `view` looks at a picture, a text file or a folder. Do exactly the task you are given: \
 open EVERY page it gives you. First get each page's words with `pdftotext -f N -l N -layout` \
 to list its material and finish tags (ST-, CT-, LA-, SNK- codes, model numbers) and notes; then \
-view each page (several pictures in one turn is fine) and compare the architect's drawing with \
+view each page's 100 dpi picture (render it with `pdftoppm -f N -l N -r 100 -png F` if it is \
+not there yet; render only a small area sharper when a number is too small to read) (several pictures in one turn is fine) and compare the architect's drawing with \
 the vendor's: dimensions, material and finish tags, doors versus drawers, splashes, cut-outs and \
 sink models, and notes. Only then report, listing every page you viewed.
 
@@ -521,11 +531,13 @@ def _bash(raw: object, tools: AgentTools) -> _Ran:
     )
 
 
-def _view(raw: object, tools: AgentTools) -> _Ran:
+def _view(raw: object, tools: AgentTools, max_edge: int | None = None) -> _Ran:
     try:
         arguments = _arguments(raw, {"path", "description", "view_range"}, {"path"})
         path = str(arguments.get("path", ""))
-        viewed = view_path(tools.sandbox.workspace, path, arguments.get("view_range"))
+        viewed = view_path(
+            tools.sandbox.workspace, path, arguments.get("view_range"), max_edge=max_edge
+        )
     except SandboxRefused as refused:
         return _refused("view", "Could not view it", str(refused), path=None)
     label = _label(arguments.get("description"), f"Viewed {path}")
@@ -607,13 +619,13 @@ def _results(raw: object, tools: AgentTools) -> _Ran:
     )
 
 
-def run_tool(name: str, raw: object, tools: AgentTools) -> _Ran:
+def run_tool(name: str, raw: object, tools: AgentTools, max_edge: int | None = None) -> _Ran:
     """One sandbox or results tool call, validated: a refusal is an error result the model reads,
     never a crash and never a read."""
     if name == "bash_tool":
         return _bash(raw, tools)
     if name == "view":
-        return _view(raw, tools)
+        return _view(raw, tools, max_edge)
     if name == "review_results":
         return _results(raw, tools)
     return _refused("bash", "Unknown tool", f"there is no tool {name!r}")
@@ -785,11 +797,34 @@ def billed_input_tokens(usage: Mapping[str, Any]) -> int:
     uncached = int(usage.get("input_tokens") or 0)
     written = int(usage.get("cache_creation_input_tokens") or 0)
     read = int(usage.get("cache_read_input_tokens") or 0)
-    return uncached + int(-(-(written * _CACHE_WRITE) // 1)) + int(-(-(read * _CACHE_READ) // 1))
+    # Rounded up: Decimal's `//` rounds toward zero, so `-(-x // 1)` would round down.
+    return (
+        uncached
+        + int((written * _CACHE_WRITE).to_integral_value(rounding=ROUND_CEILING))
+        + int((read * _CACHE_READ).to_integral_value(rounding=ROUND_CEILING))
+    )
 
 
 def _picture_tokens(width: int, height: int) -> int:
     return -(-(width * height) // _PIXELS_PER_TOKEN)
+
+
+def _strip_images(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        if value.get("type") == "image":
+            return None
+        return {key: _strip_images(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_strip_images(item) for item in value]
+    return value
+
+
+def prompt_tokens_upper(body: Mapping[str, Any], pictures: Sequence[tuple[int, int]]) -> int:
+    """An upper bound on a request's prompt tokens: text at one token per 2 bytes, each picture at
+    width x height / 750."""
+    text = json.dumps(_strip_images(dict(body)), ensure_ascii=False, default=str)
+    tokens = _REQUEST_OVERHEAD_TOKENS + -(-len(text.encode("utf-8")) // _TEXT_BYTES_PER_TOKEN)
+    return tokens + sum(_picture_tokens(w, h) for w, h in pictures)
 
 
 def estimate_micros(
@@ -798,29 +833,20 @@ def estimate_micros(
     model_id: str,
     rates: ModelRates | None,
     cached_tokens: int = 0,
+    previous_tokens: int = 0,
 ) -> int | None:
     """An upper bound on one turn's cost; `None` when the model has no stated price.
 
-    All text at one token per 2 bytes, each picture at width x height / 750, and the whole output
-    allowance. `cached_tokens` is how long the previous turn's prompt was: that prefix is read
-    from the cache (0.1x) and the rest is written to it (1.25x). A missed cache costs more than
-    this estimate; the spend that is then recorded is the real one, so the next check sees it."""
-
-    def strip_images(value: Any) -> Any:
-        if isinstance(value, Mapping):
-            if value.get("type") == "image":
-                return None
-            return {key: strip_images(item) for key, item in value.items()}
-        if isinstance(value, list):
-            return [strip_images(item) for item in value]
-        return value
-
-    text = json.dumps(strip_images(dict(body)), ensure_ascii=False, default=str)
-    tokens = _REQUEST_OVERHEAD_TOKENS + -(-len(text.encode("utf-8")) // _TEXT_BYTES_PER_TOKEN)
-    tokens += sum(_picture_tokens(w, h) for w, h in pictures)
-    read = min(cached_tokens, tokens)
+    **Cache-aware.** `cached_tokens` is the previous turn's real prompt length (from its usage),
+    which this turn reads from the cache at 0.1x, pictures included; `previous_tokens` is this
+    estimate's upper bound for that previous prompt, so only what was added since (this bound
+    minus that one) is priced as a cache write (1.25x). Plus the whole output allowance. A missed
+    cache costs more than this estimate; the spend then recorded is the real one, so the next
+    check sees it."""
+    tokens = prompt_tokens_upper(body, pictures)
+    added = max(0, tokens - previous_tokens) if cached_tokens else tokens
     billed = billed_input_tokens(
-        {"cache_read_input_tokens": read, "cache_creation_input_tokens": tokens - read}
+        {"cache_read_input_tokens": cached_tokens, "cache_creation_input_tokens": added}
     )
     return call_cost_micros(rates, model_id, billed, int(body.get("max_tokens", 0)))
 
@@ -1003,6 +1029,7 @@ def _loop(
     label: str = "",
     review: Callable[[Mapping[str, Any]], tuple[str, int] | None] | None = None,
     max_tokens: int = MAX_OUTPUT_TOKENS,
+    retries: int = 0,
 ) -> Generator[_Event, None, _LoopEnd]:
     """One agent's turns: ask, run the tools it calls, ask again, until it answers or must stop.
 
@@ -1011,18 +1038,23 @@ def _loop(
     which gets that many more tool turns (none: it must write the answer again). At most two
     reviews per loop, so it always ends."""
     rewrites = 2 if review is not None else 0
+    retries_left = retries
     messages: list[dict[str, Any]] = [{"role": "user", "content": first}]
     pictures: list[tuple[int, int]] = []
     own = 0
     turn = 0
     cached = 0
+    previous = 0
     while True:
         final = turn >= max_turns
         body = request_body(
             messages, final=final, system=system, tools=tools, schema=schema, max_tokens=max_tokens
         )
         rates = None if spend.budget is None else spend.budget.rates
-        estimate = estimate_micros(body, pictures, model.model_id, rates, cached_tokens=cached)
+        upper = prompt_tokens_upper(body, pictures)
+        estimate = estimate_micros(
+            body, pictures, model.model_id, rates, cached_tokens=cached, previous_tokens=previous
+        )
         if not spend.fits(estimate, own=own, limit=limit):
             _log.info("review assistant agent stopped at the cost cap after %d turns", turn)
             return _LoopEnd(stopped="cost_cap")
@@ -1051,10 +1083,20 @@ def _loop(
         except Exception:  # noqa: BLE001 - the answer still goes out; the failure is logged
             _log.exception("review assistant agent call could not be recorded")
         if error is not None or payload is None:
+            if retries_left:
+                # A helper's call that the provider failed (a 5xx or a busy answer) is asked once
+                # more after a short wait: one lost call should not cost a whole helper's pages.
+                retries_left -= 1
+                _log.warning(
+                    "review assistant call failed, asking once more: %s", type(error).__name__
+                )
+                sleep(_RETRY_WAIT_SECONDS)
+                continue
             return _LoopEnd(error=error)
         own += spend.add(recorded, model.model_id)
         if recorded is not None:
             cached = int(recorded.get("prompt_tokens") or 0)
+            previous = upper
         stop = payload.get("stop_reason")
         content = payload.get("content")
         if stop == "tool_use" and not final and isinstance(content, list):
@@ -1200,7 +1242,7 @@ def _run_agents(
         def run(name: str, raw: object) -> _Ran:
             if name not in ("bash_tool", "view"):
                 return _refused("bash", "Unknown tool", f"there is no tool {name!r}")
-            return run_tool(name, raw, tools)
+            return run_tool(name, raw, tools, max_edge=HELPER_PICTURE_EDGE_PX)
 
         assigned = pages_mentioned(call.prompt) & set(range(1, max(tools.page_count, 1) + 1))
 
@@ -1248,6 +1290,7 @@ def _run_agents(
                     label=label,
                     max_tokens=SUB_MAX_OUTPUT_TOKENS,
                     review=review_report,
+                    retries=1,
                 ),
                 events.put,
             )
