@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -34,6 +35,7 @@ import shutil
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from importlib import import_module
 from pathlib import Path
 from time import monotonic
 from typing import Any, Final
@@ -46,10 +48,13 @@ from app.review.assistant.chat_findings import (
     REPORT_FINDING,
     SET_COVERAGE,
     UPDATE_FINDING,
+    main_upload,
+    page_ranges,
 )
 from app.review.assistant.sandbox import (
     OUTPUTS,
     SCRATCH,
+    SET_PACK,
     SKILLS,
     UPLOADS,
     ChatWorkspace,
@@ -61,21 +66,39 @@ from app.review.assistant.sandbox import (
 )
 
 __all__ = [
+    "HELPER_FOOTER_MARK",
     "HELPER_SYSTEM_PROMPT",
     "HELPER_TOOLS",
     "LEAD_SYSTEM_PROMPT",
     "LEAD_TOOLS",
     "MAX_AGENTS",
+    "MAX_ZOOM_CROPS",
+    "PARALLEL_TOOLS",
     "ChatTools",
     "TaskList",
     "ToolResult",
     "arguments",
+    "helper_footer",
+    "named_pages",
     "new_step",
+    "seen_log",
     "step_label",
 ]
 
-#: Helpers run at once, at most.
-MAX_AGENTS: Final = 4
+_log = logging.getLogger(__name__)
+
+#: Helpers run at once by default (`GV_ASSISTANT_MAX_PARALLEL_AGENTS`, at most 8).
+MAX_AGENTS: Final = 6
+#: Crops one `zoom` call draws.
+MAX_ZOOM_CROPS: Final = 4
+#: Sandbox commands one message runs at the same time (helpers' parallel tools included).
+MAX_PARALLEL_COMMANDS: Final = 6
+#: Tools that only read (or only add a record): the ones of one reply run at the same time.
+PARALLEL_TOOLS: Final = frozenset(
+    {"bash_tool", "view", "zoom", "review_results", "report_finding", "set_coverage", "cite"}
+)
+#: What a helper is told to spend, in tool calls (its real limit is the helper turn limit).
+HELPER_CALL_BUDGET: Final = 12
 #: What a step shows of a tool's output; the model gets up to the sandbox's 20 KB.
 SHOWN_OUTPUT_CHARS: Final = 4000
 _RESULTS_CHARS: Final = 40_000
@@ -97,13 +120,16 @@ You have a Linux computer with no internet access:
 - {OUTPUTS}: files for the reviewer. Make them here, then hand them over with present_files.
 - {SKILLS}: how GV reviews drawings, and this set's rules (read-only). Read {SKILLS}/SKILL.md \
 first, before you review, compare or mark up drawings.
+- {SET_PACK}: made by code (read-only): page_map.json (whose drawing is on each page), \
+drawings-only PDFs, page pictures. Use it; never rebuild it.
 
 Your tools: bash_tool runs a command (poppler, and Python with pypdf, pdfplumber, pypdfium2, \
 Pillow, reportlab, matplotlib and openpyxl); view shows you a picture, a text file or a folder; \
+zoom crops up to 4 areas of pages at once, sharp, GV's markup hidden; \
 create_file and str_replace write files in {SCRATCH} or {OUTPUTS}; present_files hands files to \
 the reviewer; TaskCreate and TaskUpdate keep a task list the reviewer sees; Agent starts a helper \
-with bash_tool, view, create_file and str_replace on this computer (up to {MAX_AGENTS} run at once: \
-give each everything it needs, and check what a helper reports before you state it); \
+with the same reading tools (several run at once: give each its pages, and check what a helper \
+reports before you state it); \
 review_results reads what GV Review's own checks recorded for this set; report_finding records \
 each difference you find, with boxes so the app crops the evidence, checks it and draws the table \
 (update_finding, drop_finding as you check); set_coverage records the pages you compared (a \
@@ -116,6 +142,10 @@ Three GV facts:
 notes, never the vendor's or the architect's numbers.
 - You cannot change the review. Nothing you do records a result; the reviewer decides and signs off.
 
+Work fast: the tool calls of one reply run at once, so ask for all you need together (all crops \
+in one zoom). Scale to the question: a fact, 1-3 calls; one item or one page pair, you alone, only \
+those pages, 1-3 findings; helpers only for the whole set, by page pair.
+
 How to answer: match the question. A yes/no or a number: one line. "Summarize": one or two lines. \
 A list: a short list. A comparison: report_finding for each item, then at most two plain lines; \
 never repeat the findings as a table. No preamble, no disclaimer, no restating the question. Say in \
@@ -125,15 +155,17 @@ back. Write in markdown."""
 HELPER_SYSTEM_PROMPT: Final = f"""\
 You are a helper agent working for Claude inside GV Review, on part of one drawing set of \
 countertop and cabinet shop drawings. You share Claude's Linux computer (no internet access): the \
-PDFs read-only in {UPLOADS}, the working folder {SCRATCH}, {OUTPUTS}, and GV's review skill in \
-{SKILLS} (read SKILL.md there when your task is a review). Your tools: bash_tool, view, \
-create_file, str_replace, report_finding and set_coverage.
+PDFs read-only in {UPLOADS}, the set pack in {SET_PACK} (page_map.json, drawings-only PDFs, page \
+pictures), the working folder {SCRATCH}, {OUTPUTS}, and GV's review skill in {SKILLS} (read \
+SKILL.md there when your task is a review). Your tools: bash_tool, view, zoom, create_file, \
+str_replace, report_finding and set_coverage. Tool calls of one reply run at the same time: ask \
+for all the crops you need in one zoom call.
 
 Do the task you are given. Record each difference you find with report_finding: both values as \
 printed, and boxes (PDF points of the page as shown, origin top-left) so the app can crop the \
 evidence. Record the pages you compared with set_coverage. Then reply with your report in \
-markdown: what you found, with page numbers and the values as printed, and what you could not \
-read or did not get to. Measurements are in inches. GV's markup (annotations GV reviewers added to the PDFs) is GV's notes, never the \
+markdown (at most 300 words): what you found, with page numbers and the values as printed, and \
+what you could not read or did not get to. Measurements are in inches. GV's markup (annotations GV reviewers added to the PDFs) is GV's notes, never the \
 vendor's or the architect's numbers. Never guess a number you cannot read."""
 
 _BASH: Final[Mapping[str, Any]] = {
@@ -263,8 +295,11 @@ _TASK_UPDATE: Final[Mapping[str, Any]] = {
 _AGENT: Final[Mapping[str, Any]] = {
     "name": "Agent",
     "description": (
-        "Start a helper agent with bash_tool, view, create_file and str_replace on this computer. "
-        f"Up to {MAX_AGENTS} Agent calls in one turn run at once; each returns its report to you."
+        "Start a helper agent with bash_tool, view, zoom, create_file, str_replace, report_finding "
+        "and set_coverage on this computer. Agent calls in one turn run at the same time; each "
+        "returns a short report to you. Use helpers only for whole-set work: split it by page "
+        "pair, 3-5 pages per helper, all helpers in one turn. A question about one item or one "
+        "page pair needs no helper."
     ),
     "input_schema": {
         "type": "object",
@@ -275,7 +310,17 @@ _AGENT: Final[Mapping[str, Any]] = {
                 "type": "string",
                 "description": "A short (3-5 word) description of the task",
             },
-            "prompt": {"type": "string", "description": "The task for the agent to perform"},
+            "prompt": {
+                "type": "string",
+                "description": (
+                    "The helper's brief, in four parts. Objective: what to compare and why, and "
+                    'its pages ("pages 12-15"). Output: what to record (report_finding with '
+                    "boxes for each difference, set_coverage for each page) and what to report. "
+                    "Tools and sources: which files and pages, what to read in the skill. "
+                    "Boundaries: what not to do (other pages, guesses). The app adds where the "
+                    "pictures are, the page map of its pages, the zoom tool and its budget."
+                ),
+            },
             "model": {
                 "type": "string",
                 "enum": ["opus", "sonnet", "haiku"],
@@ -284,6 +329,62 @@ _AGENT: Final[Mapping[str, Any]] = {
                     "check)"
                 ),
             },
+        },
+    },
+}
+_ZOOM: Final[Mapping[str, Any]] = {
+    "name": "zoom",
+    "description": (
+        f"Look closely at 1-{MAX_ZOOM_CROPS} areas of the drawings in one call: each crop is drawn "
+        "from the drawings-only copy (GV's markup hidden) at the sharpest dpi that fits (300 dpi "
+        "for a small area) and comes back as its own picture. Ask for every area you need at once."
+    ),
+    "input_schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["crops"],
+        "properties": {
+            "crops": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": MAX_ZOOM_CROPS,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["page", "box"],
+                    "properties": {
+                        "page": {"type": "integer", "minimum": 1, "description": "Page (from 1)"},
+                        "box": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["x0", "y0", "x1", "y1"],
+                            "properties": {
+                                "x0": {"type": "number"},
+                                "y0": {"type": "number"},
+                                "x1": {"type": "number"},
+                                "y1": {"type": "number"},
+                            },
+                            "description": (
+                                "The area in PDF points of the page as shown, origin top-left "
+                                "(as pdftotext -bbox and page_map.json give; points = pixels x "
+                                "72 / dpi on a page picture)"
+                            ),
+                        },
+                        "file": {
+                            "type": "string",
+                            "description": "The upload's file name, when the set has more than one",
+                        },
+                        "label": {"type": "string", "description": "What this crop is, short"},
+                    },
+                },
+            },
+            "dpi": {
+                "type": "integer",
+                "minimum": 72,
+                "maximum": 600,
+                "description": "Optional lower dpi; the app never goes over what fits",
+            },
+            "description": {"type": "string", "description": "Why I'm zooming in"},
         },
     },
 }
@@ -306,6 +407,7 @@ _RESULTS: Final[Mapping[str, Any]] = {
 LEAD_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     _BASH,
     _VIEW,
+    _ZOOM,
     _CREATE,
     _REPLACE,
     _PRESENT,
@@ -323,6 +425,7 @@ LEAD_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
 HELPER_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     _BASH,
     _VIEW,
+    _ZOOM,
     _CREATE,
     _REPLACE,
     REPORT_FINDING,
@@ -332,6 +435,7 @@ HELPER_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
 _DEFAULT_LABELS: Final[Mapping[str, str]] = {
     "bash_tool": "Ran a command",
     "view": "Viewed a file",
+    "zoom": "Zoomed in",
     "create_file": "Created a file",
     "str_replace": "Edited a file",
     "present_files": "Presented files",
@@ -373,7 +477,8 @@ def new_step(step_id: str, name: str, raw: object) -> dict[str, Any]:
     """A step as it starts: what it is, no output yet (`ok` is null while it runs)."""
     step: dict[str, Any] = {
         "id": step_id,
-        "tool": name if name in _DEFAULT_LABELS else "bash_tool",
+        # A zoom shows on the screen as a view of its first crop.
+        "tool": "view" if name == "zoom" else name if name in _DEFAULT_LABELS else "bash_tool",
         "label": step_label(name, raw),
         "command": None,
         "path": None,
@@ -504,7 +609,13 @@ class ChatTools:
     uploads: Sequence[Mapping[str, Any]] = ()
     """The set's PDFs as copied into the chat (`uploads.json`): name, pages, kind."""
     register_file: FileRegistrar | None = None
+    seen: list[dict[str, Any]] = field(default_factory=list)
+    """Every zoom crop of this message: `{by, file, page, box, dpi, picture_id}` (the "seen" log
+    the trust checks read; also kept in each zoom step)."""
     _lock: threading.Lock = field(default_factory=threading.Lock)
+    _commands: threading.Semaphore = field(
+        default_factory=lambda: threading.Semaphore(MAX_PARALLEL_COMMANDS)
+    )
 
     # ---- bash_tool -------------------------------------------------------------------------------
 
@@ -516,13 +627,16 @@ class ChatTools:
         except SandboxRefused as refused:
             return _refused(step, started, str(refused))
         try:
-            result = self.sandbox.run(command)
+            with self._commands:
+                result = self.sandbox.run(command)
         except Exception:  # noqa: BLE001 - the model reads it; the message goes on
             return _refused(step, started, "the computer could not run this command just now")
         status = (
             "stopped: over its time limit" if result.timed_out else f"exit code {result.exit_code}"
         )
         text = f"[{status}]\n{result.output}" if result.output else f"[{status}, no output]"
+        if result.exit_code not in (0, None) and "No such file or directory" in result.output:
+            text += f"\n[Fix: {self.workspace.where_hint()}]"
         ok = not result.timed_out and result.exit_code == 0
         return ToolResult(
             content=[{"type": "text", "text": text}],
@@ -563,6 +677,130 @@ class ChatTools:
                 },
             ],
             step=_done(step, started, ok=True, path=path, picture_id=picture_id),
+        )
+
+    # ---- zoom ------------------------------------------------------------------------------------
+
+    def _crop_request(self, raw: object, number: int) -> tuple[str, int, tuple[float, ...], str]:
+        """One crop's (file name, page, box, label), checked."""
+        where = f"crops[{number}]"
+        if not isinstance(raw, Mapping):
+            raise SandboxRefused(f"{where} must be an object")
+        given = arguments(raw, frozenset({"page", "box", "file", "label"}))
+        page = given.get("page")
+        if isinstance(page, bool) or not isinstance(page, int) or page < 1:
+            raise SandboxRefused(f"{where}.page must be a whole number from 1")
+        box = given.get("box")
+        if not isinstance(box, Mapping) or set(box) != {"x0", "y0", "x1", "y1"}:
+            raise SandboxRefused(f"{where}.box must be {{x0, y0, x1, y1}} in PDF points")
+        coords = tuple(box[key] for key in ("x0", "y0", "x1", "y1"))
+        if not all(
+            isinstance(v, int | float) and not isinstance(v, bool) and abs(v) <= 100_000
+            for v in coords
+        ):
+            raise SandboxRefused(f"{where}.box must hold four numbers (PDF points)")
+        names = [str(item["name"]) for item in self.uploads]
+        file_name = given.get("file")
+        if file_name is None:
+            main = main_upload(self.uploads)
+            if main is None:
+                raise SandboxRefused(
+                    f"the set has no PDFs to zoom into. {self.workspace.where_hint()}"
+                )
+            chosen = str(main["name"])
+        elif isinstance(file_name, str):
+            chosen = file_name.strip().removeprefix(UPLOADS + "/")
+            if chosen not in names:
+                raise SandboxRefused(
+                    f"{where}.file: there is no upload {chosen!r}. {self.workspace.where_hint()}"
+                )
+        else:
+            raise SandboxRefused(f"{where}.file must be text")
+        label = given.get("label")
+        text = " ".join(label.split())[:80] if isinstance(label, str) else ""
+        return chosen, page, tuple(float(v) for v in coords), text
+
+    def zoom(self, raw: object, step: dict[str, Any], by: str = "lead") -> ToolResult:
+        """Up to four crops of the drawings-only copies, each its own picture, logged as seen."""
+        started = monotonic()
+        try:
+            given = arguments(raw, frozenset({"crops", "dpi", "description"}), frozenset({"crops"}))
+            crops = given["crops"]
+            if not isinstance(crops, list) or not 1 <= len(crops) <= MAX_ZOOM_CROPS:
+                raise SandboxRefused(f"crops must be a list of 1 to {MAX_ZOOM_CROPS} areas")
+            dpi = given.get("dpi")
+            if dpi is not None and (isinstance(dpi, bool) or not isinstance(dpi, int)):
+                raise SandboxRefused("dpi must be a whole number")
+            wanted = [self._crop_request(item, n) for n, item in enumerate(crops)]
+        except SandboxRefused as refused:
+            return _refused(step, started, str(refused))
+        pack = import_module("app.review.assistant.set_pack")
+        folder = self.workspace.set_pack or self.workspace.root / "set-local"
+        content: list[dict[str, Any]] = []
+        seen: list[dict[str, Any]] = []
+        lines: list[str] = []
+        for number, (name, page, box, label) in enumerate(wanted, start=1):
+            title = f"Crop {number}" + (f" ({label})" if label else "")
+            try:
+                pdf = pack.drawings_only(folder, self.workspace.uploads, name)
+                crop = pack.crop_picture(pdf, page, box, dpi)
+            except ValueError as wrong:
+                lines.append(f"{title}: not drawn: {wrong}.")
+                content.append({"type": "text", "text": lines[-1]})
+                continue
+            except Exception as failed:  # noqa: BLE001 - told plainly; the other crops go on
+                lines.append(f"{title}: not drawn: the page could not be drawn just now.")
+                content.append({"type": "text", "text": lines[-1]})
+                _log_failure(failed)
+                continue
+            picture_id = str(uuid4())
+            self.workspace.pictures.mkdir(parents=True, exist_ok=True)
+            (self.workspace.pictures / f"{picture_id}.png").write_bytes(crop.png)
+            x0, y0, x1, y1 = crop.box
+            lines.append(
+                f"{title}: page {page} of {name}, box {x0:g},{y0:g} to {x1:g},{y1:g} pt, "
+                f"{crop.dpi} dpi, {crop.width} x {crop.height} px (drawings only)"
+            )
+            content.append({"type": "text", "text": lines[-1]})
+            content.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "gv_picture",
+                        "picture_id": picture_id,
+                        "width": crop.width,
+                        "height": crop.height,
+                    },
+                }
+            )
+            seen.append(
+                {
+                    "by": by,
+                    "file": name,
+                    "page": page,
+                    "box": {"x0": x0, "y0": y0, "x1": x1, "y1": y1},
+                    "dpi": crop.dpi,
+                    "picture_id": picture_id,
+                }
+            )
+        with self._lock:
+            self.seen.extend(seen)
+        label = step["label"]
+        if label == "Zoomed in" and seen:
+            pages = sorted({entry["page"] for entry in seen})
+            label = f"Zoomed in on page{'s' if len(pages) > 1 else ''} {page_ranges(pages)}"
+        return ToolResult(
+            content=content,
+            step=_done(
+                step,
+                started,
+                ok=bool(seen),
+                label=label,
+                output="\n".join(lines),
+                picture_id=seen[0]["picture_id"] if seen else None,
+                seen=seen,
+            ),
+            is_error=not seen,
         )
 
     # ---- create_file / str_replace ---------------------------------------------------------------
@@ -773,3 +1011,130 @@ def _done_presented(
         step=_done(step, started, ok=problem is None, output=text),
         is_error=problem is not None,
     )
+
+
+def _log_failure(failed: BaseException) -> None:
+    _log.warning("assistant chat zoom failed: %s", type(failed).__name__)
+
+
+# ---- the set pack in briefs, and the seen log -----------------------------------------------------
+
+_PAGES: Final = re.compile(
+    r"\b(?:pages?|pp?\.|sheets?)\s*((?:\d{1,4}\s*(?:-|\u2013|to)\s*\d{1,4}|\d{1,4})"
+    r"(?:\s*(?:,|and|&)\s*(?:\d{1,4}\s*(?:-|\u2013|to)\s*\d{1,4}|\d{1,4}))*)",
+    re.IGNORECASE,
+)
+_RANGE: Final = re.compile(r"(\d{1,4})\s*(?:-|\u2013|to)\s*(\d{1,4})|(\d{1,4})")
+_MAX_NAMED_PAGES: Final = 60
+#: How the app's footer of a helper's brief starts.
+HELPER_FOOTER_MARK: Final = "\n\n---\nFrom the app"
+
+
+def named_pages(text: str) -> list[int]:
+    """The pages a brief names ("pages 3-5 and 9", "p. 12", "pp. 4, 6"), in order, at most 60."""
+    found: list[int] = []
+    for match in _PAGES.finditer(text):
+        for part in _RANGE.finditer(match.group(1)):
+            if part.group(3):
+                numbers = [int(part.group(3))]
+            else:
+                low, high = int(part.group(1)), int(part.group(2))
+                numbers = list(range(low, high + 1)) if 0 < high - low < _MAX_NAMED_PAGES else []
+            for number in numbers:
+                if number >= 1 and number not in found:
+                    found.append(number)
+    return found[:_MAX_NAMED_PAGES]
+
+
+def _page_line(entry: Mapping[str, Any]) -> str:
+    halves = entry.get("halves") or []
+    drawings = "; ".join(
+        f"{half.get('role')}"
+        + (f" round {half['round']}" if half.get("round") else "")
+        + " at "
+        + ",".join(f"{v:g}" for v in half.get("box") or ())
+        for half in halves
+    )
+    area = entry.get("area") or entry.get("section")
+    return (
+        f"- page {entry.get('page')}"
+        + (f" ({entry.get('file')})" if entry.get("file") else "")
+        + f": {entry.get('role')}"
+        + (f", {area}" if area else "")
+        + (f"; drawings: {drawings}" if drawings else "")
+    )
+
+
+def helper_footer(prompt: str, workspace: ChatWorkspace) -> str:
+    """What the app adds to every helper's brief: its pages from the page map (when the lead
+    named pages), where the pictures are, the zoom tool, its budget and what to return."""
+    folder = workspace.set_folder
+    try:
+        status = json.loads((folder / "status.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        status = {}
+    state = status.get("state") if isinstance(status, dict) else None
+    lines = [HELPER_FOOTER_MARK + " (every helper gets this):"]
+    pages = named_pages(prompt)
+    entries: list[Mapping[str, Any]] = []
+    if pages:
+        try:
+            page_map = json.loads((folder / "page_map.json").read_text(encoding="utf-8"))
+            wanted = set(pages)
+            entries = [
+                e
+                for e in page_map.get("pages") or []
+                if isinstance(e, Mapping) and e.get("page") in wanted
+            ]
+        except (OSError, ValueError, AttributeError):
+            entries = []
+        lines.append(f"- Your pages: {page_ranges(pages)}. Work only on them.")
+        if entries:
+            lines.append(
+                "- From page_map.json (GV's typed headings, read by code; the drawings decide; "
+                "boxes are PDF points, origin top-left):"
+            )
+            lines += [_page_line(entry) for entry in entries[:20]]
+    if state == "ready":
+        lines.append(
+            f"- The set pack is ready at {SET_PACK}/: page_map.json, *_drawings_only.pdf, "
+            "pages/<file>/p-NNN.png (100 dpi, drawings only), contact/ (nine pages a picture)."
+        )
+    else:
+        lines.append(
+            f"- The set pack at {SET_PACK}/ is still being made (status.json); the PDFs are in "
+            f"{UPLOADS}. zoom works now."
+        )
+    lines += [
+        (
+            "- To read numbers, use zoom: up to 4 crops in one call, sharp, GV's markup hidden. "
+            "Ask for all the crops you need in one call."
+        ),
+        f"- Budget: about {HELPER_CALL_BUDGET} tool calls; report before then.",
+        (
+            "- Return: each difference with report_finding (both values as printed, with boxes), "
+            "set_coverage for your pages, then a report of at most 300 words that names the "
+            "pages you did not reach."
+        ),
+    ]
+    return "\n".join(lines)
+
+
+def seen_log(blocks: Sequence[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
+    """Every zoom crop an answer looked at, from its stored blocks (the lead's steps and its
+    helpers' steps): `{by, file, page, box, dpi, picture_id}`."""
+    out: list[dict[str, Any]] = []
+    for block in blocks or []:
+        step = block.get("step") if block.get("type") == "step" else None
+        if not isinstance(step, Mapping):
+            continue
+        steps: list[Any] = [step]
+        for agent in step.get("agents") or []:
+            if isinstance(agent, Mapping):
+                steps += list(agent.get("steps") or [])
+        for one in steps:
+            if isinstance(one, Mapping):
+                out += [
+                    dict(entry) for entry in one.get("seen") or [] if isinstance(entry, Mapping)
+                ]
+    return out

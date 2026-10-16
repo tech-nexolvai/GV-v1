@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.review.assistant.chat_provider import ProviderFailure
-from app.review.assistant.chat_tools import LEAD_SYSTEM_PROMPT
+from app.review.assistant.chat_tools import HELPER_FOOTER_MARK, LEAD_SYSTEM_PROMPT
 from app.review.assistant.sandbox import ChatWorkspace, SandboxResult
 
 OPUS = "claude-opus-5-5"
@@ -215,6 +215,8 @@ class ScriptedProvider:
                 # pictures).
                 first = params["messages"][0]["content"]
                 task = next((b["text"] for b in first if b.get("type") == "text"), "")
+                # The brief as the lead wrote it: the app's footer is checked on its own.
+                task = task.split(HELPER_FOOTER_MARK)[0]
                 self.helper_calls.setdefault(task, []).append(sent)
                 if self.helper_answer is not None:
                     script = self.helper_answer(params)

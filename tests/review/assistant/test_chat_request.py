@@ -421,7 +421,8 @@ def test_usage_rows_name_the_route_and_the_purpose() -> None:
 
 
 def test_the_system_prompt_is_short_and_names_the_skill_and_the_three_facts() -> None:
-    assert len(LEAD_SYSTEM_PROMPT) < 2600
+    # Short like claude.ai's (chat-v6 added the set pack, zoom and the effort line).
+    assert len(LEAD_SYSTEM_PROMPT) < 3000
     for words in (
         "/mnt/skills/gv-review/SKILL.md",
         "inches",
@@ -434,6 +435,7 @@ def test_the_system_prompt_is_short_and_names_the_skill_and_the_three_facts() ->
     assert [t["name"] for t in LEAD_TOOLS] == [
         "bash_tool",
         "view",
+        "zoom",
         "create_file",
         "str_replace",
         "present_files",

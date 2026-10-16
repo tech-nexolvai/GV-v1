@@ -649,6 +649,7 @@ def _message(
             registry=registry,
             lead_max_turns=settings.assistant_lead_max_turns,
             helper_max_turns=settings.assistant_helper_max_turns,
+            max_parallel_agents=settings.assistant_max_parallel_agents,
             message_cap_micros=int(settings.assistant_message_cap_usd * _MICROS),
             package_cap_micros=int(settings.assistant_package_cap_usd * _MICROS),
             rates=runtime.rates,

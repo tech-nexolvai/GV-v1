@@ -32,7 +32,7 @@ from app.review.assistant.chat_engine import (
 )
 from app.review.assistant.chat_provider import ProviderFailure
 from app.review.assistant.chat_request import MODELS
-from app.review.assistant.chat_tools import ChatTools
+from app.review.assistant.chat_tools import HELPER_FOOTER_MARK, ChatTools
 from app.review.assistant.sandbox import ChatWorkspace
 from app.runs.rates import call_cost_micros, load_model_rates
 from tests.review.assistant.chat_fakes import (
@@ -236,7 +236,7 @@ def test_a_tool_turn_runs_the_tool_and_sends_the_reply_back_unchanged(tmp_path: 
     assert [b["type"] for b in outcome.blocks] == ["thinking", "text", "step", "text", "accuracy"]
     assert len(harness.ledger.rows) == 2
     assert {row["prompt_id"] for row in harness.ledger.rows} == {
-        "review-assistant-chat-anthropic-chat-v5"
+        "review-assistant-chat-anthropic-chat-v6"
     }
 
 
@@ -423,6 +423,7 @@ def test_helpers_run_together_and_their_reports_go_back_to_the_lead(tmp_path: Pa
     assert [t["name"] for t in helper_call["tools"]] == [
         "bash_tool",
         "view",
+        "zoom",
         "create_file",
         "str_replace",
         "report_finding",
@@ -509,18 +510,20 @@ def test_a_helper_whose_final_call_fails_still_reports_from_its_steps(tmp_path: 
     assert result["is_error"] is True and "pdfinfo a.pdf" in result["content"][0]["text"]
 
 
-def test_a_fifth_agent_is_refused_until_the_next_turn(tmp_path: Path) -> None:
-    tasks = [f"Task {n}" for n in range(5)]
+def test_an_agent_past_the_limit_is_refused_until_the_next_turn(tmp_path: Path) -> None:
+    """Six helpers run at once by default (`GV_ASSISTANT_MAX_PARALLEL_AGENTS`)."""
+    tasks = [f"Task {n}" for n in range(7)]
     provider = ScriptedProvider(
         lead=[_agents(*tasks), reply(text("Done."))],
-        helpers={task: [reply(text(f"{task} report"), model=SONNET)] for task in tasks[:4]},
+        helpers={task: [reply(text(f"{task} report"), model=SONNET)] for task in tasks[:6]},
     )
     harness = Harness(tmp_path, provider)
     harness.run()
 
     results = _sent(provider.lead_calls[1])["messages"][-1]["content"]
-    assert len(results) == 5
-    assert results[4]["is_error"] is True and "at most 4 agents" in results[4]["content"][0]["text"]
+    assert len(results) == 7
+    assert not any(result.get("is_error") for result in results[:6])
+    assert results[6]["is_error"] is True and "at most 6 agents" in results[6]["content"][0]["text"]
 
 
 @pytest.mark.parametrize(
@@ -650,7 +653,7 @@ def test_helpers_stop_at_their_share_and_the_lead_keeps_the_rest(tmp_path: Path)
     tasks = ("Check pages 1-30", "Check pages 31-60")
 
     def busy(params: Mapping[str, Any]) -> list[dict[str, Any]]:
-        task = params["messages"][0]["content"][0]["text"]
+        task = params["messages"][0]["content"][0]["text"].split(HELPER_FOOTER_MARK)[0]
         if params["tool_choice"] == {"type": "none"}:
             return reply(text(f"Report for {task}"), model=SONNET)
         return reply(
@@ -835,7 +838,8 @@ def test_cancel_between_steps_stops_and_closes_the_open_calls(tmp_path: Path) ->
         lead=[
             reply(
                 tool("a", "bash_tool", {"command": "one", "description": "x"}),
-                tool("b", "bash_tool", {"command": "two", "description": "y"}),
+                # A file write runs alone, after the command: the cancel is seen before it.
+                tool("b", "create_file", {"path": "n.txt", "file_text": "y", "description": "y"}),
                 stop="tool_use",
             )
         ]
