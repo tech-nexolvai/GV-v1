@@ -89,7 +89,8 @@ class ApprovalReadinessOut(BaseModel):
         json_schema_extra=optional_in_schema,
         description=(
             "Page numbers listed with no countertop that no reviewer has confirmed yet (#1191). "
-            "Sign-off is refused until each has an answer."
+            "Optional since 2026-10-16: signed unanswered, each is printed as not confirmed by a "
+            "person."
         ),
     )
     unchecked_countertop_pages: tuple[int, ...] = Field(

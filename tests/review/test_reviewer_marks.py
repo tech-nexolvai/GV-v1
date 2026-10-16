@@ -250,7 +250,7 @@ def test_the_snapshot_freezes_every_persons_answer_as_a_mark(
     revision, _anchors, _findings = _answered(session, tmp_path)
     payload = _snapshot(session, _approve(session, revision))
 
-    assert payload.format_version == 4
+    assert payload.format_version == 5
     assert payload.reviewer_marks is not None
     marks = _by_words(payload.reviewer_marks)
     assert marks["Confirmed by AB"].kind == "confirmed"
@@ -349,6 +349,7 @@ def test_a_snapshot_frozen_before_1363_loads_as_format_1_and_draws_no_marks(
     ).one()
     stored = json.loads(snapshot.canonical_json)
     del stored["format_version"], stored["reviewer_marks"], stored["old_compare_off"]
+    del stored["left_for_person"]
     old = ExportSnapshot.model_validate(stored)
     assert old.format_version == 1 and old.reviewer_marks is None
     monkeypatch.undo()
@@ -481,7 +482,7 @@ def test_a_format_3_snapshot_is_drawn_with_tags_and_the_new_cover_only(
     the cover that counts what is clouded wrong; a format-2 snapshot exactly as before."""
     from reports.redline import LabelLayout
 
-    if version < 4:
+    if version < 5:
         monkeypatch.setattr("app.review.signed_exports.SNAPSHOT_FORMAT_VERSION", version)
     if version == 2:
         monkeypatch.setattr("app.review.signed_exports._old_compare_off", lambda: None)

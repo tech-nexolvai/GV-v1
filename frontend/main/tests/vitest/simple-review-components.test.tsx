@@ -17,7 +17,7 @@ import { LoadError, NothingNeedsYou, ReviewSkeleton, UnaccountedBanner } from '@
 import { PicturesProvider } from '@/components/simple-review/item-pictures';
 import { leftWords, openNoCountertopPages, openPagesToDecide, summarize } from '@/lib/review-items';
 import { ApiError } from '@/api/client';
-import { allSettled, reviewItems } from './fixtures/review-items';
+import { allSettled, optionalOpen, reviewItems } from './fixtures/review-items';
 
 // Synthetic data only: nothing here comes from a client drawing.
 const data = reviewItems();
@@ -125,7 +125,8 @@ describe('ItemRow', () => {
     expect(button.textContent).toContain('Countertop 1');
     expect(screen.getByText('p.3').className).toContain('num');
     expect(screen.getByText('96 1/4"').className).toContain('num');
-    expect(screen.getByText('Needs you')).toBeTruthy();
+    expect(screen.getByText('Optional')).toBeTruthy();
+    expect(screen.queryByText('Needs you')).toBeNull();
     expect(button.querySelector('[data-outcome-icon="REVIEW_REQUIRED"]')).toBeTruthy();
     fireEvent.click(button);
     expect(onToggle).toHaveBeenCalled();
@@ -605,8 +606,9 @@ describe('FinalBar (#1368)', () => {
     renderBar(technical);
     const button = screen.getByRole('button', { name: 'Create final cloud PDF' }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
-    expect(screen.getByRole('status').textContent).toBe('9 items need you · 54 not checked');
-    expect(screen.queryByText(/valid reviewer decision/)).toBeNull();
+    expect(screen.getByRole('status').textContent).toBe('9 optional · 54 not checked');
+    // Open questions are optional (owner, 2026-10-16): only the server's own reason explains the lock.
+    expect(screen.getByText('61 findings still need a valid reviewer decision or a check rerun after correction.')).toBeTruthy();
   });
 
   it('under StrictMode the sign-off dialog still names the signer and can be confirmed (#1394)', async () => {
@@ -661,7 +663,7 @@ describe('FinalBar (#1368)', () => {
       throw new Error('The checks are already running.');
     });
     renderBar(stale, finalApi({ runChecks }));
-    expect(screen.getByRole('status').textContent).toBe('2 items need you');
+    expect(screen.getByRole('status').textContent).toBe('2 optional');
     expect(screen.getByText(/You changed inputs after the last check run/)).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Run the checks again' }));
     expect((await screen.findByRole('alert')).textContent).toContain('The checks are already running.');
@@ -1005,13 +1007,54 @@ describe('screen polish (2026-10-16)', () => {
     expect((screen.getByRole('button', { name: 'Create final cloud PDF' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it('items that need a person still say "unlocks once these are settled"', () => {
+  it('optional items left and the server still locks: the counts, and the server\'s own reason (owner, 2026-10-16)', () => {
     const source = reviewItems((draft) => {
-      draft.header = { ...draft.header, open: 3, not_checked: 5, rechecking: 0, can_finalise: false };
+      draft.header = { ...draft.header, open: 3, not_checked: 5, rechecking: 0, can_finalise: false, blocked_reason: 'Sample: the checks are running.' };
     });
-    render(<FinalBar summary={summarize(source)} left={leftWords(source.header)} notChecked={source.header.not_checked} api={api} projectId="proj-demo" packageId="pkg-demo" revision={2} approved={false} onSigned={vi.fn()} />);
-    expect(screen.getByRole('status').textContent).toBe('3 items need you · 5 not checked');
-    expect(screen.getByText('The final cloud PDF unlocks once these are settled.')).toBeTruthy();
+    render(<FinalBar summary={summarize(source)} left={leftWords(source.header)} open={source.header.open} notChecked={source.header.not_checked} api={api} projectId="proj-demo" packageId="pkg-demo" revision={2} approved={false} onSigned={vi.fn()} />);
+    expect(screen.getByRole('status').textContent).toBe('3 optional · 5 not checked');
+    expect(screen.getByText('Sample: the checks are running.')).toBeTruthy();
+    expect(screen.queryByText(/unlocks once these are settled|need you/)).toBeNull();
+  });
+
+  it('optional items left and the server unlocks: ready, and says how many are printed as not confirmed', () => {
+    const source = optionalOpen();
+    source.header.open = 3;
+    render(<FinalBar summary={summarize(source)} left={leftWords(source.header)} open={source.header.open} notChecked={source.header.not_checked} api={api} projectId="proj-demo" packageId="pkg-demo" revision={2} approved={false} onSigned={vi.fn()} />);
+    expect(screen.getByRole('status').textContent).toBe('Ready to create the final cloud PDF — 3 items left unanswered will be printed as not confirmed');
+    expect((screen.getByRole('button', { name: 'Create final cloud PDF' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('one optional item left: the singular words', () => {
+    const source = optionalOpen();
+    source.header.open = 1;
+    render(<FinalBar summary={summarize(source)} left={leftWords(source.header)} open={1} notChecked={source.header.not_checked} api={api} projectId="proj-demo" packageId="pkg-demo" revision={2} approved={false} onSigned={vi.fn()} />);
+    expect(screen.getByRole('status').textContent).toBe('Ready to create the final cloud PDF — 1 item left unanswered will be printed as not confirmed');
+  });
+
+  it('the sign-off dialog lists, by kind, what will be printed as not confirmed by a person', async () => {
+    const source = optionalOpen();
+    render(<FinalBar summary={summarize(source)} left={leftWords(source.header)} open={source.header.open} notChecked={source.header.not_checked} api={{ ...api, facts: vi.fn(async () => ({ signer: 'Sample Reviewer', carried: [] })) }} projectId="proj-demo" packageId="pkg-demo" revision={2} approved={false} onSigned={vi.fn()} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Create final cloud PDF' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Sign off and create the final cloud PDF?' });
+    const list = within(dialog).getByRole('region', { name: /Will be printed as not confirmed by a person/ });
+    expect(within(list).getByText(/Will be printed as not confirmed by a person/).textContent).toBe('Will be printed as not confirmed by a person (8)');
+    expect(within(list).getAllByRole('listitem').map((line) => line.textContent)).toEqual([
+      'Numbers to confirm: 2',
+      'Depths to confirm: 1',
+      'Countertops to check by hand: 1',
+      'Wall choices: 1',
+      'Pages to decide: 1',
+      'Clouded as wrong, not agreed by a person: 2',
+    ]);
+  });
+
+  it('the sign-off dialog says nothing extra when nothing is left unanswered', async () => {
+    const source = allSettled();
+    render(<FinalBar summary={summarize(source)} left={[]} api={{ ...api, facts: vi.fn(async () => ({ signer: 'Sample Reviewer', carried: [] })) }} projectId="proj-demo" packageId="pkg-demo" revision={2} approved={false} onSigned={vi.fn()} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Create final cloud PDF' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Sign off and create the final cloud PDF?' });
+    expect(within(dialog).queryByText(/not confirmed by a person/)).toBeNull();
   });
 });
 

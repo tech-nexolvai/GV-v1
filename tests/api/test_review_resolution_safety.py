@@ -60,15 +60,24 @@ def _assert_blocked(
     revision: PackageRevision,
     review: ReviewSession,
     finding: Finding,
+    *,
+    rerun: bool = False,
 ) -> None:
     readiness = client.get(
         f"{API_PREFIX}/projects/{project}/packages/{revision.package_id}/approval-readiness"
     )
     assert readiness.status_code == 200, readiness.text
+    # The finding is still open: the refused or unsupported action did not answer it. Since every
+    # question is optional (owner decision 2026-10-16) an open finding no longer locks sign-off; it
+    # is signed as "Not confirmed by a person", never as answered.
     assert readiness.json()["blocking_finding_ids"] == [str(finding.id)]
-    assert readiness.json()["can_approve"] is False
-    response = client.post(f"{API_PREFIX}/projects/{project}/review-sessions/{review.id}/approve")
-    assert response.status_code == 409, response.text
+    # A recorded correction waits for the checks to run again: a system state, so still locked.
+    assert readiness.json()["can_approve"] is not rerun
+    if rerun:
+        response = client.post(
+            f"{API_PREFIX}/projects/{project}/review-sessions/{review.id}/approve"
+        )
+        assert response.status_code == 409, response.text
 
 
 @pytest.mark.parametrize("action", ["correct", "except"])
@@ -100,7 +109,7 @@ def test_legacy_action_without_its_supporting_record_never_unlocks_signoff(
         )
     )
     session.commit()
-    _assert_blocked(client, project, revision, review, finding)
+    _assert_blocked(client, project, revision, review, finding, rerun=action == "correct")
 
 
 @pytest.mark.parametrize("expired,wrong_scope", [(True, False), (False, True), (False, False)])
@@ -135,7 +144,7 @@ def test_only_matching_unexpired_exception_resolves_the_finding(
     if expired or wrong_scope:
         _assert_blocked(client, project, revision, review, finding)
     else:
-        assert approval_readiness(session, revision.id).can_approve
+        assert approval_readiness(session, revision.id).blocking_finding_ids == ()
 
 
 @pytest.mark.parametrize("note", [None, "", "   "])
@@ -169,7 +178,7 @@ def test_fail_dismissal_note_is_recorded_in_the_signed_words(session: Session) -
         note=action["note"],
     ).wording("FAIL")
     assert "Detail cannot be checked" in words and "FAIL" in words
-    assert approval_readiness(session, revision.id).can_approve
+    assert approval_readiness(session, revision.id).blocking_finding_ids == ()
 
 
 def test_confirmed_fail_is_a_problem_for_the_vendor_without_a_note(session: Session) -> None:
@@ -181,7 +190,7 @@ def test_confirmed_fail_is_a_problem_for_the_vendor_without_a_note(session: Sess
         actor="anant",
         action=ReviewActionKind.CONFIRM,
     )
-    assert approval_readiness(session, revision.id).can_approve
+    assert approval_readiness(session, revision.id).blocking_finding_ids == ()
     words = ReviewDisposition(
         action_id=action.id, action="confirm", reviewer="anant", at=action.created_at
     ).wording("FAIL")

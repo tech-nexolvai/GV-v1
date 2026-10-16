@@ -58,7 +58,7 @@ export interface SimpleReviewPageProps {
   /** The old tabs and wizard, `#/review/<id>/advanced`. */
   onOpenAdvanced: () => void;
   onTitleChange?: (title: string, revision: number | null) => void;
-  /** The page's own "items need you" count (`header.open`), so the sidebar shows the same number. */
+  /** The page's own optional count (`header.open`), so the sidebar shows the same number. */
   onNeedYouChange?: (count: number | null) => void;
   /** The review assistant, docked on the right. Off in tests that do not exercise it. */
   assistantAvailable?: boolean;
@@ -251,7 +251,7 @@ export function SimpleReviewPage({
     };
   }, [api, project, packageId, version]);
 
-  // The sidebar shows the same "items need you" count as this page (its list's `header.open`).
+  // The sidebar shows the same optional count as this page (its list's `header.open`).
   const openCount = lastGood?.header.open ?? null;
   useEffect(() => {
     if (openCount !== null) onNeedYouChange?.(openCount);
@@ -860,7 +860,8 @@ export function SimpleReviewPage({
                     <section aria-labelledby="needs-you-title" className="flex flex-col gap-3">
                       <div className="flex items-baseline justify-between gap-4">
                         <h2 id="needs-you-title" className="text-[20px] leading-7 font-semibold tracking-[-0.01em]">
-                          Needs you <span className="num ml-1 text-[15px] font-normal text-muted-foreground">{needsYou.filter((item) => item.status === 'open').length}</span>
+                          {/* Every question is optional (owner, 2026-10-16): answered or left, the review runs. */}
+                          Optional — answer if you want <span className="num ml-1 text-[15px] font-normal text-muted-foreground">({needsYou.filter((item) => item.status === 'open').length})</span>
                         </h2>
                         <p className="hidden text-[13px] text-muted-foreground md:block">
                           <span className="num">J</span>/<span className="num">K</span> to move, <span className="num">Enter</span> to open
@@ -903,6 +904,7 @@ export function SimpleReviewPage({
                 <FinalBar
                   summary={summary}
                   left={leftWords(data.header)}
+                  open={data.header.open}
                   notChecked={data.header.not_checked}
                   api={finalCloud}
                   projectId={project}

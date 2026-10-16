@@ -10,7 +10,7 @@ import type { FinalCloudApi } from '@/api/final-cloud';
 import type { DraftCloudApi, DraftCloudStatus } from '@/api/draft-cloud';
 import type { ArchitectPairing, ArchitectViewMatch } from '@/api/client';
 import type { ArchitectLoader } from '@/components/simple-review/architect-choices-lib';
-import { allSettled, reviewItems } from './fixtures/review-items';
+import { allSettled, optionalOpen, reviewItems } from './fixtures/review-items';
 
 // Synthetic data only: nothing here comes from a client drawing.
 vi.mock('@/api/config', () => ({ projectId: () => 'proj-demo' }));
@@ -308,6 +308,28 @@ describe('SimpleReviewPage (#1343)', () => {
     await waitFor(() => expect(posted).toEqual([{ key: 'wall:row-7', action: 'answer', body: { expected_finding_id: 'find-7', wall_config: 'back_and_left', answer: 'choose_wall' } }]));
     await userEvent.keyboard('c');
     await waitFor(() => expect(posted.at(-1)).toEqual({ key: 'wall:row-7', action: 'answer', body: { expected_finding_id: 'find-7', wall_config: 'back_left_right', answer: 'choose_wall' } }));
+  });
+
+  it('every question is optional (owner, 2026-10-16): the list says so, and sign-off is offered with items still open', async () => {
+    current = optionalOpen();
+    const finalCloud = finalApi();
+    renderPage({ finalCloud });
+    // Six open items in the fixture; the open "no countertop?" page is its own card above the list.
+    const heading = await screen.findByRole('heading', { level: 2, name: /Optional — answer if you want/ });
+    expect(heading.textContent).toBe('Optional — answer if you want (5)');
+    expect(screen.queryByRole('heading', { name: /^Needs you/ })).toBeNull();
+    const status = screen.getAllByRole('status').find((node) => node.closest('[data-slot="final-bar"]'))!;
+    expect(status.textContent).toBe(`Ready to create the final cloud PDF — ${current.header.open} items left unanswered will be printed as not confirmed`);
+    const final = screen.getByRole('button', { name: 'Create final cloud PDF' }) as HTMLButtonElement;
+    expect(final.disabled).toBe(false);
+    await userEvent.click(final);
+    const dialog = await screen.findByRole('dialog', { name: 'Sign off and create the final cloud PDF?' });
+    expect(within(dialog).getByRole('region', { name: /Will be printed as not confirmed by a person \(8\)/ })).toBeTruthy();
+    // The answers still work: Confirm on an open number is sent as before.
+    await userEvent.keyboard('{Escape}');
+    await userEvent.click(rowButton(/Overall countertop width.*Countertop 1/));
+    await userEvent.click(await screen.findByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(posted.at(-1)?.action).toBe('confirm'));
   });
 
   it('when everything is checked: "Nothing needs you" and the final cloud PDF unlocks into the sign-off', async () => {
