@@ -6,20 +6,25 @@
 import { describe, expect, it } from 'vitest';
 
 import { formatRoute, parseRoute } from '@/app/route';
-import type { ChatEvent, ChatMessage, ChatModel } from '@/lib/chat-api';
+import type { ChatEvent, ChatMessage, ChatModel, ChatTool } from '@/lib/chat-api';
 import {
+  activityHeadline,
+  activitySummary,
   answerItems,
   applyChatEvent,
   dollars,
   footerWords,
+  messageCost,
+  previousQuestion,
   fromSaved,
   localAnswer,
   modelLabel,
   relativeTime,
   settle,
   stoppedWords,
+  thinkingLine,
   thoughtFor,
-  toAssistantStep,
+  type ViewBlock,
   type ViewMessage,
 } from '@/lib/chat-messages';
 import {
@@ -87,7 +92,7 @@ describe('an answer built from its events', () => {
   it('fills a gap in the indexes with empty words, which show nothing', () => {
     const message = build([ev('text_delta', { index: 2, text: 'Late words' })]);
     expect(message.blocks.map((block) => block.type)).toEqual(['text', 'text', 'text']);
-    expect(answerItems(message.blocks, true, false).items).toEqual([{ kind: 'text', index: 2 }]);
+    expect(answerItems(message.blocks, false).items).toEqual([{ kind: 'text', index: 2 }]);
   });
 
   it('builds helper agents live under their Agent step, and finished helpers read as finished', () => {
@@ -178,37 +183,73 @@ describe('what an answer shows, in order', () => {
     ],
   }).blocks;
 
-  it('while running, every step is its own line', () => {
-    expect(answerItems(blocks, true, true)).toEqual({
+  it('folds all thinking and steps between words into one activity row; the task list follows the row with its last task step', () => {
+    const items = {
       items: [
-        { kind: 'thinking', index: 0 },
-        { kind: 'step', index: 1 },
-        { kind: 'step', index: 2 },
+        { kind: 'activity', indexes: [0, 1, 2] },
         { kind: 'text', index: 3 },
-        { kind: 'step', index: 4 },
+        { kind: 'activity', indexes: [4] },
         { kind: 'text', index: 6 },
       ],
-      planAfter: 2,
-    });
+      planAfter: 0,
+    };
+    expect(answerItems(blocks, true)).toEqual(items);
+    // Empty words never break a row: thinking, a step, empty words and more thinking stay one row.
+    const ladder: ViewBlock[] = [
+      { type: 'thinking', text: 'a', seconds: 2, live: false },
+      { type: 'step', step: { id: '1', tool: 'bash_tool', label: 'one', ok: true }, live: false },
+      { type: 'text', text: '' },
+      { type: 'thinking', text: 'b', seconds: 1, live: false },
+      { type: 'step', step: { id: '2', tool: 'bash_tool', label: 'two', ok: true }, live: false },
+      { type: 'thinking', text: 'c', seconds: 4, live: false },
+      { type: 'text', text: 'The answer.' },
+    ];
+    expect(answerItems(ladder, false)).toEqual({ items: [{ kind: 'activity', indexes: [0, 1, 3, 4, 5] }, { kind: 'text', index: 6 }], planAfter: null });
   });
 
-  it('once finished, each run of steps between words folds under one line; the task list follows its last task step', () => {
-    expect(answerItems(blocks, false, true)).toEqual({
-      items: [
-        { kind: 'thinking', index: 0 },
-        { kind: 'steps', indexes: [1, 2] },
-        { kind: 'text', index: 3 },
-        { kind: 'steps', indexes: [4] },
-        { kind: 'text', index: 6 },
-      ],
-      planAfter: 1,
-    });
+  const step = (id: string, tool: ChatTool, extra: object = {}): ViewBlock =>
+    ({ type: 'step', step: { id, tool, label: `step ${id}`, ok: true, ...extra }, live: false });
+
+  it('sums a finished row up in words, claude.ai’s way', () => {
+    expect(activitySummary([step('1', 'bash_tool'), step('2', 'bash_tool'), step('3', 'view', { picture_id: 'p' }), step('4', 'bash_tool'), step('5', 'view', { picture_id: 'q' }), step('6', 'create_file')]))
+      .toBe('Ran 3 commands, viewed 2 pictures, created a file');
+    expect(activitySummary([
+      { type: 'thinking', text: 'a', seconds: 2, live: false },
+      step('1', 'bash_tool'),
+      { type: 'thinking', text: 'b', seconds: 5, live: false },
+      step('2', 'bash_tool'),
+    ])).toBe('Thought for 7s, ran 2 commands');
+    expect(activitySummary([step('1', 'view'), step('2', 'str_replace'), step('3', 'TaskCreate'), step('4', 'TaskUpdate'), step('5', 'present_files'), step('6', 'review_results')]))
+      .toBe('Viewed a file, edited a file, updated the task list, presented files');
+    expect(activitySummary([
+      { type: 'thinking', text: 'a', seconds: 41, live: false }, step('1', 'review_results'), step('2', 'bash_tool'), step('3', 'view', { picture_id: 'p' }),
+      step('4', 'TaskCreate'), step('5', 'Agent', { agents: [{ id: 'a' }, { id: 'b' }] }), step('6', 'create_file'),
+    ])).toBe('Thought for 41s, ran a command, viewed a picture, ran 2 agents');
+    expect(activitySummary([step('1', 'Agent', { agents: [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }] })])).toBe('Ran 4 agents');
+    expect(activitySummary([{ type: 'thinking', text: 'a', seconds: null, live: false }])).toBe('Thought');
   });
 
-  it('chat steps become the assistant panel’s steps, pictures by URL', () => {
-    const step = toAssistantStep({ id: 'v', tool: 'view', label: 'Look at page 3', path: '/home/claude/p3.png', ok: null, picture_id: 'pic 1' }, (id) => `/pictures/${id}`);
-    expect(step).toMatchObject({ kind: 'view', label: 'Look at page 3', thumbnail: '/pictures/pic 1', ok: true });
-    expect(toAssistantStep({ id: 'f', tool: 'create_file', label: 'Write the markup', path: '/mnt/user-data/outputs/m.pdf', ok: true }, String).kind).toBe('file');
+  it('a running row says what it does now: the newest thinking line, the running step, or its helpers', () => {
+    expect(activityHeadline([step('1', 'bash_tool'), { type: 'thinking', text: '**Reading the plans**\n\nThe vendor set has 12 pages.', seconds: null, live: true }]))
+      .toBe('The vendor set has 12 pages.');
+    expect(activityHeadline([{ type: 'thinking', text: '', seconds: null, live: true }])).toBe('Thinking…');
+    expect(activityHeadline([{ type: 'step', step: { id: '1', tool: 'bash_tool', label: 'Render page 3', ok: null }, live: true }])).toBe('Render page 3');
+    expect(activityHeadline([{ type: 'step', step: { id: '1', tool: 'Agent', label: 'Agents', ok: null, agents: [{ id: 'a', description: 'd', model: 'm', ok: null, report: null, steps: [], running: true }, { id: 'b', description: 'd', model: 'm', ok: null, report: null, steps: [], running: true }] }, live: true }]))
+      .toBe('Running 2 agents…');
+    expect(thinkingLine('## Plan\n- **Compare** the widths\n')).toBe('Compare the widths');
+    expect(thinkingLine('  ')).toBeNull();
+  });
+
+  it('Retry asks the question the answer replied to', () => {
+    const messages = [
+      { key: 'u1', role: 'user' as const, text: 'First?' },
+      { key: 'a1', role: 'assistant' as const, text: '' },
+      { key: 'u2', role: 'user' as const, text: 'Second?' },
+      { key: 'a2', role: 'assistant' as const, text: '' },
+    ];
+    expect(previousQuestion(messages, 'a2')).toBe('Second?');
+    expect(previousQuestion(messages, 'a1')).toBe('First?');
+    expect(previousQuestion(messages, 'u1')).toBeNull();
   });
 });
 
@@ -264,20 +305,26 @@ describe('model, effort and thinking', () => {
 });
 
 describe('the answer’s words', () => {
-  it('footer: model, effort, cost and the AI-answer label', () => {
-    expect(footerWords({ model: 'claude-opus-5-5', effort: 'high', cost_usd: '1.72' }, MODELS)).toBe('Claude Opus 5.5 · High effort · $1.72 · AI answer: check before acting');
-    expect(footerWords({ model: 'claude-opus-5-5', effort: 'xhigh', cost_usd: null }, null)).toBe('Claude Opus 5.5 · Extra high effort · AI answer: check before acting');
+  it('meta line: model, effort and cost, under one cent as "<$0.01", with no AI-answer label', () => {
+    expect(footerWords({ model: 'claude-opus-5-5', effort: 'high', cost_usd: '1.72' }, MODELS)).toBe('Claude Opus 5.5 · High effort · $1.72');
+    expect(footerWords({ model: 'claude-opus-5-5', effort: 'xhigh', cost_usd: null }, null)).toBe('Claude Opus 5.5 · Extra high effort');
+    expect(footerWords({ model: 'claude-haiku-5-5', effort: 'low', cost_usd: '0.00' }, null)).toBe('Claude Haiku 5.5 · Low effort · <$0.01');
+    expect(messageCost('0.002')).toBe('<$0.01');
+    expect(messageCost('0.01')).toBe('$0.01');
+    expect(messageCost('junk')).toBeNull();
     expect(modelLabel('claude-sonnet-5-5', [])).toBe('Claude Sonnet 5.5');
     expect(dollars('0.001')).toBe('under $0.01');
     expect(dollars('3')).toBe('$3.00');
   });
 
-  it('why it stopped, in plain words', () => {
-    expect(stoppedWords({ stopped: 'cost_cap', error: null }, '5.00')).toBe('Stopped: this message reached its cost cap of $5.00. Above is what it found before then.');
-    expect(stoppedWords({ stopped: 'cancelled', error: null })).toBe('Stopped by you.');
-    expect(stoppedWords({ stopped: 'error', error: 'The model provider did not answer.' })).toBe('Stopped by an error: The model provider did not answer.');
-    expect(stoppedWords({ stopped: 'turn_limit', error: null })).toBe('Stopped: it reached the most steps one message may take. Above is what it found before then.');
-    expect(stoppedWords({ stopped: null, error: null })).toBeNull();
+  it('why it stopped, in claude.ai’s plain words', () => {
+    expect(stoppedWords({ stopped: 'cost_cap' }, '5.00')).toBe('Stopped: this answer reached its $5 limit');
+    expect(stoppedWords({ stopped: 'cost_cap' }, '7.50')).toBe('Stopped: this answer reached its $7.50 limit');
+    expect(stoppedWords({ stopped: 'cost_cap' })).toBe('Stopped: this answer reached its cost limit');
+    expect(stoppedWords({ stopped: 'cancelled' })).toBe('Stopped');
+    expect(stoppedWords({ stopped: 'error' })).toBe('Something went wrong. Try again.');
+    expect(stoppedWords({ stopped: 'turn_limit' })).toBe('Stopped after the maximum number of steps');
+    expect(stoppedWords({ stopped: null })).toBeNull();
   });
 
   it('thinking time and how long ago', () => {

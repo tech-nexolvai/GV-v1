@@ -1,12 +1,14 @@
 import { Fragment } from 'react';
 
-import { AnswerTable } from '@/components/assistant/assistant-answer';
+import { CopyButton } from '@/components/chat/chat-motion';
 import { cn } from '@/lib/utils';
 import { inlinePieces, markdownBlocks, type InlinePiece, type MarkdownBlock } from '@/lib/chat-markdown';
 
 /**
- * An answer's markdown (#1464), in the app's type: Geist for words, Plex Mono for code. Tables use
- * the assistant panel's own table. `streaming` puts a caret after the last words while they arrive.
+ * An answer's markdown (#1464, #1470), in the app's type: Geist for words, Plex Mono for code.
+ * Tables are clean (thin borders, a muted header row, sideways scroll on a narrow screen); code
+ * blocks carry a Copy button. While words stream in (`streaming`), each new block fades in, as
+ * claude.ai's do, instead of a caret blinking after them.
  */
 
 function Inline({ pieces }: { pieces: readonly InlinePiece[] }) {
@@ -42,33 +44,28 @@ function InlineText({ text }: { text: string }) {
   return <Inline pieces={inlinePieces(text)} />;
 }
 
-function Caret() {
-  return <span aria-hidden="true" data-slot="chat-caret" className="ml-0.5 inline-block h-[1em] w-[0.45em] animate-pulse bg-foreground align-[-0.15em] motion-reduce:animate-none" />;
-}
-
+// Modest headings, as claude.ai's: a little larger than the words, never shouting.
 const HEADING_CLASS: Record<number, string> = {
-  1: 'text-xl font-semibold',
-  2: 'text-lg font-semibold',
-  3: 'text-base font-semibold',
+  1: 'text-[1.25em] font-semibold',
+  2: 'text-[1.125em] font-semibold',
+  3: 'text-[1em] font-semibold',
 };
 
-function Block({ block, caret }: { block: MarkdownBlock; caret: boolean }) {
+function Block({ block }: { block: MarkdownBlock }) {
   switch (block.kind) {
     case 'heading': {
       // Inside a message the page's own headings come first: an answer's "#" starts at h3.
       const Tag = (`h${Math.min(6, block.level + 2)}`) as 'h3' | 'h4' | 'h5' | 'h6';
       return (
-        <Tag className={cn('mt-2 leading-snug text-foreground', HEADING_CLASS[block.level] ?? 'text-[15px] font-semibold')}>
+        <Tag className={cn('mt-1.5 leading-snug tracking-[-0.005em] text-foreground', HEADING_CLASS[block.level] ?? 'text-[1em] font-medium')}>
           <InlineText text={block.text} />
-          {caret && <Caret />}
         </Tag>
       );
     }
     case 'paragraph':
       return (
-        <p className="leading-relaxed break-words whitespace-pre-line">
+        <p className="break-words whitespace-pre-line">
           <InlineText text={block.text} />
-          {caret && <Caret />}
         </p>
       );
     case 'list': {
@@ -76,7 +73,7 @@ function Block({ block, caret }: { block: MarkdownBlock; caret: boolean }) {
       return (
         <List
           start={block.ordered && block.start !== 1 ? block.start : undefined}
-          className={cn('ml-1 space-y-1 pl-5 leading-relaxed marker:text-muted-foreground', block.ordered ? 'list-decimal' : 'list-disc')}
+          className={cn('space-y-1.5 pl-6 marker:text-muted-foreground', block.ordered ? 'list-decimal' : 'list-disc')}
         >
           {block.items.map((item, index) => (
             <li key={index} className="break-words">
@@ -88,21 +85,47 @@ function Block({ block, caret }: { block: MarkdownBlock; caret: boolean }) {
                   ))}
                 </ul>
               )}
-              {caret && index === block.items.length - 1 && <Caret />}
             </li>
           ))}
         </List>
       );
     }
     case 'table':
-      return <AnswerTable header={block.header} rows={block.rows} renderCell={(cell) => <InlineText text={cell} />} />;
+      return (
+        <div data-slot="chat-table" className="max-w-full overflow-x-auto rounded-lg border">
+          <table className="w-full border-collapse text-[0.875em] leading-normal">
+            <thead className="bg-muted/50">
+              <tr>
+                {block.header.map((cell, index) => (
+                  <th key={index} scope="col" className="border-b px-4 py-2.5 text-left font-semibold whitespace-nowrap text-foreground">
+                    <InlineText text={cell} />
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {block.rows.map((row, at) => (
+                <tr key={at} className="border-b last:border-b-0">
+                  {block.header.map((_, index) => (
+                    <td key={index} className="px-4 py-2.5 align-top">
+                      <InlineText text={row[index] ?? ''} />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
     case 'code':
       return (
-        <div className="overflow-hidden rounded-lg border bg-muted/50">
-          {block.lang && <div className="border-b px-3 py-1 font-mono text-xs text-muted-foreground">{block.lang}</div>}
-          <pre className="overflow-x-auto px-3 py-2 font-mono text-[12.5px] leading-relaxed">
+        <div data-slot="chat-code" className="min-w-0 overflow-hidden rounded-lg border bg-muted/40">
+          <div className="flex items-center justify-between gap-2 border-b py-0.5 pr-1 pl-3">
+            <span className="font-mono text-xs text-muted-foreground">{block.lang || 'code'}</span>
+            <CopyButton text={block.text} label="Copy code" withWords />
+          </div>
+          <pre className="overflow-x-auto px-3 py-2.5 font-mono text-[12.5px] leading-relaxed">
             <code>{block.text}</code>
-            {caret && <Caret />}
           </pre>
         </div>
       );
@@ -110,7 +133,6 @@ function Block({ block, caret }: { block: MarkdownBlock; caret: boolean }) {
       return (
         <blockquote className="border-l-2 border-border pl-3 text-muted-foreground whitespace-pre-line">
           <InlineText text={block.text} />
-          {caret && <Caret />}
         </blockquote>
       );
     case 'rule':
@@ -123,11 +145,14 @@ function Block({ block, caret }: { block: MarkdownBlock; caret: boolean }) {
 export function ChatMarkdown({ text, streaming = false, className }: { text: string; streaming?: boolean; className?: string }) {
   const blocks = markdownBlocks(text);
   return (
-    <div data-slot="chat-markdown" className={cn('grid min-w-0 grid-cols-[minmax(0,1fr)] gap-3', className)}>
+    // claude.ai's reading type: 16px words at a 1.65 line height (a caller may make it smaller).
+    <div data-slot="chat-markdown" data-streaming={streaming ? 'true' : undefined} className={cn('grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4 text-base leading-[1.65] text-foreground', className)}>
       {blocks.map((block, index) => (
-        <Block key={index} block={block} caret={streaming && index === blocks.length - 1} />
+        // A block that appears while the words stream in fades in; one already there stays still.
+        <div key={`${index}-${block.kind}`} className={cn('min-w-0', streaming && 'chat-fade-in')}>
+          <Block block={block} />
+        </div>
       ))}
-      {streaming && blocks.length === 0 && <span><Caret /></span>}
     </div>
   );
 }
