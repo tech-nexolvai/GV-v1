@@ -55,6 +55,7 @@ from extraction.depth.view_kind import (
     MEASURED_VIEW_SETTINGS,
     ViewFinderSettings,
     find_vendor_views,
+    kind_from_heading,
 )
 from extraction.geometry.rows import MEASURED_SETTINGS, Box, RowSettings
 from extraction.panels import propose_panel_roles
@@ -117,6 +118,8 @@ class ArchitectViewDimensions:
     """Every dimension printed in the view, exactly once."""
     lines: tuple[DrawnDimension, ...]
     """The spans of every dimension line a label was placed on: what is laid over the vendor's."""
+    kind: str | None = None
+    """What kind of view the sheet's heading over it names (`elevation`, `plan`, ...), or `None`."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +134,9 @@ class VendorViewDimensions:
     scale_reason: str
     lines: tuple[DrawnDimension, ...]
     """Every labelled dimension span in the view, both axes."""
+    kind: str | None = None
+    """What kind of view its own title names, or (when it names none and it is the drawing's only
+    view) the sheet's heading over the drawing; `None` when neither names one."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,6 +195,11 @@ def _vendor_scale(
     )
 
 
+def _kind(heading: str | None) -> str | None:
+    kind = kind_from_heading(heading).kind
+    return None if kind is None else kind.value
+
+
 def read_compare_page(
     data: bytes, page_index: int, *, settings: CompareSettings, dpi: int
 ) -> ComparePage:
@@ -239,14 +250,17 @@ def read_compare_page(
                 scale_reason=view.scale_reason,
                 dimensions=tuple(_moved_dimension(dim, dx, dtop) for dim in dims),
                 lines=tuple(_moved_span(span, dx, dtop) for span in lines),
+                kind=_kind(view.judgment.heading),
             )
         )
     if not views:
         notes.append("no architect's drawing on this page is decided by code")
     layers = read_markup_layer(data, page_index, document_version_id=_UNSTORED, dpi=dpi)
+    proposals = propose_panel_roles(layers.vendor_stamps, layers.markup)
+    sheet_headings = {proposal.annotation_index: proposal.heading for proposal in proposals}
     named = [
         proposal.annotation_index
-        for proposal in propose_panel_roles(layers.vendor_stamps, layers.markup)
+        for proposal in proposals
         if proposal.role == "shop" and proposal.annotation_index in stamps
     ]
     # A sheet with no heading: a drawing the architect reader decided is the vendor's, by the
@@ -258,9 +272,9 @@ def read_compare_page(
         and view.annotation_index in stamps
         and view.annotation_index not in named
     ]
-    panels = [stamps[index] for index in named]
+    panels = [(*stamps[index], sheet_headings.get(index)) for index in named]
     vendor: list[VendorViewDimensions] = []
-    for panel_box, paste in panels:
+    for panel_box, paste, sheet_heading in panels:
         found = [
             view
             for view in find_vendor_views(page.chars, page.ink, panel_box, settings.views).views
@@ -288,6 +302,7 @@ def read_compare_page(
                     points_per_inch=ppi,
                     scale_reason=reason,
                     lines=tuple(_moved_span(span, dx, dtop) for span in labelled_lines(spans)),
+                    kind=_kind(heading) or (_kind(sheet_heading) if len(places) == 1 else None),
                 )
             )
     if not panels:

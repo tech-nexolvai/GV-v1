@@ -3,23 +3,33 @@
 The direct compare puts each number the architect printed beside the vendor's number for the same
 span. This module decides **which vendor dimension line is that span**, from where and how long
 things are drawn, never from a printed number (pairing by value could only pair numbers that
-already agree, so a real difference could never show).
+already agree, so a real difference could never show). **A wrong pair is worse than none**: every
+test below must pass, or the dimension is "?" with the reason.
 
 **The rule** (`pair_page`), for each architect dimension on the sheet:
 
-* its real length is the length drawn between its ticks through the architect view's scale;
-* a vendor dimension line qualifies when it runs on the same axis, on the same sheet, and its own
-  real length (drawn length through the vendor view's printed scale) equals the architect's within
-  `length_fraction` of it or `length_floor_in`, whichever is larger;
-* a vendor view that prints no scale is laid over the architect's view by `register.py` (its ticks
-  lining up); there a line qualifies when it lands on the architect's span and has the same real
-  length at the registered scale. A view that does not register gives no candidates, and says so;
-* **exactly one** qualifying line is the pair. None or several: "?" with the reason in plain words.
+1. **Same kind of view.** The architect's view and the vendor's view must both be named, by their
+   printed headings, as the same kind (an elevation with an elevation, a plan with a plan). A view
+   whose kind is not printed pairs with nothing.
+2. **A printed scale.** The vendor view must print a scale code can read (through the factor it was
+   pasted at). A view without one is never stretched to fit.
+3. **Real dimension lines only.** A vendor span counts only when its ticks are the drawing's own
+   slashes at both ends (not witness lines, which an edge of a cabinet or a stone also gives) and a
+   label of its own sits on it: inside its span along the line, within `label_reach_pt` across, and
+   nearer to it than to any other dimension line that runs past the label.
+4. **Same place along the wall**, measured from a reference both views share, at each view's own
+   printed scale (never stretched): for heights the **floor** (the lowest tick that at least
+   `floor_lines` height lines, at different places across, end on); for widths the **left end** of
+   the dimensioned run, and only when both views' widths run about as far (so their ends line up).
+   A vendor line qualifies when both of its ends are where the architect span's ends are, and its
+   length is the architect's, each within `length_fraction` (at least `length_floor_in`).
+5. **Exactly one** qualifying line is the pair. None or several: "?" with the reason in plain
+   words. One vendor line that is the only match for two architect dimensions pairs neither.
 
 Every architect dimension appears **exactly once** in the result, held ones too (a held value or a
 label on no line is a "?" with its reason). Nothing is dropped. Pure: plain values in and out.
 
-Source: the direct-compare issue · Verification: `tests/extraction/compare/test_pair.py`
+Source: the direct-compare issues #1417, #1418 · Verification: `tests/extraction/compare/test_pair.py`
 """
 
 from __future__ import annotations
@@ -27,13 +37,14 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
+from decimal import Decimal
 from enum import StrEnum
 from fractions import Fraction
 from io import BytesIO
 from pathlib import Path
 from typing import Final
 
-from extraction.compare.dimensions import ArchitectDimension, DrawnDimension
+from extraction.compare.dimensions import ArchitectDimension, Axis, DrawnDimension
 from extraction.compare.page import (
     MEASURED_COMPARE_SETTINGS,
     ArchitectViewDimensions,
@@ -41,7 +52,7 @@ from extraction.compare.page import (
     VendorViewDimensions,
     read_compare_page,
 )
-from extraction.compare.register import RegisterSettings, register, vendor_candidates
+from extraction.geometry.rows import Box, TickSource
 
 __all__ = [
     "MEASURED_PAIR_SETTINGS",
@@ -49,6 +60,7 @@ __all__ = [
     "PairStatus",
     "Pairing",
     "compare_pdf",
+    "own_label",
     "pair_page",
 ]
 
@@ -68,8 +80,12 @@ class PairSettings:
     """The two real lengths may differ by this fraction of the architect's..."""
     length_floor_in: Fraction
     """...or by this many inches, whichever is larger."""
-    register: RegisterSettings
-    """How a vendor view with no printed scale is laid over the architect's."""
+    label_reach_pt: Decimal
+    """A vendor label is on its dimension line when at most this far across from it."""
+    tick_pair_pt: Decimal
+    """Two ticks this close are one place (a doubled slash)."""
+    floor_lines: int
+    """A view's floor is the lowest tick at least this many height lines end on."""
 
 
 MEASURED_PAIR_SETTINGS: Final = PairSettings(
@@ -78,15 +94,10 @@ MEASURED_PAIR_SETTINGS: Final = PairSettings(
     # inch) is the smallest band that still finds the vendor's line for a span both drew alike.
     length_fraction=Fraction(5, 100),
     length_floor_in=Fraction(1, 2),
-    register=RegisterSettings(
-        tick_tolerance_in=Fraction(1),
-        minimum_coinciding_ticks=4,
-        minimum_margin=2,
-        stretch_range=(Fraction(1, 4), Fraction(4)),
-        stretch_agreement=Fraction(5, 100),
-        candidate_fraction=Fraction(5, 100),
-        extent_tolerance_in=Fraction(2),
-    ),
+    # The architect reader's own measured reach for a label off its line.
+    label_reach_pt=Decimal(12),
+    tick_pair_pt=Decimal(2),
+    floor_lines=2,
 )
 
 
@@ -103,19 +114,104 @@ class Pairing:
     """The vendor view's page-local number, when paired."""
     vendor: DrawnDimension | None
     vendor_inches_drawn: Fraction | None
-    """The paired line's drawn length through the vendor view's scale (never its printed number)."""
+    """The paired line's drawn length at the registered scale (never its printed number)."""
     how: str | None
-    """"printed scale" or "registered": how the vendor view's scale was known."""
+    """How the vendor view was laid over the architect's, when paired."""
     reason: str
     """In plain words: why this is the pair, or why there is none."""
+    vendor_label: Box | None = None
+    """The paired line's own label: where the vendor's number is printed."""
 
 
-def _qualifies(
-    arch_inches: Fraction, line: DrawnDimension, ppi: Fraction, settings: PairSettings
-) -> Fraction | None:
-    real = Fraction(line.length_pt) / ppi
-    allowed = max(settings.length_floor_in, settings.length_fraction * arch_inches)
-    return real if abs(real - arch_inches) <= allowed else None
+def _across(axis: Axis, box: Box) -> tuple[Decimal, Decimal, Decimal]:
+    if axis is Axis.HORIZONTAL:
+        return box.centre_x, box.top, box.bottom
+    return box.centre_y, box.x0, box.x1
+
+
+def _gap(low: Decimal, high: Decimal, offset: Decimal) -> Decimal:
+    if low <= offset <= high:
+        return Decimal(0)
+    return min(abs(low - offset), abs(high - offset))
+
+
+def own_label(line: DrawnDimension, lines: Sequence[DrawnDimension], reach: Decimal) -> Box | None:
+    """The label that belongs to `line`: inside its span along it, within `reach` across, and
+    nearer to it than to any other line of the view that runs past it. `None` when there is none."""
+    for box in line.label_boxes:
+        along, low, high = _across(line.axis, box)
+        if not line.start_pt <= along <= line.end_pt:
+            continue
+        distance = _gap(low, high, line.offset_pt)
+        if distance > reach:
+            continue
+        if any(
+            other is not line
+            and other.axis is line.axis
+            and other.offset_pt != line.offset_pt
+            and other.start_pt <= along <= other.end_pt
+            and _gap(low, high, other.offset_pt) <= distance
+            for other in lines
+        ):
+            continue
+        return box
+    return None
+
+
+def _real_lines(
+    view: VendorViewDimensions, settings: PairSettings
+) -> list[tuple[DrawnDimension, Box]]:
+    found: list[tuple[DrawnDimension, Box]] = []
+    for line in view.lines:
+        if line.tick_source is not TickSource.SLASH:
+            continue
+        label = own_label(line, view.lines, settings.label_reach_pt)
+        if label is not None:
+            found.append((line, label))
+    return found
+
+
+_Found = tuple[VendorViewDimensions, DrawnDimension, Box, Fraction]
+
+
+def _reference(
+    lines: Sequence[DrawnDimension], axis: Axis, settings: PairSettings
+) -> tuple[Fraction, Fraction] | None:
+    """The view's shared reference on `axis`, as (where it is, how far the dimensions reach from
+    it), in page points: for heights the floor (the lowest tick that at least `floor_lines` height
+    lines, at different places across, end on), for widths the left end of the dimensioned run.
+    `None` when there is none."""
+    on = [line for line in lines if line.axis is axis]
+    if not on:
+        return None
+    if axis is Axis.VERTICAL:
+        within = Fraction(settings.tick_pair_pt)
+        for floor in sorted({Fraction(line.end_pt) for line in on}, reverse=True):
+            resting = {
+                Fraction(line.offset_pt)
+                for line in on
+                if abs(floor - Fraction(line.end_pt)) <= within
+            }
+            if len(resting) >= settings.floor_lines:
+                return floor, floor - min(Fraction(line.start_pt) for line in on)
+        return None
+    left = min(Fraction(line.start_pt) for line in on)
+    return left, max(Fraction(line.end_pt) for line in on) - left
+
+
+def _from_reference(
+    span: DrawnDimension, reference: Fraction, axis: Axis, ppi: Fraction
+) -> tuple[Fraction, Fraction]:
+    """The span's two ends as real inches from the reference (up from the floor, right of the
+    left end)."""
+    ends = (Fraction(span.start_pt), Fraction(span.end_pt))
+    if axis is Axis.VERTICAL:
+        return (reference - ends[1]) / ppi, (reference - ends[0]) / ppi
+    return (ends[0] - reference) / ppi, (ends[1] - reference) / ppi
+
+
+def _near(a: Fraction, b: Fraction, settings: PairSettings) -> bool:
+    return abs(a - b) <= max(settings.length_floor_in, settings.length_fraction * abs(a))
 
 
 def _candidates(
@@ -123,41 +219,53 @@ def _candidates(
     arch_view: ArchitectViewDimensions,
     vendor: Sequence[VendorViewDimensions],
     settings: PairSettings,
-) -> tuple[list[tuple[VendorViewDimensions, DrawnDimension, Fraction, str]], list[str]]:
+) -> tuple[list[_Found], list[str]]:
     assert dim.span is not None and dim.drawn_inches is not None
-    found: list[tuple[VendorViewDimensions, DrawnDimension, Fraction, str]] = []
+    assert arch_view.points_per_inch is not None
+    axis = dim.span.axis
+    arch_ppi = Fraction(arch_view.points_per_inch)
+    found: list[_Found] = []
     notes: list[str] = []
+    arch_ref = _reference(arch_view.lines, axis, settings)
+    where = (
+        "floor that two of its heights rest on" if axis is Axis.VERTICAL else "widths to line up"
+    )
+    if arch_ref is None:
+        return [], [f"the architect's view shows no {where}"]
+    a0, a1 = _from_reference(dim.span, arch_ref[0], axis, arch_ppi)
     for view in vendor:
-        if view.points_per_inch is not None:
-            for line in view.lines:
-                if line.axis is not dim.span.axis:
-                    continue
-                real = _qualifies(dim.drawn_inches, line, view.points_per_inch, settings)
-                if real is not None:
-                    found.append((view, line, real, "printed scale"))
+        if view.kind != arch_view.kind:
+            kind = "of no printed kind" if view.kind is None else f"a {view.kind}"
+            notes.append(f"vendor view {view.number} is {kind}")
             continue
-        if arch_view.points_per_inch is None or not view.lines:
+        if view.points_per_inch is None:
+            notes.append(f"vendor view {view.number} prints no scale")
             continue
-        arch_ppi = Fraction(arch_view.points_per_inch)
-        laid = register(
-            arch_view.lines, view.lines, arch_points_per_inch=arch_ppi, settings=settings.register
-        )
-        placed = laid.on(dim.span.axis)
-        if placed is None:
-            notes.append(f"vendor view {view.number} prints no scale and does not line up")
+        vendor_ppi = Fraction(view.points_per_inch)
+        real = _real_lines(view, settings)
+        lines = [line for line, _label in real]
+        ref = _reference(lines, axis, settings)
+        if ref is None:
+            notes.append(f"vendor view {view.number} shows no {where}")
             continue
-        near = vendor_candidates(
-            dim.span,
-            view.lines,
-            laid,
-            arch_points_per_inch=arch_ppi,
-            settings=settings.register,
-        )
-        vendor_ppi = arch_ppi * placed.stretch
-        for candidate in near.found:
-            real = _qualifies(dim.drawn_inches, candidate.span, vendor_ppi, settings)
-            if real is not None:
-                found.append((view, candidate.span, real, "registered"))
+        if axis is Axis.HORIZONTAL and not _near(
+            arch_ref[1] / arch_ppi, ref[1] / vendor_ppi, settings
+        ):
+            notes.append(
+                f"vendor view {view.number}'s widths do not run as far as the architect's, so "
+                "their ends cannot be lined up"
+            )
+            continue
+        for line, label in real:
+            if line.axis is not axis:
+                continue
+            v0, v1 = _from_reference(line, ref[0], axis, vendor_ppi)
+            if (
+                _near(a0, v0, settings)
+                and _near(a1, v1, settings)
+                and _near(dim.drawn_inches, v1 - v0, settings)
+            ):
+                found.append((view, line, label, v1 - v0))
     return found, notes
 
 
@@ -185,13 +293,18 @@ def _one(
         return unpaired(dim.placement_reason)
     if dim.inches is None:
         return unpaired(dim.held_reason or "the architect's number is held")
-    if dim.drawn_inches is None:
+    if dim.drawn_inches is None or arch_view.points_per_inch is None:
         return unpaired("the architect view's scale is not known, so its drawn length is not")
     if not vendor:
         return unpaired("no drawing on this sheet is named the vendor's")
+    if arch_view.kind is None:
+        return unpaired(
+            "the sheet does not print what kind of view the architect's drawing is (an elevation "
+            "or a plan), so no vendor view can be matched to it"
+        )
     found, notes = _candidates(dim, arch_view, vendor, settings)
     if len(found) == 1:
-        view, line, real, how = found[0]
+        view, line, label, real = found[0]
         return Pairing(
             page_index,
             arch_view.annotation_index,
@@ -200,17 +313,25 @@ def _one(
             view.number,
             line,
             real,
-            how,
-            f"the only vendor {line.axis.value} dimension drawn this long",
+            (
+                "lined up on the floor"
+                if dim.span.axis is Axis.VERTICAL
+                else "lined up on the run's ends"
+            ),
+            f"the only vendor {line.axis.value} dimension line drawn at the same place and length",
+            label,
         )
     if found:
         return unpaired(
-            f"{len(found)} vendor {dim.span.axis.value} dimensions are drawn this long, "
-            "so which one is the same span is not known"
+            f"{len(found)} vendor {dim.span.axis.value} dimension lines are drawn at this place "
+            "and length, so which one is the same span is not known"
         )
-    if notes and all(view.points_per_inch is None for view in vendor):
+    if notes and (len(notes) == len(vendor) or notes[0].startswith("the architect's")):
         return unpaired("; ".join(notes))
-    return unpaired(f"the vendor draws no {dim.span.axis.value} dimension this long")
+    return unpaired(
+        f"the vendor draws no labelled {dim.span.axis.value} dimension line at this place and "
+        "length"
+    )
 
 
 def pair_page(page: ComparePage, settings: PairSettings) -> tuple[Pairing, ...]:
@@ -233,6 +354,7 @@ def pair_page(page: ComparePage, settings: PairSettings) -> tuple[Pairing, ...]:
                 vendor=None,
                 vendor_inches_drawn=None,
                 how=None,
+                vendor_label=None,
                 reason=(
                     f"one vendor dimension line is the only match for {uses[_line_key(p)]} of the "
                     "architect's dimensions, so which span it draws is not known"
