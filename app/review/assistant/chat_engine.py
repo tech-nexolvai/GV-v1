@@ -1163,14 +1163,12 @@ class ChatEngine:
                 note = "*This chat is now too long for the model. Start a new chat to go on.*"
                 self._add_text(note)
                 text = f"{text}\n\n{note}" if text else note
+            # A cap or turn-limit stop is carried by `stopped` (the screen says it under the
+            # answer); a note is written only when there is no answer to show.
             stopped = forced
-            if forced is not None:
-                note = _stop_note(forced, self.settings, answered=True)
-                self._add_text(note)
-                text = f"{text}\n\n{note}" if text else note
             break
         if stopped in ("cost_cap", "turn_limit") and not text:
-            text = _stop_note(stopped, self.settings, answered=False)
+            text = _stop_note(stopped, self.settings)
             self._add_text(text)
         elif stopped in ("cancelled", "error"):
             # What was written before it stopped.
@@ -1255,22 +1253,13 @@ def _declined(details: Mapping[str, Any] | None) -> str:
     )
 
 
-def _stop_note(stopped: str, settings: EngineSettings, *, answered: bool) -> str:
-    cap = cost_text(settings.message_cap_micros)
+def _stop_note(stopped: str, settings: EngineSettings) -> str:
+    """The answer when a cap or the turn limit stopped the message before it wrote one."""
     if stopped == "cost_cap":
-        if answered:
-            return (
-                f"*Stopped early: this message reached its ${cap} cost cap, so this answer covers "
-                "only what I got to.*"
-            )
         return (
-            f"I stopped before finishing: this message reached its ${cap} cost cap (or the drawing "
-            "set's assistant budget). Ask a narrower question, or ask me to go on."
-        )
-    if answered:
-        return (
-            f"*Stopped early: I used all {settings.lead_max_turns} tool turns for this message, so "
-            "this answer covers only what I got to.*"
+            f"I stopped before finishing: this message reached its "
+            f"${cost_text(settings.message_cap_micros)} cost cap (or the drawing set's assistant "
+            "budget). Ask a narrower question, or ask me to go on."
         )
     return (
         f"I stopped before finishing: I used all {settings.lead_max_turns} tool turns for this "

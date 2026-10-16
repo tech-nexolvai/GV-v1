@@ -91,7 +91,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
 
   useEffect(() => {
     let current = true;
-    api.models().then(
+    api.models(packageId).then(
       (data) => current && setModels({ status: 'ready', data }),
       // A failed refresh keeps the models already shown; only a first failure is said.
       (error: unknown) => current && setModels((now) => (now.status === 'ready' ? now : { status: 'error', message: chatFailureWords(error) })),
@@ -99,7 +99,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
     return () => {
       current = false;
     };
-  }, [api, modelsAsk]);
+  }, [api, modelsAsk, packageId]);
 
   const modelList = models.status === 'ready' ? models.data.models : [];
   const choice = models.status === 'ready' ? resolveChoice(modelList, picked ?? remembered) : null;
@@ -112,12 +112,17 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   // ── This set's chats ──
   const [list, setList] = useState<ChatListState>({ status: 'loading' });
   const [listAsk, setListAsk] = useState(0);
+  // The ids in the newest list read, so a chat opened that it lacks (started elsewhere) is listed.
+  const listed = useRef<ReadonlySet<string> | null>(null);
   const [creating, setCreating] = useState(false);
 
   useEffect(() => {
     let current = true;
     api.list(packageId).then(
-      ({ chats }) => current && setList({ status: 'ready', chats }),
+      ({ chats }) => {
+        listed.current = new Set(chats.map((listedChat) => listedChat.id));
+        if (current) setList({ status: 'ready', chats });
+      },
       (error: unknown) => current && setList((now) => (now.status === 'ready' ? now : { status: 'error', message: chatFailureWords(error) })),
     );
     return () => {
@@ -174,6 +179,8 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
       (chat) => {
         if (!current) return;
         follow.current = true;
+        // A chat started elsewhere (another tab, a script) is listed as soon as it is opened.
+        if (listed.current && !listed.current.has(chatId)) setListAsk((n) => n + 1);
         setLoaded({ chatId, chat });
         setThread({ chatId, messages: chat.messages.map(fromSaved) });
         setLoadError(null);
@@ -205,9 +212,19 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   const answeredElsewhere = Boolean(chat?.running) && !running;
   useEffect(() => {
     if (!answeredElsewhere) return;
-    const timer = window.setTimeout(() => setLoadAsk((n) => n + 1), runningPollMs);
+    const timer = window.setTimeout(() => {
+      setLoadAsk((n) => n + 1);
+      setListAsk((n) => n + 1);
+    }, runningPollMs);
     return () => window.clearTimeout(timer);
   }, [answeredElsewhere, chat, runningPollMs]);
+
+  // The list is read again whenever the window comes back into focus (a chat started in another tab).
+  useEffect(() => {
+    const again = () => setListAsk((n) => n + 1);
+    window.addEventListener('focus', again);
+    return () => window.removeEventListener('focus', again);
+  }, []);
 
   useLayoutEffect(() => {
     const box = scroller.current;
@@ -297,6 +314,8 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
         chatId,
         { text: question, model: choice.model, effort: choice.effort, thinking: choice.thinking },
         (event) => {
+          // The question is saved before `message_start`: list the chat now, titled by it.
+          if (event.event === 'message_start') setListAsk((n) => n + 1);
           started = true;
           patch((message) => applyChatEvent(message, event));
         },
@@ -312,6 +331,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
         patch((message) => settle(message, { stopped: message.stopped ?? 'cancelled' }));
         setAnnounce('Stopped');
         setListAsk((n) => n + 1);
+        setModelsAsk((n) => n + 1);
       } else if (!started) {
         // Refused before anything began (busy, too long, offline): the question goes back to the box.
         setThread((now) => (now && now.chatId === chatId ? { ...now, messages: now.messages.filter((message) => message.key !== userKey && message.key !== answerKey) } : now));
