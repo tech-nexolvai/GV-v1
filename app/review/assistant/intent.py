@@ -41,8 +41,8 @@ __all__ = [
 ]
 
 REFUSAL_TEXT: Final = (
-    "I can't make, change or record a decision. Only you decide, in the review queue: open the "
-    "item there and record your decision."
+    "I can't approve, sign off, confirm, fix, agree with or mark anything from the chat. You do "
+    "that yourself on the screen: open the item and click your answer there."
 )
 
 #: Openers that make what follows a request, or that add nothing.

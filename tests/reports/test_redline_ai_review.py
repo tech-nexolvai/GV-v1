@@ -1,10 +1,11 @@
 """The cloud PDF marks the AI page review's "different" rows (the AI reads, code decides).
 
-* Each "different" row is a cloud at its `vendor_box`, "✗ Architect: X — vendor: Y (what it
-  measures)"; a person who agreed keeps the cloud and gets the reviewer mark; "Not a difference"
-  removes the cloud and is listed; a row with no `vendor_box` is listed with its page and words.
+* Each "different" row is a cloud at its `vendor_box`, by itself (decision 2026-10-16: no person
+  answers it), "✗ Needs: X (per architect: what it measures) — Vendor drew: Y"; an old stored
+  answer changes nothing and adds no mark; a row with no `vendor_box` is listed with its page and
+  words. Same, not-shown and unsure rows are never clouded.
 * The summary says "Compared with the architect (AI read): N same · M different · K not shown ·
-  U unsure".
+  U unsure", then "Differences found by the AI reading; check against the drawings."
 * One compare per drawing: with AI rows the old direct compare is not drawn, and the old one is
   drawn only while `GV_ARCH_COMPARE_RECORDS` is on. The draft reads live; the signed PDF reads the
   sign-off snapshot (`ai_review`); a snapshot without it is drawn exactly as before.
@@ -22,13 +23,14 @@ from uuid import uuid4
 
 import pytest
 
-from reports.redline import AiReviewCounts, ReportMode, ReviewerMarkKind, render_redline
+from reports.redline import AiReviewCounts, ReportMode, render_redline
 from storage.local import LocalStore
 from tests.reports.test_redline import DOCUMENT, _finding, _package, _read_back, _reference
 from workflow.redline_outputs import ai_review_input
 
-WORDS = '✗ Architect: 36" — vendor: 35 1/2" (overall width)'
+WORDS = '✗ Needs: 36" (per architect: overall width) — Vendor drew: 35 1/2"'
 LINE = "Compared with the architect (AI read): 1 same · 1 different · 1 not shown · 2 unsure"
+NOTE = "Differences found by the AI reading; check against the drawings."
 
 
 def _flat(text: str) -> str:
@@ -56,8 +58,8 @@ def _row(result: str = "different", **changes: object) -> dict[str, object]:
         "why": "made up",
         "vendor_box": _box(),
         "architect_ref": None,
-        "actions": ["agree", "not_this"],
-        "status": "open",
+        "actions": [],
+        "status": "done",
         "answer": None,
         "answered_by": None,
     }
@@ -101,9 +103,10 @@ def test_a_different_row_is_clouded_at_the_vendor_box_with_its_words(
     pages = _pages(tmp_path, _review(*EVERY_RESULT), rotation)
 
     assert f"A1 · {WORDS}" in pages[0], "the drawing says both numbers and what they measure"
-    assert pages[0].count("Architect:") == 2, "one cloud label and one callout, only the different"
+    assert pages[0].count("Needs:") == 2, "one cloud label and one callout, only the different"
+    assert "Architect:" not in pages[0]
     summary = " ".join(pages[1:])
-    assert LINE in summary
+    assert f"{LINE} {NOTE}" in summary
     assert f"A1 {WORDS} — Page 1" in summary
     assert "clouded on page 1" in summary
 
@@ -111,38 +114,57 @@ def test_a_different_row_is_clouded_at_the_vendor_box_with_its_words(
 def test_a_different_row_with_no_vendor_box_is_listed_with_page_and_words(tmp_path: Path) -> None:
     pages = _pages(tmp_path, _review(_row(vendor_box=None), page=3))
 
-    assert "Architect:" not in pages[0]
+    assert "Needs:" not in pages[0]
     summary = " ".join(pages[1:])
     assert f"A1 {WORDS} — Page 3" in summary
     assert "not clouded on the drawing: the vendor's dimension has no recorded place" in summary
 
 
-def test_a_person_who_agreed_keeps_the_cloud_and_gets_the_mark(tmp_path: Path) -> None:
-    pages = _pages(tmp_path, _review(_row(answer="agree", answered_by="AB")))
+@pytest.mark.parametrize("answer", ["agree", "not_this", "maybe"])
+def test_an_old_answer_changes_nothing_the_row_is_clouded_with_no_mark(
+    tmp_path: Path, answer: str
+) -> None:
+    pages = _pages(tmp_path, _review(_row(answer=answer, answered_by="AB", status="done")))
 
     assert f"A1 · {WORDS}" in pages[0]
-    assert "R1 ✓ Agreed by AB: vendor is wrong" in pages[0]
-    assert "Agreed by AB: the vendor is wrong." in " ".join(pages[1:])
+    assert "Agreed by" not in " ".join(pages)
+    assert "not a difference" not in " ".join(pages)
+    assert "clouded on page 1" in " ".join(pages[1:])
 
 
-def test_not_a_difference_removes_the_cloud_and_is_listed(tmp_path: Path) -> None:
-    pages = _pages(tmp_path, _review(_row(answer="not_this", answered_by="AB")))
+def test_the_architect_value_in_feet_also_says_its_inches(tmp_path: Path) -> None:
+    pages = _pages(
+        tmp_path,
+        _review(
+            _row(
+                architect_text="2'-9\"",
+                architect_inches="33",
+                measures="floor to top of counter",
+                vendor_text='34"',
+            ),
+            _row(
+                architect_text="2'-9 1/2\"", architect_inches="67/2", measures="a", vendor_text="b"
+            ),
+        ),
+    )
 
-    assert "Architect:" not in pages[0]
-    summary = " ".join(pages[1:])
-    assert f"A1 {WORDS}" in summary
-    assert "AB said it is not a difference, so it is not clouded" in summary
+    assert (
+        'A1 · ✗ Needs: 2\'-9" (33") (per architect: floor to top of counter) — Vendor drew: 34"'
+        in pages[0]
+    )
+    assert 'Needs: 2\'-9 1/2" (33 1/2") (per architect: a) — Vendor drew: b' in pages[0]
 
 
-def test_the_counts_come_from_the_rows_and_the_marks_from_the_answers() -> None:
+def test_the_counts_come_from_the_rows_and_no_answer_makes_a_mark() -> None:
     architect, agreed = ai_review_input(
         {"pages": [{"page": 2, "rows": [*EVERY_RESULT, _row(answer="agree", answered_by="AB")]}]}
     )
 
     assert architect is not None
     assert architect.counts == AiReviewCounts(same=1, different=2, not_shown=1, unsure=2)
-    assert [mark.kind for mark in agreed] == [ReviewerMarkKind.CONFIRMED]
-    assert agreed[0].evidence_ref == _reference()
+    assert agreed == ()
+    assert [item.answer for item in architect.different] == [None, None]
+    assert [item.evidence_ref for item in architect.different] == [_reference(), _reference()]
 
 
 def test_a_review_with_no_rows_prints_nothing() -> None:
@@ -150,9 +172,7 @@ def test_a_review_with_no_rows_prints_nothing() -> None:
     assert ai_review_input({"pages": [{"page": 1, "status": "not_run", "rows": []}]}) == (None, ())
 
 
-def test_an_unknown_answer_or_result_is_refused_not_dropped() -> None:
-    with pytest.raises(ValueError, match="maybe"):
-        ai_review_input(_review(_row(answer="maybe", answered_by="AB")))
+def test_an_unknown_result_is_refused_not_dropped() -> None:
     with pytest.raises(ValueError, match="sideways"):
         ai_review_input(_review(_row("sideways")))
 

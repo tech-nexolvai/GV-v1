@@ -1,13 +1,12 @@
 import { useId, useState } from 'react';
-import { Check, ChevronRight, CircleDashed, Equal, FileSearch, HelpCircle, Loader2, Minus, X } from 'lucide-react';
+import { ChevronRight, CircleDashed, Equal, FileSearch, HelpCircle, Loader2, Minus } from 'lucide-react';
 
-import { isItemAction, type AiReviewOut, type AiReviewPage, type AiReviewResult, type AiReviewRow, type ItemAction } from '@/api/review-items';
-import { ANSWER_WORDS, aiReviewEntries, aiReviewSummary, aiReviewWhat, answeredWord, GROUP_OF, GROUP_TITLE, type AiReviewEntry, type AiReviewGroup } from './ai-review-lib';
+import type { AiReviewOut, AiReviewPage, AiReviewResult, AiReviewRow } from '@/api/review-items';
+import { aiReviewEntries, aiReviewSummary, aiReviewWhat, GROUP_OF, GROUP_TITLE, type AiReviewEntry, type AiReviewGroup } from './ai-review-lib';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
 import { NumText, PageTag } from './words';
-import type { SaveError } from './failures-strip';
 
 /** The glyph and word for one result: never colour alone. Only Different is coloured; the rest are calm greys. */
 function ResultWord({ result }: { result: AiReviewResult }) {
@@ -46,20 +45,14 @@ function Numbers({ row, page }: { row: AiReviewRow; page: number }) {
   );
 }
 
-/** What the rows need from the page: who is saving, what failed, and how to answer. */
-interface Answers {
-  busyKey: string | null;
-  errors: Readonly<Record<string, SaveError>>;
-  onAct: (row: AiReviewRow, action: ItemAction) => void;
-}
-
-function Row({ entry, onLook, answers }: { entry: AiReviewEntry; onLook: (row: AiReviewRow, page: number) => void; answers: Answers }) {
+/**
+ * One row: the result, both numbers and Look. No person answers it (decision 2026-10-16): a different
+ * row is clouded on the PDF by itself and never holds sign-off, so no answer buttons are offered,
+ * whatever the server lists.
+ */
+function Row({ entry, onLook }: { entry: AiReviewEntry; onLook: (row: AiReviewRow, page: number) => void }) {
   const { row, page } = entry;
   const what = aiReviewWhat(row);
-  // Only the answers the server lists, and only ones this page can name; none once answered.
-  const offered = row.status === 'open' ? row.actions.filter(isItemAction).filter((action) => action in ANSWER_WORDS) : [];
-  const busy = answers.busyKey === row.key;
-  const error = answers.errors[row.key];
   return (
     <li data-slot="ai-review-row" data-entry-key={row.key} data-result={row.result} tabIndex={-1} className="flex min-h-14 flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2 outline-none focus-visible:bg-accent/60 sm:px-6">
       <span className="shrink-0 basis-full sm:w-28 sm:basis-auto">
@@ -74,31 +67,12 @@ function Row({ entry, onLook, answers }: { entry: AiReviewEntry; onLook: (row: A
           <FileSearch aria-hidden="true" />
           Look
         </Button>
-        {offered.map((action) => (
-          <Button key={action} size="sm" variant="outline" disabled={answers.busyKey !== null} onClick={() => answers.onAct(row, action)} aria-label={`${ANSWER_WORDS[action]}: ${what}`}>
-            {busy ? <Loader2 aria-hidden="true" className="animate-spin motion-reduce:animate-none" /> : action === 'agree' ? <X aria-hidden="true" /> : <Check aria-hidden="true" />}
-            {ANSWER_WORDS[action]}
-          </Button>
-        ))}
-        {row.status === 'done' && row.result === 'different' && (
-          <span data-testid="ai-review-answered" className="inline-flex items-center gap-1.5 text-[13px] text-muted-foreground">
-            <Check aria-hidden="true" className="size-3.5" />
-            {answeredWord(row.answer)}
-            {row.answered_by ? ` · ${row.answered_by}` : ''}
-          </span>
-        )}
       </span>
-      {error && (
-        <p role="alert" className="flex basis-full flex-wrap items-center gap-2 text-[13px] text-outcome-fail-fg">
-          {error.message}
-          <Button size="xs" variant="ghost" onClick={error.retry}>Retry</Button>
-        </p>
-      )}
     </li>
   );
 }
 
-function Group({ group, entries, defaultOpen, onLook, answers }: { group: AiReviewGroup; entries: readonly AiReviewEntry[]; defaultOpen: boolean; onLook: (row: AiReviewRow, page: number) => void; answers: Answers }) {
+function Group({ group, entries, defaultOpen, onLook }: { group: AiReviewGroup; entries: readonly AiReviewEntry[]; defaultOpen: boolean; onLook: (row: AiReviewRow, page: number) => void }) {
   const [open, setOpen] = useState(defaultOpen);
   const listId = useId();
   if (entries.length === 0) return null;
@@ -122,7 +96,7 @@ function Group({ group, entries, defaultOpen, onLook, answers }: { group: AiRevi
       {open && (
         <ul id={listId} aria-label={title} className="divide-y divide-border border-t border-border">
           {entries.map((entry) => (
-            <Row key={entry.row.key} entry={entry} onLook={onLook} answers={answers} />
+            <Row key={entry.row.key} entry={entry} onLook={onLook} />
           ))}
         </ul>
       )}
@@ -165,32 +139,20 @@ function PageLine({ page }: { page: AiReviewPage }) {
 
 /**
  * "Compared with the architect", the AI page review: per sheet, every architect number set beside
- * the vendor's of the same span. Different rows are open with two answers; unsure and unreadable ones
- * are open but need nothing; same and not-shown rows are folded. Pages still being read, or that
- * could not be read, are said in words. Look opens both drawings at the row. Hidden when absent.
- * It works nothing out itself: results, counts and answers are the server's.
+ * the vendor's of the same span. Different rows are open and are clouded on the PDF by themselves (no
+ * person answers them, decision 2026-10-16); unsure, unreadable, same and not-shown rows are shown
+ * folded and never clouded. Pages still being read, or that could not be read, are said in words.
+ * Look opens both drawings at the row. Hidden when absent. It works nothing out itself: results
+ * and counts are the server's.
  */
-export function AiReview({
-  review,
-  onLook,
-  busyKey = null,
-  errors = {},
-  onAct = () => undefined,
-}: {
-  review: AiReviewOut | null;
-  onLook: (row: AiReviewRow, page: number) => void;
-  busyKey?: string | null;
-  errors?: Readonly<Record<string, SaveError>>;
-  onAct?: (row: AiReviewRow, action: ItemAction) => void;
-}) {
+export function AiReview({ review, onLook }: { review: AiReviewOut | null; onLook: (row: AiReviewRow, page: number) => void }) {
   if (!review || review.pages.length === 0) return null;
   const entries = aiReviewEntries(review);
-  const answers: Answers = { busyKey, errors, onAct };
   const by = (group: AiReviewGroup) => entries.filter((entry) => GROUP_OF[entry.row.result] === group);
   const notDone = review.pages.filter((page) => page.status !== 'done');
   const groups: { group: AiReviewGroup; open: boolean }[] = [
     { group: 'different', open: true },
-    { group: 'unsure', open: true },
+    { group: 'unsure', open: false },
     { group: 'same', open: false },
     { group: 'not_shown', open: false },
   ];
@@ -214,7 +176,7 @@ export function AiReview({
       {entries.length > 0 && (
         <div className="overflow-hidden rounded-xl border border-border">
           {groups.map(({ group, open }) => (
-            <Group key={group} group={group} entries={by(group)} defaultOpen={open} onLook={onLook} answers={answers} />
+            <Group key={group} group={group} entries={by(group)} defaultOpen={open} onLook={onLook} />
           ))}
         </div>
       )}

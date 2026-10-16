@@ -10,8 +10,12 @@
 
 **Looking at the page (#1431).** A question about a page (named in the question, the page in
 focus, or the focused record's page) also sends that page's architect and vendor pictures and its
-AI page review rows (`page_pictures.py`). A question with no page sends the records only. The
-guard is the same either way: the model still writes no fact of its own.
+AI page review rows (`page_pictures.py`). Every question also carries the package's AI page review
+summary (per page, how many rows of each result) when the source has one.
+
+**Chat-assistant style (owner, 2026-10-16).** The model may read numbers off the pictures, count
+and compare in its own words; the guard keeps only the hard rules (no action claimed or advised,
+no pass or fail of its own, a recorded result quoted through its placeholder).
 
 **Cost (#1431).** Every call is recorded on the Usage page. With a budget (`AssistantBudget`), a
 question whose estimated cost is over the per-question cap is asked without its pictures, and
@@ -494,6 +498,18 @@ def stream_answer(
                 extra=log,
             )
 
+    overview: tuple[Mapping[str, Any], ...] = ()
+    summarise = getattr(pictures, "ai_review_overview", None)
+    if callable(summarise):
+        try:
+            overview = tuple(summarise())
+        except Exception as failed:  # noqa: BLE001 - no summary never stops the answer
+            _log.warning(
+                "review assistant could not read the AI page review summary: %s",
+                type(failed).__name__,
+                extra=log,
+            )
+
     def _built(shown: PageLook | None) -> dict[str, Any]:
         return build_request(
             model_id=model.model_id,
@@ -504,6 +520,7 @@ def stream_answer(
             focus=request.focus,
             focus_ids=_focus_ids(snapshot, request),
             look=shown,
+            overview=overview,
         )
 
     built = _built(look)

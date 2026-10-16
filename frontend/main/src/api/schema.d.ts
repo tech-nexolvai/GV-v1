@@ -2524,7 +2524,7 @@ export interface components {
             different: number;
             /**
              * Needs Person
-             * @description Open `different` rows: sign-off waits.
+             * @description Always 0: no row waits for a person, sign-off never waits on it.
              * @default 0
              */
             needs_person: number;
@@ -2584,12 +2584,12 @@ export interface components {
         AiReviewRowOut: {
             /**
              * Actions
-             * @description `agree` (the vendor is wrong) and `not_this` (not a difference) on an open `different` row; empty otherwise.
+             * @description Always empty: no row asks a person anything (decision 2026-10-16).
              */
             actions?: string[];
             /**
              * Answer
-             * @description The newest answer, as the action is named: `agree` (the vendor is wrong) | `not_this` (not a difference).
+             * @description An older stored answer, as the action is named (`agree` | `not_this`); it changes nothing.
              */
             answer?: string | null;
             /** Answered By */
@@ -2607,7 +2607,7 @@ export interface components {
             architect_text: string;
             /**
              * Clouded
-             * @description True on a `different` row unless a person answered `not_a_difference`.
+             * @description True on every `different` row: it is clouded by itself.
              * @default false
              */
             clouded: boolean;
@@ -2633,6 +2633,7 @@ export interface components {
             result: "same" | "different" | "not_shown" | "unsure" | "unreadable";
             /**
              * Status
+             * @description Always `done`: no row waits for a person.
              * @default done
              * @enum {string}
              */

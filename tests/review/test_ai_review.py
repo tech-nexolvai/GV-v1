@@ -148,11 +148,14 @@ def test_each_page_and_row_is_shown_with_what_code_decided(session: Session) -> 
     assert [r.result for r in listed] == ["same", "different", "not_shown", "unsure", "unreadable"]
     different = listed[1]
     assert (different.architect_inches, different.vendor_inches) == ("33", "34")
-    assert different.status == "open" and different.actions == ["agree", "not_this"]
+    # No person answers it (decision 2026-10-16): clouded by itself, nothing offered, nothing open.
+    assert different.status == "done" and different.actions == []
     assert different.clouded
     assert different.vendor_box is not None and different.vendor_box.page_number == 1
     assert different.architect_ref is not None
-    assert all(r.status == "done" and not r.actions for i, r in enumerate(listed) if i != 1)
+    assert all(
+        r.status == "done" and not r.actions and not r.clouded for r in listed if r is not different
+    )
     counts = review.counts
     assert (counts.same, counts.different, counts.not_shown, counts.unsure, counts.unreadable) == (
         1,
@@ -161,13 +164,15 @@ def test_each_page_and_row_is_shown_with_what_code_decided(session: Session) -> 
         1,
         1,
     )
-    assert counts.needs_person == 1
+    assert counts.needs_person == 0
     assert ai_review_for_revision(session, uuid4()).pages == []
 
 
-def test_answers_are_append_only_rows_and_only_open_different_rows_wait(session: Session) -> None:
+def test_old_answers_stay_append_only_and_change_nothing(session: Session) -> None:
+    """The answers table and code stay (append-only, unused by the screen); a different row is
+    clouded whatever was answered, and never waits for a person."""
     _package, revision_id, rows = _review(session)
-    assert ai_review_open_many(session, [revision_id, uuid4()]) == {revision_id: 1}
+    assert ai_review_open_many(session, [revision_id, uuid4()]) == {}
 
     with pytest.raises(AiReviewRefused) as refused:
         record_ai_review_answer(
@@ -193,12 +198,7 @@ def test_answers_are_append_only_rows_and_only_open_different_rows_wait(session:
         == 0
     )
     row = ai_review_for_revision(session, revision_id).pages[0].rows[1]
-    assert (row.answer, row.answered_by, row.status, row.clouded) == (
-        "agree",
-        "tester",
-        "done",
-        True,
-    )
+    assert (row.status, row.clouded, row.actions) == ("done", True, [])
     assert ai_review_open_many(session, [revision_id]) == {}
 
     assert (
@@ -208,7 +208,7 @@ def test_answers_are_append_only_rows_and_only_open_different_rows_wait(session:
         == 1
     )
     row = ai_review_for_revision(session, revision_id).pages[0].rows[1]
-    assert (row.answer, row.clouded) == ("not_this", False)
+    assert (row.status, row.clouded, row.actions) == ("done", True, [])
     assert len(session.scalars(select(AiPageReviewAnswer)).all()) == 2
 
     session.commit()
@@ -237,11 +237,12 @@ def test_sign_off_waits_on_open_different_rows() -> None:
     assert reason is not None and "1 number compared with the architect" in reason
 
 
-def test_readiness_counts_the_ai_review_open_rows(session: Session) -> None:
+def test_readiness_ignores_the_ai_review_different_rows(session: Session) -> None:
     from app.review.approval import _compare_open
 
     _package, revision_id, rows = _review(session)
-    assert _compare_open(session, [revision_id]) == {revision_id: 1}
+    assert rows[1].result == "different"
+    assert _compare_open(session, [revision_id]) == {}
     record_ai_review_answer(
         session, revision_id=revision_id, key=f"air:{rows[1].id}", answer="not_this", actor="t"
     )
@@ -261,7 +262,9 @@ def test_the_review_list_and_the_answer_route_carry_the_ai_review(session: Sessi
     body = _items(client, package.project_id, package_id)
     assert [p["page"] for p in body["ai_review"]["pages"]] == [1, 2]
     assert body["ai_review"]["pages"][1]["reason"]
-    assert body["ai_review"]["counts"]["needs_person"] == 1
+    assert body["ai_review"]["counts"]["needs_person"] == 0
+    assert body["ai_review"]["pages"][0]["rows"][1]["actions"] == []
+    assert body["ai_review"]["pages"][0]["rows"][1]["clouded"] is True
     assert body["architect_compare"] == []
     key = f"air:{rows[1].id}"
 
@@ -515,6 +518,11 @@ def test_a_difference_the_evaluator_does_not_confirm_is_unsure_and_not_clouded(
     assert row.why.startswith(says) or says in row.why
     assert row.evaluator_reason
     assert review.counts.different == 0 and review.counts.needs_person == 0
+    # The auto-cloud path draws only `different` rows: a demoted row is counted, never clouded.
+    from workflow.redline_outputs import ai_review_input
+
+    compare, _marks = ai_review_input(review)
+    assert compare is not None and compare.different == ()
 
 
 def test_without_an_evaluator_answer_a_difference_is_never_clouded(

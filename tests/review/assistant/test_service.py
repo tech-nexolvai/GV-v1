@@ -108,7 +108,7 @@ def test_a_guarded_model_answer_streams_in_step_order() -> None:
     assert [data.label for _, data in events[:3]] == [
         "Reading this review's records",
         "Asking Claude Sonnet",
-        "Checking every number against the records",
+        "Checking the answer against the records",
     ]
     answer = events[-1][1]
     assert isinstance(answer, AnswerEvent)
@@ -172,7 +172,7 @@ def test_a_decision_request_is_refused_without_a_model_call() -> None:
     assert _stages(events) == ["records", "answer"]
     answer = events[-1][1]
     assert (answer.mode, answer.checked, answer.citations) == ("refused", False, ())
-    assert "Only you decide" in answer.text
+    assert "on the screen" in answer.text
     assert [(a.kind, a.label) for a in answer.actions] == [
         ("open_queue_item", "Open page 7 in the queue")
     ]

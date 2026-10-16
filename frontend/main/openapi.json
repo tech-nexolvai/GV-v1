@@ -167,7 +167,7 @@
           },
           "needs_person": {
             "default": 0,
-            "description": "Open `different` rows: sign-off waits.",
+            "description": "Always 0: no row waits for a person, sign-off never waits on it.",
             "title": "Needs Person",
             "type": "integer"
           },
@@ -271,7 +271,7 @@
       "AiReviewRowOut": {
         "properties": {
           "actions": {
-            "description": "`agree` (the vendor is wrong) and `not_this` (not a difference) on an open `different` row; empty otherwise.",
+            "description": "Always empty: no row asks a person anything (decision 2026-10-16).",
             "items": {
               "type": "string"
             },
@@ -287,7 +287,7 @@
                 "type": "null"
               }
             ],
-            "description": "The newest answer, as the action is named: `agree` (the vendor is wrong) | `not_this` (not a difference).",
+            "description": "An older stored answer, as the action is named (`agree` | `not_this`); it changes nothing.",
             "title": "Answer"
           },
           "answered_by": {
@@ -330,7 +330,7 @@
           },
           "clouded": {
             "default": false,
-            "description": "True on a `different` row unless a person answered `not_a_difference`.",
+            "description": "True on every `different` row: it is clouded by itself.",
             "title": "Clouded",
             "type": "boolean"
           },
@@ -369,6 +369,7 @@
           },
           "status": {
             "default": "done",
+            "description": "Always `done`: no row waits for a person.",
             "enum": [
               "open",
               "done"

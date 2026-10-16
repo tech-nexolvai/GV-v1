@@ -473,15 +473,12 @@ def _readiness_reason(
 def _compare_open(db: Session, revision_ids: list[UUID]) -> dict[UUID, int]:
     """For each revision, the numbers compared with the architect that still need a person (#1418):
     one statement for any number of revisions when none has a compare record (#1426)."""
-    from app.review.ai_review import ai_review_open_many
     from app.review.architect_compare import open_architect_compare_many
 
-    # The old direct compare counts only while `GV_ARCH_COMPARE_RECORDS` is on; the AI page
-    # review's open `different` rows always count (decision 2026-10-16).
-    found = open_architect_compare_many(db, revision_ids)
-    for revision_id, count in ai_review_open_many(db, revision_ids).items():
-        found[revision_id] = found.get(revision_id, 0) + count
-    return found
+    # The old direct compare counts only while `GV_ARCH_COMPARE_RECORDS` is on. The AI page
+    # review never holds sign-off: its `different` rows are clouded by themselves, and no person
+    # answers them (decision 2026-10-16).
+    return open_architect_compare_many(db, revision_ids)
 
 
 def approval_readiness(db: Session, revision_id: UUID) -> ApprovalReadiness:
