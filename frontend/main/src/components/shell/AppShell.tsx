@@ -69,6 +69,7 @@ export function AppShell({
   const [open, setOpen] = useState(() => !readCollapsed());
   const [titleSlot, setTitleSlot] = useState<HTMLDivElement | null>(null);
   const [actionsSlot, setActionsSlot] = useState<HTMLDivElement | null>(null);
+  const [chatsSlot, setChatsSlot] = useState<HTMLDivElement | null>(null);
   const evidenceOpen = Boolean(evidencePanel);
 
   function changeOpen(next: boolean) {
@@ -81,7 +82,7 @@ export function AppShell({
   }
 
   return (
-    <ShellSlotsContext.Provider value={{ title: titleSlot, actions: actionsSlot }}>
+    <ShellSlotsContext.Provider value={{ title: titleSlot, actions: actionsSlot, chats: chatsSlot }}>
       <SidebarProvider
         open={open}
         onOpenChange={changeOpen}
@@ -104,6 +105,7 @@ export function AppShell({
           onOpenReviewList={onOpenReviewList}
           onNewReview={onNewReview}
           onToggleTheme={onToggleTheme}
+          chatsSlotRef={setChatsSlot}
         />
 
         {/* Not shadcn's SidebarInset, which is a <main>: the screen below already is the page's main. */}
@@ -113,6 +115,8 @@ export function AppShell({
           <AppTopbar
             title={title}
             titleHeading={(activePage === 'review' || activePage === 'chat') && activePackage !== null}
+            // A chat's top bar is quiet, like claude.ai's: no brand in the middle (it stays on the other screens).
+            brand={activePage !== 'chat'}
             crumbs={crumbs}
             titleRef={setTitleSlot}
             actionsRef={setActionsSlot}

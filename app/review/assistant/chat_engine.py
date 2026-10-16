@@ -16,11 +16,14 @@ cache). The lead stops cleanly when the message's spend plus the estimate would 
 cap, or the drawing set's spend plus it the set's cap: first with one final, smaller call told to
 answer now from what it has, else with no call; the answer says so (`stopped: cost_cap`).
 
-**Helpers always report.** A helper shares the message's money and has `helper_max_turns` turns.
-Near either limit it is told "wrap up now: report what you found and what you did not get to" and
-gets one final call without tools, made even when that call passes the cap (bounded by a smaller
-output allowance). If even that fails, its report is written from the steps it took. There are no
-per-helper money shares that kill a helper before it reports.
+**Helpers always report.** A helper runs on Sonnet when the lead is Opus (else on the lead's model)
+unless the lead names one, and has `helper_max_turns` turns. The helpers the lead starts in one turn
+may together spend `HELPER_SHARE_PERCENT` of what is left of the message cap at that moment; the rest
+stays for the lead to check their reports and answer. Near any of these limits a helper is told
+"wrap up now: report what you found and what you did not get to" and gets one final call without
+tools, made even when that call passes the cap (bounded by a smaller output allowance). If even that
+fails, its report is written from the steps it took. There are no per-helper money shares that kill
+a helper before it reports.
 
 **Failures.** A provider 5xx, 520/529, a lost connection or an error in the middle of a stream is
 asked once more (for the lead and for helpers); a call's partial output is then dropped from what is
@@ -92,11 +95,22 @@ __all__ = [
 
 _log = logging.getLogger(__name__)
 
-#: Names the system prompts and tools: a change to either is a new id.
-HARNESS_ID: Final = "chat-v1"
+#: Names the system prompts and tools: a change to either is a new id. (chat-v2: the `Agent`
+#: tool's `model` text names Sonnet as the default.) Only the request's prefix changes; a chat's
+#: stored messages replay unchanged.
+HARNESS_ID: Final = "chat-v2"
 #: The output allowance of a forced last call (a wrap-up or a final answer at the cap).
 WRAP_UP_MAX_TOKENS: Final = 8000
 FINAL_MAX_TOKENS: Final = 16000
+#: The share of what is left of the message cap that the helpers of one delegation may spend
+#: together; the rest is the lead's, to check their reports and write the answer.
+HELPER_SHARE_PERCENT: Final = 70
+#: A helper's model when the lead names none, by the lead's: Opus leads, Sonnet helps.
+HELPER_DEFAULT_MODEL: Final[Mapping[str, str]] = {
+    "opus": "sonnet",
+    "sonnet": "sonnet",
+    "haiku": "haiku",
+}
 _RETRY_WAIT_SECONDS: Final = 3.0
 _MAX_REPORT_CHARS: Final = 40_000
 _MAX_PROMPT_CHARS: Final = 20_000
@@ -359,6 +373,15 @@ class _Agent:
     model: ChatModel
 
 
+@dataclass(slots=True)
+class _Share:
+    """The helpers' money for one delegation: the message spend they may take it up to, and the
+    estimates of their calls running now (held, so helpers running at once do not overshoot)."""
+
+    limit: int
+    held: int = 0
+
+
 class ChatEngine:
     """One message's run. `emit(event, data)` sends an SSE event; it must be thread-safe."""
 
@@ -474,6 +497,21 @@ class ChatEngine:
             spent + estimate <= self.settings.message_cap_micros
             and package + spent + estimate <= self.settings.package_cap_micros
         )
+
+    def _hold(self, share: _Share, estimate: int | None) -> bool:
+        """Whether a helper's next call fits the helpers' share; if it does, its estimate is held
+        until the call is charged."""
+        if estimate is None:
+            return True
+        with self._lock:
+            if self._spent + share.held + estimate > share.limit:
+                return False
+            share.held += estimate
+            return True
+
+    def _release(self, share: _Share, held: int) -> None:
+        with self._lock:
+            share.held -= held
 
     def _charge(self, model: ChatModel, usage: Mapping[str, Any]) -> None:
         billed_in, out = self._weighted(model, usage)
@@ -786,7 +824,7 @@ class ChatEngine:
             raise SandboxRefused(f"the prompt is longer than {_MAX_PROMPT_CHARS} characters")
         short = given.get("model")
         if short is None:
-            model = self.settings.model
+            model = BY_SHORT[HELPER_DEFAULT_MODEL[self.settings.model.short]]
         elif isinstance(short, str) and short in BY_SHORT:
             model = BY_SHORT[short]
         else:
@@ -813,6 +851,9 @@ class ChatEngine:
             accepted.append((call, agent))
         if not accepted:
             return results
+        with self._lock:
+            left = max(0, self.settings.message_cap_micros - self._spent)
+            share = _Share(limit=self._spent + left * HELPER_SHARE_PERCENT // 100)
         first = accepted[0][1]
         count = len(accepted)
         entries: list[dict[str, Any]] = [
@@ -847,7 +888,7 @@ class ChatEngine:
         def run(position: int, agent: _Agent) -> None:
             entry = entries[position]
             try:
-                report, ok, stopped = self._helper(agent, index, entry)
+                report, ok, stopped = self._helper(agent, index, entry, share)
             except Exception as failed:  # noqa: BLE001 - one helper failing never stops the others
                 _log.warning("assistant chat helper failed: %s", type(failed).__name__)
                 report = _report_from_steps(entry["steps"], "it failed unexpectedly")
@@ -888,7 +929,7 @@ class ChatEngine:
         return results
 
     def _helper(
-        self, agent: _Agent, step_index: int, entry: dict[str, Any]
+        self, agent: _Agent, step_index: int, entry: dict[str, Any], share: _Share
     ) -> tuple[str, bool, str | None]:
         """One helper's loop. Always returns a report: (report, ok, stopped)."""
         model = agent.model
@@ -917,17 +958,20 @@ class ChatEngine:
                 final=final,
                 max_tokens=max_tokens,
             )
+            held = 0
             if not final:
-                over_turns = turns >= self.settings.helper_max_turns
-                if over_turns or not self._fits(self._estimate(model, body, cached, previous)):
-                    wrap = "turn_limit" if over_turns else "cost_cap"
-                    why = (
-                        "you have used all your tool turns"
-                        if over_turns
-                        else "this message is near its money cap"
-                    )
+                why = None
+                estimate = self._estimate(model, body, cached, previous)
+                if turns >= self.settings.helper_max_turns:
+                    wrap, why = "turn_limit", "you have used all your tool turns"
+                elif not self._fits(estimate):
+                    wrap, why = "cost_cap", "this message is near its money cap"
+                elif not self._hold(share, estimate):
+                    wrap, why = "cost_cap", "the helpers have used their share of the money"
+                if why is not None:
                     _append_note(messages, WRAP_UP_NOTE.format(why=why))
                     continue
+                held = estimate or 0
             upper = prompt_tokens_upper(body, picture_sizes(messages))
             try:
                 reply = self._call(
@@ -949,6 +993,8 @@ class ChatEngine:
                 )
             except ProviderFailure as failure:
                 return _report_from_steps(entry["steps"], str(failure)), False, "error"
+            finally:
+                self._release(share, held)
             cached = sum(
                 int(reply.usage.get(key) or 0)
                 for key in (

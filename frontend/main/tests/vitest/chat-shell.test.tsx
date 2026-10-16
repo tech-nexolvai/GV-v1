@@ -44,6 +44,7 @@ beforeEach(() => {
 });
 
 const { default: App } = await import('@/App');
+const { COLLAPSED_KEY } = await import('@/components/shell/AppShell');
 
 describe('chat first', () => {
   it('an upload lands in the drawing set’s newest chat, named in the top bar', async () => {
@@ -56,16 +57,68 @@ describe('chat first', () => {
     await waitFor(() => expect(document.title).toBe(`${SET_NAME} · GV Review`));
   });
 
-  it('the open set in the sidebar shows its Chats and its Review list; Review list opens the review screen', async () => {
+  it('one sidebar: the open set lists its chats (New chat on top) and a Review list link; the top bar is quiet', async () => {
+    routes['GET /packages/pkg-1/chats'] = () => json({ chats: [summary('c-1', { title: 'Widths', turns: 1 }), summary('c-2', { title: 'Sinks', turns: 1 })] });
     window.location.hash = '#/chat/pkg-1/c-1';
     render(<App />);
     const sidebar = document.querySelector('[data-slot="sidebar"]') as HTMLElement;
     await within(sidebar).findByText(SET_NAME);
-    const links = await within(sidebar).findByRole('list', { name: `${SET_NAME}: chats or review list` });
-    const chats = within(links).getByRole('button', { name: 'Chats' });
-    expect(chats.getAttribute('aria-current')).toBe('page');
-    await userEvent.setup().click(within(links).getByRole('button', { name: 'Review list' }));
+    // No second column: the chats sit under the set's name in the app's sidebar.
+    expect(screen.queryByRole('complementary', { name: 'Chats' })).toBeNull();
+    const chats = await within(sidebar).findByRole('navigation', { name: 'Chats in this drawing set' });
+    expect(within(chats).getAllByRole('button').map((button) => button.textContent)).toEqual(['New chat']);
+    expect(within(chats).getAllByRole('link').map((link) => link.textContent)).toEqual(['Widths', 'Sinks']);
+    expect(within(chats).getByRole('link', { name: 'Widths' }).getAttribute('aria-current')).toBe('page');
+    // The top bar: the set, then the chat's title; no brand in the middle.
+    expect(document.querySelector('[data-slot="chat-crumb"]')?.textContent).toBe('Widths');
+    expect(screen.queryByLabelText('Graniti Vicentia')).toBeNull();
+
+    const reviewList = within(sidebar).getByRole('list', { name: `${SET_NAME}: review list` });
+    await userEvent.setup().click(within(reviewList).getByRole('button', { name: 'Review list' }));
     await waitFor(() => expect(window.location.hash).toBe('#/review/pkg-1'));
+    expect(within(sidebar).queryByRole('navigation', { name: 'Chats in this drawing set' })).toBeNull();
+  });
+
+  it('a set with many chats shows ten, then Show all', async () => {
+    routes['GET /packages/pkg-1/chats'] = () => json({ chats: Array.from({ length: 12 }, (_, n) => summary(`c-${n + 1}`, { title: `Chat ${n + 1}`, turns: 1 })) });
+    window.location.hash = '#/chat/pkg-1/c-1';
+    render(<App />);
+    const sidebar = document.querySelector('[data-slot="sidebar"]') as HTMLElement;
+    const chats = await within(sidebar).findByRole('navigation', { name: 'Chats in this drawing set' });
+    await waitFor(() => expect(within(chats).getAllByRole('link')).toHaveLength(10));
+    await userEvent.setup().click(within(chats).getByRole('button', { name: 'Show all (12)' }));
+    expect(within(chats).getAllByRole('link')).toHaveLength(12);
+  });
+
+  it('the one sidebar folds with the top bar’s toggle, and remembers it', async () => {
+    window.location.hash = '#/chat/pkg-1/c-1';
+    const first = render(<App />);
+    await screen.findByRole('heading', { name: `What do you want to know about ${SET_NAME}?` });
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Toggle sidebar' }));
+    expect(localStorage.getItem(COLLAPSED_KEY)).toBe('true');
+    expect(document.querySelector('[data-slot="sidebar"][data-state]')?.getAttribute('data-state')).toBe('collapsed');
+    first.unmount();
+    render(<App />);
+    expect(document.querySelector('[data-slot="sidebar"][data-state]')?.getAttribute('data-state')).toBe('collapsed');
+    localStorage.removeItem(COLLAPSED_KEY);
+  });
+
+  it('on a phone the one sidebar is a drawer; picking a chat closes it', async () => {
+    const phone = vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
+      matches: query.includes('max-width'), media: query, onchange: null,
+      addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {}, dispatchEvent: () => false,
+    }) as MediaQueryList);
+    routes['GET /packages/pkg-1/chats'] = () => json({ chats: [summary('c-1', { title: 'Widths', turns: 1 }), summary('c-2', { title: 'Sinks', turns: 1 })] });
+    window.location.hash = '#/chat/pkg-1/c-1';
+    render(<App />);
+    await screen.findByRole('heading', { name: `What do you want to know about ${SET_NAME}?` });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Toggle sidebar' }));
+    const drawer = await screen.findByRole('dialog');
+    const chats = await within(drawer).findByRole('navigation', { name: 'Chats in this drawing set' });
+    await user.click(within(chats).getByRole('link', { name: 'Sinks' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    phone.mockRestore();
   });
 
   it('the review screen’s Assistant button opens the set’s chat; picking the set in the sidebar does too', async () => {

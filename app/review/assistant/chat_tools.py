@@ -259,7 +259,10 @@ _AGENT: Final[Mapping[str, Any]] = {
             "model": {
                 "type": "string",
                 "enum": ["opus", "sonnet", "haiku"],
-                "description": "Optional model for this agent (default: the model you run on)",
+                "description": (
+                    "Optional model for this agent. Default: sonnet (opus only for a hard visual "
+                    "check)"
+                ),
             },
         },
     },
