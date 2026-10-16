@@ -460,6 +460,11 @@ class AiReviewCounts:
         )
 
 
+#: Printed under the AI page review's counts line: the differences come from an AI reading, and
+#: no person answered them one by one (decision 2026-10-16), so the reader checks the drawings.
+AI_REVIEW_NOTE: Final = "Differences found by the AI reading; check against the drawings."
+
+
 @dataclass(frozen=True, slots=True)
 class ArchitectDifference:
     """One architect dimension the vendor drew differently (direct compare), as the PDF shows it.
@@ -480,6 +485,9 @@ class ArchitectDifference:
     measures: str | None = None
     """What the dimension measures, as the AI page review says it ("overall width"); `None` for a
     direct-compare result, whose words are then exactly as before."""
+    ai_read: bool = False
+    """An AI page review row (decision 2026-10-16): worded "Needs: X (per architect: what) —
+    Vendor drew: Y". False for a direct-compare result, whose words are exactly as before."""
 
     def __post_init__(self) -> None:
         if not self.architect_text.strip() or not self.vendor_text.strip():
@@ -493,12 +501,19 @@ class ArchitectDifference:
 
     @property
     def words(self) -> str:
-        """ "✗ Architect: Y — vendor: X", as drawn and listed."""
+        """ "✗ Architect: Y — vendor: X", as drawn and listed; an AI page review row says
+        "✗ Needs: Y (per architect: what it measures) — Vendor drew: X"."""
+        measures = (self.measures or "").strip()
+        if self.ai_read:
+            what = f" (per architect: {measures})" if measures else ""
+            return (
+                f"{ARCHITECT_DIFFERENT_GLYPH} Needs: {self.architect_text}{what} \u2014 "
+                f"Vendor drew: {self.vendor_text}"
+            )
         words = (
             f"{ARCHITECT_DIFFERENT_GLYPH} Architect: {self.architect_text} \u2014 "
             f"vendor: {self.vendor_text}"
         )
-        measures = (self.measures or "").strip()
         return f"{words} ({measures})" if measures else words
 
 
@@ -1773,6 +1788,8 @@ def _architect_section(
     """The counts, then every "different" result, clouded or not: listed, never dropped."""
     line("Compared with the architect", font="Helvetica-Bold", size=12.0)
     paragraph(listing.compare.counts.line)
+    if isinstance(listing.compare.counts, AiReviewCounts):
+        paragraph(AI_REVIEW_NOTE)
     line("")
     if not listing.compare.different:
         paragraph("None. No architect dimension was found different from the vendor's.")

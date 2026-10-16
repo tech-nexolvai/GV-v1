@@ -1054,12 +1054,11 @@ def review_items_for_revision(
     projection = _countertop_results_for_revision(session, package_id, revision)
     # Read once: the compare it shows is the one sign-off readiness waits on (#1418).
     compared, compare_counts = architect_compare_for_revision(session, revision.id)
-    # The AI page review's open `different` rows wait for a person too (decision 2026-10-16).
+    # The AI page review is shown, but never holds sign-off: its `different` rows are clouded by
+    # themselves and no person answers them (decision 2026-10-16).
     ai_review = ai_review_for_revision(session, revision.id)
     readiness, records = readiness_and_decisions(
-        session,
-        revision.id,
-        compare_open=compare_counts.needs_person + ai_review.counts.needs_person,
+        session, revision.id, compare_open=compare_counts.needs_person
     )
     open_ids = set(readiness.blocking_finding_ids)
     corrected = set(records.corrected)
