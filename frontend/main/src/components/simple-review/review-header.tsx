@@ -25,6 +25,7 @@ export function ReviewHeader({
   onOpenPdfs,
   onDraftCloud,
   draft,
+  signedOff = false,
 }: {
   title: string;
   revision: number | null;
@@ -33,6 +34,8 @@ export function ReviewHeader({
   /** Ask for the draft cloud PDF (W4b); null when it cannot be asked for here: the button says so instead of hiding. */
   onDraftCloud: (() => void) | null;
   draft: CloudState;
+  /** The package is signed off: a draft is no longer what is wanted, the final cloud PDF is. */
+  signedOff?: boolean;
 }) {
   const working = draft.status === 'working';
   return (
@@ -84,13 +87,19 @@ export function ReviewHeader({
         <Button
           variant="outline"
           onClick={onDraftCloud ?? undefined}
-          disabled={onDraftCloud === null || working}
-          title={onDraftCloud === null ? 'The draft cloud PDF cannot be asked for here: no project is configured.' : 'A draft with every item marked as it stands now. Not signed off.'}
+          disabled={onDraftCloud === null || working || signedOff}
+          aria-describedby={signedOff ? 'draft-signed-note' : undefined}
+          title={signedOff ? 'Signed off: download the final cloud PDF at the bottom of the page instead.' : onDraftCloud === null ? 'The draft cloud PDF cannot be asked for here: no project is configured.' : 'A draft with every item marked as it stands now. Not signed off.'}
         >
           {working ? <Loader2 aria-hidden="true" className="animate-spin motion-reduce:animate-none" /> : <FileText aria-hidden="true" />}
           {working ? 'Making draft…' : 'Draft cloud PDF'}
         </Button>
       </div>
+      {signedOff && (
+        <p id="draft-signed-note" data-testid="draft-signed-note" className="text-[13px] text-muted-foreground sm:basis-full sm:text-right">
+          Signed off — download the final cloud PDF instead
+        </p>
+      )}
       {working && (
         <p role="status" className="text-[13px] text-muted-foreground sm:basis-full">
           Making the draft cloud PDF. This takes a minute; it downloads by itself when ready.

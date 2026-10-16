@@ -47,6 +47,7 @@ function sentence(text: string): string {
 export function FinalBar({
   summary,
   left,
+  notChecked,
   api,
   projectId,
   packageId,
@@ -58,6 +59,8 @@ export function FinalBar({
   summary: ReviewSummary;
   /** What is left, in words ("9 items need you · 54 not checked"), from the page's W1 header. */
   left: readonly string[];
+  /** The header's not-checked count (`header.not_checked`), the same count `left` prints. */
+  notChecked?: number;
   api: FinalCloudApi;
   projectId: string | null;
   packageId: string;
@@ -220,6 +223,11 @@ export function FinalBar({
   let sub: React.ReactNode = null;
   let action: React.ReactNode;
   const locked = phase.kind === 'unsigned' && !summary.canFinalise;
+  // Only not-checked results are left (the one count in `left`): they are printed NOT CHECKED on the
+  // PDF, so the bar never says they must be "settled". Whether sign-off is open is still the server's
+  // `can_finalise` alone, whichever way it answers.
+  const onlyNotChecked = notChecked !== undefined && notChecked > 0 && left.length === 1 && summary.rechecking.length === 0;
+  const notCheckedWords = `${notChecked} not checked — printed NOT CHECKED on the PDF`;
 
   if (phase.kind === 'error') {
     icon = <CircleAlert aria-hidden="true" className="size-4 text-outcome-fail-fg" />;
@@ -281,7 +289,7 @@ export function FinalBar({
     }
   } else if (summary.canFinalise) {
     icon = <CheckCheck aria-hidden="true" className="size-4 text-foreground" />;
-    headline = 'Everything is checked.';
+    headline = onlyNotChecked ? notCheckedWords : 'Everything is checked.';
     sub = 'Creating the final cloud PDF signs off this revision first. It cannot be undone.';
     action = (
       <Button onClick={openDialog}>
@@ -293,7 +301,7 @@ export function FinalBar({
     // The server waits for a check run that no count shows (QA 2026-10-16): its own words, and
     // the run it asks for. Never "nothing needs you" while sign-off is blocked.
     icon = <Lock aria-hidden="true" className="size-4 text-muted-foreground" />;
-    headline = left.length > 0 ? left.join(' · ') : 'The checks need to run again.';
+    headline = onlyNotChecked ? notCheckedWords : left.length > 0 ? left.join(' · ') : 'The checks need to run again.';
     sub = askError ? <span role="alert">{askError}</span> : summary.finalBlocked;
     action = (
       <span className="flex flex-col gap-2 sm:flex-row">
@@ -311,8 +319,8 @@ export function FinalBar({
     icon = <Lock aria-hidden="true" className="size-4 text-muted-foreground" />;
     // Plain words with the header's own counts (#1394). The server's sentence is shown only when
     // there is no count to say what is left; it never decides what the bar says is open.
-    headline = left.length > 0 ? left.join(' · ') : 'Not ready for sign-off yet.';
-    sub = left.length > 0 ? 'The final cloud PDF unlocks once these are settled.' : summary.finalBlocked;
+    headline = onlyNotChecked ? notCheckedWords : left.length > 0 ? left.join(' · ') : 'Not ready for sign-off yet.';
+    sub = left.length > 0 && !onlyNotChecked ? 'The final cloud PDF unlocks once these are settled.' : summary.finalBlocked;
     action = (
       <Button disabled>
         <FileCheck2 aria-hidden="true" />

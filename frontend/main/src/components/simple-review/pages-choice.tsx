@@ -101,7 +101,8 @@ export function PagesChoice({
                   <FileX2 aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
                   <span className="num w-10 shrink-0 text-[15px] font-medium text-foreground">p.{page.page ?? '?'}</span>
                   <NumText text={page.why} className="min-w-0 flex-1 basis-40 text-[13px] leading-5 text-muted-foreground" />
-                  <span className="flex shrink-0 items-center gap-1">
+                  {/* Wraps and shrinks to the row, so no button is clipped at phone width (375 px). */}
+                  <span data-slot="page-actions" className="flex min-w-0 max-w-full flex-wrap items-center gap-1">
                     <Button size="sm" variant="ghost" onClick={() => onLook(page)} aria-label={`Look at page ${page.page ?? ''}`}>
                       <FileSearch aria-hidden="true" />
                       Look
@@ -140,7 +141,8 @@ export function PagesChoice({
                     <span className="text-[15px] font-medium text-foreground">Decide this page <span className="num">p.{page.page ?? '?'}</span></span>
                     <NumText text={page.why} className="text-[13px] leading-5 text-muted-foreground" />
                   </span>
-                  <span className="flex shrink-0 flex-wrap items-center gap-1">
+                  {/* Wraps and shrinks to the row, so no button is clipped at phone width (375 px). */}
+                  <span data-slot="page-actions" className="flex min-w-0 max-w-full flex-wrap items-center gap-1">
                     <Button size="sm" variant="ghost" onClick={() => onLook(page)} aria-label={`Look at page ${page.page ?? ''}`}>
                       <FileSearch aria-hidden="true" />
                       Look
