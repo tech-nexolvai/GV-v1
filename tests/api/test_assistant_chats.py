@@ -211,7 +211,7 @@ def _world(  # type: ignore[no-untyped-def]
             sandboxes.append(sandbox)
             return sandbox
 
-        def skill(session: Session, revision_id: UUID, dest: Path) -> None:
+        def skill(session: Session, revision_id: UUID, dest: Path, products: Any = None) -> None:
             dest.mkdir(parents=True, exist_ok=True)
             (dest / "SKILL.md").write_text(f"---\nname: gv-review\n---\nrevision {revision_id}\n")
 
@@ -321,7 +321,7 @@ def test_a_message_streams_and_ends_with_the_stored_message(postgres_engine, tmp
         stored = events[-1][1]["message"]
         assert stored["id"] == start["message_id"]
         assert stored["text"] == "| Page | Item |\n|---|---|\n| 4 | sink |"
-        assert [b["type"] for b in stored["blocks"]] == ["thinking", "step", "text"]
+        assert [b["type"] for b in stored["blocks"]] == ["thinking", "step", "text", "accuracy"]
         assert stored["blocks"][1]["step"]["output"].startswith("/mnt/skills/gv-review/SKILL.md")
         assert stored["cost_usd"] is not None and stored["stopped"] is None
         # The caps it ran under are kept with it (#1479).
@@ -607,7 +607,7 @@ def test_each_call_is_recorded_for_the_usage_page_labelled_by_chat(postgres_engi
         ).all()
         assert len(rows) == 2
         assert {row.template_id for row in rows} == {f"chat:{chat_id}"}
-        assert {row.prompt_id for row in rows} == {"review-assistant-chat-anthropic-chat-v4"}
+        assert {row.prompt_id for row in rows} == {"review-assistant-chat-anthropic-chat-v5"}
         assert all(row.package_revision_id == world.revision_id for row in rows)
         assert rows[0].outcome != "ok" and rows[1].outcome == "ok"
         models = world.client.get(f"/api/v1/assistant/models?package_id={world.package_id}").json()

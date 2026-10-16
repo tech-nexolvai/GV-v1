@@ -58,7 +58,7 @@ from rules.schema import (
 )
 from units.imperial import format_inches
 from units.measurement import Unit
-from vocabulary.semantic_types import SemanticType
+from vocabulary.semantic_types import ProductType, SemanticType
 from vocabulary.setting_names import setting_name
 from vocabulary.wall_layouts import WALL_LAYOUT_WORDS
 
@@ -130,15 +130,21 @@ def local_skills_folder(environ: Mapping[str, str] | None = None) -> Path:
     return Path(source.get(LOCAL_FOLDER_VARIABLE) or DEFAULT_LOCAL_FOLDER).expanduser()
 
 
-def build_skill_folder(session: Session, package_revision_id: UUID, dest: Path) -> None:
+def build_skill_folder(
+    session: Session,
+    package_revision_id: UUID,
+    dest: Path,
+    products: Sequence[str] | None = None,
+) -> None:
     """Write the skill folder for one drawing set at `dest` (mounted at `/mnt/skills/gv-review`).
 
     `SKILL.md` and `rules.md`, plus GV's local files when their folder exists. Replaces an earlier
     folder this function wrote at `dest`; refuses (`FileExistsError`) to replace anything else, so
     a wrong path can never wipe a chat's files. `LookupError` when the revision does not exist.
+    `products`: the products the reviewer picked for the chat (`rules_markdown`).
     """
     dest = Path(dest)
-    rules_text = rules_markdown(session, package_revision_id)
+    rules_text = rules_markdown(session, package_revision_id, products)
     if dest.exists() and not _replaceable(dest):
         raise FileExistsError(f"{dest} is not an empty folder or a skill folder; not replaced")
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -207,8 +213,13 @@ def _make_readable(root: Path) -> None:
 # --------------------------------------------------------------------------------------------------
 
 
-def rules_markdown(session: Session, package_revision_id: UUID) -> str:
-    """`rules.md` for one drawing set: the checks that run on it and the settings in force."""
+def rules_markdown(
+    session: Session, package_revision_id: UUID, products: Sequence[str] | None = None
+) -> str:
+    """`rules.md` for one drawing set: the checks that run on it and the settings in force.
+
+    With `products` (the reviewer's pick in the chat, chat v4), the checks of those products come
+    first and every other product's checks are listed after them, under "Other products"."""
     revision = session.get(PackageRevision, package_revision_id)
     if revision is None:
         raise LookupError(f"no drawing set revision {package_revision_id}")
@@ -217,13 +228,15 @@ def rules_markdown(session: Session, package_revision_id: UUID) -> str:
         raise LookupError(f"no drawing set for revision {package_revision_id}")
     product = package_product(package)
     store = snapshot_store(session)
+    picked = None if products is None else {ProductType(name) for name in products}
     rules = sorted(
         (
             snapshot.rule
             for snapshot in (store.latest(rule_id) for rule_id in store.rule_ids())
-            if snapshot is not None and (product is None or snapshot.rule.product_type is product)
+            if snapshot is not None
+            and (picked is not None or product is None or snapshot.rule.product_type is product)
         ),
-        key=lambda rule: rule.id,
+        key=lambda rule: (picked is not None and rule.product_type not in picked, rule.id),
     )
     in_force = settings_in_force(session, package.project_id, revision.id, rules)
     sink = session.execute(
@@ -234,7 +247,13 @@ def rules_markdown(session: Session, package_revision_id: UUID) -> str:
     ).scalar_one_or_none()
 
     lines = [_HEADER]
-    if product is None:
+    if picked is not None:
+        names = " and ".join(sorted(item.value for item in picked))
+        lines.append(
+            f"Products picked for this chat: {names}. Their checks come first; the other "
+            'products\' checks follow under "Other products".\n'
+        )
+    elif product is None:
         lines.append(
             "Product: not stated for this drawing set, so every published check runs "
             "(countertop and cabinet).\n"
@@ -251,7 +270,11 @@ def rules_markdown(session: Session, package_revision_id: UUID) -> str:
         return "\n".join(lines)
     lines.extend(_settings_section(rules, in_force, sink))
     lines.append("## The checks\n")
+    other = False
     for rule in rules:
+        if picked is not None and rule.product_type not in picked and not other:
+            other = True
+            lines.append("## Other products (not picked for this chat)\n")
         lines.extend(_rule_section(rule, in_force))
     return "\n".join(lines)
 

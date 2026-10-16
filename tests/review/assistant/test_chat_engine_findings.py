@@ -95,7 +95,7 @@ def test_findings_and_coverage_are_blocks_and_events_updated_in_place(
     outcome = harness.run()
 
     types_ = [block["type"] for block in outcome.blocks]
-    assert types_ == ["finding", "finding_dropped", "coverage", "text", "trust"]
+    assert types_ == ["finding", "finding_dropped", "coverage", "text", "trust", "accuracy"]
     finding = outcome.blocks[0]["finding"]
     assert finding["id"] == "F1" and finding["why"] == "9 in too long"
     assert finding["arch_picture_id"] and finding["vendor_picture_id"]
@@ -273,7 +273,9 @@ def test_no_guard_when_coverage_was_not_used(
 
     assert len(provider.lead_calls) == 1
     # A short answer stays short: no trust block without findings or coverage.
-    assert [b["type"] for b in outcome.blocks] == ["text"]
+    assert [b["type"] for b in outcome.blocks] == ["text", "accuracy"]
+    assert outcome.blocks[1]["accuracy"]["score"] is None
+    assert outcome.blocks[1]["accuracy"]["level"] == "n/a"
 
 
 def _fake_checks() -> types.SimpleNamespace:
@@ -360,7 +362,7 @@ def test_second_reads_run_after_the_lead_and_feed_the_trust_report(
         assert call["thinking"] == {"type": "disabled"} and call["max_tokens"] == 1024
         assert "tools" not in call and "tool_choice" not in call
     prompt_ids = [row["prompt_id"] for row in harness.ledger.rows]
-    assert prompt_ids.count("review-assistant-chat-check-anthropic-chat-v4") == 2
+    assert prompt_ids.count("review-assistant-chat-check-anthropic-chat-v5") == 2
     assert outcome.cost_micros > 0
 
 
@@ -436,3 +438,167 @@ def test_the_real_checks_modules_confirm_a_finding_printed_where_it_says(
     assert finding["inches"] == {"architect": "37", "vendor": "46", "difference": "9"}
     assert finding["checks"]["second_read"] == "agrees"
     assert finding["trust_level"] == "confirmed"
+
+
+# ---- full check (CONTRACT4), recorded results never dropped, cites and accuracy (CONTRACT5) ----
+
+RECORDS = {
+    "records": {
+        "countertops": [
+            {
+                "id": "c1",
+                "page": 2,
+                "label": "Vanity top",
+                "outcome": "Needs correction",
+                "printed_overall": "3'-10\"",
+                "needed_overall": '37"',
+            }
+        ],
+    },
+    "ai_page_review": [
+        {"page": 3, "different": [{"key": "sink centre", "verified_by": "evaluator"}]}
+    ],
+}
+
+
+def _full_check(harness: Harness, products: tuple[str, ...] = ("countertop",)) -> None:
+    import dataclasses
+
+    harness.engine.settings = dataclasses.replace(
+        harness.engine.settings, mode="full_check", products=products
+    )
+    harness.engine.tools.results = lambda page: RECORDS
+
+
+def test_a_full_check_seeds_recorded_results_and_makes_the_cloud_drawing_and_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _modules(monkeypatch)
+    workspace_with_pdf(tmp_path)
+    right = finding_input(item="Backsplash height", status="same", vendor='37"')
+    provider = ScriptedProvider(
+        lead=[
+            reply(
+                tool(
+                    "u1",
+                    "update_finding",
+                    {"finding_id": "F1", "vendor_box": VENDOR_BOX, "verified": True},
+                ),
+                tool("d1", "drop_finding", {"finding_id": "F2", "reason": "sink is centred"}),
+                tool("r1", "report_finding", right),
+                stop="tool_use",
+            ),
+            reply(text("One item wrong on page 2; the backsplash is right.")),
+        ]
+    )
+    harness = Harness(tmp_path, provider)
+    _full_check(harness)
+
+    outcome = harness.run()
+
+    first = _sent(provider.lead_calls[0])["messages"][0]["content"]
+    seeded = first[-1]["text"]
+    assert "GV Review already recorded these differences" in seeded
+    assert "F1 page 2: Vanity top" in seeded and "(c1)" in seeded
+    assert "F2 page 3: sink centre" in seeded and "(ai-review:p3:sink centre)" in seeded
+    findings = {b["finding"]["id"]: b["finding"] for b in outcome.blocks if b["type"] == "finding"}
+    assert findings["F1"]["created_by"] == "gv_review" and findings["F1"]["record_id"] == "c1"
+    assert findings["F1"]["source"] == "rules" and findings["F1"]["checks"]["rule"] == "agrees"
+    assert findings["F1"]["vendor_picture_id"] and findings["F1"]["verified"] is True
+    trust = next(b["trust"] for b in outcome.blocks if b["type"] == "trust")
+    assert trust["gv_checks"]["left_out"] == []
+    assert trust["gv_checks"]["dismissed"] == [
+        {"record_id": "ai-review:p3:sink centre", "reason": "sink is centred"}
+    ]
+    # The two files, made by code, handed over (the service announces each with `file`).
+    names = [f["name"] for f in harness.files]
+    assert names == ["Vendor set - AI cloud drawing.pdf", "Vendor set - AI check report.pdf"]
+    from pypdf import PdfReader
+
+    workspace = harness.workspace
+    drawing = PdfReader(str(workspace.files / harness.files[0]["id"]))
+    assert "Vendor: 3'-10\"" in drawing.pages[1].extract_text()
+    assert "Right: not clouded." in drawing.pages[-1].extract_text()
+    report = "".join(
+        page.extract_text()
+        for page in PdfReader(str(workspace.files / harness.files[1]["id"])).pages
+    )
+    for words in (
+        "AI check report: draft, not GV's signed review",
+        "Countertop",
+        "What's wrong (1)",
+        "To check (0)",
+        "What's right (1)",
+        "Backsplash height",
+        "Not checked",
+    ):
+        assert words in report, words
+    accuracy = next(b["accuracy"] for b in outcome.blocks if b["type"] == "accuracy")
+    assert accuracy["claims"] == 2 and accuracy["breakdown"][0]["points"] == 1.0
+
+
+def test_a_recorded_difference_left_out_sends_the_lead_back_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _modules(monkeypatch)
+    workspace_with_pdf(tmp_path)
+    every_page = {"pages": [{"page": p, "status": "same"} for p in (1, 2, 3)]}
+    provider = ScriptedProvider(
+        lead=[
+            reply(tool("c1", "set_coverage", every_page), stop="tool_use"),
+            reply(text("All pages are the same.")),
+            reply(
+                tool("x1", "dismiss_recorded", {"record_id": "c1", "reason": "field cut"}),
+                stop="tool_use",
+            ),
+            reply(text("All the same; the recorded top is a field cut.")),
+        ]
+    )
+    harness = Harness(tmp_path, provider)
+    harness.engine.tools.results = lambda page: RECORDS
+
+    outcome = harness.run()
+
+    note = _sent(provider.lead_calls[2])["messages"][-1]["content"][-1]["text"]
+    assert note.startswith(COVERAGE_CHECK_PREFIX)
+    assert "c1 (page 2: Vanity top)" in note and "dismiss_recorded" in note
+    assert "ai-review:p3:sink centre" in note
+    assert len(provider.lead_calls) == 4
+    trust = next(b["trust"] for b in outcome.blocks if b["type"] == "trust")
+    assert trust["gv_checks"]["dismissed"] == [{"record_id": "c1", "reason": "field cut"}]
+    # Still missing after the one send-back: the report says so.
+    assert [i["record_id"] for i in trust["gv_checks"]["left_out"]] == ["ai-review:p3:sink centre"]
+
+
+def test_values_stated_without_evidence_send_the_lead_back_for_cites(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _modules(monkeypatch)
+    workspace_with_pdf(tmp_path)
+    provider = ScriptedProvider(
+        lead=[
+            reply(text('The vanity top is 37" long.')),
+            reply(
+                tool("k1", "cite", {"value": '37"', "box": ARCH_BOX}),
+                tool("k2", "cite", {"value": "3", "fact": "page_count"}),
+                tool("k3", "cite", {"value": "9", "fact": "page_count"}),
+                stop="tool_use",
+            ),
+            reply(text('The vanity top is 37" long (page 1).')),
+        ]
+    )
+    harness = Harness(tmp_path, provider)
+
+    outcome = harness.run()
+
+    note = _sent(provider.lead_calls[1])["messages"][-1]["content"][-1]["text"]
+    assert "show the evidence" in note and "cite" in note
+    cites = [b["cite"] for b in outcome.blocks if b["type"] == "cite"]
+    assert [c["id"] for c in cites] == ["C1", "C2", "C3"]
+    assert cites[0]["picture_id"] and cites[0]["box"]["file"] == "Vendor set.pdf"
+    assert cites[0]["printed"] == "not_run"  # the checks module is off in this test
+    assert [c["printed"] for c in cites[1:]] == ["match", "not_found"]
+    accuracy = next(b["accuracy"] for b in outcome.blocks if b["type"] == "accuracy")
+    assert [item["points"] for item in accuracy["breakdown"]] == [0.2, 1.0, 0.0]
+    assert accuracy["score"] == 40 and accuracy["level"] == "yellow"
+    assert events_named(harness.events, "accuracy")[0]["accuracy"] == accuracy

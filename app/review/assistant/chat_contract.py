@@ -11,16 +11,20 @@ from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 __all__ = [
     "MAX_MESSAGE_TEXT",
     "AssistantModelOut",
     "AssistantModelsOut",
+    "ChatAccuracyBlock",
+    "ChatAccuracyOut",
     "ChatAgentOut",
     "ChatBlock",
     "ChatBoxOut",
     "ChatCancelOut",
+    "ChatCiteBlock",
+    "ChatCiteOut",
     "ChatCoverageBlock",
     "ChatCoverageOut",
     "ChatCreatedOut",
@@ -60,14 +64,30 @@ type ChatCapHit = Literal["message", "package"]
 
 
 class ChatMessageIn(BaseModel):
-    """One message from the reviewer, with the model, effort and thinking they picked."""
+    """One message from the reviewer, with the model, effort and thinking they picked.
+
+    `mode: full_check` (CONTRACT4) runs the app's own fixed whole-set check instead of a typed
+    question (`text` is then not needed: the question shown is "Full check · Countertops · High
+    effort"). `products`: the products picked in the composer (default: the set's own)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    text: str = Field(min_length=1, max_length=MAX_MESSAGE_TEXT)
+    text: str = Field(default="", max_length=MAX_MESSAGE_TEXT)
     model: str = Field(min_length=1, max_length=64)
     effort: Literal["low", "medium", "high", "xhigh", "max"]
     thinking: bool
+    mode: Literal["chat", "full_check"] = "chat"
+    products: list[Literal["countertop", "cabinet"]] | None = Field(
+        default=None, min_length=1, max_length=2
+    )
+
+    @model_validator(mode="after")
+    def _a_question_or_a_full_check(self) -> ChatMessageIn:
+        if self.mode == "chat" and not self.text.strip():
+            raise ValueError("text is needed for a chat message")
+        if self.products is not None and len(set(self.products)) != len(self.products):
+            raise ValueError("each product at most once")
+        return self
 
 
 class ChatTaskOut(BaseModel):
@@ -205,16 +225,21 @@ class ChatFindingOut(BaseModel):
     verified: bool
     arch_box: ChatBoxOut | None = None
     vendor_box: ChatBoxOut | None = None
-    source: Literal["architect", "brand_prototype", "rules", "vendor_arithmetic"]
+    source: Literal["architect", "brand_prototype", "rules", "vendor_arithmetic", "gv_review"]
     parts: list[str] | None = None
     printed_total: str | None = None
     rule_check_id: str | None = None
+    record_id: str | None = Field(
+        default=None, description="The difference GV Review recorded that this finding is."
+    )
     round: int | None = None
     arch_picture_id: str | None = Field(
         default=None, description="Evidence crop: GET /chats/{chat_id}/pictures/{picture_id}."
     )
     vendor_picture_id: str | None = None
-    created_by: str = Field(description='"lead" or "helper:<n>".')
+    created_by: str = Field(
+        description='"lead", "helper:<n>", or "gv_review" (made by code from a recorded result).'
+    )
     checks: ChatFindingChecksOut | None = None
     inches: ChatFindingInchesOut | None = None
     trust_level: Literal["confirmed", "likely", "to_check"] | None = None
@@ -312,10 +337,18 @@ class ChatTrustCoverageOut(BaseModel):
 class ChatRecordedDifferenceOut(BaseModel):
     model_config = ConfigDict(frozen=True)
 
+    record_id: str | None = None
     source: Literal["code", "ai_page_review"]
     id: str | None = None
     page: int | None = None
     what: str
+
+
+class ChatDismissedOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    record_id: str
+    reason: str
 
 
 class ChatGvChecksOut(BaseModel):
@@ -325,6 +358,7 @@ class ChatGvChecksOut(BaseModel):
 
     recorded: int
     included: int
+    dismissed: list[ChatDismissedOut] = Field(default_factory=list)
     left_out: list[ChatRecordedDifferenceOut]
 
 
@@ -361,6 +395,58 @@ class ChatTrustBlock(BaseModel):
     trust: ChatTrustOut
 
 
+class ChatCiteOut(BaseModel):
+    """A value the answer states, backed by where it is printed (checked by code)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    value: str
+    fact: Literal["page_count", "file_name"] | None = None
+    page: int | None = None
+    box: ChatBoxOut | None = None
+    file: str | None = None
+    picture_id: str | None = None
+    printed: str = Field(
+        description="match | not_found | no_text | no_box | not_a_number | not_run"
+    )
+
+
+class ChatCiteBlock(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["cite"]
+    cite: ChatCiteOut
+
+
+class ChatAccuracyClaimOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    claim: str
+    how: str
+    points: float
+
+
+class ChatAccuracyOut(BaseModel):
+    """The answer's accuracy, computed by code (CONTRACT5); `score` null: nothing to check."""
+
+    model_config = ConfigDict(frozen=True)
+
+    score: int | None
+    level: Literal["green", "orange", "yellow", "n/a"]
+    claims: int
+    breakdown: list[ChatAccuracyClaimOut]
+    coverage_factor: float | None = None
+    measured: str
+
+
+class ChatAccuracyBlock(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["accuracy"]
+    accuracy: ChatAccuracyOut
+
+
 ChatBlock = Annotated[
     ChatThinkingBlock
     | ChatTextBlock
@@ -368,7 +454,9 @@ ChatBlock = Annotated[
     | ChatFindingBlock
     | ChatFindingDroppedBlock
     | ChatCoverageBlock
-    | ChatTrustBlock,
+    | ChatTrustBlock
+    | ChatCiteBlock
+    | ChatAccuracyBlock,
     Field(discriminator="type"),
 ]
 
@@ -410,6 +498,10 @@ class ChatMessageOut(BaseModel):
         default=None,
         description="With `stopped: cost_cap`: `message` (this answer's cap) or `package` (the "
         "drawing set's budget ran out).",
+    )
+    accuracy: ChatAccuracyOut | None = Field(
+        default=None,
+        description="The answer's accuracy by code (its `accuracy` block); null on older answers.",
     )
 
 
@@ -493,3 +585,4 @@ class ChatCancelOut(BaseModel):
 
 ChatAgentOut.model_rebuild()
 ChatStepOut.model_rebuild()
+ChatMessageOut.model_rebuild()

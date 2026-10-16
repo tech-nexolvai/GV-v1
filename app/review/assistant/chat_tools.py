@@ -40,6 +40,8 @@ from typing import Any, Final
 from uuid import uuid4
 
 from app.review.assistant.chat_findings import (
+    CITE,
+    DISMISS_RECORDED,
     DROP_FINDING,
     REPORT_FINDING,
     SET_COVERAGE,
@@ -105,7 +107,8 @@ give each everything it needs, and check what a helper reports before you state 
 review_results reads what GV Review's own checks recorded for this set; report_finding records \
 each difference you find, with boxes so the app crops the evidence, checks it and draws the table \
 (update_finding, drop_finding as you check); set_coverage records the pages you compared (a \
-whole-set answer accounts for every page).
+whole-set answer accounts for every page); dismiss_recorded sets aside a difference GV Review \
+recorded, with your reason; cite backs any other value you state with where it is printed.
 
 Three GV facts:
 - Measurements are in inches. Answer in inches.
@@ -314,6 +317,8 @@ LEAD_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     UPDATE_FINDING,
     DROP_FINDING,
     SET_COVERAGE,
+    DISMISS_RECORDED,
+    CITE,
 )
 HELPER_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     _BASH,

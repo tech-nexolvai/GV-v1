@@ -114,7 +114,13 @@ def test_the_tool_schemas_are_strict() -> None:
     props = report["properties"]
     assert props["category"]["enum"] == ["countertop", "cabinet", "other"]
     assert props["status"]["enum"] == ["different", "check", "same"]
-    assert props["source"]["enum"] == ["architect", "brand_prototype", "rules", "vendor_arithmetic"]
+    assert props["source"]["enum"] == [
+        "architect",
+        "brand_prototype",
+        "rules",
+        "vendor_arithmetic",
+        "gv_review",
+    ]
     assert props["arch_box"]["additionalProperties"] is False
     assert {"parts", "printed_total", "rule_check_id", "round"} <= set(props)
     assert UPDATE_FINDING["input_schema"]["required"] == ["finding_id"]
@@ -343,7 +349,7 @@ def test_the_marked_up_pdf_has_clouds_at_the_boxes_notes_and_the_stamp(tmp_path:
     assert _red_pixels(out, 1, (a0 - 14, b0 - 4, a0 - 4, b1 + 4)) > 5
     assert _red_pixels(out, 3, (200, 200, 500, 600)) == 0
     page2 = reader.pages[1].extract_text()
-    assert "AI 1: Vanity top length" in page2 and 'architect 37"' in page2
+    assert 'AI 1 Vanity top length: Vendor: 3\'-10" \u2014 Needs: 37"' in page2
     assert "AI markup: draft, not GV's signed review" in reader.pages[0].extract_text()
     notes = reader.pages[3].extract_text()
     for words in ("AI 1", "AI 2", "AI 3", "Backsplash height", "Not marked on the drawing: no box"):
@@ -442,6 +448,7 @@ def test_recorded_differences_and_the_trust_report(no_checks_module: None) -> No
         {
             "id": "F1",
             "page": 4,
+            "record_id": "c1",
             "category": "countertop",
             "status": "different",
             "trust_level": "confirmed",
@@ -484,8 +491,25 @@ def test_recorded_differences_and_the_trust_report(no_checks_module: None) -> No
     ]
     assert report["gv_checks"]["recorded"] == 3 and report["gv_checks"]["included"] == 2
     assert report["gv_checks"]["left_out"][0]["page"] == 12
+    assert report["gv_checks"]["left_out"][0]["record_id"] == "ai-review:p12:overall width"
+    # A recorded difference the lead dismissed with a reason is accounted for, and listed.
+    dismissed = trust_report(
+        findings, None, recorded, dismissed={"ai-review:p12:overall width": "the arch shows 42"}
+    )["gv_checks"]
+    assert dismissed["left_out"] == [] and dismissed["included"] == 2
+    assert dismissed["dismissed"] == [
+        {"record_id": "ai-review:p12:overall width", "reason": "the arch shows 42"}
+    ]
+    # Without the record's id, a code FAIL on the same page is not taken as reported.
+    no_id = [{**findings[0], "record_id": None}, findings[1]]
+    assert [
+        i["record_id"] for i in trust_report(no_id, None, recorded)["gv_checks"]["left_out"]
+    ] == [
+        "c1",
+        "ai-review:p12:overall width",
+    ]
     assert report["coverage"]["pages_not_opened"] == [3]
-    assert any("pen strokes" in line and "20" in line for line in report["not_checked"])
+    assert any("drawn as strokes" in line and "20" in line for line in report["not_checked"])
     assert "Pages not opened: 3." in report["not_checked"]
     unread = trust_report(findings, None, recorded_from(None))
     assert unread["gv_checks"] is None
@@ -541,3 +565,49 @@ def test_code_numbers_come_from_the_checks_module(monkeypatch: pytest.MonkeyPatc
     assert checked["checks"]["printed_vendor"] == "match"
     assert checked["checks"]["lead_checked"] is True
     assert checked["trust_level"] == "likely"
+
+
+def test_accuracy_points_levels_and_the_coverage_penalty() -> None:
+    from app.review.assistant.chat_trust import accuracy
+
+    findings = [
+        {"id": "F1", "trust_level": "confirmed", "status": "different", "checks": _checks()},
+        {"id": "F2", "trust_level": "likely", "status": "different", "checks": _checks()},
+        {
+            "id": "F3",
+            "trust_level": "likely",
+            "status": "different",
+            "checks": _checks(second_read="disagrees"),
+        },
+        {
+            "id": "F4",
+            "trust_level": "to_check",
+            "status": "different",
+            "created_by": "gv_review",
+            "checks": _checks(),
+        },
+    ]
+    score = accuracy(findings, [{"id": "C1", "value": "3", "printed": "no_text"}], None)
+    assert [item["points"] for item in score["breakdown"]] == [1.0, 0.75, 0.0, 1.0, 0.5]
+    assert score["score"] == 65 and score["level"] == "orange" and score["claims"] == 5
+    assert "test sets" in score["measured"]
+    coverage = {
+        "counts": {"total": 4},
+        "pages": [
+            {"page": 1, "status": "same"},
+            {"page": 2, "status": "not_opened", "note": None},
+            {"page": 3, "status": "not_opened", "note": "blank"},
+            {"page": 4, "status": "same"},
+        ],
+    }
+    penalised = accuracy(findings[:1], [], coverage)
+    assert penalised["score"] == 75 and penalised["coverage_factor"] == 0.75
+    assert accuracy([], [], None) == {
+        "score": None,
+        "level": "n/a",
+        "claims": 0,
+        "breakdown": [],
+        "coverage_factor": None,
+        "measured": score["measured"],
+    }
+    assert accuracy(findings[:1], [], None)["level"] == "green"

@@ -243,6 +243,14 @@ def message_out(
             "message_cap_usd": _usd(message.message_cap_micros),
             "package_cap_usd": _usd(message.package_cap_micros),
             "cap_hit": message.cap_hit,
+            "accuracy": next(
+                (
+                    block.get("accuracy")
+                    for block in reversed(message.blocks or [])
+                    if isinstance(block, dict) and block.get("type") == "accuracy"
+                ),
+                None,
+            ),
         }
     )
 

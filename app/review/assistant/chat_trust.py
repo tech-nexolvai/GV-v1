@@ -41,14 +41,20 @@ from typing import Any, Final
 from app.review.assistant.chat_findings import page_ranges
 
 __all__ = [
+    "ACCURACY_MEASURED_LINE",
     "CHECKS_MODULE",
     "SECOND_READ_MODULE",
     "Recorded",
+    "accuracy",
     "apply_checks",
+    "cloud_kind",
     "findings_csv",
     "load_module",
+    "needs_text",
     "recorded_from",
+    "recorded_missing",
     "round_statuses",
+    "states_drawing_values",
     "trust_level",
     "trust_report",
 ]
@@ -91,8 +97,18 @@ class Recorded:
         self.readable = readable
 
 
+def _evaluated(row: Mapping[str, Any]) -> bool:
+    """An AI page review row the evaluator checked (or that our cloud PDF will cloud)."""
+    keys = ("verified_by", "evaluator_reason", "will_be_clouded_on_our_cloud_pdf")
+    if not any(key in row for key in keys):
+        return True
+    return any(bool(row.get(key)) for key in keys)
+
+
 def recorded_from(document: Mapping[str, Any] | None) -> Recorded:
-    """`review_results`' whole-set document, read for what it recorded."""
+    """`review_results`' whole-set document, read for what it recorded. Each recorded difference
+    has a `record_id`: the code record's id, or `ai-review:p<page>:<key>` for an AI page review
+    row (those have no id of their own)."""
     if not isinstance(document, Mapping):
         return Recorded(readable=False)
     differences: list[dict[str, Any]] = []
@@ -106,10 +122,15 @@ def recorded_from(document: Mapping[str, Any] | None) -> Recorded:
             if item.get("outcome") in _FAIL_WORDS:
                 differences.append(
                     {
+                        "record_id": str(item["id"]),
                         "source": "code",
                         "id": str(item["id"]),
                         "page": item.get("page"),
                         "what": str(item.get("label") or "countertop"),
+                        "category": "countertop",
+                        "architect": item.get("needed_overall"),
+                        "vendor": item.get("printed_overall"),
+                        "why": item.get("difference") and f"Difference {item['difference']}",
                     }
                 )
         for item in records.get("other_checks") or []:
@@ -118,25 +139,37 @@ def recorded_from(document: Mapping[str, Any] | None) -> Recorded:
             results[str(item["id"])] = str(item.get("outcome") or "")
             if item.get("outcome") in _FAIL_WORDS:
                 pages = [p for p in item.get("pages") or [] if isinstance(p, int)]
+                values = [str(v) for v in item.get("values") or []]
                 differences.append(
                     {
+                        "record_id": str(item["id"]),
                         "source": "code",
                         "id": str(item["id"]),
                         "page": pages[0] if pages else None,
                         "what": str(item.get("check") or "GV check"),
+                        "category": "other",
+                        "architect": item.get("comparison"),
+                        "vendor": "; ".join(values) or None,
+                        "why": item.get("reason"),
                     }
                 )
     for sheet in document.get("ai_page_review") or []:
         if not isinstance(sheet, Mapping):
             continue
         for row in sheet.get("different") or []:
-            if isinstance(row, Mapping):
+            if isinstance(row, Mapping) and _evaluated(row):
+                key = str(row.get("key") or row.get("measures") or "item")
                 differences.append(
                     {
+                        "record_id": f"ai-review:p{sheet.get('page')}:{key}",
                         "source": "ai_page_review",
                         "id": None,
                         "page": sheet.get("page"),
-                        "what": str(row.get("key") or row.get("measures") or "item"),
+                        "what": key,
+                        "category": "other",
+                        "architect": row.get("architect_text"),
+                        "vendor": row.get("vendor_text"),
+                        "why": row.get("why"),
                     }
                 )
     return Recorded(differences, results)
@@ -155,6 +188,29 @@ def rule_result(finding: Mapping[str, Any], recorded: Recorded | None) -> str | 
     if outcome in _PASS_WORDS:
         return "agrees" if finding.get("status") == "same" else "disagrees"
     return "not_run"
+
+
+def recorded_missing(
+    findings: Sequence[Mapping[str, Any]], recorded: Recorded, dismissed: Mapping[str, str]
+) -> list[str]:
+    """The recorded differences an answer neither reports nor dismissed (with a reason): a finding
+    carries the record's id (`record_id`, or `rule_check_id` for a code check), or, for a record
+    without an id of its own, a finding on its page names its item."""
+    ids = {
+        str(f.get(key)) for f in findings for key in ("record_id", "rule_check_id") if f.get(key)
+    }
+    on_page = {
+        (f.get("page"), _key(f)) for f in findings if f.get("status") in ("different", "check")
+    }
+    missing: list[str] = []
+    for item in recorded.differences:
+        record_id = item["record_id"]
+        if record_id in ids or record_id in dismissed:
+            continue
+        if item.get("id") is None and (item.get("page"), _key({"item": item["what"]})) in on_page:
+            continue
+        missing.append(record_id)
+    return missing
 
 
 # ---- checks and trust --------------------------------------------------------------------------
@@ -342,8 +398,10 @@ def trust_report(
     recorded: Recorded | None,
     *,
     second_reads_skipped: int = 0,
+    dismissed: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """The answer's trust report, built by code from its findings and coverage."""
+    """The answer's trust report, built by code from its findings and coverage. `dismissed`:
+    recorded differences the lead set aside, with its reason."""
     counts = {level: 0 for level in LEVELS}
     by_category: dict[str, dict[str, int]] = {}
     printed = {k: 0 for k in ("match", "not_found", "no_text", "not_a_number", "no_box", "not_run")}
@@ -380,22 +438,19 @@ def trust_report(
         lead_checked += bool(checks.get("lead_checked"))
     gv_checks: dict[str, Any] | None = None
     if recorded is not None and recorded.readable:
-        pages = {
-            p
-            for f in findings
-            if f.get("status") in ("different", "check")
-            for p in (f.get("page"), f.get("vs_page"))
-            if p
-        }
-        ids = {str(f.get("rule_check_id")) for f in findings if f.get("rule_check_id")}
+        missing = set(recorded_missing(findings, recorded, dismissed or {}))
         left_out = [
-            item
+            {k: item.get(k) for k in ("record_id", "source", "id", "page", "what")}
             for item in recorded.differences
-            if not ((item.get("id") and item["id"] in ids) or item.get("page") in pages)
+            if item["record_id"] in missing
         ]
         gv_checks = {
             "recorded": len(recorded.differences),
-            "included": len(recorded.differences) - len(left_out),
+            "included": len(recorded.differences) - len(left_out) - len(dismissed or {}),
+            "dismissed": [
+                {"record_id": record_id, "reason": reason}
+                for record_id, reason in sorted((dismissed or {}).items())
+            ],
             "left_out": left_out,
         }
     not_checked: list[str] = []
@@ -408,8 +463,9 @@ def trust_report(
         ]
     if pen_pages - {0}:
         not_checked.append(
-            "Numbers drawn as pen strokes (no text layer) on pages "
-            f"{page_ranges(sorted(pen_pages - {0}))}: not checked against the printed text."
+            "Numbers drawn as strokes (no text layer) on pages "
+            f"{page_ranges(sorted(pen_pages - {0}))}: checked by a second read, not by the "
+            "page's text."
         )
     if pages_not_opened:
         not_checked.append(f"Pages not opened: {page_ranges(pages_not_opened)}.")
@@ -441,6 +497,127 @@ def trust_report(
         "rounds": _rounds_summary(findings),
         "not_checked": not_checked,
     }
+
+
+def cloud_kind(finding: Mapping[str, Any]) -> str | None:
+    """`wrong` (red: a difference its checks do not put in doubt), `check` (amber: to check), or
+    `None` (right: never clouded)."""
+    if finding.get("status") == "same":
+        return None
+    if finding.get("status") == "different" and finding.get("trust_level") != "to_check":
+        return "wrong"
+    return "check"
+
+
+def needs_text(finding: Mapping[str, Any]) -> str:
+    """What the vendor's value needs to be: code's inches when it read the architect's value."""
+    inches = (finding.get("inches") or {}).get("architect")
+    return f'{inches}"' if inches else str(finding.get("architect"))
+
+
+# ---- the accuracy score (CONTRACT5) -------------------------------------------------------------
+
+#: What the eval kit measured on GV's test sets (the orchestrator updates this line; never invented).
+ACCURACY_MEASURED_LINE: Final = "Measured on GV's test sets: 23 of 24 claims right."
+_LEVEL_POINTS: Final = {"confirmed": 1.0, "likely": 0.75, "to_check": 0.4}
+_CITE_POINTS: Final = {"match": 1.0, "no_text": 0.5, "not_found": 0.2}
+
+
+def _disagrees(finding: Mapping[str, Any]) -> str | None:
+    checks = finding.get("checks") or {}
+    if checks.get("second_read") == "disagrees":
+        return "the second read disagrees"
+    if checks.get("rule") == "disagrees":
+        return "GV's recorded check disagrees"
+    if _arithmetic_agrees(checks, finding.get("status")) is False:
+        return "code's arithmetic disagrees"
+    return None
+
+
+def accuracy(
+    findings: Sequence[Mapping[str, Any]],
+    cites: Sequence[Mapping[str, Any]],
+    coverage: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """The share of the answer's checkable claims that independent checks back, by code.
+
+    A finding: confirmed 1, likely 0.75, to check 0.4, any check that disagrees 0; a code rule or
+    code arithmetic that agrees, or GV's recorded result quoted as recorded, 1. A cited value:
+    printed there 1, pen strokes 0.5, not found 0.2; a fact about the file checked by code 1 (0
+    when it is wrong). A whole-set answer is multiplied by the share of pages accounted for. No
+    claim to check: n/a."""
+    breakdown: list[dict[str, Any]] = []
+    for finding in findings:
+        checks = finding.get("checks") or {}
+        claim = f"{finding.get('id')} page {finding.get('page')}: {finding.get('item')}"
+        against = _disagrees(finding)
+        if against:
+            points, how = 0.0, against
+        elif finding.get("created_by") == "gv_review" and finding.get("status") != "same":
+            points, how = 1.0, "GV Review's own recorded result"
+        elif checks.get("rule") == "agrees" or _arithmetic_agrees(checks, finding.get("status")):
+            points, how = 1.0, "code (GV's rule or the vendor's own arithmetic)"
+        else:
+            level = str(finding.get("trust_level") or "to_check")
+            points, how = _LEVEL_POINTS.get(level, 0.4), f"trust level: {level.replace('_', ' ')}"
+        breakdown.append({"claim": claim, "how": how, "points": points})
+    for cite in cites:
+        claim = f"{cite.get('id')} {cite.get('value')}"
+        check = str(cite.get("printed") or "not_run")
+        if cite.get("fact"):
+            points = 1.0 if check == "match" else 0.0
+            how = "checked on the file by code" if points else "the file says otherwise"
+        else:
+            points = _CITE_POINTS.get(check, 0.2)
+            how = {
+                "match": "printed at that spot",
+                "no_text": "drawn as strokes: not checkable by the page's text",
+                "not_found": "not found at that spot",
+            }.get(check, "could not be checked at a spot")
+        breakdown.append({"claim": claim, "how": how, "points": points})
+    if not breakdown:
+        return {
+            "score": None,
+            "level": "n/a",
+            "claims": 0,
+            "breakdown": [],
+            "coverage_factor": None,
+            "measured": ACCURACY_MEASURED_LINE,
+        }
+    mean = sum(item["points"] for item in breakdown) / len(breakdown)
+    factor = None
+    if coverage:
+        counts = coverage.get("counts") or {}
+        total = int(counts.get("total") or 0)
+        gaps = sum(
+            1
+            for entry in coverage.get("pages") or []
+            if entry.get("status") == "not_opened" and not entry.get("note")
+        )
+        if total:
+            factor = (total - gaps) / total
+            mean *= factor
+    score = round(mean * 100)
+    level = "green" if score >= 80 else "orange" if score >= 60 else "yellow"
+    return {
+        "score": score,
+        "level": level,
+        "claims": len(breakdown),
+        "breakdown": breakdown,
+        "coverage_factor": None if factor is None else round(factor, 3),
+        "measured": ACCURACY_MEASURED_LINE,
+    }
+
+
+#: A drawing value stated in words: inches or feet-and-inches (37", 3'-1", 25 1/2 in).
+_STATED_VALUE: Final = re.compile(
+    r"\d+\s*'\s*-?\s*\d+(?:\s+\d+/\d+)?\s*\"|\d+(?:\s+\d+/\d+|\.\d+)?\s*(?:\"|\u201d|in\b|inches\b)"
+)
+
+
+def states_drawing_values(text: str) -> bool:
+    """Whether an answer's words state a size read off a drawing."""
+    return bool(_STATED_VALUE.search(text or ""))
 
 
 # ---- the CSV export ----------------------------------------------------------------------------

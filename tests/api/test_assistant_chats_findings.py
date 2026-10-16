@@ -74,7 +74,7 @@ def test_findings_stream_are_stored_and_reload_the_same_with_their_pictures(post
         assert status == 200
         message = _named(events, "message_end")[0]["message"]
         kinds = [block["type"] for block in message["blocks"]]
-        assert kinds == ["finding", "coverage", "text", "text", "trust"]
+        assert kinds == ["finding", "coverage", "text", "text", "trust", "accuracy"]
         finding = message["blocks"][0]["finding"]
         assert finding["id"] == "F1" and finding["arch_box"]["file"] == "Vendor set.pdf"
         assert finding["checks"]["printed_vendor"] == "not_run"
@@ -110,7 +110,7 @@ def _red_near(pdf: bytes, page: int, box: Mapping[str, float]) -> int:
     return sum(
         1
         for r, g, b in zip(raw[0::3], raw[1::3], raw[2::3], strict=True)
-        if r > 180 and g < 90 and b < 90
+        if r > 180 and g < 140 and b < 90
     )
 
 
@@ -137,7 +137,8 @@ def test_the_marked_up_pdf_is_drawn_by_code_once_per_answer(postgres_engine, tmp
         reader = PdfReader(io.BytesIO(pdf.content))
         assert len(reader.pages) == 4
         assert "AI markup: draft, not GV's signed review" in reader.pages[0].extract_text()
-        assert "AI 1: Vanity top length" in reader.pages[1].extract_text()
+        # The checks modules are off here, so the finding is "to check": an amber cloud.
+        assert "AI 1 ? Check: Vanity top length" in reader.pages[1].extract_text()
         assert _red_near(pdf.content, 2, VENDOR_BOX) > 5
         assert _red_near(pdf.content, 3, VENDOR_BOX) == 0
         # The same file again, and it is the answer's file on reload.
@@ -300,7 +301,7 @@ def test_a_whole_set_answer_end_to_end_against_a_fake_anthropic_server(postgres_
             assert message["stopped"] is None, message
             assert message["text"] == "One difference, on page 2."
             kinds = [block["type"] for block in message["blocks"]]
-            assert kinds == ["finding", "coverage", "text", "text", "trust"]
+            assert kinds == ["finding", "coverage", "text", "text", "trust", "accuracy"]
             assert message["blocks"][1]["coverage"]["counts"]["not_opened"] == 0
             trust = message["blocks"][4]["trust"]
             assert trust["counts"]["total"] == 1 and trust["coverage"]["pages_not_opened"] == []
@@ -311,3 +312,41 @@ def test_a_whole_set_answer_end_to_end_against_a_fake_anthropic_server(postgres_
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_a_full_check_through_the_route_shows_its_label_and_ends_with_its_two_files(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    provider = ScriptedProvider(
+        lead=[
+            reply(tool("r1", "report_finding", finding_input()), stop="tool_use"),
+            reply(text("One item is wrong.")),
+        ]
+    )
+    with _world(postgres_engine, tmp_path, provider=provider, pdf=PDF3, pages=3) as world:
+        chat_id = world.chat()
+        response = world.client.post(
+            f"/api/v1/chats/{chat_id}/messages",
+            json={**ASK, "mode": "full_check", "products": ["countertop"]},
+        )
+        assert response.status_code == 200, response.text
+        events = _events(response.text)
+        message = _named(events, "message_end")[0]["message"]
+        names = [f["name"] for f in message["files"]]
+        assert names == ["Vendor set - AI cloud drawing.pdf", "Vendor set - AI check report.pdf"]
+        assert [d["file"]["name"] for d in _named(events, "file")] == names
+        assert message["accuracy"] is not None and message["accuracy"]["claims"] == 1
+        chat = world.client.get(f"/api/v1/chats/{chat_id}").json()
+        assert chat["messages"][0]["text"] == "Full check · Countertops · High effort"
+        sent = json.loads(world.provider.lead_calls[0])["messages"][0]["content"]
+        words = " ".join(block.get("text", "") for block in sent)
+        assert "Focus for this chat: countertops." in words
+        assert "Full check of this drawing set" in words
+        for file in message["files"]:
+            assert world.client.get(file["url"]).content[:4] == b"%PDF"
+
+        # A chat message still needs its words; a product at most once.
+        empty = world.client.post(f"/api/v1/chats/{chat_id}/messages", json={**ASK, "text": " "})
+        twice = world.client.post(
+            f"/api/v1/chats/{chat_id}/messages",
+            json={**ASK, "text": "hi", "products": ["cabinet", "cabinet"]},
+        )
+        assert empty.status_code == 422 and twice.status_code == 422

@@ -153,6 +153,7 @@ def test_thinking_and_text_stream_as_contract_events_in_block_order(tmp_path: Pa
         "thinking_end",
         "text_delta",
         "text_delta",
+        "accuracy",
     ]
     assert events_named(harness.events, "thinking_start") == [{"index": 0}]
     assert "".join(d["text"] for d in events_named(harness.events, "thinking_delta")) == (
@@ -162,7 +163,7 @@ def test_thinking_and_text_stream_as_contract_events_in_block_order(tmp_path: Pa
     assert {d["index"] for d in events_named(harness.events, "text_delta")} == {1}
     assert outcome.text == "All **good**."
     assert outcome.stopped is None and outcome.error is None
-    assert [b["type"] for b in outcome.blocks] == ["thinking", "text"]
+    assert [b["type"] for b in outcome.blocks] == ["thinking", "text", "accuracy"]
     assert outcome.blocks[0]["text"] == "Looking at it." and outcome.blocks[0]["seconds"] >= 1
     # The turn as sent and received, the thinking block with its signature unchanged.
     assert outcome.api_content == [
@@ -232,10 +233,10 @@ def test_a_tool_turn_runs_the_tool_and_sends_the_reply_back_unchanged(tmp_path: 
     # The newest block carries the cache breakpoint.
     assert second["messages"][-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
     assert outcome.text == "It has 60 pages."
-    assert [b["type"] for b in outcome.blocks] == ["thinking", "text", "step", "text"]
+    assert [b["type"] for b in outcome.blocks] == ["thinking", "text", "step", "text", "accuracy"]
     assert len(harness.ledger.rows) == 2
     assert {row["prompt_id"] for row in harness.ledger.rows} == {
-        "review-assistant-chat-anthropic-chat-v4"
+        "review-assistant-chat-anthropic-chat-v5"
     }
 
 
