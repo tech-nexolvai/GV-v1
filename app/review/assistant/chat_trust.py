@@ -10,6 +10,12 @@ Every finding carries `checks`, run by code (and one cheap independent AI read t
 - `second_read`: a fresh model shown only the two crops (`agrees` / `disagrees` / `unsure` /
   `not_run`); run by the engine after the lead finishes.
 - `lead_checked`: the lead read both values on the drawing itself (`verified`).
+- `adjudication` (#1498): when the second read disagrees or is unsure, a third read by a stronger
+  model on sharper crops; the majority of the three readings (`agrees_after_adjudication` /
+  `disagrees` / `unsure`) stands in for the second read (`read_adjudication.py`).
+- `critic` (#1498, whole-set answers): an adversarial model's look at the finding (`passed` /
+  `objects` / `unsure` / `not_run`); `objects` makes it To check, `passed` is one more AI witness
+  (`finding_critic.py`).
 
 `inches` are code's numbers (`to_inches`), with the difference (vendor minus architect); the screen
 never shows the AI's arithmetic. `trust_level`: `confirmed` / `likely` / `to_check`.
@@ -51,6 +57,7 @@ __all__ = [
     "findings_csv",
     "load_module",
     "needs_text",
+    "read_result",
     "recorded_from",
     "recorded_missing",
     "round_statuses",
@@ -226,6 +233,17 @@ def _arithmetic_agrees(checks: Mapping[str, Any], status: object) -> bool | None
     return None
 
 
+def read_result(checks: Mapping[str, Any]) -> object:
+    """The read's result: the third read's majority when one was made, else the second read's (a
+    third read that ends unsure leaves the second read's result as it was)."""
+    adjudication = checks.get("adjudication")
+    if adjudication == "agrees_after_adjudication":
+        return "agrees"
+    if adjudication == "disagrees":
+        return "disagrees"
+    return checks.get("second_read")
+
+
 def trust_level(checks: Mapping[str, Any], status: object = None) -> str:
     """CONTRACT3's rule (the checks module's own `trust_level` is used when it is present)."""
     module = load_module(CHECKS_MODULE)
@@ -235,8 +253,9 @@ def trust_level(checks: Mapping[str, Any], status: object = None) -> str:
             return level
     arithmetic = _arithmetic_agrees(checks, status)
     if (
-        checks.get("second_read") == "disagrees"
+        read_result(checks) == "disagrees"
         or checks.get("rule") == "disagrees"
+        or checks.get("critic") == "objects"
         or arithmetic is False
     ):
         return "to_check"
@@ -245,10 +264,11 @@ def trust_level(checks: Mapping[str, Any], status: object = None) -> str:
         or checks.get("rule") == "agrees"
         or arithmetic is True
     )
-    second = checks.get("second_read") == "agrees"
+    second = read_result(checks) == "agrees"
     if printed and second:
         return "confirmed"
-    if sum((printed, second, bool(checks.get("lead_checked")))) >= 2:
+    critic = checks.get("critic") == "passed"
+    if sum((printed, second, bool(checks.get("lead_checked")), critic)) >= 2:
         return "likely"
     return "to_check"
 
@@ -406,6 +426,9 @@ def trust_report(
     by_category: dict[str, dict[str, int]] = {}
     printed = {k: 0 for k in ("match", "not_found", "no_text", "not_a_number", "no_box", "not_run")}
     second = {k: 0 for k in ("agrees", "disagrees", "unsure", "not_run")}
+    adjudication = {k: 0 for k in ("agrees_after_adjudication", "disagrees", "unsure")}
+    critic = {k: 0 for k in ("passed", "objects", "unsure", "not_run")}
+    third_not_run = 0
     arithmetic = {k: 0 for k in ("adds_up", "does_not_add_up", "not_a_number")}
     rules: list[dict[str, Any]] = []
     lead_checked = 0
@@ -427,6 +450,12 @@ def trust_report(
         )
         if checks.get("arithmetic") in arithmetic:
             arithmetic[checks["arithmetic"]] += 1
+        if checks.get("adjudication") in adjudication:
+            adjudication[checks["adjudication"]] += 1
+        elif checks.get("second_read") in ("disagrees", "unsure"):
+            third_not_run += 1
+        if checks.get("critic") in critic:
+            critic[checks["critic"]] += 1
         if checks.get("rule") is not None:
             rules.append(
                 {
@@ -473,6 +502,13 @@ def trust_report(
         not_checked.append(
             f"Second read not run on {second_reads_skipped} findings (limit or cap)."
         )
+    if third_not_run:
+        not_checked.append(
+            f"Third read not run on {third_not_run} findings whose second read disagreed or was "
+            "unsure (limit, cap or no box)."
+        )
+    if critic["not_run"]:
+        not_checked.append(f"Critic not run on {critic['not_run']} findings (limit or cap).")
     if recorded is None or not recorded.readable:
         not_checked.append("GV Review's own recorded checks could not be read for this answer.")
     return {
@@ -481,6 +517,8 @@ def trust_report(
         "checks": {
             "printed_at_spot": printed,
             "second_read": second,
+            "adjudication": adjudication,
+            "critic": critic,
             "rules": rules,
             "arithmetic": arithmetic,
             "lead_checked": lead_checked,
@@ -525,8 +563,13 @@ _CITE_POINTS: Final = {"match": 1.0, "no_text": 0.5, "not_found": 0.2}
 
 def _disagrees(finding: Mapping[str, Any]) -> str | None:
     checks = finding.get("checks") or {}
-    if checks.get("second_read") == "disagrees":
+    if checks.get("adjudication") == "disagrees":
+        return "the third read sides with the second read against it"
+    if read_result(checks) == "disagrees":
         return "the second read disagrees"
+    if checks.get("critic") == "objects":
+        note = str((finding.get("critic") or {}).get("note") or "").strip()
+        return f"the critic objects: {note}" if note else "the critic objects"
     if checks.get("rule") == "disagrees":
         return "GV's recorded check disagrees"
     if _arithmetic_agrees(checks, finding.get("status")) is False:

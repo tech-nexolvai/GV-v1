@@ -213,7 +213,7 @@ export function EvidenceViewer({ findings, openId, onOpen, pictureUrl, fullPageH
 
           <div data-slot="chat-evidence-checks" className="grid gap-1 rounded-lg border bg-muted/30 px-3 py-2">
             <p className="text-xs font-medium text-muted-foreground">Checks</p>
-            <CheckList finding={finding} only={printedSideWords(finding, 'architect') || printedSideWords(finding, 'vendor') ? ['second_read', 'verified', 'rule'] : undefined} />
+            <CheckList finding={finding} only={printedSideWords(finding, 'architect') || printedSideWords(finding, 'vendor') ? ['second_read', 'verified', 'rule', 'critic'] : undefined} />
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-2">

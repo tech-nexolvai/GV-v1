@@ -75,6 +75,7 @@ from app.review.assistant.chat_findings import (
     read_listing,
 )
 from app.review.assistant.chat_provider import ChatProvider, ProviderFailure, failure_from
+from app.review.assistant.chat_read_review import review_reads
 from app.review.assistant.chat_request import (
     BY_SHORT,
     HELPER_MAX_TOKENS,
@@ -1109,6 +1110,7 @@ class ChatEngine:
         if not book.live() and not book.coverage_used:
             return
         skipped = self._second_reads()
+        review_reads(self)  # third reads and the critic (#1498)
         statuses = round_statuses(book.live())
         for finding in book.live():
             status = statuses.get(finding["id"])

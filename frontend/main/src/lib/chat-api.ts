@@ -206,6 +206,10 @@ export interface ChatFinding {
   rule_check_id?: string | null;
   /** Chat v3: which round of comments it is from. */
   round?: number | null;
+  /** #1498: every reading of the values, when the second read was settled by a third. */
+  reads?: FindingRead[] | null;
+  /** #1498: the critic's look at it (whole-set answers). */
+  critic?: FindingCritic | null;
 }
 
 /**
@@ -240,6 +244,36 @@ export interface FindingChecks {
   arithmetic?: 'adds_up' | 'does_not_add_up' | 'not_a_number' | null;
   /** The lead checked it on the drawing itself. */
   lead_checked?: boolean | null;
+  /**
+   * #1498: when the second read disagreed or was unsure, a stronger model read the spot again from a
+   * sharper crop, and code took the majority of the three readings (it stands in for the second read).
+   */
+  adjudication?: 'agrees_after_adjudication' | 'disagrees' | 'unsure' | null;
+  /** #1498, whole-set answers: an adversarial model looked for what is wrong (`objects` = To check). */
+  critic?: 'passed' | 'objects' | 'unsure' | 'not_run' | null;
+}
+
+/** One reading of a finding's values (#1498): the finding's own (`first`), the second and third reads. */
+export interface FindingRead {
+  role?: 'first' | 'second' | 'third' | null;
+  /** "lead", "haiku", "sonnet"… */
+  model: string;
+  value_arch: string | null;
+  value_vendor: string | null;
+  /** Whether the model said it was sure (null for the finding's own values). */
+  sure: boolean | null;
+  /** The third read's crop resolution, and whether a turned copy was shown (sideways text). */
+  dpi?: number | null;
+  turned?: boolean | null;
+}
+
+/** The critic's look at one finding (#1498). */
+export interface FindingCritic {
+  result: 'passed' | 'objects' | 'unsure';
+  answers?: Partial<Record<'same_item' | 'right_dimension' | 'vendor_ink' | 'architect_side', 'yes' | 'no' | 'unsure'>> | null;
+  /** What is wrong, in the critic's words (or code's), when it objects. */
+  note?: string | null;
+  model?: string | null;
 }
 
 export type RoundStatus = 'fixed_in_later_round' | 'still_wrong' | 'new_in_later_round' | 'not_in_later_round' | 'single_round';
