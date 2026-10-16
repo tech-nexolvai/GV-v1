@@ -1369,7 +1369,7 @@ def review_items_for_revision(
 
 def _job_value_suggestions(session: Session, revision_id: UUID) -> list[JobValueSuggestionOut]:
     """The newest job values reading's auto values and suggestions (#1409), in the settings' order."""
-    from workflow.job_values import latest_job_values
+    from workflow.job_value_results import latest_job_values
 
     out: list[JobValueSuggestionOut] = []
     for found in latest_job_values(session, revision_id).values():
