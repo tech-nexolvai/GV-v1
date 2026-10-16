@@ -1,11 +1,15 @@
-import { ListChecks, SquarePen } from 'lucide-react';
+import { useState } from 'react';
+import { Plus } from 'lucide-react';
 
 import { formatRoute } from '@/app/route';
+import { SidebarMenuSub, SidebarMenuSubButton, SidebarMenuSubItem } from '@/components/ui/sidebar';
 import type { ChatSummary } from '@/lib/chat-api';
-import { chatTitle, relativeTime } from '@/lib/chat-messages';
-import { cn } from '@/lib/utils';
+import { chatTitle } from '@/lib/chat-messages';
 
 export type ChatListState = { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready'; chats: ChatSummary[] };
+
+/** How many chats show before "Show all". */
+export const CHATS_SHOWN = 10;
 
 export interface ChatListProps {
   packageId: string;
@@ -14,73 +18,76 @@ export interface ChatListProps {
   /** True while a new chat is being made. */
   creating: boolean;
   onNewChat: () => void;
-  /** Called when a chat is picked, after the link has moved the address (phones close their menu). */
-  onPicked?: () => void;
-  now?: Date;
+  /** Chats whose first message was sent here: their title fades in when the server names them. */
+  freshTitles?: ReadonlySet<string>;
 }
 
 /**
- * A drawing set's chats (#1464), newest first, like claude.ai's sidebar: New chat on top, then each
- * chat by its title and when it was last used. Each chat is a real link, so it can be opened in a
- * new tab. "Review list" goes to this set's review screen.
+ * A drawing set's chats (#1464, #1471), shown in the app's one sidebar under the open set, the way
+ * claude.ai shows a project's chats: "New chat" with a plus, then one line per chat (cut with "…"),
+ * newest first, the open one highlighted, the first ten and then "Show all". Each chat is a real
+ * link, so it can be opened in a new tab.
  */
-export function ChatList({ packageId, activeChatId, state, creating, onNewChat, onPicked, now = new Date() }: ChatListProps) {
+export function ChatList({ packageId, activeChatId, state, creating, onNewChat, freshTitles }: ChatListProps) {
+  const [showAll, setShowAll] = useState(false);
+  const chats = state.status === 'ready' ? state.chats : [];
+  // The open chat always shows, even when it is older than the first ten.
+  const activeIndex = chats.findIndex((chat) => chat.id === activeChatId);
+  const shown = showAll || activeIndex >= CHATS_SHOWN ? chats : chats.slice(0, CHATS_SHOWN);
+  const muted = 'px-2 py-1 text-xs text-muted-foreground';
+
   return (
-    <nav data-slot="chat-list" aria-label="Chats in this drawing set" className="flex min-h-0 flex-1 flex-col gap-1 p-2">
-      <button
-        type="button"
-        onClick={onNewChat}
-        disabled={creating}
-        className="flex h-9 shrink-0 items-center gap-2 rounded-lg px-2.5 text-sm font-medium hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-50"
-      >
-        <SquarePen className="size-4" aria-hidden="true" />
-        {creating ? 'Starting a chat…' : 'New chat'}
-      </button>
-
-      <h2 className="px-2.5 pt-3 pb-1 text-xs font-medium text-muted-foreground">Chats</h2>
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        {state.status === 'loading' && <p className="px-2.5 py-1 text-xs text-muted-foreground">Loading chats…</p>}
+    <nav data-slot="chat-list" aria-label="Chats in this drawing set">
+      <SidebarMenuSub className="gap-0.5">
+        <SidebarMenuSubItem>
+          <SidebarMenuSubButton asChild>
+            <button type="button" onClick={onNewChat} disabled={creating} className="font-medium">
+              <Plus aria-hidden="true" />
+              <span>{creating ? 'Starting a chat…' : 'New chat'}</span>
+            </button>
+          </SidebarMenuSubButton>
+        </SidebarMenuSubItem>
+        {state.status === 'loading' && <li className={muted}>Loading chats…</li>}
         {state.status === 'error' && (
-          <p className="px-2.5 py-1 text-xs text-muted-foreground" role="alert">
+          <li className={muted} role="alert">
             Could not load the chats: {state.message}
-          </p>
+          </li>
         )}
-        {state.status === 'ready' && state.chats.length === 0 && <p className="px-2.5 py-1 text-xs text-muted-foreground">No chats yet.</p>}
-        {state.status === 'ready' && state.chats.length > 0 && (
-          <ul className="flex flex-col gap-0.5">
-            {state.chats.map((chat) => {
-              const active = chat.id === activeChatId;
-              const used = chat.last_message_at ?? chat.created_at;
-              return (
-                <li key={chat.id}>
-                  <a
-                    href={formatRoute({ page: 'chat', packageId, chatId: chat.id })}
-                    aria-current={active ? 'page' : undefined}
-                    onClick={() => onPicked?.()}
-                    className={cn(
-                      'flex min-w-0 flex-col rounded-lg px-2.5 py-1.5 hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none',
-                      active && 'bg-accent',
-                    )}
-                  >
-                    <span className={cn('truncate text-sm', active && 'font-medium')} title={chatTitle(chat)}>{chatTitle(chat)}</span>
-                    <time dateTime={used} title={new Date(used).toLocaleString()} className="text-xs text-muted-foreground">
-                      {relativeTime(used, now)}
-                    </time>
-                  </a>
-                </li>
-              );
-            })}
-          </ul>
+        {shown.map((chat) => {
+          const active = chat.id === activeChatId;
+          const title = chatTitle(chat);
+          const fresh = Boolean(freshTitles?.has(chat.id) && chat.title);
+          return (
+            <SidebarMenuSubItem key={chat.id}>
+              <SidebarMenuSubButton
+                href={formatRoute({ page: 'chat', packageId, chatId: chat.id })}
+                isActive={active}
+                aria-current={active ? 'page' : undefined}
+                title={title}
+                className="transition-colors duration-150 data-[active=true]:font-medium"
+              >
+                {/* Keyed by the title, so a title the first message just set mounts afresh and fades in. */}
+                <span
+                  key={chat.title ?? ''}
+                  data-fresh={fresh ? 'true' : undefined}
+                  className={fresh ? 'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-500' : undefined}
+                >
+                  {title}
+                </span>
+              </SidebarMenuSubButton>
+            </SidebarMenuSubItem>
+          );
+        })}
+        {chats.length > CHATS_SHOWN && activeIndex < CHATS_SHOWN && (
+          <SidebarMenuSubItem>
+            <SidebarMenuSubButton asChild size="sm">
+              <button type="button" aria-expanded={showAll} onClick={() => setShowAll((now) => !now)} className="text-muted-foreground">
+                <span>{showAll ? 'Show fewer' : `Show all (${chats.length})`}</span>
+              </button>
+            </SidebarMenuSubButton>
+          </SidebarMenuSubItem>
         )}
-      </div>
-
-      <a
-        href={formatRoute({ page: 'review', packageId })}
-        className="flex h-9 shrink-0 items-center gap-2 rounded-lg border-t px-2.5 pt-1 text-sm text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-      >
-        <ListChecks className="size-4" aria-hidden="true" />
-        Review list
-      </a>
+      </SidebarMenuSub>
     </nav>
   );
 }

@@ -9,6 +9,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError } from '@/api/client';
+import { ShellSlotsContext } from '@/components/shell/shellSlots';
 import { CHOICE_KEY } from '@/lib/chat-settings';
 import { ChatPage } from '@/pages/ChatPage';
 import type { ChatApi } from '@/lib/chat-api';
@@ -26,12 +27,18 @@ afterEach(() => vi.useRealTimers());
 function renderChat(api: ChatApi, chatId: string | null = 'c-1', props: Partial<React.ComponentProps<typeof ChatPage>> = {}) {
   const onOpenChat = vi.fn();
   const onNameChange = vi.fn();
-  render(<ChatPage packageId="pkg-1" chatId={chatId} api={api} onOpenChat={onOpenChat} onNameChange={onNameChange} stopGraceMs={0} {...props} />);
+  // The place under the open set in the app's sidebar, where the page lists the set's chats.
+  const chats = document.body.appendChild(document.createElement('div'));
+  render(
+    <ShellSlotsContext.Provider value={{ title: null, actions: null, chats }}>
+      <ChatPage packageId="pkg-1" chatId={chatId} api={api} onOpenChat={onOpenChat} onNameChange={onNameChange} stopGraceMs={0} {...props} />
+    </ShellSlotsContext.Provider>,
+  );
   return { onOpenChat, onNameChange };
 }
 
 const composer = () => screen.getByRole('textbox', { name: 'Your message' });
-const sendButton = () => screen.getByRole('button', { name: 'Send' });
+const sendButton = () => screen.getByRole('button', { name: 'Send message' });
 
 describe('opening a drawing set’s chats', () => {
   it('#/chat/<set> opens the newest chat in place of the address', async () => {
@@ -48,16 +55,15 @@ describe('opening a drawing set’s chats', () => {
     expect(api.create).toHaveBeenCalledTimes(1);
   });
 
-  it('lists the set’s chats as links, the open one marked, with New chat on top and the review list', async () => {
+  it('lists the set’s chats as links (in the sidebar), the open one marked, with New chat on top', async () => {
     const api = fakeChatApi({ list: vi.fn(async () => ({ chats: [summary('c-1', { title: 'Which items are wrong?', turns: 1, last_message_at: new Date().toISOString() }), summary('c-2')] })) });
     renderChat(api);
     const nav = await screen.findByRole('navigation', { name: 'Chats in this drawing set' });
     const links = await within(nav).findAllByRole('link');
-    expect(links.map((link) => link.textContent)).toEqual(['Which items are wrong?just now', 'New chat' + links[1].querySelector('time')?.textContent, 'Review list']);
+    expect(links.map((link) => link.textContent)).toEqual(['Which items are wrong?', 'New chat']);
     expect(links[0].getAttribute('href')).toBe('#/chat/pkg-1/c-1');
     expect(links[0].getAttribute('aria-current')).toBe('page');
-    expect(links[2].getAttribute('href')).toBe('#/review/pkg-1');
-    expect(within(nav).getAllByRole('button')[0].textContent).toBe('New chat');
+    expect(within(nav).getAllByRole('button').map((button) => button.textContent)).toEqual(['New chat']);
   });
 });
 
@@ -142,6 +148,18 @@ describe('a saved chat, after a reload', () => {
     expect(order).toEqual(['chat-activity', 'chat-markdown', 'chat-files', 'chat-footer']);
   });
 
+  it('Retry under an answer asks its question again as a new message', async () => {
+    const stream = drivenStream();
+    renderChat(fakeChatApi({ get: vi.fn(async () => chatOut('c-1', [QUESTION, SAVED_ANSWER])), send: stream.send }));
+    const answer = await screen.findByRole('article', { name: 'Answer' });
+    const retry = await waitFor(() => within(answer).getByRole('button', { name: 'Retry' }));
+    await userEvent.setup().click(retry);
+    expect(stream.send.mock.calls[0][1].text).toBe('Which items are wrong?');
+    expect(screen.getAllByText('Which items are wrong?', { selector: '[data-slot="chat-user-message"]' })).toHaveLength(2);
+    // While the new answer runs, no answer offers Retry.
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+  });
+
   it('says why a saved answer stopped, in plain words', async () => {
     const stopped = [
       { ...SAVED_ANSWER, id: 'a-1', stopped: 'cost_cap' as const },
@@ -220,7 +238,7 @@ describe('a message streaming in', () => {
     expect(answer.querySelector('[data-slot="chat-working"]')).not.toBeNull();
     expect(within(answer).getByRole('link', { name: 'Download issues.csv' })).toBeTruthy();
     expect(answer.querySelector('[data-slot="chat-footer"]')).toBeNull();
-    expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Stop response' })).toBeTruthy();
 
     await act(async () => stream.end({
       id: 'a-9', role: 'assistant', created_at: '2026-10-17T10:00:00Z', text: 'Two items differ.', model: 'claude-opus-5-5', effort: 'high', thinking: true, cost_usd: '0.64',
@@ -230,7 +248,7 @@ describe('a message streaming in', () => {
     expect(answer.querySelector('[data-slot="chat-meta"]')?.textContent).toBe('Claude Opus 5.5 · High effort · $0.64');
     expect(answer.querySelector('[data-streaming="true"]')).toBeNull();
     expect(answer.querySelector('[data-slot="chat-working"]')).toBeNull();
-    expect(screen.getByRole('button', { name: 'Send' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeTruthy();
     expect(screen.getByRole('status').textContent).toBe('Answer ready');
   });
 
@@ -238,12 +256,12 @@ describe('a message streaming in', () => {
     const { api, stream, user } = await ready();
     await user.type(composer(), 'Summarise{Enter}');
     act(() => stream.emit({ event: 'message_start', data: { message_id: 'a-9', model: 'claude-opus-5-5', effort: 'high', thinking: true } }, { event: 'text_delta', data: { index: 0, text: 'So far' } }));
-    await user.click(screen.getByRole('button', { name: 'Stop' }));
+    await user.click(screen.getByRole('button', { name: 'Stop response' }));
     expect(api.cancel).toHaveBeenCalledWith('c-1');
     await waitFor(() => expect(document.querySelector('[data-slot="chat-stopped"]')?.textContent).toBe('Stopped'));
     // The stream's signal was aborted, and the composer is back.
     expect((stream.send.mock.calls[0][3] as AbortSignal).aborted).toBe(true);
-    expect(screen.getByRole('button', { name: 'Send' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeTruthy();
     expect(screen.getByText('So far')).toBeTruthy();
   });
 
@@ -276,10 +294,10 @@ describe('a message streaming in', () => {
     const api = fakeChatApi({ get });
     renderChat(api, 'c-1', { runningPollMs: 10 });
     expect(await screen.findByText(/Still answering the last message/)).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Stop response' })).toBeTruthy();
     await screen.findByRole('article', { name: 'Answer' });
     expect(screen.queryByText(/Still answering the last message/)).toBeNull();
-    expect(screen.getByRole('button', { name: 'Send' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeTruthy();
   });
 });
 
@@ -290,32 +308,41 @@ describe('model, effort and thinking in the composer', () => {
     return { user: userEvent.setup(), model: await screen.findByRole('button', { name: 'Model: Claude Opus 5.5' }) };
   }
 
-  it('Opus 5.5 is the default, at High effort, and its Thinking is locked on and says why', async () => {
-    await opened();
-    expect(screen.getByRole('button', { name: 'Effort: High' })).toBeTruthy();
-    const thinking = screen.getByRole('button', { name: /^Thinking/ });
-    expect(thinking.getAttribute('aria-pressed')).toBe('true');
+  it('Opus 5.5 is the default, at High effort, and its Extended thinking is locked on and says why', async () => {
+    const { user, model } = await opened();
+    expect(model.textContent).toBe('Opus 5.5');
+    await user.click(model);
+    const thinking = await screen.findByRole('menuitemcheckbox', { name: /Extended thinking/ });
+    expect(thinking.getAttribute('aria-checked')).toBe('true');
     expect(thinking.getAttribute('aria-disabled')).toBe('true');
-    expect(thinking.getAttribute('aria-describedby') && document.getElementById(thinking.getAttribute('aria-describedby')!)?.textContent).toBe('Opus 5.5 always thinks');
-    await userEvent.setup().click(thinking);
-    expect(thinking.getAttribute('aria-pressed')).toBe('true');
+    expect(thinking.textContent).toContain('Opus 5.5 always thinks');
+    expect(screen.getByRole('menuitem', { name: /Effort/ }).textContent).toContain('High');
   });
 
   it('with Sonnet and thinking off, efforts above High cannot be picked; the choice is remembered', async () => {
     const { user, model } = await opened();
     await user.click(model);
-    await user.click(await screen.findByRole('menuitemradio', { name: /Claude Sonnet 5.5/ }));
-    const thinking = await screen.findByRole('button', { name: /^Thinking/ });
+    await user.click(await screen.findByRole('menuitemradio', { name: /Sonnet 5.5/ }));
+    await user.click(await screen.findByRole('button', { name: 'Model: Claude Sonnet 5.5' }));
+    const thinking = await screen.findByRole('menuitemcheckbox', { name: /Extended thinking/ });
     expect(thinking.getAttribute('aria-disabled')).toBeNull();
     await user.click(thinking);
-    expect(thinking.getAttribute('aria-pressed')).toBe('false');
+    expect(thinking.getAttribute('aria-checked')).toBe('false');
 
-    await user.click(screen.getByRole('button', { name: 'Effort: High' }));
-    const items = await screen.findAllByRole('menuitemradio');
+    // Effort opens in place with the keyboard: Enter on its row, then Enter picks.
+    const effortRow = screen.getByRole('menuitem', { name: /Effort/ });
+    effortRow.focus();
+    await user.keyboard('{Enter}');
+    expect(effortRow.getAttribute('aria-expanded')).toBe('true');
+    const effort = await screen.findByRole('group', { name: 'Effort' });
+    await user.keyboard('{ArrowDown}');
+    const items = within(effort).getAllByRole('menuitemradio');
     const state = Object.fromEntries(items.map((item) => [item.textContent?.split('Needs')[0], item.getAttribute('aria-disabled') === 'true']));
     expect(state).toEqual({ Low: false, Medium: false, High: false, 'Extra high': true, Max: true });
-    await user.click(items[0]);
-    expect(screen.getByRole('button', { name: 'Effort: Low' })).toBeTruthy();
+    expect(items[3].textContent).toContain('Needs extended thinking (up to High without it)');
+    await waitFor(() => expect(document.activeElement).toBe(items[0]));
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
     expect(JSON.parse(window.localStorage.getItem(CHOICE_KEY) ?? '{}')).toEqual({ model: 'claude-sonnet-5-5', effort: 'low', thinking: false });
   });
 
@@ -324,7 +351,6 @@ describe('model, effort and thinking in the composer', () => {
     const stream = drivenStream();
     renderChat(fakeChatApi({ send: stream.send }));
     expect(await screen.findByRole('button', { name: 'Model: Claude Sonnet 5.5' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Effort: Max' })).toBeTruthy();
     await screen.findByRole('heading', { name: `What do you want to know about ${SET_NAME}?` });
     await userEvent.setup().type(composer(), 'Hi{Enter}');
     expect(stream.send.mock.calls[0][1]).toEqual({ text: 'Hi', model: 'claude-sonnet-5-5', effort: 'max', thinking: true });

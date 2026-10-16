@@ -23,6 +23,7 @@ from app.review.assistant.chat_tools import LEAD_SYSTEM_PROMPT
 from app.review.assistant.sandbox import ChatWorkspace, SandboxResult
 
 OPUS = "claude-opus-5-5"
+SONNET = "claude-sonnet-5-5"
 
 
 def thinking(text: str, signature: str = "sig-abc") -> dict[str, Any]:
@@ -188,6 +189,9 @@ class ScriptedProvider:
     """Every call's parameters as JSON text, in the order they were made."""
     lead_calls: list[str] = field(default_factory=list)
     helper_calls: dict[str, list[str]] = field(default_factory=dict)
+    helper_answer: Callable[[Mapping[str, Any]], Script] | None = None
+    """Answers every helper call from its parameters instead of `helpers` (for helpers whose
+    number of calls the engine decides)."""
 
     def __post_init__(self) -> None:
         self._lead = deque(self.lead)
@@ -205,7 +209,10 @@ class ScriptedProvider:
             else:
                 task = params["messages"][0]["content"][0]["text"]
                 self.helper_calls.setdefault(task, []).append(sent)
-                script = self._helpers[task].popleft()
+                if self.helper_answer is not None:
+                    script = self.helper_answer(params)
+                else:
+                    script = self._helpers[task].popleft()
         if isinstance(script, BaseException):
             raise script
         return _Stream(script, self.cancel)
