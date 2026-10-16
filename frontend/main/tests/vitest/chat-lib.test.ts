@@ -231,7 +231,7 @@ describe('model, effort and thinking', () => {
     expect(off).toEqual({ model: 'claude-sonnet-5-5', effort: 'high', thinking: false });
     expect(chooseEffort(MODELS, off, 'xhigh')).toEqual(off);
     expect(chooseEffort(MODELS, off, 'low').effort).toBe('low');
-    expect(effortBlockedReason(SONNET, 'xhigh', false)).toBe('Needs thinking on (up to High without it)');
+    expect(effortBlockedReason(SONNET, 'xhigh', false)).toBe('Needs extended thinking (up to High without it)');
     expect(effortBlockedReason(SONNET, 'max', true)).toBeNull();
     // Switching to Opus turns thinking back on.
     expect(chooseModel(MODELS, off, 'claude-opus-5-5').thinking).toBe(true);

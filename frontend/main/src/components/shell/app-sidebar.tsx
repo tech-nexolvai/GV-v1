@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import { BarChart2, BookOpen, Files, ListChecks, MessagesSquare, Moon, SlidersHorizontal, SquarePen, Sun } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { BarChart2, BookOpen, Files, ListChecks, Moon, SlidersHorizontal, SquarePen, Sun } from 'lucide-react';
 
 import { listPackages } from '@/api/client';
 import { liveReviewItemsApi } from '@/api/review-items';
@@ -62,12 +62,17 @@ export interface AppSidebarProps {
   /** A drawing set picked here: the app opens its chat (#1464). */
   onOpenPackage: (packageId: string) => void;
   /**
-   * The open drawing set's "Review list": its review screen. With it, the open set shows two links
-   * under its name, its chats and its review list, so the review screen stays one click away.
+   * The open drawing set's "Review list": its review screen. With it, the open set shows a small
+   * "Review list" link under its name (and its chats), so the review screen stays one click away.
    */
   onOpenReviewList?: (packageId: string) => void;
   onNewReview: () => void;
   onToggleTheme: () => void;
+  /**
+   * Where the chat page puts the open set's chats (#1471): under the set's name, like claude.ai's
+   * chats inside a project, so the chat page needs no second column.
+   */
+  chatsSlotRef?: (element: HTMLDivElement | null) => void;
 }
 
 /**
@@ -89,8 +94,25 @@ export function AppSidebar({
   onOpenReviewList,
   onNewReview,
   onToggleTheme,
+  chatsSlotRef,
 }: AppSidebarProps) {
   const { isMobile, setOpenMobile } = useSidebar();
+  // The chats under the open set are the chat page's; picking one on a phone closes the drawer too.
+  const chatsRef = useCallback(
+    (element: HTMLDivElement | null) => {
+      chatsSlotRef?.(element);
+      if (!element) return;
+      const close = (event: MouseEvent) => {
+        if (event.target instanceof Element && event.target.closest('a[href]')) setOpenMobile(false);
+      };
+      element.addEventListener('click', close);
+      return () => {
+        element.removeEventListener('click', close);
+        chatsSlotRef?.(null);
+      };
+    },
+    [chatsSlotRef, setOpenMobile],
+  );
   const first = useAsync(() => listPackages(projectId(), { limit: PAGE_SIZE }), [refreshKey]);
   // Older pages, appended when the reviewer asks for them. Dropped whenever the first page reloads.
   const [more, setMore] = useState<{ items: PackageItem[]; cursor: string | null } | null>(null);
@@ -228,19 +250,12 @@ export function AppSidebar({
                           )}
                         </span>
                       </SidebarMenuButton>
+                      {active && activePage === 'chat' && chatsSlotRef && <div ref={chatsRef} data-slot="sidebar-chats" className="group-data-[collapsible=icon]:hidden" />}
                       {active && onOpenReviewList && (
-                        <SidebarMenuSub aria-label={`${pkg.vendor ?? 'Untitled document set'}: chats or review list`}>
+                        <SidebarMenuSub aria-label={`${pkg.vendor ?? 'Untitled document set'}: review list`}>
                           <SidebarMenuSubItem>
-                            <SidebarMenuSubButton asChild isActive={activePage === 'chat'}>
-                              <button type="button" aria-current={activePage === 'chat' ? 'page' : undefined} onClick={closing(() => onOpenPackage(pkg.id))}>
-                                <MessagesSquare aria-hidden="true" />
-                                <span>Chats</span>
-                              </button>
-                            </SidebarMenuSubButton>
-                          </SidebarMenuSubItem>
-                          <SidebarMenuSubItem>
-                            <SidebarMenuSubButton asChild isActive={activePage === 'review'}>
-                              <button type="button" aria-current={activePage === 'review' ? 'page' : undefined} onClick={closing(() => onOpenReviewList(pkg.id))}>
+                            <SidebarMenuSubButton asChild size="sm" isActive={activePage === 'review'}>
+                              <button type="button" aria-current={activePage === 'review' ? 'page' : undefined} onClick={closing(() => onOpenReviewList(pkg.id))} className="text-muted-foreground">
                                 <ListChecks aria-hidden="true" />
                                 <span>Review list</span>
                               </button>
