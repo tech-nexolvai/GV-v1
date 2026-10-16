@@ -772,6 +772,7 @@ export function SimpleReviewPage({
                   onOpenPdfs={() => openPdfs(opened)}
                   onDraftCloud={project !== null ? () => void runDraft() : null}
                   draft={draft}
+                  signedOff={title?.approved ?? false}
                 />
                 {data.unaccounted.length > 0 && <UnaccountedBanner count={data.unaccounted.length} onOpenAdvanced={onOpenAdvanced} />}
 

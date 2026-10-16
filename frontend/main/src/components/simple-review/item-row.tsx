@@ -3,7 +3,7 @@ import { ChevronRight } from 'lucide-react';
 
 import type { ReviewItem } from '@/api/review-items';
 import { cn } from '@/lib/utils';
-import { detailId, placeWord } from '@/lib/review-items';
+import { checkedWrongByHand, detailId, placeWord } from '@/lib/review-items';
 import { PageTag, StatusWord } from './words';
 
 /** What the guess column says when the AI has no number to offer. */
@@ -66,7 +66,7 @@ export const ItemRow = forwardRef<HTMLButtonElement, {
           ) : (
             <span className="text-[13px] text-muted-foreground">{noGuessWord(item)}</span>
           )}
-          <StatusWord status={item.status} decidedBy={item.decided_by} className="shrink-0 justify-end sm:w-32" />
+          <StatusWord status={item.status} decidedBy={item.decided_by} wrongByHand={checkedWrongByHand(item)} className="shrink-0 justify-end sm:w-32" />
         </span>
       </span>
     </button>

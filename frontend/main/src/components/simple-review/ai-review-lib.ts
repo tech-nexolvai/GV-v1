@@ -68,3 +68,29 @@ export function answeredWord(answer: string | null): string {
   if (answer === 'not_this') return 'Not a difference';
   return answer ?? 'Answered';
 }
+
+const EVALUATOR_LEAD = 'Checked again by the evaluator: ';
+
+/** A sentence ends with a full stop unless it already ends with one, or with ! or ?. */
+function sentence(text: string): string {
+  return /[.!?]$/.test(text) ? text : `${text}.`;
+}
+
+/**
+ * A row's reason in two parts: the AI's, then "Checked again by the evaluator: …" on its own line.
+ * The server joins them into `why`; the split is by the structured `evaluator_reason`, never by
+ * guessing at the words. Without that joined ending `why` is shown as it is, and the evaluator's
+ * reason is added only when `why` does not already say it.
+ */
+export function aiReviewWhyParts(row: Pick<AiReviewRow, 'why' | 'evaluator_reason'>): { ai: string | null; evaluator: string | null } {
+  const why = row.why.trim();
+  const reason = row.evaluator_reason?.trim() || null;
+  if (reason === null) return { ai: why || null, evaluator: null };
+  const evaluator = `${EVALUATOR_LEAD}${reason}`;
+  if (why.endsWith(evaluator)) {
+    const ai = why.slice(0, why.length - evaluator.length).trim();
+    return { ai: ai ? sentence(ai) : null, evaluator };
+  }
+  if (why.includes(reason)) return { ai: why || null, evaluator: null };
+  return { ai: why ? sentence(why) : null, evaluator };
+}

@@ -126,6 +126,8 @@ export interface AiReviewRow {
   vendor_inches: string | null;
   result: AiReviewResult;
   why: string;
+  /** The evaluator's reason (or why it could not check); null when not re-checked. `why` already ends with it. */
+  evaluator_reason?: string | null;
   vendor_box: AiReviewRef | null;
   architect_ref: AiReviewRef | null;
   /** The W3 answers this row offers (different: agree / not_this). */

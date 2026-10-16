@@ -1,7 +1,7 @@
 import { Check, Loader2, UserCheck } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
-import { decidedWord, pageWord, splitNumbers } from '@/lib/review-items';
+import { answerWord, decidedWord, pageWord, splitNumbers } from '@/lib/review-items';
 import type { ReviewStatus } from '@/api/review-items';
 import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
 
@@ -11,7 +11,18 @@ import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
  * grey check. Done is never the green PASS glyph: a person's answer is not a check's outcome, and the
  * PASS and FAIL glyphs only ever show an outcome the API recorded.
  */
-export function StatusWord({ status, decidedBy = null, className }: { status: ReviewStatus; decidedBy?: string | null; className?: string }) {
+export function StatusWord({
+  status,
+  decidedBy = null,
+  wrongByHand = false,
+  className,
+}: {
+  status: ReviewStatus;
+  decidedBy?: string | null;
+  /** The API marks the standing answer "Checked by hand: wrong" (#1358). */
+  wrongByHand?: boolean;
+  className?: string;
+}) {
   if (status === 'rechecking') {
     return (
       <span data-slot="status-word" data-status={status} className={cn('inline-flex items-center gap-1.5 text-[13px] text-muted-foreground', className)}>
@@ -19,6 +30,9 @@ export function StatusWord({ status, decidedBy = null, className }: { status: Re
         Re-checking
       </span>
     );
+  }
+  if (status === 'done' && wrongByHand) {
+    return <WrongByHand decidedBy={decidedBy} className={className} />;
   }
   if (status === 'done') {
     return (
@@ -36,6 +50,24 @@ export function StatusWord({ status, decidedBy = null, className }: { status: Re
   );
 }
 
+/**
+ * "✗ Checked by hand: WRONG by you": a done answer the API marks as checked by hand and wrong
+ * (#1358). The cross is a text glyph and WRONG is a word, so the fail colour is never the only signal.
+ */
+export function WrongByHand({ decidedBy = null, className }: { decidedBy?: string | null; className?: string }) {
+  return (
+    <span
+      data-slot="status-word"
+      data-status="done"
+      data-wrong-by-hand="true"
+      className={cn('inline-flex items-center gap-1.5 text-[13px] font-medium text-outcome-fail-fg', className)}
+    >
+      <span aria-hidden="true">✗</span>
+      {answerWord({ decided_by: decidedBy, checked_wrong_by_hand: true })}
+    </span>
+  );
+}
+
 /** The page an item is on, in the number face; plain words when the page was not recorded. */
 export function PageTag({ page, className }: { page: number | null | undefined; className?: string }) {
   if (page == null) return <span className={cn('shrink-0 text-[13px] text-muted-foreground', className)}>page not recorded</span>;
@@ -43,9 +75,9 @@ export function PageTag({ page, className }: { page: number | null | undefined; 
 }
 
 /** Plain words with every number in it set in the number face (tabular Plex Mono). */
-export function NumText({ text, className }: { text: string; className?: string }) {
+export function NumText({ text, className, 'data-slot': slot }: { text: string; className?: string; 'data-slot'?: string }) {
   return (
-    <span className={className}>
+    <span data-slot={slot} className={className}>
       {splitNumbers(text).map((part, index) =>
         part.number ? (
           <span key={index} className="num">

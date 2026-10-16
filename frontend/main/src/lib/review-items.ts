@@ -249,6 +249,22 @@ export function decidedWord(decidedBy: string | null): string {
   return `Checked by ${decidedBy}`;
 }
 
+/** Whether a done entry's standing answer is "Checked by hand: wrong" (#1358): the API's own mark, never words. */
+export function checkedWrongByHand(entry: { checked_wrong_by_hand?: boolean }): boolean {
+  return entry.checked_wrong_by_hand === true;
+}
+
+/**
+ * The words for a done entry's answer: "Checked by hand: WRONG by you" (or by name) when the API marks
+ * it so, else who decided it. The result itself stays as recorded.
+ */
+export function answerWord(entry: { decided_by?: string | null; checked_wrong_by_hand?: boolean }): string {
+  const decidedBy = entry.decided_by ?? null;
+  if (!checkedWrongByHand(entry)) return decidedWord(decidedBy);
+  if (decidedBy === null) return 'Checked by hand: WRONG';
+  return `Checked by hand: WRONG by ${decidedBy === 'REVIEWER' ? 'you' : decidedBy}`;
+}
+
 /** Splits text so numbers (with fractions and inch marks) can be set in the number face. */
 export function splitNumbers(text: string): { text: string; number: boolean }[] {
   const parts: { text: string; number: boolean }[] = [];

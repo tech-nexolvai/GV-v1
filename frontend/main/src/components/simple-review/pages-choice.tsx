@@ -140,15 +140,17 @@ export function PagesChoice({
                     <span className="text-[15px] font-medium text-foreground">Decide this page <span className="num">p.{page.page ?? '?'}</span></span>
                     <NumText text={page.why} className="text-[13px] leading-5 text-muted-foreground" />
                   </span>
-                  <span className="flex shrink-0 flex-wrap items-center gap-1">
-                    <Button size="sm" variant="ghost" onClick={() => onLook(page)} aria-label={`Look at page ${page.page ?? ''}`}>
+                  {/* On a phone the three buttons take a line of their own and wrap there; a button's
+                      words wrap too, so "There is a countertop" is never clipped at 375 px (QA 3). */}
+                  <span data-slot="page-decide-actions" className="flex min-w-0 basis-full flex-wrap items-center gap-1 sm:basis-auto sm:shrink-0">
+                    <Button size="sm" variant="ghost" className="max-w-full" onClick={() => onLook(page)} aria-label={`Look at page ${page.page ?? ''}`}>
                       <FileSearch aria-hidden="true" />
                       Look
                     </Button>
-                    <Button size="sm" variant="outline" disabled={saving || !onNoCountertop} onClick={() => onNoCountertop?.(page)} aria-label={`No countertop on page ${page.page ?? ''}`}>
+                    <Button size="sm" variant="outline" className="h-auto min-h-8 max-w-full whitespace-normal" disabled={saving || !onNoCountertop} onClick={() => onNoCountertop?.(page)} aria-label={`No countertop on page ${page.page ?? ''}`}>
                       No countertop here
                     </Button>
-                    <Button size="sm" variant="outline" disabled={saving} onClick={() => onThereIsOne(page)} aria-label={`There is a countertop on page ${page.page ?? ''}`}>
+                    <Button size="sm" variant="outline" className="h-auto min-h-8 max-w-full whitespace-normal" disabled={saving} onClick={() => onThereIsOne(page)} aria-label={`There is a countertop on page ${page.page ?? ''}`}>
                       {busyKey === page.key && <Loader2 aria-hidden="true" className="animate-spin motion-reduce:animate-none" />}
                       There is a countertop
                     </Button>

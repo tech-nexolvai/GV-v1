@@ -2,7 +2,7 @@ import { useId, useState } from 'react';
 import { ChevronRight, CircleDashed, Equal, FileSearch, HelpCircle, Loader2, Minus } from 'lucide-react';
 
 import type { AiReviewOut, AiReviewPage, AiReviewResult, AiReviewRow } from '@/api/review-items';
-import { aiReviewEntries, aiReviewSummary, aiReviewWhat, GROUP_OF, GROUP_TITLE, type AiReviewEntry, type AiReviewGroup } from './ai-review-lib';
+import { aiReviewEntries, aiReviewSummary, aiReviewWhat, aiReviewWhyParts, GROUP_OF, GROUP_TITLE, type AiReviewEntry, type AiReviewGroup } from './ai-review-lib';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
@@ -46,13 +46,18 @@ function Numbers({ row, page }: { row: AiReviewRow; page: number }) {
 }
 
 /**
- * One row: the result, both numbers and Look. No person answers it (decision 2026-10-16): a different
+ * One row: the result, both numbers, Why (the reasons, folded) and Look. No person answers it (decision 2026-10-16): a different
  * row is clouded on the PDF by itself and never holds sign-off, so no answer buttons are offered,
  * whatever the server lists.
  */
 function Row({ entry, onLook }: { entry: AiReviewEntry; onLook: (row: AiReviewRow, page: number) => void }) {
   const { row, page } = entry;
   const what = aiReviewWhat(row);
+  const [whyOpen, setWhyOpen] = useState(false);
+  const whyId = useId();
+  // The reasons are long: folded behind Why so the row stays the numbers and what they measure (QA 3).
+  const why = row.result !== 'same' ? aiReviewWhyParts(row) : { ai: null, evaluator: null };
+  const hasWhy = why.ai !== null || why.evaluator !== null;
   return (
     // Sized by the section (`@container/air`), not the window: with the Assistant open the section
     // is narrow on a wide screen. The numbers keep 18rem and drop to their own line (QA 2026-10-16).
@@ -62,9 +67,24 @@ function Row({ entry, onLook }: { entry: AiReviewEntry; onLook: (row: AiReviewRo
       </span>
       <span data-slot="ai-review-numbers" className="min-w-0 max-w-full grow basis-[18rem]">
         <Numbers row={row} page={page} />
-        {row.result !== 'same' && row.why && <NumText text={row.why} className="block text-[13px] leading-5 text-muted-foreground" />}
+        {hasWhy && (
+          <span id={whyId} data-slot="ai-review-why" className="block">
+            {whyOpen && (
+              <>
+                {why.ai !== null && <NumText text={why.ai} data-slot="ai-review-why-part" className="block text-[13px] leading-5 text-muted-foreground" />}
+                {why.evaluator !== null && <NumText text={why.evaluator} data-slot="ai-review-why-part" className="block text-[13px] leading-5 text-muted-foreground" />}
+              </>
+            )}
+          </span>
+        )}
       </span>
       <span className="ml-auto flex min-w-0 shrink-0 flex-wrap items-center gap-1">
+        {hasWhy && (
+          <Button size="sm" variant="ghost" aria-expanded={whyOpen} aria-controls={whyId} onClick={() => setWhyOpen((now) => !now)}>
+            <ChevronRight aria-hidden="true" className={cn('transition-transform motion-reduce:transition-none', whyOpen && 'rotate-90')} />
+            Why
+          </Button>
+        )}
         <Button size="sm" variant="ghost" onClick={() => onLook(row, page)} aria-label={`Look at ${what}, page ${page}`}>
           <FileSearch aria-hidden="true" />
           Look

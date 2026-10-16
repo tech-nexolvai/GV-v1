@@ -1,11 +1,11 @@
 import { Check, FileSearch, Loader2 } from 'lucide-react';
 
 import type { ReviewFailure } from '@/api/review-items';
-import { whereWord } from '@/lib/review-items';
+import { checkedWrongByHand, whereWord } from '@/lib/review-items';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
-import { NumText, PageTag } from './words';
+import { NumText, PageTag, WrongByHand } from './words';
 
 export interface SaveError {
   message: string;
@@ -93,6 +93,8 @@ export function FailuresStrip({
                     {busy ? <Loader2 aria-hidden="true" className="animate-spin motion-reduce:animate-none" /> : <Check aria-hidden="true" />}
                     Agree
                   </Button>
+                ) : failure.status === 'done' && checkedWrongByHand(failure) ? (
+                  <WrongByHand decidedBy={failure.decided_by ?? null} />
                 ) : (
                   <span className="inline-flex items-center gap-1.5 text-[13px] text-muted-foreground">
                     <Check aria-hidden="true" className="size-3.5" />

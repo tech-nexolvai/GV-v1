@@ -7,7 +7,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 
 import type { AiReviewOut, AiReviewPage, AiReviewRow, ArchitectCompareEntry, ReviewItemsOut } from '@/api/review-items';
 import { AiReview } from '@/components/simple-review/ai-review';
-import { aiReviewSummary } from '@/components/simple-review/ai-review-lib';
+import { aiReviewSummary, aiReviewWhyParts } from '@/components/simple-review/ai-review-lib';
 import { reviewItems } from './fixtures/review-items';
 
 // Synthetic data only: every number, page, name and span here is invented.
@@ -90,6 +90,9 @@ describe('AiReview', () => {
     expect(screen.queryByRole('list', { name: 'Unsure / unreadable' })).toBeNull();
     await userEvent.click(unsureButton);
     const unsure = screen.getByRole('list', { name: 'Unsure / unreadable' });
+    // The reasons are folded behind Why until opened.
+    expect(unsure.textContent).not.toContain(WHY.unsure);
+    for (const why of within(unsure).getAllByRole('button', { name: /^Why/ })) await userEvent.click(why);
     expect(unsure.textContent).toContain(WHY.unsure);
     expect(unsure.textContent).toContain(WHY.unreadable);
     expect(within(unsure).getByText('Unsure').querySelector('svg')).toBeTruthy();
@@ -106,7 +109,9 @@ describe('AiReview', () => {
     const notShown = screen.getByRole('button', { name: /^Not shown by the vendor/ });
     expect(notShown.getAttribute('aria-expanded')).toBe('false');
     await userEvent.click(notShown);
-    expect(screen.getByRole('list', { name: 'Not shown by the vendor' }).textContent).toContain(WHY.not_shown);
+    const notShownList = screen.getByRole('list', { name: 'Not shown by the vendor' });
+    await userEvent.click(within(notShownList).getByRole('button', { name: /^Why/ }));
+    expect(notShownList.textContent).toContain(WHY.not_shown);
   });
 
   it('says which pages the AI is still reading and which it could not read, with no retry', () => {
@@ -125,7 +130,7 @@ describe('AiReview', () => {
     expect(rows).toHaveLength(3);
     for (const listed of rows) {
       expect(within(listed).queryByRole('button', { name: /Agree|Not a difference/ })).toBeNull();
-      expect(within(listed).getAllByRole('button').map((b) => b.textContent)).toEqual(['Look']);
+      expect(within(listed).getAllByRole('button').map((b) => b.textContent)).toEqual(['Why', 'Look']);
       expect(within(listed).queryByTestId('ai-review-answered')).toBeNull();
     }
     expect(screen.queryByRole('button', { name: /Agree|Not a difference/ })).toBeNull();
@@ -245,5 +250,49 @@ describe('AiReview row layout (QA 2026-10-16)', () => {
     expect(numbers.className).toContain('grow');
     expect(numbers.className).toContain('min-w-0');
     expect(look.className).toContain('ml-auto');
+  });
+});
+
+describe('AiReview reasons: the AI first, the evaluator on its own line, folded behind Why (QA 3)', () => {
+  const EVAL = 'Both drawings show the sample span at 30 1/2".';
+  it('splits the joined text by the evaluator reason the server sent, adding the full stop', () => {
+    expect(aiReviewWhyParts({ why: `The vendor drew another number Checked again by the evaluator: ${EVAL}`, evaluator_reason: EVAL })).toEqual({
+      ai: 'The vendor drew another number.',
+      evaluator: `Checked again by the evaluator: ${EVAL}`,
+    });
+    // An AI reason that already ends a sentence keeps its own mark.
+    expect(aiReviewWhyParts({ why: `Is this the span? Checked again by the evaluator: ${EVAL}`, evaluator_reason: EVAL }).ai).toBe('Is this the span?');
+  });
+
+  it('without the joined suffix shows the reason as is, and adds the evaluator only when it is missing', () => {
+    expect(aiReviewWhyParts({ why: 'The vendor drew another number.', evaluator_reason: null })).toEqual({ ai: 'The vendor drew another number.', evaluator: null });
+    expect(aiReviewWhyParts({ why: 'The vendor drew another number', evaluator_reason: undefined })).toEqual({ ai: 'The vendor drew another number', evaluator: null });
+    expect(aiReviewWhyParts({ why: 'The vendor drew another number', evaluator_reason: EVAL })).toEqual({
+      ai: 'The vendor drew another number.',
+      evaluator: `Checked again by the evaluator: ${EVAL}`,
+    });
+    expect(aiReviewWhyParts({ why: `Agreed: ${EVAL} Sample tail.`, evaluator_reason: EVAL })).toEqual({ ai: `Agreed: ${EVAL} Sample tail.`, evaluator: null });
+    expect(aiReviewWhyParts({ why: '', evaluator_reason: EVAL })).toEqual({ ai: null, evaluator: `Checked again by the evaluator: ${EVAL}` });
+  });
+
+  it('a row stays short until Why is opened; Why says what it controls and works from the keyboard', async () => {
+    const joined = row('d9', 'different', { why: `The vendor drew another number Checked again by the evaluator: ${EVAL}`, evaluator_reason: EVAL });
+    render(<AiReview review={{ pages: [page(3, 'done', [joined])], counts: REVIEW.counts }} onLook={() => {}} />);
+    const listed = within(screen.getByRole('list', { name: 'Different' })).getByRole('listitem');
+    expect(listed.textContent).not.toContain('The vendor drew another number');
+    const why = within(listed).getByRole('button', { name: /^Why/ });
+    expect(why.getAttribute('aria-expanded')).toBe('false');
+    const panel = document.getElementById(why.getAttribute('aria-controls')!)!;
+    expect(panel).toBeTruthy();
+    expect(listed.contains(panel)).toBe(true);
+    why.focus();
+    await userEvent.keyboard('{Enter}');
+    expect(why.getAttribute('aria-expanded')).toBe('true');
+    const [ai, evaluator] = Array.from(panel.querySelectorAll('[data-slot="ai-review-why-part"]')).map((part) => part.textContent);
+    expect(ai).toBe('The vendor drew another number.');
+    expect(evaluator).toBe(`Checked again by the evaluator: ${EVAL}`);
+    await userEvent.click(why);
+    expect(why.getAttribute('aria-expanded')).toBe('false');
+    expect(panel.textContent).toBe('');
   });
 });
