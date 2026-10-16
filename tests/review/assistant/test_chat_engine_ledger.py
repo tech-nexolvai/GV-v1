@@ -206,7 +206,7 @@ def test_no_ledger_means_no_ledger_in_the_trust_report(
 
     trust = _blocks(Harness(tmp_path, provider).run(), "trust")[0]
 
-    assert "ledger" not in trust and "recorded_results" not in trust
+    assert trust["ledger"] is None and trust["recorded_results"] is None
 
 
 def test_a_recorded_result_only_the_ledger_knows_joins_the_one_send_back(
@@ -241,6 +241,7 @@ def test_a_recorded_result_only_the_ledger_knows_joins_the_one_send_back(
     # (The ledger counts only AI page review rows marked `result: different`.)
     assert recorded["recorded"] == 2 and recorded["included"] == 0
     assert {item["key"] for item in recorded["missing"]} == {"c1", "rl7"}
+    assert [item["key"] for item in recorded["also_left_out"]] == ["rl7"]
 
 
 # ---- revision diff (compare_rounds) ------------------------------------------------------------

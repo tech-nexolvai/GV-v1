@@ -950,6 +950,8 @@ class ChatEngine:
         checked = apply_checks(finding, self.book.pdf_paths(), recorded)
         checked.setdefault("round_status", None)
         checked.setdefault("second_read_values", None)
+        for key in ("ledger_ids", "reference_side", "sum_text"):
+            checked.setdefault(key, None)
         return checked
 
     def _show_finding(self, finding: dict[str, Any]) -> None:
@@ -1261,17 +1263,47 @@ class ChatEngine:
 
     def _ledger_trust(self, report: dict[str, Any]) -> None:
         """The ledger's counts (and everything it recorded, for a reload) in the trust report."""
+        report.update(ledger=None, ledger_entries=None, recorded_results=None)
         if self._ledger_used():
             book = self.book
             coverage = book.coverage_map() if book.coverage_used else None
             live = [f for f in book.live() if f.get("created_by") != "ledger"]
             report["ledger"] = self.reading_ledger.ledger_report(live, coverage)
             report["ledger_entries"] = self.reading_ledger.as_dict()
+            # Every box names its file (null when the model gave none), as the stored shape does.
+            entries = report["ledger_entries"]
+            for entry in [
+                *report["ledger"]["strings"]["off_list"],
+                *entries["strings"],
+                *entries["readings"],
+            ]:
+                if isinstance(entry.get("box"), dict):
+                    entry["box"].setdefault("file", None)
         check = self._recorded_results_check()
         if check is not None:
             report["recorded_results"] = {
-                key: check[key] for key in ("recorded", "included", "dismissed", "missing")
+                **{key: check[key] for key in ("recorded", "included", "dismissed", "missing")},
+                "also_left_out": self._ledger_extra_missing(check),
             }
+
+    def _ledger_extra_missing(self, check: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+        """The recorded results the ledger's check finds left out that GV Review's recorded
+        differences (the check the guard already runs) do not know at all (e.g. the review list's
+        failures)."""
+        recorded = self._recorded
+        known: set[str] = set()
+        if recorded is not None:
+            known |= {str(item["record_id"]) for item in recorded.differences}
+            known |= set(recorded.results)
+        extra: list[dict[str, Any]] = []
+        for item in (check or {}).get("missing") or []:
+            key = str(item.get("key"))
+            ids = {key, *(f"ai-review:p{page}:{key}" for page in item.get("pages") or [])}
+            if ids & known:
+                continue  # the guard's own check already counts this one
+            known.add(key)
+            extra.append(dict(item))
+        return extra
 
     def _ledger_dismissed(self) -> dict[str, str]:
         """The lead's dismissals keyed both ways: a record id, and an AI page review row's key."""
@@ -1456,20 +1488,14 @@ class ChatEngine:
         missing = self._recorded_missing()
         # The ledger's recorded-results check finds a few more (the review list's failures):
         # folded into this one note, never a second send-back.
-        recorded = self._recorded
-        known = {str(item["record_id"]) for item in missing}
-        if recorded is not None:
-            known |= {str(item["record_id"]) for item in recorded.differences}
-            known |= set(recorded.results)
-        check = self._recorded_results_check()
-        for item in (check or {}).get("missing") or []:
+        for item in self._ledger_extra_missing(self._recorded_results_check()):
             pages = item.get("pages") or []
-            key = str(item.get("key"))
-            if {key, *(f"ai-review:p{page}:{key}" for page in pages)} & known:
-                continue  # the check above already counts this one
-            known.add(key)
             missing.append(
-                {"record_id": key, "page": pages[0] if pages else None, "what": item.get("what")}
+                {
+                    "record_id": item["key"],
+                    "page": pages[0] if pages else None,
+                    "what": item.get("what"),
+                }
             )
         if missing:
             listed = "; ".join(

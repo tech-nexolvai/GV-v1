@@ -8,7 +8,7 @@ and their own steps. The SSE events (`chat_engine.py`) carry the same shapes.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -401,9 +401,86 @@ class ChatRoundsOut(BaseModel):
         default=0,
         description="compare_rounds: changes nobody asked for (no finding, no GV markup).",
     )
-    pairs: list[dict[str, Any]] = Field(
+    pairs: list[ChatRoundPairOut] = Field(
         default_factory=list, description="compare_rounds: the round pairs compared by code."
     )
+
+
+class ChatLedgerBoxOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    page: int
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+    file: str | None = None
+
+
+class ChatLedgerStringOut(BaseModel):
+    """One dimension string the AI recorded, and code's sum of it."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    page: int
+    view: str | None = None
+    side: str
+    parts: list[str]
+    printed_total: str
+    box: ChatLedgerBoxOut | None = None
+    by: str
+    result: str = Field(description="adds_up | does_not_add_up | not_a_number")
+    parts_sum: str | None = None
+    off_by: str | None = None
+    rereads: int = 0
+    sum_text: str
+
+
+class ChatLedgerReadingOut(BaseModel):
+    """One value the AI recorded."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    page: int
+    view: str
+    side: str
+    item: str
+    item_key: str
+    instance: int | None = None
+    kind: str
+    value: str
+    inches: str | None = None
+    box: ChatLedgerBoxOut | None = None
+    by: str
+    rereads: int = 0
+
+
+class ChatRecordedResultOut(BaseModel):
+    """A result GV Review recorded (a code FAIL or an evaluator-checked AI page review row)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    key: str
+    kind: str
+    pages: list[int] = Field(default_factory=list)
+    what: str
+    architect: str | None = None
+    vendor: str | None = None
+
+
+class ChatRoundPairOut(BaseModel):
+    """One round pair compared by code (compare_rounds)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    round1_page: int | None = None
+    round2_page: int | None = None
+    fixed: int
+    still_wrong: int
+    unrequested: int
+    unrequested_zones: list[str | None] = Field(default_factory=list)
 
 
 class ChatLedgerStringsOut(BaseModel):
@@ -417,7 +494,7 @@ class ChatLedgerStringsOut(BaseModel):
     not_a_number: int
     vendor_off: int
     architect_off: int
-    off_list: list[dict[str, Any]] = Field(default_factory=list)
+    off_list: list[ChatLedgerStringOut] = Field(default_factory=list)
 
 
 class ChatLedgerViewsOut(BaseModel):
@@ -458,8 +535,8 @@ class ChatLedgerEntriesOut(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    strings: list[dict[str, Any]] = Field(default_factory=list)
-    readings: list[dict[str, Any]] = Field(default_factory=list)
+    strings: list[ChatLedgerStringOut] = Field(default_factory=list)
+    readings: list[ChatLedgerReadingOut] = Field(default_factory=list)
 
 
 class ChatRecordedResultsOut(BaseModel):
@@ -471,7 +548,11 @@ class ChatRecordedResultsOut(BaseModel):
     recorded: int
     included: int
     dismissed: int
-    missing: list[dict[str, Any]] = Field(default_factory=list)
+    missing: list[ChatRecordedResultOut] = Field(default_factory=list)
+    also_left_out: list[ChatRecordedResultOut] = Field(
+        default_factory=list,
+        description="Of `missing`, the ones `gv_checks` does not count (e.g. review list failures).",
+    )
 
 
 class ChatTrustOut(BaseModel):
