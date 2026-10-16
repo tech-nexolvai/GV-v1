@@ -303,12 +303,36 @@ def test_the_old_direct_compare_is_off_by_default_and_its_records_stay(
 # --- the worker's stage, with a mocked AI ---------------------------------------------------------
 
 
-class _Client:
-    def __init__(self, text_: str) -> None:
-        self.text = text_
-        self.calls = 0
+#: The evaluator's answer by default: it confirms the difference (same span, the same 34").
+CONFIRMED = {
+    "architect_from": "floor",
+    "architect_to": "counter top",
+    "vendor_from": "floor",
+    "vendor_to": "counter top",
+    "vendor_chain": "",
+    "same_thing": "yes",
+    "vendor_value": '34"',
+    "reason": "both floor to counter top",
+}
 
-    def converse(self, **_request: Any) -> dict[str, Any]:
+
+class _Client:
+    """The page reading answers `text_`; the evaluator (another model) answers `evaluator`."""
+
+    def __init__(self, text_: str, evaluator: object = CONFIRMED) -> None:
+        self.text = text_
+        self.evaluator = evaluator
+        self.calls = 0
+        self.evaluator_calls = 0
+
+    def converse(self, **request: Any) -> dict[str, Any]:
+        if request.get("modelId") == "anthropic.claude-sonnet-5-5":
+            self.evaluator_calls += 1
+            return {
+                "stopReason": "end_turn",
+                "output": {"message": {"content": [{"text": json.dumps(self.evaluator)}]}},
+                "usage": {"inputTokens": 3_000, "outputTokens": 500},
+            }
         self.calls += 1
         return {
             "stopReason": "end_turn",
@@ -345,6 +369,9 @@ def _fake_question(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("extraction.compare.pair.compare_pdf", lambda *_a, **_k: ((_Page(), ()),))
     monkeypatch.setattr(module, "page_question", question)
+    monkeypatch.setattr(
+        module, "evaluator_pictures", lambda *_a, **_k: (out.getvalue(), out.getvalue())
+    )
 
 
 ANSWER = {
@@ -408,13 +435,17 @@ def test_the_worker_reviews_a_sheet_records_its_cost_and_reuses_the_stored_answe
     client = _Client(json.dumps(ANSWER))
     revision_id, counts, task_id = _run(session, client, spend_guard(_rates(), Decimal(6)))
 
-    assert counts == {"done": 1} and client.calls == 1
+    assert counts == {"done": 1} and client.calls == 1 and client.evaluator_calls == 1
     page = ai_review_for_revision(session, revision_id).pages[0]
     assert [r.result for r in page.rows] == ["different", "not_shown"]
     assert page.rows[0].vendor_inches == "34" and page.rows[0].vendor_box is not None
-    (call,) = session.scalars(select(ModelInvocation)).all()
-    assert call.cost_micros == 80_000  # 10k in at $4/M + 2k out at $20/M, from the price file
-    assert page.cost_usd == "0.08"
+    assert page.rows[0].verified_by == "evaluator"
+    assert page.rows[0].evaluator_reason == "both floor to counter top"
+    assert page.rows[1].verified_by is None and page.rows[1].evaluator_reason is None
+    calls = {c.model_id: c.cost_micros for c in session.scalars(select(ModelInvocation))}
+    # 10k in at $4/M + 2k out at $20/M; the evaluator 3k in at $2/M + 500 out at $10/M.
+    assert calls == {"anthropic.claude-opus-5-5": 80_000, "anthropic.claude-sonnet-5-5": 11_000}
+    assert page.cost_usd == "0.091"
 
     # The same task again stores nothing (a redelivered stage); a new run reuses the stored answer.
     version = session.scalars(select(DocumentVersion)).one()
@@ -441,11 +472,129 @@ def test_the_worker_reviews_a_sheet_records_its_cost_and_reuses_the_stored_answe
         rates=_rates(),
         guard=None,
     )
-    assert fresh == {"done": 1} and client.calls == 1
+    assert fresh == {"done": 1} and client.calls == 1 and client.evaluator_calls == 1
     assert sorted(c.cost_micros or 0 for c in session.scalars(select(ModelInvocation))) == [
         0,
+        0,
+        11_000,
         80_000,
     ]
+
+
+@pytest.mark.parametrize(
+    ("evaluator", "says"),
+    [
+        (
+            {
+                **CONFIRMED,
+                "same_thing": "no",
+                "vendor_value": '38"',
+                "reason": "it runs to the splash top",
+            },
+            (
+                "The evaluator says the vendor line runs to a different point: "
+                "it runs to the splash top"
+            ),
+        ),
+        (
+            {**CONFIRMED, "vendor_value": '35"', "reason": "same span"},
+            'The evaluator read the vendor\'s number as 35", not 34": same span',
+        ),
+        ("not json", "could not check this difference (its answer was malformed twice"),
+    ],
+)
+def test_a_difference_the_evaluator_does_not_confirm_is_unsure_and_not_clouded(
+    session: Session, monkeypatch: pytest.MonkeyPatch, evaluator: object, says: str
+) -> None:
+    from workflow.ai_page_review import spend_guard
+
+    _fake_question(monkeypatch)
+    client = _Client(json.dumps(ANSWER), evaluator)
+    revision_id, counts, _task = _run(session, client, spend_guard(_rates(), Decimal(6)))
+    assert counts == {"done": 1}
+    review = ai_review_for_revision(session, revision_id)
+    row = review.pages[0].rows[0]
+    assert row.result == "unsure" and row.verified_by is None and not row.clouded
+    assert row.why.startswith(says) or says in row.why
+    assert row.evaluator_reason
+    assert review.counts.different == 0 and review.counts.needs_person == 0
+    # The auto-cloud path draws only `different` rows: a demoted row is counted, never clouded.
+    from workflow.redline_outputs import ai_review_input
+
+    compare, _marks = ai_review_input(review)
+    assert compare is not None and compare.different == ()
+
+
+def test_without_an_evaluator_answer_a_difference_is_never_clouded(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import workflow.ai_page_review as module
+
+    _fake_question(monkeypatch)
+
+    def broken(*_a: object, **_k: object) -> tuple[bytes, bytes]:
+        raise RuntimeError("no picture")
+
+    monkeypatch.setattr(module, "evaluator_pictures", broken)
+    revision_id, _counts, _task = _run(session, _Client(json.dumps(ANSWER)), None)
+    row = ai_review_for_revision(session, revision_id).pages[0].rows[0]
+    assert row.result == "unsure" and not row.clouded
+    assert "close-ups could not be made (RuntimeError)" in row.why
+
+
+def test_recheck_differences_writes_a_new_reading_from_the_stored_rows(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import workflow.ai_page_review as module
+    from workflow.ai_page_review import recheck_differences, spend_guard
+
+    _package, revision_id, rows = _review(session)
+    seen: list[dict[str, Any]] = []
+
+    def pictures(*_a: object, **kwargs: Any) -> tuple[bytes, bytes]:
+        seen.append(kwargs)
+        import io
+
+        from PIL import Image
+
+        out = io.BytesIO()
+        Image.new("RGB", (60, 40), (255, 255, 255)).save(out, format="PNG")
+        return out.getvalue(), out.getvalue()
+
+    monkeypatch.setattr(module, "evaluator_pictures", pictures)
+    version = session.scalars(select(Page).where(Page.index == 0)).one().document_version_id
+    client = _Client(
+        "unused",
+        {
+            **CONFIRMED,
+            "same_thing": "no",
+            "vendor_value": "850 [34]",
+            "reason": "to the splash top",
+        },
+    )
+    counts = recheck_differences(
+        session,
+        package_revision_id=revision_id,
+        version_id=version,
+        data=b"%PDF synthetic",
+        task_run_id=_task(session, revision_id).id,
+        client=client,
+        rates=_rates(),
+        guard=spend_guard(_rates(), Decimal(6)),
+    )
+    assert counts == {"pages": 1, "kept": 0, "demoted": 1}
+    assert client.calls == 0 and client.evaluator_calls == 1
+    # The close-ups come from the stored row: code's architect box and the vendor box at its dpi.
+    assert seen[0]["architect_box_pt"] == ["400", "400", "420", "500"]
+    assert seen[0]["vendor_box_px"] == [100, 100, 140, 120] and seen[0]["vendor_dpi"] == 150
+    review = ai_review_for_revision(session, revision_id)
+    page = review.pages[0]
+    assert [r.result for r in page.rows] == ["same", "unsure", "not_shown", "unsure", "unreadable"]
+    assert page.rows[1].evaluator_reason == "to the splash top"
+    assert page.cost_usd == "0.011"
+    # The first reading's rows are kept, unchanged (append-only); the newest reading counts.
+    assert session.get(AiPageReviewRow, rows[1].id).result == "different"  # type: ignore[union-attr]
+    assert review.pages[1].status == "failed"
 
 
 def test_an_unparseable_answer_or_the_budget_marks_the_page_failed_never_stops(

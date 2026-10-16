@@ -98,6 +98,15 @@ class AiReviewRowOut(BaseModel):
         default=False,
         description="True on every `different` row: it is clouded by itself.",
     )
+    verified_by: Literal["evaluator"] | None = Field(
+        default=None,
+        description="`evaluator` when the independent evaluator confirmed this difference; null "
+        "when it did not or the row was not re-checked.",
+    )
+    evaluator_reason: str | None = Field(
+        default=None,
+        description="The evaluator's reason (or why it could not check); null when not re-checked.",
+    )
 
 
 class AiReviewPageOut(BaseModel):
@@ -282,6 +291,8 @@ def ai_review_many(session: Session, revision_ids: Sequence[UUID]) -> dict[UUID,
                         answer=answer,
                         answered_by=None if answer is None or given is None else given.answered_by,
                         clouded=row.result == "different",
+                        verified_by="evaluator" if row.verified_by == "evaluator" else None,
+                        evaluator_reason=row.evaluator_reason,
                     )
                 )
                 setattr(counts, row.result, getattr(counts, row.result) + 1)

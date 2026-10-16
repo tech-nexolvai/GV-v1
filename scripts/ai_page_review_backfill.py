@@ -16,6 +16,11 @@ Run it with the database and the storage root the worker uses (`GV_DATABASE_URL`
 
     python scripts/ai_page_review_backfill.py --revision <package revision id> [--stored-only]
 
+`--recheck-differences` reads nothing again: it gives each stored `different` row the evaluator's
+second look (Sonnet 5.5, close-ups of both spots, `extraction/ai_review/evaluator.py`) and writes
+the re-decided readings as new ones (the newest counts). Paid within the same budget unless the
+evaluator's answers are stored.
+
 It prints counts and cost only, never a value off the drawing.
 """
 
@@ -37,6 +42,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--dpi", type=int, default=None, help="the resolution to read at")
     parser.add_argument("--pages", default=None, help="only these sheets, from 1: 2,7")
     parser.add_argument("--stored-only", action="store_true", help="make no paid call")
+    parser.add_argument(
+        "--recheck-differences",
+        action="store_true",
+        help="re-check the stored different rows with the evaluator (no new reading)",
+    )
     args = parser.parse_args(argv)
 
     import os
@@ -53,6 +63,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ai_page_review_budget,
         configured_client,
         persist_ai_page_review,
+        recheck_differences,
         spend_guard,
     )
     from workflow.stages import (
@@ -119,6 +130,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             data = _fetch(store, key)
             if hashlib.sha256(data).hexdigest() != sha256:
                 print(f"document {version}: its stored bytes do not match their digest; skipped")
+                continue
+            if args.recheck_differences:
+                counts = recheck_differences(
+                    session,
+                    package_revision_id=revision_id,
+                    version_id=version,
+                    data=data,
+                    task_run_id=task.id,
+                    client=client,
+                    rates=rates,
+                    guard=guard,
+                    pages_wanted=pages,
+                )
+                print(f"document {version}: re-checked {counts}")
                 continue
             counts = persist_ai_page_review(
                 session,
