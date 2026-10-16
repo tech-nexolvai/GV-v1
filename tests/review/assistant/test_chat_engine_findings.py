@@ -651,3 +651,42 @@ def test_unseen_same_items_and_unopened_pages_become_unknowns(
     assert trust["not_compared"] == 1 and trust["unknowns"]["total"] == 2
     score = next(b["accuracy"] for b in outcome.blocks if b["type"] == "accuracy")
     assert score["claims"] == 1 and score["not_compared"] == 1 and score["unknowns"] == 2
+
+
+def test_findings_with_values_and_no_box_send_the_lead_back_naming_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A finding that states a drawing value needs its box: the finish check names each one (a GV
+    rule finding needs the vendor box of the value the rule read)."""
+    _modules(monkeypatch)
+    workspace_with_pdf(tmp_path)
+    rule = finding_input(
+        item="Fillers",
+        architect='rule 1-2"',
+        vendor='1 1/2", 2", 3"',
+        source="rules",
+        arch_box=None,
+        vendor_box=None,
+    )
+    rule = {k: v for k, v in rule.items() if v is not None}
+    provider = ScriptedProvider(
+        lead=[
+            reply(tool("r1", "report_finding", rule), stop="tool_use"),
+            reply(text('One filler is 3", over the rule.')),
+            reply(
+                tool("u1", "update_finding", {"finding_id": "F1", "vendor_box": VENDOR_BOX}),
+                stop="tool_use",
+            ),
+            reply(text('One filler is 3", over the rule (page 2).')),
+        ]
+    )
+    harness = Harness(tmp_path, provider)
+
+    outcome = harness.run()
+
+    note = _sent(provider.lead_calls[2])["messages"][-1]["content"][-1]["text"]
+    assert "F1 (page 2: Fillers; needs vendor_box)" in note
+    assert "the vendor_box of the value the rule read" in note
+    finding = next(b["finding"] for b in outcome.blocks if b["type"] == "finding")
+    assert finding["vendor_box"] and finding["vendor_picture_id"]
+    assert len(provider.lead_calls) == 4

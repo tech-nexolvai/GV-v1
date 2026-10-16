@@ -53,6 +53,8 @@ __all__ = [
     "UPDATE_FINDING",
     "FindingBook",
     "MarkupFile",
+    "boxless_findings",
+    "boxless_note",
     "coverage_note",
     "live_findings",
     "main_upload",
@@ -325,6 +327,57 @@ def page_ranges(pages: Sequence[int]) -> str:
             out.append(str(start) if start == previous else f"{start}-{previous}")
         start = previous = page
     return ", ".join(out)
+
+
+def _states(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def boxless_findings(findings: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The model's findings that state a drawing value with no box where it is printed: a vendor
+    value needs `vendor_box`; an architect value needs `arch_box` when it is read off the
+    architect's drawing (`source: architect`; a GV rule, a brand prototype or the vendor's own sum
+    is not on the architect's drawing). Code's own findings (GV Review's records, the ledger) are
+    left out. Each: `{id, page, item, missing: ["vendor_box", ...]}`."""
+    out: list[dict[str, Any]] = []
+    for finding in findings:
+        if finding.get("created_by") in ("gv_review", "ledger"):
+            continue
+        missing: list[str] = []
+        if _states(finding.get("vendor")) and not finding.get("vendor_box"):
+            missing.append("vendor_box")
+        if (
+            finding.get("source", "architect") == "architect"
+            and _states(finding.get("architect"))
+            and not finding.get("arch_box")
+        ):
+            missing.append("arch_box")
+        if missing:
+            out.append(
+                {
+                    "id": finding.get("id"),
+                    "page": finding.get("page"),
+                    "item": finding.get("item"),
+                    "missing": missing,
+                }
+            )
+    return out
+
+
+def boxless_note(boxless: Sequence[Mapping[str, Any]]) -> str:
+    """The send-back line naming each finding with a value and no box."""
+    listed = "; ".join(
+        f"{item['id']} (page {item.get('page')}: {item.get('item')}; needs "
+        f"{' and '.join(item['missing'])})"
+        for item in boxless[:30]
+    )
+    more = f" and {len(boxless) - 30} more" if len(boxless) > 30 else ""
+    return (
+        f"{COVERAGE_CHECK_PREFIX} show the evidence: these findings state a drawing value with no "
+        f"box where it is printed: {listed}{more}. Give each its box with update_finding (for a GV "
+        "rule, the vendor_box of the value the rule read); findings about one rule on one page "
+        "may be merged into one finding listing the values (drop the others)."
+    )
 
 
 def coverage_note(gaps: Sequence[int], file_name: str | None) -> str:

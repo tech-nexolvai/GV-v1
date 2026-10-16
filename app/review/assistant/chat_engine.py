@@ -70,6 +70,8 @@ from app.review.assistant.chat_findings import (
     HELPER_FINDING_TOOL_NAMES,
     FindingBook,
     MarkupFile,
+    boxless_findings,
+    boxless_note,
     coverage_note,
     main_upload,
     make_markup_file,
@@ -1580,7 +1582,11 @@ class ChatEngine:
         """The finish check's note: pages unaccounted for (when coverage was used), GV Review's
         recorded differences the answer lost, and drawing values stated with no evidence."""
         parts: list[str] = []
-        if states_drawing_values(answer) and not self._has_evidence():
+        boxless = boxless_findings(self.book.live())
+        if boxless:
+            # A finding that states a drawing value needs its box (the evidence picture).
+            parts.append(boxless_note(boxless))
+        elif states_drawing_values(answer) and not self._has_evidence():
             parts.append(
                 f"{COVERAGE_CHECK_PREFIX} show the evidence: your answer states values read off "
                 "the drawings with no evidence. Back each with report_finding (a comparison) or "

@@ -389,3 +389,60 @@ def test_a_cited_page_count_is_compared_as_a_number(tmp_path: Path) -> None:
     assert findings.cite({"value": "3 of 4", "fact": "page_count"}, printed)["printed"] == (
         "not_found"
     )
+
+
+def test_findings_stating_a_value_need_its_box() -> None:
+    from app.review.assistant.chat_findings import boxless_findings, boxless_note
+
+    box = {"page": 2, "x0": 0, "y0": 0, "x1": 9, "y1": 9}
+    findings = [
+        {
+            "id": "F1",
+            "page": 8,
+            "item": "Fillers",
+            "source": "rules",
+            "architect": "1-2",
+            "vendor": "3",
+        },
+        {
+            "id": "F2",
+            "page": 3,
+            "item": "Top",
+            "source": "architect",
+            "architect": "37",
+            "vendor": "38",
+            "vendor_box": box,
+        },
+        {
+            "id": "F3",
+            "page": 3,
+            "item": "Ok",
+            "source": "architect",
+            "architect": "37",
+            "vendor": "37",
+            "vendor_box": box,
+            "arch_box": box,
+        },
+        {
+            "id": "F4",
+            "page": 4,
+            "item": "Recorded",
+            "created_by": "gv_review",
+            "architect": "1",
+            "vendor": "2",
+        },
+        {
+            "id": "F5",
+            "page": 5,
+            "item": "No values",
+            "source": "architect",
+            "architect": " ",
+            "vendor": None,
+        },
+    ]
+    assert boxless_findings(findings) == [
+        {"id": "F1", "page": 8, "item": "Fillers", "missing": ["vendor_box"]},
+        {"id": "F2", "page": 3, "item": "Top", "missing": ["arch_box"]},
+    ]
+    note = boxless_note(boxless_findings(findings))
+    assert "F1 (page 8: Fillers; needs vendor_box)" in note and "F2" in note
