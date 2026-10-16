@@ -151,3 +151,97 @@ def test_a_person_who_may_not_save_the_projects_values_is_told_and_refused(
     refused = _act(reader, project_id, package_id, "not-checked", "answer", _job_values(names))
     assert refused.status_code in (403, 404), refused.text
     assert _project_values(session, project_id) == {}
+
+
+def _job_values_reading(session: Session, package_id: UUID) -> None:
+    """A job values reading of this revision (#1409): one auto value and one suggestion."""
+    from app.models.document import PackageRevisionDocument, Page
+    from app.models.job_values import JobValueReading
+    from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
+
+    revision = _revision(session, package_id)
+    version = session.scalars(
+        select(PackageRevisionDocument.document_version_id).where(
+            PackageRevisionDocument.package_revision_id == revision.id
+        )
+    ).first()
+    page = session.scalars(select(Page).where(Page.document_version_id == version)).first()
+    assert page is not None
+    workflow = WorkflowRun(package_revision_id=revision.id, engine_run_id="synthetic-job-values")
+    session.add(workflow)
+    session.flush()
+    task = TaskRun(
+        workflow_run_id=workflow.id,
+        idempotency_key="synthetic-job-values",
+        task_type="match",
+        attempt=1,
+        outcome="SUCCEEDED",
+    )
+    session.add(task)
+    session.flush()
+    run = ExtractionRun(
+        task_run_id=task.id,
+        extractor="job-values-reader",
+        extractor_version="job-values-reader-v1",
+        config_hash="synthetic",
+    )
+    session.add(run)
+    session.flush()
+    polygon = [["0.1", "0.2"], ["0.3", "0.2"], ["0.3", "0.4"], ["0.1", "0.4"]]
+
+    def shown(name: str, value: str, filled: bool, source: str) -> dict[str, object]:
+        return {
+            "name": name,
+            "value": value,
+            "filled": filled,
+            "page": page.index + 1,
+            "document_version_id": str(version),
+            "box": ["1", "2", "3", "4"],
+            "source": source,
+            "choices": [],
+            "readers": [],
+            "note": "",
+            "page_id": str(page.id),
+            "polygon": polygon,
+        }
+
+    for setting, outcome, suggestion in (
+        ("backsplash_thickness", "auto", shown("backsplash_thickness", '3/4"', True, "ai-pair")),
+        ("countertop_overhang", "suggestion", shown("countertop_overhang", '1"', False, "code")),
+        ("cabinet_depth", "nothing", None),
+        ("cabinet_side_thickness", "refused", None),
+    ):
+        session.add(
+            JobValueReading(
+                extraction_run_id=run.id,
+                package_revision_id=revision.id,
+                setting=setting,
+                outcome=outcome,
+                suggestion=suggestion,
+                reasons=[],
+                not_read=[],
+            )
+        )
+    session.commit()
+
+
+def test_the_list_carries_what_the_job_values_reader_found_beside_each_value(
+    session: Session, tmp_path: Path
+) -> None:
+    project_id, package_id = _held_page(session, tmp_path)
+    client = _client(session, project_id)
+    assert _items(client, project_id, package_id)["job_value_suggestions"] == []
+
+    _job_values_reading(session, package_id)
+    found = {
+        entry["name"]: entry
+        for entry in _items(client, project_id, package_id)["job_value_suggestions"]
+    }
+
+    assert set(found) == {"backsplash_thickness", "countertop_overhang"}, "nothing/refused: none"
+    auto = found["backsplash_thickness"]
+    assert (auto["value"], auto["auto"], auto["source"]) == ('3/4"', True, "two AIs")
+    assert auto["location"]["page_number"] == auto["page"]
+    assert auto["location"]["polygon"][0] == ["0.1", "0.2"], "Look rings the box"
+    plain = found["countertop_overhang"]
+    assert (plain["value"], plain["auto"], plain["source"]) == ('1"', False, "drawing")

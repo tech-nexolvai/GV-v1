@@ -5111,6 +5111,47 @@ export interface components {
             value: string;
         };
         /**
+         * JobValueSuggestionOut
+         * @description What the job values reader found for one of this job's values (#1409), shown beside its
+         *     field in the "Enter this job's values" form. Nothing is saved until the person presses Save.
+         */
+        JobValueSuggestionOut: {
+            /**
+             * Auto
+             * @description True only when both AIs agree and code found the number printed there with its label on this job's architect drawing: the form pre-fills it as 'Filled from p.N by two AIs and code · Change'. False: a suggestion, never pre-filled.
+             */
+            auto: boolean;
+            /** @description Where to ring it in the side-by-side viewer (Look). */
+            location?: components["schemas"]["RowLocation"] | null;
+            /**
+             * Name
+             * @description The setting's name (`backsplash_thickness`), the form field's key.
+             */
+            name: string;
+            /**
+             * Note
+             * @description Why it is only a suggestion, in plain words.
+             * @default
+             */
+            note: string;
+            /**
+             * Page
+             * @description The page it is printed on, counted from 1 in its file.
+             */
+            page: number;
+            /**
+             * Source
+             * @description `drawing`: code read it from the drawing's own text; `two AIs`: the AI pair.
+             * @enum {string}
+             */
+            source: "drawing" | "two AIs";
+            /**
+             * Value
+             * @description Inches with the inch mark, in the form's own format: `3/4"`.
+             */
+            value: string;
+        };
+        /**
          * LayoutProposalOut
          * @description A model-proposed discriminator answer, still waiting for reviewer confirmation.
          */
@@ -7438,6 +7479,11 @@ export interface components {
             header: components["schemas"]["ReviewHeaderOut"];
             /** Items */
             items: components["schemas"]["ReviewItemOut"][];
+            /**
+             * Job Value Suggestions
+             * @description What the job values reader found (#1409), one per value it found: shown beside the 'Enter this job's values' fields. Empty when the reader has not run or found nothing.
+             */
+            job_value_suggestions?: components["schemas"]["JobValueSuggestionOut"][];
             /** Not Checked */
             not_checked: components["schemas"]["NotCheckedOut"][];
             /**

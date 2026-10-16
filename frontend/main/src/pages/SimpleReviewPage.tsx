@@ -5,7 +5,7 @@ import { getPackage, ApiError, downloadPagePicture } from '@/api/client';
 import { projectId as configuredProjectId } from '@/api/config';
 import { liveDraftCloudApi, makeDraftCloud, type DraftCloudApi } from '@/api/draft-cloud';
 import { liveFinalCloudApi, type FinalCloudApi } from '@/api/final-cloud';
-import { apiUrl, liveReviewItemsApi, NOT_CHECKED_GROUP, PAGES_GROUP, type ActionExtra, type ItemAction, type ReviewFailure, type ReviewItem, type ReviewItemsApi, type ReviewItemsOut } from '@/api/review-items';
+import { apiUrl, liveReviewItemsApi, NOT_CHECKED_GROUP, PAGES_GROUP, type ActionExtra, type ItemAction, type JobValueSuggestion, type ReviewFailure, type ReviewItem, type ReviewItemsApi, type ReviewItemsOut } from '@/api/review-items';
 import { agreeAction, disagreeAction, leftWords, openNoCountertopPages, openPagesToDecide, orderItems, proposedWall, summarize, whereWord } from '@/lib/review-items';
 import type { AssistantRecords } from '@/lib/assistant';
 import { AssistantPanel, type AssistantNavigation } from '@/components/assistant/assistant-panel';
@@ -461,6 +461,13 @@ export function SimpleReviewPage({
     else setViewer((now) => ({ opening: (now?.opening ?? 0) + 1, item: at, recorded: { ...failure, tone: 'fail' } }));
   }
 
+  // A job value's Look (#1409): the side-by-side viewer at the page the reader found it on, ringed.
+  function lookAtJobValue(found: JobValueSuggestion, name: string) {
+    const at: ViewerItem = { key: `job-value:${found.name}`, page: found.page, what: `${name} ${found.value}`, status: 'open', vendor_ref: null, architect_ref: { location: found.location ?? null, reason: found.location ? null : 'The reader recorded no spot for this value.' } };
+    if (onOpenPdfs) onOpenPdfs(at);
+    else setViewer((now) => ({ opening: (now?.opening ?? 0) + 1, item: at, recorded: null }));
+  }
+
   // The newest draft ask: an older one (or one from a closed page) stops waiting and saves nothing.
   const draftAsk = useRef(0);
   useEffect(() => () => {
@@ -771,6 +778,8 @@ export function SimpleReviewPage({
                     onClearAll={() => void clearNotChecked()}
                     canSaveJobValues={data.can_save_job_values ?? false}
                     onSaveJobValues={(values) => void saveJobValues(values)}
+                    suggestions={data.job_value_suggestions ?? []}
+                    onLook={lookAtJobValue}
                   />
 
                   {checked.length > 0 && (

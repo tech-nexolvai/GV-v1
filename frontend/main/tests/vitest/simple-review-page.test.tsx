@@ -274,6 +274,21 @@ describe('SimpleReviewPage (#1343)', () => {
     await waitFor(() => expect(loads).toBeGreaterThan(before));
   });
 
+  it("a found job value's Look opens the viewer at its page with its spot (#1409)", async () => {
+    const location = { page_id: 'page-12', document_version_id: 'dv-arch', page_number: 12, coordinate_space: 'stored', polygon: [['0.1', '0.2'], ['0.3', '0.2'], ['0.3', '0.4'], ['0.1', '0.4']] };
+    current = reviewItems((draft) => {
+      draft.can_save_job_values = true;
+      draft.not_checked[0].settings = [{ key: 'countertop_overhang', name: 'Countertop overhang', project_id: 'proj-demo', set_now: false }];
+      draft.job_value_suggestions = [{ name: 'countertop_overhang', value: '1"', page: 12, source: 'drawing', auto: false, location, note: '' }];
+    });
+    const onOpenPdfs = vi.fn();
+    renderPage({ onOpenPdfs });
+    await screen.findByTestId('ai-read-line');
+    await userEvent.click(screen.getByRole('button', { name: "Enter this job's values" }));
+    await userEvent.click(screen.getByRole('button', { name: 'Look' }));
+    expect(onOpenPdfs).toHaveBeenCalledWith(expect.objectContaining({ page: 12, architect_ref: { location, reason: null } }));
+  });
+
   it('a wall choice is one click on a layout, each showing its result; C picks the proposal', async () => {
     renderPage();
     await screen.findByTestId('ai-read-line');

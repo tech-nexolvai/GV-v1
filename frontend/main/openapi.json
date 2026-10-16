@@ -6218,6 +6218,66 @@
         "title": "JobValueIn",
         "type": "object"
       },
+      "JobValueSuggestionOut": {
+        "description": "What the job values reader found for one of this job's values (#1409), shown beside its\nfield in the \"Enter this job's values\" form. Nothing is saved until the person presses Save.",
+        "properties": {
+          "auto": {
+            "description": "True only when both AIs agree and code found the number printed there with its label on this job's architect drawing: the form pre-fills it as 'Filled from p.N by two AIs and code \u00b7 Change'. False: a suggestion, never pre-filled.",
+            "title": "Auto",
+            "type": "boolean"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RowLocation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where to ring it in the side-by-side viewer (Look)."
+          },
+          "name": {
+            "description": "The setting's name (`backsplash_thickness`), the form field's key.",
+            "title": "Name",
+            "type": "string"
+          },
+          "note": {
+            "default": "",
+            "description": "Why it is only a suggestion, in plain words.",
+            "title": "Note",
+            "type": "string"
+          },
+          "page": {
+            "description": "The page it is printed on, counted from 1 in its file.",
+            "title": "Page",
+            "type": "integer"
+          },
+          "source": {
+            "description": "`drawing`: code read it from the drawing's own text; `two AIs`: the AI pair.",
+            "enum": [
+              "drawing",
+              "two AIs"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "value": {
+            "description": "Inches with the inch mark, in the form's own format: `3/4\"`.",
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "value",
+          "page",
+          "source",
+          "auto"
+        ],
+        "title": "JobValueSuggestionOut",
+        "type": "object"
+      },
       "LayoutProposalOut": {
         "description": "A model-proposed discriminator answer, still waiting for reviewer confirmation.",
         "properties": {
@@ -10725,6 +10785,14 @@
               "$ref": "#/components/schemas/ReviewItemOut"
             },
             "title": "Items",
+            "type": "array"
+          },
+          "job_value_suggestions": {
+            "description": "What the job values reader found (#1409), one per value it found: shown beside the 'Enter this job's values' fields. Empty when the reader has not run or found nothing.",
+            "items": {
+              "$ref": "#/components/schemas/JobValueSuggestionOut"
+            },
+            "title": "Job Value Suggestions",
             "type": "array"
           },
           "not_checked": {

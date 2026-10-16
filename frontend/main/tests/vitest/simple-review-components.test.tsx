@@ -422,6 +422,62 @@ describe('NotCheckedGroup', () => {
       expect(screen.getByRole('button', { name: 'Clear all as not checked' })).toBeTruthy();
     });
 
+    describe('what the job values reader found (#1409)', () => {
+      const found = (name: string, value: string, auto: boolean, page = 55) => ({
+        name,
+        value,
+        page,
+        source: 'two AIs' as const,
+        auto,
+        location: { page_id: 'page-55', document_version_id: 'dv-arch', page_number: page, coordinate_space: 'stored', polygon: [['0.1', '0.2'], ['0.3', '0.2'], ['0.3', '0.4'], ['0.1', '0.4']] },
+        note: '',
+      });
+
+      it('pre-fills an auto value, labels it, and saves it only on Save', async () => {
+        const onSave = vi.fn();
+        render(
+          <NotCheckedGroup items={waiting().not_checked} note={null} busy={false} error={null} onClearAll={() => {}} canSaveJobValues onSaveJobValues={onSave} suggestions={[found('backsplash_thickness', '3/4"', true)]} onLook={() => {}} />,
+        );
+        // The form opens with the value in view; nothing was sent.
+        expect((screen.getByLabelText('Backsplash thickness') as HTMLInputElement).value).toBe('3/4');
+        expect(screen.getByText(/Filled from p\.55 by two AIs and code/)).toBeTruthy();
+        expect(onSave).not.toHaveBeenCalled();
+        await userEvent.click(screen.getByRole('button', { name: 'Save and check again' }));
+        expect(onSave).toHaveBeenCalledWith([{ name: 'backsplash_thickness', value: '3/4"' }]);
+      });
+
+      it('Change lets the person type over an auto value, and the label goes', async () => {
+        render(
+          <NotCheckedGroup items={waiting().not_checked} note={null} busy={false} error={null} onClearAll={() => {}} canSaveJobValues onSaveJobValues={() => {}} suggestions={[found('backsplash_thickness', '3/4"', true)]} />,
+        );
+        await userEvent.click(screen.getByRole('button', { name: 'Change' }));
+        expect(document.activeElement).toBe(screen.getByLabelText('Backsplash thickness'));
+        await userEvent.keyboard('5/8');
+        expect((screen.getByLabelText('Backsplash thickness') as HTMLInputElement).value).toBe('5/8');
+        expect(screen.queryByText(/Filled from p\.55/)).toBeNull();
+      });
+
+      it('never pre-fills a plain suggestion: Found · page · Look · Use', async () => {
+        const onLook = vi.fn();
+        const onSave = vi.fn();
+        const one = found('countertop_overhang', '1 1/2"', false, 12);
+        render(
+          <NotCheckedGroup items={waiting().not_checked} note={null} busy={false} error={null} onClearAll={() => {}} canSaveJobValues onSaveJobValues={onSave} suggestions={[one]} onLook={onLook} />,
+        );
+        // Nothing auto: the form stays closed, and opens with the field empty.
+        await userEvent.click(screen.getByRole('button', { name: "Enter this job's values" }));
+        expect((screen.getByLabelText('Countertop overhang') as HTMLInputElement).value).toBe('');
+        const line = document.querySelector('[data-part="job-value-found"]');
+        expect(line?.textContent).toBe('Found 1 1/2" · p.12 · Look · Use');
+        await userEvent.click(screen.getByRole('button', { name: 'Look' }));
+        expect(onLook).toHaveBeenCalledWith(one, 'Countertop overhang');
+        await userEvent.click(screen.getByRole('button', { name: 'Use 1 1/2"' }));
+        expect((screen.getByLabelText('Countertop overhang') as HTMLInputElement).value).toBe('1 1/2');
+        await userEvent.click(screen.getByRole('button', { name: 'Save and check again' }));
+        expect(onSave).toHaveBeenCalledWith([{ name: 'countertop_overhang', value: '1 1/2"' }]);
+      });
+    });
+
     it('is read-only for someone who may not save the project values', () => {
       render(<NotCheckedGroup items={waiting().not_checked} note={null} busy={false} error={null} onClearAll={() => {}} canSaveJobValues={false} onSaveJobValues={() => {}} />);
       expect(screen.queryByRole('button', { name: "Enter this job's values" })).toBeNull();

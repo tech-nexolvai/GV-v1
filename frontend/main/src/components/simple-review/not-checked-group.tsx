@@ -1,7 +1,7 @@
-import { Fragment, useState, type FormEvent } from 'react';
+import { Fragment, useRef, useState, type FormEvent } from 'react';
 import { Check, ChevronRight, Loader2 } from 'lucide-react';
 
-import type { NotCheckedItem, NotCheckedSetting } from '@/api/review-items';
+import type { JobValueSuggestion, NotCheckedItem, NotCheckedSetting } from '@/api/review-items';
 import { formatRoute } from '@/app/route';
 import { cn } from '@/lib/utils';
 import { inchValue, jobValuesWaiting, whereWord } from '@/lib/review-items';
@@ -23,6 +23,10 @@ import { PageTag } from './words';
  * are summed up in one line, with the full list folded under "Show all N", and entered here, once,
  * in inches: they are per job (the GC's or the client's), saved on the project like Company settings
  * → Projects saves them, and the checks run again. Someone who may not save sees a read-only line.
+ *
+ * **What the job values reader found (#1409)** is shown beside each field: "Found 3/4" · p.55 · Look ·
+ * Use". A value both AIs and code agree on (`auto`) is pre-filled and labelled "Filled from p.N by
+ * two AIs and code · Change"; a plain suggestion is never pre-filled. Nothing is saved until Save.
  */
 export function NotCheckedGroup({
   items,
@@ -34,7 +38,13 @@ export function NotCheckedGroup({
   onOpenChange,
   canSaveJobValues = false,
   onSaveJobValues,
+  suggestions = [],
+  onLook,
 }: {
+  /** What the job values reader found, one per value (#1409). */
+  suggestions?: readonly JobValueSuggestion[];
+  /** Open the side-by-side viewer at a found value's page, ringed (#1409). */
+  onLook?: (found: JobValueSuggestion, name: string) => void;
   /** Whether the caller may save this project's values (`can_save_job_values`, #1403). */
   canSaveJobValues?: boolean;
   /** Save this job's values (inches, with the inch mark) and run the checks again. */
@@ -97,6 +107,8 @@ export function NotCheckedGroup({
             canSave={canSaveJobValues && onSaveJobValues !== undefined}
             onShowAll={() => setOpen(() => true)}
             onSave={(values) => onSaveJobValues?.(values)}
+            suggestions={suggestions}
+            onLook={onLook}
           />
         )}
         {note && <p className="basis-full pl-7 text-[13px] leading-5 text-muted-foreground">{note}</p>}
@@ -194,6 +206,11 @@ export interface JobValue {
   value: string;
 }
 
+/** A found value as the field shows it: the inches without the inch mark (the field says "in"). */
+function fieldText(value: string): string {
+  return value.replace(/"$/, '');
+}
+
 function JobValues({
   job,
   total,
@@ -201,6 +218,8 @@ function JobValues({
   canSave,
   onShowAll,
   onSave,
+  suggestions,
+  onLook,
 }: {
   job: ReturnType<typeof jobValuesWaiting>;
   total: number;
@@ -208,10 +227,36 @@ function JobValues({
   canSave: boolean;
   onShowAll: () => void;
   onSave: (values: JobValue[]) => void;
+  suggestions: readonly JobValueSuggestion[];
+  onLook?: (found: JobValueSuggestion, name: string) => void;
 }) {
-  const [formOpen, setFormOpen] = useState(false);
-  const [typed, setTyped] = useState<Record<string, string>>({});
+  const found = new Map(suggestions.filter((one) => job.settings.some((setting) => setting.key === one.name)).map((one) => [one.name, one]));
+  // Auto values are pre-filled (never saved until Save), so the form opens with them in view.
+  const autos = Object.fromEntries([...found.values()].filter((one) => one.auto).map((one) => [one.name, fieldText(one.value)]));
+  const [formOpen, setFormOpen] = useState(Object.keys(autos).length > 0);
+  const [typed, setTyped] = useState<Record<string, string>>(autos);
+  /** The fields still holding the value the reader filled in, unchanged. */
+  const [filled, setFilled] = useState<Record<string, boolean>>(() => Object.fromEntries(Object.keys(autos).map((key) => [key, true])));
+  const inputs = useRef<Record<string, HTMLInputElement | null>>({});
   const [problem, setProblem] = useState<string | null>(null);
+
+  function openForm() {
+    // Fields still empty take the auto values; anything typed stays.
+    setTyped((all) => ({ ...autos, ...Object.fromEntries(Object.entries(all).filter(([, text]) => text.trim() !== '')) }));
+    setFilled((all) => ({ ...all, ...Object.fromEntries(Object.keys(autos).filter((key) => !(typed[key] ?? '').trim() || typed[key] === autos[key]).map((key) => [key, true])) }));
+    setFormOpen(true);
+  }
+
+  function use(key: string, value: string) {
+    setTyped((all) => ({ ...all, [key]: fieldText(value) }));
+    setFilled((all) => ({ ...all, [key]: false }));
+  }
+
+  function change(key: string) {
+    setFilled((all) => ({ ...all, [key]: false }));
+    inputs.current[key]?.focus();
+    inputs.current[key]?.select();
+  }
   const count = job.countertops ?? job.checks;
   const noun = job.countertops === null ? 'check' : 'countertop';
   const values = job.settings.length === 1 ? "this job's value" : `this job's ${job.settings.length} values`;
@@ -250,7 +295,7 @@ function JobValues({
         <p className="text-[13px] text-muted-foreground">Only this project&apos;s reviewers can enter its values.</p>
       ) : !formOpen ? (
         <div>
-          <Button size="sm" variant="outline" onClick={() => setFormOpen(true)}>
+          <Button size="sm" variant="outline" onClick={openForm}>
             Enter this job&apos;s values
           </Button>
         </div>
@@ -258,25 +303,45 @@ function JobValues({
         <form onSubmit={submit} className="flex flex-col gap-2" aria-label="This job's values">
           <p className="text-[13px] text-muted-foreground">From the drawings&apos; sections or the GC&apos;s spec for this job.</p>
           <div className="grid gap-2 sm:grid-cols-2">
-            {job.settings.map((setting) => (
-              <label key={setting.key} className="flex items-center gap-2 text-[13px]">
-                <span className="min-w-40 text-foreground">{setting.name}</span>
-                <span className="relative">
-                  <Input
-                    aria-label={setting.name}
-                    inputMode="decimal"
-                    autoComplete="off"
-                    value={typed[setting.key] ?? ''}
-                    onChange={(event) => setTyped((all) => ({ ...all, [setting.key]: event.target.value }))}
-                    className="num h-8 w-28 pr-6"
-                    placeholder="1 1/2"
-                  />
-                  <span aria-hidden="true" className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 text-muted-foreground">
-                    in
-                  </span>
-                </span>
-              </label>
-            ))}
+            {job.settings.map((setting) => {
+              const one = found.get(setting.key);
+              return (
+                <div key={setting.key} className="flex flex-col gap-1">
+                  <label className="flex items-center gap-2 text-[13px]">
+                    <span className="min-w-40 text-foreground">{setting.name}</span>
+                    <span className="relative">
+                      <Input
+                        ref={(element) => {
+                          inputs.current[setting.key] = element;
+                        }}
+                        aria-label={setting.name}
+                        inputMode="decimal"
+                        autoComplete="off"
+                        value={typed[setting.key] ?? ''}
+                        onChange={(event) => {
+                          setTyped((all) => ({ ...all, [setting.key]: event.target.value }));
+                          setFilled((all) => ({ ...all, [setting.key]: false }));
+                        }}
+                        className="num h-8 w-28 pr-6"
+                        placeholder="1 1/2"
+                      />
+                      <span aria-hidden="true" className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 text-muted-foreground">
+                        in
+                      </span>
+                    </span>
+                  </label>
+                  {one && (
+                    <FoundLine
+                      found={one}
+                      filled={one.auto && (filled[setting.key] ?? false) && typed[setting.key] === fieldText(one.value)}
+                      onLook={onLook ? () => onLook(one, setting.name) : undefined}
+                      onUse={() => use(setting.key, one.value)}
+                      onChange={() => change(setting.key)}
+                    />
+                  )}
+                </div>
+              );
+            })}
           </div>
           {problem && (
             <p role="alert" className="text-[13px] text-outcome-fail-fg">
@@ -295,5 +360,56 @@ function JobValues({
         </form>
       )}
     </div>
+  );
+}
+
+const QUIET_LINK = 'rounded-sm underline underline-offset-2 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring';
+
+/**
+ * What the job values reader found for one field (#1409). Pre-filled (auto, unchanged): "Filled from
+ * p.N by two AIs and code · Look · Change". Otherwise: "Found 3/4" · p.55 · Look · Use", never filled.
+ */
+export function FoundLine({
+  found,
+  filled,
+  onLook,
+  onUse,
+  onChange,
+}: {
+  found: JobValueSuggestion;
+  filled: boolean;
+  onLook?: () => void;
+  onUse: () => void;
+  onChange: () => void;
+}) {
+  const by = found.source === 'drawing' ? "Read from the drawing's own text" : 'Read by two AIs';
+  const look = onLook && (
+    <>
+      {' · '}
+      <button type="button" onClick={onLook} className={QUIET_LINK}>
+        Look
+      </button>
+    </>
+  );
+  if (filled) {
+    return (
+      <p data-part="job-value-filled" className="pl-[10.5rem] text-[12px] text-muted-foreground">
+        Filled from p.{found.page} by two AIs and code{look}
+        {' · '}
+        <button type="button" onClick={onChange} className={QUIET_LINK}>
+          Change
+        </button>
+      </p>
+    );
+  }
+  return (
+    <p data-part="job-value-found" title={found.note ? `${by}. ${found.note}` : by} className="pl-[10.5rem] text-[12px] text-muted-foreground">
+      Found <span className="num text-foreground">{found.value}</span> · p.{found.page}
+      {look}
+      {' · '}
+      <button type="button" onClick={onUse} aria-label={`Use ${found.value}`} className={QUIET_LINK}>
+        Use
+      </button>
+    </p>
   );
 }

@@ -181,6 +181,9 @@ def _expected_synthetic_arguments() -> dict[str, object]:
         # The five depth checks per countertop row on two judgments (#1390): off unless
         # GV_DEPTH_PER_ROW.
         "depth_per_row": False,
+        # This job's four values from the architect's drawings (#1409): off unless
+        # GV_JOB_VALUES_READER.
+        "job_values_reader": False,
         "architect_reader": MEASURED_ARCHITECT_SETTINGS,
         "ai_budget": AiBudget(
             per_page_usd=Decimal("0.20"),
@@ -220,6 +223,9 @@ def _expected_minimal_arguments() -> dict[str, object]:
         # The five depth checks per countertop row on two judgments (#1390): off unless
         # GV_DEPTH_PER_ROW.
         "depth_per_row": False,
+        # This job's four values from the architect's drawings (#1409): off unless
+        # GV_JOB_VALUES_READER.
+        "job_values_reader": False,
         "architect_reader": None,
         "ai_budget": AiBudget(),
     }

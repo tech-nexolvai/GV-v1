@@ -232,6 +232,18 @@ def depth_reader_configuration() -> bool:
     return depth_reader_enabled(os.environ)
 
 
+def job_values_reader_configuration() -> bool:
+    """Whether the job values reader runs after the depth reader (`GV_JOB_VALUES_READER`, #1409).
+
+    Off unless switched on; an unrecognised word is refused, never read as on. On, it reads with
+    the slot reader's Claude pair, so without `GV_CLAUDE_READER_ENABLED` it reads nothing and says
+    why.
+    """
+    from extraction.job_values.read import job_values_reader_enabled
+
+    return job_values_reader_enabled(os.environ)
+
+
 def depth_per_row_configuration() -> bool:
     """Whether the five depth and sink checks run per countertop row on two judgments
     (`GV_DEPTH_PER_ROW`, #1390).
@@ -493,6 +505,8 @@ def build_stages(
         depth_reader=depth_reader_configuration(),
         # Off unless GV_DEPTH_PER_ROW: the five depth checks per countertop row (#1390).
         depth_per_row=depth_per_row_configuration(),
+        # Off unless GV_JOB_VALUES_READER: this job's four values from the architect (#1409).
+        job_values_reader=job_values_reader_configuration(),
         # Off unless GV_ARCHITECT_READER_ENABLED: the architect's numbers read by code (#1052).
         architect_reader=configured_architect_reader(settings),
         # What the AI readers may spend on a drawing set, grown by its pages (#1206).
@@ -910,6 +924,7 @@ def consume(
     """
     from workflow.depth_again import READ_DEPTHS_AGAIN_WORKFLOW
     from workflow.draft_cloud import DRAFT_CLOUD_WORKFLOW
+    from workflow.job_values import READ_JOB_VALUES_WORKFLOW
     from workflow.part_pictures import CUT_PART_PICTURES_WORKFLOW
     from workflow.slot_row_scope import READ_UNREAD_PAGES_WORKFLOW
     from workflow.vendor_page_pictures import RENDER_VENDOR_PAGE_PICTURES_WORKFLOW
@@ -992,6 +1007,13 @@ def consume(
                 f"Depths were not read again: {type(error).__name__}: {error}"[:900]
             ) from error
         return read
+    if workflow == READ_JOB_VALUES_WORKFLOW:
+        # Someone asked for a set's job values (#1409): the job values reader only, on the same
+        # revision, as a run of this request's own. A refusal is raised with its sentence.
+        stages = (stages_factory or build_stages)(timings=timings)
+        return stages.read_job_values_again(  # type: ignore[attr-defined,no-any-return]
+            session, revision_id, idempotency_key
+        )
     if workflow == CUT_PART_PICTURES_WORKFLOW:
         # A person added a part (#897): cut its picture, and any other still missing.
         return cut_part_pictures(session, revision_id, stages_factory=stages_factory)
