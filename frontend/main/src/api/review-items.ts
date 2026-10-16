@@ -32,6 +32,8 @@ export type WallChoice = Schemas['WallChoiceOut'];
 /** One cabinet of a run to mark, and one kind it may be marked as (#648). */
 export type CabinetRow = Schemas['CabinetRowOut'];
 export type CabinetChoice = Schemas['CabinetChoiceOut'];
+/** What to check on a countertop checked by hand: each piece, the overall and the rule (stored records only). */
+export type WhatToCheck = Schemas['WhatToCheckOut'];
 /** A spot on a stored page. `polygon` is in stored page space (0..1), as strings. */
 export type PageRef = Schemas['RowLocation'];
 export type ReviewItemKind = ReviewItem['kind'];
