@@ -133,6 +133,7 @@ export default function App() {
           onOpenAdvanced={() => navigate({ page: 'review', packageId, advanced: true })}
           onTitleChange={(vendor, revisionNumber) => setReviewTitle({ packageId, title: vendor, revision: revisionNumber })}
           onNeedYouChange={(count) => setLiveNeedYou(count === null ? null : { packageId, count })}
+          onPackageChanged={() => setSidebarRefreshKey((key) => key + 1)}
         />
       )}
 

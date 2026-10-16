@@ -2,7 +2,7 @@ import { useId, useRef, useState } from 'react';
 import { Loader2, PenLine } from 'lucide-react';
 
 import type { ReviewItem } from '@/api/review-items';
-import { fixChoices, fixValue } from '@/lib/review-items';
+import { fixChoices, fixValue, metricTyped } from '@/lib/review-items';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
@@ -37,6 +37,8 @@ export function FixDialog({
   const box = useRef<HTMLInputElement>(null);
   const choices = fixChoices(item);
   const value = fixValue(typed);
+  // Millimetres are refused by the server: never preview them as if they would be recorded (QA 4).
+  const metric = metricTyped(typed);
   const same = item.best_guess !== null && item.best_guess !== undefined && value.replace(/\s/g, '') === item.best_guess.text.replace(/\s/g, '');
 
   function close(next: boolean) {
@@ -52,7 +54,7 @@ export function FixDialog({
           className="flex flex-col gap-5"
           onSubmit={(event) => {
             event.preventDefault();
-            if (value && !same && !busy) onSave(value);
+            if (value && !same && !metric && !busy) onSave(value);
           }}
         >
           <DialogHeader>
@@ -97,7 +99,9 @@ export function FixDialog({
               <span aria-hidden="true" className="num pointer-events-none absolute inset-y-0 right-3 flex items-center text-[15px] text-muted-foreground">in</span>
             </div>
             <p id={`${id}-hint`} role="status" className="min-h-5 text-[13px] leading-5 text-muted-foreground">
-              {same ? (
+              {metric ? (
+                'Inches only, e.g. 1". Millimetres are not recorded.'
+              ) : same ? (
                 'That is what the AI read. Close this and use Confirm instead.'
               ) : value ? (
                 <>
@@ -134,7 +138,7 @@ export function FixDialog({
                 Cancel
               </Button>
             </DialogClose>
-            <Button type="submit" disabled={busy || !value || same}>
+            <Button type="submit" disabled={busy || !value || same || metric}>
               {busy && <Loader2 aria-hidden="true" className="animate-spin motion-reduce:animate-none" />}
               Save the correction
             </Button>

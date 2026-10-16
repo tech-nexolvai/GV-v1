@@ -30,7 +30,8 @@ export function readerWord(reader: string): string {
 
 export const GUESS_SOURCE_WORDS: Record<BestGuess['source'], string> = {
   pdf_text: "Printed in the PDF's own text",
-  agreed_text: 'Both AIs read this',
+  // Held although both wrote it: never "read this" beside a reason that a reader could not (QA 3).
+  agreed_text: 'Both AIs wrote this value, but it was held for a person',
   suggestion: 'The stored reading; the readings beside it differ',
 };
 
@@ -167,6 +168,40 @@ export function leftWords(header: Pick<ReviewItemsHeader, 'open' | 'not_checked'
   if (header.not_checked > 0) words.push(`${header.not_checked} not checked`);
   if (header.rechecking > 0) words.push(`${plural(header.rechecking, 'item')} re-checking`);
   return words;
+}
+
+/**
+ * A stored reason, tidied for the screen (Set 3 QA): the wall reason joins its question and its
+ * summary without a full stop ("...each end The vendor wrote"); the full stop is added. Nothing
+ * else changes: the words are the server's.
+ */
+export function tidyWhy(text: string): string {
+  return text.replace(/([^.!?:;\s])\s+(The vendor wrote\b)/g, '$1. $2');
+}
+
+/** A sentence: first letter capital, one full stop at the end. */
+function asSentence(text: string): string {
+  const trimmed = text.trim();
+  const capital = trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+  return /[.!?]$/.test(capital) ? capital : `${capital}.`;
+}
+
+/**
+ * A note made of several reasons joined with semicolons (the architect note, Set 3 QA): the first
+ * one is shown, the others wait behind "Why". Each is a sentence of its own.
+ */
+export function splitReasons(text: string): { first: string; others: string[] } {
+  const parts = text.split(/;\s+/).map((part) => part.trim()).filter((part) => part.length > 0);
+  if (parts.length === 0) return { first: text, others: [] };
+  return { first: asSentence(parts[0]), others: parts.slice(1).map(asSentence) };
+}
+
+/**
+ * True when what was typed in the Fix box is in millimetres, centimetres or metres (Set 3 QA): the
+ * server records inches only, so the box says so at once instead of previewing the value.
+ */
+export function metricTyped(typed: string): boolean {
+  return /\d\s*(?:mm|cm|m)\b|millimet|centimet/i.test(typed);
 }
 
 /**

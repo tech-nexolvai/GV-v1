@@ -84,7 +84,10 @@ class FrozenCountertops(BaseModel):
 #:   drawing's words, and its cover lists what is clouded as wrong and the architect compare; the
 #:   old compare's leftover rows are left out of the cover and the drawing's summary while it was
 #:   off. A format-1 or format-2 snapshot is drawn exactly as before.
-SNAPSHOT_FORMAT_VERSION = 3
+#: * 4 (Set 3 QA 2026-10-16): no new field. Its signed cover says the not-checked results nobody
+#:   answered once per reason ("NOT CHECKED (N): grouped by reason"), as the draft does, instead of
+#:   one by one with raw ids. A format-1, -2 or -3 snapshot is drawn exactly as before.
+SNAPSHOT_FORMAT_VERSION = 4
 
 
 class FrozenArchitectCompare(BaseModel):

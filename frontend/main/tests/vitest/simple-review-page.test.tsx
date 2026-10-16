@@ -383,14 +383,15 @@ describe('SimpleReviewPage (#1343)', () => {
   });
 
   it('a refused Fix keeps the dialog open with the reason (#1368)', async () => {
-    server.use(http.post(`${API}/review-items/:key/:action`, () => HttpResponse.json({ error: 'refused', message: 'Type the value in inches, not millimetres.', request_id: 'req-4' }, { status: 422 }), { once: true }));
+    server.use(http.post(`${API}/review-items/:key/:action`, () => HttpResponse.json({ error: 'refused', message: 'The value is not a whole 1/16 inch.', request_id: 'req-4' }, { status: 422 }), { once: true }));
     renderPage();
     await screen.findByTestId('ai-read-line');
     await userEvent.click(rowButton(/Overall countertop width.*Countertop 1/));
     await userEvent.click(screen.getByRole('button', { name: /^Fix/ }));
     const dialog = await screen.findByRole('dialog', { name: 'Fix this number' });
-    await userEvent.type(within(dialog).getByRole('textbox'), '2450 mm{Enter}');
-    expect((await within(dialog).findByRole('alert')).textContent).toContain('Type the value in inches, not millimetres.');
+    // (A mm value is refused in the box itself now, Set 3 QA; this is a refusal from the server.)
+    await userEvent.type(within(dialog).getByRole('textbox'), '96 1/3{Enter}');
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('The value is not a whole 1/16 inch.');
   });
 
   it('"These pages have no countertop" is one group click naming the pages shown; a page can say there is one (#1368)', async () => {

@@ -250,7 +250,7 @@ def test_the_snapshot_freezes_every_persons_answer_as_a_mark(
     revision, _anchors, _findings = _answered(session, tmp_path)
     payload = _snapshot(session, _approve(session, revision))
 
-    assert payload.format_version == 3
+    assert payload.format_version == 4
     assert payload.reviewer_marks is not None
     marks = _by_words(payload.reviewer_marks)
     assert marks["Confirmed by AB"].kind == "confirmed"
@@ -473,7 +473,7 @@ def test_the_draft_cloud_pdf_shows_the_same_marks_from_the_live_records(
     } <= texts
 
 
-@pytest.mark.parametrize(("version", "tags"), [(3, True), (2, False)])
+@pytest.mark.parametrize(("version", "tags"), [(4, True), (3, True), (2, False)])
 def test_a_format_3_snapshot_is_drawn_with_tags_and_the_new_cover_only(
     session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, version: int, tags: bool
 ) -> None:
@@ -481,8 +481,9 @@ def test_a_format_3_snapshot_is_drawn_with_tags_and_the_new_cover_only(
     the cover that counts what is clouded wrong; a format-2 snapshot exactly as before."""
     from reports.redline import LabelLayout
 
+    if version < 4:
+        monkeypatch.setattr("app.review.signed_exports.SNAPSHOT_FORMAT_VERSION", version)
     if version == 2:
-        monkeypatch.setattr("app.review.signed_exports.SNAPSHOT_FORMAT_VERSION", 2)
         monkeypatch.setattr("app.review.signed_exports._old_compare_off", lambda: None)
     revision, _anchors, _findings = _answered(session, tmp_path)
     approval = _approve(session, revision)
@@ -496,3 +497,6 @@ def test_a_format_3_snapshot_is_drawn_with_tags_and_the_new_cover_only(
 
     assert given[0]["label_layout"] is (LabelLayout.TAGS if tags else LabelLayout.AS_BEFORE)
     assert (given[0]["review_cover"] is not None) is tags
+    if version == 3:
+        # A format-3 cover is drawn as before: no NOT CHECKED groups (Set 3 QA, format 4 only).
+        assert given[0]["review_cover"].not_checked == ()

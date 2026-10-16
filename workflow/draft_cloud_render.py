@@ -381,6 +381,7 @@ def render_draft_cloud(
     if drawing.artifact is None:
         raise DraftCloudRefused(f"The draft could not be drawn: {drawing.reason}.")
     package = session.get(Package, revision.package_id)
+    screen_open = _screen_open_count(session, package, revision)
     front = _front_page(
         items,
         revision_number=revision.revision_number,
@@ -390,6 +391,7 @@ def render_draft_cloud(
         results=len(rows),
         architect=architect,
         old_compare_left_out=left_out,
+        screen_open=screen_open,
     )
     document = with_banner(front, store.get(drawing.artifact.key).read())
 
@@ -415,6 +417,7 @@ def render_draft_cloud(
         "failures": len(items.failures),
         "needs_a_person": len(items.needs_a_person),
         "not_checked": len(items.not_checked),
+        "open": screen_open if isinstance(screen_open, int) else None,
     }
 
 
@@ -441,6 +444,24 @@ def consume_draft_request(
 # ---------------------------------------------------------------------------
 
 
+def _screen_open_count(
+    session: Session, package: Package | None, revision: PackageRevision
+) -> int | str:
+    """The review screen's own "items need you" count (W1 `header.open`, Set 3 QA), so the cover
+    and the screen print the same number; or why it could not be read, said on the cover."""
+    if package is None:
+        return "the package was not found"
+    from app.review.review_items import review_items_for_revision
+
+    try:
+        listed = review_items_for_revision(
+            session, project_id=package.project_id, package_id=package.id, revision=revision
+        )
+    except Exception as error:  # noqa: BLE001 - said on the cover, never silent
+        return f"{type(error).__name__}: {error}"
+    return listed.header.open
+
+
 def _front_page(
     items: OpenItems,
     *,
@@ -451,6 +472,7 @@ def _front_page(
     results: int,
     architect: ArchitectCompare | None = None,
     old_compare_left_out: int = 0,
+    screen_open: int | str | None = None,
 ) -> bytes:
     width, height = letter
     buffer = BytesIO()
@@ -486,10 +508,23 @@ def _front_page(
         "final cloud PDF is made after a reviewer signs off."
     )
     line("")
-    paragraph(
-        f"{results} result(s) in force. Open items: {len(items.failures)} will be clouded as "
-        f"wrong, {len(items.needs_a_person)} need a person, {len(items.not_checked)} not checked."
-    )
+    if isinstance(screen_open, int):
+        # The screen's own count (Set 3 QA: the screen said 51, the cover 44 + 2); the lists
+        # below count results, and one result can hold several numbers to check.
+        paragraph(
+            f"{results} result(s) in force. Open items: {screen_open}, the same count as the "
+            f"review screen. Results: {len(items.failures)} will be clouded as wrong, "
+            f"{len(items.needs_a_person)} need a person (one result can hold several numbers), "
+            f"{len(items.not_checked)} not checked."
+        )
+    else:
+        paragraph(
+            f"{results} result(s) in force. Open items: {len(items.failures)} will be clouded as "
+            f"wrong, {len(items.needs_a_person)} need a person, {len(items.not_checked)} not "
+            "checked."
+        )
+        if screen_open is not None:
+            paragraph(f"The review screen's count could not be read: {screen_open}.")
     if old_compare_left_out:
         paragraph(old_compare_left_out_words(old_compare_left_out))
     line("")
