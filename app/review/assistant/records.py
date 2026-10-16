@@ -784,9 +784,16 @@ def _architect_what(entry: object) -> str:
     return f"Architect {architect}"
 
 
+def _compare_status(status: object) -> Literal["open", "done", "rechecking"]:
+    if status == "open":
+        return "open"
+    return "rechecking" if status == "rechecking" else "done"
+
+
 def _architect_compare_entries(listed: ReviewItemsOut | None) -> list[dict[str, object]]:
     """Every architect comparison that is not the same, different first, then the ones a person
-    settles (no match, not read), then the ones a rule checks. Records only: never a decision."""
+    settles (no match, not read), then the ones a rule checks. Records only: never a decision; an
+    open one only points the reviewer to its answer on the screen."""
     entries: list[dict[str, object]] = []
     for entry in architect_compare_of(listed):
         result = _field(entry, "result")
@@ -805,8 +812,9 @@ def _architect_compare_entries(listed: ReviewItemsOut | None) -> list[dict[str, 
                 "what": _architect_what(entry),
                 "why": _why(str(_field(entry, "why") or "")),
                 "best_guess": None,
-                # A comparison is a record to read, never an item to answer here.
-                "status": "done",
+                # The entry's own status (open: it waits for the reviewer's answer on the screen);
+                # an entry sent without one is a record to read only.
+                "status": _compare_status(_field(entry, "status")),
             }
         )
     order = {result: index for index, result in enumerate(_LISTED_RESULTS)}
@@ -1018,6 +1026,8 @@ def _prompt_review_list(snapshot: ReviewSnapshot) -> dict[str, object] | None:
                 "view": item.row_label,
                 "what": item.what,
                 "why": item.why,
+                "status": item.status,
+                "needs_reviewer": item.needs_you,
             }
             for item in snapshot.review_items
             if item.group == "architect"

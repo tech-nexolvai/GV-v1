@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
@@ -34,6 +34,8 @@ function entry(id: string, result: ArchitectCompareEntry['result'], extra: Parti
     finding_id: null,
     architect_ref: ref('docv-arch', 4),
     vendor_ref: paired ? ref('docv-vendor', 3) : null,
+    status: result === 'same' || result === 'rule' ? 'done' : 'open',
+    actions: result === 'different' ? ['agree', 'not_this'] : result === 'unpaired' || result === 'unread' ? ['checked_right', 'checked_wrong'] : [],
     ...extra,
   };
 }
@@ -105,6 +107,23 @@ describe('ArchitectCompare', () => {
     expect(onLook).toHaveBeenCalledWith(expect.objectContaining({ key: 'arch:d1' }));
   });
 
+  it('offers only the answers the server lists, and shows an answered one as checked', async () => {
+    const onAct = vi.fn();
+    const entries = [...ENTRIES, entry('d2', 'different', { status: 'done', actions: [] }), entry('d3', 'different', { actions: ['agree', 'some_new_answer'] })];
+    render(<ArchitectCompare entries={entries} counts={COUNTS} onLook={() => {}} onAct={onAct} />);
+    const rows = within(screen.getByRole('list', { name: 'Different' })).getAllByRole('listitem');
+    expect(within(rows[0]).getByRole('button', { name: /^Agree: the vendor is wrong/ })).toBeTruthy();
+    expect(within(rows[0]).getByRole('button', { name: /^Not a difference/ })).toBeTruthy();
+    // Answered: no buttons, a neutral grey check and a word.
+    expect(within(rows[1]).queryByRole('button', { name: /Agree/ })).toBeNull();
+    expect(within(rows[1]).getByText('Checked').querySelector('svg')).toBeTruthy();
+    // An answer the page cannot name is never a button.
+    expect(within(rows[2]).getAllByRole('button')).toHaveLength(2);
+    const need = screen.getByRole('list', { name: 'Need you' });
+    await userEvent.click(within(need).getAllByRole('button', { name: /^Checked by hand: wrong/ })[0]);
+    expect(onAct).toHaveBeenCalledWith(expect.objectContaining({ key: 'arch:u1' }), 'checked_wrong');
+  });
+
   it('is not shown with an empty list (an older package)', () => {
     const { container } = render(<ArchitectCompare entries={[]} counts={null} onLook={() => {}} />);
     expect(container.innerHTML).toBe('');
@@ -118,8 +137,13 @@ describe('ArchitectCompare', () => {
 describe('SimpleReviewPage: Compared with the architect', () => {
   const API = '*/api/v1/projects/proj-demo/packages/pkg-demo';
   let current: ReviewItemsOut;
+  let posted: { key: string; action: string; body: unknown }[] = [];
   const server = setupServer(
     http.get(`${API}/review-items`, () => HttpResponse.json(current)),
+    http.post(`${API}/review-items/:key/:action`, async ({ params, request }) => {
+      posted.push({ key: decodeURIComponent(String(params.key)), action: String(params.action), body: await request.json() });
+      return HttpResponse.json({ ok: true });
+    }),
     http.get(API, () => HttpResponse.json({ id: 'pkg-demo', vendor: 'Sample Stoneworks', current_revision_number: 2 })),
   );
   beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
@@ -164,6 +188,20 @@ describe('SimpleReviewPage: Compared with the architect', () => {
     const at = onOpenPdfs.mock.calls[0][0];
     expect(at.vendor_ref).toBeNull();
     expect(at.architect_ref.location.document_version_id).toBe('docv-arch');
+  });
+
+  it('an answer goes to W3 with no finding; Clear all names exactly the open no-match keys', async () => {
+    posted = [];
+    current = withCompare();
+    renderPage();
+    const section = await screen.findByRole('region', { name: 'Compared with the architect' });
+    await userEvent.click(within(section).getByRole('button', { name: /^Agree: the vendor is wrong/ }));
+    await waitFor(() => expect(posted).toHaveLength(1));
+    expect(posted[0]).toEqual({ key: 'arch:d1', action: 'agree', body: { expected_finding_id: null } });
+    await waitFor(() => expect((within(section).getByRole('button', { name: 'Clear all as not compared' }) as HTMLButtonElement).disabled).toBe(false));
+    await userEvent.click(within(section).getByRole('button', { name: 'Clear all as not compared' }));
+    await waitFor(() => expect(posted).toHaveLength(2));
+    expect(posted[1]).toEqual({ key: 'architect-not-compared', action: 'answer', body: { expected_finding_id: null, expected_keys: ['arch:u1', 'arch:n1'], answer: 'clear_not_compared' } });
   });
 
   it('an older package with no list shows no section', async () => {

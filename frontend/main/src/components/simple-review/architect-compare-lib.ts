@@ -1,4 +1,4 @@
-import type { ArchitectCompareCounts, ArchitectCompareEntry, ArchitectCompareResult } from '@/api/review-items';
+import type { ArchitectCompareCounts, ArchitectCompareEntry, ArchitectCompareResult, ItemAction } from '@/api/review-items';
 
 // The "Compared with the architect" section's words and groups: what the server sent, never worked out.
 
@@ -42,3 +42,16 @@ export function compareWhat(entry: ArchitectCompareEntry): string {
   return `Architect ${entry.architect_text}`;
 }
 
+
+/** The one-click answers an entry may offer, in the reviewer's words. Others the server lists are ignored. */
+export const ANSWER_WORDS: Partial<Record<ItemAction, string>> = {
+  agree: 'Agree: the vendor is wrong',
+  not_this: 'Not a difference',
+  checked_right: 'Checked by hand: right',
+  checked_wrong: 'Checked by hand: wrong',
+};
+
+/** The keys "Clear all as not compared" names: every open entry with no match or not read. */
+export function notComparedKeys(entries: readonly ArchitectCompareEntry[]): string[] {
+  return entries.filter((entry) => GROUP_OF[entry.result] === 'need_you' && entry.status === 'open').map((entry) => entry.key);
+}

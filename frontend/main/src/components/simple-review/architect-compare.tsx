@@ -1,12 +1,13 @@
 import { useId, useState, type ReactNode } from 'react';
-import { ChevronRight, Equal, FileSearch, Ruler } from 'lucide-react';
+import { Check, ChevronRight, Equal, FileSearch, Loader2, Ruler, X } from 'lucide-react';
 
-import type { ArchitectCompareCounts, ArchitectCompareEntry, ArchitectCompareResult } from '@/api/review-items';
-import { compareCounts, compareSummary, compareWhat, GROUP_OF, GROUP_TITLE, type CompareGroup } from './architect-compare-lib';
+import { isItemAction, type ArchitectCompareCounts, type ArchitectCompareEntry, type ArchitectCompareResult, type ItemAction } from '@/api/review-items';
+import { ANSWER_WORDS, compareCounts, compareSummary, compareWhat, GROUP_OF, GROUP_TITLE, notComparedKeys, type CompareGroup } from './architect-compare-lib';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
-import { NumText, PageTag } from './words';
+import { NumText, PageTag, StatusWord } from './words';
+import type { SaveError } from './failures-strip';
 
 /** A rule's recorded outcome, in the reviewer's words; anything else is shown as sent. */
 const RULE_OUTCOME_WORDS: Record<string, string> = {
@@ -67,11 +68,23 @@ function Numbers({ entry }: { entry: ArchitectCompareEntry }) {
   );
 }
 
-function Row({ entry, onLook }: { entry: ArchitectCompareEntry; onLook: (entry: ArchitectCompareEntry) => void }) {
+/** What the rows need from the page: who is saving, what failed, and how to answer. */
+interface Answers {
+  busyKey: string | null;
+  errors: Readonly<Record<string, SaveError>>;
+  onAct: (entry: ArchitectCompareEntry, action: ItemAction) => void;
+}
+
+function Row({ entry, onLook, answers }: { entry: ArchitectCompareEntry; onLook: (entry: ArchitectCompareEntry) => void; answers: Answers }) {
   const what = compareWhat(entry);
   const outcome = entry.rule_outcome ? (RULE_OUTCOME_WORDS[entry.rule_outcome] ?? entry.rule_outcome) : null;
+  const status = entry.status ?? null;
+  // Only the answers the server lists, and only ones this page can name; none once answered.
+  const offered = status === 'open' ? (entry.actions ?? []).filter(isItemAction).filter((action) => action in ANSWER_WORDS) : [];
+  const busy = answers.busyKey === entry.key;
+  const error = answers.errors[entry.key];
   return (
-    <li data-slot="compare-row" data-entry-key={entry.key} data-result={entry.result} className="flex min-h-14 flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2 sm:px-6">
+    <li data-slot="compare-row" data-entry-key={entry.key} data-result={entry.result} tabIndex={-1} className="flex min-h-14 flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2 outline-none focus-visible:bg-accent/60 sm:px-6">
       <span className="shrink-0 basis-full sm:w-28 sm:basis-auto">
         <ResultWord result={entry.result} />
       </span>
@@ -86,10 +99,25 @@ function Row({ entry, onLook }: { entry: ArchitectCompareEntry; onLook: (entry: 
           entry.result !== 'same' && <NumText text={entry.why} className="block text-[13px] leading-5 text-muted-foreground" />
         )}
       </span>
-      <Button size="sm" variant="ghost" className="shrink-0" onClick={() => onLook(entry)} aria-label={`Look at ${what}, page ${entry.page}`}>
-        <FileSearch aria-hidden="true" />
-        Look
-      </Button>
+      <span className="flex shrink-0 flex-wrap items-center gap-1">
+        <Button size="sm" variant="ghost" onClick={() => onLook(entry)} aria-label={`Look at ${what}, page ${entry.page}`}>
+          <FileSearch aria-hidden="true" />
+          Look
+        </Button>
+        {offered.map((action) => (
+          <Button key={action} size="sm" variant="outline" disabled={answers.busyKey !== null} onClick={() => answers.onAct(entry, action)} aria-label={`${ANSWER_WORDS[action]}: ${what}`}>
+            {busy ? <Loader2 aria-hidden="true" className="animate-spin motion-reduce:animate-none" /> : action === 'checked_wrong' || action === 'agree' ? <X aria-hidden="true" /> : <Check aria-hidden="true" />}
+            {ANSWER_WORDS[action]}
+          </Button>
+        ))}
+        {(status === 'done' || status === 'rechecking') && entry.result !== 'same' && <StatusWord status={status} />}
+      </span>
+      {error && (
+        <p role="alert" className="flex basis-full flex-wrap items-center gap-2 text-[13px] text-outcome-fail-fg">
+          {error.message}
+          <Button size="xs" variant="ghost" onClick={error.retry}>Retry</Button>
+        </p>
+      )}
     </li>
   );
 }
@@ -100,6 +128,8 @@ function Group({
   defaultOpen,
   foldWords,
   onLook,
+  answers,
+  extra = null,
 }: {
   group: CompareGroup;
   entries: readonly ArchitectCompareEntry[];
@@ -107,6 +137,9 @@ function Group({
   /** The fold button's words when closed, e.g. "Show all 80". */
   foldWords: (n: number) => string;
   onLook: (entry: ArchitectCompareEntry) => void;
+  answers: Answers;
+  /** A group-wide answer shown under the group's title while it is open. */
+  extra?: ReactNode;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const listId = useId();
@@ -128,10 +161,11 @@ function Group({
           {!open && <span className="ml-auto text-[13px] font-normal text-muted-foreground">{foldWords(entries.length)}</span>}
         </button>
       </h3>
+      {open && extra}
       {open && (
         <ul id={listId} aria-label={title} className="divide-y divide-border border-t border-border">
           {entries.map((entry) => (
-            <Row key={entry.key} entry={entry} onLook={onLook} />
+            <Row key={entry.key} entry={entry} onLook={onLook} answers={answers} />
           ))}
         </ul>
       )}
@@ -142,30 +176,58 @@ function Group({
 /**
  * "Compared with the architect": every number the architect wrote, set beside the vendor's. Different
  * ones are open, the ones a person must settle (no match, not read) next, then the ones a rule checks,
- * and the same ones folded. Look opens both drawings with both numbers ringed. Hidden when the list
- * is empty (an older package). Only shows what the server compared; it works nothing out itself.
+ * and the same ones folded. Look opens both drawings with both numbers ringed; each open entry offers
+ * the answers the server lists, and the no-match group can be cleared as not compared in one click.
+ * Hidden when the list is empty (an older package). It works nothing out itself.
  */
 export function ArchitectCompare({
   entries,
   counts,
   onLook,
+  busyKey = null,
+  errors = {},
+  onAct = () => undefined,
+  groupKey = 'group:not-compared',
+  onClearNotCompared = null,
 }: {
   entries: readonly ArchitectCompareEntry[];
   counts: ArchitectCompareCounts | null;
   onLook: (entry: ArchitectCompareEntry) => void;
+  busyKey?: string | null;
+  errors?: Readonly<Record<string, SaveError>>;
+  onAct?: (entry: ArchitectCompareEntry, action: ItemAction) => void;
+  /** Where the "Clear all as not compared" busy state and save error are kept. */
+  groupKey?: string;
+  /** "Clear all as not compared": null hides the button. */
+  onClearNotCompared?: (() => void) | null;
 }) {
   if (entries.length === 0) return null;
   const shown = compareCounts(entries, counts);
+  const answers: Answers = { busyKey, errors, onAct };
   const by = (group: CompareGroup) => entries.filter((entry) => GROUP_OF[entry.result] === group);
-  const groups: { group: CompareGroup; open: boolean; fold: (n: number) => string }[] = [
+  const clearable = notComparedKeys(entries).length;
+  const groupError = errors[groupKey];
+  const clear =
+    onClearNotCompared && clearable > 0 ? (
+      <div className="flex flex-wrap items-center gap-2 px-4 pb-2 sm:px-6">
+        <Button size="sm" variant="outline" disabled={busyKey !== null} onClick={onClearNotCompared}>
+          {busyKey === groupKey && <Loader2 aria-hidden="true" className="animate-spin motion-reduce:animate-none" />}
+          Clear all as not compared
+        </Button>
+        {groupError && (
+          <p role="alert" className="flex basis-full flex-wrap items-center gap-2 text-[13px] text-outcome-fail-fg">
+            {groupError.message}
+            <Button size="xs" variant="ghost" onClick={groupError.retry}>Retry</Button>
+          </p>
+        )}
+      </div>
+    ) : null;
+  const groups: { group: CompareGroup; open: boolean; fold: (n: number) => string; extra?: ReactNode }[] = [
     { group: 'different', open: true, fold: () => 'Show' },
-    { group: 'need_you', open: true, fold: () => 'Show' },
+    { group: 'need_you', open: true, fold: () => 'Show', extra: clear },
     { group: 'rule', open: false, fold: (n) => `Show ${n}` },
     { group: 'same', open: false, fold: (n) => `Show all ${n}` },
   ];
-  const body: ReactNode[] = groups.map(({ group, open, fold }) => (
-    <Group key={group} group={group} entries={by(group)} defaultOpen={open} foldWords={fold} onLook={onLook} />
-  ));
   return (
     <section aria-labelledby="architect-compare-title" data-slot="architect-compare" className="flex min-w-0 flex-col gap-3">
       <div className="flex flex-col gap-1">
@@ -176,7 +238,11 @@ export function ArchitectCompare({
           <NumText text={compareSummary(shown)} />
         </p>
       </div>
-      <div className="overflow-hidden rounded-xl border border-border">{body}</div>
+      <div className="overflow-hidden rounded-xl border border-border">
+        {groups.map(({ group, open, fold, extra }) => (
+          <Group key={group} group={group} entries={by(group)} defaultOpen={open} foldWords={fold} onLook={onLook} answers={answers} extra={extra} />
+        ))}
+      </div>
     </section>
   );
 }

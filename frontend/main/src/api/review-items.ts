@@ -79,6 +79,10 @@ export interface ArchitectCompareEntry {
   finding_id: string | null;
   architect_ref: ArchitectCompareRef | null;
   vendor_ref: ArchitectCompareRef | null;
+  /** Like other review items: open needs a person; done was answered; rechecking waits. Absent on older answers. */
+  status?: ReviewStatus;
+  /** The W3 answers this entry offers (different: agree / not_this; unpaired, unread: checked_right / checked_wrong). */
+  actions?: string[];
 }
 export type ArchitectCompareCounts = Record<ArchitectCompareResult, number>;
 
@@ -114,6 +118,7 @@ export const ITEM_ACTIONS = [
   'mark_cabinets',
   'use_cabinet_run',
   'job_values',
+  'clear_not_compared',
 ] as const;
 export type ItemAction = (typeof ITEM_ACTIONS)[number];
 
@@ -161,6 +166,12 @@ export type ActionExtra = Omit<ActionBody, 'expected_finding_id'>;
 /** W3's group keys: every open "Not checked" result, and every page listed with no countertop. */
 export const NOT_CHECKED_GROUP = 'not-checked';
 export const PAGES_GROUP = 'no-countertop-pages';
+/**
+ * "Clear all as not compared": every open architect number with no vendor match (or not read), in one
+ * call naming exactly the keys shown (`expected_keys`). The group key and answer name are the one
+ * place to change if the backend names them differently.
+ */
+export const NOT_COMPARED_GROUP = 'architect-not-compared';
 
 /** The calls the page makes. The app uses `liveReviewItemsApi`; tests and the UI kit pass their own. */
 export interface ReviewItemsApi {
@@ -233,6 +244,7 @@ const W3_ACTION: Record<ItemAction, 'confirm' | 'fix' | 'answer' | 'agree' | 'cl
   mark_cabinets: 'answer',
   use_cabinet_run: 'answer',
   job_values: 'answer',
+  clear_not_compared: 'answer',
 };
 
 /** The URL of a stored picture path that the API hands out (`zoom_ref`). */

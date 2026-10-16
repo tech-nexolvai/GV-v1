@@ -156,3 +156,21 @@ def test_without_the_section_nothing_changes() -> None:
 
 def test_a_page_question_keeps_the_page_answer() -> None:
     assert not is_architect_difference_question("Is page 4 different from the architect?")
+
+
+def test_an_open_comparison_waits_for_the_reviewer_and_gets_only_the_list_button() -> None:
+    from app.review.assistant.contract import Draft
+
+    entries = [_entry(2, "different", status="open", actions=["agree", "not_this"])]
+    snapshot = _snapshot(entries)
+    (item,) = [entry for entry in snapshot.review_items if entry.group == "architect"]
+    assert item.needs_you and item.status == "open"
+    # The guard lets the review-list button point at it, because it is open.
+    check(
+        Draft(text="{" + item.id + ".what}.", actions=(("open_review_item", item.id),)),
+        snapshot,
+        by_model=False,
+    )
+    # A rechecking one does not wait.
+    rechecking = _snapshot([_entry(2, "different", status="rechecking")])
+    assert not next(e for e in rechecking.review_items if e.group == "architect").needs_you
