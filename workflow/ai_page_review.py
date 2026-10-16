@@ -294,7 +294,8 @@ def persist_ai_page_review(
                 reason=question,
                 model_id=AI_REVIEW_MODEL,
                 prompt_id=AI_REVIEW_PROMPT_ID,
-                cost_micros=0,
+                # Not asked: no call, so no cost is recorded for it (null, never a stand-in zero).
+                cost_micros=None,
                 dropped=[],
             )
             session.add(review)
