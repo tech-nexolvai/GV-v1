@@ -116,6 +116,45 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/chats/{chat_id}/messages/{message_id}/findings.csv": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The answer's findings with their checks, as a spreadsheet (CSV) */
+        get: operations["findings_spreadsheet_api_v1_chats__chat_id__messages__message_id__findings_csv_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/chats/{chat_id}/messages/{message_id}/markup-pdf": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * The answer's findings drawn on a copy of the vendor's PDF (by code, no AI call)
+         * @description Red clouds and notes ("AI n: item, architect X; vendor Y") at each finding's vendor box (else
+         *     its architect box), "AI markup: draft, not GV's signed review" on page 1, and a notes page
+         *     listing every finding. Kept as a file of the answer; asking again returns the same file.
+         */
+        post: operations["markup_pdf_api_v1_chats__chat_id__messages__message_id__markup_pdf_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/chats/{chat_id}/pictures/{picture_id}": {
         parameters: {
             query?: never;
@@ -4128,6 +4167,27 @@ export interface components {
             /** Stopped */
             stopped?: ("cost_cap" | "turn_limit" | "cancelled" | "error") | null;
         };
+        /**
+         * ChatBoxOut
+         * @description Where an item is: PDF points of the upload page as shown, origin top-left.
+         */
+        ChatBoxOut: {
+            /**
+             * File
+             * @description The upload's file name the box is on.
+             */
+            file?: string | null;
+            /** Page */
+            page: number;
+            /** X0 */
+            x0: number;
+            /** X1 */
+            x1: number;
+            /** Y0 */
+            y0: number;
+            /** Y1 */
+            y1: number;
+        };
         /** ChatCancelOut */
         ChatCancelOut: {
             /** Cancelled */
@@ -4135,6 +4195,56 @@ export interface components {
         };
         /** @enum {string} */
         ChatCapHit: "message" | "package";
+        /** ChatCoverageBlock */
+        ChatCoverageBlock: {
+            coverage: components["schemas"]["ChatCoverageOut"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "coverage";
+        };
+        /** ChatCoverageCountsOut */
+        ChatCoverageCountsOut: {
+            /** Different */
+            different: number;
+            /** Not Comparable */
+            not_comparable: number;
+            /** Not Opened */
+            not_opened: number;
+            /** Same */
+            same: number;
+            /** Total */
+            total: number;
+        };
+        /**
+         * ChatCoverageOut
+         * @description Every page of the vendor's file (a page never recorded is not_opened), and the counts.
+         */
+        ChatCoverageOut: {
+            counts: components["schemas"]["ChatCoverageCountsOut"];
+            /** Pages */
+            pages: components["schemas"]["ChatCoveragePageOut"][];
+        };
+        /** ChatCoveragePageOut */
+        ChatCoveragePageOut: {
+            /**
+             * By
+             * @description Who recorded it; null: never recorded.
+             */
+            by?: string | null;
+            /** Note */
+            note?: string | null;
+            /** Page */
+            page: number;
+            /** Pair Page */
+            pair_page?: number | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "same" | "different" | "not_comparable" | "not_opened";
+        };
         /** ChatCreatedOut */
         ChatCreatedOut: {
             /**
@@ -4165,6 +4275,153 @@ export interface components {
             size: number;
             /** Url */
             url: string;
+        };
+        /** ChatFindingBlock */
+        ChatFindingBlock: {
+            finding: components["schemas"]["ChatFindingOut"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "finding";
+        };
+        /**
+         * ChatFindingChecksOut
+         * @description The checks run on a finding, by code (and one cheap independent AI read).
+         */
+        ChatFindingChecksOut: {
+            /**
+             * Arithmetic
+             * @description adds_up | does_not_add_up | not_a_number (vendor arithmetic)
+             */
+            arithmetic?: string | null;
+            /** Lead Checked */
+            lead_checked: boolean;
+            /**
+             * Printed Architect
+             * @description match | not_found | no_text | no_box | not_a_number | not_run
+             */
+            printed_architect: string;
+            /** Printed Vendor */
+            printed_vendor: string;
+            /**
+             * Rule
+             * @description agrees | disagrees | not_run (rules)
+             */
+            rule?: string | null;
+            /**
+             * Second Read
+             * @description agrees | disagrees | unsure | not_run
+             */
+            second_read: string;
+        };
+        /**
+         * ChatFindingDroppedBlock
+         * @description A finding the assistant dropped (in the place its finding block was).
+         */
+        ChatFindingDroppedBlock: {
+            /** Finding Id */
+            finding_id: string;
+            /** Reason */
+            reason: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "finding_dropped";
+        };
+        /**
+         * ChatFindingInchesOut
+         * @description Code's numbers (decimal strings, inches): never the AI's arithmetic.
+         */
+        ChatFindingInchesOut: {
+            /** Architect */
+            architect?: string | null;
+            /**
+             * Difference
+             * @description Vendor minus architect.
+             */
+            difference?: string | null;
+            /** Vendor */
+            vendor?: string | null;
+        };
+        /**
+         * ChatFindingOut
+         * @description One difference the assistant reported, with code-made evidence and checks.
+         */
+        ChatFindingOut: {
+            arch_box?: components["schemas"]["ChatBoxOut"] | null;
+            /**
+             * Arch Picture Id
+             * @description Evidence crop: GET /chats/{chat_id}/pictures/{picture_id}.
+             */
+            arch_picture_id?: string | null;
+            /** Architect */
+            architect: string;
+            /**
+             * Category
+             * @enum {string}
+             */
+            category: "countertop" | "cabinet" | "other";
+            checks?: components["schemas"]["ChatFindingChecksOut"] | null;
+            /**
+             * Created By
+             * @description "lead" or "helper:<n>".
+             */
+            created_by: string;
+            /** Id */
+            id: string;
+            inches?: components["schemas"]["ChatFindingInchesOut"] | null;
+            /** Item */
+            item: string;
+            /** Page */
+            page: number;
+            /** Parts */
+            parts?: string[] | null;
+            /** Printed Total */
+            printed_total?: string | null;
+            /** Round */
+            round?: number | null;
+            /** Round Status */
+            round_status?: ("fixed_in_later_round" | "still_wrong" | "new_in_later_round" | "not_in_later_round" | "single_round") | null;
+            /** Rule Check Id */
+            rule_check_id?: string | null;
+            second_read_values?: components["schemas"]["ChatSecondReadValuesOut"] | null;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "architect" | "brand_prototype" | "rules" | "vendor_arithmetic";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "different" | "check" | "same";
+            /** Trust Level */
+            trust_level?: ("confirmed" | "likely" | "to_check") | null;
+            /** Vendor */
+            vendor: string;
+            vendor_box?: components["schemas"]["ChatBoxOut"] | null;
+            /** Vendor Picture Id */
+            vendor_picture_id?: string | null;
+            /** Verified */
+            verified: boolean;
+            /** Vs Page */
+            vs_page?: number | null;
+            /** Why */
+            why?: string | null;
+        };
+        /**
+         * ChatGvChecksOut
+         * @description Of the differences GV Review's own checks recorded, how many this answer includes.
+         */
+        ChatGvChecksOut: {
+            /** Included */
+            included: number;
+            /** Left Out */
+            left_out: components["schemas"]["ChatRecordedDifferenceOut"][];
+            /** Recorded */
+            recorded: number;
         };
         /** ChatListOut */
         ChatListOut: {
@@ -4199,7 +4456,7 @@ export interface components {
          */
         ChatMessageOut: {
             /** Blocks */
-            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"])[] | null;
+            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"])[] | null;
             /** @description With `stopped: cost_cap`: `message` (this answer's cap) or `package` (the drawing set's budget ran out). */
             cap_hit?: components["schemas"]["ChatCapHit"] | null;
             /** Cost Usd */
@@ -4300,6 +4557,44 @@ export interface components {
             running_message_id?: string | null;
             /** Title */
             title: string | null;
+        };
+        /** ChatRecordedDifferenceOut */
+        ChatRecordedDifferenceOut: {
+            /** Id */
+            id?: string | null;
+            /** Page */
+            page?: number | null;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "code" | "ai_page_review";
+            /** What */
+            what: string;
+        };
+        /** ChatRoundsOut */
+        ChatRoundsOut: {
+            /** Earlier Items */
+            earlier_items: number;
+            /** Fixed */
+            fixed: number;
+            /** Line */
+            line: string;
+            /** New */
+            new: number;
+            /** Not In Later Round */
+            not_in_later_round: number;
+            /** Rounds */
+            rounds: number[];
+            /** Still Wrong */
+            still_wrong: number;
+        };
+        /** ChatSecondReadValuesOut */
+        ChatSecondReadValuesOut: {
+            /** Architect */
+            architect?: string | null;
+            /** Vendor */
+            vendor?: string | null;
         };
         /** ChatStepBlock */
         ChatStepBlock: {
@@ -4405,6 +4700,77 @@ export interface components {
              * @enum {string}
              */
             type: "thinking";
+        };
+        /** ChatTrustBlock */
+        ChatTrustBlock: {
+            trust: components["schemas"]["ChatTrustOut"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "trust";
+        };
+        /** ChatTrustChecksOut */
+        ChatTrustChecksOut: {
+            /** Arithmetic */
+            arithmetic: {
+                [key: string]: number;
+            };
+            /** Lead Checked */
+            lead_checked: number;
+            /** Printed At Spot */
+            printed_at_spot: {
+                [key: string]: number;
+            };
+            /** Rules */
+            rules: components["schemas"]["ChatTrustRuleOut"][];
+            /** Second Read */
+            second_read: {
+                [key: string]: number;
+            };
+        };
+        /** ChatTrustCoverageOut */
+        ChatTrustCoverageOut: {
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            /** Pages Not Opened */
+            pages_not_opened: number[];
+        };
+        /**
+         * ChatTrustOut
+         * @description Why the answer can be believed, built by code from its findings and coverage.
+         */
+        ChatTrustOut: {
+            /** By Category */
+            by_category: {
+                [key: string]: {
+                    [key: string]: number;
+                };
+            };
+            checks: components["schemas"]["ChatTrustChecksOut"];
+            /**
+             * Counts
+             * @description confirmed, likely, to_check, total.
+             */
+            counts: {
+                [key: string]: number;
+            };
+            coverage?: components["schemas"]["ChatTrustCoverageOut"] | null;
+            gv_checks?: components["schemas"]["ChatGvChecksOut"] | null;
+            /** Not Checked */
+            not_checked: string[];
+            rounds?: components["schemas"]["ChatRoundsOut"] | null;
+        };
+        /** ChatTrustRuleOut */
+        ChatTrustRuleOut: {
+            /** Finding Id */
+            finding_id?: string | null;
+            /** Result */
+            result?: string | null;
+            /** Rule Check Id */
+            rule_check_id?: string | null;
         };
         /** CheckOut */
         CheckOut: {
@@ -10389,6 +10755,87 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
+            };
+        };
+    };
+    findings_spreadsheet_api_v1_chats__chat_id__messages__message_id__findings_csv_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                chat_id: string;
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such stored answer in this chat (or no access). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    markup_pdf_api_v1_chats__chat_id__messages__message_id__markup_pdf_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                chat_id: string;
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatFileOut"];
+                };
+            };
+            /** @description No such stored answer in this chat (or no access). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `uploads_missing`: the chat has no copy of the set's PDFs. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `no_findings`: the answer has no findings to mark up. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

@@ -8,7 +8,9 @@ read-only at `/mnt/skills/gv-review`. No network, no key, no other package, no d
 **The tools, with claude.ai's names and fields:** `bash_tool {command, description}`, `view {path,
 description, view_range?}`, `create_file {path, file_text, description}`, `str_replace {path,
 old_str, new_str, description}`, `present_files {filepaths}`, `TaskCreate`, `TaskUpdate`, `Agent
-{description, prompt, model?}` (run by the engine), and our `review_results {page?}`.
+{description, prompt, model?}` (run by the engine), and our `review_results {page?}`; chat v2's
+`report_finding`, `update_finding`, `drop_finding` and `set_coverage` (`chat_findings.py`, run by
+the engine; helpers have `report_finding` and `set_coverage`).
 
 **Read-only is structural.** No tool reaches the review's records except `review_results`, which
 reads them. `create_file` and `str_replace` write only inside `/home/claude` and
@@ -30,13 +32,19 @@ import os
 import re
 import shutil
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
 from typing import Any, Final
 from uuid import uuid4
 
+from app.review.assistant.chat_findings import (
+    DROP_FINDING,
+    REPORT_FINDING,
+    SET_COVERAGE,
+    UPDATE_FINDING,
+)
 from app.review.assistant.sandbox import (
     OUTPUTS,
     SCRATCH,
@@ -94,7 +102,10 @@ create_file and str_replace write files in {SCRATCH} or {OUTPUTS}; present_files
 the reviewer; TaskCreate and TaskUpdate keep a task list the reviewer sees; Agent starts a helper \
 with bash_tool, view, create_file and str_replace on this computer (up to {MAX_AGENTS} run at once: \
 give each everything it needs, and check what a helper reports before you state it); \
-review_results reads what GV Review's own checks recorded for this set.
+review_results reads what GV Review's own checks recorded for this set; report_finding records \
+each difference you find, with boxes so the app crops the evidence, checks it and draws the table \
+(update_finding, drop_finding as you check); set_coverage records the pages you compared (a \
+whole-set answer accounts for every page).
 
 Three GV facts:
 - Measurements are in inches. Answer in inches.
@@ -102,18 +113,24 @@ Three GV facts:
 notes, never the vendor's or the architect's numbers.
 - You cannot change the review. Nothing you do records a result; the reviewer decides and signs off.
 
-Write your answer in markdown."""
+How to answer: match the question. A yes/no or a number: one line. "Summarize": one or two lines. \
+A list: a short list. A comparison: report_finding for each item, then at most two plain lines; \
+never repeat the findings as a table. No preamble, no disclaimer, no restating the question. Say in \
+one line what you did not check when it matters. An unclear question: ask one short question \
+back. Write in markdown."""
 
 HELPER_SYSTEM_PROMPT: Final = f"""\
 You are a helper agent working for Claude inside GV Review, on part of one drawing set of \
 countertop and cabinet shop drawings. You share Claude's Linux computer (no internet access): the \
 PDFs read-only in {UPLOADS}, the working folder {SCRATCH}, {OUTPUTS}, and GV's review skill in \
 {SKILLS} (read SKILL.md there when your task is a review). Your tools: bash_tool, view, \
-create_file and str_replace.
+create_file, str_replace, report_finding and set_coverage.
 
-Do the task you are given. Then reply with your report in markdown: what you found, with page \
-numbers and the values as printed, and what you could not read or did not get to. Measurements \
-are in inches. GV's markup (annotations GV reviewers added to the PDFs) is GV's notes, never the \
+Do the task you are given. Record each difference you find with report_finding: both values as \
+printed, and boxes (PDF points of the page as shown, origin top-left) so the app can crop the \
+evidence. Record the pages you compared with set_coverage. Then reply with your report in \
+markdown: what you found, with page numbers and the values as printed, and what you could not \
+read or did not get to. Measurements are in inches. GV's markup (annotations GV reviewers added to the PDFs) is GV's notes, never the \
 vendor's or the architect's numbers. Never guess a number you cannot read."""
 
 _BASH: Final[Mapping[str, Any]] = {
@@ -293,8 +310,19 @@ LEAD_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     _TASK_UPDATE,
     _AGENT,
     _RESULTS,
+    REPORT_FINDING,
+    UPDATE_FINDING,
+    DROP_FINDING,
+    SET_COVERAGE,
 )
-HELPER_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (_BASH, _VIEW, _CREATE, _REPLACE)
+HELPER_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
+    _BASH,
+    _VIEW,
+    _CREATE,
+    _REPLACE,
+    REPORT_FINDING,
+    SET_COVERAGE,
+)
 
 _DEFAULT_LABELS: Final[Mapping[str, str]] = {
     "bash_tool": "Ran a command",
@@ -468,6 +496,8 @@ class ChatTools:
     sandbox: Sandbox
     page_count: int = 0
     results: ResultsLoader | None = None
+    uploads: Sequence[Mapping[str, Any]] = ()
+    """The set's PDFs as copied into the chat (`uploads.json`): name, pages, kind."""
     register_file: FileRegistrar | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
 

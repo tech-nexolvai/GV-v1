@@ -14,6 +14,9 @@ anything else is a 404 that says nothing. The routes, under `/api/v1`:
   message's events so far, then live until `message_end`; a finished one's `message_end` at once.
 - `POST /chats/{chat_id}/cancel`: stop the message being answered (the only way to stop it).
 - `GET  /chats/{chat_id}/files/{file_id}`, `GET /chats/{chat_id}/pictures/{picture_id}`.
+- `POST /chats/{chat_id}/messages/{message_id}/markup-pdf`: the answer's findings drawn by code on a
+  copy of the vendor's PDF (clouds, notes, the draft stamp, a notes page), kept as a chat file; the
+  same file every time for the same answer. `GET .../findings.csv`: the findings with their checks.
 
 The message runs in its own thread (`chat_service.run_message`) until it ends or Stop is pressed,
 like claude.ai: the browser going away (a closed tab, a reload) does not stop it, and it is stored
@@ -27,6 +30,7 @@ import hashlib
 import json
 import logging
 import threading
+import uuid
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
@@ -35,9 +39,10 @@ from typing import Annotated, Any, Final
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.api.dependencies import ARTIFACT_STORE_STATE, get_session
@@ -58,12 +63,14 @@ from app.review.assistant.chat_contract import (
     AssistantModelsOut,
     ChatCancelOut,
     ChatCreatedOut,
+    ChatFileOut,
     ChatListOut,
     ChatMessageIn,
     ChatOut,
 )
 from app.review.assistant.chat_engine import cost_text
 from app.review.assistant.chat_feed import MessageFeed
+from app.review.assistant.chat_findings import live_findings, make_markup_file
 from app.review.assistant.chat_provider import (
     AnthropicSdkProvider,
     ChatProvider,
@@ -88,9 +95,11 @@ from app.review.assistant.chat_service import (
     run_message,
 )
 from app.review.assistant.chat_store import (
+    add_file,
     chat_summaries,
     chat_title,
     create_chat,
+    file_out,
     files_of,
     first_question,
     message_out,
@@ -98,6 +107,7 @@ from app.review.assistant.chat_store import (
     package_name,
 )
 from app.review.assistant.chat_tools import ResultsLoader
+from app.review.assistant.chat_trust import findings_csv
 from app.review.assistant.sandbox import ChatWorkspace, Sandbox, open_sandbox
 from app.runs.rates import ModelRates, rates_from_environment
 
@@ -386,6 +396,112 @@ def read_picture(
     if not path.is_file():
         raise _not_found()
     return FileResponse(path, media_type="image/png")
+
+
+# ---- an answer's findings: the marked-up PDF and the CSV -----------------------------------------
+
+#: A marked-up PDF's file id is made from its answer's id, so asking twice finds the first file.
+_MARKUP_NAMESPACE: Final = uuid.UUID("6c1f4a8e-1d1b-4c6e-9a54-6a1d2e7f0b3c")
+
+
+def _answer(session: Session, chat_id: UUID, message_id: UUID) -> AssistantChatMessage:
+    row = session.get(AssistantChatMessage, message_id)
+    if row is None or row.chat_id != chat_id or row.role != "assistant":
+        raise _not_found()
+    return row
+
+
+@router.post(
+    "/chats/{chat_id}/messages/{message_id}/markup-pdf",
+    response_model=ChatFileOut,
+    summary="The answer's findings drawn on a copy of the vendor's PDF (by code, no AI call)",
+    responses={
+        404: {"description": "No such stored answer in this chat (or no access)."},
+        409: {"description": "`uploads_missing`: the chat has no copy of the set's PDFs."},
+        422: {"description": "`no_findings`: the answer has no findings to mark up."},
+    },
+)
+def markup_pdf(
+    request: Request,
+    chat_id: UUID,
+    message_id: UUID,
+    principal: Authenticated,
+    session: Annotated[Session, Depends(get_session)],
+) -> ChatFileOut:
+    """Red clouds and notes ("AI n: item, architect X; vendor Y") at each finding's vendor box (else
+    its architect box), "AI markup: draft, not GV's signed review" on page 1, and a notes page
+    listing every finding. Kept as a file of the answer; asking again returns the same file."""
+    _chat(session, chat_id, principal)
+    row = _answer(session, chat_id, message_id)
+    findings = live_findings(row.blocks)
+    if not findings:
+        raise CodedHTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "no_findings",
+            "This answer has no findings to mark up.",
+        )
+    file_id = uuid.uuid5(_MARKUP_NAMESPACE, str(message_id))
+    workspace = ChatWorkspace(_chat_folder(request, chat_id))
+    kept = workspace.files / str(file_id)
+    existing = session.get(AssistantChatFile, file_id)
+    if existing is not None and kept.is_file():
+        return file_out(existing)
+    scratch = workspace.files / f"{file_id}.partial"
+    try:
+        made = make_markup_file(workspace, findings, scratch)
+    except LookupError:
+        raise CodedHTTPException(
+            status.HTTP_409_CONFLICT,
+            "uploads_missing",
+            "This chat has no copy of the drawing set's PDFs. Ask a question first.",
+        ) from None
+    if existing is not None:
+        # The row is there but its file was lost: the same drawing again.
+        scratch.replace(kept)
+        return file_out(existing)
+    scratch.replace(kept)
+    try:
+        added = add_file(
+            session,
+            file_id=file_id,
+            chat_id=chat_id,
+            message_id=message_id,
+            name=made.name,
+            size=made.size,
+            mime="application/pdf",
+            sha256=made.sha256,
+        )
+        session.commit()
+    except IntegrityError:
+        # Asked twice at once: the other request's row stands, with the same drawing.
+        session.rollback()
+        other = session.get(AssistantChatFile, file_id)
+        if other is None:
+            raise
+        return file_out(other)
+    return file_out(added)
+
+
+@router.get(
+    "/chats/{chat_id}/messages/{message_id}/findings.csv",
+    response_class=Response,
+    summary="The answer's findings with their checks, as a spreadsheet (CSV)",
+    responses={404: {"description": "No such stored answer in this chat (or no access)."}},
+)
+def findings_spreadsheet(
+    chat_id: UUID,
+    message_id: UUID,
+    principal: Authenticated,
+    session: Annotated[Session, Depends(get_session)],
+) -> Response:
+    _chat(session, chat_id, principal)
+    row = _answer(session, chat_id, message_id)
+    body = findings_csv(live_findings(row.blocks))
+    return Response(
+        content=body.encode("utf-8"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="findings.csv"'},
+    )
 
 
 # ---- one message ---------------------------------------------------------------------------------

@@ -19,9 +19,15 @@ __all__ = [
     "AssistantModelsOut",
     "ChatAgentOut",
     "ChatBlock",
+    "ChatBoxOut",
     "ChatCancelOut",
+    "ChatCoverageBlock",
+    "ChatCoverageOut",
     "ChatCreatedOut",
     "ChatFileOut",
+    "ChatFindingBlock",
+    "ChatFindingDroppedBlock",
+    "ChatFindingOut",
     "ChatListOut",
     "ChatMessageIn",
     "ChatMessageOut",
@@ -32,6 +38,8 @@ __all__ = [
     "ChatTaskOut",
     "ChatTextBlock",
     "ChatThinkingBlock",
+    "ChatTrustBlock",
+    "ChatTrustOut",
 ]
 
 MAX_MESSAGE_TEXT = 8000
@@ -130,8 +138,238 @@ class ChatStepBlock(BaseModel):
     step: ChatStepOut
 
 
+# ---- findings, coverage and trust (chat v2 / v3: CONTRACT2-findings, CONTRACT3-trust) ------------
+
+
+class ChatBoxOut(BaseModel):
+    """Where an item is: PDF points of the upload page as shown, origin top-left."""
+
+    model_config = ConfigDict(frozen=True)
+
+    page: int
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+    file: str | None = Field(default=None, description="The upload's file name the box is on.")
+
+
+class ChatFindingChecksOut(BaseModel):
+    """The checks run on a finding, by code (and one cheap independent AI read)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    printed_architect: str = Field(
+        description="match | not_found | no_text | no_box | not_a_number | not_run"
+    )
+    printed_vendor: str
+    second_read: str = Field(description="agrees | disagrees | unsure | not_run")
+    rule: str | None = Field(default=None, description="agrees | disagrees | not_run (rules)")
+    arithmetic: str | None = Field(
+        default=None, description="adds_up | does_not_add_up | not_a_number (vendor arithmetic)"
+    )
+    lead_checked: bool
+
+
+class ChatFindingInchesOut(BaseModel):
+    """Code's numbers (decimal strings, inches): never the AI's arithmetic."""
+
+    model_config = ConfigDict(frozen=True)
+
+    architect: str | None = None
+    vendor: str | None = None
+    difference: str | None = Field(default=None, description="Vendor minus architect.")
+
+
+class ChatSecondReadValuesOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    architect: str | None = None
+    vendor: str | None = None
+
+
+class ChatFindingOut(BaseModel):
+    """One difference the assistant reported, with code-made evidence and checks."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    page: int
+    vs_page: int | None = None
+    item: str
+    category: Literal["countertop", "cabinet", "other"]
+    architect: str
+    vendor: str
+    status: Literal["different", "check", "same"]
+    why: str | None = None
+    verified: bool
+    arch_box: ChatBoxOut | None = None
+    vendor_box: ChatBoxOut | None = None
+    source: Literal["architect", "brand_prototype", "rules", "vendor_arithmetic"]
+    parts: list[str] | None = None
+    printed_total: str | None = None
+    rule_check_id: str | None = None
+    round: int | None = None
+    arch_picture_id: str | None = Field(
+        default=None, description="Evidence crop: GET /chats/{chat_id}/pictures/{picture_id}."
+    )
+    vendor_picture_id: str | None = None
+    created_by: str = Field(description='"lead" or "helper:<n>".')
+    checks: ChatFindingChecksOut | None = None
+    inches: ChatFindingInchesOut | None = None
+    trust_level: Literal["confirmed", "likely", "to_check"] | None = None
+    round_status: (
+        Literal[
+            "fixed_in_later_round",
+            "still_wrong",
+            "new_in_later_round",
+            "not_in_later_round",
+            "single_round",
+        ]
+        | None
+    ) = None
+    second_read_values: ChatSecondReadValuesOut | None = None
+
+
+class ChatFindingBlock(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["finding"]
+    finding: ChatFindingOut
+
+
+class ChatFindingDroppedBlock(BaseModel):
+    """A finding the assistant dropped (in the place its finding block was)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["finding_dropped"]
+    finding_id: str
+    reason: str
+
+
+class ChatCoveragePageOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    page: int
+    pair_page: int | None = None
+    status: Literal["same", "different", "not_comparable", "not_opened"]
+    note: str | None = None
+    by: str | None = Field(default=None, description="Who recorded it; null: never recorded.")
+
+
+class ChatCoverageCountsOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    total: int
+    same: int
+    different: int
+    not_comparable: int
+    not_opened: int
+
+
+class ChatCoverageOut(BaseModel):
+    """Every page of the vendor's file (a page never recorded is not_opened), and the counts."""
+
+    model_config = ConfigDict(frozen=True)
+
+    pages: list[ChatCoveragePageOut]
+    counts: ChatCoverageCountsOut
+
+
+class ChatCoverageBlock(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["coverage"]
+    coverage: ChatCoverageOut
+
+
+class ChatTrustRuleOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    finding_id: str | None = None
+    rule_check_id: str | None = None
+    result: str | None = None
+
+
+class ChatTrustChecksOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    printed_at_spot: dict[str, int]
+    second_read: dict[str, int]
+    rules: list[ChatTrustRuleOut]
+    arithmetic: dict[str, int]
+    lead_checked: int
+
+
+class ChatTrustCoverageOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    counts: dict[str, int]
+    pages_not_opened: list[int]
+
+
+class ChatRecordedDifferenceOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    source: Literal["code", "ai_page_review"]
+    id: str | None = None
+    page: int | None = None
+    what: str
+
+
+class ChatGvChecksOut(BaseModel):
+    """Of the differences GV Review's own checks recorded, how many this answer includes."""
+
+    model_config = ConfigDict(frozen=True)
+
+    recorded: int
+    included: int
+    left_out: list[ChatRecordedDifferenceOut]
+
+
+class ChatRoundsOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    rounds: list[int]
+    earlier_items: int
+    fixed: int
+    still_wrong: int
+    not_in_later_round: int
+    new: int
+    line: str
+
+
+class ChatTrustOut(BaseModel):
+    """Why the answer can be believed, built by code from its findings and coverage."""
+
+    model_config = ConfigDict(frozen=True)
+
+    counts: dict[str, int] = Field(description="confirmed, likely, to_check, total.")
+    by_category: dict[str, dict[str, int]]
+    checks: ChatTrustChecksOut
+    coverage: ChatTrustCoverageOut | None = None
+    gv_checks: ChatGvChecksOut | None = None
+    rounds: ChatRoundsOut | None = None
+    not_checked: list[str]
+
+
+class ChatTrustBlock(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["trust"]
+    trust: ChatTrustOut
+
+
 ChatBlock = Annotated[
-    ChatThinkingBlock | ChatTextBlock | ChatStepBlock, Field(discriminator="type")
+    ChatThinkingBlock
+    | ChatTextBlock
+    | ChatStepBlock
+    | ChatFindingBlock
+    | ChatFindingDroppedBlock
+    | ChatCoverageBlock
+    | ChatTrustBlock,
+    Field(discriminator="type"),
 ]
 
 

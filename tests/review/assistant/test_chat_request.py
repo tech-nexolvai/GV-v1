@@ -39,7 +39,7 @@ from app.review.assistant.chat_request import (
     inline_pictures,
     thinking_config,
 )
-from app.review.assistant.chat_tools import LEAD_SYSTEM_PROMPT, LEAD_TOOLS
+from app.review.assistant.chat_tools import HELPER_SYSTEM_PROMPT, LEAD_SYSTEM_PROMPT, LEAD_TOOLS
 from app.usage_history import infer_purpose, infer_route
 from tests.review.assistant.chat_fakes import reply, text, thinking, tool
 
@@ -441,7 +441,29 @@ def test_the_system_prompt_is_short_and_names_the_skill_and_the_three_facts() ->
         "TaskUpdate",
         "Agent",
         "review_results",
+        "report_finding",
+        "update_finding",
+        "drop_finding",
+        "set_coverage",
     ]
+
+
+def test_the_system_prompt_carries_the_answer_style_rules() -> None:
+    """CONTRACT2: answers fit the question; comparisons go through report_finding, not a table."""
+    for words in (
+        "match the question",
+        "one line",
+        '"Summarize": one or two lines',
+        "report_finding for each item",
+        "never repeat the findings as a table",
+        "No preamble, no disclaimer",
+        "what you did not check",
+        "ask one short question back",
+        "set_coverage",
+    ):
+        assert words in LEAD_SYSTEM_PROMPT, words
+    for words in ("report_finding", "set_coverage", "origin top-left"):
+        assert words in HELPER_SYSTEM_PROMPT, words
 
 
 class _QuietHandler(BaseHTTPRequestHandler):
