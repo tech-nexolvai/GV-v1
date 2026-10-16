@@ -28,6 +28,8 @@ from app.review.architect_compare import (
     NOT_COMPARED_GROUP,
     CompareRefused,
     architect_compare_for_revision,
+    open_architect_compare,
+    open_architect_compare_many,
     record_compare_answers,
 )
 from tests.api.test_slot_rows import _package_rows, _run_current_checks
@@ -202,10 +204,9 @@ def test_a_persons_answer_is_its_own_row_and_sign_off_waits_until_each_is_answer
 ) -> None:
     _package, revision_id, records = _setup(session)
     reason = approval_readiness(session, revision_id).reason or ""
-    # The fixture's own results block first; the compare is counted in the readiness helper.
-    from app.review.approval import _compare_open
-
-    assert _compare_open(session, revision_id) == 4
+    # The fixture's own results block first, so readiness never reads the compare here (#1426).
+    assert open_architect_compare(session, revision_id) == 4
+    assert open_architect_compare_many(session, [revision_id, uuid4()]) == {revision_id: 4}
 
     assert (
         record_compare_answers(
@@ -254,7 +255,8 @@ def test_a_persons_answer_is_its_own_row_and_sign_off_waits_until_each_is_answer
     agreed = by_key[f"arch:{records[1].id}"]
     assert (agreed.answer, agreed.answered_by, agreed.clouded) == ("vendor_wrong", "tester", True)
     assert counts.needs_person == 0
-    assert _compare_open(session, revision_id) == 0
+    assert open_architect_compare(session, revision_id) == 0
+    assert open_architect_compare_many(session, [revision_id]) == {}
     assert "compared with the architect" not in (
         approval_readiness(session, revision_id).reason or ""
     )
@@ -361,3 +363,35 @@ def test_the_review_list_and_the_answer_route_carry_the_compare(session: Session
     listed = {e["key"]: e for e in by_hand.json()["review_items"]["architect_compare"]}
     assert listed[different]["answer"] == "vendor_wrong"
     assert listed[f"arch:{records[2].id}"]["status"] == "done"
+
+
+def test_the_open_count_costs_a_fixed_number_of_statements_whatever_the_revisions(
+    session: Session,
+) -> None:
+    """Sign-off readiness reads the compare for a page of revisions (#1426): one statement when
+    none has a record, and the same number for one revision as for many."""
+    from sqlalchemy import event
+
+    _package, revision_id, _records = _setup(session)
+    session.flush()
+    bind = session.get_bind()
+
+    def statements(revision_ids: list[UUID]) -> tuple[int, dict[UUID, int]]:
+        count = 0
+
+        def counted(*_args: object) -> None:
+            nonlocal count
+            count += 1
+
+        event.listen(bind, "before_cursor_execute", counted)
+        try:
+            result = open_architect_compare_many(session, revision_ids)
+        finally:
+            event.remove(bind, "before_cursor_execute", counted)
+        return count, result
+
+    others = [uuid4() for _ in range(5)]
+    assert statements(others) == (1, {})
+    alone, found = statements([revision_id])
+    assert found == {revision_id: 4}
+    assert statements([revision_id, *others]) == (alone, found)

@@ -28,7 +28,7 @@ from typing import Final, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.evidence.sides import page_transform_at, reading_transform
@@ -43,10 +43,10 @@ from app.models import (
 from app.models.architect_compare import ArchitectCompareAnswer, ArchitectCompareRecord
 from app.models.evidence import EvidenceSupportingCandidate
 from app.models.rules import RuleDefinition, RuleSnapshot
-from app.models.runs import ExtractionRun
+from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
 from app.review.row_location import RowLocation
 from evidence.coordinates import ImagePoint, PageTransform, PdfPoint
-from workflow.slot_row_scope import candidate_is_sealed, candidate_value, latest_slot_reader_run
+from workflow.slot_row_scope import candidate_is_sealed, candidate_value
 
 __all__ = [
     "ANSWERS_FOR",
@@ -59,7 +59,9 @@ __all__ = [
     "CompareRefused",
     "CompareResult",
     "architect_compare_for_revision",
+    "architect_compare_many",
     "open_architect_compare",
+    "open_architect_compare_many",
     "record_compare_answers",
 ]
 
@@ -239,24 +241,37 @@ def _location(page: Page, transform: PageTransform | None, box: _Box) -> RowLoca
     )
 
 
-def _latest_records(session: Session, revision_id: UUID) -> list[ArchitectCompareRecord]:
-    run_id = session.scalar(
-        select(ArchitectCompareRecord.extraction_run_id)
-        .join(ExtractionRun, ExtractionRun.id == ArchitectCompareRecord.extraction_run_id)
-        .where(ArchitectCompareRecord.package_revision_id == revision_id)
-        .order_by(ExtractionRun.created_at.desc(), ExtractionRun.id.desc())
-        .limit(1)
-    )
-    if run_id is None:
-        return []
-    return list(
-        session.scalars(
-            select(ArchitectCompareRecord).where(
-                ArchitectCompareRecord.extraction_run_id == run_id,
-                ArchitectCompareRecord.package_revision_id == revision_id,
-            )
+def _latest_records(
+    session: Session, revision_ids: Sequence[UUID]
+) -> dict[UUID, list[tuple[ArchitectCompareRecord, ExtractionRun]]]:
+    """The records of each revision's newest compare reading, with that reading's run.
+
+    One statement for any number of revisions, and the only one when none of them has a record
+    (#1426): sign-off readiness asks this for every revision it judges.
+    """
+    newest = (
+        func.rank()
+        .over(
+            partition_by=ArchitectCompareRecord.package_revision_id,
+            order_by=(ExtractionRun.created_at.desc(), ExtractionRun.id.desc()),
         )
+        .label("rank")
     )
+    ranked = (
+        select(ArchitectCompareRecord.id.label("record_id"), newest)
+        .join(ExtractionRun, ExtractionRun.id == ArchitectCompareRecord.extraction_run_id)
+        .where(ArchitectCompareRecord.package_revision_id.in_(revision_ids))
+        .subquery()
+    )
+    found: dict[UUID, list[tuple[ArchitectCompareRecord, ExtractionRun]]] = {}
+    for record, run in session.execute(
+        select(ArchitectCompareRecord, ExtractionRun)
+        .join(ExtractionRun, ExtractionRun.id == ArchitectCompareRecord.extraction_run_id)
+        .join(ranked, ranked.c.record_id == ArchitectCompareRecord.id)
+        .where(ranked.c.rank == 1)
+    ).tuples():
+        found.setdefault(record.package_revision_id, []).append((record, run))
+    return found
 
 
 def _slot_box(flags: Sequence[str]) -> tuple[int, int, int, int] | None:
@@ -318,19 +333,64 @@ def _supported(flags: Sequence[str]) -> UUID | None:
         return None
 
 
-def _rules_by_reading(
-    session: Session, revision_id: UUID, labels: Sequence[ObservationCandidate]
-) -> dict[UUID, list[_Rule]]:
-    """For each slot-reader label, the current published results that used it: through their
-    recorded operands' evidence, or because the result is scoped to the label's row."""
-    live = session.execute(
-        select(Finding.id, Finding.check_run_id, Finding.outcome, Finding.scope_row_candidate_id)
+#: A live published result: its finding, check run, outcome, scoped row and rule id.
+_Live = tuple[UUID, UUID, str, UUID | None, str]
+
+
+def _live_results(
+    session: Session, revision_ids: Sequence[UUID]
+) -> tuple[dict[UUID, list[_Live]], dict[UUID, list[tuple[UUID, list[str] | None]]]]:
+    """Every revision's current published results, and the readings each check run cited: two
+    statements for any number of revisions (one when none has a result)."""
+    live: dict[UUID, list[_Live]] = {}
+    rows = session.execute(
+        select(
+            Finding.package_revision_id,
+            Finding.id,
+            Finding.check_run_id,
+            Finding.outcome,
+            Finding.scope_row_candidate_id,
+        )
         .add_columns(RuleDefinition.rule_id)
         .join(CheckRun, CheckRun.id == Finding.check_run_id)
         .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
         .join(RuleDefinition, RuleDefinition.id == RuleSnapshot.rule_definition_id)
-        .where(Finding.package_revision_id == revision_id, CheckRun.superseded_at.is_(None))
+        .where(Finding.package_revision_id.in_(revision_ids), CheckRun.superseded_at.is_(None))
     ).all()
+    if not rows:
+        return {}, {}
+    for revision_id, fid, run_id, outcome, scope, rule_id in rows:
+        live.setdefault(revision_id, []).append((fid, run_id, outcome, scope, rule_id))
+    cited: dict[UUID, list[tuple[UUID, list[str] | None]]] = {}
+    for run_id, candidate_id, flags in session.execute(
+        select(
+            VerdictInput.check_run_id, ObservationCandidate.id, ObservationCandidate.ambiguity_flags
+        )
+        .join(
+            CanonicalObservation,
+            CanonicalObservation.id == VerdictInput.canonical_observation_id,
+        )
+        .join(
+            EvidenceSupportingCandidate,
+            EvidenceSupportingCandidate.canonical_observation_id == CanonicalObservation.id,
+        )
+        .join(
+            ObservationCandidate,
+            ObservationCandidate.id == EvidenceSupportingCandidate.candidate_id,
+        )
+        .where(VerdictInput.check_run_id.in_({row[2] for row in rows}))
+    ).all():
+        cited.setdefault(run_id, []).append((candidate_id, flags))
+    return live, cited
+
+
+def _rules_by_reading(
+    live: Sequence[_Live],
+    cited: Mapping[UUID, Sequence[tuple[UUID, list[str] | None]]],
+    labels: Sequence[ObservationCandidate],
+) -> dict[UUID, list[_Rule]]:
+    """For each slot-reader label, the current published results that used it: through their
+    recorded operands' evidence, or because the result is scoped to the label's row."""
     if not live:
         return {}
     by_run = {run_id: _Rule(rule_id, outcome, fid) for fid, run_id, outcome, _s, rule_id in live}
@@ -350,51 +410,63 @@ def _rules_by_reading(
         members = rows.get((anchor.page_id, anchor.extraction_run_id, rank), []) if rank else []
         for member in members or [anchor.id]:
             found.setdefault(member, []).append(_Rule(rule_id, outcome, fid))
-    cited = session.execute(
-        select(
-            VerdictInput.check_run_id, ObservationCandidate.id, ObservationCandidate.ambiguity_flags
-        )
-        .join(
-            CanonicalObservation,
-            CanonicalObservation.id == VerdictInput.canonical_observation_id,
-        )
-        .join(
-            EvidenceSupportingCandidate,
-            EvidenceSupportingCandidate.canonical_observation_id == CanonicalObservation.id,
-        )
-        .join(
-            ObservationCandidate,
-            ObservationCandidate.id == EvidenceSupportingCandidate.candidate_id,
-        )
-        .where(VerdictInput.check_run_id.in_(list(by_run)))
-    ).all()
-    for run_id, candidate_id, flags in cited:
-        target = candidate_id if candidate_id in label_ids else _supported(flags or [])
-        if target in label_ids and target is not None:
-            rule = by_run[run_id]
-            if rule not in found.get(target, []):
+    for run_id, rule in by_run.items():
+        for candidate_id, flags in cited.get(run_id, ()):
+            target = candidate_id if candidate_id in label_ids else _supported(flags or [])
+            if target in label_ids and target is not None and rule not in found.get(target, []):
                 found.setdefault(target, []).append(rule)
     return found
 
 
 def _labels(
-    session: Session, revision_id: UUID, page_ids: set[UUID]
-) -> tuple[ExtractionRun | None, list[ObservationCandidate]]:
-    run_id = latest_slot_reader_run(session, revision_id)
-    if run_id is None or not page_ids:
-        return None, []
-    run = session.get(ExtractionRun, run_id)
-    labels = [
-        candidate
-        for candidate in session.scalars(
-            select(ObservationCandidate).where(
-                ObservationCandidate.extraction_run_id == run_id,
-                ObservationCandidate.page_id.in_(page_ids),
+    session: Session, pages_by_revision: Mapping[UUID, set[UUID]]
+) -> dict[UUID, tuple[ExtractionRun, list[ObservationCandidate]]]:
+    """Each revision's newest slot-reader run (as `latest_slot_reader_run` picks it) and its
+    slot-reader labels on the compared pages: two statements for any number of revisions."""
+    ranked = (
+        select(
+            WorkflowRun.package_revision_id.label("revision_id"),
+            ExtractionRun.id.label("run_id"),
+            func.row_number()
+            .over(
+                partition_by=WorkflowRun.package_revision_id,
+                order_by=(ExtractionRun.created_at.desc(), ExtractionRun.id.desc()),
             )
+            .label("rank"),
         )
-        if "slot-reader" in (candidate.ambiguity_flags or ())
-    ]
-    return run, labels
+        .join(TaskRun, TaskRun.id == ExtractionRun.task_run_id)
+        .join(WorkflowRun, WorkflowRun.id == TaskRun.workflow_run_id)
+        .where(
+            WorkflowRun.package_revision_id.in_(list(pages_by_revision)),
+            ExtractionRun.extractor_version.like("slot-reader%"),
+        )
+        .subquery()
+    )
+    runs = {
+        revision_id: run
+        for revision_id, run in session.execute(
+            select(ranked.c.revision_id, ExtractionRun)
+            .join(ExtractionRun, ExtractionRun.id == ranked.c.run_id)
+            .where(ranked.c.rank == 1)
+        ).tuples()
+        if pages_by_revision.get(revision_id)
+    }
+    if not runs:
+        return {}
+    revision_of = {run.id: revision_id for revision_id, run in runs.items()}
+    labels: dict[UUID, list[ObservationCandidate]] = {revision_id: [] for revision_id in runs}
+    for candidate in session.scalars(
+        select(ObservationCandidate).where(
+            ObservationCandidate.extraction_run_id.in_(list(revision_of)),
+            ObservationCandidate.page_id.in_(set().union(*pages_by_revision.values())),
+        )
+    ):
+        revision_id = revision_of[candidate.extraction_run_id]
+        if candidate.page_id in pages_by_revision[revision_id] and "slot-reader" in (
+            candidate.ambiguity_flags or ()
+        ):
+            labels[revision_id].append(candidate)
+    return {revision_id: (run, labels[revision_id]) for revision_id, run in runs.items()}
 
 
 def _vendor_ink_only(flags: Sequence[str]) -> bool:
@@ -454,25 +526,71 @@ def architect_compare_for_revision(
 ) -> tuple[list[ArchitectCompareOut], ArchitectCompareCountsOut]:
     """Every architect dimension of the revision's newest compare reading, exactly once, with what
     code decided for it, and the counts. Empty when the compare has not run."""
-    records = _latest_records(session, revision_id)
-    if not records:
-        return [], ArchitectCompareCountsOut()
+    return architect_compare_many(session, [revision_id]).get(
+        revision_id, ([], ArchitectCompareCountsOut())
+    )
+
+
+def architect_compare_many(
+    session: Session, revision_ids: Sequence[UUID]
+) -> dict[UUID, tuple[list[ArchitectCompareOut], ArchitectCompareCountsOut]]:
+    """`architect_compare_for_revision` for a page of revisions, with a bounded query plan (#1426):
+    one statement when none of them has a compare record, and a fixed handful otherwise (the
+    records, their pages, the slot-reader runs and labels, the live results and the answers),
+    whatever the number of revisions or records. Revisions without a record are left out."""
+    ids = list(dict.fromkeys(revision_ids))
+    if not ids:
+        return {}
+    by_revision = _latest_records(session, ids)
+    if not by_revision:
+        return {}
+    every = [record for pairs in by_revision.values() for record, _run in pairs]
     pages = {
         page.id: page
         for page in session.scalars(
-            select(Page).where(Page.id.in_({record.page_id for record in records}))
+            select(Page).where(Page.id.in_({record.page_id for record in every}))
         )
     }
-    runs = {
-        run.id: run
-        for run in session.scalars(
-            select(ExtractionRun).where(
-                ExtractionRun.id.in_({record.extraction_run_id for record in records})
-            )
+    slots = _labels(
+        session,
+        {
+            revision_id: {record.page_id for record, _run in pairs}
+            for revision_id, pairs in by_revision.items()
+        },
+    )
+    live, cited = _live_results(session, list(by_revision))
+    answers: dict[UUID, ArchitectCompareAnswer] = {}
+    for row in session.scalars(
+        select(ArchitectCompareAnswer)
+        .where(ArchitectCompareAnswer.record_id.in_([record.id for record in every]))
+        .order_by(ArchitectCompareAnswer.created_at, ArchitectCompareAnswer.id)
+    ):
+        answers[row.record_id] = row
+    result: dict[UUID, tuple[list[ArchitectCompareOut], ArchitectCompareCountsOut]] = {}
+    for revision_id, pairs in by_revision.items():
+        slot_run, labels = slots.get(revision_id, (None, []))
+        result[revision_id] = _compared(
+            [record for record, _run in pairs],
+            {run.id: run for _record, run in pairs},
+            pages,
+            slot_run,
+            labels,
+            _rules_by_reading(live.get(revision_id, ()), cited, labels),
+            answers,
         )
-    }
-    slot_run, labels = _labels(session, revision_id, set(pages))
-    rules = _rules_by_reading(session, revision_id, labels)
+    return result
+
+
+def _compared(
+    records: Sequence[ArchitectCompareRecord],
+    runs: Mapping[UUID, ExtractionRun],
+    pages: Mapping[UUID, Page],
+    slot_run: ExtractionRun | None,
+    labels: Sequence[ObservationCandidate],
+    rules: Mapping[UUID, list[_Rule]],
+    answers: Mapping[UUID, ArchitectCompareAnswer],
+) -> tuple[list[ArchitectCompareOut], ArchitectCompareCountsOut]:
+    """One revision's compared dimensions and counts, from rows already read (no statement)."""
     placed: dict[UUID, list[tuple[ObservationCandidate, _Box]]] = {}
     for label in labels:
         page = pages.get(label.page_id)
@@ -481,13 +599,6 @@ def architect_compare_for_revision(
         box = _reading_box(label, page, reading_transform(page, slot_run))
         if box is not None:
             placed.setdefault(label.page_id, []).append((label, box))
-    answers: dict[UUID, ArchitectCompareAnswer] = {}
-    for row in session.scalars(
-        select(ArchitectCompareAnswer)
-        .where(ArchitectCompareAnswer.record_id.in_([record.id for record in records]))
-        .order_by(ArchitectCompareAnswer.created_at, ArchitectCompareAnswer.id)
-    ):
-        answers[row.record_id] = row
     ordered = sorted(
         records,
         key=lambda r: (pages[r.page_id].index, r.architect_view, r.architect_number, str(r.id)),
@@ -573,7 +684,17 @@ class CompareRefused(ValueError):
 
 def open_architect_compare(session: Session, revision_id: UUID) -> int:
     """How many compared dimensions still need a person (sign-off waits for them)."""
-    return architect_compare_for_revision(session, revision_id)[1].needs_person
+    return open_architect_compare_many(session, [revision_id]).get(revision_id, 0)
+
+
+def open_architect_compare_many(session: Session, revision_ids: Sequence[UUID]) -> dict[UUID, int]:
+    """For each revision, how many compared dimensions still need a person (sign-off waits for
+    them); a revision with none is left out. Bounded as `architect_compare_many` is."""
+    return {
+        revision_id: counts.needs_person
+        for revision_id, (_items, counts) in architect_compare_many(session, revision_ids).items()
+        if counts.needs_person
+    }
 
 
 def record_compare_answers(

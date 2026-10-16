@@ -1657,7 +1657,10 @@ def test_countertop_results_stay_bounded_with_carried_decisions(
     # once; still the same for any number of rows.
     # 19 since #1245: the live countertops are asked for once, to group each row's
     # results under its countertop; still the same for any number of rows.
-    assert counter[0] <= 19
+    # 20 since #1418/#1426: with every result decided, sign-off readiness asks once whether any
+    # number compared with the architect still needs a person (one batched statement, read only
+    # when nothing earlier already blocks sign-off); still the same for any number of rows.
+    assert counter[0] <= 20
 
 
 def test_an_id_inside_a_flag_is_replaced_not_dropped() -> None:

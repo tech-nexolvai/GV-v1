@@ -1042,7 +1042,11 @@ def review_items_for_revision(
     from app.api.visual_countertops import _countertop_results_for_revision
 
     projection = _countertop_results_for_revision(session, package_id, revision)
-    readiness, records = readiness_and_decisions(session, revision.id)
+    # Read once: the compare it shows is the one sign-off readiness waits on (#1418).
+    compared, compare_counts = architect_compare_for_revision(session, revision.id)
+    readiness, records = readiness_and_decisions(
+        session, revision.id, compare_open=compare_counts.needs_person
+    )
     open_ids = set(readiness.blocking_finding_ids)
     corrected = set(records.corrected)
     live = _live_findings(session, revision.id)
@@ -1468,7 +1472,6 @@ def review_items_for_revision(
     right = [reading for reading in checked if not reading.corrected]
     settled_ids = _settled_reading_actions(session, checked)
     checked_settled = [reading for reading in checked if reading.action_id in settled_ids]
-    compared, compare_counts = architect_compare_for_revision(session, revision.id)
     header = ReviewHeaderOut(
         pages_read=len(
             {result.page_number for result in projection.items}
