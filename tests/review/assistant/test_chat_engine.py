@@ -722,7 +722,8 @@ def test_a_forced_final_call_with_no_words_still_answers_with_the_stop(tmp_path:
 
     outcome = harness.run()
 
-    assert outcome.stopped == "cost_cap" and "$1.00 cost cap" in outcome.text
+    assert outcome.stopped == "cost_cap" and "$1 limit" in outcome.text
+    assert outcome.cap_hit == "message"
 
 
 def test_over_the_cap_no_call_is_made_and_the_answer_says_so(tmp_path: Path) -> None:
@@ -732,7 +733,8 @@ def test_over_the_cap_no_call_is_made_and_the_answer_says_so(tmp_path: Path) -> 
     outcome = harness.run()
 
     assert provider.calls == []
-    assert outcome.stopped == "cost_cap" and "$0.10 cost cap" in outcome.text
+    assert outcome.stopped == "cost_cap" and "this answer reached its $0.10 limit" in outcome.text
+    assert outcome.cap_hit == "message"
     assert outcome.api_content == []  # an unanswered message never enters the history
     assert events_named(harness.events, "text_delta")[0]["text"] == outcome.text
 
@@ -744,6 +746,9 @@ def test_the_drawing_sets_budget_counts_too(tmp_path: Path) -> None:
     outcome = harness.run()
 
     assert provider.calls == [] and outcome.stopped == "cost_cap"
+    # The set's budget, not this answer's limit, is what the answer names.
+    assert outcome.cap_hit == "package"
+    assert "this drawing set has used its $40 AI budget" in outcome.text
 
 
 # ---- stops -------------------------------------------------------------------------------------

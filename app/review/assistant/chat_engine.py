@@ -147,6 +147,11 @@ def cost_text(micros: int) -> str:
     return str((Decimal(micros) / _MICROS).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
+def cap_text(micros: int) -> str:
+    """A cap in words: "40", or "7.50" when it has cents."""
+    return cost_text(micros).removesuffix(".00")
+
+
 class Ledger(Protocol):
     """Where each model call is recorded (the Usage page's rows)."""
 
@@ -186,6 +191,9 @@ class MessageOutcome:
     cost_micros: int
     stopped: str | None = None
     error: str | None = None
+    cap_hit: str | None = None
+    """With `stopped: cost_cap`, which cap stopped it: `message` (this answer's) or `package` (the
+    drawing set's budget)."""
 
 
 # ---- one streamed call ---------------------------------------------------------------------------
@@ -485,18 +493,24 @@ class ChatEngine:
         return estimate
 
     def _fits(self, estimate: int | None) -> bool:
+        return self._over(estimate) is None
+
+    def _over(self, estimate: int | None) -> str | None:
+        """The cap a call of this estimate would pass: `message`, `package`, or `None` (it fits).
+        The set's budget is named first when both would be passed: more answers cannot help."""
         if estimate is None:
-            return True
+            return None
         try:
             package = self.package_spent()
         except Exception:  # noqa: BLE001 - an unknown spend stops rather than overspends
             _log.exception("assistant chat could not read the drawing set's spend")
-            return False
+            return "package"
         spent = self.spent
-        return (
-            spent + estimate <= self.settings.message_cap_micros
-            and package + spent + estimate <= self.settings.package_cap_micros
-        )
+        if package + spent + estimate > self.settings.package_cap_micros:
+            return "package"
+        if spent + estimate > self.settings.message_cap_micros:
+            return "message"
+        return None
 
     def _hold(self, share: _Share, estimate: int | None) -> bool:
         """Whether a helper's next call fits the helpers' share; if it does, its estimate is held
@@ -1071,6 +1085,7 @@ class ChatEngine:
         cached = previous = 0
         stopped: str | None = None
         error: str | None = None
+        cap_hit: str | None = None
         text = ""
         while True:
             if self.cancel.is_set():
@@ -1090,7 +1105,9 @@ class ChatEngine:
                 final=final,
                 max_tokens=max_tokens,
             )
-            if not self._fits(self._estimate(model, body, cached, previous)):
+            over = self._over(self._estimate(model, body, cached, previous))
+            if over is not None:
+                cap_hit = cap_hit or over
                 if forced != "cost_cap":
                     # One final, smaller call told to answer now, if even that fits.
                     forced = "cost_cap"
@@ -1168,7 +1185,7 @@ class ChatEngine:
             stopped = forced
             break
         if stopped in ("cost_cap", "turn_limit") and not text:
-            text = _stop_note(stopped, self.settings)
+            text = _stop_note(stopped, self.settings, cap_hit)
             self._add_text(text)
         elif stopped in ("cancelled", "error"):
             # What was written before it stopped.
@@ -1189,6 +1206,7 @@ class ChatEngine:
             cost_micros=self.spent,
             stopped=stopped,
             error=error,
+            cap_hit=cap_hit if stopped == "cost_cap" else None,
         )
 
 
@@ -1253,13 +1271,18 @@ def _declined(details: Mapping[str, Any] | None) -> str:
     )
 
 
-def _stop_note(stopped: str, settings: EngineSettings) -> str:
+def _stop_note(stopped: str, settings: EngineSettings, cap_hit: str | None = None) -> str:
     """The answer when a cap or the turn limit stopped the message before it wrote one."""
+    if stopped == "cost_cap" and cap_hit == "package":
+        return (
+            f"I stopped before finishing: this drawing set has used its "
+            f"${cap_text(settings.package_cap_micros)} AI budget."
+        )
     if stopped == "cost_cap":
         return (
-            f"I stopped before finishing: this message reached its "
-            f"${cost_text(settings.message_cap_micros)} cost cap (or the drawing set's assistant "
-            "budget). Ask a narrower question, or ask me to go on."
+            f"I stopped before finishing: this answer reached its "
+            f"${cap_text(settings.message_cap_micros)} limit. Ask a narrower question, or ask me "
+            "to go on."
         )
     return (
         f"I stopped before finishing: I used all {settings.lead_max_turns} tool turns for this "

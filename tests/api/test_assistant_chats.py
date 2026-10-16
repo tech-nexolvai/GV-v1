@@ -292,14 +292,9 @@ def test_a_message_streams_and_ends_with_the_stored_message(postgres_engine, tmp
     )
     with _world(postgres_engine, tmp_path, provider=provider) as world:
         chat_id = world.chat()
+        # A chat with no message yet is not listed (#1479); the list names the set.
         listed = world.client.get(f"/api/v1/packages/{world.package_id}/chats").json()
-        assert listed["chats"][0] == {
-            "id": chat_id,
-            "title": None,
-            "created_at": listed["chats"][0]["created_at"],
-            "last_message_at": None,
-            "turns": 0,
-        }
+        assert listed == {"chats": [], "package_name": "Sample Vendor"}
 
         status, events = world.ask(
             chat_id, "Which items are wrong comparing the vendor and architect drawings?"
@@ -327,11 +322,14 @@ def test_a_message_streams_and_ends_with_the_stored_message(postgres_engine, tmp
         assert [b["type"] for b in stored["blocks"]] == ["thinking", "step", "text"]
         assert stored["blocks"][1]["step"]["output"].startswith("/mnt/skills/gv-review/SKILL.md")
         assert stored["cost_usd"] is not None and stored["stopped"] is None
+        # The caps it ran under are kept with it (#1479).
+        assert stored["message_cap_usd"] == "5.00" and stored["package_cap_usd"] == "40.00"
+        assert stored["cap_hit"] is None
 
         chat = world.client.get(f"/api/v1/chats/{chat_id}").json()
         assert chat["package_name"] == "Sample Vendor"
         assert chat["title"] == "Which items are wrong comparing the vendor and architect"
-        assert chat["running"] is False
+        assert chat["running"] is False and chat["running_message_id"] is None
         assert [m["role"] for m in chat["messages"]] == ["user", "assistant"]
         assert chat["messages"][1] == stored
 
@@ -359,13 +357,12 @@ def test_the_chat_is_listed_with_its_title_when_its_first_message_starts(postgre
     seen: list[tuple[str | None, int]] = []
     real = assistant_chats.run_message
 
-    def spy(job, run, emit):  # type: ignore[no-untyped-def]
+    def spy(job, run, emit=None):  # type: ignore[no-untyped-def]
         def tap(event: str, data: dict[str, Any]) -> None:
             if event == "message_start":
                 with job.factory() as session:
                     listed = chat_summaries(session, job.package_id)[0]
                     seen.append((listed.title, listed.turns))
-            emit(event, data)
 
         real(job, run, tap)
 
@@ -643,7 +640,9 @@ def test_the_drawing_sets_budget_stops_a_message_before_any_call(postgres_engine
         _, events = world.ask(chat_id, "Second")
         assert len(provider.calls) == calls
         stored = events[-1][1]["message"]
-        assert stored["stopped"] == "cost_cap" and "assistant budget" in stored["text"]
+        assert stored["stopped"] == "cost_cap" and "has used its $0.01 AI budget" in stored["text"]
+        # The set's budget (not this answer's cap) stopped it, and the screen can say so.
+        assert stored["cap_hit"] == "package" and stored["package_cap_usd"] == "0.01"
 
 
 def test_the_three_tables_are_append_only(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -682,75 +681,223 @@ def test_the_three_tables_are_append_only(postgres_engine, tmp_path) -> None:  #
         assert count == 1
 
 
-def test_the_browser_going_away_cancels_the_message_which_is_still_stored(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
+def _running(world: World, provider: ScriptedProvider, text: str = "A long question") -> Any:
+    """A message claimed in the app's own registry (so the routes see it), and its job."""
     from sqlalchemy.orm import sessionmaker
 
-    from app.api.assistant_chats import _Message, send_message
+    from app.api.assistant_chats import _Message, chat_registry
     from app.review.assistant.chat_request import MODELS
-    from app.review.assistant.chat_service import ChatRegistry, MessageJob
-    from app.review.assistant.chat_store import messages_of
+    from app.review.assistant.chat_service import MessageJob
     from app.runs.rates import load_model_rates
 
-    held = reply(text("Partial"))
-    held.insert(3, {"type": "__wait_for_cancel__"})
-    provider = ScriptedProvider(lead=[held])
+    class _Request:
+        app = world.app
+
+    registry = chat_registry(_Request())  # type: ignore[arg-type]
+    chat_id = UUID(world.chat())
+    run = registry.claim(chat_id, world.package_id, uuid4())
+    assert run is not None
+    provider.cancel = run.cancel
+    rates = load_model_rates(
+        Path(__file__).resolve().parents[2] / "deploy" / "model_rates.us-east-1.json"
+    )
+    job = MessageJob(
+        chat_id=chat_id,
+        package_id=world.package_id,
+        revision_id=world.revision_id,
+        created_by="reviewer-one",
+        text=text,
+        model=MODELS["claude-opus-5-5"],
+        effort="high",
+        thinking=True,
+        chat_root=world.root,
+        factory=sessionmaker(bind=world.session.get_bind(), expire_on_commit=False),
+        provider=provider,  # type: ignore[arg-type]
+        registry=registry,
+        lead_max_turns=40,
+        helper_max_turns=20,
+        message_cap_micros=5_000_000,
+        package_cap_micros=40_000_000,
+        rates=lambda _key: rates,
+        uploads=list,
+        results=None,
+        open_sandbox=lambda w: world.sandboxes.append(FakeSandbox(w)) or world.sandboxes[-1],
+        skill_builder=None,
+    )
+    return chat_id, registry, _Message(job=job, run=run)
+
+
+def _until_saved(registry: Any, chat_id: UUID) -> None:
+    for _ in range(200):
+        if registry.get(chat_id) is None:
+            return
+        threading.Event().wait(0.05)
+    raise AssertionError("the message never ended")
+
+
+def _stored(world: World, chat_id: UUID) -> list[Any]:
+    from sqlalchemy.orm import sessionmaker
+
+    from app.review.assistant.chat_store import messages_of
+
+    with sessionmaker(bind=world.session.get_bind())() as session:
+        return messages_of(session, chat_id)
+
+
+def _held(words: str, gate: threading.Event) -> list[dict[str, Any]]:
+    """A reply whose stream waits at `gate` after its first piece of words (a slow stream)."""
+    events = reply(text(words))
+    events.insert(3, {"type": "__wait__", "until": gate})
+    return events
+
+
+def test_the_browser_going_away_does_not_cancel_the_message_which_finishes_and_is_stored(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from app.api.assistant_chats import send_message
+
+    gate = threading.Event()
+    provider = ScriptedProvider(lead=[_held("Partial answer, then the rest.", gate)])
     with _world(postgres_engine, tmp_path, provider=provider) as world:
-        chat_id = UUID(world.chat())
-        registry = ChatRegistry()
-        run = registry.claim(chat_id, world.package_id, uuid4())
-        assert run is not None
-        provider.cancel = run.cancel
-        sandboxes: list[FakeSandbox] = []
-        rates = load_model_rates(
-            Path(__file__).resolve().parents[2] / "deploy" / "model_rates.us-east-1.json"
-        )
-        job = MessageJob(
-            chat_id=chat_id,
-            package_id=world.package_id,
-            revision_id=world.revision_id,
-            created_by="reviewer-one",
-            text="A long question",
-            model=MODELS["claude-opus-5-5"],
-            effort="high",
-            thinking=True,
-            chat_root=world.root,
-            factory=sessionmaker(bind=world.session.get_bind(), expire_on_commit=False),
-            provider=provider,  # type: ignore[arg-type]
-            registry=registry,
-            lead_max_turns=40,
-            helper_max_turns=20,
-            message_cap_micros=5_000_000,
-            package_cap_micros=40_000_000,
-            rates=lambda _key: rates,
-            uploads=list,
-            results=None,
-            open_sandbox=lambda w: sandboxes.append(FakeSandbox(w)) or sandboxes[-1],
-            skill_builder=None,
-        )
+        chat_id, registry, message = _running(world, provider)
 
         async def go() -> list[str]:
-            stream = send_message(_Message(job=job, run=run))
+            stream = send_message(message)
             seen = []
             async for event in stream:
                 seen.append(event.event)
                 if event.event == "text_delta":
                     break
-            await stream.aclose()  # the browser went away
+            await stream.aclose()  # the browser went away (a closed tab, a reload)
             return seen
 
         seen = asyncio.run(go())
         assert seen[0] == "message_start" and "text_delta" in seen
-        deadline = threading.Event()
-        for _ in range(100):
-            if registry.get(chat_id) is None:
-                break
-            deadline.wait(0.05)
-        assert registry.get(chat_id) is None
-        with sessionmaker(bind=world.session.get_bind())() as session:
-            stored = messages_of(session, chat_id)
+        assert not message.run.cancel.is_set()
+        assert world.client.get(f"/api/v1/chats/{chat_id}").json()["running"] is True
+        gate.set()  # the rest of the answer arrives with nobody watching
+        _until_saved(registry, chat_id)
+        stored = _stored(world, chat_id)
         assert [m.role for m in stored] == ["user", "assistant"]
+        assert stored[1].stopped is None and stored[1].text == "Partial answer, then the rest."
+        assert world.sandboxes and world.sandboxes[0].killed == 0
+
+
+def test_following_a_running_message_replays_then_streams_until_it_ends(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from app.api.assistant_chats import _Followed, follow_message
+    from app.review.assistant.chat_service import run_message
+
+    gate = threading.Event()
+    provider = ScriptedProvider(lead=[_held("Two items differ on page 4.", gate)])
+    with _world(postgres_engine, tmp_path, provider=provider) as world:
+        chat_id, registry, message = _running(world, provider)
+        run = message.run
+        threading.Thread(target=run_message, args=(message.job, run), daemon=True).start()
+        for _ in range(200):  # the answer has started streaming
+            if any(name == "text_delta" for name, _ in run.feed.kept()):
+                break
+            threading.Event().wait(0.02)
+
+        # Another tab (or a reload) opens the chat: it names the running answer.
+        chat = world.client.get(f"/api/v1/chats/{chat_id}").json()
+        assert chat["running"] is True and chat["running_message_id"] == str(run.message_id)
+        assert [m["role"] for m in chat["messages"]] == ["user"]
+
+        async def follow() -> list[tuple[str, Any]]:
+            seen: list[tuple[str, Any]] = []
+            async for event in follow_message(_Followed(feed=run.feed, stored=None)):
+                seen.append((event.event or "", json.loads(event.raw_data or "null")))
+                if len(seen) == 1:
+                    gate.set()  # following now: the rest of the answer streams in
+            return seen
+
+        seen = asyncio.run(follow())
+        names = [name for name, _ in seen]
+        assert names[0] == "message_start" and names[-1] == "message_end"
+        assert seen[0][1]["message_id"] == str(run.message_id)
+        words = [data for name, data in seen if name == "text_delta"]
+        # The words so far came as one replayed event, the rest live, nothing twice.
+        assert len(words) == 2 and words[0]["text"] == "Two items dif"
+        assert "".join(d["text"] for d in words) == "Two items differ on page 4."
+        stored = seen[-1][1]["message"]
+        assert stored["text"] == "Two items differ on page 4." and stored["stopped"] is None
+        _until_saved(registry, chat_id)
+
+        # Followed again once it is saved: the stored answer at once.
+        response = world.client.get(f"/api/v1/chats/{chat_id}/messages/{run.message_id}/events")
+        assert response.status_code == 200
+        assert _events(response.text) == [("message_end", {"message": stored})]
+
+
+def test_the_follow_route_reads_the_running_feed_and_refuses_what_is_not_an_answer(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    provider = ScriptedProvider(lead=[reply(text("Hello."))])
+    with _world(postgres_engine, tmp_path, provider=provider) as world:
+        chat_id, _registry, message = _running(world, provider)
+        run = message.run
+        run.started = True
+        run.feed.publish("message_start", {"message_id": str(run.message_id), "model": "m"})
+        for piece in ("He", "llo"):
+            run.feed.publish("text_delta", {"index": 0, "text": piece})
+        run.feed.close()
+        url = f"/api/v1/chats/{chat_id}/messages/{run.message_id}/events"
+        assert _events(world.client.get(url).text) == [
+            ("message_start", {"message_id": str(run.message_id), "model": "m"}),
+            ("text_delta", {"index": 0, "text": "Hello"}),
+        ]
+        message.job.registry.release(run)
+
+        # Not running and not stored, a question's id, or another chat's message: 404.
+        assert world.client.get(url).status_code == 404
+        other = world.chat()
+        _, events = world.ask(other, "Hi")
+        answer = events[-1][1]["message"]["id"]
+        question = world.client.get(f"/api/v1/chats/{other}").json()["messages"][0]["id"]
+        for chat, message_id in ((other, question), (str(chat_id), answer), (other, uuid4())):
+            follow = f"/api/v1/chats/{chat}/messages/{message_id}/events"
+            assert world.client.get(follow).status_code == 404
+
+
+def test_stop_still_cancels_a_message_being_followed(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from app.api.assistant_chats import _Followed, follow_message
+    from app.review.assistant.chat_service import run_message
+
+    held = reply(text("Partial"))
+    held.insert(3, {"type": "__wait_for_cancel__"})
+    provider = ScriptedProvider(lead=[held])
+    with _world(postgres_engine, tmp_path, provider=provider) as world:
+        chat_id, registry, message = _running(world, provider)
+        run = message.run
+        threading.Thread(target=run_message, args=(message.job, run), daemon=True).start()
+
+        async def follow() -> list[tuple[str, Any]]:
+            seen: list[tuple[str, Any]] = []
+            async for event in follow_message(_Followed(feed=run.feed, stored=None)):
+                seen.append((event.event or "", json.loads(event.raw_data or "null")))
+                if event.event == "text_delta":
+                    # Stop, from this screen or another one.
+                    response = await asyncio.to_thread(
+                        world.client.post, f"/api/v1/chats/{chat_id}/cancel"
+                    )
+                    assert response.json() == {"cancelled": True}
+            return seen
+
+        seen = asyncio.run(follow())
+        assert seen[-1][0] == "message_end"
+        assert seen[-1][1]["message"]["stopped"] == "cancelled"
+        _until_saved(registry, chat_id)
+        stored = _stored(world, chat_id)
         assert stored[1].stopped == "cancelled" and stored[1].text == "Par"
-        assert sandboxes and sandboxes[0].killed >= 1
+        assert world.sandboxes and world.sandboxes[0].killed >= 1
+
+
+def test_a_chat_with_no_messages_is_not_listed(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    provider = ScriptedProvider(lead=[reply(text("Hi."))])
+    with _world(postgres_engine, tmp_path, provider=provider) as world:
+        never_used = world.chat()
+        used = world.chat()
+        world.ask(used, "How many pages?")
+        listed = world.client.get(f"/api/v1/packages/{world.package_id}/chats").json()
+        assert [chat["id"] for chat in listed["chats"]] == [used]
+        # Hidden, not deleted: the empty chat still opens.
+        assert world.client.get(f"/api/v1/chats/{never_used}").json()["messages"] == []
 
 
 def test_the_real_skill_builder_writes_the_chats_skill(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]

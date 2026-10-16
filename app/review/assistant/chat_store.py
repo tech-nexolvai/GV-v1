@@ -113,6 +113,9 @@ def add_assistant_message(
     cost_micros: int,
     stopped: str | None,
     error: str | None,
+    message_cap_micros: int | None = None,
+    package_cap_micros: int | None = None,
+    cap_hit: str | None = None,
 ) -> AssistantChatMessage:
     message = AssistantChatMessage(
         id=message_id,
@@ -129,6 +132,9 @@ def add_assistant_message(
         cost_micros=cost_micros,
         stopped=stopped,
         error=error,
+        message_cap_micros=message_cap_micros,
+        package_cap_micros=package_cap_micros,
+        cap_hit=cap_hit,
     )
     session.add(message)
     session.flush()
@@ -234,12 +240,17 @@ def message_out(
             "cost_usd": _usd(message.cost_micros),
             "stopped": message.stopped,
             "error": message.error,
+            "message_cap_usd": _usd(message.message_cap_micros),
+            "package_cap_usd": _usd(message.package_cap_micros),
+            "cap_hit": message.cap_hit,
         }
     )
 
 
 def chat_summaries(session: Session, package_id: UUID) -> list[ChatSummaryOut]:
-    """The package's chats, newest activity first."""
+    """The package's chats with at least one message, newest activity first. A chat never used
+    (an empty "New chat" made before chats were made on the first message) is left out, not
+    deleted: the table is append-only."""
     chats = list(
         session.scalars(select(AssistantChat).where(AssistantChat.package_id == package_id))
     )
@@ -268,14 +279,16 @@ def chat_summaries(session: Session, package_id: UUID) -> list[ChatSummaryOut]:
     out: list[ChatSummaryOut] = []
     for chat in chats:
         row = stats.get(chat.id)
+        if row is None:
+            continue
         first = firsts.get(chat.id)
         out.append(
             ChatSummaryOut(
                 id=chat.id,
                 title=chat.title or (chat_title(first) if first else None),
                 created_at=chat.created_at,
-                last_message_at=None if row is None else row.last,
-                turns=0 if row is None else int(row.turns),
+                last_message_at=row.last,
+                turns=int(row.turns),
             )
         )
     out.sort(key=lambda item: (item.last_message_at or item.created_at, item.id), reverse=True)

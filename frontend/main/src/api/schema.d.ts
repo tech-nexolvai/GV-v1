@@ -85,9 +85,31 @@ export interface paths {
          * Send a message and stream the answer
          * @description `message_start`, then thinking, text, steps, helpers, files and usage as they happen, then
          *     `message_end` with the stored message (`error` first when it failed). The browser going away
-         *     cancels the message, which is still stored.
+         *     only stops this stream: the message goes on and is stored, and `GET .../events` follows it.
          */
         post: operations["send_message_api_v1_chats__chat_id__messages_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/chats/{chat_id}/messages/{message_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Follow a message: its events so far, then live until it ends
+         * @description For a running message, every event so far (the same events as the `POST` stream, with
+         *     streamed words merged), then each new one until `message_end`. For a finished message,
+         *     `message_end` with the stored message at once. Leaving changes nothing for the message.
+         */
+        get: operations["follow_message_api_v1_chats__chat_id__messages__message_id__events_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -4111,6 +4133,8 @@ export interface components {
             /** Cancelled */
             cancelled: boolean;
         };
+        /** @enum {string} */
+        ChatCapHit: "message" | "package";
         /** ChatCreatedOut */
         ChatCreatedOut: {
             /**
@@ -4146,6 +4170,11 @@ export interface components {
         ChatListOut: {
             /** Chats */
             chats: components["schemas"]["ChatSummaryOut"][];
+            /**
+             * Package Name
+             * @description The drawing set's name, for a new chat's greeting.
+             */
+            package_name?: string | null;
         };
         /**
          * ChatMessageIn
@@ -4171,6 +4200,8 @@ export interface components {
         ChatMessageOut: {
             /** Blocks */
             blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"])[] | null;
+            /** @description With `stopped: cost_cap`: `message` (this answer's cap) or `package` (the drawing set's budget ran out). */
+            cap_hit?: components["schemas"]["ChatCapHit"] | null;
             /** Cost Usd */
             cost_usd?: string | null;
             /**
@@ -4189,8 +4220,18 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /**
+             * Message Cap Usd
+             * @description The per-answer cap this answer ran under ("5.00").
+             */
+            message_cap_usd?: string | null;
             /** Model */
             model?: string | null;
+            /**
+             * Package Cap Usd
+             * @description The drawing set's AI budget this answer ran under ("40.00").
+             */
+            package_cap_usd?: string | null;
             /**
              * Role
              * @enum {string}
@@ -4252,6 +4293,11 @@ export interface components {
              * @default false
              */
             running: boolean;
+            /**
+             * Running Message Id
+             * @description The answer being written while `running`: follow it with GET /chats/{chat_id}/messages/{running_message_id}/events.
+             */
+            running_message_id?: string | null;
             /** Title */
             title: string | null;
         };
@@ -10304,6 +10350,45 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    follow_message_api_v1_chats__chat_id__messages__message_id__events_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                chat_id: string;
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": unknown;
+                };
+            };
+            /** @description No such message in this chat (or no access). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
             };
         };
     };

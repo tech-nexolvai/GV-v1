@@ -10,16 +10,19 @@ anything else is a 404 that says nothing. The routes, under `/api/v1`:
 - `POST /chats/{chat_id}/messages`: one message, answered as Server-Sent Events. 409 while another
   message of the chat is being answered; 422 for a model, effort and thinking the API would
   refuse; 503 when no provider key is set.
-- `POST /chats/{chat_id}/cancel`: stop the message being answered.
+- `GET  /chats/{chat_id}/messages/{message_id}/events`: follow a message (#1479): the running
+  message's events so far, then live until `message_end`; a finished one's `message_end` at once.
+- `POST /chats/{chat_id}/cancel`: stop the message being answered (the only way to stop it).
 - `GET  /chats/{chat_id}/files/{file_id}`, `GET /chats/{chat_id}/pictures/{picture_id}`.
 
-The message runs in its own thread (`chat_service.run_message`), so it is stored even when the
-browser goes away; the stream only relays its events, and the browser going away cancels it.
+The message runs in its own thread (`chat_service.run_message`) until it ends or Stop is pressed,
+like claude.ai: the browser going away (a closed tab, a reload) does not stop it, and it is stored
+when it ends. Its events go into the message's feed (`chat_feed.MessageFeed`); the `POST` stream and
+every `GET .../events` are followers of that feed.
 """
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -45,6 +48,7 @@ from app.errors import CodedHTTPException
 from app.models import (
     AssistantChat,
     AssistantChatFile,
+    AssistantChatMessage,
     Package,
     PackageRevision,
 )
@@ -59,6 +63,7 @@ from app.review.assistant.chat_contract import (
     ChatOut,
 )
 from app.review.assistant.chat_engine import cost_text
+from app.review.assistant.chat_feed import MessageFeed
 from app.review.assistant.chat_provider import (
     AnthropicSdkProvider,
     ChatProvider,
@@ -274,8 +279,10 @@ def list_chats(
     principal: Authenticated,
     session: Annotated[Session, Depends(get_session)],
 ) -> ChatListOut:
-    _package(session, package_id, principal)
-    return ChatListOut(chats=chat_summaries(session, package_id))
+    package = _package(session, package_id, principal)
+    return ChatListOut(
+        chats=chat_summaries(session, package_id), package_name=package_name(package)
+    )
 
 
 @router.post(
@@ -306,6 +313,7 @@ def read_chat(
     messages = messages_of(session, chat_id)
     files = files_of(session, chat_id)
     first = first_question(messages)
+    run = registry.get(chat_id)
     return ChatOut(
         id=chat.id,
         package_id=package.id,
@@ -313,7 +321,8 @@ def read_chat(
         title=chat.title or (chat_title(first) if first else None),
         created_at=chat.created_at,
         messages=[message_out(message, files) for message in messages],
-        running=registry.get(chat_id) is not None,
+        running=run is not None,
+        running_message_id=None if run is None else run.message_id,
     )
 
 
@@ -551,39 +560,69 @@ async def send_message(
 ) -> AsyncIterator[ServerSentEvent]:
     """`message_start`, then thinking, text, steps, helpers, files and usage as they happen, then
     `message_end` with the stored message (`error` first when it failed). The browser going away
-    cancels the message, which is still stored."""
-    loop = asyncio.get_running_loop()
-    events: asyncio.Queue[tuple[str, dict[str, Any]] | None] = asyncio.Queue()
+    only stops this stream: the message goes on and is stored, and `GET .../events` follows it."""
+    # A daemon, as before: a server that is stopped does not wait minutes for an answer (that
+    # question is then left without one, as after a crash).
+    threading.Thread(
+        target=run_message,
+        args=(message.job, message.run),
+        name="assistant-chat-message",
+        daemon=True,
+    ).start()
+    async for event, data in message.run.feed.follow():
+        yield ServerSentEvent(event=event, raw_data=json.dumps(data, ensure_ascii=False))
 
-    def emit(event: str, data: dict[str, Any]) -> None:
-        loop.call_soon_threadsafe(events.put_nowait, (event, data))
 
-    def work() -> None:
-        try:
-            run_message(message.job, message.run, emit)
-        finally:
-            try:
-                loop.call_soon_threadsafe(events.put_nowait, None)
-            except RuntimeError:
-                pass
+@dataclass(frozen=True, slots=True)
+class _Followed:
+    """The message to follow: its feed while it runs, else its stored `message_end`."""
 
-    thread = threading.Thread(target=work, name="assistant-chat-message", daemon=True)
-    finished = False
-    try:
-        thread.start()
-        while True:
-            item = await events.get()
-            if item is None:
-                finished = True
-                break
-            event, data = item
-            yield ServerSentEvent(event=event, raw_data=json.dumps(data, ensure_ascii=False))
-    finally:
-        if not finished:
-            # The browser went away (or the server is stopping): the message stops and is stored.
-            message.run.stop()
-        if not thread.is_alive() and not finished and not message.run.started:
-            message.job.registry.release(message.run)
+    feed: MessageFeed | None
+    stored: dict[str, Any] | None
+
+
+def _followed(
+    chat_id: UUID,
+    message_id: UUID,
+    principal: Authenticated,
+    session: Annotated[Session, Depends(get_session)],
+    registry: Annotated[ChatRegistry, Depends(chat_registry)],
+) -> _Followed:
+    """Access (404), then the running message's feed, else the stored answer (404 when there is
+    neither: an unknown id, or an answer that was never stored)."""
+    _chat(session, chat_id, principal)
+    run = registry.get(chat_id)
+    if run is not None and run.message_id == message_id:
+        return _Followed(feed=run.feed, stored=None)
+    # The feed closes before the slot is freed, and the answer is stored before the feed closes:
+    # a message no longer running is in the database (unless it could not be stored).
+    row = session.get(AssistantChatMessage, message_id)
+    if row is None or row.chat_id != chat_id or row.role != "assistant":
+        raise _not_found()
+    stored = message_out(row, files_of(session, chat_id)).model_dump(mode="json")
+    return _Followed(feed=None, stored=stored)
+
+
+@router.get(
+    "/chats/{chat_id}/messages/{message_id}/events",
+    response_class=EventSourceResponse,
+    summary="Follow a message: its events so far, then live until it ends",
+    responses={404: {"description": "No such message in this chat (or no access)."}},
+)
+async def follow_message(
+    followed: Annotated[_Followed, Depends(_followed)],
+) -> AsyncIterator[ServerSentEvent]:
+    """For a running message, every event so far (the same events as the `POST` stream, with
+    streamed words merged), then each new one until `message_end`. For a finished message,
+    `message_end` with the stored message at once. Leaving changes nothing for the message."""
+    if followed.feed is None:
+        yield ServerSentEvent(
+            event="message_end",
+            raw_data=json.dumps({"message": followed.stored}, ensure_ascii=False),
+        )
+        return
+    async for event, data in followed.feed.follow():
+        yield ServerSentEvent(event=event, raw_data=json.dumps(data, ensure_ascii=False))
 
 
 __all__ = ["chat_registry", "chat_runtime", "router"]

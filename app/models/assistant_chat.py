@@ -38,6 +38,8 @@ from app.db.base import Base, Immutable, TimestampedUUID
 CHAT_ROLES: tuple[str, ...] = ("user", "assistant")
 #: Why an answer stopped before it finished; NULL when it finished.
 CHAT_STOPS: tuple[str, ...] = ("cost_cap", "cancelled", "error", "turn_limit")
+#: With `stopped = 'cost_cap'`, which cap stopped it: the answer's own, or the drawing set's budget.
+CHAT_CAPS: tuple[str, ...] = ("message", "package")
 
 
 def _listed(values: tuple[str, ...]) -> str:
@@ -82,6 +84,12 @@ class AssistantChatMessage(Base, TimestampedUUID, Immutable):
     cost_micros: Mapped[int | None] = mapped_column(BigInteger, default=None)
     stopped: Mapped[str | None] = mapped_column(String(16), default=None)
     error: Mapped[str | None] = mapped_column(Text, default=None)
+    message_cap_micros: Mapped[int | None] = mapped_column(BigInteger, default=None)
+    """The per-answer cap the answer ran under (#1479); NULL for answers stored before it."""
+    package_cap_micros: Mapped[int | None] = mapped_column(BigInteger, default=None)
+    """The drawing set's AI budget the answer ran under."""
+    cap_hit: Mapped[str | None] = mapped_column(String(16), default=None)
+    """With `stopped = 'cost_cap'`: `message` or `package`."""
 
     __table_args__ = (
         UniqueConstraint("chat_id", "seq"),
@@ -91,6 +99,10 @@ class AssistantChatMessage(Base, TimestampedUUID, Immutable):
             name="assistant_chat_message_stopped",
         ),
         CheckConstraint("seq >= 1", name="assistant_chat_message_seq"),
+        CheckConstraint(
+            f"cap_hit IS NULL OR cap_hit IN ({_listed(CHAT_CAPS)})",
+            name="assistant_chat_message_cap_hit",
+        ),
     )
 
 

@@ -164,6 +164,10 @@ class _Stream:
                 if self._cancel is not None:
                     self._cancel.set()
                 continue
+            if event.get("type") == "__wait__":
+                # Holds the stream open until the test opens the gate (at most 10 s).
+                event["until"].wait(10)
+                continue
             if event.get("type") == "__wait_for_cancel__":
                 # Holds the stream open until the message is cancelled (at most 10 s).
                 if self._cancel is not None:
