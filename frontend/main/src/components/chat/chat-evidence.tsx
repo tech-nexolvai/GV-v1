@@ -5,8 +5,8 @@ import { FindingDifference, FindingValue, SourceTag, StatusChip } from '@/compon
 import { CheckList, RoundChip, TrustChip } from '@/components/chat/chat-trust';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import type { ChatFinding } from '@/lib/chat-api';
-import { architectPage, vendorPage } from '@/lib/chat-findings';
-import { printedSideWords } from '@/lib/chat-trust';
+import { architectPage, sideLabels, vendorPage } from '@/lib/chat-findings';
+import { printedSideWords, sumWords } from '@/lib/chat-trust';
 import { useReducedMotion } from '@/lib/chat-motion';
 import { cn } from '@/lib/utils';
 
@@ -127,11 +127,12 @@ export function NoPicture() {
   );
 }
 
-function Side({ who, page, src, finding }: { who: 'Architect' | 'Vendor'; page: number; src: string | null; finding: ChatFinding }) {
+function Side({ side, page, src, finding }: { side: 'architect' | 'vendor'; page: number; src: string | null; finding: ChatFinding }) {
+  const who = sideLabels(finding)[side];
   const label = `${who}, page ${page}`;
-  const printed = printedSideWords(finding, who === 'Architect' ? 'architect' : 'vendor');
+  const printed = printedSideWords(finding, side);
   return (
-    <figure data-slot="chat-evidence-side" data-side={who.toLowerCase()} className="grid min-w-0 content-start gap-1.5">
+    <figure data-slot="chat-evidence-side" data-side={side} className="grid min-w-0 content-start gap-1.5">
       <figcaption className="flex items-baseline gap-1.5 text-xs font-medium text-muted-foreground">
         <span className="text-foreground">{who}</span>
         <span className="num">page {page}</span>
@@ -186,12 +187,12 @@ export function EvidenceViewer({ findings, openId, onOpen, pictureUrl, fullPageH
             </div>
             <dl className="flex flex-wrap items-baseline gap-x-5 gap-y-1 text-sm">
               <div className="flex items-baseline gap-1.5">
-                <dt className="text-muted-foreground">Architect</dt>
+                <dt className="text-muted-foreground">{sideLabels(finding).architect}</dt>
                 <dd className="font-medium"><FindingValue finding={finding} side="architect" /></dd>
                 <dd><SourceTag finding={finding} /></dd>
               </div>
               <div className="flex items-baseline gap-1.5">
-                <dt className="text-muted-foreground">Vendor</dt>
+                <dt className="text-muted-foreground">{sideLabels(finding).vendor}</dt>
                 <dd className="font-medium"><FindingValue finding={finding} side="vendor" /></dd>
               </div>
               {finding.inches && (
@@ -201,14 +202,20 @@ export function EvidenceViewer({ findings, openId, onOpen, pictureUrl, fullPageH
                 </div>
               )}
             </dl>
+            {sumWords(finding) && (
+              <p data-slot="chat-evidence-sum" className="text-sm tabular-nums">
+                <span className="text-muted-foreground">Code’s sum: </span>
+                <span className="num">{sumWords(finding)}</span>
+              </p>
+            )}
             {finding.why?.trim()
               ? <DialogDescription className="break-words">{finding.why}</DialogDescription>
               : <DialogDescription className="sr-only">The architect's and the vendor's drawings at this spot, side by side.</DialogDescription>}
           </div>
 
           <div className="grid min-w-0 gap-3 md:grid-cols-2">
-            <Side who="Architect" page={architectPage(finding)} src={finding.arch_picture_id ? pictureUrl(finding.arch_picture_id) : null} finding={finding} />
-            <Side who="Vendor" page={vendorPage(finding)} src={finding.vendor_picture_id ? pictureUrl(finding.vendor_picture_id) : null} finding={finding} />
+            <Side side="architect" page={architectPage(finding)} src={finding.arch_picture_id ? pictureUrl(finding.arch_picture_id) : null} finding={finding} />
+            <Side side="vendor" page={vendorPage(finding)} src={finding.vendor_picture_id ? pictureUrl(finding.vendor_picture_id) : null} finding={finding} />
           </div>
 
           <div data-slot="chat-evidence-checks" className="grid gap-1 rounded-lg border bg-muted/30 px-3 py-2">

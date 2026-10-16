@@ -116,7 +116,7 @@ def test_a_whole_set_answer_gets_the_critic_and_its_no_makes_the_finding_to_chec
     ]
     assert len(critic_calls) == 1 and critic_calls[0]["output_config"] == {"effort": "low"}
     prompt_ids = [row["prompt_id"] for row in harness.ledger.rows]
-    assert prompt_ids.count("review-assistant-chat-critic-anthropic-chat-v5") == 1
+    assert prompt_ids.count("review-assistant-chat-critic-anthropic-chat-v6") == 1
     assert outcome.cost_micros == sum(_cost(row) for row in harness.ledger.rows)
 
 
