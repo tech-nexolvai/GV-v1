@@ -250,10 +250,11 @@ describe('ItemDetail', () => {
     const byHand = {
       ...item('countertop:find-5'),
       what_to_check: {
+        row_reason: null,
         pieces: [
-          { position: 1, kind: 'filler', value: '2"', note: null },
-          { position: 2, kind: 'cabinet', value: null, note: 'written as 90"(5 EQ) — 5 equal pieces in one number' },
-          { position: 3, kind: null, value: null, note: 'under GV markup — check by hand' },
+          { position: 1, kind: 'filler', value: '2"', mm: null, not_used: false, note: null },
+          { position: 2, kind: 'cabinet', value: null, mm: null, not_used: false, note: 'written as 90"(5 EQ) — 5 equal pieces in one number' },
+          { position: 3, kind: null, value: null, mm: null, not_used: false, note: 'under GV markup — check by hand' },
         ],
         overall: '96"',
         overall_note: null,
