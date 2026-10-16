@@ -47,6 +47,57 @@ export type ReviewItemKind = ReviewItem['kind'];
 export type ReviewStatus = ReviewItem['status'];
 
 /**
+ * "Compared with the architect": every architect number set beside the vendor's (direct compare).
+ * `same`/`different` were compared by exact arithmetic; `rule` was left to a check (its id and
+ * outcome); `unpaired` found no vendor number to set it beside; `unread` could not be read. `why`
+ * says it in plain words. Older packages send no list, and the section is not shown.
+ *
+ * Written to match the backend contract until the generated `schema.d.ts` carries it; the page only
+ * reads these fields, so the generated type can replace this one without a change elsewhere.
+ */
+export type ArchitectCompareResult = 'same' | 'different' | 'rule' | 'unpaired' | 'unread';
+/** A spot on a stored page, in stored page space (0..1), as strings. */
+export interface ArchitectCompareRef {
+  document_version_id: string;
+  page_number: number;
+  polygon: string[][];
+}
+export interface ArchitectCompareEntry {
+  /** `arch:<id>`. */
+  key: string;
+  page: number;
+  view: string | null;
+  architect_text: string;
+  /** The architect's number exactly, `n/d` inches. */
+  architect_inches: string;
+  vendor_text: string | null;
+  vendor_inches: string | null;
+  result: ArchitectCompareResult;
+  rule_id: string | null;
+  rule_outcome: string | null;
+  why: string;
+  finding_id: string | null;
+  architect_ref: ArchitectCompareRef | null;
+  vendor_ref: ArchitectCompareRef | null;
+  /** Like other review items: open needs a person; done was answered; rechecking waits. Absent on older answers. */
+  status?: ReviewStatus;
+  /** The W3 answers this entry offers (different: agree / not_this; unpaired, unread: checked_right / checked_wrong). */
+  actions?: string[];
+}
+export type ArchitectCompareCounts = Record<ArchitectCompareResult, number>;
+
+/** The list, empty when this package's answer has none (an older package). */
+export function architectCompareOf(data: ReviewItemsOut): readonly ArchitectCompareEntry[] {
+  const list = (data as { architect_compare?: readonly ArchitectCompareEntry[] | null }).architect_compare;
+  return Array.isArray(list) ? list : [];
+}
+
+/** The header's counts, or null when the server sent none. */
+export function architectCompareCountsOf(data: ReviewItemsOut): ArchitectCompareCounts | null {
+  return (data.header as { architect_compare_counts?: ArchitectCompareCounts | null }).architect_compare_counts ?? null;
+}
+
+/**
  * Every answer the page can send. Only Fix carries typed text: the value the drawing shows, in
  * inches, recorded as a correction of the AI's reading (Anant, 2026-10-16). The API lists an
  * item's `actions` as plain strings; `isItemAction` narrows one to this list, and anything else is
@@ -67,6 +118,7 @@ export const ITEM_ACTIONS = [
   'mark_cabinets',
   'use_cabinet_run',
   'job_values',
+  'clear_not_compared',
 ] as const;
 export type ItemAction = (typeof ITEM_ACTIONS)[number];
 
@@ -114,6 +166,12 @@ export type ActionExtra = Omit<ActionBody, 'expected_finding_id'>;
 /** W3's group keys: every open "Not checked" result, and every page listed with no countertop. */
 export const NOT_CHECKED_GROUP = 'not-checked';
 export const PAGES_GROUP = 'no-countertop-pages';
+/**
+ * "Clear all as not compared": every open architect number with no vendor match (or not read), in one
+ * call naming exactly the keys shown (`expected_keys`). The group key and answer name are the one
+ * place to change if the backend names them differently.
+ */
+export const NOT_COMPARED_GROUP = 'architect-not-compared';
 
 /** The calls the page makes. The app uses `liveReviewItemsApi`; tests and the UI kit pass their own. */
 export interface ReviewItemsApi {
@@ -186,6 +244,7 @@ const W3_ACTION: Record<ItemAction, 'confirm' | 'fix' | 'answer' | 'agree' | 'cl
   mark_cabinets: 'answer',
   use_cabinet_run: 'answer',
   job_values: 'answer',
+  clear_not_compared: 'answer',
 };
 
 /** The URL of a stored picture path that the API hands out (`zoom_ref`). */

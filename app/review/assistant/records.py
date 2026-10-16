@@ -65,6 +65,8 @@ MAX_PIECES: Final = 16
 MAX_PAGE_NOTES: Final = 40
 MAX_ARCHITECT_PAIRS: Final = 12
 MAX_REVIEW_ITEMS: Final = 60
+#: "Compared with the architect" entries kept as records (different first); the rest are counted.
+MAX_ARCHITECT_COMPARE: Final = 20
 MAX_TEXT: Final = 320
 #: The prompt JSON is rebuilt without per-piece detail when it is longer than this many characters.
 MAX_PROMPT_CHARS: Final = 40_000
@@ -259,9 +261,10 @@ class ReviewItemRecord(_Frozen):
     """`R1`, `R2` …: items first, then failures, then not-checked; open ones first in each."""
     record_id: str
     """The list's own key for it (what the screen opens)."""
-    group: Literal["item", "failure", "not_checked"]
+    group: Literal["item", "failure", "not_checked", "architect"]
     kind: str
-    """The item's kind (`number`, `wall_choice` …), or `failure` / `not_checked`."""
+    """The item's kind (`number`, `wall_choice` …), or `failure` / `not_checked`; for an architect
+    comparison, `architect_<result>` (`architect_different`, `architect_unpaired` …)."""
     page_number: int | None
     row_label: str | None
     what: str
@@ -606,6 +609,7 @@ def build_snapshot(
             "review_failures": header.failures,
             "review_not_checked": header.not_checked,
         }
+        totals |= _architect_counts(review_items)
     return ReviewSnapshot(
         package_id=str(countertops.package_id),
         revision_id=str(countertops.revision_id),
@@ -729,13 +733,116 @@ def _review_list(listed: ReviewItemsOut | None) -> tuple[tuple[ReviewItemRecord,
     groups = {"item": 0, "failure": 1, "not_checked": 2}
     entries.sort(key=lambda entry: (groups[str(entry["group"])], entry["status"] != "open"))
     kept = entries[:MAX_REVIEW_ITEMS]
+    compared = _architect_compare_entries(listed)
+    kept_compared = compared[:MAX_ARCHITECT_COMPARE]
     records = tuple(
         ReviewItemRecord.model_validate(
             {**entry, "id": f"R{index}", "needs_you": entry["status"] == "open"}
         )
-        for index, entry in enumerate(kept, start=1)
+        for index, entry in enumerate([*kept, *kept_compared], start=1)
     )
-    return records, len(entries) - len(kept)
+    return records, len(entries) - len(kept) + len(compared) - len(kept_compared)
+
+
+#: The architect comparison results, as the screen groups them (`same` is only counted).
+ARCHITECT_RESULTS: Final = ("different", "unpaired", "unread", "rule", "same")
+_LISTED_RESULTS: Final = ("different", "unpaired", "unread", "rule")
+
+
+def _field(entry: object, name: str) -> object:
+    """One field of an architect comparison entry: a model attribute, or a key of a plain mapping."""
+    if isinstance(entry, Mapping):
+        return entry.get(name)
+    return getattr(entry, name, None)
+
+
+def architect_compare_of(listed: ReviewItemsOut | None) -> list[object]:
+    """The list's `architect_compare` entries; empty when the list has none (an older package)."""
+    found = None if listed is None else getattr(listed, "architect_compare", None)
+    return list(found) if isinstance(found, Sequence) and not isinstance(found, str) else []
+
+
+def _text(value: object) -> str | None:
+    return _cut(value) if isinstance(value, str) else None
+
+
+def _architect_what(entry: object) -> str:
+    """The numbers side by side, as the screen shows them: code's words around the records' text."""
+    architect = _text(_field(entry, "architect_text")) or "a number"
+    vendor = _text(_field(entry, "vendor_text"))
+    result = _field(entry, "result")
+    if result == "rule":
+        rule = _text(_field(entry, "rule_id")) or "a rule"
+        outcome = _field(entry, "rule_outcome")
+        said = outcome_label(outcome) if isinstance(outcome, str) else NOT_CHECKED_LABEL
+        pair = (
+            f"vendor {vendor} against architect {architect}" if vendor else f"architect {architect}"
+        )
+        return f"The {pair}, checked by {rule} ({said.lower()})"
+    if vendor:
+        return f"Vendor {vendor} vs architect {architect}"
+    return f"Architect {architect}"
+
+
+def _compare_status(status: object) -> Literal["open", "done", "rechecking"]:
+    if status == "open":
+        return "open"
+    return "rechecking" if status == "rechecking" else "done"
+
+
+def _architect_compare_entries(listed: ReviewItemsOut | None) -> list[dict[str, object]]:
+    """Every architect comparison that is not the same, different first, then the ones a person
+    settles (no match, not read), then the ones a rule checks. Records only: never a decision; an
+    open one only points the reviewer to its answer on the screen."""
+    entries: list[dict[str, object]] = []
+    for entry in architect_compare_of(listed):
+        result = _field(entry, "result")
+        key = _field(entry, "key")
+        if result not in _LISTED_RESULTS or not isinstance(key, str):
+            continue
+        page = _field(entry, "page")
+        view = _text(_field(entry, "view"))
+        entries.append(
+            {
+                "record_id": key,
+                "group": "architect",
+                "kind": f"architect_{result}",
+                "page_number": page if isinstance(page, int) else None,
+                "row_label": view,
+                "what": _architect_what(entry),
+                "why": _why(str(_field(entry, "why") or "")),
+                "best_guess": None,
+                # The entry's own status (open: it waits for the reviewer's answer on the screen);
+                # an entry sent without one is a record to read only.
+                "status": _compare_status(_field(entry, "status")),
+            }
+        )
+    order = {result: index for index, result in enumerate(_LISTED_RESULTS)}
+    entries.sort(key=lambda entry: order[str(entry["kind"]).removeprefix("architect_")])
+    return entries
+
+
+def _architect_counts(listed: ReviewItemsOut | None) -> dict[str, int]:
+    """The section's counts: the header's own when it sent them, else counted from the list."""
+    entries = architect_compare_of(listed)
+    if not entries:
+        return {}
+    sent = None if listed is None else getattr(listed.header, "architect_compare_counts", None)
+    counts: dict[str, int] = {}
+    for result in ARCHITECT_RESULTS:
+        value = _field(sent, result) if sent is not None else None
+        counts[result] = (
+            value
+            if isinstance(value, int)
+            else sum(_field(entry, "result") == result for entry in entries)
+        )
+    return {
+        "architect_compared": sum(counts.values()),
+        "architect_same": counts["same"],
+        "architect_different": counts["different"],
+        "architect_rule": counts["rule"],
+        "architect_need_you": counts["unpaired"] + counts["unread"],
+    }
 
 
 #: Decisions after which a result no longer needs correction from the reviewer's side.
@@ -909,6 +1016,21 @@ def _prompt_review_list(snapshot: ReviewSnapshot) -> dict[str, object] | None:
             _prompt_review_item(item)
             for item in snapshot.review_items
             if item.group == "not_checked"
+        ],
+        # "Compared with the architect": records to read, never items to answer.
+        "architect_compare": [
+            {
+                "id": item.id,
+                "result": item.kind.removeprefix("architect_"),
+                "page": item.page_number,
+                "view": item.row_label,
+                "what": item.what,
+                "why": item.why,
+                "status": item.status,
+                "needs_reviewer": item.needs_you,
+            }
+            for item in snapshot.review_items
+            if item.group == "architect"
         ],
     }
 

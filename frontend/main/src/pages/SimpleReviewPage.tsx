@@ -5,7 +5,7 @@ import { getPackage, ApiError, downloadPagePicture } from '@/api/client';
 import { projectId as configuredProjectId } from '@/api/config';
 import { liveDraftCloudApi, makeDraftCloud, type DraftCloudApi } from '@/api/draft-cloud';
 import { liveFinalCloudApi, type FinalCloudApi } from '@/api/final-cloud';
-import { apiUrl, liveReviewItemsApi, NOT_CHECKED_GROUP, PAGES_GROUP, type ActionExtra, type ItemAction, type JobValueSuggestion, type ReviewFailure, type ReviewItem, type ReviewItemsApi, type ReviewItemsOut } from '@/api/review-items';
+import { apiUrl, architectCompareCountsOf, architectCompareOf, liveReviewItemsApi, NOT_CHECKED_GROUP, NOT_COMPARED_GROUP, PAGES_GROUP, type ActionExtra, type ArchitectCompareEntry, type ItemAction, type JobValueSuggestion, type ReviewFailure, type ReviewItem, type ReviewItemsApi, type ReviewItemsOut } from '@/api/review-items';
 import { agreeAction, disagreeAction, leftWords, openNoCountertopPages, openPagesToDecide, orderItems, proposedWall, summarize, whereWord } from '@/lib/review-items';
 import type { AssistantRecords } from '@/lib/assistant';
 import { AssistantPanel, type AssistantNavigation } from '@/components/assistant/assistant-panel';
@@ -26,6 +26,8 @@ import { liveArchitectLoader, type ArchitectLoader } from '@/components/simple-r
 import { RecordedNumbersPanel, type RecordedPanelSubject } from '@/components/simple-review/recorded-numbers';
 import { liveRecordedNumbers, type RecordedNumbersLoader } from '@/components/simple-review/recorded-numbers-lib';
 import type { ViewerItem } from '@/components/simple-review/dual-pdf-viewer';
+import { ArchitectCompare } from '@/components/simple-review/architect-compare';
+import { compareWhat, notComparedKeys } from '@/components/simple-review/architect-compare-lib';
 
 // "Open PDFs" opens both full drawings side by side (U3, #1355), loaded only when first opened.
 const DualPdfViewer = lazy(() => import('@/components/simple-review/dual-pdf-viewer').then((m) => ({ default: m.DualPdfViewer })));
@@ -122,6 +124,8 @@ function isTyping(target: EventTarget | null): boolean {
 const NOT_CHECKED = 'group:not-checked';
 /** Where the "no countertop" pages group's busy state and save error are kept. */
 const PAGES = 'group:no-countertop-pages';
+/** Where the "Clear all as not compared" group's busy state and save error are kept. */
+const NOT_COMPARED = 'group:not-compared';
 
 /** What a saved answer is announced as (role=status), in a few plain words. */
 const SAVED_WORDS: Partial<Record<ItemAction, string>> = {
@@ -137,6 +141,7 @@ const SAVED_WORDS: Partial<Record<ItemAction, string>> = {
   agree: 'Agreed. It will be clouded as wrong.',
   settle_group: 'Cleared as not checked. They are printed NOT CHECKED.',
   job_values: "Saved on this job. The checks run again with this job's values.",
+  clear_not_compared: 'Cleared as not compared.',
 };
 
 const NO_RECORDS: AssistantRecords = {
@@ -432,6 +437,23 @@ export function SimpleReviewPage({
     }
   }
 
+  // "Clear all as not compared": one group call naming exactly the architect numbers shown with no
+  // match or not read (`expected_keys`); a 409 reloads, and Retry sends the group as shown then.
+  async function clearNotCompared() {
+    const keys = latest.current ? notComparedKeys(architectCompareOf(latest.current)) : [];
+    if (!begin({ key: NOT_COMPARED, action: 'clear_not_compared' })) return;
+    try {
+      await send(NOT_COMPARED_GROUP, 'clear_not_compared', null, { expected_keys: keys });
+      cleared(NOT_COMPARED);
+      announce('clear_not_compared');
+      reload();
+    } catch (error) {
+      failed(NOT_COMPARED, error, () => void clearNotCompared());
+    } finally {
+      finish();
+    }
+  }
+
   // "These N pages have no countertop": one group call naming exactly the pages shown (#1358).
   async function confirmPages() {
     const keys = openNoCountertopPages(latest.current?.items ?? []).map((item) => item.key);
@@ -459,6 +481,22 @@ export function SimpleReviewPage({
     const at: ViewerItem = { key: failure.key, page: failure.page ?? null, what: whereWord(failure), status: failure.status, vendor_ref: failure.vendor_ref ?? null, architect_ref: null };
     if (onOpenPdfs) onOpenPdfs(at);
     else setViewer((now) => ({ opening: (now?.opening ?? 0) + 1, item: at, recorded: { ...failure, tone: 'fail' } }));
+  }
+
+  // An architect comparison's Look: both drawings, the vendor's and the architect's numbers ringed.
+  function lookAtCompare(entry: ArchitectCompareEntry) {
+    const spot = (ref: ArchitectCompareEntry['vendor_ref']) => (ref ? { ...ref, page_id: '', coordinate_space: 'stored' } : null);
+    const location = spot(entry.architect_ref);
+    const at: ViewerItem = {
+      key: entry.key,
+      page: entry.vendor_ref?.page_number ?? entry.page,
+      what: compareWhat(entry),
+      status: entry.result === 'same' ? 'done' : 'open',
+      vendor_ref: spot(entry.vendor_ref),
+      architect_ref: { location, reason: location ? null : "No spot on the architect's drawing was recorded for this number." },
+    };
+    if (onOpenPdfs) onOpenPdfs(at);
+    else setViewer((now) => ({ opening: (now?.opening ?? 0) + 1, item: at, recorded: null }));
   }
 
   // A job value's Look (#1409): the side-by-side viewer at the page the reader found it on, ringed.
@@ -595,7 +633,7 @@ export function SimpleReviewPage({
       return;
     }
     if (listed.not_checked.some((entry) => entry.key === key)) setNotCheckedOpen(true);
-    const known = listed.failures.some((entry) => entry.key === key) || listed.not_checked.some((entry) => entry.key === key) || pagesAsked.some((item) => item.key === key) || pagesToDecide.some((item) => item.key === key);
+    const known = architectCompareOf(listed).some((entry) => entry.key === key) || listed.failures.some((entry) => entry.key === key) || listed.not_checked.some((entry) => entry.key === key) || pagesAsked.some((item) => item.key === key) || pagesToDecide.some((item) => item.key === key);
     if (known) {
       focusWhenShown(key);
       return;
@@ -725,6 +763,19 @@ export function SimpleReviewPage({
                 </p>
 
                 <div className="flex flex-col gap-10 pt-2">
+                  {/* First: every architect number set beside the vendor's. Hidden for older packages. */}
+                  <ArchitectCompare
+                    entries={architectCompareOf(data)}
+                    counts={architectCompareCountsOf(data)}
+                    onLook={lookAtCompare}
+                    busyKey={busy?.key ?? null}
+                    errors={errors}
+                    // An architect comparison names no finding: the key is what W3 checks.
+                    onAct={(entry, action) => void act(entry.key, action, null)}
+                    groupKey={NOT_COMPARED}
+                    onClearNotCompared={() => void clearNotCompared()}
+                  />
+
                   <FailuresStrip
                     failures={data.failures}
                     busyKey={busy?.key ?? null}

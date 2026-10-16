@@ -50,6 +50,7 @@ export const ACTION_LABELS: Record<ItemAction, string> = {
   mark_cabinets: 'Save marks',
   use_cabinet_run: 'Use this run',
   job_values: 'Save and check again',
+  clear_not_compared: 'Clear all as not compared',
 };
 
 /** The answer that agrees with the AI (the C key), and the one that disagrees (the F key). */

@@ -26,11 +26,13 @@ __all__ = [
     "NO_ANSWER_IN_RECORDS",
     "YOUR_DECISION",
     "answer_for_question",
+    "architect_difference_answer",
     "asks_about_deciding",
     "blockers_answer",
     "details_answer",
     "fallback_answer",
     "glossary_answer",
+    "is_architect_difference_question",
     "is_ranking_question",
     "judging_answer",
     "needs_you_answer",
@@ -69,6 +71,11 @@ _NEED_WORDS: Final = re.compile(
 _DETAIL_WORDS: Final = re.compile(
     r"\bwalls?\b|\bwhat (?:was|were) read\b|\breadings?\b|\bpieces?\b|\bfield cut|"
     r"\bvalues?\b|\bmeasure|\bnumbers\b|\bdimensions?\b"
+)
+_ARCHITECT: Final = re.compile(r"\barchitect")
+_DIFFER_WORDS: Final = re.compile(
+    r"\bdiffer|\bdifferent|\bdifference|\bmismatch|\bcompar|\bmatch|\bsame\b|\bdisagree|"
+    r"\bagree with\b|\bnot the same\b"
 )
 _FIX_WORDS: Final = re.compile(
     r"\bfix|\bhow do i (?:correct|solve|sort)|\bwhat (?:do|should) i tell"
@@ -540,6 +547,42 @@ def _focus_answer(snapshot: ReviewSnapshot, focus: Focus | None) -> Draft | None
     return None
 
 
+def is_architect_difference_question(question: str) -> bool:
+    """ "What is different from the architect?", "does the vendor match the architect?" (no page)."""
+    folded = _folded(question)
+    return (
+        _ARCHITECT.search(folded) is not None
+        and _DIFFER_WORDS.search(folded) is not None
+        and _PAGE.search(folded) is None
+    )
+
+
+def architect_difference_answer(snapshot: ReviewSnapshot) -> Draft | None:
+    """What "Compared with the architect" recorded: the count of different numbers, each one (up
+    to the list cap) with its page and reason, then how many need the reviewer. Records only: no
+    decision, and every number is a placeholder code fills. `None` when the list had no section
+    (an older package), so the question falls through to the other answers.
+    """
+    if "architect_compared" not in snapshot.totals:
+        return None
+    compared = [item for item in snapshot.review_items if item.group == "architect"]
+    different = [item for item in compared if item.kind == "architect_different"]
+    sentences = ["{count.architect_compared}.", "{count.architect_different}."]
+    for item in different[:MAX_LISTED]:
+        where = f" on {{{item.id}.page}}" if item.page_number is not None else ""
+        sentences.append(f"{{{item.id}.what}}{where}; {{{item.id}.why}}.")
+    # Never silent: more different numbers than are listed here (capped) are pointed to.
+    if snapshot.totals.get("architect_different", 0) > min(len(different), MAX_LISTED):
+        sentences.append("The rest are listed under Compared with the architect.")
+    if snapshot.totals.get("architect_need_you", 0):
+        sentences.append("{count.architect_need_you}.")
+    first = next((item for item in different if item.page_number is not None), None)
+    return Draft(
+        text="\n\n".join(sentences),
+        actions=(() if first is None else (("open_page", f"P{first.page_number}"),)),
+    )
+
+
 def answer_for_question(
     snapshot: ReviewSnapshot, question: str, focus: Focus | None = None
 ) -> Draft | None:
@@ -562,6 +605,10 @@ def answer_for_question(
         and (_DETAIL_WORDS.search(folded) or _FIX_WORDS.search(folded))
     ):
         page = focus.page_number
+    if is_architect_difference_question(question):
+        compared = architect_difference_answer(snapshot)
+        if compared is not None:
+            return compared
     if _NO_COUNTERTOP.search(folded):
         return _notes_answer(snapshot, no_countertop=True)
     if page is None and _NOT_CHECKED.search(folded):

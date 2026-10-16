@@ -43,6 +43,7 @@ from app.review.assistant.records import (
 )
 
 __all__ = [
+    "ARCHITECT_COUNT_FIELDS",
     "COUNT_FIELDS",
     "KINDS",
     "OUTCOME_PHRASES",
@@ -83,6 +84,15 @@ COUNT_FIELDS: Final = (
 )
 #: The simple review list's header counts (#1352): offered only when the list was read.
 REVIEW_COUNT_FIELDS: Final = ("review_open", "review_failures", "review_not_checked")
+#: "Compared with the architect" counts: offered only when the list had that section.
+ARCHITECT_COUNT_FIELDS: Final = (
+    "architect_compared",
+    "architect_same",
+    "architect_different",
+    "architect_rule",
+    "architect_need_you",
+)
+_OPTIONAL_COUNTS: Final = frozenset((*REVIEW_COUNT_FIELDS, *ARCHITECT_COUNT_FIELDS))
 
 #: The grammatical kind of every field, as the prompt shows it.
 KINDS: Final[Mapping[str, str]] = {
@@ -267,12 +277,37 @@ _COUNT_WORDS: Final[Mapping[str, tuple[str, str, str]]] = {
         "checks could not run and are printed NOT CHECKED",
         "no check is listed as not checked",
     ),
+    "architect_compared": (
+        "architect number was compared with the vendor's",
+        "architect numbers were compared with the vendor's",
+        "no architect number was compared",
+    ),
+    "architect_same": (
+        "architect number is the same as the vendor's",
+        "architect numbers are the same as the vendor's",
+        "no architect number is the same as the vendor's",
+    ),
+    "architect_different": (
+        "architect number is different from the vendor's",
+        "architect numbers are different from the vendor's",
+        "no architect number is different from the vendor's",
+    ),
+    "architect_rule": (
+        "architect number is checked by a rule",
+        "architect numbers are checked by a rule",
+        "no architect number is left to a rule",
+    ),
+    "architect_need_you": (
+        "architect number has no vendor number beside it or was not read, so it needs you",
+        "architect numbers have no vendor number beside them or were not read, so they need you",
+        "every architect number was read and set beside a vendor number",
+    ),
 }
 
 
 def _count(snapshot: ReviewSnapshot, field: str) -> str | None:
     words = _COUNT_WORDS.get(field)
-    if words is None or (field in REVIEW_COUNT_FIELDS and field not in snapshot.totals):
+    if words is None or (field in _OPTIONAL_COUNTS and field not in snapshot.totals):
         return None
     return _plural(snapshot.totals.get(field, 0), *words)
 
@@ -545,7 +580,11 @@ def record_fields(snapshot: ReviewSnapshot) -> dict[str, list[str]]:
         fields[entry.id] = [name for name in _REVIEW_ITEM_FIELDS if _held(snapshot, entry.id, name)]
     fields["count"] = [
         *COUNT_FIELDS,
-        *(name for name in REVIEW_COUNT_FIELDS if name in snapshot.totals),
+        *(
+            name
+            for name in (*REVIEW_COUNT_FIELDS, *ARCHITECT_COUNT_FIELDS)
+            if name in snapshot.totals
+        ),
     ]
     fields["signoff"] = ["status"]
     return fields
