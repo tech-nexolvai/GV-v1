@@ -286,7 +286,8 @@ def _estimate_micros(
 
 
 def assistant_spent_micros(session: Session, package_revision_id: UUID) -> int:
-    """What the assistant's recorded calls on this revision cost (unpriced calls count as zero)."""
+    """What the side panel's recorded calls on this revision cost (unpriced calls count as zero).
+    The chats (#1463) have their own budget per drawing set, so their calls are not counted here."""
     from sqlalchemy import func, select
 
     from app.models import ModelInvocation
@@ -296,6 +297,7 @@ def assistant_spent_micros(session: Session, package_revision_id: UUID) -> int:
             select(func.coalesce(func.sum(ModelInvocation.cost_micros), 0)).where(
                 ModelInvocation.package_revision_id == package_revision_id,
                 ModelInvocation.prompt_id.like("review-assistant-%"),
+                ModelInvocation.prompt_id.not_like("review-assistant-chat-%"),
             )
         )
         or 0

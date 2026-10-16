@@ -1,0 +1,394 @@
+"""The chat's call, exactly as it leaves the process (#1463): no network, no paid call.
+
+- Each model, effort and thinking choice goes into the call per Anthropic's rules (the exact JSON),
+  and the combinations the API would refuse are refused first, in plain words.
+- The provider is chosen from the keys present; the official SDK, run over a fake transport, sends
+  the call to the right place with the right key only, and its stream is read back exactly.
+- No key ever reaches an error, a log line or a repr.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from collections.abc import Iterator
+from typing import Any
+
+import httpx2
+import pytest
+
+from app.review.assistant.chat_engine import _accumulate, prompt_ids
+from app.review.assistant.chat_provider import (
+    AnthropicSdkProvider,
+    ProviderChoice,
+    ProviderFailure,
+    choose_provider,
+    failure_from,
+)
+from app.review.assistant.chat_request import (
+    MODELS,
+    ChoiceRefused,
+    call_params,
+    check_choice,
+    helper_thinking,
+    inline_pictures,
+    thinking_config,
+)
+from app.review.assistant.chat_tools import LEAD_SYSTEM_PROMPT, LEAD_TOOLS
+from app.usage_history import infer_purpose, infer_route
+from tests.review.assistant.chat_fakes import reply, text, thinking, tool
+
+ANTHROPIC_KEY = "sk-ant-api03-TESTKEY-never-real"
+OPENROUTER_KEY = "sk-or-v1-TESTKEY-never-real"
+MESSAGES = [{"role": "user", "content": [{"type": "text", "text": "Hi"}]}]
+
+
+def _params(model: str, effort: str, on: bool, *, provider: str = "anthropic", final: bool = False):  # type: ignore[no-untyped-def]
+    chosen = check_choice(model, effort, on)
+    return call_params(
+        provider=provider,  # type: ignore[arg-type]
+        model=chosen,
+        effort=effort,
+        thinking=thinking_config(chosen, on),
+        system="SYSTEM",
+        tools=[{"name": "a", "input_schema": {}}, {"name": "b", "input_schema": {}}],
+        messages=MESSAGES,
+        final=final,
+        max_tokens=64000,
+    )
+
+
+def test_opus_always_thinks_with_the_summary_shown_and_the_refusal_fallback() -> None:
+    assert _params("claude-opus-5-5", "high", True) == {
+        "model": "claude-opus-5-5",
+        "max_tokens": 64000,
+        "system": [{"type": "text", "text": "SYSTEM", "cache_control": {"type": "ephemeral"}}],
+        "messages": [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "Hi", "cache_control": {"type": "ephemeral"}}],
+            }
+        ],
+        "tools": [
+            {"name": "a", "input_schema": {}},
+            {"name": "b", "input_schema": {}, "cache_control": {"type": "ephemeral"}},
+        ],
+        "tool_choice": {"type": "auto"},
+        "thinking": {"type": "adaptive", "display": "summarized"},
+        "output_config": {"effort": "high"},
+        "betas": ["server-side-fallback-2026-07-01"],
+        "fallbacks": "default",
+    }
+
+
+@pytest.mark.parametrize(
+    ("model", "effort", "on", "expected"),
+    [
+        ("claude-opus-5-5", "max", True, {"type": "adaptive", "display": "summarized"}),
+        ("claude-opus-5-5", "low", True, {"type": "adaptive", "display": "summarized"}),
+        ("claude-sonnet-5-5", "xhigh", True, {"type": "adaptive", "display": "summarized"}),
+        ("claude-sonnet-5-5", "high", False, {"type": "between_tools"}),
+        ("claude-sonnet-5-5", "low", False, {"type": "between_tools"}),
+        ("claude-haiku-5-5", "medium", True, {"type": "adaptive", "display": "summarized"}),
+        ("claude-haiku-5-5", "high", False, {"type": "disabled"}),
+    ],
+)
+def test_each_choice_sends_its_thinking_and_effort(
+    model: str, effort: str, on: bool, expected: dict[str, str]
+) -> None:
+    params = _params(model, effort, on)
+    assert params["thinking"] == expected
+    assert params["output_config"] == {"effort": effort}
+    assert params["model"] == model
+    # Never a budget, a temperature or a forced tool.
+    flat = json.dumps(params)
+    for banned in ("budget_tokens", "temperature", "top_p", '"any"'):
+        assert banned not in flat
+
+
+def test_haiku_has_no_server_side_fallback() -> None:
+    params = _params("claude-haiku-5-5", "low", True)
+    assert "betas" not in params and "fallbacks" not in params
+
+
+def test_sonnet_takes_the_default_fallback_form_only() -> None:
+    params = _params("claude-sonnet-5-5", "medium", False)
+    assert params["betas"] == ["server-side-fallback-2026-07-01"]
+    assert params["fallbacks"] == "default"
+
+
+def test_a_forced_final_answer_is_tool_choice_none() -> None:
+    assert _params("claude-opus-5-5", "high", True, final=True)["tool_choice"] == {"type": "none"}
+
+
+def test_openrouter_gets_its_names_and_the_keep_no_data_routing_and_no_betas() -> None:
+    params = _params("claude-opus-5-5", "high", True, provider="openrouter")
+    assert params["model"] == "anthropic/claude-opus-5.5"
+    assert "betas" not in params and "fallbacks" not in params
+    assert params["extra_body"] == {
+        "provider": {
+            "only": ["google-vertex/global"],
+            "allow_fallbacks": False,
+            "require_parameters": True,
+            "data_collection": "deny",
+            "zdr": True,
+        }
+    }
+    assert _params("claude-haiku-5-5", "low", True, provider="openrouter")["model"] == (
+        "anthropic/claude-haiku-5.5"
+    )
+
+
+@pytest.mark.parametrize(
+    ("model", "effort", "on", "words"),
+    [
+        ("claude-opus-5-5", "high", False, "always on"),
+        ("claude-sonnet-5-5", "xhigh", False, "high or below"),
+        ("claude-sonnet-5-5", "max", False, "high or below"),
+        ("claude-haiku-5-5", "max", False, "high or below"),
+        ("claude-fable-5-1", "high", True, "not one of the models"),
+        ("claude-opus-5-5", "extreme", True, "effort must be"),
+    ],
+)
+def test_choices_the_api_would_refuse_are_refused_first(
+    model: str, effort: str, on: bool, words: str
+) -> None:
+    with pytest.raises(ChoiceRefused, match=words):
+        check_choice(model, effort, on)
+
+
+def test_a_helper_on_another_model_never_gets_a_setting_it_refuses() -> None:
+    opus, sonnet = MODELS["claude-opus-5-5"], MODELS["claude-sonnet-5-5"]
+    assert helper_thinking(opus, "high", False) == {"type": "adaptive", "display": "summarized"}
+    assert helper_thinking(sonnet, "high", False) == {"type": "between_tools"}
+    assert helper_thinking(sonnet, "max", False) == {"type": "adaptive", "display": "summarized"}
+
+
+def test_pictures_are_put_back_the_same_way_every_time() -> None:
+    stored = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "v",
+                    "content": [
+                        {"type": "text", "text": "Picture"},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "gv_picture",
+                                "picture_id": "p1",
+                                "width": 2,
+                                "height": 2,
+                            },
+                        },
+                    ],
+                }
+            ],
+        }
+    ]
+    once = inline_pictures(stored, lambda _pid: b"\x89PNG-bytes")
+    twice = inline_pictures(json.loads(json.dumps(stored)), lambda _pid: b"\x89PNG-bytes")
+    assert json.dumps(once) == json.dumps(twice)
+    assert once[0]["content"][0]["content"][1] == {
+        "type": "image",
+        "source": {"type": "base64", "media_type": "image/png", "data": "iVBORy1ieXRlcw=="},
+    }
+    assert stored[0]["content"][0]["content"][1]["source"]["type"] == "gv_picture"
+
+
+# ---- the provider ------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("setting", "anthropic", "openrouter", "name", "available"),
+    [
+        ("auto", ANTHROPIC_KEY, OPENROUTER_KEY, "anthropic", True),
+        ("auto", None, OPENROUTER_KEY, "openrouter", True),
+        ("auto", "  ", OPENROUTER_KEY, "openrouter", True),
+        ("auto", None, None, "openrouter", False),
+        ("anthropic", None, OPENROUTER_KEY, "anthropic", False),
+        ("openrouter", ANTHROPIC_KEY, OPENROUTER_KEY, "openrouter", True),
+        ("openrouter", ANTHROPIC_KEY, None, "openrouter", False),
+    ],
+)
+def test_the_provider_follows_the_keys_present(
+    setting: str, anthropic: str | None, openrouter: str | None, name: str, available: bool
+) -> None:
+    choice = choose_provider(setting, anthropic, openrouter)  # type: ignore[arg-type]
+    assert choice.name == name and choice.available is available
+    assert (choice.reason is None) is available
+    assert ANTHROPIC_KEY not in repr(choice) and OPENROUTER_KEY not in repr(choice)
+
+
+def _sse(events: list[dict[str, Any]]) -> bytes:
+    return "".join(
+        f"event: {event['type']}\ndata: {json.dumps(event)}\n\n" for event in events
+    ).encode()
+
+
+class _Transport:
+    def __init__(self, status: int, body: bytes) -> None:
+        self.status = status
+        self.body = body
+        self.requests: list[httpx2.Request] = []
+
+    def __call__(self, request: httpx2.Request) -> httpx2.Response:
+        self.requests.append(request)
+        return httpx2.Response(
+            self.status,
+            headers={
+                "content-type": "text/event-stream" if self.status == 200 else "application/json"
+            },
+            content=self.body,
+        )
+
+
+def _provider(name: str, key: str, transport: _Transport) -> AnthropicSdkProvider:
+    import anthropic
+
+    return AnthropicSdkProvider(
+        ProviderChoice(name, key),  # type: ignore[arg-type]
+        timeout_seconds=30,
+        http_client=anthropic.DefaultHttpxClient(transport=httpx2.MockTransport(transport)),
+    )
+
+
+def _drain(stream: Any) -> Iterator[dict[str, Any]]:
+    try:
+        yield from stream
+    finally:
+        stream.close()
+
+
+def test_anthropic_direct_streams_with_its_key_and_the_fallback_beta(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", OPENROUTER_KEY)
+    events = reply(
+        thinking("Hmm."), text("Hello."), tool("t", "view", {"path": "/x"}), stop="tool_use"
+    )
+    transport = _Transport(200, _sse(events))
+    provider = _provider("anthropic", ANTHROPIC_KEY, transport)
+    params = _params("claude-opus-5-5", "high", True)
+
+    got = list(_drain(provider.open_stream(params)))
+
+    request = transport.requests[0]
+    assert str(request.url).startswith("https://api.anthropic.com/v1/messages")
+    assert request.headers["x-api-key"] == ANTHROPIC_KEY
+    assert "server-side-fallback-2026-07-01" in request.headers["anthropic-beta"]
+    assert OPENROUTER_KEY not in str(request.headers)
+    body = json.loads(request.content)
+    assert body["stream"] is True and body["fallbacks"] == "default"
+    assert body["thinking"] == {"type": "adaptive", "display": "summarized"}
+    assert "betas" not in body
+    # The stream reads back as the API sent it.
+    accumulated = _accumulate(got, None, lambda: False, {})
+    assert accumulated.content == [
+        {"type": "thinking", "thinking": "Hmm.", "signature": "sig-abc"},
+        {"type": "text", "text": "Hello."},
+        {"type": "tool_use", "id": "t", "name": "view", "input": {"path": "/x"}},
+    ]
+    assert accumulated.stop_reason == "tool_use"
+
+
+def test_openrouter_gets_a_bearer_token_and_never_the_anthropic_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", ANTHROPIC_KEY)
+    transport = _Transport(200, _sse(reply(text("Hi"), model="anthropic/claude-opus-5.5")))
+    provider = _provider("openrouter", OPENROUTER_KEY, transport)
+
+    list(
+        _drain(
+            provider.open_stream(_params("claude-opus-5-5", "high", True, provider="openrouter"))
+        )
+    )
+
+    request = transport.requests[0]
+    assert str(request.url) == "https://openrouter.ai/api/v1/messages"
+    assert request.headers["authorization"] == f"Bearer {OPENROUTER_KEY}"
+    assert "x-api-key" not in request.headers
+    assert ANTHROPIC_KEY not in str(request.headers) + request.content.decode()
+    body = json.loads(request.content)
+    assert body["model"] == "anthropic/claude-opus-5.5"
+    assert body["provider"]["only"] == ["google-vertex/global"] and body["provider"]["zdr"] is True
+    assert "fallbacks" not in body
+
+
+def test_a_refused_key_is_told_plainly_without_the_key(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.DEBUG)
+    error_body = json.dumps(
+        {
+            "type": "error",
+            "error": {"type": "authentication_error", "message": f"bad {ANTHROPIC_KEY}"},
+        }
+    ).encode()
+    provider = _provider("anthropic", ANTHROPIC_KEY, _Transport(401, error_body))
+
+    with pytest.raises(ProviderFailure) as raised:
+        list(_drain(provider.open_stream(_params("claude-opus-5-5", "high", True))))
+
+    assert raised.value.retryable is False and raised.value.status == 401
+    assert str(raised.value) == (
+        "The AI service refused this server's key, so Claude did not answer. Tell your admin."
+    )
+    assert raised.value.__cause__ is None
+    assert ANTHROPIC_KEY not in caplog.text and ANTHROPIC_KEY not in repr(provider)
+
+
+def test_failures_are_plain_and_say_whether_to_ask_again() -> None:
+    import anthropic
+
+    request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+    timeout = failure_from(anthropic.APITimeoutError(request=request))
+    connection = failure_from(anthropic.APIConnectionError(request=request))
+    assert timeout.retryable and connection.retryable
+    overloaded = failure_from(
+        anthropic.APIStatusError(
+            "overloaded", response=httpx2.Response(529, request=request), body=None
+        )
+    )
+    assert overloaded.retryable and overloaded.status == 529
+    mid_stream = failure_from(
+        anthropic.APIStatusError("boom", response=httpx2.Response(200, request=request), body=None)
+    )
+    assert mid_stream.retryable and "middle of the answer" in str(mid_stream)
+    bad = failure_from(
+        anthropic.BadRequestError("bad", response=httpx2.Response(400, request=request), body=None)
+    )
+    assert not bad.retryable and str(bad) == "The AI service refused the request (error 400)."
+
+
+def test_usage_rows_name_the_route_and_the_purpose() -> None:
+    lead, helper = prompt_ids("anthropic")
+    assert infer_route("anthropic.claude-opus-5-5", lead) == "anthropic"
+    assert infer_route("anthropic.claude-opus-5-5", helper) == "anthropic"
+    assert infer_route("anthropic.claude-opus-5-5", prompt_ids("openrouter")[0]) == "openrouter"
+    assert infer_purpose(lead) == "assistant" and infer_purpose(helper) == "assistant"
+
+
+def test_the_system_prompt_is_short_and_names_the_skill_and_the_three_facts() -> None:
+    assert len(LEAD_SYSTEM_PROMPT) < 2600
+    for words in (
+        "/mnt/skills/gv-review/SKILL.md",
+        "inches",
+        "GV's markup",
+        "cannot change the review",
+        "present_files",
+        "markdown",
+    ):
+        assert words in LEAD_SYSTEM_PROMPT
+    assert [t["name"] for t in LEAD_TOOLS] == [
+        "bash_tool",
+        "view",
+        "create_file",
+        "str_replace",
+        "present_files",
+        "TaskCreate",
+        "TaskUpdate",
+        "Agent",
+        "review_results",
+    ]

@@ -1,0 +1,310 @@
+"""The saved chats (#1463), append-only: chats, their messages and the files they hand over.
+
+Nothing here updates or deletes a row. A chat's title is its first message's opening words, read
+from that row. A message's `seq` is the next number in its chat; the unique `(chat_id, seq)` keeps
+two writers from taking the same place. The history a turn replays is every earlier answer's
+`api_content`, in order, exactly as stored (`json`, so the keys keep their order).
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Iterable, Sequence
+from decimal import Decimal
+from typing import Any, Final
+from uuid import UUID
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from app.models import (
+    AssistantChat,
+    AssistantChatFile,
+    AssistantChatMessage,
+    ModelInvocation,
+    Package,
+    PackageRevision,
+)
+from app.review.assistant.chat_contract import (
+    ChatFileOut,
+    ChatMessageOut,
+    ChatSummaryOut,
+)
+
+__all__ = [
+    "TITLE_CHARS",
+    "add_assistant_message",
+    "add_file",
+    "add_user_message",
+    "chat_summaries",
+    "chat_title",
+    "create_chat",
+    "file_out",
+    "history",
+    "message_out",
+    "package_name",
+    "recorded_chat_spend",
+    "stored_chat_spend",
+]
+
+TITLE_CHARS: Final = 60
+_MICROS: Final = Decimal(1_000_000)
+#: The prompt ids of every chat call (lead and helpers, both providers) on the Usage page.
+CHAT_PROMPT_PREFIX: Final = "review-assistant-chat-"
+
+
+def chat_title(text: str) -> str:
+    """A chat's title from its first message: the first 60 characters, cut at a word."""
+    words = re.sub(r"\s+", " ", text).strip()
+    if len(words) <= TITLE_CHARS:
+        return words
+    cut = words[:TITLE_CHARS]
+    if words[TITLE_CHARS] != " " and " " in cut:
+        cut = cut[: cut.rindex(" ")]
+    return cut.rstrip(" ,;:.-")
+
+
+def package_name(package: Package) -> str:
+    vendor = (package.vendor or "").strip()
+    return vendor or "Untitled drawing set"
+
+
+def create_chat(session: Session, *, package_id: UUID, created_by: str) -> AssistantChat:
+    chat = AssistantChat(package_id=package_id, created_by=created_by[:200])
+    session.add(chat)
+    session.flush()
+    return chat
+
+
+def _next_seq(session: Session, chat_id: UUID) -> int:
+    highest = session.scalar(
+        select(func.max(AssistantChatMessage.seq)).where(AssistantChatMessage.chat_id == chat_id)
+    )
+    return int(highest or 0) + 1
+
+
+def add_user_message(
+    session: Session, *, chat_id: UUID, created_by: str, text: str
+) -> AssistantChatMessage:
+    message = AssistantChatMessage(
+        chat_id=chat_id,
+        seq=_next_seq(session, chat_id),
+        role="user",
+        created_by=created_by[:200],
+        text=text,
+    )
+    session.add(message)
+    session.flush()
+    return message
+
+
+def add_assistant_message(
+    session: Session,
+    *,
+    message_id: UUID,
+    chat_id: UUID,
+    created_by: str,
+    model: str,
+    effort: str,
+    thinking: bool,
+    text: str,
+    blocks: list[dict[str, Any]],
+    api_content: list[dict[str, Any]],
+    cost_micros: int,
+    stopped: str | None,
+    error: str | None,
+) -> AssistantChatMessage:
+    message = AssistantChatMessage(
+        id=message_id,
+        chat_id=chat_id,
+        seq=_next_seq(session, chat_id),
+        role="assistant",
+        created_by=created_by[:200],
+        model=model,
+        effort=effort,
+        thinking=thinking,
+        text=text,
+        blocks=blocks,
+        api_content=api_content,
+        cost_micros=cost_micros,
+        stopped=stopped,
+        error=error,
+    )
+    session.add(message)
+    session.flush()
+    return message
+
+
+def add_file(
+    session: Session,
+    *,
+    file_id: UUID,
+    chat_id: UUID,
+    message_id: UUID,
+    name: str,
+    size: int,
+    mime: str,
+    sha256: str,
+) -> AssistantChatFile:
+    row = AssistantChatFile(
+        id=file_id,
+        chat_id=chat_id,
+        message_id=message_id,
+        name=name[:255],
+        size=size,
+        mime=mime[:127],
+        sha256=sha256,
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+def messages_of(session: Session, chat_id: UUID) -> list[AssistantChatMessage]:
+    return list(
+        session.scalars(
+            select(AssistantChatMessage)
+            .where(AssistantChatMessage.chat_id == chat_id)
+            .order_by(AssistantChatMessage.seq)
+        )
+    )
+
+
+def files_of(session: Session, chat_id: UUID) -> list[AssistantChatFile]:
+    return list(
+        session.scalars(
+            select(AssistantChatFile)
+            .where(AssistantChatFile.chat_id == chat_id)
+            .order_by(AssistantChatFile.created_at, AssistantChatFile.id)
+        )
+    )
+
+
+def history(session: Session, chat_id: UUID) -> list[dict[str, Any]]:
+    """Every earlier answer's API messages, in order, as stored."""
+    replay: list[dict[str, Any]] = []
+    for message in messages_of(session, chat_id):
+        if message.role == "assistant" and message.api_content:
+            replay.extend(message.api_content)
+    return replay
+
+
+def first_question(messages: Sequence[AssistantChatMessage]) -> str | None:
+    return next((message.text for message in messages if message.role == "user"), None)
+
+
+def file_url(chat_id: UUID, file_id: UUID) -> str:
+    return f"/api/v1/chats/{chat_id}/files/{file_id}"
+
+
+def file_out(row: AssistantChatFile) -> ChatFileOut:
+    return ChatFileOut(
+        id=row.id,
+        name=row.name,
+        size=row.size,
+        mime=row.mime,
+        url=file_url(row.chat_id, row.id),
+    )
+
+
+def _usd(micros: int | None) -> str | None:
+    if micros is None:
+        return None
+    return str((Decimal(micros) / _MICROS).quantize(Decimal("0.01")))
+
+
+def message_out(
+    message: AssistantChatMessage, files: Iterable[AssistantChatFile]
+) -> ChatMessageOut:
+    if message.role == "user":
+        return ChatMessageOut(
+            id=message.id, role="user", created_at=message.created_at, text=message.text
+        )
+    return ChatMessageOut.model_validate(
+        {
+            "id": message.id,
+            "role": "assistant",
+            "created_at": message.created_at,
+            "text": message.text,
+            "model": message.model,
+            "effort": message.effort,
+            "thinking": message.thinking,
+            "blocks": message.blocks or [],
+            "files": [file_out(row) for row in files if row.message_id == message.id],
+            "cost_usd": _usd(message.cost_micros),
+            "stopped": message.stopped,
+            "error": message.error,
+        }
+    )
+
+
+def chat_summaries(session: Session, package_id: UUID) -> list[ChatSummaryOut]:
+    """The package's chats, newest activity first."""
+    chats = list(
+        session.scalars(select(AssistantChat).where(AssistantChat.package_id == package_id))
+    )
+    if not chats:
+        return []
+    ids = [chat.id for chat in chats]
+    stats = {
+        row.chat_id: row
+        for row in session.execute(
+            select(
+                AssistantChatMessage.chat_id,
+                func.max(AssistantChatMessage.created_at).label("last"),
+                func.count().filter(AssistantChatMessage.role == "user").label("turns"),
+            )
+            .where(AssistantChatMessage.chat_id.in_(ids))
+            .group_by(AssistantChatMessage.chat_id)
+        )
+    }
+    firsts: dict[UUID, str] = {}
+    for chat_id, text in session.execute(
+        select(AssistantChatMessage.chat_id, AssistantChatMessage.text)
+        .where(AssistantChatMessage.chat_id.in_(ids), AssistantChatMessage.role == "user")
+        .order_by(AssistantChatMessage.chat_id, AssistantChatMessage.seq)
+    ):
+        firsts.setdefault(chat_id, text)
+    out: list[ChatSummaryOut] = []
+    for chat in chats:
+        row = stats.get(chat.id)
+        first = firsts.get(chat.id)
+        out.append(
+            ChatSummaryOut(
+                id=chat.id,
+                title=chat.title or (chat_title(first) if first else None),
+                created_at=chat.created_at,
+                last_message_at=None if row is None else row.last,
+                turns=0 if row is None else int(row.turns),
+            )
+        )
+    out.sort(key=lambda item: (item.last_message_at or item.created_at, item.id), reverse=True)
+    return out
+
+
+def stored_chat_spend(session: Session, package_id: UUID) -> int:
+    """What the package's finished chat messages cost (their stored totals)."""
+    return int(
+        session.scalar(
+            select(func.coalesce(func.sum(AssistantChatMessage.cost_micros), 0))
+            .join(AssistantChat, AssistantChat.id == AssistantChatMessage.chat_id)
+            .where(AssistantChat.package_id == package_id)
+        )
+        or 0
+    )
+
+
+def recorded_chat_spend(session: Session, package_id: UUID) -> int:
+    """What the Usage page's rows say the package's chat calls cost (priced when they were
+    recorded): a cross-check that also counts a message that never finished."""
+    return int(
+        session.scalar(
+            select(func.coalesce(func.sum(ModelInvocation.cost_micros), 0))
+            .join(PackageRevision, PackageRevision.id == ModelInvocation.package_revision_id)
+            .where(
+                PackageRevision.package_id == package_id,
+                ModelInvocation.prompt_id.like(f"{CHAT_PROMPT_PREFIX}%"),
+            )
+        )
+        or 0
+    )
