@@ -14,6 +14,7 @@ export function stepsSummary(steps: AssistantStep[]): string {
   if (commands) parts.push(`ran ${plural(commands, 'command', 'commands')}`);
   if (pictures) parts.push(`viewed ${plural(pictures, 'picture', 'pictures')}`);
   if (count('review_results')) parts.push('read the results');
+  if (count('file')) parts.push(`worked on ${plural(count('file'), 'file', 'files')}`);
   if (agents) parts.push(`ran ${plural(agents, 'agent', 'agents')}`);
   if (!parts.length && count('task')) parts.push('kept a task list');
   const text = parts.join(', ');
@@ -23,9 +24,22 @@ export function stepsSummary(steps: AssistantStep[]): string {
 
 // ── Live: the steps so far while the answer is worked out ──
 
+/**
+ * A helper agent while its block runs. The chat (#1464) also knows when each one ends: `done`, with
+ * its `ok`, `report` and `stopped`, so a finished helper reads as finished before the others are.
+ */
+export interface LiveAgent {
+  description: string;
+  steps: AssistantStep[];
+  done?: boolean;
+  ok?: boolean;
+  report?: string;
+  stopped?: string | null;
+}
+
 export type LiveEntry =
   | { kind: 'step'; step: AssistantStep }
-  | { kind: 'agents'; label: string; agents: { description: string; steps: AssistantStep[] }[] };
+  | { kind: 'agents'; label: string; agents: LiveAgent[] };
 
 const RUNNING_AGENTS = /^Running \d+ agents · /;
 

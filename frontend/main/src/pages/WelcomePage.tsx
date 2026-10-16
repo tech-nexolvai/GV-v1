@@ -19,7 +19,10 @@ import { PageFrame } from '@/components/ui/PageFrame';
 import { PackageStatusBadge } from '@/components/ui/package-status-badge';
 
 interface WelcomePageProps {
+  /** An upload finished: the app opens the set's chat (#1464). */
   onCreated: (packageId: string) => void;
+  /** A half-finished upload's saved set, opened to inspect. Without it, the same as `onCreated`. */
+  onOpenSaved?: (packageId: string) => void;
   onOpenReview: (packageId: string) => void;
 }
 
@@ -31,7 +34,7 @@ function formatDay(iso: string): string {
   return new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
 }
 
-export function WelcomePage({ onCreated, onOpenReview }: WelcomePageProps) {
+export function WelcomePage({ onCreated, onOpenSaved, onOpenReview }: WelcomePageProps) {
   const packages = useAsync(() => listPackages(projectId(), { limit: RECENT_LIMIT }), []);
   const recent = packages.status === 'ready' ? packages.data.items : [];
 
@@ -42,7 +45,7 @@ export function WelcomePage({ onCreated, onOpenReview }: WelcomePageProps) {
       description="Add the architect's drawings and the vendor's shop drawings to check them."
     >
       <div className="flex flex-col gap-8">
-        <NewReviewForm onCreated={onCreated} />
+        <NewReviewForm onCreated={onCreated} onOpenSaved={onOpenSaved} />
 
         {/* Failure is said out loud: "no reviews" on a screen that could not reach the server
             reads as an empty project. */}

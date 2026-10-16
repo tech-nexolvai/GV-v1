@@ -21,9 +21,12 @@ export interface SseFrame {
 }
 
 export function parseSseFrames(buffer: string): { frames: SseFrame[]; rest: string } {
-  const normalised = buffer.replace(/\r\n?/g, '\n');
+  // A chunk can end between the `\r` and `\n` of one line end: hold that `\r` back until the next
+  // chunk, or the pair would read as two line ends and cut a frame in two (#1464).
+  const held = buffer.endsWith('\r') ? '\r' : '';
+  const normalised = (held ? buffer.slice(0, -1) : buffer).replace(/\r\n?/g, '\n');
   const blocks = normalised.split('\n\n');
-  const rest = blocks.pop() ?? '';
+  const rest = (blocks.pop() ?? '') + held;
   const frames: SseFrame[] = [];
 
   for (const block of blocks) {

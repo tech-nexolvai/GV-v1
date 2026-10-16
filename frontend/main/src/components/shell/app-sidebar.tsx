@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { BarChart2, BookOpen, Files, Moon, SlidersHorizontal, SquarePen, Sun } from 'lucide-react';
+import { BarChart2, BookOpen, Files, ListChecks, MessagesSquare, Moon, SlidersHorizontal, SquarePen, Sun } from 'lucide-react';
 
 import { listPackages } from '@/api/client';
 import { liveReviewItemsApi } from '@/api/review-items';
@@ -21,6 +21,9 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarMenuSkeleton,
+  SidebarMenuSub,
+  SidebarMenuSubButton,
+  SidebarMenuSubItem,
   useSidebar,
 } from '@/components/ui/sidebar';
 
@@ -56,7 +59,13 @@ export interface AppSidebarProps {
    */
   liveRestarting?: { packageId: string; restarting: boolean } | null;
   onNavigate: (page: Page) => void;
+  /** A drawing set picked here: the app opens its chat (#1464). */
   onOpenPackage: (packageId: string) => void;
+  /**
+   * The open drawing set's "Review list": its review screen. With it, the open set shows two links
+   * under its name, its chats and its review list, so the review screen stays one click away.
+   */
+  onOpenReviewList?: (packageId: string) => void;
   onNewReview: () => void;
   onToggleTheme: () => void;
 }
@@ -77,6 +86,7 @@ export function AppSidebar({
   liveRestarting = null,
   onNavigate,
   onOpenPackage,
+  onOpenReviewList,
   onNewReview,
   onToggleTheme,
 }: AppSidebarProps) {
@@ -189,14 +199,16 @@ export function AppSidebar({
             <SidebarGroupContent>
               <SidebarMenu>
                 {group.map((pkg) => {
-                  const active = activePage === 'review' && activePackage === pkg.id;
+                  // Open here: its review or its chats (#1464).
+                  const active = (activePage === 'review' || activePage === 'chat') && activePackage === pkg.id;
                   const count = liveNeedYou?.packageId === pkg.id ? liveNeedYou.count : needYou.get(pkg.id);
                   return (
                     <SidebarMenuItem key={pkg.id}>
                       <SidebarMenuButton
                         size="lg"
                         isActive={active}
-                        aria-current={active ? 'page' : undefined}
+                        // With its two links below, the link for the open screen is the "page"; the set is the current one.
+                        aria-current={active ? (onOpenReviewList ? 'true' : 'page') : undefined}
                         className="h-auto flex-col items-start gap-1 py-2"
                         onClick={closing(() => onOpenPackage(pkg.id))}
                       >
@@ -216,6 +228,26 @@ export function AppSidebar({
                           )}
                         </span>
                       </SidebarMenuButton>
+                      {active && onOpenReviewList && (
+                        <SidebarMenuSub aria-label={`${pkg.vendor ?? 'Untitled document set'}: chats or review list`}>
+                          <SidebarMenuSubItem>
+                            <SidebarMenuSubButton asChild isActive={activePage === 'chat'}>
+                              <button type="button" aria-current={activePage === 'chat' ? 'page' : undefined} onClick={closing(() => onOpenPackage(pkg.id))}>
+                                <MessagesSquare aria-hidden="true" />
+                                <span>Chats</span>
+                              </button>
+                            </SidebarMenuSubButton>
+                          </SidebarMenuSubItem>
+                          <SidebarMenuSubItem>
+                            <SidebarMenuSubButton asChild isActive={activePage === 'review'}>
+                              <button type="button" aria-current={activePage === 'review' ? 'page' : undefined} onClick={closing(() => onOpenReviewList(pkg.id))}>
+                                <ListChecks aria-hidden="true" />
+                                <span>Review list</span>
+                              </button>
+                            </SidebarMenuSubButton>
+                          </SidebarMenuSubItem>
+                        </SidebarMenuSub>
+                      )}
                     </SidebarMenuItem>
                   );
                 })}
