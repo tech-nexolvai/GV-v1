@@ -32,7 +32,7 @@ import { ChatList, type ChatListState } from '@/components/chat/chat-list';
 import { AssistantMessage, UserMessage } from '@/components/chat/chat-message';
 import { ApiError } from '@/api/client';
 import { chatFailureWords, isAbort, LIVE_CHAT_API, type Chat, type ChatApi, type ChatModels } from '@/lib/chat-api';
-import { applyChatEvent, CHAT_STARTERS, chatTitle, dollars, fromSaved, localAnswer, localQuestion, settle, type ViewMessage } from '@/lib/chat-messages';
+import { applyChatEvent, CHAT_STARTERS, chatTitle, dollars, fromSaved, localAnswer, localQuestion, previousQuestion, settle, type ViewMessage } from '@/lib/chat-messages';
 import { browserStorage, readChoice, resolveChoice, saveChoice, type ChatChoice } from '@/lib/chat-settings';
 import { cn } from '@/lib/utils';
 
@@ -454,13 +454,24 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                   <Skeleton className="h-4 w-1/2" />
                 </div>
               )}
-              {chat && chatId && messages.map((message) =>
-                message.role === 'user' ? (
-                  <UserMessage key={message.key} message={message} />
-                ) : (
-                  <AssistantMessage key={message.key} message={message} chatId={chatId} models={modelList} messageCapUsd={cap} onReload={reload} />
-                ),
-              )}
+              {chat && chatId && messages.map((message, at) => {
+                if (message.role === 'user') return <UserMessage key={message.key} message={message} />;
+                // Retry asks the answer's question again, as a new message (claude.ai's Retry).
+                const question = previousQuestion(messages, message.key);
+                const canRetry = question !== null && !running && !answeredElsewhere && !blocked;
+                return (
+                  <AssistantMessage
+                    key={message.key}
+                    message={message}
+                    chatId={chatId}
+                    models={modelList}
+                    messageCapUsd={cap}
+                    onReload={reload}
+                    onRetry={canRetry ? () => void send(question) : undefined}
+                    latest={at === messages.length - 1}
+                  />
+                );
+              })}
               {answeredElsewhere && (
                 <div data-slot="chat-running-elsewhere">
                   <LiveSteps entries={[]} stage="Still answering the last message (started before this page opened). It shows here when it is done." />

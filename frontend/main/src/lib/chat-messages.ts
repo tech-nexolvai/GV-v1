@@ -7,7 +7,6 @@
  * message, which then replaces what was built live: a reload and a live answer end up identical.
  */
 
-import type { AssistantPlanTask, AssistantStep, AssistantSubAgent } from '@/api/assistantTypes';
 import type { ChatAgent, ChatBlock, ChatEffort, ChatEvent, ChatFile, ChatMessage, ChatModel, ChatStep, ChatStopped, ChatSummary, ChatTask } from '@/lib/chat-api';
 import { EFFORT_WORDS } from '@/lib/chat-settings';
 
@@ -213,24 +212,22 @@ export function settle(message: ViewMessage, change: Partial<ViewMessage> = {}):
 // ── What the answer shows, in order ─────────────────────────
 
 /**
- * One item of an answer, in the order its blocks happened: a thinking block, words, one step, or
- * (once the answer is finished) a run of finished steps folded under one line.
+ * One item of an answer, in the order its blocks happened: words, or one folded row holding all the
+ * work between two pieces of words (thinking, tool steps, the task list's updates and helpers), as
+ * claude.ai folds it ("Thought for 7s, ran 2 commands").
  */
 export type AnswerItem =
-  | { kind: 'thinking'; index: number }
-  | { kind: 'text'; index: number }
-  | { kind: 'step'; index: number }
-  | { kind: 'steps'; indexes: number[] };
+  | { kind: 'activity'; indexes: number[] }
+  | { kind: 'text'; index: number };
 
 const isTaskStep = (block: ViewBlock | undefined) => block?.type === 'step' && (block.step.tool === 'TaskCreate' || block.step.tool === 'TaskUpdate');
 
 /**
- * The answer's items. While it runs, every step is its own line (so the newest is in view); once
- * finished, each run of steps between words is folded under one line, as claude.ai does. Empty
- * words are left out. `planAfter` is the item after which the task list shows: the one holding the
- * last task step, or the last item when only `tasks` events said there is a list.
+ * The answer's items: every run of thinking and steps between words folds into one activity row
+ * (empty words do not break a run). `planAfter` is the item after which the task list shows: the
+ * one holding the last task step, or the last item when only `tasks` events said there is a list.
  */
-export function answerItems(blocks: readonly ViewBlock[], running: boolean, hasTasks: boolean): { items: AnswerItem[]; planAfter: number | null } {
+export function answerItems(blocks: readonly ViewBlock[], hasTasks: boolean): { items: AnswerItem[]; planAfter: number | null } {
   const items: AnswerItem[] = [];
   let lastTaskItem: number | null = null;
   blocks.forEach((block, index) => {
@@ -238,17 +235,38 @@ export function answerItems(blocks: readonly ViewBlock[], running: boolean, hasT
       if (block.text.trim()) items.push({ kind: 'text', index });
       return;
     }
-    if (block.type === 'thinking') {
-      items.push({ kind: 'thinking', index });
-      return;
-    }
     const last = items[items.length - 1];
-    if (!running && !block.live && last?.kind === 'steps') last.indexes.push(index);
-    else items.push(running || block.live ? { kind: 'step', index } : { kind: 'steps', indexes: [index] });
+    if (last?.kind === 'activity') last.indexes.push(index);
+    else items.push({ kind: 'activity', indexes: [index] });
     if (isTaskStep(block)) lastTaskItem = items.length - 1;
   });
   const planAfter = lastTaskItem ?? (hasTasks && items.length ? items.length - 1 : null);
   return { items, planAfter };
+}
+
+/** The engine's own italic stop note at the end of a cut-short answer ("*Stopped early: …*"). */
+const STOP_NOTE = /\n*\s*([*_])Stopped early\b[^\n]*\1\s*$/;
+
+/**
+ * The blocks an answer shows. A stopped answer's last words lose the engine's italic "*Stopped
+ * early…*" line, because the screen says why it stopped once, in its own words, under the answer.
+ */
+export function shownBlocks(message: Pick<ViewMessage, 'blocks' | 'stopped'>): ViewBlock[] {
+  if (!message.stopped) return message.blocks as ViewBlock[];
+  const blocks = message.blocks.slice();
+  for (let at = blocks.length - 1; at >= 0; at -= 1) {
+    const block = blocks[at];
+    if (block.type !== 'text') continue;
+    if (!block.text.trim()) continue;
+    blocks[at] = { type: 'text', text: withoutStopNote(block.text) };
+    break;
+  }
+  return blocks;
+}
+
+/** Words without a trailing "*Stopped early: …*" line. */
+export function withoutStopNote(text: string): string {
+  return text.replace(STOP_NOTE, '').trimEnd();
 }
 
 /** True while the newest words are still arriving: the answer runs and its last block is words. */
@@ -257,61 +275,106 @@ export function textStreaming(message: Pick<ViewMessage, 'status' | 'blocks'>): 
   return message.status === 'running' && last?.type === 'text';
 }
 
-/** True while something shows its own progress (a thinking block or a step still arriving, or words). */
-export function somethingLive(message: Pick<ViewMessage, 'status' | 'blocks'>): boolean {
-  if (message.status !== 'running') return false;
-  if (textStreaming(message)) return true;
-  return message.blocks.some((block) => block.type !== 'text' && block.live);
+// ── The activity row's words ────────────────────────────────
+
+type Phrase = { one: string; many: (count: number) => string } | { once: string };
+
+function phraseFor(step: ChatStep): { key: string; phrase: Phrase } {
+  switch (step.tool) {
+    case 'bash_tool':
+      return { key: 'bash', phrase: { one: 'ran a command', many: (n) => `ran ${n} commands` } };
+    case 'view':
+      return step.picture_id
+        ? { key: 'picture', phrase: { one: 'viewed a picture', many: (n) => `viewed ${n} pictures` } }
+        : { key: 'read', phrase: { one: 'viewed a file', many: (n) => `viewed ${n} files` } };
+    case 'create_file':
+      return { key: 'create', phrase: { one: 'created a file', many: (n) => `created ${n} files` } };
+    case 'str_replace':
+      return { key: 'edit', phrase: { one: 'edited a file', many: (n) => `edited ${n} files` } };
+    case 'present_files':
+      return { key: 'present', phrase: { once: 'presented files' } };
+    case 'TaskCreate':
+    case 'TaskUpdate':
+      return { key: 'tasks', phrase: { once: 'updated the task list' } };
+    case 'Agent':
+      return { key: 'agents', phrase: { one: 'ran an agent', many: (n) => `ran ${n} agents` } };
+    default:
+      return { key: 'results', phrase: { once: 'read the review results' } };
+  }
 }
 
-// ── Steps, in the assistant panel's shapes ──────────────────
-
-const STEP_KIND: Record<ChatStep['tool'], AssistantStep['kind']> = {
-  bash_tool: 'bash',
-  view: 'view',
-  review_results: 'review_results',
-  TaskCreate: 'task',
-  TaskUpdate: 'task',
-  Agent: 'agents',
-  create_file: 'file',
-  str_replace: 'file',
-  present_files: 'file',
-};
-
-function planTask(task: ChatTask): AssistantPlanTask {
-  return { id: task.id, subject: task.subject, active_form: task.active_form ?? null, status: task.status };
+/** "Thought for 7s" for every thinking block of a run together; "Thought" when no time is known. */
+function thoughtTotal(blocks: readonly ViewBlock[]): string | null {
+  const thinking = blocks.filter((block): block is Extract<ViewBlock, { type: 'thinking' }> => block.type === 'thinking');
+  if (!thinking.length) return null;
+  const known = thinking.map((block) => block.seconds).filter((seconds): seconds is number => seconds !== null && Number.isFinite(seconds));
+  return thoughtFor(known.length ? known.reduce((sum, seconds) => sum + seconds, 0) : null);
 }
 
-/** A chat step as the assistant panel's step list draws it (`assistant-steps.tsx`), its picture by URL. */
-export function toAssistantStep(step: ChatStep, pictureUrl: (pictureId: string) => string): AssistantStep {
-  return {
-    kind: STEP_KIND[step.tool] ?? 'review_results',
-    label: step.label,
-    // A file step shows the file it worked on where a command step shows its command.
-    command: step.command ?? step.path ?? null,
-    path: step.path ?? null,
-    output: step.output ?? null,
-    // Null while it runs, which is not a failure.
-    ok: step.ok !== false,
-    thumbnail: step.picture_id ? pictureUrl(step.picture_id) : null,
-    ...(step.tasks ? { tasks: step.tasks.map(planTask) } : {}),
-    ...(step.agents ? { agents: step.agents.map((agent) => toSubAgent(agent, pictureUrl)) } : {}),
-  };
+const SUMMARY_PARTS = 4;
+
+/**
+ * A finished activity row in words, claude.ai's way: "Thought for 7s, ran 3 commands, viewed 2
+ * pictures, created a file". Thinking first, then each kind of tool in the order it was first used
+ * (counted ones before the task list, presented files and review results), four parts at most.
+ */
+export function activitySummary(blocks: readonly ViewBlock[]): string {
+  const counts = new Map<string, { phrase: Phrase; count: number }>();
+  for (const block of blocks) {
+    if (block.type !== 'step') continue;
+    const { key, phrase } = phraseFor(block.step);
+    const count = block.step.tool === 'Agent' ? Math.max(1, block.step.agents?.length ?? 0) : 1;
+    const known = counts.get(key);
+    if (known) known.count += count;
+    else counts.set(key, { phrase, count });
+  }
+  // Counted work first (commands, pictures, files, helpers), then the rest; four parts at most, so
+  // the row stays one short line.
+  const counted = [...counts.values()].filter(({ phrase }) => !('once' in phrase));
+  const once = [...counts.values()].filter(({ phrase }) => 'once' in phrase);
+  const parts = [thoughtTotal(blocks), ...[...counted, ...once].map(({ phrase, count }) =>
+    'once' in phrase ? phrase.once : count === 1 ? phrase.one : phrase.many(count))].filter(Boolean).slice(0, SUMMARY_PARTS);
+  const words = parts.join(', ');
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : 'Worked';
 }
 
-function toSubAgent(agent: ChatAgent, pictureUrl: (pictureId: string) => string): AssistantSubAgent {
-  return {
-    description: agent.description,
-    model: /opus/i.test(agent.model) ? 'opus' : 'sonnet',
-    steps: agent.steps.map((step) => toAssistantStep(step, pictureUrl)),
-    report: agent.report ?? '',
-    ok: agent.ok === true,
-    stopped: agent.stopped ? (agent.stopped === 'cost_cap' ? 'cost_cap' : 'failed') : null,
-  };
+/** The latest line of a thinking summary, without its markdown marks; null when there is none yet. */
+export function thinkingLine(text: string): string | null {
+  const lines = text.split('\n').map((line) => line.replace(/^\s{0,3}(?:#{1,6}\s+|[-*+]\s+|>\s?)/, '').replace(/\*\*|__|`/g, '').trim()).filter(Boolean);
+  return lines.length ? lines[lines.length - 1] : null;
 }
 
-export function toPlanTasks(tasks: readonly ChatTask[]): AssistantPlanTask[] {
-  return tasks.map(planTask);
+/** "Running 4 agents…" while any helper works, "Ran 4 agents" after. */
+export function agentsWords(step: Pick<ViewStep, 'agents'>, running: boolean): string {
+  const count = step.agents?.length ?? 0;
+  const noun = count === 1 ? 'agent' : 'agents';
+  return running ? `Running ${count || ''}${count ? ' ' : ''}${noun}…` : `Ran ${count} ${noun}`;
+}
+
+/** True while an Agent step's helpers are still working. */
+export function agentsRunning(step: ViewStep, live: boolean): boolean {
+  return live || Boolean(step.agents?.some((agent) => agent.running));
+}
+
+/**
+ * What a running activity row says: the newest thing it does, as it does it (the newest thinking
+ * line, or the running step's own description, or "Running 4 agents…").
+ */
+export function activityHeadline(blocks: readonly ViewBlock[]): string {
+  const last = blocks[blocks.length - 1];
+  if (!last) return 'Working…';
+  if (last.type === 'thinking') return (last.live ? thinkingLine(last.text) : null) ?? (last.live ? 'Thinking…' : thoughtFor(last.seconds));
+  if (last.type === 'step') return last.step.tool === 'Agent' ? agentsWords(last.step, agentsRunning(last.step, last.live)) : last.step.label;
+  return 'Working…';
+}
+
+/** The question an answer replied to (the user message before it), for Retry; null when there is none. */
+export function previousQuestion(messages: readonly Pick<ViewMessage, 'key' | 'role' | 'text'>[], answerKey: string): string | null {
+  const at = messages.findIndex((message) => message.key === answerKey);
+  for (let index = at - 1; index >= 0; index -= 1) {
+    if (messages[index].role === 'user') return messages[index].text;
+  }
+  return null;
 }
 
 // ── Words ───────────────────────────────────────────────────
@@ -356,32 +419,48 @@ export function dollars(value: string | null | undefined): string | null {
   return `$${amount.toFixed(2)}`;
 }
 
+/** The label the page shows under the composer (claude.ai's disclaimer); no longer on each answer. */
 export const AI_ANSWER_WORDS = 'AI answer: check before acting';
 
-/** "Claude Opus 5.5 · High effort · $1.72 · AI answer: check before acting". */
+/** A message's cost for its meta line: "$1.72", or "<$0.01" below one cent; null when not known. */
+export function messageCost(value: string | null | undefined): string | null {
+  if (value === null || value === undefined || value === '') return null;
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount < 0) return null;
+  // The server rounds to cents, so a message that cost $0.002 arrives as "0.00".
+  if (amount < 0.01) return '<$0.01';
+  return `$${amount.toFixed(2)}`;
+}
+
+/** The small line under a finished answer: "Claude Opus 5.5 · High effort · $1.72". */
 export function footerWords(message: Pick<ViewMessage, 'model' | 'effort' | 'cost_usd'>, models: readonly Pick<ChatModel, 'id' | 'label'>[] | null): string {
   return [
     modelLabel(message.model, models),
     message.effort ? `${EFFORT_WORDS[message.effort]} effort` : null,
-    dollars(message.cost_usd),
-    AI_ANSWER_WORDS,
+    messageCost(message.cost_usd),
   ].filter(Boolean).join(' · ');
 }
 
-/** Why an answer stopped, in plain words; null when it finished. */
-export function stoppedWords(message: Pick<ViewMessage, 'stopped' | 'error'>, messageCapUsd?: string | null): string | null {
-  const cap = dollars(messageCapUsd);
+/** A cap in words: "$5", or "$7.50" when it has cents. */
+function capWords(value: string | null | undefined): string | null {
+  const amount = Number(value);
+  if (value === null || value === undefined || value === '' || !Number.isFinite(amount)) return null;
+  return Number.isInteger(amount) ? `$${amount}` : `$${amount.toFixed(2)}`;
+}
+
+/** Why an answer stopped, in claude.ai's plain words; null when it finished. */
+export function stoppedWords(message: Pick<ViewMessage, 'stopped'>, messageCapUsd?: string | null): string | null {
   switch (message.stopped) {
-    case 'cost_cap':
-      return `Stopped: this message reached its cost cap${cap ? ` of ${cap}` : ''}. Above is what it found before then.`;
-    case 'cancelled':
-      return 'Stopped by you.';
-    case 'turn_limit':
-      return 'Stopped: it reached the most steps one message may take. Above is what it found before then.';
-    case 'error': {
-      const words = message.error?.trim().replace(/\.$/, '');
-      return words ? `Stopped by an error: ${words}.` : 'Stopped by an error.';
+    case 'cost_cap': {
+      const cap = capWords(messageCapUsd);
+      return cap ? `Stopped: this answer reached its ${cap} limit` : 'Stopped: this answer reached its cost limit';
     }
+    case 'cancelled':
+      return 'Stopped';
+    case 'turn_limit':
+      return 'Stopped after the maximum number of steps';
+    case 'error':
+      return 'Something went wrong. Try again.';
     default:
       return null;
   }

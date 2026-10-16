@@ -1,60 +1,59 @@
-import { useEffect, useId, useState } from 'react';
-import { Check, ChevronRight, CircleAlert, Copy, Download, FileImage, FileSpreadsheet, FileText, File as FileIcon, RotateCw } from 'lucide-react';
+import { useId, useState } from 'react';
+import { ChevronRight, CircleAlert, Download, FileImage, FileSpreadsheet, FileText, File as FileIcon, RotateCw } from 'lucide-react';
 
-import { AssistantSteps, LiveSteps, PlanList, StepItem } from '@/components/assistant/assistant-steps';
+import { ActivityRow, TaskChecklist } from '@/components/chat/chat-activity';
 import { ChatMarkdown } from '@/components/chat/chat-markdown';
+import { Collapse, CopyButton, Shimmer, Spark } from '@/components/chat/chat-motion';
 import { chatPaths, type ChatFile, type ChatModel } from '@/lib/chat-api';
 import {
   answerItems,
   fileKind,
   fileSize,
   footerWords,
-  somethingLive,
+  shownBlocks,
   stoppedWords,
   textStreaming,
+  thinkingLine,
   thoughtFor,
-  toAssistantStep,
-  toPlanTasks,
+  withoutStopNote,
   type ViewBlock,
   type ViewMessage,
-  type ViewStep,
 } from '@/lib/chat-messages';
-import type { LiveAgent } from '@/lib/assistant-steps';
 import { cn } from '@/lib/utils';
 
 /**
- * One message of a chat (#1464). The user's question sits on the right; the answer takes the full
- * width and shows, in the order it happened: "Thought for 12s" blocks, the tools it used (the
- * assistant panel's step list), its task list, helper agents, the markdown answer, the files it
- * made, and a footer naming the model, effort and cost. Read-only: nothing here changes the review.
+ * One message of a chat (#1464), made to look and move like claude.ai (#1470). The question is a
+ * rounded bubble on the right. The answer has no bubble: full-width words, with the work behind
+ * them folded into rows ("Thought for 7s, ran 2 commands") in the order it happened, its task
+ * list, the files it made, and, once finished, Copy and Retry with a small line naming the model,
+ * effort and cost. While it works, a spark turns at its foot.
+ * Read-only: nothing here changes the review.
  */
 
 export function UserMessage({ message }: { message: ViewMessage }) {
   return (
-    <div data-slot="chat-user-message" className="max-w-[85%] self-end rounded-[18px_18px_4px_18px] bg-muted px-4 py-2.5 leading-relaxed break-words whitespace-pre-wrap">
+    <div
+      data-slot="chat-user-message"
+      className="chat-rise max-w-[min(85%,36rem)] self-end rounded-2xl bg-muted px-4 py-2.5 leading-relaxed break-words whitespace-pre-wrap text-foreground"
+    >
       {message.text}
     </div>
   );
 }
 
-// ── Thinking ────────────────────────────────────────────────
-
-function Spinner() {
-  return <span aria-hidden="true" className="size-3.5 shrink-0 animate-spin rounded-full border-[1.5px] border-border border-t-foreground motion-reduce:animate-none" />;
-}
+// ── Thinking on its own ─────────────────────────────────────
 
 /**
- * A thinking block: open while its summary streams in, folded to "Thought for 12s" once it ends.
- * After the reviewer opens or folds it themselves, it stays the way they left it.
+ * A thinking block shown on its own (not inside an activity row): "Thinking…" shimmering with its
+ * newest line while it streams, "Thought for 12s" with a chevron after. Opening it grows its
+ * height and shows the thinking, smaller and muted, with a rule on its left.
  */
 export function ThinkingBlock({ block }: { block: Extract<ViewBlock, { type: 'thinking' }> }) {
-  const [chosen, setChosen] = useState<boolean | null>(null);
-  const open = chosen ?? block.live;
+  const [open, setOpen] = useState(false);
   const bodyId = useId();
-  const title = block.live ? 'Thinking' : thoughtFor(block.seconds);
-  const hasText = block.text.trim().length > 0;
-  if (!hasText && !block.live) {
-    return <p data-slot="chat-thinking" className="text-[13px] text-muted-foreground">{title}</p>;
+  const title = block.live ? thinkingLine(block.text) ?? 'Thinking…' : thoughtFor(block.seconds);
+  if (!block.text.trim() && !block.live) {
+    return <p data-slot="chat-thinking" className="text-sm text-muted-foreground">{title}</p>;
   }
   return (
     <div data-slot="chat-thinking" data-live={block.live ? 'true' : 'false'} className="min-w-0">
@@ -62,46 +61,19 @@ export function ThinkingBlock({ block }: { block: Extract<ViewBlock, { type: 'th
         type="button"
         aria-expanded={open}
         aria-controls={bodyId}
-        onClick={() => setChosen(!open)}
-        className="group inline-flex items-center gap-1.5 rounded-md py-0.5 text-[13px] text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        onClick={() => setOpen(!open)}
+        className="flex w-fit max-w-full min-w-0 items-center gap-1.5 rounded-md py-1 text-left text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
       >
-        {block.live && <Spinner />}
-        <span className={block.live ? 'animate-pulse motion-reduce:animate-none' : undefined}>{title}</span>
-        <ChevronRight aria-hidden="true" className={cn('size-3.5 transition-transform motion-reduce:transition-none', open && 'rotate-90')} />
+        <Shimmer active={block.live} className="min-w-0 truncate">{title}</Shimmer>
+        <ChevronRight aria-hidden="true" className={cn('size-3.5 shrink-0 transition-transform duration-200 ease-out motion-reduce:transition-none', open && 'rotate-90')} />
       </button>
-      {open && (
-        <div id={bodyId} className="mt-1.5 ml-[7px] max-h-80 overflow-y-auto border-l border-border pl-3.5 text-[13px] text-muted-foreground">
-          <ChatMarkdown text={block.text} />
+      <Collapse open={open} id={bodyId}>
+        <div className="mt-1.5 mb-1 border-l-2 border-border pl-4">
+          <ChatMarkdown text={block.text} className="gap-2 text-[13px] leading-relaxed text-muted-foreground" />
         </div>
-      )}
+      </Collapse>
     </div>
   );
-}
-
-// ── Steps ───────────────────────────────────────────────────
-
-function liveAgents(step: ViewStep, pictureUrl: (id: string) => string): LiveAgent[] {
-  return (step.agents ?? []).map((agent) => ({
-    description: agent.description,
-    steps: agent.steps.map((inner) => toAssistantStep(inner, pictureUrl)),
-    done: !agent.running,
-    ok: agent.ok === true,
-    report: agent.report ?? '',
-    stopped: agent.stopped ?? null,
-  }));
-}
-
-/** A step still running: its line with a spinner, or "Running N agents" with each helper so far. */
-function RunningStep({ step, pictureUrl }: { step: ViewStep; pictureUrl: (id: string) => string }) {
-  if (step.tool === 'Agent') {
-    return <LiveSteps entries={[{ kind: 'agents', label: step.label, agents: liveAgents(step, pictureUrl) }]} stage={null} />;
-  }
-  return <LiveSteps entries={[]} stage={step.label} />;
-}
-
-/** One step on its own line: running (spinner), or finished (folded to its command and output). */
-function OneStep({ block, pictureUrl }: { block: Extract<ViewBlock, { type: 'step' }>; pictureUrl: (id: string) => string }) {
-  return block.live ? <RunningStep step={block.step} pictureUrl={pictureUrl} /> : <StepItem step={toAssistantStep(block.step, pictureUrl)} />;
 }
 
 // ── Files ───────────────────────────────────────────────────
@@ -114,18 +86,23 @@ function iconFor(file: ChatFile) {
   return FileIcon;
 }
 
+/** claude.ai's file cards: an icon by type, the name, "PDF · 2.1 MB" and Download; several in a grid. */
 export function FileCards({ files, chatId }: { files: readonly ChatFile[]; chatId: string }) {
   if (!files.length) return null;
   return (
-    <ul data-slot="chat-files" aria-label="Files it made" className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,17rem),1fr))] gap-2">
+    <ul data-slot="chat-files" aria-label="Files it made" className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,16rem),1fr))] gap-2">
       {files.map((file) => {
         const Icon = iconFor(file);
         const href = file.url || chatPaths.file(chatId, file.id);
         const meta = [fileKind(file), fileSize(file.size)].filter(Boolean).join(' · ');
         return (
-          <li key={file.id} data-slot="chat-file" className="flex min-w-0 items-center gap-3 rounded-xl border bg-card px-3 py-2.5">
-            <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground" aria-hidden="true">
-              <Icon className="size-[18px]" />
+          <li
+            key={file.id}
+            data-slot="chat-file"
+            className="chat-rise flex min-w-0 items-center gap-3 rounded-xl border bg-card px-3 py-2.5 transition-colors hover:border-foreground/20"
+          >
+            <span className="grid size-10 shrink-0 place-items-center rounded-lg border bg-muted text-muted-foreground" aria-hidden="true">
+              <Icon className="size-5" />
             </span>
             <span className="min-w-0 flex-1">
               <span className="block truncate text-sm font-medium" title={file.name}>{file.name}</span>
@@ -135,7 +112,7 @@ export function FileCards({ files, chatId }: { files: readonly ChatFile[]; chatI
               href={href}
               download={file.name}
               aria-label={`Download ${file.name}`}
-              className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border bg-background px-2.5 text-sm font-medium hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+              className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border bg-background px-2.5 text-sm font-medium transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
             >
               <Download className="size-4" aria-hidden="true" />
               <span className="hidden min-[420px]:inline">Download</span>
@@ -149,22 +126,21 @@ export function FileCards({ files, chatId }: { files: readonly ChatFile[]; chatI
 
 // ── The answer ──────────────────────────────────────────────
 
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    if (!copied) return;
-    const timer = window.setTimeout(() => setCopied(false), 2000);
-    return () => window.clearTimeout(timer);
-  }, [copied]);
+function RetryButton({ onRetry, withWords = false }: { onRetry: () => void; withWords?: boolean }) {
   return (
     <button
       type="button"
-      onClick={() => void navigator.clipboard?.writeText(text).then(() => setCopied(true), () => setCopied(false))}
-      title={copied ? 'Copied' : 'Copy answer'}
-      aria-label={copied ? 'Copied' : 'Copy answer'}
-      className="inline-grid size-[28px] shrink-0 place-items-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+      data-slot="chat-retry"
+      onClick={onRetry}
+      title="Retry"
+      aria-label="Retry"
+      className={cn(
+        'inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none',
+        withWords ? 'border bg-background px-2.5 font-medium text-foreground' : 'px-1.5',
+      )}
     >
-      {copied ? <Check className="size-3.5" aria-hidden="true" /> : <Copy className="size-3.5" aria-hidden="true" />}
+      <RotateCw className="size-3.5" aria-hidden="true" />
+      {withWords && <span aria-hidden="true">Retry</span>}
     </button>
   );
 }
@@ -176,47 +152,77 @@ export interface AssistantMessageProps {
   messageCapUsd?: string | null;
   /** Shown on a message whose stream broke: read the chat again to see what was saved. */
   onReload?: () => void;
+  /**
+   * Ask the question again as a new message (claude.ai's Retry). Optional: the page passes it when
+   * it can send (`previousQuestion` in `chat-messages` finds the question).
+   */
+  onRetry?: () => void;
+  /** The newest answer: its Copy and Retry stay shown; on older answers they appear on hover. */
+  latest?: boolean;
 }
 
-export function AssistantMessage({ message, chatId, models, messageCapUsd, onReload }: AssistantMessageProps) {
+export function AssistantMessage({ message, chatId, models, messageCapUsd, onReload, onRetry, latest = false }: AssistantMessageProps) {
   const running = message.status === 'running';
   const pictureUrl = (pictureId: string) => chatPaths.picture(chatId, pictureId);
-  const { items, planAfter } = answerItems(message.blocks, running, Boolean(message.tasks?.length));
+  const blocks = shownBlocks(message);
+  const { items } = answerItems(blocks, Boolean(message.tasks?.length));
   const streaming = textStreaming(message);
-  const lastText = items.reduce((last, item, at) => (item.kind === 'text' ? at : last), -1);
   const stopped = stoppedWords(message, messageCapUsd);
-  const answerText = message.text || message.blocks.filter((block) => block.type === 'text').map((block) => block.text).join('\n\n');
-  const plan = message.tasks?.length ? <PlanList tasks={toPlanTasks(message.tasks)} /> : null;
+  const answerText = (message.stopped ? withoutStopNote(message.text) : message.text)
+    || blocks.filter((block) => block.type === 'text').map((block) => block.text).join('\n\n');
+  const retry = !running && onRetry ? onRetry : undefined;
+  // The task list sits inside the activity timeline, at its newest update (the last task step);
+  // the list from the newest `tasks` event wins over the one that step carried.
+  const lastTaskAt = blocks.reduce((last, block, at) => (block.type === 'step' && (block.step.tool === 'TaskCreate' || block.step.tool === 'TaskUpdate') ? at : last), -1);
+  const lastTaskStep = lastTaskAt >= 0 ? (blocks[lastTaskAt] as Extract<ViewBlock, { type: 'step' }>) : null;
+  const tasks = message.tasks?.length ? message.tasks : lastTaskStep?.step.tasks ?? null;
+  const looseTasks = tasks?.length && lastTaskAt < 0 ? <TaskChecklist tasks={tasks} running={running} /> : null;
 
   return (
-    <article data-slot="chat-assistant-message" data-status={message.status} aria-label="Answer" className="flex min-w-0 flex-col gap-3">
-      {items.map((item, at) => (
-        <div key={item.kind === 'steps' ? `steps-${item.indexes[0]}` : `${item.kind}-${item.index}`} className="min-w-0">
-          {item.kind === 'thinking' && <ThinkingBlock block={message.blocks[item.index] as Extract<ViewBlock, { type: 'thinking' }>} />}
-          {item.kind === 'text' && (
-            <ChatMarkdown
-              text={(message.blocks[item.index] as Extract<ViewBlock, { type: 'text' }>).text}
-              streaming={streaming && at === lastText && item.index === message.blocks.length - 1}
-            />
-          )}
-          {item.kind === 'step' && <OneStep block={message.blocks[item.index] as Extract<ViewBlock, { type: 'step' }>} pictureUrl={pictureUrl} />}
-          {item.kind === 'steps' && (
-            <AssistantSteps steps={item.indexes.map((index) => toAssistantStep((message.blocks[index] as Extract<ViewBlock, { type: 'step' }>).step, pictureUrl))} />
-          )}
-          {at === planAfter && plan && <div className="mt-2">{plan}</div>}
-        </div>
-      ))}
-      {planAfter === null && plan}
-
-      {running && !somethingLive(message) && <LiveSteps entries={[]} stage={message.id ? 'Working' : 'Sending your message'} />}
+    <article data-slot="chat-assistant-message" data-status={message.status} aria-label="Answer" className="group/message chat-rise flex min-w-0 flex-col gap-3">
+      {items.map((item, at) => {
+        const last = at === items.length - 1;
+        return (
+          <div key={item.kind === 'activity' ? `activity-${item.indexes[0]}` : `text-${item.index}`} className="grid min-w-0 gap-3">
+            {item.kind === 'activity' && (
+              item.indexes.length === 1 && blocks[item.indexes[0]]?.type === 'thinking' ? (
+                <ThinkingBlock block={blocks[item.indexes[0]] as Extract<ViewBlock, { type: 'thinking' }>} />
+              ) : (
+                <ActivityRow
+                  blocks={item.indexes.map((index) => blocks[index])}
+                  active={running && last}
+                  pictureUrl={pictureUrl}
+                  tasks={tasks}
+                  tasksAt={item.indexes.indexOf(lastTaskAt) >= 0 ? item.indexes.indexOf(lastTaskAt) : null}
+                  running={running}
+                />
+              )
+            )}
+            {item.kind === 'text' && (
+              <ChatMarkdown
+                text={(blocks[item.index] as Extract<ViewBlock, { type: 'text' }>).text}
+                streaming={streaming && last && item.index === blocks.length - 1}
+              />
+            )}
+          </div>
+        );
+      })}
+      {looseTasks}
 
       <FileCards files={message.files} chatId={chatId} />
 
-      {stopped && (
-        <p data-slot="chat-stopped" data-stopped={message.stopped ?? undefined} className="flex items-start gap-2 text-sm text-muted-foreground">
-          <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-          <span>{stopped}</span>
-        </p>
+      {stopped && message.stopped !== 'error' && (
+        <p data-slot="chat-stopped" data-stopped={message.stopped ?? undefined} className="text-sm text-muted-foreground">{stopped}</p>
+      )}
+
+      {stopped && message.stopped === 'error' && (
+        <div data-slot="chat-stopped" data-stopped="error" className="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm">
+          <span className="inline-flex min-w-0 items-start gap-2">
+            <CircleAlert className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+            <span>{stopped}</span>
+          </span>
+          {retry && <RetryButton onRetry={retry} withWords />}
+        </div>
       )}
 
       {message.status === 'failed' && (
@@ -238,10 +244,21 @@ export function AssistantMessage({ message, chatId, models, messageCapUsd, onRel
         </div>
       )}
 
+      {running && <Spark label={message.id ? 'Working' : 'Sending your message'} className="chat-fade-in" />}
+
       {!running && (
-        <div data-slot="chat-footer" className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
-          {answerText.trim() && <CopyButton text={answerText} />}
-          <span className="min-w-0">{footerWords(message, models)}</span>
+        <div data-slot="chat-footer" className="-ml-1.5 flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1">
+          <div
+            data-slot="chat-actions"
+            className={cn(
+              'flex min-h-7 items-center gap-0.5 transition-opacity duration-150 focus-within:opacity-100 group-hover/message:opacity-100 [@media(hover:none)]:opacity-100 motion-reduce:transition-none',
+              latest ? 'opacity-100' : 'opacity-0',
+            )}
+          >
+            {answerText.trim() && <CopyButton text={answerText} />}
+            {retry && <RetryButton onRetry={retry} />}
+          </div>
+          <span data-slot="chat-meta" className="min-w-0 text-xs text-muted-foreground">{footerWords(message, models)}</span>
         </div>
       )}
     </article>

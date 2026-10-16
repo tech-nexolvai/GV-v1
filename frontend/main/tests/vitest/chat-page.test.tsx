@@ -113,23 +113,27 @@ describe('a saved chat, after a reload', () => {
     const answer = await screen.findByRole('article', { name: 'Answer' });
     expect(screen.getByText('Which items are wrong?', { selector: '[data-slot="chat-user-message"]' })).toBeTruthy();
 
-    // Thinking: folded to "Thought for 12s", opening to its summary.
-    const thought = within(answer).getByRole('button', { name: 'Thought for 12s' });
-    expect(thought.getAttribute('aria-expanded')).toBe('false');
-    await userEvent.setup().click(thought);
-    expect(thought.getAttribute('aria-expanded')).toBe('true');
+    // Thinking and every tool fold into ONE row that sums them up, claude.ai's way; opening it shows a timeline.
+    const user = userEvent.setup();
+    const row = within(answer).getByRole('button', { name: 'Thought for 12s, ran a command, viewed a picture, ran an agent' });
+    expect(row.getAttribute('aria-expanded')).toBe('false');
+    await user.click(row);
+    expect(row.getAttribute('aria-expanded')).toBe('true');
     expect(within(answer).getByText('two sets').tagName).toBe('STRONG');
+    const kinds = [...answer.querySelectorAll('[data-slot="chat-timeline"] > [data-slot="chat-entry"]')].map((entry) => entry.getAttribute('data-kind'));
+    expect(kinds).toEqual(['thinking', 'step', 'step', 'tasks', 'agents']);
 
-    // The four tools fold under one line, opening to each step (command and output, the picture, the helper and its report).
-    const fold = answer.querySelector('[data-slot="assistant-steps-fold"] > summary');
-    expect(fold?.textContent).toBe('Ran 1 command, viewed 1 picture, ran 1 agent');
+    // A step opens to its command and output, a picture step to its picture, a helper to its steps and report.
+    await user.click(within(answer).getByRole('button', { name: 'List the PDFs' }));
     expect(within(answer).getByText('ls /mnt/user-data/uploads', { selector: 'pre' })).toBeTruthy();
-    expect(within(answer).getByRole('img', { name: 'What it looked at: Look at page 3' }).getAttribute('src')).toBe('/api/v1/chats/c-1/pictures/pic-3');
+    await user.click(within(answer).getByRole('button', { name: 'Look at page 3' }));
+    expect(within(answer).getByRole('img', { name: 'Picture: Look at page 3' }).getAttribute('src')).toBe('/api/v1/chats/c-1/pictures/pic-3');
+    await user.click(within(answer).getByRole('button', { name: /Pages 1-4/ }));
     expect(within(answer).getByText('Page 2 differs by 1 inch.')).toBeTruthy();
 
-    // The task list, the markdown answer (a heading and a table), the file and the footer.
-    const plan = answer.querySelector('[data-slot="assistant-plan"]');
-    expect(plan?.textContent).toContain('Progress 1/2');
+    // The task list sits inside the timeline; then the markdown answer (a heading and a table), the file and the meta line.
+    const plan = answer.querySelector('[data-slot="chat-timeline"] [data-slot="chat-tasks"]');
+    expect(plan?.textContent).toContain('1 of 2 done');
     expect(within(answer).getByRole('heading', { name: 'Result' })).toBeTruthy();
     expect(within(answer).getByRole('columnheader', { name: 'Architect' })).toBeTruthy();
     expect(within(answer).getByRole('cell', { name: '26' })).toBeTruthy();
@@ -137,11 +141,23 @@ describe('a saved chat, after a reload', () => {
     expect(download.getAttribute('href')).toBe('/api/v1/chats/c-1/files/f-1');
     expect(download.getAttribute('download')).toBe('markup.pdf');
     expect(within(answer).getByText('PDF · 1.2 MB')).toBeTruthy();
-    expect(answer.querySelector('[data-slot="chat-footer"]')?.textContent).toBe('Claude Opus 5.5 · High effort · $1.72 · AI answer: check before acting');
+    expect(answer.querySelector('[data-slot="chat-meta"]')?.textContent).toBe('Claude Opus 5.5 · High effort · $1.72');
 
-    // Blocks keep their order: thinking, the folded steps (with the task list after them), the words, then the file and footer.
+    // Blocks keep their order: the activity row (with the task list after it), the words, then the file and footer.
     const order = [...answer.children].map((child) => child.getAttribute('data-slot') ?? child.firstElementChild?.getAttribute('data-slot'));
-    expect(order).toEqual(['chat-thinking', 'assistant-steps', 'chat-markdown', 'chat-files', 'chat-footer']);
+    expect(order).toEqual(['chat-activity', 'chat-markdown', 'chat-files', 'chat-footer']);
+  });
+
+  it('Retry under an answer asks its question again as a new message', async () => {
+    const stream = drivenStream();
+    renderChat(fakeChatApi({ get: vi.fn(async () => chatOut('c-1', [QUESTION, SAVED_ANSWER])), send: stream.send }));
+    const answer = await screen.findByRole('article', { name: 'Answer' });
+    const retry = await waitFor(() => within(answer).getByRole('button', { name: 'Retry' }));
+    await userEvent.setup().click(retry);
+    expect(stream.send.mock.calls[0][1].text).toBe('Which items are wrong?');
+    expect(screen.getAllByText('Which items are wrong?', { selector: '[data-slot="chat-user-message"]' })).toHaveLength(2);
+    // While the new answer runs, no answer offers Retry.
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
   });
 
   it('says why a saved answer stopped, in plain words', async () => {
@@ -154,10 +170,10 @@ describe('a saved chat, after a reload', () => {
     renderChat(fakeChatApi({ get: vi.fn(async () => chatOut('c-1', stopped)) }));
     await screen.findAllByRole('article', { name: 'Answer' });
     expect([...document.querySelectorAll('[data-slot="chat-stopped"]')].map((node) => node.textContent)).toEqual([
-      'Stopped: this message reached its cost cap of $5.00. Above is what it found before then.',
-      'Stopped by an error: The model provider did not answer.',
-      'Stopped: it reached the most steps one message may take. Above is what it found before then.',
-      'Stopped by you.',
+      'Stopped: this answer reached its $5 limit',
+      'Something went wrong. Try again.',
+      'Stopped after the maximum number of steps',
+      'Stopped',
     ]);
   });
 });
@@ -181,7 +197,7 @@ describe('a message streaming in', () => {
     expect(composer()).toHaveProperty('value', '');
   });
 
-  it('shows thinking open while it streams, folds it when it ends, then steps, words, a file and the footer in order', async () => {
+  it('shows thinking folded and shimmering while it streams, then one row for the work, words, a file and the footer in order', async () => {
     const { stream, user } = await ready();
     await user.type(composer(), 'Which items differ?{Enter}');
     const answer = screen.getByRole('article', { name: 'Answer' });
@@ -193,17 +209,20 @@ describe('a message streaming in', () => {
       { event: 'thinking_delta', data: { index: 0, text: 'Reading the ' } },
       { event: 'thinking_delta', data: { index: 0, text: 'vendor pages.' } },
     ));
-    const thinking = within(answer).getByRole('button', { name: 'Thinking' });
-    expect(thinking.getAttribute('aria-expanded')).toBe('true');
-    expect(within(answer).getByText('Reading the vendor pages.')).toBeTruthy();
+    // Thinking stays folded, its newest line shimmering.
+    const thinking = within(answer).getByRole('button', { name: 'Reading the vendor pages.' });
+    expect(thinking.getAttribute('aria-expanded')).toBe('false');
+    expect(thinking.querySelector('[data-slot="chat-shimmer"]')?.getAttribute('data-active')).toBe('true');
+    expect(answer.querySelector('[data-slot="chat-working"]')).not.toBeNull();
 
+    // A step joins the thinking in one row, which says what runs now.
     act(() => stream.emit(
       { event: 'thinking_end', data: { index: 0, seconds: 12 } },
       { event: 'step_start', data: { index: 1, step: { id: 's1', tool: 'bash_tool', label: 'List the PDFs', ok: null } } },
     ));
-    expect(within(answer).getByRole('button', { name: 'Thought for 12s' }).getAttribute('aria-expanded')).toBe('false');
-    expect(within(answer).queryByText('Reading the vendor pages.')).toBeNull();
-    expect(answer.querySelector('[data-slot="assistant-working"]')?.textContent).toBe('List the PDFs');
+    const toggle = () => answer.querySelector('[data-slot="chat-activity-toggle"]');
+    expect(toggle()?.textContent).toBe('List the PDFs');
+    expect(toggle()?.querySelector('[data-slot="chat-shimmer"]')?.getAttribute('data-active')).toBe('true');
 
     act(() => stream.emit(
       { event: 'step_end', data: { index: 1, step: { id: 's1', tool: 'bash_tool', label: 'List the PDFs', command: 'ls', output: 'vendor.pdf', ok: true } } },
@@ -212,9 +231,11 @@ describe('a message streaming in', () => {
       { event: 'file', data: { file: { id: 'f-9', name: 'issues.csv', size: 900, mime: 'text/csv', url: '/api/v1/chats/c-1/files/f-9' } } },
       { event: 'usage', data: { cost_usd: '0.42' } },
     ));
-    expect(answer.querySelector('[data-slot="assistant-step"]')?.textContent).toContain('List the PDFs');
+    // Once words follow, the row sums up the work.
+    expect(toggle()?.textContent).toBe('Thought for 12s, ran a command');
     expect(within(answer).getByText('Two items differ.')).toBeTruthy();
-    expect(answer.querySelector('[data-slot="chat-caret"]')).not.toBeNull();
+    expect(answer.querySelector('[data-slot="chat-markdown"][data-streaming="true"]')).not.toBeNull();
+    expect(answer.querySelector('[data-slot="chat-working"]')).not.toBeNull();
     expect(within(answer).getByRole('link', { name: 'Download issues.csv' })).toBeTruthy();
     expect(answer.querySelector('[data-slot="chat-footer"]')).toBeNull();
     expect(screen.getByRole('button', { name: 'Stop response' })).toBeTruthy();
@@ -224,8 +245,9 @@ describe('a message streaming in', () => {
       blocks: [{ type: 'thinking', text: 'Reading the vendor pages.', seconds: 12 }, { type: 'step', step: { id: 's1', tool: 'bash_tool', label: 'List the PDFs', command: 'ls', output: 'vendor.pdf', ok: true } }, { type: 'text', text: 'Two items differ.' }],
       files: [{ id: 'f-9', name: 'issues.csv', size: 900, mime: 'text/csv', url: '/api/v1/chats/c-1/files/f-9' }],
     }));
-    expect(answer.querySelector('[data-slot="chat-footer"]')?.textContent).toBe('Claude Opus 5.5 · High effort · $0.64 · AI answer: check before acting');
-    expect(answer.querySelector('[data-slot="chat-caret"]')).toBeNull();
+    expect(answer.querySelector('[data-slot="chat-meta"]')?.textContent).toBe('Claude Opus 5.5 · High effort · $0.64');
+    expect(answer.querySelector('[data-streaming="true"]')).toBeNull();
+    expect(answer.querySelector('[data-slot="chat-working"]')).toBeNull();
     expect(screen.getByRole('button', { name: 'Send message' })).toBeTruthy();
     expect(screen.getByRole('status').textContent).toBe('Answer ready');
   });
@@ -236,7 +258,7 @@ describe('a message streaming in', () => {
     act(() => stream.emit({ event: 'message_start', data: { message_id: 'a-9', model: 'claude-opus-5-5', effort: 'high', thinking: true } }, { event: 'text_delta', data: { index: 0, text: 'So far' } }));
     await user.click(screen.getByRole('button', { name: 'Stop response' }));
     expect(api.cancel).toHaveBeenCalledWith('c-1');
-    await waitFor(() => expect(document.querySelector('[data-slot="chat-stopped"]')?.textContent).toBe('Stopped by you.'));
+    await waitFor(() => expect(document.querySelector('[data-slot="chat-stopped"]')?.textContent).toBe('Stopped'));
     // The stream's signal was aborted, and the composer is back.
     expect((stream.send.mock.calls[0][3] as AbortSignal).aborted).toBe(true);
     expect(screen.getByRole('button', { name: 'Send message' })).toBeTruthy();
