@@ -90,6 +90,9 @@ describe('AiReview', () => {
     expect(screen.queryByRole('list', { name: 'Unsure / unreadable' })).toBeNull();
     await userEvent.click(unsureButton);
     const unsure = screen.getByRole('list', { name: 'Unsure / unreadable' });
+    // The reasons sit behind each row's Why.
+    expect(unsure.textContent).not.toContain(WHY.unsure);
+    for (const why of within(unsure).getAllByRole('button', { name: /^Why/ })) await userEvent.click(why);
     expect(unsure.textContent).toContain(WHY.unsure);
     expect(unsure.textContent).toContain(WHY.unreadable);
     expect(within(unsure).getByText('Unsure').querySelector('svg')).toBeTruthy();
@@ -106,7 +109,9 @@ describe('AiReview', () => {
     const notShown = screen.getByRole('button', { name: /^Not shown by the vendor/ });
     expect(notShown.getAttribute('aria-expanded')).toBe('false');
     await userEvent.click(notShown);
-    expect(screen.getByRole('list', { name: 'Not shown by the vendor' }).textContent).toContain(WHY.not_shown);
+    const notShownList = screen.getByRole('list', { name: 'Not shown by the vendor' });
+    await userEvent.click(within(notShownList).getByRole('button', { name: /^Why/ }));
+    expect(notShownList.textContent).toContain(WHY.not_shown);
   });
 
   it('says which pages the AI is still reading and which it could not read, with no retry', () => {
@@ -125,7 +130,7 @@ describe('AiReview', () => {
     expect(rows).toHaveLength(3);
     for (const listed of rows) {
       expect(within(listed).queryByRole('button', { name: /Agree|Not a difference/ })).toBeNull();
-      expect(within(listed).getAllByRole('button').map((b) => b.textContent)).toEqual(['Look']);
+      expect(within(listed).getAllByRole('button').map((b) => b.textContent)).toEqual(['Why', 'Look']);
       expect(within(listed).queryByTestId('ai-review-answered')).toBeNull();
     }
     expect(screen.queryByRole('button', { name: /Agree|Not a difference/ })).toBeNull();
@@ -245,5 +250,46 @@ describe('AiReview row layout (QA 2026-10-16)', () => {
     expect(numbers.className).toContain('grow');
     expect(numbers.className).toContain('min-w-0');
     expect(look.className).toContain('ml-auto');
+  });
+});
+
+describe('AiReview rows stay short (2026-10-16)', () => {
+  const evaluated = (extra: Partial<AiReviewRow> = {}) =>
+    ({ ...row('e1', 'different'), evaluator_reason: 'The sample span reads 30 1/2 on both looks', verified_by: 'evaluator', ...extra }) as AiReviewRow;
+
+  it('shows the numbers, the page and what it measures; the reasons wait behind a closed Why', () => {
+    render(<AiReview review={{ ...REVIEW, pages: [page(3, 'done', [evaluated()])] }} onLook={() => {}} />);
+    const listed = within(screen.getByRole('list', { name: 'Different' })).getByRole('listitem');
+    expect(within(listed).getByTestId('ai-review-line').textContent).toBe('Architect 30" vs vendor 30 1/2" · p.3');
+    expect(listed.textContent).toContain('sample overall width');
+    expect(listed.textContent).not.toContain(WHY.different);
+    expect(listed.textContent).not.toContain('Checked again by the evaluator');
+    expect(within(listed).getByRole('button', { name: /^Why/ }).getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('Why opens the AI reason and the evaluator reason as two sentences on two lines', async () => {
+    render(<AiReview review={{ ...REVIEW, pages: [page(3, 'done', [evaluated()])] }} onLook={() => {}} />);
+    const listed = within(screen.getByRole('list', { name: 'Different' })).getByRole('listitem');
+    const why = within(listed).getByRole('button', { name: /^Why/ });
+    await userEvent.click(why);
+    expect(why.getAttribute('aria-expanded')).toBe('true');
+    const reasons = within(listed).getByTestId('ai-review-why');
+    expect(reasons.textContent).toBe('The vendor drew a different number for this span.Checked again by the evaluator: The sample span reads 30 1/2 on both looks.');
+    expect(reasons.querySelector('br')).toBeTruthy();
+    await userEvent.click(why);
+    expect(within(listed).queryByTestId('ai-review-why')).toBeNull();
+  });
+
+  it('adds a full stop to an AI reason that has none, and has no evaluator line when there is none', async () => {
+    render(<AiReview review={{ ...REVIEW, pages: [page(3, 'done', [evaluated({ why: 'No stop here', evaluator_reason: null } as Partial<AiReviewRow>)])] }} onLook={() => {}} />);
+    const listed = within(screen.getByRole('list', { name: 'Different' })).getByRole('listitem');
+    await userEvent.click(within(listed).getByRole('button', { name: /^Why/ }));
+    expect(within(listed).getByTestId('ai-review-why').textContent).toBe('No stop here.');
+  });
+
+  it('a row with no reason at all has no Why', () => {
+    render(<AiReview review={{ ...REVIEW, pages: [page(3, 'done', [row('q1', 'different', { why: '' })])] }} onLook={() => {}} />);
+    const listed = within(screen.getByRole('list', { name: 'Different' })).getByRole('listitem');
+    expect(within(listed).queryByRole('button', { name: /^Why/ })).toBeNull();
   });
 });

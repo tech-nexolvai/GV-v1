@@ -28,18 +28,33 @@ function ResultWord({ result }: { result: AiReviewResult }) {
   );
 }
 
-/** The numbers side by side, in the number face, with what they measure and the page. */
+/** The server's words as a sentence, ending with one full stop. */
+function sentence(text: string): string {
+  const trimmed = text.trim();
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
+/** Fields the server sends since the evaluator (#1442) that the hand-written row type does not carry yet. */
+type EvaluatedRow = AiReviewRow & { evaluator_reason?: string | null };
+
+/**
+ * The numbers side by side, in the number face, and the page, on one line; what they measure on a
+ * second. Nothing more: the reasons wait behind Why.
+ */
 function Numbers({ row, page }: { row: AiReviewRow; page: number }) {
   return (
     <span className="block min-w-0 text-[15px] text-foreground [overflow-wrap:anywhere]">
-      Architect <span className="num">{row.architect_text}</span>
-      {row.vendor_text !== null && (
-        <>
-          {' '}
-          vs vendor <span className="num">{row.vendor_text}</span>
-        </>
-      )}
-      <PageTag page={page} className="ml-2" />
+      <span data-testid="ai-review-line" className="block">
+        Architect <span className="num">{row.architect_text}</span>
+        {row.vendor_text !== null && (
+          <>
+            {' '}
+            vs vendor <span className="num">{row.vendor_text}</span>
+          </>
+        )}
+        <span className="text-[13px] text-muted-foreground"> · </span>
+        <PageTag page={page} />
+      </span>
       {row.measures && <NumText text={row.measures} className="block text-[13px] leading-5 text-muted-foreground" />}
     </span>
   );
@@ -48,11 +63,17 @@ function Numbers({ row, page }: { row: AiReviewRow; page: number }) {
 /**
  * One row: the result, both numbers and Look. No person answers it (decision 2026-10-16): a different
  * row is clouded on the PDF by itself and never holds sign-off, so no answer buttons are offered,
- * whatever the server lists.
+ * whatever the server lists. The AI's reason and the evaluator's are folded behind a small Why.
  */
 function Row({ entry, onLook }: { entry: AiReviewEntry; onLook: (row: AiReviewRow, page: number) => void }) {
   const { row, page } = entry;
   const what = aiReviewWhat(row);
+  const [open, setOpen] = useState(false);
+  const whyId = useId();
+  const aiWhy = row.result !== 'same' && row.why.trim() ? sentence(row.why) : null;
+  const evaluatorReason = (row as EvaluatedRow).evaluator_reason?.trim();
+  const evaluatorWhy = evaluatorReason ? `Checked again by the evaluator: ${sentence(evaluatorReason)}` : null;
+  const hasWhy = aiWhy !== null || evaluatorWhy !== null;
   return (
     // Sized by the section (`@container/air`), not the window: with the Assistant open the section
     // is narrow on a wide screen. The numbers keep 18rem and drop to their own line (QA 2026-10-16).
@@ -62,9 +83,20 @@ function Row({ entry, onLook }: { entry: AiReviewEntry; onLook: (row: AiReviewRo
       </span>
       <span data-slot="ai-review-numbers" className="min-w-0 max-w-full grow basis-[18rem]">
         <Numbers row={row} page={page} />
-        {row.result !== 'same' && row.why && <NumText text={row.why} className="block text-[13px] leading-5 text-muted-foreground" />}
+        {hasWhy && open && (
+          <span id={whyId} data-testid="ai-review-why" className="mt-1 block text-[13px] leading-5 text-muted-foreground">
+            {aiWhy && <NumText text={aiWhy} />}
+            {aiWhy && evaluatorWhy && <br />}
+            {evaluatorWhy && <NumText text={evaluatorWhy} />}
+          </span>
+        )}
       </span>
       <span className="ml-auto flex min-w-0 shrink-0 flex-wrap items-center gap-1">
+        {hasWhy && (
+          <Button size="sm" variant="ghost" aria-expanded={open} aria-controls={open ? whyId : undefined} onClick={() => setOpen((now) => !now)} className="text-muted-foreground">
+            Why
+          </Button>
+        )}
         <Button size="sm" variant="ghost" onClick={() => onLook(row, page)} aria-label={`Look at ${what}, page ${page}`}>
           <FileSearch aria-hidden="true" />
           Look
