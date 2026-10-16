@@ -19,10 +19,12 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+import pytest
 from PIL import Image
 
 from app.review.assistant.chat_engine import (
     COST_CAP_NOTE,
+    HELPER_SHARE_PERCENT,
     TURN_LIMIT_NOTE,
     ChatEngine,
     EngineSettings,
@@ -32,8 +34,10 @@ from app.review.assistant.chat_provider import ProviderFailure
 from app.review.assistant.chat_request import MODELS
 from app.review.assistant.chat_tools import ChatTools
 from app.review.assistant.sandbox import ChatWorkspace
-from app.runs.rates import load_model_rates
+from app.runs.rates import call_cost_micros, load_model_rates
 from tests.review.assistant.chat_fakes import (
+    OPUS,
+    SONNET,
     FakeLedger,
     FakeSandbox,
     ScriptedProvider,
@@ -231,7 +235,7 @@ def test_a_tool_turn_runs_the_tool_and_sends_the_reply_back_unchanged(tmp_path: 
     assert [b["type"] for b in outcome.blocks] == ["thinking", "text", "step", "text"]
     assert len(harness.ledger.rows) == 2
     assert {row["prompt_id"] for row in harness.ledger.rows} == {
-        "review-assistant-chat-anthropic-chat-v1"
+        "review-assistant-chat-anthropic-chat-v2"
     }
 
 
@@ -383,10 +387,11 @@ def test_helpers_run_together_and_their_reports_go_back_to_the_lead(tmp_path: Pa
                 reply(
                     tool("h1", "bash_tool", {"command": "pdftotext", "description": "Read"}),
                     stop="tool_use",
+                    model=SONNET,
                 ),
-                reply(text("Page 4: sink differs.")),
+                reply(text("Page 4: sink differs."), model=SONNET),
             ],
-            "Check pages 6-9": [reply(text("Page 7: depth differs."))],
+            "Check pages 6-9": [reply(text("Page 7: depth differs."), model=SONNET)],
         },
     )
     harness = Harness(tmp_path, provider)
@@ -409,9 +414,10 @@ def test_helpers_run_together_and_their_reports_go_back_to_the_lead(tmp_path: Pa
     results = _sent(provider.lead_calls[1])["messages"][-1]["content"]
     assert [r["tool_use_id"] for r in results] == ["ag1", "ag2"]
     assert "Page 4: sink differs." in results[0]["content"][0]["text"]
-    # Helpers run on the lead's model by default, with its effort.
+    # An Opus lead's helpers run on Sonnet by default, with the lead's effort.
     helper_call = _sent(provider.helper_calls["Check pages 6-9"][0])
-    assert helper_call["model"] == "claude-opus-5-5" and helper_call["max_tokens"] == 32000
+    assert helper_call["model"] == SONNET and helper_call["max_tokens"] == 32000
+    assert helper_call["output_config"] == {"effort": "high"}
     assert [t["name"] for t in helper_call["tools"]] == [
         "bash_tool",
         "view",
@@ -429,8 +435,9 @@ def test_a_helper_at_its_turn_limit_is_told_to_wrap_up_and_reports(tmp_path: Pat
                 reply(
                     tool("h1", "bash_tool", {"command": "ls", "description": "List"}),
                     stop="tool_use",
+                    model=SONNET,
                 ),
-                reply(text("I read pages 1-3; pages 4-60 not opened.")),
+                reply(text("I read pages 1-3; pages 4-60 not opened."), model=SONNET),
             ]
         },
     )
@@ -450,14 +457,14 @@ def test_a_helper_near_the_money_cap_still_gets_its_final_call(tmp_path: Path) -
     task = "Check every page"
     provider = ScriptedProvider(
         lead=[_agents(task), reply(text("Done."))],
-        helpers={task: [reply(text("Nothing opened yet; pages 1-60 left."))]},
+        helpers={task: [reply(text("Nothing opened yet; pages 1-60 left."), model=SONNET)]},
     )
-    # Room for the lead's calls, not for a helper's normal one: it wraps up at once.
+    # Room for the lead's first call, not for a helper's normal one: it wraps up at once.
     spent = {"n": 0}
 
     def package_spent() -> int:
         spent["n"] += 1
-        return 0 if spent["n"] == 1 else 39_500_000
+        return 0 if spent["n"] == 1 else 39_700_000
 
     harness = Harness(tmp_path, provider, package_spent=package_spent)
     harness.run()
@@ -481,6 +488,7 @@ def test_a_helper_whose_final_call_fails_still_reports_from_its_steps(tmp_path: 
                 reply(
                     tool("h1", "bash_tool", {"command": "pdfinfo a.pdf", "description": "Info"}),
                     stop="tool_use",
+                    model=SONNET,
                 ),
                 failure,
             ]
@@ -501,7 +509,7 @@ def test_a_fifth_agent_is_refused_until_the_next_turn(tmp_path: Path) -> None:
     tasks = [f"Task {n}" for n in range(5)]
     provider = ScriptedProvider(
         lead=[_agents(*tasks), reply(text("Done."))],
-        helpers={task: [reply(text(f"{task} report"))] for task in tasks[:4]},
+        helpers={task: [reply(text(f"{task} report"), model=SONNET)] for task in tasks[:4]},
     )
     harness = Harness(tmp_path, provider)
     harness.run()
@@ -509,6 +517,165 @@ def test_a_fifth_agent_is_refused_until_the_next_turn(tmp_path: Path) -> None:
     results = _sent(provider.lead_calls[1])["messages"][-1]["content"]
     assert len(results) == 5
     assert results[4]["is_error"] is True and "at most 4 agents" in results[4]["content"][0]["text"]
+
+
+@pytest.mark.parametrize(
+    ("lead", "helper"),
+    [
+        ("claude-opus-5-5", "claude-sonnet-5-5"),
+        ("claude-sonnet-5-5", "claude-sonnet-5-5"),
+        ("claude-haiku-5-5", "claude-haiku-5-5"),
+    ],
+)
+def test_a_helper_with_no_model_runs_on_sonnet_under_opus_else_on_the_leads_model(
+    tmp_path: Path, lead: str, helper: str
+) -> None:
+    task = "Check pages 1-5"
+    provider = ScriptedProvider(
+        lead=[
+            reply(
+                tool("ag1", "Agent", {"description": "Pages 1-5", "prompt": task}),
+                stop="tool_use",
+                model=lead,
+            ),
+            reply(text("Done."), model=lead),
+        ],
+        helpers={task: [reply(text("Page 4: sink differs."), model=helper)]},
+    )
+    harness = Harness(tmp_path, provider, model=lead)
+
+    outcome = harness.run()
+
+    assert _sent(provider.helper_calls[task][0])["model"] == helper
+    assert events_named(harness.events, "agent_start")[0]["agent"]["model"] == helper
+    assert events_named(harness.events, "agent_end")[0]["agent"]["ok"] is True
+    assert outcome.stopped is None
+
+
+def test_a_model_the_lead_names_for_a_helper_is_used(tmp_path: Path) -> None:
+    task = "Look closely at the sink on page 4"
+    provider = ScriptedProvider(
+        lead=[
+            reply(
+                tool(
+                    "ag1", "Agent", {"description": "Sink check", "prompt": task, "model": "opus"}
+                ),
+                stop="tool_use",
+            ),
+            reply(text("Done.")),
+        ],
+        helpers={task: [reply(text("The sink model differs."), model=OPUS)]},
+    )
+    harness = Harness(tmp_path, provider)
+
+    harness.run()
+
+    assert _sent(provider.helper_calls[task][0])["model"] == OPUS
+    assert events_named(harness.events, "agent_end")[0]["agent"]["ok"] is True
+
+
+def test_helpers_stop_at_their_share_and_the_lead_keeps_the_rest(tmp_path: Path) -> None:
+    """Helpers that never finish on their own: every normal call runs one more command at a big
+    output, a final call (no tools) writes the report."""
+    tasks = ("Check pages 1-30", "Check pages 31-60")
+
+    def busy(params: Mapping[str, Any]) -> list[dict[str, Any]]:
+        task = params["messages"][0]["content"][0]["text"]
+        if params["tool_choice"] == {"type": "none"}:
+            return reply(text(f"Report for {task}"), model=SONNET)
+        return reply(
+            tool("h", "bash_tool", {"command": "pdftotext", "description": "Read"}),
+            stop="tool_use",
+            model=SONNET,
+            usage={"output_tokens": 30_000},
+        )
+
+    provider = ScriptedProvider(
+        lead=[_agents(*tasks), reply(text("Checked the helpers' leads."))],
+        helper_answer=busy,
+    )
+    harness = Harness(tmp_path, provider)
+
+    outcome = harness.run()
+
+    # Every helper reports, told to wrap up because the helpers' share is used.
+    ends = [end["agent"] for end in events_named(harness.events, "agent_end")]
+    assert sorted(end["report"] for end in ends) == [f"Report for {task}" for task in tasks]
+    assert all(end["ok"] and end["stopped"] == "cost_cap" for end in ends)
+    for task in tasks:
+        last = _sent(provider.helper_calls[task][-1])
+        assert last["tool_choice"] == {"type": "none"}
+        assert "the helpers have used their share" in last["messages"][-1]["content"][-1]["text"]
+
+    def cost(row: Mapping[str, Any]) -> int:
+        micros = call_cost_micros(
+            RATES, row["model_key"], row["input_tokens"], row["output_tokens"]
+        )
+        assert micros is not None
+        return micros
+
+    lead_rows = [row for row in harness.ledger.rows if "helper" not in row["prompt_id"]]
+    helper_rows = [row for row in harness.ledger.rows if "helper" in row["prompt_id"]]
+    share = (5 * DOLLARS - cost(lead_rows[0])) * HELPER_SHARE_PERCENT // 100
+    working = sum(cost(row) for row in helper_rows if row["stop_reason"] == "tool_use")
+    # They used most of their share, never more; only the two short reports come on top.
+    assert share - 2 * DOLLARS // 3 < working <= share
+    assert len(helper_rows) == len(provider.helper_calls[tasks[0]]) + len(
+        provider.helper_calls[tasks[1]]
+    )
+
+    # The lead still had the money for a normal call after the helpers: no cost-cap stop.
+    assert len(provider.lead_calls) == 2
+    after = _sent(provider.lead_calls[1])
+    assert after["tool_choice"] == {"type": "auto"} and after["max_tokens"] == 64000
+    assert COST_CAP_NOTE not in json.dumps(after["messages"])
+    assert outcome.stopped is None and outcome.text == "Checked the helpers' leads."
+    assert harness.engine.spent < 5 * DOLLARS
+
+
+#: A turn stored by an earlier harness (chat-v1): the lead started a helper without a model.
+_EARLIER_TURN: list[dict[str, Any]] = [
+    {"role": "user", "content": [{"type": "text", "text": "Check the whole set."}]},
+    {
+        "role": "assistant",
+        "content": [
+            {"type": "thinking", "thinking": "Split the pages.", "signature": "sig-v1"},
+            {
+                "type": "tool_use",
+                "id": "ag1",
+                "name": "Agent",
+                "input": {"description": "Pages 1-30", "prompt": "Check pages 1-30"},
+            },
+        ],
+    },
+    {
+        "role": "user",
+        "content": [
+            {
+                "type": "tool_result",
+                "tool_use_id": "ag1",
+                "content": [{"type": "text", "text": "Report from helper agent: all fine."}],
+            }
+        ],
+    },
+    {"role": "assistant", "content": [{"type": "text", "text": "Pages 1-30 look fine."}]},
+]
+
+
+def test_an_earlier_chats_history_still_replays_byte_identical(tmp_path: Path) -> None:
+    stored = json.loads(json.dumps(_EARLIER_TURN))
+    provider = ScriptedProvider(lead=[reply(text("Yes."))])
+    harness = Harness(tmp_path, provider, history=stored, question="And pages 31-60?")
+
+    harness.run()
+
+    sent = _sent(provider.lead_calls[0])["messages"]
+    replayed = strip_cache_control(sent[: len(_EARLIER_TURN)])
+    assert json.dumps(replayed) == json.dumps(_EARLIER_TURN)
+    assert strip_cache_control(sent[-1]) == {
+        "role": "user",
+        "content": [{"type": "text", "text": "And pages 31-60?"}],
+    }
 
 
 # ---- limits ------------------------------------------------------------------------------------
