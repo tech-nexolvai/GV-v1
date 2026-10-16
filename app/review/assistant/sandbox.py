@@ -59,6 +59,7 @@ __all__ = [
     "Sandbox",
     "SandboxRefused",
     "SandboxResult",
+    "SandboxUnavailable",
     "Viewed",
     "Workspace",
     "check_command",
@@ -80,6 +81,11 @@ MAX_OUTPUT_CHARS: Final = 20_000
 MAX_COMMAND_CHARS: Final = 8_000
 _TRUNCATED: Final = "\n\n[Output truncated: {left} more characters not shown]"
 _POPPLER: Final = ("pdfinfo", "pdftotext", "pdftoppm", "pdfimages", "pdftocairo", "pdffonts")
+
+
+class SandboxUnavailable(RuntimeError):
+    """The sandbox cannot run here (Docker not running, image not built): the assistant answers
+    from the records only and says so."""
 
 
 class SandboxRefused(ValueError):

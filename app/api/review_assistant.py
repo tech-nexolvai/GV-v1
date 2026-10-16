@@ -36,7 +36,7 @@ from app.review.assistant.contract import AssistantInfoOut, AssistantRequest
 from app.review.assistant.model import OpenRouterAssistantModel
 from app.review.assistant.page_pictures import RevisionPagePictures
 from app.review.assistant.records import ReviewSnapshot, build_snapshot
-from app.review.assistant.sandbox import Workspace, open_sandbox
+from app.review.assistant.sandbox import SandboxUnavailable, Workspace, open_sandbox
 from app.review.assistant.service import (
     AssistantBudget,
     AssistantRuntime,
@@ -313,7 +313,7 @@ def _agent_tools(
         sandbox = open_sandbox(workspace, prefer=runtime.sandbox)
         if sandbox is None:
             workspace.close()
-            return None
+            raise SandboxUnavailable(runtime.sandbox)
         files = tuple(
             AgentFiles(name=name, kind=kind, pages=pages)
             for name, (_n, _d, kind, pages) in zip(workspace.file_names, pdfs, strict=True)

@@ -554,9 +554,11 @@ def test_cached_prompt_tokens_are_priced_as_cache_reads_and_writes() -> None:
 def _report(page: int) -> dict[str, Any]:
     body = {
         "summary": f"Made-up check of page {page}.",
+        "pages_viewed": [page],
         "findings": [
             {
                 "page": page,
+                "kind": "dimension",
                 "what": "overall length",
                 "architect": "120",
                 "vendor": "118 1/2",
@@ -615,7 +617,9 @@ def test_helpers_run_in_parallel_and_report_back(workspace: Workspace) -> None:
         main=[
             _agents(1, 2, 3),
             _turn(_bash("v1", f"ls {SCRATCH}", "Verify the flagged pages")),
-            _final("The AI reading found a different overall length on pages 1 to 3."),
+            _final(
+                "The AI reading found a different overall length on pages 1 to 3; code: page 4."
+            ),
         ],
         meet=threading.Barrier(3, timeout=10),
     )
@@ -646,7 +650,7 @@ def test_helpers_run_in_parallel_and_report_back(workspace: Workspace) -> None:
 
 
 def test_at_most_four_agents_run_at_once(workspace: Workspace) -> None:
-    model = DispatchModel(main=[_agents(1, 2, 3, 1, 2), _final("Checked.")])
+    model = DispatchModel(main=[_agents(1, 2, 3, 1, 2), _final("Checked; code: page 4.")])
     answer = _answer(_ask("Which pages differ?", model, workspace))
     assert len(answer.steps[0].agents) == 4
     assert answer.steps[1].label == "Could not start a helper agent"
@@ -655,7 +659,7 @@ def test_at_most_four_agents_run_at_once(workspace: Workspace) -> None:
 
 def test_one_helper_failing_does_not_stop_the_others(workspace: Workspace) -> None:
     model = DispatchModel(
-        main=[_agents(1, 2), _final("Page 1 was checked; page 2 was not.")],
+        main=[_agents(1, 2), _final("Page 1 was checked; page 2 was not. Code: page 4.")],
         failing=("Check page 2",),
     )
     answer = _answer(_ask("Which pages differ?", model, workspace))
@@ -672,7 +676,7 @@ def test_helpers_share_the_question_budget(workspace: Workspace) -> None:
     # Cap $0.10: once the lead has spent its first call, three helpers share 75% of what is left,
     # too little for any helper's first call; each stops at the cost cap without a call, and the
     # lead still answers.
-    model = DispatchModel(main=[_agents(1, 2, 3), _final("No helper could finish.")])
+    model = DispatchModel(main=[_agents(1, 2, 3), _final("No helper could finish. Code: page 4.")])
     ledger = FakeLedger()
     answer = _answer(
         _ask("Which pages differ?", model, workspace, ledger=ledger, budget=_budget("0.10"))
@@ -693,7 +697,7 @@ def test_a_delegating_question_gets_the_larger_cap(workspace: Workspace) -> None
         spent_micros=lambda: 0,
         rates=_rates(),
     )
-    model = DispatchModel(main=[_agents(1), _final("Page 1 differs.")])
+    model = DispatchModel(main=[_agents(1), _final("Page 1 differs; code: page 4.")])
     answer = _answer(_ask("Which pages differ?", model, workspace, budget=budget))
     assert answer.mode == "llm" and answer.stopped is None
     assert answer.steps[0].agents[0].ok
@@ -712,7 +716,9 @@ def test_a_delegating_question_gets_the_larger_cap(workspace: Workspace) -> None
 def test_agent_arguments_are_checked(
     workspace: Workspace, arguments: dict[str, Any], reason: str
 ) -> None:
-    model = DispatchModel(main=[_turn(_use("a1", "Agent", arguments)), _final("Could not.")])
+    model = DispatchModel(
+        main=[_turn(_use("a1", "Agent", arguments)), _final("Could not; code: page 4.")]
+    )
     answer = _answer(_ask("Which pages differ?", model, workspace))
     step = answer.steps[0]
     assert step.kind == "agents" and not step.ok and reason in (step.output or "")
@@ -720,7 +726,9 @@ def test_agent_arguments_are_checked(
 
 
 def test_the_lead_and_the_helpers_use_their_own_models(workspace: Workspace) -> None:
-    lead = DispatchModel(main=[_agents(1), _agents(2, model="opus"), _final("Page 1 differs.")])
+    lead = DispatchModel(
+        main=[_agents(1), _agents(2, model="opus"), _final("Page 1 differs; code: page 4.")]
+    )
     lead.model_id = OPUS
     helper = DispatchModel(main=[])
     answer = _answer(_ask("Which pages differ?", helper, workspace, lead=lead))
@@ -751,3 +759,141 @@ def test_a_refused_answer_is_written_again_once(workspace: Workspace) -> None:
         == "records_only"
     )
     assert len(again.bodies) == 2
+
+
+# ---- nothing recorded is dropped; helpers open every page (owner, 2026-10-16) --------------------
+
+
+def test_pages_mentioned_reads_lists_and_ranges() -> None:
+    from app.review.assistant.agent import pages_mentioned
+
+    text = 'Page 3 and pages 39-41, p. 7/8, pp 10 and 12, sheets 20 to 22; not 1\'-8" or 34".'
+    assert pages_mentioned(text) == {3, 7, 8, 10, 12, 20, 21, 22, 39, 40, 41}
+
+
+def _tools_with_review(workspace: Workspace) -> Any:
+    review = [
+        {
+            "page": 2,
+            "status": "done",
+            "different": [
+                {
+                    "measures": "made-up counter to uppers",
+                    "architect_text": "1'-8\"",
+                    "vendor_text": "406 [16]",
+                }
+            ],
+        }
+    ]
+
+    def factory(records: Any) -> AgentTools:
+        return AgentTools(
+            sandbox=FakeSandbox(workspace),
+            snapshot=records,
+            files=(AgentFiles(name="Made-up vendor set.pdf", kind="the vendor's", pages=9),),
+            extra_results=lambda page: {"ai_page_review": review},
+        )
+
+    return factory
+
+
+def test_a_comparison_answer_must_mention_every_failure_and_difference(
+    workspace: Workspace,
+) -> None:
+    model = ScriptedAgentModel(
+        [
+            _final("Page 7 looks different to me."),
+            _turn(_use("v", "view", {"path": SCRATCH, "description": "Look again"})),
+            _final(
+                "Code: page 4 {C1.outcome}. AI review says 1'-8\" on page 2; on the drawing I "
+                'see 16". Page 7 looks different to me.'
+            ),
+        ]
+    )
+    events = list(
+        stream_answer(
+            AssistantRequest(question="Which ones are wrong compared with the architect?"),
+            load_snapshot=snapshot,
+            runtime=AssistantRuntime(model=model, max_history_turns=6),
+            ledger=FakeLedger(),
+            agent_tools=_tools_with_review(workspace),
+        )
+    )
+    answer = _answer(events)
+    assert answer.mode == "llm"
+    note = model.bodies[1]["messages"][-1]["content"][-1]["text"]
+    assert note.startswith("Your answer leaves out recorded results")
+    assert "page 4: code: Sample run A" in note
+    assert "page 2: AI page review: made-up counter to uppers, architect 1'-8\"" in note
+    # It may look again before answering (tools are still offered).
+    assert model.bodies[1]["tool_choice"] == {"type": "auto"}
+    assert [step.kind for step in answer.steps] == ["view"]
+
+
+def test_a_question_about_one_page_need_not_list_the_whole_set(workspace: Workspace) -> None:
+    model = ScriptedAgentModel([_final("Page 7 shows a made-up 40 inch run.")])
+    events = list(
+        stream_answer(
+            AssistantRequest(question="What does the vendor show on page 7?"),
+            load_snapshot=snapshot,
+            runtime=AssistantRuntime(model=model, max_history_turns=6),
+            ledger=FakeLedger(),
+            agent_tools=_tools_with_review(workspace),
+        )
+    )
+    assert _answer(events).mode == "llm" and len(model.bodies) == 1
+
+
+def test_a_helper_that_skipped_pages_is_sent_back_once(workspace: Workspace) -> None:
+    @dataclass
+    class Skipper(DispatchModel):
+        def agent_turn(self, body: Mapping[str, Any]) -> Mapping[str, Any]:
+            if body["system"][0]["text"] != SUB_SYSTEM_PROMPT:
+                self.main_bodies.append(json.loads(json.dumps(body)))
+                return self.main.pop(0)
+            seen = self.helper_bodies.setdefault("helper", [])
+            seen.append(json.loads(json.dumps(body)))
+            report = {
+                "summary": "Made-up.",
+                "pages_viewed": [1] if len(seen) == 1 else [1, 2, 3],
+                "findings": [],
+            }
+            return _turn({"type": "text", "text": json.dumps(report)}, stop="end_turn")
+
+    model = Skipper(
+        main=[
+            _turn(_use("a1", "Agent", {"description": "Pages 1-3", "prompt": "Check pages 1-3"})),
+            _final("Done; code: page 4."),
+        ]
+    )
+    answer = _answer(_ask("Which pages differ?", model, workspace))
+    assert answer.steps[0].agents[0].ok
+    second = model.helper_bodies["helper"][1]
+    assert second["messages"][-1]["content"][-1]["text"].startswith(
+        "You have not viewed every page of your task. Still to open: 2, 3."
+    )
+    assert second["tool_choice"] == {"type": "auto"}
+    assert len(model.helper_bodies["helper"]) == 2
+
+
+def test_without_the_sandbox_the_answer_is_from_the_records_with_a_note() -> None:
+    from app.review.assistant.sandbox import SandboxUnavailable
+    from app.review.assistant.service import NO_SANDBOX_TEXT
+
+    def unavailable(records: Any) -> AgentTools:
+        raise SandboxUnavailable("docker")
+
+    model = ScriptedAgentModel([])
+    events = list(
+        stream_answer(
+            AssistantRequest(question="Why did page 4 fail?"),
+            load_snapshot=snapshot,
+            runtime=AssistantRuntime(model=model, max_history_turns=6),
+            ledger=FakeLedger(),
+            agent_tools=unavailable,
+        )
+    )
+    answer = _answer(events)
+    assert answer.text.startswith(NO_SANDBOX_TEXT)
+    assert answer.mode == "records_only"
+    assert model.bodies == []

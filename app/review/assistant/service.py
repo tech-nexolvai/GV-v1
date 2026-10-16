@@ -91,6 +91,7 @@ from app.review.assistant.records_only import (
     judging_answer,
     needs_you_answer,
 )
+from app.review.assistant.sandbox import SandboxUnavailable
 from app.runs.invocations import BedrockConverseInvocationRecorder
 from app.runs.rates import ModelRates, call_cost_micros
 
@@ -98,6 +99,7 @@ __all__ = [
     "BUDGET_TEXT",
     "COST_CAP_TEXT",
     "DISABLED_TEXT",
+    "NO_SANDBOX_TEXT",
     "AssistantBudget",
     "AssistantRuntime",
     "CallLedger",
@@ -115,6 +117,10 @@ DISABLED_TEXT: Final = (
 BUDGET_TEXT: Final = (
     "This package has used its assistant budget, so Claude Sonnet was not asked. The suggested "
     "questions still work from the records."
+)
+NO_SANDBOX_TEXT: Final = (
+    "The drawing tools are not running here right now (the sandbox is off), so I could not open "
+    "the drawings; this answer is from the review's records only."
 )
 COST_CAP_TEXT: Final = (
     "I stopped before finishing: this question reached its cost cap after {steps} step(s), so "
@@ -542,6 +548,29 @@ def stream_answer(
         tools: AgentTools | None = None
         try:
             tools = agent_tools(snapshot)
+        except SandboxUnavailable:
+            # The drawing tools are switched on but cannot run here (Docker not running): the
+            # records answer, with a plain note, never a guess without the drawings.
+            _log.warning("review assistant sandbox unavailable; answering from records", extra=log)
+            draft = answer_for_question(snapshot, question, request.focus)
+            if draft is not None:
+                draft = _checked_or_plain(draft, snapshot)
+                draft = Draft(
+                    text=f"{NO_SANDBOX_TEXT} {draft.text}",
+                    evidence=draft.evidence,
+                    actions=draft.actions,
+                )
+            yield _stage("guard")
+            yield (
+                "answer",
+                _publish_safely(
+                    draft or Draft(text=NO_SANDBOX_TEXT),
+                    snapshot,
+                    mode="records_only" if draft is not None else "disabled",
+                    question=question,
+                ),
+            )
+            return
         except Exception as failed:  # noqa: BLE001 - no sandbox falls back to one call
             _log.warning(
                 "review assistant could not open its sandbox: %s", type(failed).__name__, extra=log
@@ -714,6 +743,13 @@ def stream_answer(
     )
 
 
+#: A question about the whole set's differences ("which one is wrong compared with the architect?").
+_COMPARING: Final = re.compile(
+    r"\b(?:wrong|differ\w*|difference\w*|mismatch\w*|mistake\w*|compar\w*|vs\.?|versus)\b",
+    re.IGNORECASE,
+)
+
+
 def _guard_reason(draft: Draft, snapshot: ReviewSnapshot) -> str | None:
     """The guard's reason code for refusing `draft`, or `None` when it passes."""
     try:
@@ -765,6 +801,7 @@ def _agent_answer(
         max_turns=runtime.max_tool_turns,
         helper_model=helper,
         check=lambda draft: _guard_reason(draft, snapshot),
+        comparing=_COMPARING.search(question) is not None and page_mentioned(question) is None,
     )
     steps = outcome.steps
     if outcome.stopped == "cost_cap":
