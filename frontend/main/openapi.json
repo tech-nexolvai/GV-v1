@@ -8588,6 +8588,24 @@
             "description": "What the piece is, when it was named (e.g. \"filler\", \"cabinet\").",
             "title": "Kind"
           },
+          "mm": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The millimetres printed with the inches, e.g. `457 mm` for a `457 [18]` label: shown muted beside the value, which is the inches. Null when none was printed.",
+            "title": "Mm"
+          },
+          "not_used": {
+            "default": false,
+            "description": "True when the row is held as a whole: the value is what is stored for the piece, but the check does not use it (the row's reason is the block's `row_reason`).",
+            "title": "Not Used",
+            "type": "boolean"
+          },
           "note": {
             "anyOf": [
               {
@@ -14905,6 +14923,18 @@
             },
             "title": "Pieces",
             "type": "array"
+          },
+          "row_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why the whole row is held (a tall appliance, a split row, stone into pockets, ...), said once for the block in plain words; null when only numbers are held.",
+            "title": "Row Reason"
           },
           "rule": {
             "description": "The plain rule: what the pieces should add up to.",

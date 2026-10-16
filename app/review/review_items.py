@@ -51,6 +51,9 @@ read, or why not: an equal-share label, readers who disagree, GV's markup, no la
 overall with the plain rule, and the walls or field cut only when recorded. From the stored result
 and held readings only; GV's markup is never quoted. Its spot is the row's own: one labelled number
 keeps its close-up, otherwise there is none and the screen shows the row's strip of the page.
+A row held as a whole (a tall appliance, a split row, stone into pockets...) says its reason once
+(`row_reason`, #1413), never on every piece; each piece shows what is stored for it (an inch value,
+or a vendor `mm [in]` label's bracket) tagged not used, or why nothing is, in its own words.
 
 **Status is the result's, not the number's.** Several `number` items of one width result share its
 finding id and its status. Nothing records a decision on one held number yet; when W3/W2 add one,
@@ -59,7 +62,7 @@ each number's own status should be read from it.
 **Reader texts** come from the reading's own record (`reader:<model>:<text>` on the candidate), so
 nothing under `extraction/` is imported (`tests/api/test_no_heavy_work.py`).
 
-Source: issues #1338, #1360, #1386, #1411. Verification: `tests/api/test_review_items.py`,
+Source: issues #1338, #1360, #1386, #1411, #1413. Verification: `tests/api/test_review_items.py`,
 `tests/api/test_review_item_depth.py`, `tests/api/test_review_header_accuracy.py`,
 `tests/api/test_review_item_what_to_check.py`.
 """
@@ -105,6 +108,7 @@ from units.imperial import format_inches, parse_imperial
 from verdict.operands import EvidenceStatus
 from verdict.outcomes import Outcome
 from vocabulary.cabinet_categories import CABINET_CATEGORY_LABELS, CabinetCategory
+from vocabulary.check_holds import NO_STONE_NOTE
 from vocabulary.reviewer_reasons import finding_reviewer_reason, reviewer_reason
 from vocabulary.setting_names import setting_name
 from vocabulary.wall_layouts import wall_case_words
@@ -318,6 +322,20 @@ class PieceToCheckOut(BaseModel):
             "Null for a confirmed reading."
         ),
     )
+    mm: str | None = Field(
+        default=None,
+        description=(
+            "The millimetres printed with the inches, e.g. `457 mm` for a `457 [18]` label: shown "
+            "muted beside the value, which is the inches. Null when none was printed."
+        ),
+    )
+    not_used: bool = Field(
+        default=False,
+        description=(
+            "True when the row is held as a whole: the value is what is stored for the piece, but "
+            "the check does not use it (the row's reason is the block's `row_reason`)."
+        ),
+    )
 
 
 class WhatToCheckOut(BaseModel):
@@ -326,6 +344,13 @@ class WhatToCheckOut(BaseModel):
     Nothing here is worked out: no sum, no verdict. It lists what the row's records say.
     """
 
+    row_reason: str | None = Field(
+        default=None,
+        description=(
+            "Why the whole row is held (a tall appliance, a split row, stone into pockets, ...), "
+            "said once for the block in plain words; null when only numbers are held."
+        ),
+    )
     pieces: list[PieceToCheckOut] = Field(default_factory=list)
     overall: str | None = Field(
         default=None, description='The printed overall the check stored, e.g. `96"`; else null.'
@@ -1659,7 +1684,10 @@ def unread_reason(candidate: object, what: str = "this piece") -> str:
 
     GV's markup is named, never quoted; reader texts are quoted only when the record is positively
     the vendor's one label (`vendor_ink_only`, the same rule as the best guess)."""
-    flags = _flags(candidate)
+    return _unread_reason(_flags(candidate), getattr(candidate, "review_reason", None), what)
+
+
+def _unread_reason(flags: list[str], review_reason: str | None, what: str) -> str:
     if under_gv_markup(flags):
         return "under GV markup — check by hand"
     if "no-label" in flags:
@@ -1686,7 +1714,7 @@ def unread_reason(candidate: object, what: str = "this piece") -> str:
         shown = " vs ".join(f'{format_inches(value)}"' for value in distinct)
         return f"two readers disagree: {shown}"
     return plain_why(
-        reviewer_reason(flags, getattr(candidate, "review_reason", None)),
+        reviewer_reason(flags, review_reason),
         "the AI could not read it — check by hand",
     )
 
@@ -1702,6 +1730,135 @@ def _held_piece(candidate: object, position: int | None, kind: str | None) -> Pi
             + ("" if position is not None else ": no place recorded"),
         )
     note = unread_reason(candidate)
+    if position is None:
+        note = f"its place on the row was not recorded; {note}"
+    return PieceToCheckOut(position=position, kind=kind, note=note)
+
+
+#: A vendor label printed as millimetres with the inches in brackets: `457 [18]`, `622 mm [24 1/2"]`.
+#: The inches are the value; the millimetres are shown muted beside it.
+_MM_WITH_INCHES = re.compile(
+    r"^\s*(?P<mm>\d+(?:\.\d+)?)\s*(?:mm)?\s*\[\s*(?P<inches>[^\]]+?)\s*\]\s*$", re.IGNORECASE
+)
+
+#: Flags about the whole row, never one piece's own reason: under a row-level hold they would
+#: repeat the row's words on every piece (#1413).
+_ROW_LEVEL_FLAGS: Final = frozenset(
+    {
+        "row-partial",
+        "incomplete-row",
+        "row-ambiguous",
+        "row-choice-disagreement",
+        "wall-layout-needed",
+        "budget-not-asked",
+    }
+)
+
+#: A row hold's words for the block, where the stored words are not plain enough on their own.
+_ROW_HOLD_WORDS: Final = {
+    "counter-break": (
+        "This line includes a tall appliance (fridge or range), so it may measure wall to wall, "
+        "not the countertop."
+    ),
+}
+_PIECES_NOT_USED: Final = "The pieces below are not used for the check."
+
+
+def _row_level_hold(result: CountertopResultOut) -> bool:
+    """Whether the row is held as a whole (not only its numbers): its pieces are not used."""
+    return result.hold is not None and result.hold.code != _NUMBER_LEVEL_HOLD
+
+
+def row_hold_reason(result: CountertopResultOut) -> str | None:
+    """A row-level hold in plain words, said once for the block; None when only numbers are held."""
+    hold = result.hold
+    if hold is None or not _row_level_hold(result):
+        return None
+    words = _ROW_HOLD_WORDS.get(hold.code)
+    if words is None:
+        words = plain_why(hold.reason, "This row is held as a whole, so it is checked by hand.")
+        words = words if words.endswith((".", "!", "?")) else f"{words}."
+    elif NO_STONE_NOTE in (hold.reason or ""):
+        words = f"{words} {NO_STONE_NOTE}"
+    return f"{words} {_PIECES_NOT_USED}"
+
+
+def _label_inches(text: str) -> tuple[Fraction, str | None] | None:
+    """A vendor label's inches: the bracket of `mm [in]` (with the mm), or a number with an inch
+    mark. None for anything else: a bare `457` may be millimetres, and a combined label holds
+    several pieces."""
+    if _EQUAL_SHARES.search(text) or _SUMMED.search(text):
+        return None
+    paired = _MM_WITH_INCHES.match(text)
+    if paired is not None:
+        inches = _parsed(paired["inches"])
+        return None if inches is None else (inches, f"{paired['mm']} mm")
+    cleaned = text.strip()
+    if cleaned.endswith('"') or cleaned.casefold().endswith(" in"):
+        value = _parsed(cleaned)
+        return None if value is None else (value, None)
+    return None
+
+
+def _row_piece_reason(flags: list[str], review_reason: str | None, what: str) -> str:
+    """Why a piece of a row held as a whole shows no value: its own reason, never the row's."""
+    texts = [text for _source, text in reader_texts(flags)]
+    if (
+        under_gv_markup(flags)
+        or "no-label" in flags
+        or not vendor_ink_only(flags)
+        or any(_EQUAL_SHARES.search(text) or _SUMMED.search(text) for text in texts)
+    ):
+        return _unread_reason(flags, review_reason, what)
+    if not texts:
+        if "one-reader-missing" in flags:
+            return f"only one AI reader ran, and no number was recorded for {what}"
+        return f"no number was recorded for {what}"
+    labels = [found[0] for text in texts if (found := _label_inches(text)) is not None]
+    distinct = list(dict.fromkeys(labels))
+    if len(distinct) >= 2:
+        return "two readers disagree: " + " vs ".join(f'{format_inches(v)}"' for v in distinct)
+    shown = " / ".join(dict.fromkeys(texts))
+    return f"written as {shown} — no inch value to show, check by hand"
+
+
+def _row_held_piece(candidate: object, position: int | None, kind: str | None) -> PieceToCheckOut:
+    """A held piece of a row held as a whole: what is stored for it, tagged not used, or why
+    nothing is. GV's markup is never shown (`vendor_ink_only`)."""
+    flags = [
+        flag
+        for flag in _flags(candidate)
+        if not flag.startswith(("row-hold:", "check-hold:")) and flag not in _ROW_LEVEL_FLAGS
+    ]
+    place = None if position is not None else "no place recorded"
+    if vendor_ink_only(flags):
+        texts = [text for _source, text in reader_texts(flags)]
+        labels = [_label_inches(text) for text in texts]
+        stored = stored_inches(candidate)
+        value: Fraction | None = None
+        if stored is not None:
+            value = stored
+        elif labels and all(found is not None for found in labels):
+            distinct = {found[0] for found in labels if found is not None}
+            value = next(iter(distinct)) if len(distinct) == 1 else None
+        if value is not None:
+            mm = next(
+                (
+                    found[1]
+                    for found in labels
+                    if found is not None and found[0] == value and found[1]
+                ),
+                None,
+            )
+            return PieceToCheckOut(
+                position=position,
+                kind=kind,
+                value=f'{format_inches(value)}"',
+                mm=mm,
+                not_used=True,
+                note=place,
+            )
+    note = _row_piece_reason(flags, getattr(candidate, "review_reason", None), "this piece")
     if position is None:
         note = f"its place on the row was not recorded; {note}"
     return PieceToCheckOut(position=position, kind=kind, note=note)
@@ -1723,6 +1880,8 @@ def what_to_check(result: CountertopResultOut, held: Sequence[object]) -> WhatTo
         else:
             by_slot.setdefault(position, candidate)
     pieces = {piece.index: piece for piece in result.pieces}
+    row_held = _row_level_hold(result)
+    held_piece = _row_held_piece if row_held else _held_piece
     lines: list[PieceToCheckOut] = []
     for index in sorted(set(pieces) | set(by_slot)):
         piece = pieces.get(index)
@@ -1731,11 +1890,17 @@ def what_to_check(result: CountertopResultOut, held: Sequence[object]) -> WhatTo
             None if candidate is None else _flag_kind(candidate)
         )
         if candidate is not None:
-            lines.append(_held_piece(candidate, index + 1, kind))
+            lines.append(held_piece(candidate, index + 1, kind))
         elif piece is not None and piece.value is not None:
             note = "typed by a person" if piece.source == "typed" else None
             lines.append(
-                PieceToCheckOut(position=index + 1, kind=kind, value=piece.value.display, note=note)
+                PieceToCheckOut(
+                    position=index + 1,
+                    kind=kind,
+                    value=piece.value.display,
+                    note=note,
+                    not_used=row_held,
+                )
             )
         else:
             lines.append(
@@ -1743,7 +1908,7 @@ def what_to_check(result: CountertopResultOut, held: Sequence[object]) -> WhatTo
                     position=index + 1, kind=kind, note="nothing was read for this piece"
                 )
             )
-    lines.extend(_held_piece(candidate, None, _flag_kind(candidate)) for candidate in unplaced)
+    lines.extend(held_piece(candidate, None, _flag_kind(candidate)) for candidate in unplaced)
 
     overall = None if result.printed_overall is None else result.printed_overall.display
     overall_note = None
@@ -1773,6 +1938,7 @@ def what_to_check(result: CountertopResultOut, held: Sequence[object]) -> WhatTo
             else f"Field cut recorded: {cut} at each of {count} {'end' if count == 1 else 'ends'}."
         )
     return WhatToCheckOut(
+        row_reason=row_hold_reason(result),
         pieces=lines,
         overall=overall,
         overall_note=overall_note,
