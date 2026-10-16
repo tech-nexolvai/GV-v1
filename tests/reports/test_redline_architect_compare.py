@@ -211,6 +211,9 @@ def test_the_draft_reads_the_live_compare(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(
         draft_cloud_render, "ARCHITECT_COMPARE_MODULE", "tests_stub_architect_compare"
     )
+    # The old compare only, switched on: no AI page review on this revision.
+    monkeypatch.setattr(draft_cloud_render, "AI_REVIEW_MODULE", "app.review.no_such_mod")
+    monkeypatch.setattr(draft_cloud_render, "old_compare_switched_on", lambda: True)
 
     architect, agreed = draft_cloud_render.architect_compare_for_draft(
         None, revision_id  # type: ignore[arg-type]

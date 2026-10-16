@@ -15,10 +15,11 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from io import BytesIO
+from typing import Final
 from uuid import UUID
 
 from pypdf import PdfReader, PdfWriter
@@ -41,6 +42,7 @@ from app.review.reviewer_marks import FrozenReviewerMarks
 from evidence.coordinates import PageTransform
 from reports.redline import (
     NOT_CHECKED,
+    AiReviewCounts,
     ArchitectAnswer,
     ArchitectCompare,
     ArchitectCompareCounts,
@@ -63,6 +65,7 @@ from workflow.changed_values import ChangedValues
 __all__ = [
     "NOT_CHECKED",
     "RedlineOutput",
+    "ai_review_input",
     "architect_compare_input",
     "redline_marks",
     "render_draft_redline",
@@ -102,6 +105,8 @@ _ANSWERS: dict[str, ArchitectAnswer] = {
     "vendor_wrong": ArchitectAnswer.AGREED,
     "not_a_difference": ArchitectAnswer.NOT_A_DIFFERENCE,
     "not_different": ArchitectAnswer.NOT_A_DIFFERENCE,
+    # The AI page review's actions on a "different" row (`air:<id>`).
+    "not_this": ArchitectAnswer.NOT_A_DIFFERENCE,
 }
 
 
@@ -191,6 +196,94 @@ def architect_compare_input(
         ),
         tuple(marks),
     )
+
+
+#: The AI page review's results, as `AiReviewCounts` adds them up ("unreadable" is unsure).
+_AI_RESULTS: Final[dict[str, str]] = {
+    "same": "same",
+    "different": "different",
+    "not_shown": "not_shown",
+    "unsure": "unsure",
+    "unreadable": "unsure",
+}
+
+
+def _sequence(value: object) -> list[object]:
+    """A list field of a backend value (a list or a tuple), or empty when it has none."""
+    return list(value) if isinstance(value, list | tuple) else []
+
+
+def ai_review_input(review: object) -> tuple[ArchitectCompare | None, tuple[ReviewerMark, ...]]:
+    """The AI page review (`app/review/ai_review.ai_review_for_revision`'s `AiReviewOut`, or the
+    copy frozen at sign-off) as the renderer draws it, and the marks of a person who agreed.
+
+    `None` when no page has a row, so nothing about it is printed. Each "different" row is clouded
+    at its `vendor_box` with "✗ Architect: X — vendor: Y (what it measures)"; "Agree: the vendor is
+    wrong" keeps the cloud and adds the person's mark; "Not a difference" is listed, not clouded;
+    a row with no `vendor_box` is listed with its page and words. The counts line is added up from
+    the rows themselves, so it always matches what is listed. An unknown result or answer is
+    refused, never dropped.
+    """
+    pages = _sequence(None if review is None else _field(review, "pages"))
+    rows: list[tuple[object, object]] = [
+        (_field(page, "page"), row) for page in pages for row in _sequence(_field(page, "rows"))
+    ]
+    if not rows:
+        return None, ()
+    totals = dict.fromkeys(("same", "different", "not_shown", "unsure"), 0)
+    different: list[ArchitectDifference] = []
+    marks: list[ReviewerMark] = []
+    for page, row in rows:
+        result = _field(row, "result")
+        result = str(getattr(result, "value", result))
+        if result not in _AI_RESULTS:
+            raise ValueError(f"unknown result on an AI page review row: {result!r}")
+        totals[_AI_RESULTS[result]] += 1
+        if result != "different":
+            continue
+        subject = f"Page {page}"
+        place, reason = _vendor_place(_field(row, "vendor_box"))
+        said = _field(row, "answer")
+        answer = None if said is None else _ANSWERS.get(str(getattr(said, "value", said)))
+        if said is not None and answer is None:
+            raise ValueError(f"unknown answer on an AI page review row: {said!r}")
+        who = _field(row, "answered_by")
+        measures = _field(row, "measures")
+        difference = ArchitectDifference(
+            architect_text=str(_field(row, "architect_text") or "not read"),
+            vendor_text=str(_field(row, "vendor_text") or "not read"),
+            subject=subject,
+            evidence_ref=place,
+            unplaced_reason=reason,
+            answer=answer,
+            answered_by=None if who is None else str(who),
+            measures=measures if isinstance(measures, str) and measures.strip() else None,
+        )
+        different.append(difference)
+        if answer is ArchitectAnswer.AGREED:
+            marks.append(
+                ReviewerMark(
+                    kind=ReviewerMarkKind.CONFIRMED,
+                    words=f"Agreed by {who}: vendor is wrong",
+                    subject=f"Compared with the architect (AI read), {subject}",
+                    details=(difference.words,),
+                    evidence_ref=place,
+                    unplaced_reason=reason,
+                )
+            )
+    return (
+        ArchitectCompare(counts=AiReviewCounts(**totals), different=tuple(different)),
+        tuple(marks),
+    )
+
+
+def compare_for_render(
+    ai_review: tuple[ArchitectCompare | None, tuple[ReviewerMark, ...]],
+    direct: Callable[[], tuple[ArchitectCompare | None, tuple[ReviewerMark, ...]]],
+) -> tuple[ArchitectCompare | None, tuple[ReviewerMark, ...]]:
+    """One compare per drawing, never both, so a dimension is never clouded twice: the AI page
+    review when it has rows, else the direct compare (`direct`, called only then)."""
+    return ai_review if ai_review[0] is not None else direct()
 
 
 def _printed_not_checked(finding: RedlineFinding) -> RedlineFinding:
