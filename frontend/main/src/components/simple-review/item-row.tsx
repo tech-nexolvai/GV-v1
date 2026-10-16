@@ -7,12 +7,13 @@ import { detailId, placeWord } from '@/lib/review-items';
 import { PageTag, StatusWord } from './words';
 
 /** What the guess column says when the AI has no number to offer. */
-function noGuessWord(item: Pick<ReviewItem, 'kind' | 'status'>): string {
+function noGuessWord(item: Pick<ReviewItem, 'kind' | 'status' | 'cabinet_proposal'>): string {
   if (item.status === 'done') return '';
   if (item.kind === 'wall_choice') return 'Your choice';
   if (item.kind === 'no_countertop_page') return 'Confirm the page';
   if (item.kind === 'architect') return 'Your answer';
   if (item.kind === 'cabinet_kinds') return 'Your marks';
+  if (item.kind === 'cabinet_run') return item.cabinet_proposal?.runs?.length ? 'Read by the AIs' : 'Enter by hand';
   return 'Check by hand';
 }
 

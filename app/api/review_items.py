@@ -41,7 +41,13 @@ from app.api.architect_matches import pick_architect_view
 from app.api.company_settings import ProjectValueIn, may_save_project, store_project_values
 from app.api.confirmations import _candidate_crop_artifact, _verified_crop_content
 from app.api.dependencies import get_artifact_store, get_session
-from app.api.measurements import checks_pending, queue_recheck
+from app.api.measurements import (
+    _declared_inputs,
+    _published_rules,
+    _store,
+    checks_pending,
+    queue_recheck,
+)
 from app.api.review import _refuse
 from app.api.signed_off import open_revision
 from app.api.slot_rows import (
@@ -60,6 +66,7 @@ from app.auth import Action, Principal, require_action, require_project_access
 from app.models import Package, PackageRevision
 from app.models.review import ReviewActionKind
 from app.review import review_item_actions as actions
+from app.review.cabinet_run_answer import CabinetRunRefused, cabinet_run_answer
 from app.review.evidence_actions import (
     HeldReadingRefusal,
     HeldReadingRefused,
@@ -67,13 +74,17 @@ from app.review.evidence_actions import (
     correct_candidate_reading,
 )
 from app.review.review_items import (
+    CABINET_RULE,
+    CABINET_TYPE_INPUT,
     ReviewItemOut,
     ReviewItemsOut,
     parsed_inches,
     review_items_for_revision,
 )
 from app.schemas.architect_matches import ArchitectViewPickIn
+from rules.parameters import ParameterLayer, Provenance
 from storage.store import ArtifactStore
+from workflow.classifications import record_classifications
 
 router = APIRouter(tags=["simple review"])
 
@@ -214,7 +225,11 @@ def answer_review_item(
         raise _http(refused) from refused
 
     sitting_id: UUID | None = None
-    if kind == "cabinet_kinds":
+    if kind == "cabinet_run":
+        if not isinstance(entry, ReviewItemOut):  # pragma: no cover - the kind is an item's
+            raise _unprocessable("This item has no cabinet run to use.")
+        recorded = _answer_cabinet_run(session, principal, project_id, revision, entry, body)
+    elif kind == "cabinet_kinds":
         if not isinstance(entry, ReviewItemOut):  # pragma: no cover - the kind is an item's
             raise _unprocessable("This item has no cabinets to mark.")
         recorded = _answer_cabinets(session, principal, revision, entry, body)
@@ -423,6 +438,63 @@ def _answer_cabinets(
         f"Marked {len(marks)} cabinets: {keeps} keep their width, {len(marks) - keeps} can be "
         "resized. The cabinet check runs again with them."
     )
+
+
+def _answer_cabinet_run(
+    session: Session,
+    principal: Principal,
+    project_id: UUID,
+    revision: PackageRevision,
+    entry: ReviewItemOut,
+    body: actions.ReviewItemActionIn,
+) -> str:
+    """A proposed cabinet run used (cabinets e2e): the vendor's fillers and cabinets as two AIs read
+    them, each cabinet's mark and the site wall-to-wall, stored where `CAB-FILLER-001` reads them
+    (the RUN set Measurements stores, `app/api/measurements.py:_store`; the marks through
+    `workflow/classifications.py`), and one coalesced re-check. All or nothing."""
+    published = _published_rules(session)
+    try:
+        answer = cabinet_run_answer(
+            entry.cabinet_proposal,
+            body.cabinet_run,
+            offered=[choice.category for choice in entry.cabinet_choices],
+            declared=set(_declared_inputs(published)),
+        )
+    except CabinetRunRefused as refused:
+        raise HTTPException(status_code=refused.status_code, detail=refused.detail) from refused
+    try:
+        _store(
+            session,
+            project_id=project_id,
+            layer=ParameterLayer.RUN,
+            values=answer.values,
+            typed=answer.typed,
+            actor=principal.id,
+            carry_forward=True,
+            package_revision_id=revision.id,
+            sources={
+                key: (Provenance.MEASURED, reference)
+                for key, reference in answer.references.items()
+            },
+        )
+        record_classifications(
+            session,
+            package_revision_id=revision.id,
+            rule_id=CABINET_RULE,
+            input_name=CABINET_TYPE_INPUT,
+            categories=answer.categories,
+            confirmed_by=principal.id,
+        )
+        session.flush()
+        queue_recheck(session, revision)
+        session.commit()
+    except HTTPException:
+        session.rollback()
+        raise
+    except Exception as error:
+        session.rollback()
+        raise _refuse(error) from error
+    return answer.summary
 
 
 def _check_depth_picture(

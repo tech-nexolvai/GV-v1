@@ -58,6 +58,7 @@ __all__ = [
     "bala_cabinet_prefill_configuration",
     "build_package_text",
     "build_stages",
+    "cabinet_ai_reading_configuration",
     "carry_forward",
     "consume",
     "cut_part_pictures",
@@ -94,6 +95,9 @@ BALA_AUTO_ITEMS_VARIABLE = "GV_BALA_AUTO_ITEMS"
 BALA_CABINET_PREFILL_VARIABLE = "GV_BALA_CABINET_PREFILL"
 #: The five depth and sink checks per countertop row on two judgments (#1390). Off by default.
 DEPTH_PER_ROW_VARIABLE = "GV_DEPTH_PER_ROW"
+#: A cabinet package read by the same AI readers as a countertop package (cabinets e2e), so the
+#: cabinet run can be proposed from its widths. Off by default: reading costs money (#1205).
+CABINET_AI_READING_VARIABLE = "GV_CABINET_AI_READING"
 
 #: The settings the line-work reader and the dimension-line detector take (`AssociationSettings`).
 #: Required for the same reason as the rest: each decides which strokes a reading may attach to,
@@ -253,6 +257,20 @@ def depth_per_row_configuration() -> bool:
     and sink reader on (`GV_DEPTH_READER`).
     """
     return _switched_on(DEPTH_PER_ROW_VARIABLE)
+
+
+def cabinet_ai_reading_configuration() -> bool:
+    """Whether a cabinet package is read by the AI readers like a countertop package
+    (`GV_CABINET_AI_READING`, cabinets e2e).
+
+    Off unless switched on. Off, a cabinet package is not read (#1205, `AI_READING_SKIPPED`). On,
+    the same form and slot readers read it, with the same budget and seals, so its rows' widths can
+    be proposed as the cabinet run for a person to confirm (`app/review/cabinet_run_proposal.py`).
+    It changes no question the readers ask; it only stops skipping the package. It is a paid
+    reading (about what a countertop package of the same pages costs), so switching it on is
+    Anant's call.
+    """
+    return _switched_on(CABINET_AI_READING_VARIABLE)
 
 
 def bala_cabinet_prefill_configuration() -> bool:
@@ -501,6 +519,8 @@ def build_stages(
         bala_auto_items=bala_auto_items_configuration(),
         # Off unless GV_BALA_CABINET_PREFILL: "cabinet" pre-filled from one printed tag (#1266).
         bala_cabinet_prefill=bala_cabinet_prefill_configuration(),
+        # Off unless GV_CABINET_AI_READING: a cabinet package read like a countertop package.
+        cabinet_ai_reading=cabinet_ai_reading_configuration(),
         # Off unless GV_DEPTH_READER: each countertop's plan and section views read (#1290).
         depth_reader=depth_reader_configuration(),
         # Off unless GV_DEPTH_PER_ROW: the five depth checks per countertop row (#1390).

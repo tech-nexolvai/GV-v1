@@ -177,6 +177,8 @@ def _expected_synthetic_arguments() -> dict[str, object]:
         "bala_auto_items": False,
         # "Cabinet" pre-filled from one printed tag (#1266): off unless GV_BALA_CABINET_PREFILL.
         "bala_cabinet_prefill": False,
+        # A cabinet package read like a countertop package: off unless GV_CABINET_AI_READING.
+        "cabinet_ai_reading": False,
         "depth_reader": False,
         # The five depth checks per countertop row on two judgments (#1390): off unless
         # GV_DEPTH_PER_ROW.
@@ -219,6 +221,8 @@ def _expected_minimal_arguments() -> dict[str, object]:
         "part_finder": None,
         "bala_auto_items": False,
         "bala_cabinet_prefill": False,
+        # A cabinet package read like a countertop package: off unless GV_CABINET_AI_READING.
+        "cabinet_ai_reading": False,
         "depth_reader": False,
         # The five depth checks per countertop row on two judgments (#1390): off unless
         # GV_DEPTH_PER_ROW.

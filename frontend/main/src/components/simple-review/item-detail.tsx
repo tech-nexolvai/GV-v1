@@ -12,6 +12,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { ArchitectChoices } from './architect-choices';
 import { CabinetKinds } from './cabinet-kinds';
+import { CabinetRun } from './cabinet-run';
 import { FixDialog } from './fix-dialog';
 import { PagePicture, PictureUnavailable, ZoomPicture } from './item-pictures';
 import type { SaveError } from './failures-strip';
@@ -160,8 +161,9 @@ export function ItemDetail({
   const walls = item.kind === 'wall_choice';
   const architect = item.kind === 'architect';
   const cabinets = item.kind === 'cabinet_kinds';
+  const cabinetRun = item.kind === 'cabinet_run';
   // A wall, architect or cabinet question is answered by its own choices; no agree or disagree button.
-  const cards = walls || architect || cabinets;
+  const cards = walls || architect || cabinets || cabinetRun;
   const agree = cards ? null : agreeAction(item);
   const disagree = cards ? null : disagreeAction(item);
   const saving = busy !== null;
@@ -170,7 +172,9 @@ export function ItemDetail({
     <div id={detailId(item.key)} data-slot="item-detail" className="flex flex-col gap-6 border-t border-border bg-muted/30 px-4 pt-5 pb-6 sm:px-6 sm:pl-[3.25rem]">
       {/* A cabinet run is entered on Measurements: it has no spot on a page to picture. */}
       {!cabinets && <Evidence item={item} />}
-      {cabinets ? (
+      {cabinetRun ? (
+        <CabinetRun key={`${item.key}:${item.status}`} item={item} busy={busy !== null} onUse={(answer) => onAct('use_cabinet_run', { cabinet_run: answer })} />
+      ) : cabinets ? (
         <CabinetKinds key={`${item.key}:${item.status}`} item={item} busy={busy !== null} onSave={(kinds) => onAct('mark_cabinets', { cabinet_kinds: kinds })} />
       ) : walls ? (
         <WallChoices item={item} busy={busy !== null} saving={sending?.wall_config ?? null} onChoose={(layout) => onAct('choose_wall', { wall_config: layout })} />

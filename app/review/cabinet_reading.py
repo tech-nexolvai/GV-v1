@@ -29,6 +29,10 @@ the page manifest and the drawing's own text, the drawing roles and the architec
 by code (they decide which side a reviewer's labelled reading is on), and the part suggestions a
 person confirms on Measurements (a confirmed run gives `CAB-FILLER-001` its vendor lists).
 
+**Unless `GV_CABINET_AI_READING` is on** (cabinets e2e, off by default because reading is paid):
+then a cabinet package is read by the same readers, and the simple review proposes its cabinet run
+from the widths read (`app/review/cabinet_run_proposal.py`) for a person to confirm.
+
 **Countertop questions are not asked of a cabinet package** (`app/review/no_countertop.py`): a page
 listed with no countertop never blocks its sign-off, including on a package read before this change.
 

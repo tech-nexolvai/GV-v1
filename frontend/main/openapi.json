@@ -2285,6 +2285,238 @@
         "title": "CabinetRowOut",
         "type": "object"
       },
+      "CabinetRunIn": {
+        "additionalProperties": false,
+        "description": "`use_cabinet_run`: the run chosen, what each piece is, and the site wall-to-wall.",
+        "properties": {
+          "pieces": {
+            "description": "One answer per piece, left to right: `filler`, or a `cabinet_choices` category. 409 when the run's pieces changed.",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Pieces",
+            "type": "array"
+          },
+          "row_id": {
+            "description": "The proposed run's `row_id`.",
+            "format": "uuid",
+            "title": "Row Id",
+            "type": "string"
+          },
+          "site_width": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The site wall-to-wall, measured on site, in inches (e.g. `75 1/2\"`). Required unless one is already saved (`cabinet_proposal.site_width`).",
+            "title": "Site Width"
+          }
+        },
+        "required": [
+          "row_id",
+          "pieces"
+        ],
+        "title": "CabinetRunIn",
+        "type": "object"
+      },
+      "CabinetRunNotProposedOut": {
+        "description": "A vendor row that was read but not proposed, and why (never silent).",
+        "properties": {
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "row_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Id"
+          },
+          "why": {
+            "title": "Why",
+            "type": "string"
+          }
+        },
+        "required": [
+          "page",
+          "why"
+        ],
+        "title": "CabinetRunNotProposedOut",
+        "type": "object"
+      },
+      "CabinetRunOut": {
+        "description": "One vendor row whose every width two AIs read alike and code checked.",
+        "properties": {
+          "architect_note": {
+            "description": "What the architect's drawings give for this run.",
+            "title": "Architect Note",
+            "type": "string"
+          },
+          "checks": {
+            "description": "What code checked, in plain words.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Checks",
+            "type": "array"
+          },
+          "page": {
+            "description": "1-based vendor page.",
+            "title": "Page",
+            "type": "integer"
+          },
+          "pieces": {
+            "items": {
+              "$ref": "#/components/schemas/CabinetRunPieceOut"
+            },
+            "title": "Pieces",
+            "type": "array"
+          },
+          "row_id": {
+            "description": "The row's first piece reading; sent back to use this run.",
+            "format": "uuid",
+            "title": "Row Id",
+            "type": "string"
+          },
+          "total": {
+            "$ref": "#/components/schemas/ExactValueOut",
+            "description": "The pieces added up: the run as the vendor drew it."
+          },
+          "vendor_ref": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RowLocation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "row_id",
+          "page",
+          "pieces",
+          "total",
+          "checks",
+          "architect_note"
+        ],
+        "title": "CabinetRunOut",
+        "type": "object"
+      },
+      "CabinetRunPieceOut": {
+        "description": "One piece of a proposed run, left to right, as two AIs read its printed width.",
+        "properties": {
+          "candidate_id": {
+            "description": "The sealed reading this width comes from.",
+            "format": "uuid",
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "position": {
+            "description": "1-based place on the row, left to right.",
+            "title": "Position",
+            "type": "integer"
+          },
+          "printed": {
+            "description": "The label as printed, e.g. `610 [24]`.",
+            "title": "Printed",
+            "type": "string"
+          },
+          "printed_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the vendor's own printed word names it (`filler`, `cabinet`, `appliance_space`), or null when nothing printed names it. Never from its width or its place.",
+            "title": "Printed Kind"
+          },
+          "proposed": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Pre-selected answer: `filler` only where the vendor printed \"Filler\".",
+            "title": "Proposed"
+          },
+          "width": {
+            "$ref": "#/components/schemas/ExactValueOut",
+            "description": "The sealed width, exact inches."
+          }
+        },
+        "required": [
+          "position",
+          "width",
+          "printed",
+          "candidate_id"
+        ],
+        "title": "CabinetRunPieceOut",
+        "type": "object"
+      },
+      "CabinetRunProposalOut": {
+        "description": "The runs a person may use for the cabinet check, and the rows that could not be used.",
+        "properties": {
+          "not_proposed": {
+            "items": {
+              "$ref": "#/components/schemas/CabinetRunNotProposedOut"
+            },
+            "title": "Not Proposed",
+            "type": "array"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why nothing is proposed; null when a run is proposed.",
+            "title": "Note"
+          },
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/CabinetRunOut"
+            },
+            "title": "Runs",
+            "type": "array"
+          },
+          "site_width": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExactValueOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The site wall-to-wall already saved for this check (the client's F_Wall_2_Wall_Dim, measured on site); null until a person enters it."
+          }
+        },
+        "title": "CabinetRunProposalOut",
+        "type": "object"
+      },
       "CalculationTraceOut": {
         "description": "The arithmetic, when arithmetic ran. Mirrors `verdict.trace.CalculationTrace`.",
         "properties": {
@@ -10436,6 +10668,17 @@
             "description": "With `mark_cabinets`: one kind per cabinet shown, left to right (a `cabinet_choices` category). Required; 409 when the run's cabinets changed.",
             "title": "Cabinet Kinds"
           },
+          "cabinet_run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CabinetRunIn"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With `use_cabinet_run`: the proposed run chosen (`row_id`), what each piece is, and the site wall-to-wall in inches. 409 when the run is no longer proposed."
+          },
           "expected_finding_id": {
             "anyOf": [
               {
@@ -10606,12 +10849,23 @@
             "description": "Null when the AI has no guess: the item is then checked by hand, no typing."
           },
           "cabinet_choices": {
-            "description": "`cabinet_kinds` only: the kinds a cabinet may be marked as.",
+            "description": "`cabinet_kinds` and `cabinet_run`: the kinds a cabinet may be marked as.",
             "items": {
               "$ref": "#/components/schemas/CabinetChoiceOut"
             },
             "title": "Cabinet Choices",
             "type": "array"
+          },
+          "cabinet_proposal": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CabinetRunProposalOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`cabinet_run` only: the runs proposed from the AI's stored width readings for a person to confirm, the rows not proposed and why, and the site wall-to-wall saved so far."
           },
           "cabinets": {
             "description": "`cabinet_kinds` only: each cabinet of the run, left to right, to mark.",
@@ -10692,6 +10946,7 @@
               "architect",
               "depth_reading",
               "cabinet_kinds",
+              "cabinet_run",
               "other_result"
             ],
             "title": "Kind",

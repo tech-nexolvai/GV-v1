@@ -1863,6 +1863,7 @@ class DatabaseStages:
         part_finder: AssociationSettings | None = None,
         bala_auto_items: bool = False,
         bala_cabinet_prefill: bool = False,
+        cabinet_ai_reading: bool = False,
         depth_reader: bool = False,
         depth_per_row: bool = False,
         depth_stored_answers: Callable[[Session], StoredAnswerSource] | None = None,
@@ -2058,6 +2059,13 @@ class DatabaseStages:
         if not isinstance(bala_cabinet_prefill, bool):
             raise TypeError("bala_cabinet_prefill must be a bool")
         self._bala_cabinet_prefill = bala_cabinet_prefill
+        # **A cabinet package read like a countertop package (cabinets e2e).** Off unless
+        # `GV_CABINET_AI_READING` is on: the extraction stage then gives a cabinet package to the
+        # same AI readers instead of skipping it (#1205), so its rows' widths can be proposed as
+        # the cabinet run for a person to confirm. Off, nothing changes.
+        if not isinstance(cabinet_ai_reading, bool):
+            raise TypeError("cabinet_ai_reading must be a bool")
+        self._cabinet_ai_reading = cabinet_ai_reading
         # **The depth and sink reader (#1290).** Off unless `GV_DEPTH_READER` is on: `match` then
         # reads each countertop's plan and section views after Bala, and the five depth and sink
         # checks are scoped to each countertop (`workflow/depth_evidence.py`). Off, nothing changes.
@@ -2386,7 +2394,13 @@ class DatabaseStages:
             # views refused, why no view was found — travel with that page's result.
             results = _with_architect_notes(results, architect)
         product = _revision_product(session, package_revision_id)
-        if self._form_reader is not None and product is not None and not ai_reading_used(product):
+        read_anyway = self._cabinet_ai_reading and product is ProductType.CABINET
+        if (
+            self._form_reader is not None
+            and product is not None
+            and not ai_reading_used(product)
+            and not read_anyway
+        ):
             # **A package whose checks include no countertop is not read by the AI (#1205).** The
             # readers ask countertop questions, and no cabinet check can use a reading
             # (`app/review/cabinet_reading.py`). Never silent: the skip is a run of its own on this
