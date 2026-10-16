@@ -54,6 +54,7 @@ __all__ = [
     "MAX_OUTPUT_CHARS",
     "OUTPUTS",
     "SCRATCH",
+    "SET_PACK",
     "SKILLS",
     "TIMEOUT_SECONDS",
     "UPLOADS",
@@ -84,6 +85,8 @@ SCRATCH: Final = "/home/claude"
 OUTPUTS: Final = "/mnt/user-data/outputs"
 #: The GV review skill (read-only), as claude.ai mounts its skills.
 SKILLS: Final = "/mnt/skills/gv-review"
+#: The set pack (`set_pack.py`, read-only): page map, drawings-only copies, page pictures.
+SET_PACK: Final = "/mnt/user-data/set"
 TIMEOUT_SECONDS: Final = 60
 MAX_OUTPUT_CHARS: Final = 20_000
 #: The longest command accepted: a short script, never a file pasted in.
@@ -236,9 +239,13 @@ class ChatWorkspace:
     """One chat's folders (#1463), kept for the whole chat like claude.ai's container: the set's
     PDFs (read-only), the home folder and the outputs folder (writable, kept across turns), and the
     GV review skill (read-only). The chat's `pictures/` and `files/` are beside them and never
-    mounted. `close` keeps everything: a chat's folder outlives a message."""
+    mounted. `close` keeps everything: a chat's folder outlives a message.
+
+    `set_pack` is the set pack's folder (shared by the chats on the same PDFs), seen read-only at
+    `/mnt/user-data/set`; until it exists the chat's own `set-pending/` stands in for it."""
 
     root: Path
+    set_pack: Path | None = None
 
     @property
     def uploads(self) -> Path:
@@ -264,12 +271,43 @@ class ChatWorkspace:
     def files(self) -> Path:
         return self.root / "files"
 
+    @property
+    def set_folder(self) -> Path:
+        """What `/mnt/user-data/set` shows: the pack, or a folder whose `status.json` says it is
+        not ready yet."""
+        if self.set_pack is not None and self.set_pack.is_dir():
+            return self.set_pack
+        pending = self.root / "set-pending"
+        if not (pending / "status.json").is_file():
+            pending.mkdir(parents=True, exist_ok=True)
+            (pending / "status.json").write_text(
+                '{"state": "not_started", "note": "The set pack is not made for this chat."}',
+                encoding="utf-8",
+            )
+        return pending
+
+    def where_hint(self) -> str:
+        """The fix line of a wrong path: where the files really are."""
+        try:
+            names = sorted(
+                child.name for child in self.uploads.iterdir() if not child.name.startswith(".")
+            )
+        except OSError:
+            names = []
+        listed = ", ".join(names[:10]) or "none"
+        return (
+            f"The uploads are at {UPLOADS}: {listed}; the set pack (page_map.json, "
+            f"drawings-only PDFs, page pictures) is at {SET_PACK}/; your folder is {SCRATCH}."
+        )
+
     @classmethod
-    def open(cls, root: Path) -> ChatWorkspace:
+    def open(cls, root: Path, set_pack: Path | None = None) -> ChatWorkspace:
         """The chat's folder, made on first use. The writable folders are open to the sandbox's
         unprivileged user; the others are the server's."""
         root.mkdir(parents=True, exist_ok=True)
-        workspace = cls(root=root.resolve())
+        workspace = cls(
+            root=root.resolve(), set_pack=None if set_pack is None else set_pack.resolve()
+        )
         for folder in (workspace.uploads, workspace.skills, workspace.pictures, workspace.files):
             folder.mkdir(parents=True, exist_ok=True)
         for folder in (workspace.home, workspace.outputs):
@@ -284,13 +322,17 @@ class ChatWorkspace:
             Mount(SCRATCH, self.home, True),
             Mount(OUTPUTS, self.outputs, True),
             Mount(SKILLS, self.skills, False),
+            Mount(SET_PACK, self.set_folder, False),
         )
 
     def close(self) -> None:
         """Nothing to remove: the chat keeps its folder."""
 
     def resolve(self, path: str) -> Path:
-        return _resolve(self.mounts, self.home, path)
+        try:
+            return _resolve(self.mounts, self.home, path)
+        except SandboxRefused as refused:
+            raise SandboxRefused(f"{refused}. {self.where_hint()}") from None
 
     def shown(self, real: Path) -> str:
         return _shown(self.mounts, real)

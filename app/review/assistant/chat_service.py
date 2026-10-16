@@ -28,8 +28,9 @@ import logging
 import os
 import shutil
 import threading
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
+from importlib import import_module
 from pathlib import Path
 from time import monotonic, monotonic_ns
 from typing import Any, Final
@@ -61,7 +62,7 @@ from app.review.assistant.chat_store import (
     recorded_chat_spend,
     stored_chat_spend,
 )
-from app.review.assistant.chat_tools import ChatTools, ResultsLoader
+from app.review.assistant.chat_tools import MAX_AGENTS, ChatTools, ResultsLoader
 from app.review.assistant.chat_unknowns import asks_for_the_rest, last_unknowns, work_list_note
 from app.review.assistant.sandbox import UPLOADS, ChatWorkspace, Sandbox, safe_file_name
 from app.runs.rates import ModelRates
@@ -317,6 +318,23 @@ def sync_uploads(
     return wanted, True
 
 
+def start_set_pack(
+    workspace: ChatWorkspace, chat_root: Path, listing: Sequence[Mapping[str, Any]]
+) -> ChatWorkspace:
+    """The chat's workspace with its set pack (`set_pack.py`), whose building starts in the
+    background when it is not made yet: the message never waits for it."""
+    if not listing:
+        return workspace
+    try:
+        pack = import_module("app.review.assistant.set_pack")
+        folder: Path = pack.pack_folder(chat_root, listing)
+        pack.ensure_pack(folder, workspace.uploads, listing)
+    except Exception as failed:  # noqa: BLE001 - the chat works without the pack
+        _log.warning("assistant set pack could not start: %s", type(failed).__name__)
+        return workspace
+    return replace(workspace, set_pack=folder.resolve())
+
+
 def uploaded_files_text(listing: Sequence[dict[str, Any]], *, changed: bool) -> str:
     """The `<uploaded_files>` block of a chat's first message (and of a message after the set's
     PDFs changed)."""
@@ -433,6 +451,7 @@ class MessageJob:
     results: ResultsLoader | None
     open_sandbox: Callable[[ChatWorkspace], Sandbox | None]
     skill_builder: SkillBuilder | None = None
+    max_parallel_agents: int = MAX_AGENTS
     mode: str = "chat"
     products: tuple[str, ...] | None = None
     """The products picked in the composer, else the set's own (`None`: not stated)."""
@@ -555,6 +574,7 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
         _log.warning("assistant chat could not copy the PDFs: %s", type(failed).__name__)
         stop_with("", "error", _NO_UPLOADS)
         return
+    workspace = start_set_pack(workspace, job.chat_root, listing)
     prepare_skill(workspace, job.factory, job.revision_id, job.skill_builder, job.products)
     sandbox = job.open_sandbox(workspace)
     if sandbox is None:
@@ -628,6 +648,7 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             thinking=job.thinking,
             lead_max_turns=job.lead_max_turns,
             helper_max_turns=job.helper_max_turns,
+            max_parallel_agents=job.max_parallel_agents,
             message_cap_micros=job.message_cap_micros,
             package_cap_micros=job.package_cap_micros,
             rates=job.rates,

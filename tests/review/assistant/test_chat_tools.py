@@ -21,6 +21,7 @@ from app.review.assistant.chat_tools import ChatTools, new_step
 from app.review.assistant.sandbox import (
     OUTPUTS,
     SCRATCH,
+    SET_PACK,
     SKILLS,
     UPLOADS,
     ChatWorkspace,
@@ -60,6 +61,7 @@ def test_the_chat_folder_has_claude_ais_four_folders(workspace: ChatWorkspace) -
         (SCRATCH, True),
         (OUTPUTS, True),
         (SKILLS, False),
+        (SET_PACK, False),
     ]
     assert workspace.home.stat().st_mode & 0o777 == 0o777
     assert workspace.resolve("/mnt/skills/gv-review/SKILL.md") == workspace.skills / "SKILL.md"
@@ -196,6 +198,7 @@ def test_docker_sees_four_folders_with_the_pdfs_and_skill_read_only(
         f"type=bind,source={workspace.home},target={SCRATCH}",
         f"type=bind,source={workspace.outputs},target={OUTPUTS}",
         f"type=bind,source={workspace.skills},target={SKILLS},readonly",
+        f"type=bind,source={workspace.root / 'set-pending'},target={SET_PACK},readonly",
     ]
     joined = " ".join(argv)
     assert "--network none" in joined and "--read-only" in joined and "--memory 2g" in joined
