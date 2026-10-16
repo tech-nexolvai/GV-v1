@@ -22,6 +22,15 @@ function words(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * Whether the server's own reason asks for a check run (`INPUTS_CHANGED_NEEDS_RERUN`, "You changed
+ * inputs after the last check run. Run the checks before signing off."): no count on the page
+ * explains it, so the bar says it and offers the run.
+ */
+function asksForCheckRun(reason: string | null): boolean {
+  return reason !== null && /\brun the checks\b/i.test(reason);
+}
+
 /** The server's words as a sentence, ending with one full stop. */
 function sentence(text: string): string {
   const trimmed = text.trim();
@@ -44,6 +53,7 @@ export function FinalBar({
   revision,
   approved,
   onSigned,
+  onRechecked,
 }: {
   summary: ReviewSummary;
   /** What is left, in words ("9 items need you · 54 not checked"), from the page's W1 header. */
@@ -56,6 +66,8 @@ export function FinalBar({
   approved: boolean;
   /** After a sign-off: the page reloads its lists (every answer is now closed). */
   onSigned: () => void;
+  /** After "Run the checks again" was recorded: the page reloads its lists. */
+  onRechecked?: () => void;
 }) {
   const [signedNow, setSignedNow] = useState(false);
   const [files, setFiles] = useState<SignedFilesStatus | null>(null);
@@ -70,6 +82,8 @@ export function FinalBar({
   const [signing, setSigning] = useState(false);
   const [signError, setSignError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
+  const [asking, setAsking] = useState(false);
+  const [askError, setAskError] = useState<string | null>(null);
   const mounted = useRef(true);
   useEffect(() => {
     // Set again on every mount: StrictMode (the dev server) mounts, unmounts and mounts again (#1394).
@@ -167,6 +181,21 @@ export function FinalBar({
     }
   }
 
+  /** Ask for the checks to run again (the existing `POST …/checks`). */
+  async function runChecks() {
+    if (projectId === null || asking || !api.runChecks) return;
+    setAsking(true);
+    setAskError(null);
+    try {
+      await api.runChecks(projectId, packageId);
+      if (mounted.current) onRechecked?.();
+    } catch (error) {
+      if (mounted.current) setAskError(`The checks could not be asked for: ${sentence(words(error))}`);
+    } finally {
+      if (mounted.current) setAsking(false);
+    }
+  }
+
   async function download() {
     if (projectId === null || downloading) return;
     setDownloading(true);
@@ -260,6 +289,24 @@ export function FinalBar({
         Create final cloud PDF
       </Button>
     );
+  } else if (asksForCheckRun(summary.finalBlocked) && summary.rechecking.length === 0 && api.runChecks) {
+    // The server waits for a check run that no count shows (QA 2026-10-16): its own words, and
+    // the run it asks for. Never "nothing needs you" while sign-off is blocked.
+    icon = <Lock aria-hidden="true" className="size-4 text-muted-foreground" />;
+    headline = left.length > 0 ? left.join(' · ') : 'The checks need to run again.';
+    sub = askError ? <span role="alert">{askError}</span> : summary.finalBlocked;
+    action = (
+      <span className="flex flex-col gap-2 sm:flex-row">
+        <Button variant="outline" onClick={() => void runChecks()} disabled={asking}>
+          {asking ? <Loader2 aria-hidden="true" className="animate-spin motion-reduce:animate-none" /> : <RotateCcw aria-hidden="true" />}
+          Run the checks again
+        </Button>
+        <Button disabled>
+          <FileCheck2 aria-hidden="true" />
+          Create final cloud PDF
+        </Button>
+      </span>
+    );
   } else {
     icon = <Lock aria-hidden="true" className="size-4 text-muted-foreground" />;
     // Plain words with the header's own counts (#1394). The server's sentence is shown only when
@@ -290,7 +337,7 @@ export function FinalBar({
             {sub && <p className={locked || phase.kind === 'error' ? 'text-[13px] leading-5 text-muted-foreground' : 'hidden text-[13px] leading-5 text-muted-foreground sm:block'}>{sub}</p>}
           </div>
         </div>
-        {action && <div className="flex shrink-0 [&>button]:w-full sm:[&>button]:w-auto">{action}</div>}
+        {action && <div className="flex shrink-0 [&>button]:w-full sm:[&>button]:w-auto [&>span]:w-full sm:[&>span]:w-auto [&>span>button]:w-full sm:[&>span>button]:w-auto">{action}</div>}
       </div>
 
       <Dialog open={dialog} onOpenChange={(next) => !signing && setDialog(next)}>

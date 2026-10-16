@@ -212,23 +212,42 @@ class AssistantBudget:
 
 #: Tokens for the API's own framing of a request, on top of what it carries.
 _REQUEST_OVERHEAD_TOKENS: Final = 500
-_TILE_PX: Final = 28
+#: Anthropic's documented picture cost: about width x height / 750 tokens, after the picture is
+#: shrunk to the model's longest side (`page_pictures._MAX_EDGE_PX`).
+_PIXELS_PER_TOKEN: Final = 750
+_MAX_EDGE_PX: Final = 2576
+#: Prompt text is about one token per 3.5 bytes of English and nearer 2.5 for JSON full of ids; one
+#: token per 2 bytes stays an upper bound. One per byte (before QA 2026-10-16) put every page
+#: question over the per-question cap, so the pictures were always dropped.
+_TEXT_BYTES_PER_TOKEN: Final = 2
+
+
+def _text_tokens(text: str) -> int:
+    return -(-len(text.encode("utf-8")) // _TEXT_BYTES_PER_TOKEN)
+
+
+def _picture_tokens(width_px: int, height_px: int) -> int:
+    """About width x height / 750, after shrinking to the longest side the model reads."""
+    longest = max(width_px, height_px, 1)
+    scale = min(Decimal(1), Decimal(_MAX_EDGE_PX) / longest)
+    pixels = Decimal(width_px) * scale * Decimal(height_px) * scale
+    return int(-(-pixels // _PIXELS_PER_TOKEN))
 
 
 def _estimate_micros(
     request: Mapping[str, Any], look: PageLook | None, model_id: str, rates: ModelRates | None
 ) -> int | None:
-    """An upper bound on one call's cost: one token per text byte, each picture's tile count, and
-    the whole output allowance; `None` when the model has no stated price."""
+    """An upper bound on one call's cost: the text at one token per 2 bytes, each picture at its
+    documented pixels / 750, and the whole output allowance; `None` when the model has no price."""
     tokens = _REQUEST_OVERHEAD_TOKENS
     for block in request.get("system") or ():
-        tokens += len(str(block.get("text", "")).encode("utf-8"))
+        tokens += _text_tokens(str(block.get("text", "")))
     for message in request.get("messages") or ():
         for block in message.get("content") or ():
             if isinstance(block.get("text"), str):
-                tokens += len(block["text"].encode("utf-8"))
+                tokens += _text_tokens(block["text"])
     for picture in () if look is None else look.pictures:
-        tokens += -(-picture.width_px // _TILE_PX) * -(-picture.height_px // _TILE_PX)
+        tokens += _picture_tokens(picture.width_px, picture.height_px)
     output = int(request.get("inferenceConfig", {}).get("maxTokens", 0))
     return call_cost_micros(rates, model_id, tokens, output)
 
@@ -524,10 +543,23 @@ def stream_answer(
         )
 
     built = _built(look)
+    left_out_page: int | None = None
+
+    def _noted(answer: AnswerEvent) -> AnswerEvent:
+        """The answer, saying which page's pictures were left out for the cost cap, if any."""
+        if left_out_page is None:
+            return answer
+        return answer.model_copy(
+            update={"not_looked_at_page": left_out_page, "not_looked_at_reason": "cost_cap"}
+        )
+
     if budget is not None:
         estimate = _estimate_micros(built, look, model.model_id, budget.rates)
         if estimate is not None and estimate > budget.question_cap_micros and look is not None:
-            # Over the cap with the pictures: asked about the records (and AI review rows) only.
+            # Over the cap with the pictures: asked about the records (and AI review rows) only,
+            # and the answer says so (never silent).
+            if look.pictures:
+                left_out_page = look.page_number
             look = PageLook(
                 page_number=look.page_number, pictures=(), ai_review_rows=look.ai_review_rows
             )
@@ -546,15 +578,17 @@ def stream_answer(
             yield _stage("guard")
             yield (
                 "answer",
-                _publish_safely(
-                    (
-                        _checked_or_plain(draft, snapshot)
-                        if draft is not None
-                        else Draft(text=BUDGET_TEXT)
-                    ),
-                    snapshot,
-                    mode="records_only" if draft is not None else "disabled",
-                    question=question,
+                _noted(
+                    _publish_safely(
+                        (
+                            _checked_or_plain(draft, snapshot)
+                            if draft is not None
+                            else Draft(text=BUDGET_TEXT)
+                        ),
+                        snapshot,
+                        mode="records_only" if draft is not None else "disabled",
+                        question=question,
+                    )
                 ),
             )
             return
@@ -609,7 +643,7 @@ def stream_answer(
             "review assistant answer could not be checked: %s", type(failed).__name__, extra=log
         )
     else:
-        yield "answer", answer
+        yield "answer", _noted(answer)
         return
     fallback = fallback_answer(
         snapshot,
@@ -619,7 +653,12 @@ def stream_answer(
     )
     yield (
         "answer",
-        _publish_safely(
-            _checked_or_plain(fallback, snapshot), snapshot, mode="records_only", question=question
+        _noted(
+            _publish_safely(
+                _checked_or_plain(fallback, snapshot),
+                snapshot,
+                mode="records_only",
+                question=question,
+            )
         ),
     )

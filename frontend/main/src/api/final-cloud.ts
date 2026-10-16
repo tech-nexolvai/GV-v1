@@ -16,6 +16,7 @@ import {
   listReviewSessions,
   openReviewSession,
   prepareSignedExports,
+  requestChecks,
 } from './client';
 import { carriedNoCountertopConfirmations, carriedWallsDrivingResults, type CarriedWall } from '@/lib/revisions';
 
@@ -42,6 +43,10 @@ export interface FinalCloudApi {
   status: (projectId: string, packageId: string) => Promise<SignedFilesStatus>;
   /** The final cloud PDF (the signed drawing redline). */
   download: (projectId: string, packageId: string) => Promise<Blob>;
+  /** Ask for the checks to run again (the existing `POST …/checks`, with the confirmed
+   * discriminators the server already holds), when the server says inputs changed since the last
+   * run. Resolves once the request is recorded, not when the run is done. */
+  runChecks?: (projectId: string, packageId: string) => Promise<void>;
 }
 
 export const liveFinalCloudApi: FinalCloudApi = {
@@ -76,4 +81,7 @@ export const liveFinalCloudApi: FinalCloudApi = {
     return (await getSignedExports(projectId, packageId)).status;
   },
   download: (projectId, packageId) => downloadRedline(projectId, packageId),
+  async runChecks(projectId, packageId) {
+    await requestChecks(projectId, packageId);
+  },
 };

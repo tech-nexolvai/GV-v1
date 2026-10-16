@@ -166,6 +166,12 @@ class AnswerEvent(BaseModel):
     sources: tuple[str, ...]
     looked_at_page: int | None = None
     """The page whose two drawings the model was shown for this answer (#1431), else `None`."""
+    not_looked_at_page: int | None = None
+    """The page the question was about whose pictures were NOT shown to the model, else `None`
+    (never silent, QA 2026-10-16): the screen says "Answered without looking at page N"."""
+    not_looked_at_reason: Literal["cost_cap"] | None = None
+    """Why `not_looked_at_page` was not looked at: `cost_cap`, the question was over its cost cap
+    with the pictures."""
 
 
 class ErrorEvent(BaseModel):

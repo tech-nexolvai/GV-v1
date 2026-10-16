@@ -31,7 +31,7 @@ function ResultWord({ result }: { result: AiReviewResult }) {
 /** The numbers side by side, in the number face, with what they measure and the page. */
 function Numbers({ row, page }: { row: AiReviewRow; page: number }) {
   return (
-    <span className="block min-w-0 break-words text-[15px] text-foreground">
+    <span className="block min-w-0 text-[15px] text-foreground [overflow-wrap:anywhere]">
       Architect <span className="num">{row.architect_text}</span>
       {row.vendor_text !== null && (
         <>
@@ -54,15 +54,17 @@ function Row({ entry, onLook }: { entry: AiReviewEntry; onLook: (row: AiReviewRo
   const { row, page } = entry;
   const what = aiReviewWhat(row);
   return (
-    <li data-slot="ai-review-row" data-entry-key={row.key} data-result={row.result} tabIndex={-1} className="flex min-h-14 flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2 outline-none focus-visible:bg-accent/60 sm:px-6">
-      <span className="shrink-0 basis-full sm:w-28 sm:basis-auto">
+    // Sized by the section (`@container/air`), not the window: with the Assistant open the section
+    // is narrow on a wide screen. The numbers keep 18rem and drop to their own line (QA 2026-10-16).
+    <li data-slot="ai-review-row" data-entry-key={row.key} data-result={row.result} tabIndex={-1} className="flex min-h-14 flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2 outline-none focus-visible:bg-accent/60 @min-[36rem]/air:px-6">
+      <span className="w-full shrink-0 @min-[40rem]/air:w-28">
         <ResultWord result={row.result} />
       </span>
-      <span className="min-w-0 flex-1">
+      <span data-slot="ai-review-numbers" className="min-w-0 max-w-full grow basis-[18rem]">
         <Numbers row={row} page={page} />
         {row.result !== 'same' && row.why && <NumText text={row.why} className="block text-[13px] leading-5 text-muted-foreground" />}
       </span>
-      <span className="flex min-w-0 shrink-0 flex-wrap items-center gap-1">
+      <span className="ml-auto flex min-w-0 shrink-0 flex-wrap items-center gap-1">
         <Button size="sm" variant="ghost" onClick={() => onLook(row, page)} aria-label={`Look at ${what}, page ${page}`}>
           <FileSearch aria-hidden="true" />
           Look
@@ -157,7 +159,7 @@ export function AiReview({ review, onLook }: { review: AiReviewOut | null; onLoo
     { group: 'not_shown', open: false },
   ];
   return (
-    <section aria-labelledby="ai-review-title" data-slot="ai-review" className="flex min-w-0 flex-col gap-3">
+    <section aria-labelledby="ai-review-title" data-slot="ai-review" className="@container/air flex min-w-0 flex-col gap-3">
       <div className="flex flex-col gap-1">
         <h2 id="ai-review-title" className="text-[20px] leading-7 font-semibold tracking-[-0.01em]">
           Compared with the architect

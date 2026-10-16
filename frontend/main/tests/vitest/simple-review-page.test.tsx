@@ -329,9 +329,11 @@ describe('SimpleReviewPage (#1343)', () => {
     current.header.can_finalise = false;
     current.header.blocked_reason = 'The checks are running again.';
     renderPage({ finalCloud: finalApi() });
-    expect(await screen.findByText('Nothing needs you')).toBeTruthy();
+    // Never "Nothing needs you" while sign-off is blocked (QA 2026-10-16): nothing to answer, and why.
+    expect(await screen.findByText('Nothing to answer, but sign-off is waiting')).toBeTruthy();
+    expect(screen.queryByText('Nothing needs you')).toBeNull();
     expect((screen.getByRole('button', { name: 'Create final cloud PDF' }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText('The checks are running again.')).toBeTruthy();
+    expect(screen.getAllByText('The checks are running again.').length).toBeGreaterThan(0);
   });
 
   it('Draft cloud PDF asks the server, waits while it is made, then downloads it (#1394)', async () => {

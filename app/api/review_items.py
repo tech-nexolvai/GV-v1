@@ -28,7 +28,7 @@ items and numbers are decided.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Annotated, Literal
+from typing import Annotated, Final, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -64,6 +64,7 @@ from app.api.visual_countertops import (
 )
 from app.auth import Action, Principal, require_action, require_project_access
 from app.models import Package, PackageRevision
+from app.models.package import PackageState
 from app.models.review import ReviewActionKind
 from app.review import ai_review
 from app.review import architect_compare as compare
@@ -817,11 +818,57 @@ def _save_job_values(
             [ProjectValueIn(name=entry.name, value=entry.value) for entry in entries],
         )
         queue_recheck(session, revision)
+        others = _queue_project_rechecks(session, project_id, besides=revision.package_id)
         session.commit()
     except Exception:
         session.rollback()
         raise
-    return f"{len(entries)} of this job's values saved on the project; the checks run again."
+    words = f"{len(entries)} of this job's values saved on the project; the checks run again"
+    if others:
+        noun = "package" if others == 1 else "packages"
+        words += f", also on {others} other open {noun} of this project"
+    return words + "."
+
+
+#: A package whose newest revision is in one of these states takes a re-check after the project's
+#: values change: it has been checked and is not closed (signed off, sent back, replaced, cancelled).
+_RECHECKABLE: Final = frozenset(
+    {
+        PackageState.AWAITING_REVIEW.value,
+        PackageState.NEEDS_INPUT.value,
+        PackageState.RUNNING_CHECKS.value,
+        PackageState.GENERATING_OUTPUTS.value,
+    }
+)
+
+
+def _queue_project_rechecks(session: Session, project_id: UUID, *, besides: UUID) -> int:
+    """One coalesced re-check for every other open package of the project (QA 2026-10-16).
+
+    The job's values are saved per PROJECT, so every open package reads them on its next run; one
+    left un-run stays blocked at sign-off ("You changed inputs after the last check run"). Its
+    newest revision only, never a closed one (`app/lifecycle/closed.py`). A package whose confirmed
+    discriminators the rulebook refuses is skipped (its own screen offers the run and says why);
+    the save itself still lands. Returns how many packages were asked."""
+    asked = 0
+    package_ids = session.scalars(
+        select(Package.id).where(Package.project_id == project_id, Package.id != besides)
+    ).all()
+    for package_id in package_ids:
+        newest = session.scalars(
+            select(PackageRevision)
+            .where(PackageRevision.package_id == package_id)
+            .order_by(PackageRevision.revision_number.desc())
+            .limit(1)
+        ).first()
+        if newest is None or newest.state not in _RECHECKABLE:
+            continue
+        try:
+            queue_recheck(session, newest)
+        except HTTPException:
+            continue
+        asked += 1
+    return asked
 
 
 __all__ = ["router"]

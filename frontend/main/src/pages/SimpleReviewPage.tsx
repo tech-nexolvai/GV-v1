@@ -808,7 +808,7 @@ export function SimpleReviewPage({
                     onSelect={(failure) => setActiveKey(failure.key)}
                   />
 
-                  {summary.nothingNeedsYou && pagesAsked.length === 0 && pagesToDecide.length === 0 && <NothingNeedsYou checked={checked.length} signedOff={title?.approved ?? false} />}
+                  {summary.nothingNeedsYou && pagesAsked.length === 0 && pagesToDecide.length === 0 && <NothingNeedsYou checked={checked.length} signedOff={title?.approved ?? false} blocked={summary.finalBlocked} />}
 
                   <PagesChoice
                     pages={pagesAsked}
@@ -875,6 +875,7 @@ export function SimpleReviewPage({
                   revision={title?.revision ?? data.revision_number}
                   approved={title?.approved ?? false}
                   onSigned={reload}
+                  onRechecked={reload}
                 />
               </>
             )}

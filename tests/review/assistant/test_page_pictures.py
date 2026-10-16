@@ -229,7 +229,62 @@ def test_a_question_over_its_cap_is_asked_without_the_pictures() -> None:
     (request,) = model.calls
     assert _images(request) == []
     assert "air:x" in _texts(request), "the AI page review rows still go"
-    assert events[-1][1].looked_at_page is None
+    answer = events[-1][1]
+    assert answer.looked_at_page is None
+    # Never silent (QA 2026-10-16): the answer says it did not look at the page, and why.
+    assert (answer.not_looked_at_page, answer.not_looked_at_reason) == (4, "cost_cap")
+
+
+def test_an_answer_that_looked_at_the_page_says_nothing_was_left_out() -> None:
+    events = _run(
+        "What does the vendor show on page 4?", FakeModel(), FakePictures(), budget=_budget()
+    )
+    answer = events[-1][1]
+    assert (answer.looked_at_page, answer.not_looked_at_page, answer.not_looked_at_reason) == (
+        4,
+        None,
+        None,
+    )
+
+
+def _sized_request(text_bytes: int) -> dict[str, Any]:
+    return {
+        "system": [{"text": "s" * 1000}],
+        "messages": [{"role": "user", "content": [{"text": "r" * text_bytes}]}],
+        "inferenceConfig": {"maxTokens": 1500},
+    }
+
+
+def test_a_picture_is_estimated_at_its_pixels_over_750() -> None:
+    """Anthropic's documented picture cost: about width x height / 750 tokens."""
+    rates = _rates()
+    request = _sized_request(0)
+    picture = PagePicture(role="vendor", png=PNG, width_px=1500, height_px=1000)
+    with_picture = _estimate_micros(
+        request, PageLook(page_number=4, pictures=(picture,)), SONNET, rates
+    )
+    without = _estimate_micros(request, None, SONNET, rates)
+    assert with_picture is not None and without is not None
+    # 1500 * 1000 / 750 = 2000 tokens at $0.002 per 1k = 4000 millionths.
+    assert with_picture - without == 4000
+
+
+def test_a_page_question_with_a_full_records_prompt_keeps_its_pictures_under_the_cap() -> None:
+    """QA 2026-10-16: a page question over a full set's records (~120 KB of prompt text) with two
+    large halves was estimated over the $0.25 cap, so every page question silently lost its
+    pictures. Text is about one token per 3.5 bytes; it is estimated at one per 2 (still an upper
+    bound for JSON with ids), and the real cost is recorded after every call."""
+    rates = _rates()
+    halves = tuple(
+        PagePicture(role=role, png=PNG, width_px=2576, height_px=1600)
+        for role in ("architect", "vendor")
+    )
+    estimate = _estimate_micros(
+        _sized_request(120_000), PageLook(page_number=4, pictures=halves), SONNET, rates
+    )
+    assert estimate is not None
+    assert estimate < 250_000
+    assert estimate > 120_000, "still an upper bound: well over the text's real cost"
 
 
 def test_with_a_budget_many_questions_are_asked_until_it_is_used() -> None:

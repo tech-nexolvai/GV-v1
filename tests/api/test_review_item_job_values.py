@@ -245,3 +245,44 @@ def test_the_list_carries_what_the_job_values_reader_found_beside_each_value(
     assert auto["location"]["polygon"][0] == ["0.1", "0.2"], "Look rings the box"
     plain = found["countertop_overhang"]
     assert (plain["value"], plain["auto"], plain["source"]) == ('1"', False, "drawing")
+
+
+def test_saving_the_jobs_values_queues_a_recheck_for_every_open_package_of_the_project(
+    session: Session, tmp_path: Path
+) -> None:
+    """The values are the PROJECT's, so every open package of it is checked again (QA 2026-10-16):
+    a sibling package that was not re-checked was left blocked with "You changed inputs after the
+    last check run" and no way forward. A signed-off package is closed and is never queued."""
+    from app.models.package import Package, PackageRevision
+
+    project_id, package_id = _held_page(session, tmp_path)
+    client = _client(session, project_id)
+    names = _unset(_items(client, project_id, package_id))
+
+    def sibling(state: str) -> PackageRevision:
+        package = Package(
+            project_id=project_id, vendor="Synthetic vendor", product_type="countertop"
+        )
+        session.add(package)
+        session.flush()
+        revision = PackageRevision(package_id=package.id, revision_number=1, state=state)
+        session.add(revision)
+        session.flush()
+        return revision
+
+    open_one = sibling("AWAITING_REVIEW")
+    waiting_one = sibling("NEEDS_INPUT")
+    signed_one = sibling("APPROVED")
+    session.commit()
+
+    response = _act(client, project_id, package_id, "not-checked", "answer", _job_values(names))
+    assert response.status_code == 201, response.text
+    assert len(_queued_runs(session, _revision(session, package_id).id)) == 1
+    assert len(_queued_runs(session, open_one.id)) == 1
+    assert len(_queued_runs(session, waiting_one.id)) == 1
+    assert _queued_runs(session, signed_one.id) == [], "a signed-off package is never re-checked"
+    assert "2 other open packages" in response.json()["recorded"]
+
+    again = _act(client, project_id, package_id, "not-checked", "answer", _job_values(names, '2"'))
+    assert again.status_code == 201, again.text
+    assert len(_queued_runs(session, open_one.id)) == 1, "re-checks coalesce to one waiting run"

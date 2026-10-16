@@ -615,6 +615,44 @@ def _draw_text(canvas: Canvas, x: float, y: float, text: str, font: str, size: f
         cursor += canvas.stringWidth(segment, run_font, size)
 
 
+def _text_width(text: str, font: str, size: float) -> float:
+    """How wide `text` is drawn by `_draw_text`, its glyphs in their own fonts."""
+    from reportlab.pdfbase.pdfmetrics import stringWidth  # type: ignore[import-untyped]
+
+    return float(
+        sum(stringWidth(segment, run_font, size) for run_font, segment in _runs(text, font))
+    )
+
+
+def _fitted(text: str, font: str, size: float, limit: float) -> tuple[str, ...]:
+    """`text` as one line when it fits `limit` points; else wrapped at spaces onto lines that do,
+    each after the first indented (QA 2026-10-16: a long heading ran off the page). A word longer
+    than a whole line is broken where it must be."""
+    if _text_width(text, font, size) <= limit:
+        return (text,)
+    indent = "    "
+    lines: list[str] = []
+    current = ""
+    for word in text.split():
+        prefix = f"{current} " if current else (indent if lines else "")
+        if _text_width(prefix + word, font, size) <= limit:
+            current = prefix + word
+            continue
+        if current:
+            lines.append(current)
+            prefix = indent
+        piece = prefix
+        for character in word:
+            if piece.strip() and _text_width(piece + character, font, size) > limit:
+                lines.append(piece)
+                piece = indent
+            piece += character
+        current = piece
+    if current:
+        lines.append(current)
+    return tuple(lines)
+
+
 @dataclass(frozen=True, slots=True)
 class _Located:
     """A decoded evidence reference: where on which page the operand was read."""
@@ -643,6 +681,8 @@ CALLOUT_COLUMN_WIDTH: Final = Decimal(252)
 CALLOUT_MARGIN: Final = Decimal(16)
 CALLOUT_LINE_HEIGHT: Final = Decimal(10)
 CALLOUT_FONT_SIZE: Final = 7.5
+#: How wide a margin note's line may run: its column, less the gap before it and one after it.
+CALLOUT_TEXT_WIDTH: Final = float(CALLOUT_COLUMN_WIDTH - 2 * CALLOUT_MARGIN)
 
 
 def _fact_note(finding: RenderableFinding) -> str:
@@ -1153,11 +1193,31 @@ def _compose(
             ordered = _ordered_marks(entry, page_marks)
             reviewer_ordered = tuple(sorted(page_reviewer, key=lambda item: item.number))
             architect_ordered = tuple(sorted(page_architect, key=lambda item: item.number))
+            # A heading too long for its column wraps (QA 2026-10-16): its later lines are laid out
+            # with the note, so the column still holds all of it.
             placements, columns = _callout_layout(
                 entry,
-                [_note_lines(mark.finding) for mark in ordered]
-                + [_reviewer_lines(item.mark) for item in reviewer_ordered]
-                + [_architect_lines(item.item) for item in architect_ordered],
+                [
+                    (
+                        *_heading_lines(_finding_heading(index, mark.finding), "Courier-Bold")[1:],
+                        *_note_lines(mark.finding),
+                    )
+                    for index, mark in enumerate(ordered, start=1)
+                ]
+                + [
+                    (
+                        *_heading_lines(f"R{item.number}  {item.mark.text}", "Helvetica-Bold")[1:],
+                        *_reviewer_lines(item.mark),
+                    )
+                    for item in reviewer_ordered
+                ]
+                + [
+                    (
+                        *_heading_lines(f"A{item.number}  {item.item.words}", "Courier-Bold")[1:],
+                        *_architect_lines(item.item),
+                    )
+                    for item in architect_ordered
+                ],
             )
             expanded = _expanded_boxes(entry, columns)
             after_reviewer = len(ordered) + len(reviewer_ordered)
@@ -1231,6 +1291,16 @@ def _visible_size(entry: RedlinePage) -> tuple[Decimal, Decimal]:
     left, bottom, right, top = entry.transform.crop_box
     width, height = right - left, top - bottom
     return (height, width) if entry.transform.rotation in (90, 270) else (width, height)
+
+
+def _finding_heading(index: int, finding: RenderableFinding) -> str:
+    """A finding's margin-note heading: its number, rule and result."""
+    return f"{index:02d}  {finding.rule_id} \u00b7 {_result_words(finding)}"
+
+
+def _heading_lines(heading: str, font: str) -> tuple[str, ...]:
+    """A margin-note heading on the lines it takes inside its column (one, unless it is long)."""
+    return _fitted(heading, font, CALLOUT_FONT_SIZE, CALLOUT_TEXT_WIDTH)
 
 
 def _reviewer_lines(mark: ReviewerMark) -> tuple[str, ...]:
@@ -1320,73 +1390,66 @@ def _overlay(
     angle = text_angle(entry.transform.rotation)
     visible_width, _ = _visible_size(entry)
 
+    sheet = _sheet(entry, angle)
+    taken: list[tuple[float, float, float, float]] = []
     for index, (mark, (column, cursor, lines)) in enumerate(
         zip(marks, placements, strict=True), start=1
     ):
-        _draw_mark(canvas, mark, entry.transform, angle, index)
+        _draw_mark(canvas, mark, entry.transform, angle, index, sheet, taken)
         u = visible_width + column * CALLOUT_COLUMN_WIDTH + CALLOUT_MARGIN
         x, y = _visual_point(entry, u, cursor)
         style = _style(mark.finding)
+        heading = _heading_lines(_finding_heading(index, mark.finding), "Courier-Bold")
+        extra = len(heading) - 1
         canvas.saveState()
         canvas.translate(float(x), float(y))
         canvas.rotate(angle)
         canvas.setFillColorRGB(*style.stroke)
-        if _not_checked(mark.finding):
-            _draw_text(
-                canvas,
-                0,
-                0,
-                f"{index:02d}  {mark.finding.rule_id} · {_result_words(mark.finding)}",
-                "Courier-Bold",
-                CALLOUT_FONT_SIZE,
-            )
+        if _not_checked(mark.finding) or extra:
+            _draw_text(canvas, 0, 0, heading[0], "Courier-Bold", CALLOUT_FONT_SIZE)
         else:
             canvas.setFont("Courier-Bold", CALLOUT_FONT_SIZE)
-            canvas.drawString(
-                0, 0, f"{index:02d}  {mark.finding.rule_id} · {mark.finding.outcome.value}"
-            )
+            canvas.drawString(0, 0, heading[0])
+        _heading_rest(canvas, heading, "Courier-Bold")
         canvas.setFillColorRGB(0.1, 0.1, 0.1)
         canvas.setFont("Courier", CALLOUT_FONT_SIZE)
-        for line_number, line in enumerate(lines, start=1):
+        for line_number, line in enumerate(lines[extra:], start=extra + 1):
             canvas.drawString(0, -line_number * float(CALLOUT_LINE_HEIGHT), line)
         canvas.restoreState()
 
     for placed, (column, cursor, lines) in zip(architect, architect_placements, strict=True):
-        _draw_architect(canvas, placed, entry.transform, angle)
+        _draw_architect(canvas, placed, entry.transform, angle, sheet, taken)
         u = visible_width + column * CALLOUT_COLUMN_WIDTH + CALLOUT_MARGIN
         x, y = _visual_point(entry, u, cursor)
+        heading = _heading_lines(f"A{placed.number}  {placed.item.words}", "Courier-Bold")
+        extra = len(heading) - 1
         canvas.saveState()
         canvas.translate(float(x), float(y))
         canvas.rotate(angle)
         canvas.setFillColorRGB(*ARCHITECT_STYLE.stroke)
-        _draw_text(
-            canvas,
-            0,
-            0,
-            f"A{placed.number}  {placed.item.words}",
-            "Courier-Bold",
-            CALLOUT_FONT_SIZE,
-        )
+        _draw_text(canvas, 0, 0, heading[0], "Courier-Bold", CALLOUT_FONT_SIZE)
+        _heading_rest(canvas, heading, "Courier-Bold")
         canvas.setFillColorRGB(0.1, 0.1, 0.1)
         canvas.setFont("Courier", CALLOUT_FONT_SIZE)
-        for line_number, line in enumerate(lines, start=1):
+        for line_number, line in enumerate(lines[extra:], start=extra + 1):
             canvas.drawString(0, -line_number * float(CALLOUT_LINE_HEIGHT), line)
         canvas.restoreState()
 
-    taken: list[tuple[Decimal, Decimal, Decimal, Decimal]] = []
+    reviewer_taken: list[tuple[Decimal, Decimal, Decimal, Decimal]] = []
     for item, (column, cursor, lines) in zip(reviewer, reviewer_placements, strict=True):
-        _draw_reviewer_mark(canvas, item, entry, angle, taken)
+        _draw_reviewer_mark(canvas, item, entry, angle, reviewer_taken)
         u = visible_width + column * CALLOUT_COLUMN_WIDTH + CALLOUT_MARGIN
         x, y = _visual_point(entry, u, cursor)
+        heading = _heading_lines(f"R{item.number}  {item.mark.text}", "Helvetica-Bold")
+        extra = len(heading) - 1
         canvas.saveState()
         canvas.translate(float(x), float(y))
         canvas.rotate(angle)
         canvas.setFillColorRGB(*_REVIEWER_STROKES[item.mark.kind])
-        _draw_text(
-            canvas, 0, 0, f"R{item.number}  {item.mark.text}", "Helvetica-Bold", CALLOUT_FONT_SIZE
-        )
+        _draw_text(canvas, 0, 0, heading[0], "Helvetica-Bold", CALLOUT_FONT_SIZE)
+        _heading_rest(canvas, heading, "Helvetica-Bold")
         canvas.setFillColorRGB(0.1, 0.1, 0.1)
-        for line_number, line in enumerate(lines, start=1):
+        for line_number, line in enumerate(lines[extra:], start=extra + 1):
             _draw_text(
                 canvas,
                 0,
@@ -1401,6 +1464,14 @@ def _overlay(
     canvas.save()
     buffer.seek(0)
     return PdfReader(buffer).pages[0]
+
+
+def _heading_rest(canvas: Canvas, heading: Sequence[str], font: str) -> None:
+    """The later lines of a wrapped margin-note heading, under its first, in the colour set."""
+    for line_number, line in enumerate(heading[1:], start=1):
+        _draw_text(
+            canvas, 0, -line_number * float(CALLOUT_LINE_HEIGHT), line, font, CALLOUT_FONT_SIZE
+        )
 
 
 def _append_overlay(
@@ -1463,7 +1534,13 @@ def _append_overlay(
 
 
 def _draw_mark(
-    canvas: Canvas, mark: _Mark, transform: PageTransform, angle: int, index: int
+    canvas: Canvas,
+    mark: _Mark,
+    transform: PageTransform,
+    angle: int,
+    index: int,
+    sheet: _Box,
+    taken: list[_Box],
 ) -> None:
     """Outline the evidence region and label it with the rule and the outcome."""
     style = _style(mark.finding)
@@ -1480,7 +1557,7 @@ def _draw_mark(
     # The stored polygon may tightly bound the vendor's glyphs. Stroking that polygon
     # crosses the number itself; the padded cloud alone is the visible region mark.
     _draw_cloud(canvas, points, style)
-    _draw_label(canvas, mark, points, style, angle, index)
+    _draw_label(canvas, mark, points, style, angle, index, sheet, taken)
 
 
 def _draw_cloud(canvas: Canvas, points: Sequence[PdfPoint], style: _OutcomeStyle) -> None:
@@ -1504,6 +1581,139 @@ def _draw_cloud(canvas: Canvas, points: Sequence[PdfPoint], style: _OutcomeStyle
     canvas.restoreState()
 
 
+#: A box in the page's visible (turned) frame: left, bottom, right, top, in points.
+_Box = tuple[float, float, float, float]
+
+#: How far inside the sheet's edge a label on the drawing is kept.
+LABEL_INSET: Final = 2.0
+
+#: The smallest size the full words of a label on the drawing are shrunk to before the label says
+#: only its number.
+LABEL_MIN_FONT_SIZE: Final = 5.5
+
+
+def _sheet(entry: RedlinePage, angle: int) -> _Box:
+    """The visible sheet (its crop box) in the turned frame labels are placed in."""
+    inverse = (360 - angle) % 360
+    left, bottom, right, top = entry.transform.crop_box
+    corners = [_turn(x, y, inverse) for x in (left, right) for y in (bottom, top)]
+    return (
+        float(min(x for x, _ in corners)),
+        float(min(y for _, y in corners)),
+        float(max(x for x, _ in corners)),
+        float(max(y for _, y in corners)),
+    )
+
+
+def _label_box(x: float, base: float, width: float, size: float) -> _Box:
+    return (x, base - size * 0.25, x + width, base + size)
+
+
+def _clashes(box: _Box, taken: Sequence[_Box]) -> bool:
+    return any(
+        box[0] < other[2] and other[0] < box[2] and box[1] < other[3] and other[1] < box[3]
+        for other in taken
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _LabelSpot:
+    """Where a label on the drawing goes, in the turned frame, and in which words and size."""
+
+    text: str
+    size: float
+    x: float
+    base: float
+    as_before: bool
+    """Drawn exactly as before (QA 2026-10-16): the full words, in place, touching nothing."""
+
+
+def _label_spot(
+    points: Sequence[PdfPoint],
+    angle: int,
+    sheet: _Box,
+    taken: list[_Box],
+    full: str,
+    short: str | None,
+    font: str,
+) -> _LabelSpot:
+    """Place a label above its cloud, inside the sheet and off every label already placed.
+
+    The full words, where they always went, when they fit inside the sheet and touch no other
+    label: drawn exactly as before. Else moved inside the sheet (below the cloud when there is no
+    room above it), shrunk down to `LABEL_MIN_FONT_SIZE` if that is what it takes; and when even
+    that does not fit or would print over another label, only `short` (the cloud's number; the
+    full words stay in the margin note and on the summary), stacked clear of the others. With no
+    `short` the full words are kept, moved inside the sheet.
+    """
+    inverse = (360 - angle) % 360
+    turned = [_turn(point.x, point.y, inverse) for point in points]
+    anchor_x = float(min(x for x, _ in turned))
+    cloud_top = float(max(y for _, y in turned))
+    cloud_bottom = float(min(y for _, y in turned))
+    left, bottom, right, top = (
+        sheet[0] + LABEL_INSET,
+        sheet[1] + LABEL_INSET,
+        sheet[2] - LABEL_INSET,
+        sheet[3] - LABEL_INSET,
+    )
+
+    def spot(text: str, size: float) -> tuple[float, float, float]:
+        width = _text_width(text, font, size)
+        base = cloud_top + 12 + size * 0.35 + 1.0
+        if base + size > top:
+            # No room above the cloud: just below it (its scallops reach 13 points out).
+            base = cloud_bottom - 13 - size
+        base = max(bottom + size * 0.25, min(base, top - size))
+        x = max(left, min(anchor_x, right - width))
+        return x, base, width
+
+    default_base = cloud_top + 12 + MARK_FONT_SIZE * 0.35 + 1.0
+    sizes = [MARK_FONT_SIZE]
+    while sizes[-1] - 0.5 >= LABEL_MIN_FONT_SIZE:
+        sizes.append(sizes[-1] - 0.5)
+    for size in sizes:
+        x, base, width = spot(full, size)
+        box = _label_box(x, base, width, size)
+        fits = box[0] >= left - 1e-6 and box[2] <= right + 1e-6
+        if fits and not _clashes(box, taken):
+            taken.append(box)
+            as_before = size == MARK_FONT_SIZE and x == anchor_x and base == default_base
+            return _LabelSpot(full, size, x, base, as_before)
+    text = full if short is None else short
+    size = MARK_FONT_SIZE if short is not None else LABEL_MIN_FONT_SIZE
+    x, base, width = spot(text, size)
+    step = size + 2
+    for direction in (1, -1):
+        candidate = base
+        while bottom + size * 0.25 <= candidate <= top - size:
+            if not _clashes(_label_box(x, candidate, width, size), taken):
+                taken.append(_label_box(x, candidate, width, size))
+                return _LabelSpot(text, size, x, candidate, False)
+            candidate += step * direction
+    # Nowhere clear inside the sheet: at its own place, still inside the sheet.
+    taken.append(_label_box(x, base, width, size))
+    return _LabelSpot(text, size, x, base, False)
+
+
+def _draw_moved_label(
+    canvas: Canvas, spot: _LabelSpot, angle: int, stroke: tuple[float, float, float], font: str
+) -> None:
+    """A label that was moved, shrunk or shortened, on a pale backing so it reads over the lines."""
+    x, y = _turn(Decimal(str(spot.x)), Decimal(str(spot.base)), angle)
+    width = _text_width(spot.text, font, spot.size)
+    canvas.saveState()
+    canvas.translate(float(x), float(y))
+    canvas.rotate(angle)
+    canvas.setFillColorRGB(1, 1, 1)
+    canvas.setFillAlpha(0.8)
+    canvas.rect(-1, -spot.size * 0.25 - 1, width + 2, spot.size * 1.25 + 2, stroke=0, fill=1)
+    canvas.setFillAlpha(1)
+    canvas.setFillColorRGB(*stroke)
+    _draw_text(canvas, 0.0, 0.0, spot.text, font, spot.size)
+    canvas.restoreState()
+
+
 def _draw_label(
     canvas: Canvas,
     mark: _Mark,
@@ -1511,6 +1721,8 @@ def _draw_label(
     style: _OutcomeStyle,
     angle: int,
     index: int,
+    sheet: _Box,
+    taken: list[_Box],
 ) -> None:
     """Write the rule id and outcome beside the mark, turned to read upright on a rotated page.
 
@@ -1519,6 +1731,10 @@ def _draw_label(
     to look at.
     """
     label = f"{index:02d} · {mark.finding.rule_id} · {_result_words(mark.finding)}"
+    spot = _label_spot(points, angle, sheet, taken, label, None, "Helvetica-Bold")
+    if not spot.as_before:
+        _draw_moved_label(canvas, spot, angle, style.stroke, "Helvetica-Bold")
+        return
     anchor = label_anchor(points, angle)
 
     canvas.saveState()
@@ -1542,11 +1758,29 @@ ARCHITECT_STYLE: Final = OUTCOME_STYLES[Outcome.FAIL]
 
 
 def _draw_architect(
-    canvas: Canvas, placed: _ArchitectPlaced, transform: PageTransform, angle: int
+    canvas: Canvas,
+    placed: _ArchitectPlaced,
+    transform: PageTransform,
+    angle: int,
+    sheet: _Box,
+    taken: list[_Box],
 ) -> None:
-    """A cloud at the vendor's dimension, "A1 · ✗ Architect: Y — vendor: X" above it."""
+    """A cloud at the vendor's dimension, "A1 · ✗ Architect: Y — vendor: X" above it; only "A1"
+    when the words would leave the sheet or print over another label (`_label_spot`)."""
     points = polygon_pdf_points(placed.polygon, transform)
     _draw_cloud(canvas, points, ARCHITECT_STYLE)
+    spot = _label_spot(
+        points,
+        angle,
+        sheet,
+        taken,
+        f"A{placed.number} · {placed.item.words}",
+        f"A{placed.number}",
+        "Helvetica-Bold",
+    )
+    if not spot.as_before:
+        _draw_moved_label(canvas, spot, angle, ARCHITECT_STYLE.stroke, "Helvetica-Bold")
+        return
     anchor = label_anchor(points, angle)
     canvas.saveState()
     canvas.translate(float(anchor.x), float(anchor.y))

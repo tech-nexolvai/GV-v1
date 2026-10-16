@@ -633,6 +633,40 @@ describe('FinalBar (#1368)', () => {
     expect(screen.getByText('The checks are running again.')).toBeTruthy();
   });
 
+  it("says the server's blocked reason and offers Run the checks again when inputs changed since the last run (QA 2026-10-16)", async () => {
+    const stale = allSettled();
+    stale.header.can_finalise = false;
+    stale.header.blocked_reason = 'You changed inputs after the last check run. Run the checks before signing off.';
+    const runChecks = vi.fn(async () => {});
+    const onRechecked = vi.fn();
+    render(<FinalBar summary={summarize(stale)} left={leftWords(stale.header)} api={finalApi({ runChecks })} projectId="proj-demo" packageId="pkg-demo" revision={2} approved={false} onSigned={vi.fn()} onRechecked={onRechecked} />);
+    expect(screen.getByRole('status').textContent).toBe('The checks need to run again.');
+    expect(screen.getByText('You changed inputs after the last check run. Run the checks before signing off.')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Create final cloud PDF' }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(screen.getByRole('button', { name: 'Run the checks again' }));
+    expect(runChecks).toHaveBeenCalledWith('proj-demo', 'pkg-demo');
+    await waitFor(() => expect(onRechecked).toHaveBeenCalled());
+  });
+
+  it('shows the re-run reason beside the counts too, and says why when asking for the run fails', async () => {
+    const stale = reviewItems((draft) => {
+      draft.items = draft.items.filter((item) => item.status !== 'rechecking');
+      draft.header.open = 2;
+      draft.header.not_checked = 0;
+      draft.header.rechecking = 0;
+      draft.header.can_finalise = false;
+      draft.header.blocked_reason = 'You changed inputs after the last check run. Run the checks before signing off.';
+    });
+    const runChecks = vi.fn(async () => {
+      throw new Error('The checks are already running.');
+    });
+    renderBar(stale, finalApi({ runChecks }));
+    expect(screen.getByRole('status').textContent).toBe('2 items need you');
+    expect(screen.getByText(/You changed inputs after the last check run/)).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Run the checks again' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('The checks are already running.');
+  });
+
   it('unlocked: confirms the sign-off first, then signs, makes the PDF and offers the download', async () => {
     let status: 'preparing' | 'ready' = 'preparing';
     const api = finalApi({ status: vi.fn(async () => status) });
@@ -816,6 +850,14 @@ describe('page states', () => {
     render(<NothingNeedsYou checked={7} />);
     expect(screen.getByRole('status').textContent).toContain('Nothing needs you');
     expect(document.querySelector('[data-outcome-icon]')).toBeNull();
+  });
+
+  it('never says nothing needs you while sign-off is blocked (QA 2026-10-16)', () => {
+    render(<NothingNeedsYou checked={7} blocked="You changed inputs after the last check run. Run the checks before signing off." />);
+    const status = screen.getByRole('status').textContent ?? '';
+    expect(status).not.toContain('Nothing needs you');
+    expect(status).toContain('Nothing to answer');
+    expect(status).toContain('You changed inputs after the last check run.');
   });
 
   it('an error is named, with the request id, and Retry', async () => {

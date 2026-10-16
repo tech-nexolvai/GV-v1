@@ -224,3 +224,26 @@ describe('SimpleReviewPage: the AI page review', () => {
     expect(posted).toHaveLength(0);
   });
 });
+
+describe('AiReview row layout (QA 2026-10-16)', () => {
+  // jsdom has no layout, so the rules that keep a row readable are pinned on its classes: the row
+  // is sized by its own section (a container), never by the window, so the Assistant panel beside
+  // it cannot squeeze the numbers; the numbers keep a readable width and drop to their own line
+  // instead of wrapping one word per line; nothing is clipped.
+  it('sizes the row by the section, not the window, and lets the numbers take their own line', async () => {
+    render(<AiReview review={REVIEW} onLook={() => {}} />);
+    const section = screen.getByRole('region', { name: 'Compared with the architect' });
+    expect(section.className).toContain('@container/air');
+    const [first] = screen.getAllByRole('listitem').filter((li) => li.getAttribute('data-slot') === 'ai-review-row');
+    expect(first.className).toContain('flex-wrap');
+    expect(first.className).not.toMatch(/overflow-hidden|truncate/);
+    const [word, numbers, look] = Array.from(first.children) as HTMLElement[];
+    expect(word.className).toContain('w-full');
+    expect(word.className).not.toMatch(/(^|\s)sm:/);
+    expect(numbers.getAttribute('data-slot')).toBe('ai-review-numbers');
+    expect(numbers.className).toContain('basis-[18rem]');
+    expect(numbers.className).toContain('grow');
+    expect(numbers.className).toContain('min-w-0');
+    expect(look.className).toContain('ml-auto');
+  });
+});

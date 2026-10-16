@@ -242,8 +242,11 @@ def test_off_a_starter_is_answered_from_the_records(postgres_engine) -> None:  #
         "model_id",
         "sources",
         "looked_at_page",
+        "not_looked_at_page",
+        "not_looked_at_reason",
     }
     assert answer["looked_at_page"] is None, "no model looked at a page for a records answer"
+    assert answer["not_looked_at_page"] is None, "no page was asked about, so none was left out"
 
 
 def test_off_a_decision_request_is_refused(postgres_engine) -> None:  # type: ignore[no-untyped-def]
