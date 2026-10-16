@@ -19,6 +19,7 @@ import {
   type StatusFilter,
 } from '@/lib/chat-findings';
 import { useReducedMotion } from '@/lib/chat-motion';
+import { matchesWords } from '@/lib/chat-full-check';
 import { differenceOf, differenceWords, sideValue } from '@/lib/chat-trust';
 import { cn } from '@/lib/utils';
 
@@ -99,7 +100,7 @@ export function EvidenceThumb({ src, label }: { src: string | null; label: strin
         data-slot="chat-evidence-thumb"
         data-missing="true"
         title={`${label}: no evidence picture`}
-        className="grid h-8 w-11 shrink-0 place-items-center rounded border border-dashed text-muted-foreground/70"
+        className="grid h-9 w-12 shrink-0 place-items-center rounded-md border border-dashed text-muted-foreground/70"
       >
         <ImageOff aria-hidden="true" className="size-3.5" />
         <span className="sr-only">{label}: no evidence picture</span>
@@ -113,7 +114,7 @@ export function EvidenceThumb({ src, label }: { src: string | null; label: strin
       alt={`${label} evidence`}
       loading="lazy"
       onError={() => setBroken(src)}
-      className="h-8 w-11 shrink-0 rounded border bg-white object-cover"
+      className="h-9 w-12 shrink-0 rounded-md border bg-white object-cover"
     />
   );
 }
@@ -178,9 +179,26 @@ export interface FindingsTableProps {
   /** Open the evidence viewer on this finding. */
   onOpen: (finding: ChatFinding) => void;
   pictureUrl: (pictureId: string) => string;
+  /**
+   * Chat v4 full check: the status chips become three tabs, What's wrong · To check · What's right
+   * (the parent picks the opening tab, never "all").
+   */
+  tabs?: boolean;
 }
 
-export function FindingsTable({ findings, filter, onFilter, onOpen, pictureUrl }: FindingsTableProps) {
+const TABS = [
+  { status: 'different', words: 'What’s wrong' },
+  { status: 'check', words: 'To check' },
+  { status: 'same', words: 'What’s right' },
+] as const;
+
+/** Under a right finding's vendor value: what it matched ("matches architect"). */
+function Matches({ finding }: { finding: ChatFinding }) {
+  if (finding.status !== 'same') return null;
+  return <span data-slot="chat-finding-matches" className="mt-0.5 block text-xs text-outcome-pass-fg">{matchesWords(finding.source)}</span>;
+}
+
+export function FindingsTable({ findings, filter, onFilter, onOpen, pictureUrl, tabs = false }: FindingsTableProps) {
   const narrow = useMediaQuery(FINDINGS_NARROW);
   const leaving = useLeaving(findings);
   const counts = findingCounts(findings);
@@ -198,14 +216,51 @@ export function FindingsTable({ findings, filter, onFilter, onOpen, pictureUrl }
   return (
     <section data-slot="chat-findings" aria-label="Findings" className="chat-rise grid min-w-0 gap-2">
       <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
-        <p data-slot="chat-findings-count" aria-live="polite" className="text-sm font-medium text-foreground tabular-nums">{summary}</p>
-
+        {tabs ? (
+          <div
+            role="tablist"
+            aria-label="Findings"
+            data-slot="chat-findings-tabs"
+            className="flex max-w-full min-w-0 flex-wrap gap-1 rounded-xl bg-muted p-1"
+            onKeyDown={(event) => {
+              if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return;
+              const at = TABS.findIndex((tab) => tab.status === filter.status);
+              const next = TABS[(at + (event.key === 'ArrowRight' ? 1 : TABS.length - 1)) % TABS.length];
+              setStatus(next.status);
+              event.currentTarget.querySelector<HTMLElement>(`[data-tab="${next.status}"]`)?.focus();
+            }}
+          >
+            {TABS.map((tab) => {
+              const selected = filter.status === tab.status;
+              return (
+                <button
+                  key={tab.status}
+                  type="button"
+                  role="tab"
+                  data-tab={tab.status}
+                  aria-selected={selected}
+                  tabIndex={selected ? 0 : -1}
+                  onClick={() => setStatus(tab.status)}
+                  className={cn(
+                    'inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none motion-reduce:transition-none',
+                    selected ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
+                  )}
+                >
+                  {tab.words}
+                  <span className="tabular-nums opacity-80">({counts[tab.status]})</span>
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <p data-slot="chat-findings-count" aria-live="polite" className="text-sm font-medium text-foreground tabular-nums">{summary}</p>
+        )}
         <div role="group" aria-label="Filter findings" className="flex flex-wrap items-center gap-1.5">
-          <Chip pressed={filter.status === 'all'} onClick={() => setStatus('all')} count={issues}>All</Chip>
-          <Chip pressed={filter.status === 'different'} onClick={() => setStatus('different')} count={counts.different}>Different</Chip>
-          <Chip pressed={filter.status === 'check'} onClick={() => setStatus('check')} count={counts.check}>Check</Chip>
-          {counts.same > 0 && <Chip pressed={filter.status === 'same'} onClick={() => setStatus('same')} count={counts.same}>Same</Chip>}
-          {categories.length > 1 && <span aria-hidden="true" className="mx-0.5 h-4 w-px bg-border" />}
+          {!tabs && <Chip pressed={filter.status === 'all'} onClick={() => setStatus('all')} count={issues}>All</Chip>}
+          {!tabs && <Chip pressed={filter.status === 'different'} onClick={() => setStatus('different')} count={counts.different}>Different</Chip>}
+          {!tabs && <Chip pressed={filter.status === 'check'} onClick={() => setStatus('check')} count={counts.check}>Check</Chip>}
+          {!tabs && counts.same > 0 && <Chip pressed={filter.status === 'same'} onClick={() => setStatus('same')} count={counts.same}>Same</Chip>}
+          {!tabs && categories.length > 1 && <span aria-hidden="true" className="mx-0.5 h-4 w-px bg-border" />}
           {categories.length > 1 && categories.map((category) => (
             <Chip key={category} pressed={filter.category === category} onClick={() => setCategory(category)}>{CATEGORY_WORDS[category]}</Chip>
           ))}
@@ -257,7 +312,7 @@ export function FindingsTable({ findings, filter, onFilter, onOpen, pictureUrl }
                         <span className="text-muted-foreground">Architect</span>
                         <span className="min-w-0"><FindingValue finding={finding} side="architect" /><SourceTag finding={finding} /></span>
                         <span className="text-muted-foreground">Vendor</span>
-                        <span className="min-w-0"><FindingValue finding={finding} side="vendor" /></span>
+                        <span className="min-w-0"><FindingValue finding={finding} side="vendor" /><Matches finding={finding} /></span>
                         {showDifference && <span className="text-muted-foreground">Difference</span>}
                         {showDifference && <FindingDifference finding={finding} />}
                         <span className="text-muted-foreground">Trust</span>
@@ -272,7 +327,7 @@ export function FindingsTable({ findings, filter, onFilter, onOpen, pictureUrl }
           ))}
         </div>
       ) : (
-        <div className="max-w-full overflow-x-auto rounded-lg border">
+        <div className="max-w-full overflow-x-auto rounded-xl border bg-card shadow-[0_1px_2px_rgb(0_0_0/0.03)]">
           <table data-slot="chat-findings-table" className="w-full border-collapse text-[13px] leading-snug">
             <caption className="sr-only">Findings: {summary}</caption>
             <thead className="bg-muted/50 text-xs text-muted-foreground">
@@ -319,6 +374,7 @@ export function FindingsTable({ findings, filter, onFilter, onOpen, pictureUrl }
                       <td className="px-2.5 py-2"><FindingValue finding={finding} side="architect" /><SourceTag finding={finding} /></td>
                       <td className="px-2.5 py-2">
                         <FindingValue finding={finding} side="vendor" />
+                        <Matches finding={finding} />
                         {showDifference && differenceOf(finding) !== null && <span className="mt-0.5 block text-xs font-medium"><FindingDifference finding={finding} /></span>}
                       </td>
                       <td className="px-2.5 py-2"><StatusChip status={finding.status} /></td>

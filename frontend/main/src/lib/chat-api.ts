@@ -48,6 +48,12 @@ export interface ChatModels {
   package_spent_usd: string;
 }
 
+/** Chat v4 (CONTRACT4): the products a message focuses on. */
+export type ChatProduct = 'countertop' | 'cabinet';
+
+/** Chat v4: an ordinary question, or the one-click full check (the app's own fixed instruction). */
+export type ChatMode = 'chat' | 'full_check';
+
 /** One chat in a drawing set's list (`GET /packages/{id}/chats`), newest first. */
 export interface ChatSummary {
   id: string;
@@ -64,6 +70,8 @@ export interface ChatList {
   chats: ChatSummary[];
   /** The drawing set's name, for a new chat's greeting. */
   package_name?: string | null;
+  /** Chat v4: the set's product type, the product chips' default. */
+  product_type?: ChatProduct | null;
 }
 
 /** `POST /packages/{id}/chats`: a new empty chat. */
@@ -86,6 +94,8 @@ export interface Chat {
   running?: boolean | null;
   /** The answer being written while `running`: followed live with `followChatMessage`. */
   running_message_id?: string | null;
+  /** Chat v4: the set's product type, the product chips' default. */
+  product_type?: ChatProduct | null;
 }
 
 /** Why a message stopped before it finished; null or absent when it finished. */
@@ -115,6 +125,11 @@ export interface ChatMessage {
   package_cap_usd?: string | null;
   /** With `stopped: "cost_cap"`: which one stopped it. */
   cap_hit?: 'message' | 'package' | null;
+  /** Chat v4: how it was asked (absent = an ordinary chat message) and for which products. */
+  mode?: ChatMode | null;
+  products?: ChatProduct[] | null;
+  /** Chat v5: code's accuracy score for the answer; absent on older answers. */
+  accuracy?: ChatAccuracy | null;
 }
 
 export type ChatBlock =
@@ -123,7 +138,9 @@ export type ChatBlock =
   | { type: 'step'; step: ChatStep }
   | { type: 'finding'; finding: ChatFinding }
   | { type: 'coverage'; coverage: ChatCoverage }
-  | { type: 'trust'; trust: ChatTrust };
+  | { type: 'trust'; trust: ChatTrust }
+  | { type: 'cite'; cite: ChatCite }
+  | { type: 'accuracy'; accuracy: ChatAccuracy };
 
 // ── Chat v2 (CONTRACT2-findings): findings with evidence, and page coverage ──
 
@@ -259,6 +276,42 @@ export interface ChatTrust {
   rounds?: { fixed: number; still_wrong: number; new: number; not_in_later?: number | null } | null;
 }
 
+/**
+ * Chat v5 (CONTRACT5-accuracy): a number the answer states, backed by its spot on a drawing (the
+ * model's `cite`); code checked it is printed there and cropped the spot.
+ */
+export interface ChatCite {
+  id: string;
+  page: number;
+  /** The value as the answer states it. */
+  value?: string | null;
+  box?: FindingBox | null;
+  /** The crop code made at the box, served by the pictures route. */
+  picture_id?: string | null;
+  /** Printed at the spot: match / not_found / no_text … (code's check). */
+  printed?: PrintedResult | null;
+}
+
+/** One checkable claim of an answer, how code checked it, and the points it earned (0 to 1). */
+export interface AccuracyClaim {
+  claim: string;
+  how: string;
+  points: number;
+}
+
+/**
+ * Chat v5: the answer's accuracy, computed by CODE from its claims' checks (never by the model).
+ * `score` is 0 to 100, or null when there was nothing to check ("n/a").
+ */
+export interface ChatAccuracy {
+  score: number | null;
+  level?: string | null;
+  claims?: number | null;
+  breakdown?: AccuracyClaim[] | null;
+  /** Whole-set answers: the share of pages accounted for, already applied to the score. */
+  coverage_factor?: number | null;
+}
+
 export type CoverageStatus = 'same' | 'different' | 'not_comparable' | 'not_opened';
 
 export interface CoveragePage {
@@ -330,6 +383,8 @@ export interface ChatAgent {
 /** A file the assistant made and handed over, downloaded from `url`. */
 export interface ChatFile {
   id: string;
+  /** Chat v4: what a full check made: the cloud drawing (the main output) or the check report. */
+  kind?: 'cloud_drawing' | 'check_report' | string | null;
   name: string;
   /** Bytes. */
   size: number;
@@ -344,6 +399,10 @@ export interface SendMessageBody {
   model: string;
   effort: ChatEffort;
   thinking: boolean;
+  /** Chat v4: `full_check` runs the app's own full-set check; absent means an ordinary message. */
+  mode?: ChatMode;
+  /** Chat v4: the products to focus on; absent means the set's own product type. */
+  products?: ChatProduct[];
 }
 
 /** The stream's events, in the contract's words. `index` is the block's place in `blocks`. */
@@ -366,14 +425,16 @@ export type ChatEvent =
   | { event: 'finding'; data: { finding: ChatFinding } }
   | { event: 'finding_dropped'; data: { finding_id: string } }
   | { event: 'coverage'; data: { coverage: ChatCoverage } }
-  | { event: 'trust'; data: { trust: ChatTrust } };
+  | { event: 'trust'; data: { trust: ChatTrust } }
+  | { event: 'cite'; data: { cite: ChatCite } }
+  | { event: 'accuracy'; data: { accuracy: ChatAccuracy } };
 
 export type ChatEventName = ChatEvent['event'];
 
 const EVENT_NAMES: ReadonlySet<string> = new Set<ChatEventName>([
   'message_start', 'thinking_start', 'thinking_delta', 'thinking_end', 'text_delta', 'step_start', 'step_end',
   'tasks', 'agent_start', 'agent_step', 'agent_end', 'file', 'usage', 'message_end', 'error',
-  'finding', 'finding_dropped', 'coverage', 'trust',
+  'finding', 'finding_dropped', 'coverage', 'trust', 'cite', 'accuracy',
 ]);
 
 /**

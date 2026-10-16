@@ -1,15 +1,19 @@
 import { useId, useState } from 'react';
-import { ChevronRight, CircleAlert, Download, FileDown, Sheet, FileImage, FileSpreadsheet, FileText, File as FileIcon, RotateCw } from 'lucide-react';
+import { ChevronRight, CircleAlert, Download, FileDown, Sheet, FileImage, FileSpreadsheet, FileText, File as FileIcon, RotateCw, ScanSearch } from 'lucide-react';
 
+import { AccuracyBadge, CiteChips } from '@/components/chat/chat-accuracy';
 import { ActivityRow, TaskChecklist } from '@/components/chat/chat-activity';
 import { CoverageStrip } from '@/components/chat/chat-coverage';
 import { EvidenceViewer } from '@/components/chat/chat-evidence';
 import { FindingsTable } from '@/components/chat/chat-findings';
+import { FullCheckFiles } from '@/components/chat/chat-full-check';
 import { TrustSummary } from '@/components/chat/chat-trust';
 import { ChatMarkdown } from '@/components/chat/chat-markdown';
 import { Collapse, CopyButton, Shimmer, Spark, Spinner } from '@/components/chat/chat-motion';
-import { chatPaths, type ChatFile, type ChatModel } from '@/lib/chat-api';
-import { groupFindings, isShortAnswer, NO_FILTER, shownInOrder, type FindingFilter } from '@/lib/chat-findings';
+import { chatPaths, type ChatEffort, type ChatFile, type ChatModel } from '@/lib/chat-api';
+import { findingCounts, groupFindings, isShortAnswer, NO_FILTER, shownInOrder, type FindingFilter } from '@/lib/chat-findings';
+import { fullCheckBubble, fullCheckFiles } from '@/lib/chat-full-check';
+import { EFFORT_WORDS } from '@/lib/chat-settings';
 import { downloadFile, downloadFindingsCsv, markupFailureWords } from '@/lib/chat-exports';
 import { hasTrust, roundCounts } from '@/lib/chat-trust';
 import {
@@ -37,7 +41,21 @@ import { cn } from '@/lib/utils';
  * Read-only: nothing here changes the review.
  */
 
-export function UserMessage({ message }: { message: ViewMessage }) {
+export function UserMessage({ message, effort }: { message: ViewMessage; effort?: ChatEffort | null }) {
+  if (message.mode === 'full_check') {
+    // Chat v4: a full check is the app's own instruction, so the bubble names it, not its text.
+    const level = effort ?? message.effort;
+    return (
+      <div
+        data-slot="chat-user-message"
+        data-mode="full_check"
+        className="chat-rise inline-flex max-w-[min(85%,36rem)] items-center gap-2 self-end rounded-2xl bg-muted px-4 py-2.5 font-medium text-foreground"
+      >
+        <ScanSearch className="size-4 shrink-0" aria-hidden="true" />
+        <span>{fullCheckBubble(message.products, level ? EFFORT_WORDS[level] : null)}</span>
+      </div>
+    );
+  }
   return (
     <div
       data-slot="chat-user-message"
@@ -208,6 +226,7 @@ export interface AssistantMessageProps {
   message: ViewMessage;
   chatId: string;
   models: readonly ChatModel[] | null;
+  /** No longer used: an answer names only the cap it was saved with (kept so callers need not change). */
   messageCapUsd?: string | null;
   /** Shown on a message whose stream broke: read the chat again to see what was saved. */
   onReload?: () => void;
@@ -225,9 +244,14 @@ export interface AssistantMessageProps {
   makeMarkupPdf?: (messageId: string) => Promise<ChatFile>;
   /** Chat v2: where the evidence viewer's "Open in review screen" goes; left out when absent. */
   fullPageHref?: string | null;
+  /**
+   * Chat v4: the answer to a full check. It renders as AI notes → trust summary → the cloud drawing
+   * (first and large) and the check report → What's wrong / To check / What's right → coverage.
+   */
+  fullCheck?: boolean;
 }
 
-export function AssistantMessage({ message, chatId, models, messageCapUsd, onReload, onRetry, latest = false, makeMarkupPdf, fullPageHref }: AssistantMessageProps) {
+export function AssistantMessage({ message, chatId, models, onReload, onRetry, latest = false, makeMarkupPdf, fullPageHref, fullCheck = false }: AssistantMessageProps) {
   const running = message.status === 'running';
   const pictureUrl = (pictureId: string) => chatPaths.picture(chatId, pictureId);
   const [filter, setFilter] = useState<FindingFilter>(NO_FILTER);
@@ -240,23 +264,30 @@ export function AssistantMessage({ message, chatId, models, messageCapUsd, onRel
   const blocks = shownBlocks(message);
   const { items: allItems } = answerItems(blocks, Boolean(message.tasks?.length));
   const items = short ? allItems.filter((item) => item.kind === 'text') : allItems;
+  // A full check opens on its first tab that has rows (What's wrong, else To check, else What's right).
+  const counts = findingCounts(findings);
+  const opening = counts.different ? 'different' : counts.check ? 'check' : 'same';
+  const shownFilter: FindingFilter = fullCheck && filter.status === 'all' ? { ...filter, status: opening } : filter;
   // The viewer's arrows step through the findings in the table's order, under its filter.
-  const ordered = shownInOrder(groupFindings(findings, filter));
-  const files = [...message.files, ...madeFiles.filter((made) => !message.files.some((file) => file.id === made.id))];
+  const ordered = shownInOrder(groupFindings(findings, shownFilter));
+  const allFiles = [...message.files, ...madeFiles.filter((made) => !message.files.some((file) => file.id === made.id))];
+  const made = fullCheck ? fullCheckFiles(allFiles) : { cloud: null, report: null, rest: allFiles };
+  const files = made.rest;
   const messageId = message.id;
   const finished = !running && message.status === 'done' && findings.length > 0;
-  const canMarkup = finished && messageId !== null && makeMarkupPdf !== undefined;
+  // A full check's cloud drawing already is the marked-up PDF.
+  const canMarkup = finished && messageId !== null && makeMarkupPdf !== undefined && !made.cloud;
   const showTrust = findings.length > 0 && (hasTrust(findings, message.trust) || roundCounts(findings, message.trust) !== null);
   // The coverage strip sits in the trust summary when there is one, else on its own under the table.
   const coverageStrip = coverage ? (
     <CoverageStrip
       coverage={coverage}
       page={filter.page}
-      onPickPage={findings.length ? (page) => setFilter({ ...filter, status: 'all', page: filter.page === page ? null : page }) : undefined}
+      onPickPage={findings.length ? (page) => setFilter({ ...filter, status: fullCheck ? shownFilter.status : 'all', page: filter.page === page ? null : page }) : undefined}
     />
   ) : null;
   const streaming = textStreaming(message);
-  const stopped = stoppedWords(message, messageCapUsd);
+  const stopped = stoppedWords(message);
   const answerText = (message.stopped ? withoutStopNote(message.text) : message.text)
     || blocks.filter((block) => block.type === 'text').map((block) => block.text).join('\n\n');
   const retry = !running && onRetry ? onRetry : undefined;
@@ -306,16 +337,20 @@ export function AssistantMessage({ message, chatId, models, messageCapUsd, onRel
       })}
       {looseTasks}
 
-      {showTrust && <TrustSummary findings={findings} trust={message.trust} coverage={coverage} coverageStrip={coverageStrip} />}
+      {(message.cites?.length ?? 0) > 0 && <CiteChips cites={message.cites ?? []} pictureUrl={pictureUrl} />}
+
+      {showTrust && <TrustSummary findings={findings} trust={message.trust} coverage={coverage} coverageStrip={fullCheck ? null : coverageStrip} />}
+
+      {fullCheck && <FullCheckFiles cloud={made.cloud} report={made.report} chatId={chatId} />}
 
       {findings.length > 0 && (
-        <FindingsTable findings={findings} filter={filter} onFilter={setFilter} onOpen={(finding) => setViewing(finding.id)} pictureUrl={pictureUrl} />
+        <FindingsTable findings={findings} filter={shownFilter} onFilter={setFilter} onOpen={(finding) => setViewing(finding.id)} pictureUrl={pictureUrl} tabs={fullCheck} />
       )}
       {findings.length > 0 && (
         <EvidenceViewer findings={ordered} openId={viewing} onOpen={setViewing} pictureUrl={pictureUrl} fullPageHref={fullPageHref} />
       )}
 
-      {coverage && !showTrust && coverageStrip}
+      {coverage && (fullCheck || !showTrust) && coverageStrip}
 
       {finished && (
         <div data-slot="chat-exports" className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
@@ -389,7 +424,11 @@ export function AssistantMessage({ message, chatId, models, messageCapUsd, onRel
             {answerText.trim() && <CopyButton text={answerText} />}
             {retry && <RetryButton onRetry={retry} />}
           </div>
-          <span data-slot="chat-meta" className="min-w-0 text-xs text-muted-foreground">{footerWords(message, models)}</span>
+          <span className="flex min-w-0 flex-wrap items-center justify-end gap-x-3 gap-y-1">
+            <span data-slot="chat-meta" className="min-w-0 text-xs text-muted-foreground">{footerWords(message, models)}</span>
+            {/* Chat v5: code's accuracy closes every answer that has one (older answers show none). */}
+            {message.accuracy && <AccuracyBadge accuracy={message.accuracy} />}
+          </span>
         </div>
       )}
     </article>

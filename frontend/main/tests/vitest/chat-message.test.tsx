@@ -238,7 +238,8 @@ describe('stopped, in plain words', () => {
       return text;
     };
     expect(words('cancelled')).toBe('Stopped');
-    expect(words('cost_cap')).toBe('Stopped: this answer reached its $5 limit');
+    // Saved without its cap: the words never name today's setting (#1483).
+    expect(words('cost_cap')).toBe('Stopped: this answer reached its cost limit');
     expect(words('turn_limit')).toBe('Stopped after the maximum number of steps');
     expect(words('error')).toBe('Something went wrong. Try again.Retry');
 

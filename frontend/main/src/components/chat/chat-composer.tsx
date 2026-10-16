@@ -51,6 +51,8 @@ export interface ChatComposerProps {
   /** Small muted words at the foot of the model menu (what a message may cost). */
   menuFootnote?: string;
   textareaRef?: React.RefObject<HTMLTextAreaElement | null>;
+  /** Shown at the bottom left (chat v4: the Countertop / Cabinet chips). */
+  leading?: React.ReactNode;
 }
 
 /**
@@ -74,6 +76,7 @@ export function ChatComposer({
   placeholder,
   menuFootnote,
   textareaRef,
+  leading,
 }: ChatComposerProps) {
   const fieldId = useId();
   const ownRef = useRef<HTMLTextAreaElement>(null);
@@ -121,6 +124,7 @@ export function ChatComposer({
         className="block max-h-[40vh] min-h-[52px] w-full resize-none border-0 bg-transparent px-4 pt-3.5 pb-1 text-[15px] leading-[1.55] text-foreground outline-none placeholder:text-muted-foreground"
       />
       <div className="flex min-w-0 items-center gap-1 px-2.5 pt-1 pb-2.5">
+        {leading}
         <span className="flex-1" />
         {value.length > MESSAGE_MAX - 500 && (
           <span className="mr-1 text-xs text-muted-foreground">
