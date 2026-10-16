@@ -56,7 +56,9 @@ from workflow.draft_cloud import (
 )
 from workflow.redline_outputs import (
     NOT_CHECKED,
+    ai_review_input,
     architect_compare_input,
+    compare_for_render,
     redline_marks,
     render_draft_redline,
 )
@@ -64,8 +66,10 @@ from workflow.redline_outputs import (
 __all__ = [
     "BANNER",
     "OpenItems",
+    "ai_review_for_draft",
     "architect_compare_for_draft",
     "grouped_by_reason",
+    "old_compare_switched_on",
     "open_items",
     "render_draft_cloud",
 ]
@@ -176,7 +180,61 @@ def open_items(
 ARCHITECT_COMPARE_MODULE: Final = "app.review.architect_compare"
 
 
+#: Where the AI page review's rows are read (the same function the review items use).
+AI_REVIEW_MODULE: Final = "app.review.ai_review"
+
+#: The setting that switches the old direct-compare pipeline on (`GV_ARCH_COMPARE_RECORDS`).
+OLD_COMPARE_SETTING: Final = "arch_compare_records"
+
+
+def old_compare_switched_on() -> bool:
+    """Whether the old direct compare is on (`GV_ARCH_COMPARE_RECORDS`). Before that setting
+    exists the old compare is the only one, so it stays on, exactly as before."""
+    from pydantic import ValidationError
+
+    from app.config import Settings
+
+    field = Settings.model_fields.get(OLD_COMPARE_SETTING)
+    if field is None:
+        return True
+    try:
+        return bool(getattr(Settings(), OLD_COMPARE_SETTING))  # type: ignore[call-arg]
+    except ValidationError:
+        return bool(field.default)
+
+
+def ai_review_for_draft(
+    session: Session, package_revision_id: UUID
+) -> tuple[ArchitectCompare | None, tuple[ReviewerMark, ...]]:
+    """The live AI page review for the draft, and the marks of a person who agreed with a row.
+    `(None, ())` before the AI page review exists or while it has no row on this revision."""
+    import importlib
+
+    try:
+        module = importlib.import_module(AI_REVIEW_MODULE)
+    except ModuleNotFoundError as error:
+        if error.name != AI_REVIEW_MODULE:
+            raise
+        return None, ()
+    return ai_review_input(module.ai_review_for_revision(session, package_revision_id))
+
+
 def architect_compare_for_draft(
+    session: Session, package_revision_id: UUID
+) -> tuple[ArchitectCompare | None, tuple[ReviewerMark, ...]]:
+    """What the draft compares with the architect: the live AI page review when it has rows, else
+    the live direct compare while it is switched on; never both, so nothing is clouded twice."""
+    return compare_for_render(
+        ai_review_for_draft(session, package_revision_id),
+        lambda: (
+            _direct_compare_for_draft(session, package_revision_id)
+            if old_compare_switched_on()
+            else (None, ())
+        ),
+    )
+
+
+def _direct_compare_for_draft(
     session: Session, package_revision_id: UUID
 ) -> tuple[ArchitectCompare | None, tuple[ReviewerMark, ...]]:
     """The live direct compare for the draft, and the marks of a person who agreed with one.

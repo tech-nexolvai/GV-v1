@@ -27,6 +27,7 @@ from app.review.signed_exports import (
     load_snapshot,
 )
 from reports.findings_pdf import FindingsPdfInput, write_findings_pdf
+from reports.redline import ArchitectCompare, ReviewerMark
 from reports.spreadsheet import (
     StoredFinding,
     WorkbookSignoff,
@@ -34,7 +35,9 @@ from reports.spreadsheet import (
 )
 from storage.store import ArtifactStore
 from workflow.redline_outputs import (
+    ai_review_input,
     architect_compare_input,
+    compare_for_render,
     redline_marks,
     render_evidence_grounded_redline,
 )
@@ -56,6 +59,24 @@ def record_publication_failure(
                     error_type=type(error).__name__,
                 )
             )
+
+
+def frozen_compare_input(
+    payload: object,
+) -> tuple[ArchitectCompare | None, tuple[ReviewerMark, ...]]:
+    """What the signed cloud PDF compares with the architect, from the sign-off snapshot only:
+    the AI page review frozen there (`ai_review`) when it has rows, else the direct compare frozen
+    there (`architect_compare`: its items and counts); never both. A snapshot with neither is
+    drawn exactly as before."""
+    frozen_compare = getattr(payload, "architect_compare", None)
+    return compare_for_render(
+        ai_review_input(getattr(payload, "ai_review", None)),
+        lambda: (
+            (None, ())
+            if frozen_compare is None
+            else architect_compare_input(frozen_compare.items, frozen_compare.counts)
+        ),
+    )
 
 
 def generate_signed_outputs(
@@ -106,14 +127,7 @@ def generate_signed_outputs(
     # A format-2 snapshot (#1363) carries a person's marks and the results printed NOT CHECKED;
     # a format-1 snapshot carries neither, and its cloud PDF is drawn exactly as before.
     marks = payload.reviewer_marks
-    # The direct compare frozen at sign-off (`architect_compare`: its items and counts), when the
-    # snapshot has it; a snapshot without it is drawn exactly as before.
-    frozen_compare = getattr(payload, "architect_compare", None)
-    architect, agreed = (
-        (None, ())
-        if frozen_compare is None
-        else architect_compare_input(frozen_compare.items, frozen_compare.counts)
-    )
+    architect, agreed = frozen_compare_input(payload)
     shown_marks = None if marks is None else redline_marks(marks)
     if agreed:
         shown_marks = (*(shown_marks or ()), *agreed)

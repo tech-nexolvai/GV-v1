@@ -436,6 +436,31 @@ class ArchitectCompareCounts:
 
 
 @dataclass(frozen=True, slots=True)
+class AiReviewCounts:
+    """How the AI page review's rows came out (`app/review/ai_review.py`), for the summary's line.
+
+    The AI read both drawings and code decided each row; `unsure` counts the rows the AI could not
+    settle, a number hidden under markup ("unreadable") included, so no row leaves the line."""
+
+    same: int
+    different: int
+    not_shown: int
+    unsure: int
+
+    def __post_init__(self) -> None:
+        for value in (self.same, self.different, self.not_shown, self.unsure):
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError("AI page review counts are whole numbers, never negative")
+
+    @property
+    def line(self) -> str:
+        return (
+            f"Compared with the architect (AI read): {self.same} same \u00b7 {self.different} "
+            f"different \u00b7 {self.not_shown} not shown \u00b7 {self.unsure} unsure"
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ArchitectDifference:
     """One architect dimension the vendor drew differently (direct compare), as the PDF shows it.
 
@@ -452,6 +477,9 @@ class ArchitectDifference:
     unplaced_reason: str | None = None
     answer: ArchitectAnswer | None = None
     answered_by: str | None = None
+    measures: str | None = None
+    """What the dimension measures, as the AI page review says it ("overall width"); `None` for a
+    direct-compare result, whose words are then exactly as before."""
 
     def __post_init__(self) -> None:
         if not self.architect_text.strip() or not self.vendor_text.strip():
@@ -466,22 +494,25 @@ class ArchitectDifference:
     @property
     def words(self) -> str:
         """ "✗ Architect: Y — vendor: X", as drawn and listed."""
-        return (
+        words = (
             f"{ARCHITECT_DIFFERENT_GLYPH} Architect: {self.architect_text} \u2014 "
             f"vendor: {self.vendor_text}"
         )
+        measures = (self.measures or "").strip()
+        return f"{words} ({measures})" if measures else words
 
 
 @dataclass(frozen=True, slots=True)
 class ArchitectCompare:
-    """The direct compare for one render: the counts, and every "different" result."""
+    """The direct compare, or the AI page review, for one render: the counts, and every
+    "different" result. The two are never drawn together (`workflow/redline_outputs.py`)."""
 
-    counts: ArchitectCompareCounts
+    counts: ArchitectCompareCounts | AiReviewCounts
     different: tuple[ArchitectDifference, ...] = ()
 
     def __post_init__(self) -> None:
-        if not isinstance(self.counts, ArchitectCompareCounts):
-            raise TypeError("counts must be ArchitectCompareCounts")
+        if not isinstance(self.counts, ArchitectCompareCounts | AiReviewCounts):
+            raise TypeError("counts must be ArchitectCompareCounts or AiReviewCounts")
         if any(not isinstance(item, ArchitectDifference) for item in self.different):
             raise TypeError("different must hold ArchitectDifference values")
 
