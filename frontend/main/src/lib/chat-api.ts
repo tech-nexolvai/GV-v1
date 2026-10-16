@@ -60,7 +60,10 @@ export interface ChatSummary {
 }
 
 export interface ChatList {
+  /** Only chats with at least one message: a chat is made on its first message. */
   chats: ChatSummary[];
+  /** The drawing set's name, for a new chat's greeting. */
+  package_name?: string | null;
 }
 
 /** `POST /packages/{id}/chats`: a new empty chat. */
@@ -81,6 +84,8 @@ export interface Chat {
   messages: ChatMessage[];
   /** True while a message of this chat is being answered (its answer is not stored yet). */
   running?: boolean | null;
+  /** The answer being written while `running`: followed live with `followChatMessage`. */
+  running_message_id?: string | null;
 }
 
 /** Why a message stopped before it finished; null or absent when it finished. */
@@ -105,6 +110,11 @@ export interface ChatMessage {
   stopped?: ChatStopped | null;
   /** Plain words about a failure (`stopped: "error"`). */
   error?: string | null;
+  /** The per-answer cap and the drawing set's AI budget this answer ran under ("5.00", "40.00"). */
+  message_cap_usd?: string | null;
+  package_cap_usd?: string | null;
+  /** With `stopped: "cost_cap"`: which one stopped it. */
+  cap_hit?: 'message' | 'package' | null;
 }
 
 export type ChatBlock =
@@ -230,6 +240,8 @@ export const chatPaths = {
   chats: (packageId: string) => `${BASE}/packages/${id(packageId)}/chats`,
   chat: (chatId: string) => `${BASE}/chats/${id(chatId)}`,
   messages: (chatId: string) => `${BASE}/chats/${id(chatId)}/messages`,
+  /** A message's events: the running one's so far then live, or a finished one's end at once. */
+  events: (chatId: string, messageId: string) => `${BASE}/chats/${id(chatId)}/messages/${id(messageId)}/events`,
   cancel: (chatId: string) => `${BASE}/chats/${id(chatId)}/cancel`,
   file: (chatId: string, fileId: string) => `${BASE}/chats/${id(chatId)}/files/${id(fileId)}`,
   picture: (chatId: string, pictureId: string) => `${BASE}/chats/${id(chatId)}/pictures/${id(pictureId)}`,
@@ -304,6 +316,26 @@ export async function streamChatMessage(
     body: JSON.stringify(body),
     signal,
   });
+  return readChatStream(response, onEvent);
+}
+
+/**
+ * Follow a message (#1479), like claude.ai when you come back to a chat that is still answering:
+ * the running message's events so far (streamed words arrive merged), then each new one live, until
+ * `message_end`; for a message already finished, `message_end` at once. Same events and same
+ * failures as `streamChatMessage`. Aborting `signal` only stops reading: the message goes on.
+ */
+export async function followChatMessage(
+  chatId: string,
+  messageId: string,
+  onEvent: (event: ChatEvent) => void,
+  signal?: AbortSignal,
+): Promise<ChatMessage> {
+  const response = await fetch(chatPaths.events(chatId, messageId), { headers: { Accept: 'text/event-stream' }, signal });
+  return readChatStream(response, onEvent);
+}
+
+async function readChatStream(response: Response, onEvent: (event: ChatEvent) => void): Promise<ChatMessage> {
   const requestId = response.headers.get('x-request-id') ?? 'unknown';
   if (!response.ok || !response.body) throw await failure(response);
 
@@ -375,6 +407,7 @@ export interface ChatApi {
   create: typeof createChat;
   get: typeof getChat;
   send: typeof streamChatMessage;
+  follow: typeof followChatMessage;
   cancel: typeof cancelChat;
 }
 
@@ -384,5 +417,6 @@ export const LIVE_CHAT_API: ChatApi = {
   create: createChat,
   get: getChat,
   send: streamChatMessage,
+  follow: followChatMessage,
   cancel: cancelChat,
 };

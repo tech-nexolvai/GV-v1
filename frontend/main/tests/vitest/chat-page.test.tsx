@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 /**
- * The chat page (#1464) against a fake chat API: opening a set's newest chat, the empty chat, a
- * saved chat shown exactly after a reload, a message streaming in, Stop, the composer's model /
- * effort / thinking rules, and models that are not available. Synthetic data only.
+ * The chat page (#1464) against a fake chat API: a new chat made on its first message (#1479), the
+ * empty chat, a saved chat shown exactly after a reload, a message streaming in, Stop, an answer still
+ * running followed live after a reload (#1479), the composer's model / effort / thinking rules, and
+ * models that are not available. Synthetic data only.
  */
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -13,7 +14,7 @@ import { ShellSlotsContext } from '@/components/shell/shellSlots';
 import { CHOICE_KEY } from '@/lib/chat-settings';
 import { ChatPage } from '@/pages/ChatPage';
 import type { ChatApi } from '@/lib/chat-api';
-import { chatOut, drivenStream, fakeChatApi, modelsOut, QUESTION, SAVED_ANSWER, SET_NAME, summary } from './fixtures/chat';
+import { chatOut, drivenFollow, drivenStream, fakeChatApi, modelsOut, QUESTION, SAVED_ANSWER, SET_NAME, summary } from './fixtures/chat';
 
 beforeEach(() => {
   try {
@@ -41,18 +42,40 @@ const composer = () => screen.getByRole('textbox', { name: 'Your message' });
 const sendButton = () => screen.getByRole('button', { name: 'Send message' });
 
 describe('opening a drawing set’s chats', () => {
-  it('#/chat/<set> opens the newest chat in place of the address', async () => {
-    const api = fakeChatApi({ list: vi.fn(async () => ({ chats: [summary('c-new', { title: 'Newest' }), summary('c-old')] })) });
+  it('#/chat/<set> shows the empty composer and makes no chat (like claude.ai)', async () => {
+    const api = fakeChatApi({ list: vi.fn(async () => ({ chats: [summary('c-old', { title: 'Older', turns: 1 })], package_name: SET_NAME })) });
     const { onOpenChat } = renderChat(api, null);
-    await waitFor(() => expect(onOpenChat).toHaveBeenCalledWith('c-new', { replace: true }));
+    expect(await screen.findByRole('heading', { name: `What do you want to know about ${SET_NAME}?` })).toBeTruthy();
+    await waitFor(() => expect(screen.queryByRole('button', { name: /^Model:/ })).not.toBeNull());
+    expect(composer()).toBeTruthy();
     expect(api.create).not.toHaveBeenCalled();
+    expect(api.get).not.toHaveBeenCalled();
+    expect(onOpenChat).not.toHaveBeenCalled();
   });
 
-  it('a set with no chats gets one new empty chat', async () => {
-    const api = fakeChatApi({ list: vi.fn(async () => ({ chats: [] })) });
+  it('the first send makes the chat, moves the address to it, then sends to it', async () => {
+    const stream = drivenStream();
+    const api = fakeChatApi({ send: stream.send, list: vi.fn(async () => ({ chats: [], package_name: SET_NAME })) });
     const { onOpenChat } = renderChat(api, null);
-    await waitFor(() => expect(onOpenChat).toHaveBeenCalledWith('c-new', { replace: true }));
+    await screen.findByRole('heading', { name: `What do you want to know about ${SET_NAME}?` });
+    await waitFor(() => expect(screen.queryByRole('button', { name: /^Model:/ })).not.toBeNull());
+    await userEvent.setup().type(composer(), 'How many pages?{Enter}');
+    await waitFor(() => expect(stream.send).toHaveBeenCalledTimes(1));
     expect(api.create).toHaveBeenCalledTimes(1);
+    expect(api.create.mock.invocationCallOrder[0]).toBeLessThan(stream.send.mock.invocationCallOrder[0]);
+    expect(stream.send.mock.calls[0][0]).toBe('c-new');
+    expect(stream.send.mock.calls[0][1].text).toBe('How many pages?');
+    expect(onOpenChat).toHaveBeenCalledWith('c-new', { replace: true });
+  });
+
+  it('New chat goes to the empty composer instead of making a chat', async () => {
+    const api = fakeChatApi({ get: vi.fn(async (id: string) => chatOut(id, [QUESTION, SAVED_ANSWER])) });
+    const { onOpenChat } = renderChat(api);
+    const nav = await screen.findByRole('navigation', { name: 'Chats in this drawing set' });
+    await screen.findByRole('article', { name: 'Answer' });
+    await userEvent.setup().click(within(nav).getByRole('button', { name: 'New chat' }));
+    expect(onOpenChat).toHaveBeenCalledWith(null);
+    expect(api.create).not.toHaveBeenCalled();
   });
 
   it('lists the set’s chats as links (in the sidebar), the open one marked, with New chat on top', async () => {
@@ -166,6 +189,8 @@ describe('a saved chat, after a reload', () => {
       { ...SAVED_ANSWER, id: 'a-2', stopped: 'error' as const, error: 'The model provider did not answer' },
       { ...SAVED_ANSWER, id: 'a-3', stopped: 'turn_limit' as const },
       { ...SAVED_ANSWER, id: 'a-4', stopped: 'cancelled' as const },
+      { ...SAVED_ANSWER, id: 'a-5', stopped: 'cost_cap' as const, cap_hit: 'package' as const, message_cap_usd: '5.00', package_cap_usd: '40.00' },
+      { ...SAVED_ANSWER, id: 'a-6', stopped: 'cost_cap' as const, cap_hit: 'message' as const, message_cap_usd: '3.00', package_cap_usd: '40.00' },
     ];
     renderChat(fakeChatApi({ get: vi.fn(async () => chatOut('c-1', stopped)) }));
     await screen.findAllByRole('article', { name: 'Answer' });
@@ -174,6 +199,8 @@ describe('a saved chat, after a reload', () => {
       'Something went wrong. Try again.',
       'Stopped after the maximum number of steps',
       'Stopped',
+      'Stopped: this drawing set has used its $40 AI budget',
+      'Stopped: this answer reached its $3 limit',
     ]);
   });
 });
@@ -286,18 +313,76 @@ describe('a message streaming in', () => {
     await user.click(screen.getByRole('button', { name: 'Reload chat' }));
     await waitFor(() => expect(api.get).toHaveBeenCalledTimes(2));
   });
+});
 
-  it('a chat still answering elsewhere shows it, offers Stop, and reads it again until it is saved', async () => {
-    const get = vi.fn()
-      .mockResolvedValueOnce(chatOut('c-1', [QUESTION], { running: true }))
-      .mockResolvedValue(chatOut('c-1', [QUESTION, SAVED_ANSWER], { running: false }));
-    const api = fakeChatApi({ get });
-    renderChat(api, 'c-1', { runningPollMs: 10 });
-    expect(await screen.findByText(/Still answering the last message/)).toBeTruthy();
+describe('an answer still running when its chat is opened (a reload, another tab)', () => {
+  const running = () => chatOut('c-1', [QUESTION], { running: true, running_message_id: 'a-7' });
+
+  it('follows it live: the events so far, then each new one, shown like an answer sent from here, with Stop', async () => {
+    const feed = drivenFollow();
+    const api = fakeChatApi({ get: vi.fn(async () => running()), follow: feed.follow });
+    renderChat(api);
+    await waitFor(() => expect(feed.follow).toHaveBeenCalledTimes(1));
+    expect(feed.follow.mock.calls[0].slice(0, 2)).toEqual(['c-1', 'a-7']);
+    expect(screen.queryByText(/started before this page opened/)).toBeNull();
+    const answer = await screen.findByRole('article', { name: 'Answer' });
+
+    // The replay: thinking so far (one merged delta), shimmering, folded.
+    act(() => feed.emit(
+      { event: 'message_start', data: { message_id: 'a-7', model: 'claude-opus-5-5', effort: 'high', thinking: true } },
+      { event: 'thinking_start', data: { index: 0 } },
+      { event: 'thinking_delta', data: { index: 0, text: 'Reading the vendor pages.' } },
+    ));
+    const thinking = within(answer).getByRole('button', { name: 'Reading the vendor pages.' });
+    expect(thinking.querySelector('[data-slot="chat-shimmer"]')?.getAttribute('data-active')).toBe('true');
     expect(screen.getByRole('button', { name: 'Stop response' })).toBeTruthy();
-    await screen.findByRole('article', { name: 'Answer' });
-    expect(screen.queryByText(/Still answering the last message/)).toBeNull();
+
+    // Then live: a step, and the words streaming in.
+    act(() => feed.emit(
+      { event: 'thinking_end', data: { index: 0, seconds: 9 } },
+      { event: 'step_start', data: { index: 1, step: { id: 's1', tool: 'bash_tool', label: 'List the PDFs', ok: null } } },
+      { event: 'step_end', data: { index: 1, step: { id: 's1', tool: 'bash_tool', label: 'List the PDFs', command: 'ls', output: 'vendor.pdf', ok: true } } },
+      { event: 'text_delta', data: { index: 2, text: 'Two items ' } },
+      { event: 'text_delta', data: { index: 2, text: 'differ.' } },
+    ));
+    expect(within(answer).getByText('Two items differ.')).toBeTruthy();
+    expect(answer.querySelector('[data-slot="chat-markdown"][data-streaming="true"]')).not.toBeNull();
+
+    await act(async () => feed.end({ ...SAVED_ANSWER, id: 'a-7' }));
+    expect(answer.querySelector('[data-streaming="true"]')).toBeNull();
     expect(screen.getByRole('button', { name: 'Send message' })).toBeTruthy();
+    expect(screen.getByRole('status').textContent).toBe('Answer ready');
+  });
+
+  it('Stop on a followed answer asks the server to stop it', async () => {
+    const feed = drivenFollow();
+    const api = fakeChatApi({ get: vi.fn(async () => running()), follow: feed.follow });
+    renderChat(api);
+    await waitFor(() => expect(feed.follow).toHaveBeenCalledTimes(1));
+    act(() => feed.emit({ event: 'text_delta', data: { index: 0, text: 'So far' } }));
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Stop response' }));
+    expect(api.cancel).toHaveBeenCalledWith('c-1');
+    await waitFor(() => expect(document.querySelector('[data-slot="chat-stopped"]')?.textContent).toBe('Stopped'));
+  });
+
+  it('leaving the chat only stops reading: the server is not asked to stop', async () => {
+    const feed = drivenFollow();
+    const api = fakeChatApi({ get: vi.fn(async (id: string) => (id === 'c-1' ? running() : chatOut(id))), follow: feed.follow });
+    const onOpenChat = vi.fn();
+    const chats = document.body.appendChild(document.createElement('div'));
+    const page = (chatId: string) => (
+      <ShellSlotsContext.Provider value={{ title: null, actions: null, chats }}>
+        <ChatPage packageId="pkg-1" chatId={chatId} api={api} onOpenChat={onOpenChat} stopGraceMs={0} />
+      </ShellSlotsContext.Provider>
+    );
+    const { rerender } = render(page('c-1'));
+    await waitFor(() => expect(feed.follow).toHaveBeenCalledTimes(1));
+    rerender(page('c-2'));
+    expect((feed.follow.mock.calls[0][3] as AbortSignal).aborted).toBe(true);
+    expect(api.cancel).not.toHaveBeenCalled();
+    // Coming back follows it again.
+    rerender(page('c-1'));
+    await waitFor(() => expect(feed.follow).toHaveBeenCalledTimes(2));
   });
 });
 

@@ -48,6 +48,7 @@ type ChatStepTool = Literal[
     "review_results",
 ]
 type ChatStopped = Literal["cost_cap", "cancelled", "error", "turn_limit"]
+type ChatCapHit = Literal["message", "package"]
 
 
 class ChatMessageIn(BaseModel):
@@ -161,6 +162,17 @@ class ChatMessageOut(BaseModel):
     cost_usd: str | None = None
     stopped: ChatStopped | None = None
     error: str | None = None
+    message_cap_usd: str | None = Field(
+        default=None, description='The per-answer cap this answer ran under ("5.00").'
+    )
+    package_cap_usd: str | None = Field(
+        default=None, description='The drawing set\'s AI budget this answer ran under ("40.00").'
+    )
+    cap_hit: ChatCapHit | None = Field(
+        default=None,
+        description="With `stopped: cost_cap`: `message` (this answer's cap) or `package` (the "
+        "drawing set's budget ran out).",
+    )
 
 
 class ChatSummaryOut(BaseModel):
@@ -177,6 +189,9 @@ class ChatListOut(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     chats: list[ChatSummaryOut]
+    package_name: str | None = Field(
+        default=None, description="The drawing set's name, for a new chat's greeting."
+    )
 
 
 class ChatCreatedOut(BaseModel):
@@ -200,6 +215,11 @@ class ChatOut(BaseModel):
         default=False,
         description="True while a message of this chat is being answered (its answer is not "
         "stored yet).",
+    )
+    running_message_id: UUID | None = Field(
+        default=None,
+        description="The answer being written while `running`: follow it with "
+        "GET /chats/{chat_id}/messages/{running_message_id}/events.",
     )
 
 

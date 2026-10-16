@@ -14,8 +14,10 @@
    the stored message.
 
 **One message at a time per chat** (`ChatRegistry.claim`); a second is refused (409) before its
-stream starts. Cancel (or the client going away) sets the message's cancel flag and kills the
-sandbox commands running for it.
+stream starts. Only Stop (`POST /chats/{id}/cancel`) cancels: it sets the message's cancel flag and
+kills the sandbox commands running for it. A screen going away changes nothing (#1479): the
+message's events go into its `MessageFeed`, which any screen can follow again, and it is stored when
+it ends, like claude.ai.
 """
 
 from __future__ import annotations
@@ -40,8 +42,10 @@ from app.review.assistant.chat_engine import (
     ChatEngine,
     EngineSettings,
     MessageOutcome,
+    cap_text,
     cost_text,
 )
+from app.review.assistant.chat_feed import MessageFeed
 from app.review.assistant.chat_provider import ChatProvider
 from app.review.assistant.chat_request import ChatModel
 from app.review.assistant.chat_store import (
@@ -114,6 +118,8 @@ class RunningMessage:
     started: bool = False
     engine: ChatEngine | None = None
     sandbox: Sandbox | None = None
+    feed: MessageFeed = field(default_factory=MessageFeed)
+    """Its events so far, for the screens following it (the sender's, a reload's, another tab's)."""
 
     def spent(self) -> int:
         engine = self.engine
@@ -148,6 +154,9 @@ class ChatRegistry:
                 current.started or monotonic() - current.claimed_at < _STALE_CLAIM_SECONDS
             ):
                 return None
+            if current is not None:
+                # A claim whose message never started: anything following it stops waiting.
+                current.feed.close()
             run = RunningMessage(chat_id=chat_id, package_id=package_id, message_id=message_id)
             self._runs[chat_id] = run
             return run
@@ -404,22 +413,35 @@ _NOT_SAVED: Final = (
 
 def _budget_used(job: MessageJob) -> str:
     return (
-        f"This drawing set has used its assistant budget (${cost_text(job.package_cap_micros)}), "
-        "so Claude was not asked. Your admin can raise GV_ASSISTANT_PACKAGE_CAP_USD."
+        f"This drawing set has used its ${cap_text(job.package_cap_micros)} AI budget, so Claude "
+        "was not asked. Your admin can raise GV_ASSISTANT_PACKAGE_CAP_USD."
     )
 
 
-def run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
+def run_message(job: MessageJob, run: RunningMessage, emit: Emit | None = None) -> None:
     """One message, start to stored answer. Never raises; always ends with `message_end`, except
-    when even the question could not be stored (then `error`, and the stream ends)."""
+    when even the question could not be stored (then `error`, and the stream ends). Its events go
+    into `run.feed` (and to `emit`, when given); the feed closes when it ends."""
+    feed = run.feed
+
+    def publish(event: str, data: dict[str, Any]) -> None:
+        feed.publish(event, data)
+        if emit is not None:
+            emit(event, data)
+
     try:
-        _run_message(job, run, emit)
+        _run_message(job, run, publish)
     except Exception:  # noqa: BLE001 - the stream still ends cleanly
         _log.exception("assistant chat message failed before it could be stored")
         _safe(
-            emit, "error", {"message": "Something went wrong in the assistant. Please ask again."}
+            publish,
+            "error",
+            {"message": "Something went wrong in the assistant. Please ask again."},
         )
     finally:
+        # Closed before the slot is freed: a screen that finds no running message then finds the
+        # stored one.
+        feed.close()
         job.registry.release(run)
 
 
@@ -456,7 +478,9 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
     def finish(outcome: MessageOutcome) -> None:
         _finish(job, run, emit, outcome)
 
-    def stop_with(text: str, stopped: str, error: str | None = None) -> None:
+    def stop_with(
+        text: str, stopped: str, error: str | None = None, cap_hit: str | None = None
+    ) -> None:
         if text:
             _safe(emit, "text_delta", {"index": 0, "text": text})
         finish(
@@ -468,6 +492,7 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
                 cost_micros=run.spent(),
                 stopped=stopped,
                 error=error,
+                cap_hit=cap_hit,
             )
         )
 
@@ -476,7 +501,7 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             return package_spent_micros(session, job.package_id, job.registry, exclude=run)
 
     if package_spent() >= job.package_cap_micros:
-        stop_with(_budget_used(job), "cost_cap")
+        stop_with(_budget_used(job), "cost_cap", cap_hit="package")
         return
     workspace = ChatWorkspace.open(job.chat_root / str(job.chat_id))
     try:
@@ -585,6 +610,9 @@ def _finish(job: MessageJob, run: RunningMessage, emit: Emit, outcome: MessageOu
                 cost_micros=outcome.cost_micros,
                 stopped=outcome.stopped,
                 error=outcome.error,
+                message_cap_micros=job.message_cap_micros,
+                package_cap_micros=job.package_cap_micros,
+                cap_hit=outcome.cap_hit if outcome.stopped == "cost_cap" else None,
             )
             session.commit()
             stored = message_out(message, files_of(session, job.chat_id))

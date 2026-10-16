@@ -116,8 +116,9 @@ export default function App() {
 
   // Stable, so the chat page's effects that use them run only when the chat changes.
   const openChat = useCallback(
-    (id: string, options?: { replace?: boolean }) => {
-      if (chatPackageId !== null) navigate({ page: 'chat', packageId: chatPackageId, chatId: id }, options);
+    (id: string | null, options?: { replace?: boolean }) => {
+      // null: a new chat (`#/chat/<set>`), made on its first message.
+      if (chatPackageId !== null) navigate(id ? { page: 'chat', packageId: chatPackageId, chatId: id } : { page: 'chat', packageId: chatPackageId }, options);
     },
     [navigate, chatPackageId],
   );

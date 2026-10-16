@@ -3575,6 +3575,13 @@
         "title": "ChatCancelOut",
         "type": "object"
       },
+      "ChatCapHit": {
+        "enum": [
+          "message",
+          "package"
+        ],
+        "type": "string"
+      },
       "ChatCreatedOut": {
         "properties": {
           "created_at": {
@@ -3649,6 +3656,18 @@
             },
             "title": "Chats",
             "type": "array"
+          },
+          "package_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The drawing set's name, for a new chat's greeting.",
+            "title": "Package Name"
           }
         },
         "required": [
@@ -3733,6 +3752,17 @@
             ],
             "title": "Blocks"
           },
+          "cap_hit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatCapHit"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With `stopped: cost_cap`: `message` (this answer's cap) or `package` (the drawing set's budget ran out)."
+          },
           "cost_usd": {
             "anyOf": [
               {
@@ -3790,6 +3820,18 @@
             "title": "Id",
             "type": "string"
           },
+          "message_cap_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The per-answer cap this answer ran under (\"5.00\").",
+            "title": "Message Cap Usd"
+          },
           "model": {
             "anyOf": [
               {
@@ -3800,6 +3842,18 @@
               }
             ],
             "title": "Model"
+          },
+          "package_cap_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The drawing set's AI budget this answer ran under (\"40.00\").",
+            "title": "Package Cap Usd"
           },
           "role": {
             "enum": [
@@ -3930,6 +3984,19 @@
             "description": "True while a message of this chat is being answered (its answer is not stored yet).",
             "title": "Running",
             "type": "boolean"
+          },
+          "running_message_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The answer being written while `running`: follow it with GET /chats/{chat_id}/messages/{running_message_id}/events.",
+            "title": "Running Message Id"
           },
           "title": {
             "anyOf": [
@@ -16700,7 +16767,7 @@
     },
     "/api/v1/chats/{chat_id}/messages": {
       "post": {
-        "description": "`message_start`, then thinking, text, steps, helpers, files and usage as they happen, then\n`message_end` with the stored message (`error` first when it failed). The browser going away\ncancels the message, which is still stored.",
+        "description": "`message_start`, then thinking, text, steps, helpers, files and usage as they happen, then\n`message_end` with the stored message (`error` first when it failed). The browser going away\nonly stops this stream: the message goes on and is stored, and `GET .../events` follows it.",
         "operationId": "send_message_api_v1_chats__chat_id__messages_post",
         "parameters": [
           {
@@ -16761,6 +16828,78 @@
           }
         },
         "summary": "Send a message and stream the answer",
+        "tags": [
+          "assistant chats"
+        ]
+      }
+    },
+    "/api/v1/chats/{chat_id}/messages/{message_id}/events": {
+      "get": {
+        "description": "For a running message, every event so far (the same events as the `POST` stream, with\nstreamed words merged), then each new one until `message_end`. For a finished message,\n`message_end` with the stored message at once. Leaving changes nothing for the message.",
+        "operationId": "follow_message_api_v1_chats__chat_id__messages__message_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chat_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Chat Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "message_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Message Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "itemSchema": {
+                  "properties": {
+                    "data": {
+                      "type": "string"
+                    },
+                    "event": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "retry": {
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No such message in this chat (or no access)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Follow a message: its events so far, then live until it ends",
         "tags": [
           "assistant chats"
         ]

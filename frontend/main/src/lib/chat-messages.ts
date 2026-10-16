@@ -43,6 +43,10 @@ export interface ViewMessage {
   cost_usd: string | null;
   stopped: ChatStopped | null;
   error: string | null;
+  /** The caps it ran under, and which one stopped it (saved answers; absent while it streams). */
+  message_cap_usd?: string | null;
+  package_cap_usd?: string | null;
+  cap_hit?: 'message' | 'package' | null;
   /** `running` while its stream is open; `failed` when the stream broke before `message_end`. */
   status: 'running' | 'done' | 'failed';
   /** Plain words for a `failed` message. */
@@ -82,6 +86,9 @@ export function fromSaved(message: ChatMessage): ViewMessage {
     cost_usd: message.cost_usd ?? null,
     stopped: message.stopped ?? null,
     error: message.error ?? null,
+    message_cap_usd: message.message_cap_usd ?? null,
+    package_cap_usd: message.package_cap_usd ?? null,
+    cap_hit: message.cap_hit ?? null,
     status: 'done',
   };
 }
@@ -98,6 +105,17 @@ export function localQuestion(key: string, text: string, now = new Date()): View
 export function localAnswer(key: string, choice: { model: string; effort: ChatEffort; thinking: boolean }, now = new Date()): ViewMessage {
   return {
     key, id: null, role: 'assistant', created_at: now.toISOString(), text: '', ...choice,
+    blocks: [], files: [], tasks: null, cost_usd: null, stopped: null, error: null, status: 'running',
+  };
+}
+
+/**
+ * An answer still being written when the chat was opened (a reload, another tab): its events are
+ * replayed from the server and then follow live, exactly like an answer sent from this screen.
+ */
+export function followedAnswer(messageId: string, now = new Date()): ViewMessage {
+  return {
+    key: `follow-${messageId}`, id: messageId, role: 'assistant', created_at: now.toISOString(), text: '', model: null, effort: null, thinking: null,
     blocks: [], files: [], tasks: null, cost_usd: null, stopped: null, error: null, status: 'running',
   };
 }
@@ -448,11 +466,22 @@ function capWords(value: string | null | undefined): string | null {
   return Number.isInteger(amount) ? `$${amount}` : `$${amount.toFixed(2)}`;
 }
 
-/** Why an answer stopped, in claude.ai's plain words; null when it finished. */
-export function stoppedWords(message: Pick<ViewMessage, 'stopped'>, messageCapUsd?: string | null): string | null {
+/**
+ * Why an answer stopped, in claude.ai's plain words; null when it finished. A money stop names the cap
+ * the answer actually ran under (kept with it); `messageCapUsd` (today's setting) is only for answers
+ * saved before that was kept.
+ */
+export function stoppedWords(
+  message: Pick<ViewMessage, 'stopped'> & Partial<Pick<ViewMessage, 'cap_hit' | 'message_cap_usd' | 'package_cap_usd'>>,
+  messageCapUsd?: string | null,
+): string | null {
   switch (message.stopped) {
     case 'cost_cap': {
-      const cap = capWords(messageCapUsd);
+      if (message.cap_hit === 'package') {
+        const budget = capWords(message.package_cap_usd);
+        return budget ? `Stopped: this drawing set has used its ${budget} AI budget` : 'Stopped: this drawing set has used its AI budget';
+      }
+      const cap = capWords(message.message_cap_usd ?? messageCapUsd);
       return cap ? `Stopped: this answer reached its ${cap} limit` : 'Stopped: this answer reached its cost limit';
     }
     case 'cancelled':

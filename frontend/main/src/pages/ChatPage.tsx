@@ -9,13 +9,18 @@
  * under a greeting, and the first message glides it down. Switching chats fades the thread; every
  * animation stops under "reduce motion".
  *
- * `#/chat/<set>` opens the set's newest chat (or a new empty one) and replaces itself with
- * `#/chat/<set>/<chat>`, so Back does not bounce. A message streams in event by event; when it
- * ends, the stored message replaces what was built live, so a reload shows exactly the same thing.
+ * `#/chat/<set>` is a new chat, like claude.ai's: the empty composer, and no chat is made until the
+ * first message is sent (then the chat is made, the address becomes `#/chat/<set>/<chat>` in place,
+ * and the message is sent). A message streams in event by event; when it ends, the stored message
+ * replaces what was built live, so a reload shows exactly the same thing.
+ *
+ * Like claude.ai, only Stop stops a message (#1479). Leaving the chat, closing the tab or reloading
+ * only stops reading it: the server goes on answering and saves the answer. Opening a chat whose
+ * last message is still being answered (a reload, another tab) follows it live: the events so far,
+ * then each new one, shown exactly like an answer sent from here, with Stop.
  *
  * Read-only toward the review: an answer here is an AI answer ("check before acting") and never
- * becomes a recorded result. Leaving a chat while a message runs stops that message (the server
- * stops it when the stream closes, and saves it as stopped).
+ * becomes a recorded result.
  */
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
@@ -26,13 +31,12 @@ import { HeaderActions, HeaderTitleExtra, SidebarChats } from '@/components/shel
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { TooltipProvider } from '@/components/ui/tooltip';
-import { LiveSteps } from '@/components/assistant/assistant-steps';
 import { ChatComposer } from '@/components/chat/chat-composer';
 import { ChatList, type ChatListState } from '@/components/chat/chat-list';
 import { AssistantMessage, UserMessage } from '@/components/chat/chat-message';
 import { ApiError } from '@/api/client';
-import { chatFailureWords, isAbort, LIVE_CHAT_API, type Chat, type ChatApi, type ChatModels } from '@/lib/chat-api';
-import { applyChatEvent, CHAT_STARTERS, chatTitle, dollars, fromSaved, localAnswer, localQuestion, previousQuestion, settle, type ViewMessage } from '@/lib/chat-messages';
+import { chatFailureWords, isAbort, LIVE_CHAT_API, type Chat, type ChatApi, type ChatEvent, type ChatMessage, type ChatModels } from '@/lib/chat-api';
+import { applyChatEvent, CHAT_STARTERS, chatTitle, dollars, followedAnswer, fromSaved, localAnswer, localQuestion, previousQuestion, settle, type ViewMessage } from '@/lib/chat-messages';
 import { browserStorage, readChoice, resolveChoice, saveChoice, type ChatChoice } from '@/lib/chat-settings';
 import { cn } from '@/lib/utils';
 
@@ -51,38 +55,27 @@ function money(value: string | null | undefined): string | null {
 
 type ModelsState = { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready'; data: ChatModels };
 
-/**
- * Opening `#/chat/<set>`: the newest chat, else a new one. One request per set at a time, so React's
- * double-run of effects in development never makes two empty chats.
- */
-const opening = new Map<string, Promise<string>>();
-function newestOrNewChat(api: ChatApi, packageId: string): Promise<string> {
-  const known = opening.get(packageId);
-  if (known) return known;
-  const promise = api
-    .list(packageId)
-    .then(({ chats }) => chats[0]?.id ?? api.create(packageId).then((made) => made.id))
-    .finally(() => opening.delete(packageId));
-  opening.set(packageId, promise);
-  return promise;
+/** The message this page is reading (sent from here, or followed): `left` once the reviewer moved away. */
+interface Reading {
+  chatId: string;
+  controller: AbortController;
+  left: boolean;
 }
 
 export interface ChatPageProps {
   packageId: string;
-  /** The open chat; null on `#/chat/<set>` until the newest (or a new) chat is found. */
+  /** The open chat; null on `#/chat/<set>`, a new chat not made yet. */
   chatId: string | null;
-  /** Move to a chat. `replace` swaps the address without a new Back step. */
-  onOpenChat: (chatId: string, options?: { replace?: boolean }) => void;
+  /** Move to a chat, or (null) to a new one. `replace` swaps the address without a new Back step. */
+  onOpenChat: (chatId: string | null, options?: { replace?: boolean }) => void;
   /** The drawing set's name, once known, for the top bar and the tab title. */
   onNameChange?: (name: string) => void;
   api?: ChatApi;
   /** How long Stop waits for the server's stored (stopped) message before it stops reading. Tests pass 0. */
   stopGraceMs?: number;
-  /** How often a chat answered elsewhere (another tab, before a reload) is read again until it is saved. */
-  runningPollMs?: number;
 }
 
-export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LIVE_CHAT_API, stopGraceMs = 3000, runningPollMs = 3000 }: ChatPageProps) {
+export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LIVE_CHAT_API, stopGraceMs = 3000 }: ChatPageProps) {
   // ── The models and the reviewer's choice ──
   const [models, setModels] = useState<ModelsState>({ status: 'loading' });
   const [modelsAsk, setModelsAsk] = useState(0);
@@ -114,14 +107,17 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   const [listAsk, setListAsk] = useState(0);
   // The ids in the newest list read, so a chat opened that it lacks (started elsewhere) is listed.
   const listed = useRef<ReadonlySet<string> | null>(null);
-  const [creating, setCreating] = useState(false);
+  // The set's name from the list, for a new chat's greeting (no chat is read for it).
+  const [listName, setListName] = useState<string | null>(null);
 
   useEffect(() => {
     let current = true;
     api.list(packageId).then(
-      ({ chats }) => {
+      ({ chats, package_name: setName }) => {
         listed.current = new Set(chats.map((listedChat) => listedChat.id));
-        if (current) setList({ status: 'ready', chats });
+        if (!current) return;
+        setList({ status: 'ready', chats });
+        if (setName) setListName(setName);
       },
       (error: unknown) => current && setList((now) => (now.status === 'ready' ? now : { status: 'error', message: chatFailureWords(error) })),
     );
@@ -129,21 +125,6 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
       current = false;
     };
   }, [api, packageId, listAsk]);
-
-  // `#/chat/<set>`: open the newest chat, or a new one, in place of this address.
-  const [openError, setOpenError] = useState<string | null>(null);
-  const [openAsk, setOpenAsk] = useState(0);
-  useEffect(() => {
-    if (chatId) return;
-    let current = true;
-    newestOrNewChat(api, packageId).then(
-      (id) => current && onOpenChat(id, { replace: true }),
-      (error: unknown) => current && setOpenError(chatFailureWords(error)),
-    );
-    return () => {
-      current = false;
-    };
-  }, [api, packageId, chatId, onOpenChat, openAsk]);
 
   // ── The composer, and a message on its way ──
   const [draft, setDraft] = useState('');
@@ -166,14 +147,16 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   const [loadError, setLoadError] = useState<{ chatId: string; message: string; missing: boolean } | null>(null);
   const [loadAsk, setLoadAsk] = useState(0);
   const [thread, setThread] = useState<{ chatId: string; messages: ViewMessage[] } | null>(null);
-  const runRef = useRef<{ chatId: string; controller: AbortController } | null>(null);
+  const runRef = useRef<Reading | null>(null);
   const stopTimer = useRef<number | null>(null);
   const counter = useRef(0);
+  // An answer still being written when its chat was opened: followed live (#1479).
+  const [toFollow, setToFollow] = useState<{ chatId: string; messageId: string } | null>(null);
 
   useEffect(() => {
     if (!chatId) return;
-    // A message running in this chat is its own truth until it ends.
-    if (runRef.current?.chatId === chatId) return;
+    // A message running in this chat (and still read here) is its own truth until it ends.
+    if (runRef.current?.chatId === chatId && !runRef.current.left) return;
     let current = true;
     api.get(chatId).then(
       (chat) => {
@@ -184,6 +167,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
         setLoaded({ chatId, chat });
         setThread({ chatId, messages: chat.messages.map(fromSaved) });
         setLoadError(null);
+        if (chat.running && chat.running_message_id) setToFollow({ chatId, messageId: chat.running_message_id });
       },
       (error: unknown) => current && setLoadError({ chatId, message: chatFailureWords(error), missing: error instanceof ApiError && error.status === 404 }),
     );
@@ -192,32 +176,117 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
     };
   }, [api, chatId, loadAsk]);
 
-  // Leaving a chat (or the page) while a message runs stops it: the server saves it as stopped.
+  // Leaving a chat (or the page) while a message runs only stops reading it: the server goes on
+  // answering and saves the answer; coming back follows it again.
+  useEffect(() => {
+    const run = runRef.current;
+    if (run && run.chatId !== chatId) {
+      run.left = true;
+      run.controller.abort();
+    }
+  }, [chatId]);
   useEffect(() => {
     const runs = runRef;
-    return () => runs.current?.controller.abort();
-  }, [chatId]);
+    return () => {
+      const run = runs.current;
+      if (!run) return;
+      run.left = true;
+      run.controller.abort();
+    };
+  }, []);
 
   const chat = chatId && loaded?.chatId === chatId ? loaded.chat : null;
   const failedToLoad = chatId && loadError?.chatId === chatId && !chat ? loadError : null;
   const messages = chatId && thread?.chatId === chatId ? thread.messages : NO_MESSAGES;
-  const name = chat?.package_name ?? null;
+  const name = chat?.package_name ?? listName;
 
   useEffect(() => {
     if (name) onNameChange?.(name);
   }, [name, onNameChange]);
 
-  // A message started elsewhere (another tab, or before a reload) is still being answered: read the
-  // chat again every few seconds until its answer is saved.
-  const answeredElsewhere = Boolean(chat?.running) && !running;
+  /** Read one message's events into the answer `key` of `target`'s thread, until it ends. */
+  const read = useCallback(
+    async (
+      run: Reading,
+      key: string,
+      stream: (onEvent: (event: ChatEvent) => void, signal: AbortSignal) => Promise<ChatMessage>,
+      onStarted?: () => void,
+    ): Promise<'done' | 'refused'> => {
+      const target = run.chatId;
+      const patch = (change: (message: ViewMessage) => ViewMessage) =>
+        setThread((now) => (now && now.chatId === target ? { ...now, messages: now.messages.map((message) => (message.key === key ? change(message) : message)) } : now));
+      let started = false;
+      try {
+        await stream((event) => {
+          if (!started) onStarted?.();
+          started = true;
+          patch((message) => applyChatEvent(message, event));
+        }, run.controller.signal);
+        patch((message) => (message.status === 'running' ? settle(message) : message));
+        setAnnounce('Answer ready');
+        // The first message names the chat; the set's spending moved on.
+        setListAsk((n) => n + 1);
+        setModelsAsk((n) => n + 1);
+        return 'done';
+      } catch (error) {
+        if (run.left) {
+          // Moved away: the server goes on with the message, and shows it again on coming back.
+          return 'done';
+        }
+        if (run.controller.signal.aborted || isAbort(error)) {
+          patch((message) => settle(message, { stopped: message.stopped ?? 'cancelled' }));
+          setAnnounce('Stopped');
+          setListAsk((n) => n + 1);
+          setModelsAsk((n) => n + 1);
+          return 'done';
+        }
+        if (!started) return 'refused';
+        const words = chatFailureWords(error);
+        patch((message) => settle(message, { status: 'failed', failure: words }));
+        setAnnounce(words);
+        setListAsk((n) => n + 1);
+        return 'done';
+      } finally {
+        // Only the message still read here frees the composer (a chat left and opened again may
+        // already be following its message anew).
+        if (runRef.current === run) {
+          runRef.current = null;
+          if (stopTimer.current !== null) {
+            window.clearTimeout(stopTimer.current);
+            stopTimer.current = null;
+          }
+          setRunning(false);
+          setStopping(false);
+        }
+      }
+    },
+    [],
+  );
+
+  // Following an answer that was being written when its chat was opened (a reload, another tab):
+  // its events so far, then live, exactly like an answer sent from here.
   useEffect(() => {
-    if (!answeredElsewhere) return;
-    const timer = window.setTimeout(() => {
-      setLoadAsk((n) => n + 1);
-      setListAsk((n) => n + 1);
-    }, runningPollMs);
-    return () => window.clearTimeout(timer);
-  }, [answeredElsewhere, chat, runningPollMs]);
+    if (!toFollow || (runRef.current && !runRef.current.left)) return;
+    const { chatId: target, messageId } = toFollow;
+    const run: Reading = { chatId: target, controller: new AbortController(), left: false };
+    runRef.current = run;
+    const key = `follow-${messageId}`;
+    setRunning(true);
+    setStopping(false);
+    setAnnounce('Answer in progress');
+    setThread((now) =>
+      now && now.chatId === target ? { ...now, messages: [...now.messages.filter((message) => message.key !== key), followedAnswer(messageId)] } : now);
+    void read(run, key, (onEvent, signal) => api.follow(target, messageId, onEvent, signal))
+      .then((ended) => {
+        if (ended === 'refused') {
+          // It could not be followed (it ended unsaved, or the connection failed): said, with Reload.
+          const words = 'This answer could not be shown live. Reload the chat to see what was saved.';
+          setThread((now) => (now && now.chatId === target ? { ...now, messages: now.messages.map((message) => (message.key === key ? settle(message, { status: 'failed', failure: words }) : message)) } : now));
+          setAnnounce(words);
+        }
+      })
+      .finally(() => setToFollow((now) => (now === toFollow ? null : now)));
+  }, [api, read, toFollow]);
 
   // The list is read again whenever the window comes back into focus (a chat started in another tab).
   useEffect(() => {
@@ -234,9 +303,8 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   // An empty chat holds the composer in the middle, under a greeting; the first message sends it
   // gliding down to the bottom (it is measured before and after, then slid between the two).
   const activeSummary = list.status === 'ready' ? list.chats.find((candidate) => candidate.id === chatId) : undefined;
-  const centred = chat
-    ? messages.length === 0 && !answeredElsewhere
-    : Boolean(chatId) && !failedToLoad && activeSummary?.turns === 0;
+  // A new chat (`#/chat/<set>`, nothing made yet) is centred too, until its first message.
+  const centred = !chatId || (chat !== null && messages.length === 0);
   const dock = useRef<HTMLDivElement>(null);
   const glideFrom = useRef<number | null>(null);
   useLayoutEffect(() => {
@@ -281,95 +349,79 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
     : models.status === 'ready' && !choice ? 'No model is offered on this server.'
     : overBudget ? `This drawing set has used its ${dollars(models.status === 'ready' ? models.data.package_cap_usd : null) ?? ''} assistant budget, so no more messages can be sent here.`
     : null;
-  const blocked = unavailable ?? (models.status === 'loading' ? 'Loading the models…' : !chat ? 'Opening the chat…' : null);
+  const blocked = unavailable ?? (models.status === 'loading' ? 'Loading the models…' : chatId && !chat ? 'Opening the chat…' : null);
 
   async function send(text: string) {
     const question = text.trim();
-    if (!question || runRef.current || blocked || !chatId || !choice) return;
+    if (!question || runRef.current || blocked || !choice) return;
     counter.current += 1;
     const userKey = `local-question-${counter.current}`;
     const answerKey = `local-answer-${counter.current}`;
-    const controller = new AbortController();
-    const run = { chatId, controller };
+    // Held at once, so a second press while the chat is being made does nothing.
+    const run: Reading = { chatId: chatId ?? '', controller: new AbortController(), left: false };
     runRef.current = run;
     if (centred) glideFrom.current = dock.current?.getBoundingClientRect().top ?? null;
-    if (messages.length === 0) setFreshTitles((now) => new Set(now).add(chatId));
     setRunning(true);
     setStopping(false);
     setNotice(null);
     setDraft('');
     setAnnounce('Working on your message');
+
+    let target = chatId;
+    if (!target) {
+      // A new chat is made on its first message, like claude.ai (never an empty one before).
+      try {
+        const made = await api.create(packageId);
+        target = made.id;
+        run.chatId = target;
+        setLoaded({ chatId: target, chat: { id: target, package_id: packageId, package_name: name ?? '', title: null, created_at: made.created_at, messages: [] } });
+        onOpenChat(target, { replace: true });
+      } catch (error) {
+        if (runRef.current === run) runRef.current = null;
+        glideFrom.current = null;
+        setRunning(false);
+        setDraft((now) => (now.trim() ? now : question));
+        const words = `The chat could not be started: ${chatFailureWords(error)}`;
+        setNotice(words);
+        setAnnounce(words);
+        return;
+      }
+    }
+    const sendTo = target;
+    if (messages.length === 0) setFreshTitles((now) => new Set(now).add(sendTo));
     follow.current = true;
     setAtBottom(true);
     setThread((now) => ({
-      chatId,
-      messages: [...(now?.chatId === chatId ? now.messages : []), localQuestion(userKey, question), localAnswer(answerKey, choice)],
+      chatId: sendTo,
+      messages: [...(now?.chatId === sendTo ? now.messages : []), localQuestion(userKey, question), localAnswer(answerKey, choice)],
     }));
-    const patch = (change: (message: ViewMessage) => ViewMessage) =>
-      setThread((now) => (now && now.chatId === chatId ? { ...now, messages: now.messages.map((message) => (message.key === answerKey ? change(message) : message)) } : now));
 
-    let started = false;
-    try {
-      await api.send(
-        chatId,
-        { text: question, model: choice.model, effort: choice.effort, thinking: choice.thinking },
-        (event) => {
-          // The question is saved before `message_start`: list the chat now, titled by it.
-          if (event.event === 'message_start') setListAsk((n) => n + 1);
-          started = true;
-          patch((message) => applyChatEvent(message, event));
-        },
-        controller.signal,
-      );
-      patch((message) => (message.status === 'running' ? settle(message) : message));
-      setAnnounce('Answer ready');
-      // The first message names the chat; the set's spending moved on.
-      setListAsk((n) => n + 1);
-      setModelsAsk((n) => n + 1);
-    } catch (error) {
-      if (controller.signal.aborted || isAbort(error)) {
-        patch((message) => settle(message, { stopped: message.stopped ?? 'cancelled' }));
-        setAnnounce('Stopped');
-        setListAsk((n) => n + 1);
-        setModelsAsk((n) => n + 1);
-      } else if (!started) {
-        // Refused before anything began (busy, too long, offline): the question goes back to the box.
-        setThread((now) => (now && now.chatId === chatId ? { ...now, messages: now.messages.filter((message) => message.key !== userKey && message.key !== answerKey) } : now));
-        setDraft((now) => (now.trim() ? now : question));
-        const words = chatFailureWords(error);
-        setNotice(words);
-        setAnnounce(words);
-      } else {
-        const words = chatFailureWords(error);
-        patch((message) => settle(message, { status: 'failed', failure: words }));
-        setAnnounce(words);
-        setListAsk((n) => n + 1);
-      }
-    } finally {
-      if (stopTimer.current !== null) {
-        window.clearTimeout(stopTimer.current);
-        stopTimer.current = null;
-      }
-      if (runRef.current === run) runRef.current = null;
-      setRunning(false);
-      setStopping(false);
+    let refusal: unknown = null;
+    const ended = await read(
+      run,
+      answerKey,
+      (onEvent, signal) =>
+        api.send(sendTo, { text: question, model: choice.model, effort: choice.effort, thinking: choice.thinking }, onEvent, signal).catch((error: unknown) => {
+          refusal = error;
+          throw error;
+        }),
+      // The question is saved before `message_start`: list the chat now, titled by it.
+      () => setListAsk((n) => n + 1),
+    );
+    if (ended === 'refused') {
+      // Refused before anything began (busy, too long, offline): the question goes back to the box.
+      setThread((now) => (now && now.chatId === sendTo ? { ...now, messages: now.messages.filter((message) => message.key !== userKey && message.key !== answerKey) } : now));
+      setDraft((now) => (now.trim() ? now : question));
+      const words = chatFailureWords(refusal);
+      setNotice(words);
+      setAnnounce(words);
     }
   }
 
   /** Stop: ask the server to stop (it saves the message as stopped), then stop reading shortly after. */
   function stop() {
     const run = runRef.current;
-    if (stopping) return;
-    if (!run) {
-      // An answer running elsewhere: ask the server to stop it, then read what it saved.
-      if (!chatId || !answeredElsewhere) return;
-      setStopping(true);
-      api.cancel(chatId).catch(() => {}).finally(() => {
-        setStopping(false);
-        setLoadAsk((n) => n + 1);
-      });
-      return;
-    }
+    if (stopping || !run || !run.chatId) return;
     setStopping(true);
     setAnnounce('Stopping');
     api.cancel(run.chatId).then(
@@ -380,28 +432,13 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
     );
   }
 
-  async function newChat() {
-    if (creating) return;
-    // Already on an empty chat: it is the new chat.
-    if (chat && messages.length === 0) {
+  /** New chat: the empty composer at `#/chat/<set>`; nothing is made until its first message. */
+  function newChat() {
+    if (!chatId) {
       textareaRef.current?.focus();
       return;
     }
-    const empty = list.status === 'ready' ? list.chats.find((candidate) => candidate.turns === 0 && candidate.id !== chatId) : undefined;
-    if (empty) {
-      onOpenChat(empty.id);
-      return;
-    }
-    setCreating(true);
-    try {
-      const made = await api.create(packageId);
-      setListAsk((n) => n + 1);
-      onOpenChat(made.id);
-    } catch (error) {
-      setNotice(`A new chat could not be started: ${chatFailureWords(error)}`);
-    } finally {
-      setCreating(false);
-    }
+    onOpenChat(null);
   }
 
   const reload = useCallback(() => setLoadAsk((n) => n + 1), []);
@@ -440,7 +477,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
 
         {/* One sidebar, like claude.ai: this set's chats sit under the set's name in the app's sidebar. */}
         <SidebarChats>
-          <ChatList packageId={packageId} activeChatId={chatId} state={list} creating={creating} onNewChat={() => void newChat()} freshTitles={freshTitles} />
+          <ChatList packageId={packageId} activeChatId={chatId} state={list} creating={false} onNewChat={newChat} freshTitles={freshTitles} />
         </SidebarChats>
 
         <section aria-label={activeSummary ? chatTitle(activeSummary) : 'Conversation'} className="relative flex min-h-0 min-w-0 flex-1 flex-col">
@@ -455,20 +492,17 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
           >
             {/* Keyed by the chat, so switching chats (or a chat finishing loading) fades the thread in. */}
             <div
-              key={`${chatId ?? 'opening'}:${chat ? 'ready' : 'waiting'}`}
+              key={`${chatId ?? 'new'}:${chat ? 'ready' : 'waiting'}`}
               className="mx-auto flex min-h-full w-full max-w-3xl flex-col gap-8 px-4 pt-8 pb-16 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-150"
             >
-              {openError && !chatId && (
-                <Problem words={`The chats could not be opened: ${openError}`} action="Try again" onAction={() => { setOpenError(null); setOpenAsk((n) => n + 1); }} />
-              )}
               {failedToLoad && (
                 failedToLoad.missing ? (
-                  <Problem words="This chat was not found. It may have been opened from an old link." action="Open this set's newest chat" href={formatRoute({ page: 'chat', packageId })} />
+                  <Problem words="This chat was not found. It may have been opened from an old link." action="Start a new chat" href={formatRoute({ page: 'chat', packageId })} />
                 ) : (
                   <Problem words={`This chat could not be opened: ${failedToLoad.message}`} action="Try again" onAction={reload} />
                 )
               )}
-              {!chat && !failedToLoad && !openError && (
+              {chatId && !chat && !failedToLoad && (
                 <div aria-label="Loading the chat" className="flex flex-col gap-3 pt-6">
                   <Skeleton className="h-7 w-2/3" />
                   <Skeleton className="h-4 w-1/2" />
@@ -478,7 +512,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                 if (message.role === 'user') return <UserMessage key={message.key} message={message} />;
                 // Retry asks the answer's question again, as a new message (claude.ai's Retry).
                 const question = previousQuestion(messages, message.key);
-                const canRetry = question !== null && !running && !answeredElsewhere && !blocked;
+                const canRetry = question !== null && !running && !blocked;
                 return (
                   <AssistantMessage
                     key={message.key}
@@ -492,11 +526,6 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                   />
                 );
               })}
-              {answeredElsewhere && (
-                <div data-slot="chat-running-elsewhere">
-                  <LiveSteps entries={[]} stage="Still answering the last message (started before this page opened). It shows here when it is done." />
-                </div>
-              )}
             </div>
           </div>
 
@@ -508,7 +537,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
               centred ? 'flex-1 justify-center gap-0 pb-[14vh]' : 'shrink-0 pt-1 pb-[calc(8px+env(safe-area-inset-bottom,0px))]',
             )}
           >
-            {centred && <Greeting name={chat?.package_name ?? null} />}
+            {centred && <Greeting name={name} />}
             {!centred && (
               <button
                 type="button"
@@ -543,7 +572,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                 onChange={setDraft}
                 onSend={() => void send(draft)}
                 onStop={stop}
-                running={running || answeredElsewhere}
+                running={running}
                 stopping={stopping}
                 blocked={blocked}
                 models={modelList}
