@@ -66,6 +66,7 @@ YES = {
     "architect_to": "counter top",
     "vendor_from": "floor",
     "vendor_to": "counter top",
+    "vendor_chain": "",
     "same_thing": "yes",
     "vendor_value": "864 [34]",
     "reason": "both floor to counter top",

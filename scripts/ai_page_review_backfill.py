@@ -141,6 +141,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     client=client,
                     rates=rates,
                     guard=guard,
+                    pages_wanted=pages,
                 )
                 print(f"document {version}: re-checked {counts}")
                 continue

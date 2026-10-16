@@ -69,7 +69,7 @@ EVALUATOR_MODEL: Final = "anthropic.claude-sonnet-5-5"
 EVALUATOR_PROMPT_ID: Final = "ai-page-review-evaluator-v1"
 _READER: Final = "ai-page-review-evaluator"
 _EFFORT: Final = "high"
-_MAX_TOKENS: Final = 8000
+_MAX_TOKENS: Final = 4000
 _LONG_EDGE_PX: Final = 1600
 _RENDER_DPI: Final = 300
 _ARCHITECT_PAD_PT: Final = 150
@@ -91,10 +91,14 @@ EVALUATOR_PROMPT: Final = (
     "2. On each image, follow the outlined dimension's line to its two ends (arrowheads or ticks) "
     "and the extension lines there, and name the drawn feature each end is level with (for "
     "example the floor, the top of the counter slab, the top of a backsplash standing on the "
-    "counter, a wall, an outlet's centre). When a chain of smaller dimensions runs beside the "
-    "line, use where its ticks fall to see which parts the line covers (for example toe kick + "
-    "cabinet + counter, with or without the backsplash above the counter).\n"
-    '3. same_thing: "yes" only when both lines start at the same feature AND end at the same '
+    "counter, a wall, an outlet's centre).\n"
+    "3. vendor_chain: when a chain of smaller vendor dimensions runs beside the outlined vendor "
+    "line, list every piece of it in order from the outlined line's start to its end, each as "
+    "printed with the part it measures (for example 102 [4] toe kick, 724 [28 1/2] cabinet, "
+    "38 [1 1/2] counter slab, 102 [4] backsplash). Include a piece only when it lies between the "
+    "outlined line's two end ticks; the last piece tells where the line ends. Empty when there "
+    "is no chain.\n"
+    '4. same_thing: "yes" only when both lines start at the same feature AND end at the same '
     'feature; "no" when either end is at a different feature (for example one ends at the top '
     'of the counter slab and the other at the top of the backsplash); "unsure" when you cannot '
     "tell from the drawings.\n"
@@ -113,6 +117,7 @@ def evaluator_schema() -> dict[str, object]:
             "architect_to": {"type": "string"},
             "vendor_from": {"type": "string"},
             "vendor_to": {"type": "string"},
+            "vendor_chain": {"type": "string"},
             "same_thing": {"type": "string", "enum": ["yes", "no", "unsure"]},
             "vendor_value": {"type": "string"},
             "reason": {"type": "string"},
@@ -122,6 +127,7 @@ def evaluator_schema() -> dict[str, object]:
             "architect_to",
             "vendor_from",
             "vendor_to",
+            "vendor_chain",
             "same_thing",
             "vendor_value",
             "reason",
@@ -465,7 +471,13 @@ def decide_recheck(
     kept: Mapping[str, str] = {
         **{
             key: str(answer.get(key, "")).strip()
-            for key in ("architect_from", "architect_to", "vendor_from", "vendor_to")
+            for key in (
+                "architect_from",
+                "architect_to",
+                "vendor_from",
+                "vendor_to",
+                "vendor_chain",
+            )
         },
         "same_thing": said,
         "vendor_value": printed,

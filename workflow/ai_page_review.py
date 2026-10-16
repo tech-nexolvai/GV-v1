@@ -519,6 +519,7 @@ def recheck_differences(
     client: Any | None,
     rates: object | None,
     guard: Any | None,
+    pages_wanted: set[int] | None = None,
 ) -> dict[str, int]:
     """The evaluator's second look at the `different` rows already stored for one shop document
     (readings made before the evaluator existed).
@@ -526,7 +527,7 @@ def recheck_differences(
     Append-only: each newest page reading with a `different` row not yet confirmed by the
     evaluator is written again as a new reading under a run of its own, every row copied and each
     such row re-decided (the newest reading counts). Its cost is the evaluator's calls. Returns
-    counts: `kept` and `demoted` rows, and `pages` written."""
+    counts: `kept` and `demoted` rows, and `pages` written. `pages_wanted` (from 1) limits it."""
     from app.review.ai_review import _latest_reviews
 
     run = open_extraction_run(
@@ -547,7 +548,9 @@ def recheck_differences(
     reviews = [
         review
         for review in _latest_reviews(session, [package_revision_id]).get(package_revision_id, [])
-        if review.page_id in pages and review.status == "done"
+        if review.page_id in pages
+        and review.status == "done"
+        and (pages_wanted is None or pages[review.page_id].index + 1 in pages_wanted)
     ]
     rows_by_review: dict[UUID, list[AiPageReviewRow]] = {}
     for stored_row in session.scalars(
