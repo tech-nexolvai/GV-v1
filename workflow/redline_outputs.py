@@ -39,6 +39,7 @@ from app.models.document import (
 from app.models.evidence import CanonicalObservation
 from app.models.verdicts import CheckRun, VerdictInput
 from app.models.verdicts import Finding as FindingRow
+from app.review.left_for_person import FrozenLeftForPerson
 from app.review.reviewer_marks import FrozenReviewerMarks
 from evidence.coordinates import PageTransform
 from reports.redline import (
@@ -69,6 +70,7 @@ __all__ = [
     "RedlineOutput",
     "ai_review_input",
     "architect_compare_input",
+    "left_for_person_marks",
     "redline_marks",
     "render_draft_redline",
     "render_evidence_grounded_redline",
@@ -87,6 +89,21 @@ def redline_marks(frozen: FrozenReviewerMarks) -> tuple[ReviewerMark, ...]:
             unplaced_reason=mark.unplaced_reason,
         )
         for mark in frozen.marks
+    )
+
+
+def left_for_person_marks(frozen: FrozenLeftForPerson) -> tuple[ReviewerMark, ...]:
+    """The grey "Not confirmed by a person" marks, one per question; a FAIL keeps its own cloud."""
+    return tuple(
+        ReviewerMark(
+            kind=ReviewerMarkKind.NOT_CONFIRMED,
+            words=item.words,
+            subject=item.what,
+            evidence_ref=item.place,
+            unplaced_reason=item.unplaced_reason,
+        )
+        for item in frozen.items
+        if item.kind != "failure"
     )
 
 

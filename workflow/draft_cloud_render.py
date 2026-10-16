@@ -46,7 +46,7 @@ from app.models.package import Package, PackageRevision
 from app.models.rules import RuleDefinition, RuleSnapshot
 from app.models.verdicts import CheckRun, Finding, OutputArtifact, OutputArtifactKind
 from app.review.approval import approval_readiness
-from app.review.left_for_person import cover_groups, left_for_person, left_for_person_marks
+from app.review.left_for_person import cover_groups, left_for_person
 from app.review.reviewer_marks import is_not_checked, live_decisions, reviewer_marks_for
 from reports.redline import (
     AI_REVIEW_NOTE,
@@ -67,6 +67,7 @@ from workflow.redline_outputs import (
     ai_review_input,
     architect_compare_input,
     compare_for_render,
+    left_for_person_marks,
     redline_marks,
     render_draft_redline,
 )

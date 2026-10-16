@@ -749,9 +749,7 @@ def _fact_note(finding: RenderableFinding) -> str:
     comparison = (
         finding.comparison
         if isinstance(finding, RedlineFinding)
-        else finding.trace.comparison
-        if finding.trace is not None
-        else None
+        else finding.trace.comparison if finding.trace is not None else None
     )
     if outcome in (Outcome.FAIL, Outcome.REVIEW_REQUIRED) and comparison:
         parts.append(f"Comparison: {comparison}")

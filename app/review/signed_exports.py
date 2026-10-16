@@ -268,9 +268,7 @@ def _columns(row: object) -> dict[str, object]:
         result[column.key] = (
             value.isoformat()
             if isinstance(value, datetime)
-            else str(value)
-            if isinstance(value, UUID)
-            else value
+            else str(value) if isinstance(value, UUID) else value
         )
     return result
 

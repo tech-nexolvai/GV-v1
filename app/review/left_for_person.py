@@ -7,7 +7,7 @@ is ever dropped or treated as resolved: each one is printed on the draft and on 
 * **The list** is the review screen's own (`app/review/review_items.review_items_for_revision`):
   every item and every FAIL still `open`, plus anything the list could not place (`unaccounted`),
   so the screen, the draft and the signed file name the same questions.
-* **On the drawing** each open item with a recorded place gets a grey mark there: "Not confirmed by
+* **On the drawing** (`workflow/redline_outputs.left_for_person_marks`) each open item with a recorded place gets a grey mark there: "Not confirmed by
   a person — <what> (AI: <best guess or reason>)". One with no recorded place is listed with why.
   A FAIL keeps its own FAIL cloud; it is only listed (as not agreed by a person), never greyed.
 * **On the cover** "Left for a person (N)", grouped by kind, each line with its words.
@@ -28,7 +28,6 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from sqlalchemy.orm import Session
 
 from app.models.package import Package, PackageRevision
-from reports.redline import ReviewerMark, ReviewerMarkKind
 
 __all__ = [
     "KIND_WORDS",
@@ -37,7 +36,6 @@ __all__ = [
     "FrozenLeftItem",
     "cover_groups",
     "left_for_person",
-    "left_for_person_marks",
 ]
 
 #: How every such line begins, on the drawing and on the cover.
@@ -190,21 +188,6 @@ def left_for_person(
             _item("unaccounted", _on_page(what, missing.page), missing.page, missing.why, None)
         )
     return FrozenLeftForPerson(items=tuple(items))
-
-
-def left_for_person_marks(frozen: FrozenLeftForPerson) -> tuple[ReviewerMark, ...]:
-    """The grey "Not confirmed by a person" marks, one per question; a FAIL keeps its own cloud."""
-    return tuple(
-        ReviewerMark(
-            kind=ReviewerMarkKind.NOT_CONFIRMED,
-            words=item.words,
-            subject=item.what,
-            evidence_ref=item.place,
-            unplaced_reason=item.unplaced_reason,
-        )
-        for item in frozen.items
-        if item.kind != "failure"
-    )
 
 
 def cover_groups(

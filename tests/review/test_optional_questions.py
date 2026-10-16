@@ -31,7 +31,6 @@ from app.review.left_for_person import (
     FrozenLeftForPerson,
     FrozenLeftItem,
     cover_groups,
-    left_for_person_marks,
 )
 from app.review.session import open_session
 from app.review.signed_exports import SNAPSHOT_FORMAT_VERSION, ExportSnapshot, load_snapshot
@@ -41,6 +40,7 @@ from storage.local import LocalStore
 from tests.api.test_draft_cloud import _checked
 from tests.api.test_draft_cloud import session as session_fixture
 from tests.api.test_draft_cloud import store as store_fixture
+from workflow.redline_outputs import left_for_person_marks
 
 session = session_fixture
 store = store_fixture

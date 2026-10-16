@@ -185,7 +185,8 @@ def generate_signed_outputs(
             # and a cover section grouped by kind. A FAIL keeps its own cloud.
             from dataclasses import replace
 
-            from app.review.left_for_person import cover_groups, left_for_person_marks
+            from app.review.left_for_person import cover_groups
+            from workflow.redline_outputs import left_for_person_marks
 
             shown_marks = (*(shown_marks or ()), *left_for_person_marks(payload.left_for_person))
             cover = replace(cover, left_for_person=cover_groups(payload.left_for_person))
