@@ -15,7 +15,7 @@ read the number right. All of it is code: $0, no model, the same answer every ti
   the value as printed. Code groups readings by item, kind and side (item names normalised, so
   "Base B-36" and "b36 base cabinet" are one item) across views and pages, and compares them: sizes
   in inches, tags and models as normalised words. GV's settled view roles decide which view governs
-  ("Settled with Raj": plan for the cut-out position, offsets and wall-to-wall; elevation for
+  ("Settled with the client": plan for the cut-out position, offsets and wall-to-wall; elevation for
   widths, fillers and tags; section for the overhang). A group that disagrees is a `cross_view`
   finding.
 - **Completeness both ways.** From the readings, the answer's findings and its page coverage: items
@@ -193,7 +193,7 @@ LEDGER_TOOL_NAMES: Final = frozenset(tool["name"] for tool in LEDGER_TOOLS)
 
 
 def format_inches(value: Decimal | Fraction) -> str:
-    """Exact inches as a drawing writes them: `39 5/8"`, `36"`, `-1/8"`."""
+    """Exact inches as a drawing writes them: `34 3/8"`, `36"`, `-1/8"`."""
     exact = Fraction(value)
     sign = "-" if exact < 0 else ""
     exact = abs(exact)
@@ -250,7 +250,7 @@ def _word_value(value: str) -> str:
     return "".join(_words(value))
 
 
-# ---- which view governs (settled with Raj) -------------------------------------------------------
+# ---- which view governs (settled with the client) -------------------------------------------------------
 
 #: "Which view each check reads: plan (cut-out position, offsets, wall-to-wall), elevation (cabinet
 #: widths, fillers, tags), section (overhang)." Item words first, then the kind of value.
@@ -272,7 +272,7 @@ _VIEW_ROLE_WORDS: Final[Mapping[str, str]] = {
 
 
 def governing_view(item: str, kind: str) -> str | None:
-    """The view GV reads this value from (settled with Raj), or `None` when no view is settled."""
+    """The view GV reads this value from (settled with the client), or `None` when no view is settled."""
     words = " ".join(_words(item))
     squashed = words.replace(" ", "")
     for needles, view in _ITEM_VIEW_ROLES:
@@ -326,7 +326,7 @@ class StringEntry:
     rereads: int = 0
 
     def sum_text(self) -> str:
-        """`12 + 15 1/2 + 12 1/8 = 39 5/8" ≠ 39 1/2" printed (off 1/8")`, all written by code."""
+        """`10 + 14 1/4 + 10 1/8 = 34 3/8" ≠ 34 1/4" printed (off 1/8")`, all written by code."""
         parts = " + ".join(self.parts)
         if self.result == "not_a_number" or self.parts_sum is None or self.off_by is None:
             return f"{parts} vs {self.printed_total} printed: not all are numbers code can read"
