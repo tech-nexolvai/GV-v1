@@ -189,6 +189,7 @@ def test_the_draft_reads_nothing_before_the_compare_module_exists(
     from workflow import draft_cloud_render
 
     monkeypatch.setattr(draft_cloud_render, "ARCHITECT_COMPARE_MODULE", "app.review.no_such_mod")
+    monkeypatch.setattr(draft_cloud_render, "AI_REVIEW_MODULE", "app.review.no_such_mod")
 
     found = draft_cloud_render.architect_compare_for_draft(None, uuid4())  # type: ignore[arg-type]
 

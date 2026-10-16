@@ -123,6 +123,15 @@ class Settings(BaseSettings):
     # (#1052): no AI, no cost. Off by default. When on, a drawing whose exact heading and own content
     # agree on its role is confirmed by code, and the architect's values are stored as candidates.
     architect_reader_enabled: bool = False
+    # The AI page review (decision 2026-10-16, `workflow/ai_page_review.py`): one Opus 5.5 reading
+    # per combined sheet through OpenRouter, decided by code, after the reading. Off by default;
+    # paid, within `ai_page_review_budget_usd` per package. The worker reads `GV_AI_PAGE_REVIEW`
+    # and `GV_AI_PAGE_REVIEW_BUDGET_USD` from its environment.
+    ai_page_review: bool = False
+    ai_page_review_budget_usd: Decimal = Field(default=Decimal(6), ge=0)
+    # The old direct compare (#1418) the AI page review replaced: off by default, so the worker
+    # stores no new records and the review neither shows nor waits on them. Records stay stored.
+    arch_compare_records: bool = False
     # Grounded full-view plus close-up reader route (#1001 onward). It is separate from the
     # existing one-crop route and defaults off until every proof gate is met.
     claude_reader_enabled: bool = False

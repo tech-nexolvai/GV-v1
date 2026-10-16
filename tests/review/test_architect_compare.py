@@ -45,6 +45,13 @@ def _pt(px: tuple[int, int, int, int]) -> list[str]:
     return [str(Decimal(value * 72) / Decimal(150)) for value in px]
 
 
+@pytest.fixture(autouse=True)
+def _old_compare_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These test the old direct compare, which is off by default since the AI page review
+    replaced it (`GV_ARCH_COMPARE_RECORDS`)."""
+    monkeypatch.setenv("GV_ARCH_COMPARE_RECORDS", "1")
+
+
 @pytest.fixture
 def session(postgres_engine: Engine) -> Iterator[Session]:
     config = alembic_config()

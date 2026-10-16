@@ -2396,7 +2396,12 @@ class DatabaseStages:
             results = _with_architect_notes(results, architect)
             # The direct compare (#1418): where each architect dimension on a combined sheet was
             # paired with the vendor's line, by geometry only, stored once for the review to read.
-            if not _one_file_as_both_roles(session, package_revision_id):
+            # Off by default since the AI page review replaced it (`GV_ARCH_COMPARE_RECORDS`).
+            from app.review.architect_compare import arch_compare_records_on
+
+            if arch_compare_records_on() and not _one_file_as_both_roles(
+                session, package_revision_id
+            ):
                 for version in _shop_document_versions_for(session, package_revision_id):
                     compare_data = verified_data.get(version)
                     if compare_data is not None:
@@ -2408,6 +2413,25 @@ class DatabaseStages:
                             task_run_id=task_run.id,
                             dpi=self._dpi,
                         )
+        # The AI page review (decision 2026-10-16): one sharper AI reading per combined sheet,
+        # decided by code. Off unless `GV_AI_PAGE_REVIEW`; it never stops the package.
+        from workflow.ai_page_review import AI_PAGE_REVIEW_ENV
+        from workflow.ai_page_review import run_in_stage as run_ai_page_review
+
+        if os.environ.get(AI_PAGE_REVIEW_ENV, "").strip() and not _one_file_as_both_roles(
+            session, package_revision_id
+        ):
+            run_ai_page_review(
+                session,
+                package_revision_id=package_revision_id,
+                documents=[
+                    (version, verified_data[version])
+                    for version in _shop_document_versions_for(session, package_revision_id)
+                    if verified_data.get(version) is not None
+                ],
+                task_run_id=task_run.id,
+                dpi=self._dpi,
+            )
         product = _revision_product(session, package_revision_id)
         read_anyway = self._cabinet_ai_reading and product is ProductType.CABINET
         if (

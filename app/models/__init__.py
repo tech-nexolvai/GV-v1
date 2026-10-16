@@ -16,6 +16,7 @@ migrated, and the first sign of it is a missing table in production.
 from __future__ import annotations
 
 from app.audit.events import AuditEvent
+from app.models.ai_review import AiPageReview, AiPageReviewAnswer, AiPageReviewRow
 from app.models.architect_compare import ArchitectCompareAnswer, ArchitectCompareRecord
 from app.models.document import (
     Document,
@@ -140,6 +141,9 @@ __all__ = [
     "REFERENCE_ROLE",
     "AgentNodeInvocationClaim",
     "AgentNodeInvocationState",
+    "AiPageReview",
+    "AiPageReviewAnswer",
+    "AiPageReviewRow",
     "AiSpendHistory",
     "Alias",
     "Approval",
