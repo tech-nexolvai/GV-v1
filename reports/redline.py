@@ -327,6 +327,9 @@ NOT_CHECKED: Final = "NOT CHECKED"
 #: The glyph beside `NOT_CHECKED`. Never the colour alone.
 NOT_CHECKED_GLYPH: Final = "❍"
 
+#: The glyph beside a dimension the vendor drew differently from the architect. Never colour alone.
+ARCHITECT_DIFFERENT_GLYPH: Final = "\u2717"
+
 
 class ReviewerMarkKind(StrEnum):
     """What a person did, as drawn on the cloud PDF (#1363). Each has its own glyph."""
@@ -364,6 +367,7 @@ _REVIEWER_STROKES: Final[dict[ReviewerMarkKind, tuple[float, float, float]]] = {
 _GLYPH_FONTS: Final[dict[str, str]] = {
     **{glyph: "ZapfDingbats" for glyph in REVIEWER_MARK_GLYPHS.values()},
     NOT_CHECKED_GLYPH: "ZapfDingbats",
+    ARCHITECT_DIFFERENT_GLYPH: "ZapfDingbats",
     "→": "Symbol",
 }
 
@@ -397,6 +401,98 @@ class ReviewerMark:
     def text(self) -> str:
         """The glyph and the words, as drawn."""
         return f"{REVIEWER_MARK_GLYPHS[self.kind]} {self.words}"
+
+
+class ArchitectAnswer(StrEnum):
+    """A person's answer on a "different" architect compare result."""
+
+    AGREED = "agreed"
+    """"Agree: vendor is wrong": still clouded; the person's own mark is a reviewer mark."""
+
+    NOT_A_DIFFERENCE = "not_a_difference"
+    """"Not a difference": no cloud, listed on the summary with who said so."""
+
+
+@dataclass(frozen=True, slots=True)
+class ArchitectCompareCounts:
+    """How every architect dimension of the revision came out, for the summary page's one line."""
+
+    same: int
+    different: int
+    for_a_person: int
+    by_a_rule: int
+
+    def __post_init__(self) -> None:
+        for value in (self.same, self.different, self.for_a_person, self.by_a_rule):
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError("architect compare counts are whole numbers, never negative")
+
+    @property
+    def line(self) -> str:
+        return (
+            f"Compared with the architect: {self.same} same \u00b7 {self.different} different "
+            f"\u00b7 {self.for_a_person} for a person \u00b7 {self.by_a_rule} by a rule"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ArchitectDifference:
+    """One architect dimension the vendor drew differently (direct compare), as the PDF shows it.
+
+    A presentation value, like `ReviewerMark`: code decided "different" and stored it
+    (`app/review/architect_compare.py`); nothing here reads or decides anything. Both numbers are
+    as printed. `evidence_ref` is the vendor dimension's stored place, in the JSON shape a
+    finding's evidence carries; with none, `unplaced_reason` says why, and it is listed instead.
+    """
+
+    architect_text: str
+    vendor_text: str
+    subject: str
+    evidence_ref: str | None = None
+    unplaced_reason: str | None = None
+    answer: ArchitectAnswer | None = None
+    answered_by: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.architect_text.strip() or not self.vendor_text.strip():
+            raise ValueError("an architect difference must say both printed numbers")
+        if not self.subject.strip():
+            raise ValueError("an architect difference must say where it is")
+        if self.evidence_ref is None and not (self.unplaced_reason or "").strip():
+            raise ValueError("an architect difference has a recorded place or says why not")
+        if self.answer is not None and not (self.answered_by or "").strip():
+            raise ValueError("a person's answer on an architect difference names the person")
+
+    @property
+    def words(self) -> str:
+        """ "✗ Architect: Y — vendor: X", as drawn and listed."""
+        return (
+            f"{ARCHITECT_DIFFERENT_GLYPH} Architect: {self.architect_text} \u2014 "
+            f"vendor: {self.vendor_text}"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ArchitectCompare:
+    """The direct compare for one render: the counts, and every "different" result."""
+
+    counts: ArchitectCompareCounts
+    different: tuple[ArchitectDifference, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.counts, ArchitectCompareCounts):
+            raise TypeError("counts must be ArchitectCompareCounts")
+        if any(not isinstance(item, ArchitectDifference) for item in self.different):
+            raise TypeError("different must hold ArchitectDifference values")
+
+
+@dataclass(frozen=True, slots=True)
+class _ArchitectPlaced:
+    """A "different" result, its number (A1, A2, ...) and the polygon its cloud is drawn at."""
+
+    item: ArchitectDifference
+    number: int
+    polygon: Polygon
 
 
 @dataclass(frozen=True, slots=True)
@@ -598,6 +694,7 @@ def render_redline(
     signed_review: SignedReview | None = None,
     countertop_labels: Sequence[str] = (),
     reviewer_marks: Sequence[ReviewerMark] | None = None,
+    architect: ArchitectCompare | None = None,
 ) -> StoredArtifact:
     """Overlay the findings onto the source pages and store the result.
 
@@ -616,6 +713,11 @@ def render_redline(
     recorded a place for it, and every one is listed on the summary pages, placed or not. `None`
     (a sign-off snapshot frozen before #1363) draws exactly what was drawn before; an empty
     sequence says on the summary that no person answered anything.
+
+    `architect` (the direct compare) clouds each "different" architect dimension at the vendor's
+    dimension, "✗ Architect: Y — vendor: X", unless a person said it is not a difference, and lists
+    every one, with the counts, on the summary. `None` (no compare, or a snapshot frozen before
+    it) draws exactly what was drawn before.
     """
     if not isinstance(package, RedlinePackage):
         raise TypeError("package must be a RedlinePackage")
@@ -638,6 +740,8 @@ def render_redline(
         or any(not isinstance(mark, ReviewerMark) for mark in reviewer_marks)
     ):
         raise TypeError("reviewer_marks must be a sequence of ReviewerMark values")
+    if architect is not None and not isinstance(architect, ArchitectCompare):
+        raise TypeError("architect must be an ArchitectCompare")
 
     if clearance is not None and not isinstance(clearance, VendorClearance):
         raise TypeError("clearance must be a VendorClearance")
@@ -660,6 +764,7 @@ def render_redline(
 
     marks, unplaced, marked = _place(package, findings)
     reviewer_placed, reviewer_unplaced = _place_reviewer(package, reviewer_marks or ())
+    architect_placed, architect_unplaced = _place_architect(package, architect)
     document = _compose(
         package,
         reader,
@@ -676,6 +781,8 @@ def render_redline(
             if reviewer_marks is None
             else _ReviewerListing(tuple(reviewer_marks), reviewer_unplaced)
         ),
+        architect_placed,
+        None if architect is None else _ArchitectListing(architect, architect_unplaced),
     )
     if signed_review is not None:
         if clearance is None or signed_review.approval_id != clearance.approval_id:
@@ -906,6 +1013,59 @@ def _place_reviewer(
     return placed, unplaced
 
 
+@dataclass(frozen=True, slots=True)
+class _ArchitectListing:
+    """The direct compare, and why each "different" result not clouded is not (by its number)."""
+
+    compare: ArchitectCompare
+    unplaced: dict[int, str]
+
+
+def _place_architect(
+    package: RedlinePackage, architect: ArchitectCompare | None
+) -> tuple[dict[int, list[_ArchitectPlaced]], dict[int, str]]:
+    """Sort the "different" results into clouds on pages and reasons; every one leaves accounted
+    for. The same placement rule as a finding's: a recorded page and stored polygon on a page of
+    this redline. Numbered from 1 in the order given (A1, A2, ...)."""
+    placed: dict[int, list[_ArchitectPlaced]] = {}
+    unplaced: dict[int, str] = {}
+    if architect is None:
+        return placed, unplaced
+    by_key = {entry.key: entry for entry in package.pages}
+    for number, item in enumerate(architect.different, start=1):
+        if item.answer is ArchitectAnswer.NOT_A_DIFFERENCE:
+            unplaced[number] = (
+                f"{item.answered_by} said it is not a difference, so it is not clouded"
+            )
+            continue
+        if item.evidence_ref is None:
+            unplaced[number] = item.unplaced_reason or "no place on the drawing was recorded"
+            continue
+        located = _decode_reference(item.evidence_ref)
+        if isinstance(located, _Undecodable):
+            unplaced[number] = located.reason.replace("its evidence reference", "its place", 1)
+            continue
+        entry = by_key.get((located.document_version_id, located.page))
+        if entry is None:
+            unplaced[number] = (
+                f"it is on page {located.page + 1} of a document version that is not one of the "
+                "pages in this redline"
+            )
+            continue
+        try:
+            polygon = Polygon(
+                points=located.points,
+                space="stored",
+                document_version_id=located.document_version_id,
+                page=located.page,
+            )
+        except (TypeError, ValueError) as error:
+            unplaced[number] = f"its recorded place is not a usable page region ({error})"
+            continue
+        placed.setdefault(entry.source_index, []).append(_ArchitectPlaced(item, number, polygon))
+    return placed, unplaced
+
+
 # ---------------------------------------------------------------------------
 # Drawing
 # ---------------------------------------------------------------------------
@@ -923,6 +1083,8 @@ def _compose(
     countertop_labels: Sequence[str],
     reviewer_placed: dict[int, list[_ReviewerPlaced]] | None = None,
     reviewer_listing: _ReviewerListing | None = None,
+    architect_placed: dict[int, list[_ArchitectPlaced]] | None = None,
+    architect_listing: _ArchitectListing | None = None,
 ) -> bytes:
     """Merge the overlays onto the original pages and append the summary pages.
 
@@ -935,26 +1097,33 @@ def _compose(
     by_index = {entry.source_index: entry for entry in package.pages}
 
     reviewer_placed = reviewer_placed or {}
+    architect_placed = architect_placed or {}
     for index, page in enumerate(writer.pages):
         page_marks = marks.get(index) or ()
         page_reviewer = reviewer_placed.get(index) or ()
-        if page_marks or page_reviewer:
+        page_architect = architect_placed.get(index) or ()
+        if page_marks or page_reviewer or page_architect:
             entry = by_index[index]
             ordered = _ordered_marks(entry, page_marks)
             reviewer_ordered = tuple(sorted(page_reviewer, key=lambda item: item.number))
+            architect_ordered = tuple(sorted(page_architect, key=lambda item: item.number))
             placements, columns = _callout_layout(
                 entry,
                 [_note_lines(mark.finding) for mark in ordered]
-                + [_reviewer_lines(item.mark) for item in reviewer_ordered],
+                + [_reviewer_lines(item.mark) for item in reviewer_ordered]
+                + [_architect_lines(item.item) for item in architect_ordered],
             )
             expanded = _expanded_boxes(entry, columns)
+            after_reviewer = len(ordered) + len(reviewer_ordered)
             overlay = _overlay(
                 entry,
                 ordered,
                 placements[: len(ordered)],
                 expanded,
                 reviewer_ordered,
-                placements[len(ordered) :],
+                placements[len(ordered) : after_reviewer],
+                architect_ordered,
+                placements[after_reviewer:],
             )
             _append_overlay(writer, page, overlay, expanded)
 
@@ -973,6 +1142,12 @@ def _compose(
             item.number: entry.page
             for entry in package.pages
             for item in reviewer_placed.get(entry.source_index, ())
+        },
+        architect_listing,
+        {
+            item.number: entry.page
+            for entry in package.pages
+            for item in architect_placed.get(entry.source_index, ())
         },
     )
     for listing in PdfReader(BytesIO(summary)).pages:
@@ -1019,6 +1194,11 @@ def _reviewer_lines(mark: ReviewerMark) -> tuple[str, ...]:
         for text in (mark.subject, *mark.details)
         for wrapped in textwrap.wrap(text, width=47, break_long_words=True)
     )
+
+
+def _architect_lines(item: ArchitectDifference) -> tuple[str, ...]:
+    """The callout under an architect difference's heading: where it is."""
+    return tuple(textwrap.wrap(item.subject, width=47, break_long_words=True))
 
 
 def _callout_layout(
@@ -1084,6 +1264,8 @@ def _overlay(
     ],
     reviewer: Sequence[_ReviewerPlaced] = (),
     reviewer_placements: Sequence[tuple[int, Decimal, tuple[str, ...]]] = (),
+    architect: Sequence[_ArchitectPlaced] = (),
+    architect_placements: Sequence[tuple[int, Decimal, tuple[str, ...]]] = (),
 ) -> PageObject:
     """Build the transparent vector mark and callout page."""
     left, bottom, right, top = expanded[0]
@@ -1117,6 +1299,28 @@ def _overlay(
             canvas.drawString(
                 0, 0, f"{index:02d}  {mark.finding.rule_id} · {mark.finding.outcome.value}"
             )
+        canvas.setFillColorRGB(0.1, 0.1, 0.1)
+        canvas.setFont("Courier", CALLOUT_FONT_SIZE)
+        for line_number, line in enumerate(lines, start=1):
+            canvas.drawString(0, -line_number * float(CALLOUT_LINE_HEIGHT), line)
+        canvas.restoreState()
+
+    for placed, (column, cursor, lines) in zip(architect, architect_placements, strict=True):
+        _draw_architect(canvas, placed, entry.transform, angle)
+        u = visible_width + column * CALLOUT_COLUMN_WIDTH + CALLOUT_MARGIN
+        x, y = _visual_point(entry, u, cursor)
+        canvas.saveState()
+        canvas.translate(float(x), float(y))
+        canvas.rotate(angle)
+        canvas.setFillColorRGB(*ARCHITECT_STYLE.stroke)
+        _draw_text(
+            canvas,
+            0,
+            0,
+            f"A{placed.number}  {placed.item.words}",
+            "Courier-Bold",
+            CALLOUT_FONT_SIZE,
+        )
         canvas.setFillColorRGB(0.1, 0.1, 0.1)
         canvas.setFont("Courier", CALLOUT_FONT_SIZE)
         for line_number, line in enumerate(lines, start=1):
@@ -1284,6 +1488,33 @@ def _draw_label(
         canvas.setFont("Helvetica-Bold", MARK_FONT_SIZE)
         canvas.setFillColorRGB(*style.stroke)
         canvas.drawString(0.0, MARK_FONT_SIZE * 0.35 + 1.0, label)
+    canvas.restoreState()
+
+
+#: An architect difference is clouded as a wrong result is: the glyph and words say what it is.
+ARCHITECT_STYLE: Final = OUTCOME_STYLES[Outcome.FAIL]
+
+
+def _draw_architect(
+    canvas: Canvas, placed: _ArchitectPlaced, transform: PageTransform, angle: int
+) -> None:
+    """A cloud at the vendor's dimension, "A1 · ✗ Architect: Y — vendor: X" above it."""
+    points = polygon_pdf_points(placed.polygon, transform)
+    _draw_cloud(canvas, points, ARCHITECT_STYLE)
+    anchor = label_anchor(points, angle)
+    canvas.saveState()
+    canvas.translate(float(anchor.x), float(anchor.y))
+    canvas.rotate(angle)
+    canvas.translate(0, 12)
+    canvas.setFillColorRGB(*ARCHITECT_STYLE.stroke)
+    _draw_text(
+        canvas,
+        0.0,
+        MARK_FONT_SIZE * 0.35 + 1.0,
+        f"A{placed.number} · {placed.item.words}",
+        "Helvetica-Bold",
+        MARK_FONT_SIZE,
+    )
     canvas.restoreState()
 
 
@@ -1502,6 +1733,29 @@ def _reviewer_section(
         line("")
 
 
+def _architect_section(
+    listing: _ArchitectListing,
+    pages: dict[int, int],
+    line: Callable[..., None],
+    paragraph: Callable[..., None],
+) -> None:
+    """The counts, then every "different" result, clouded or not: listed, never dropped."""
+    line("Compared with the architect", font="Helvetica-Bold", size=12.0)
+    paragraph(listing.compare.counts.line)
+    line("")
+    if not listing.compare.different:
+        paragraph("None. No architect dimension was found different from the vendor's.")
+    for number, item in enumerate(listing.compare.different, start=1):
+        paragraph(f"A{number} {item.words} \u2014 {item.subject}")
+        if item.answer is ArchitectAnswer.AGREED:
+            paragraph(f"Agreed by {item.answered_by}: the vendor is wrong.", "    ")
+        if number in listing.unplaced:
+            paragraph(f"not clouded on the drawing: {listing.unplaced[number]}", "    ")
+        else:
+            paragraph(f"clouded on page {pages[number] + 1}", "    ")
+        line("")
+
+
 def _listing(
     package: RedlinePackage,
     findings: Sequence[RenderableFinding],
@@ -1513,6 +1767,8 @@ def _listing(
     countertop_labels: Sequence[str],
     reviewer_listing: _ReviewerListing | None = None,
     reviewer_pages: dict[int, int] | None = None,
+    architect_listing: _ArchitectListing | None = None,
+    architect_pages: dict[int, int] | None = None,
 ) -> bytes:
     """Render the appended pages that account for every finding not on the drawing.
 
@@ -1559,6 +1815,9 @@ def _listing(
         for label in countertop_labels:
             paragraph(label)
         line("")
+
+    if architect_listing is not None:
+        _architect_section(architect_listing, architect_pages or {}, line, paragraph)
 
     if clearance is not None:
         line("Approved by", font="Helvetica-Bold", size=12.0)

@@ -46,6 +46,7 @@ from app.models.rules import RuleDefinition, RuleSnapshot
 from app.models.verdicts import CheckRun, Finding, OutputArtifact, OutputArtifactKind
 from app.review.approval import approval_readiness
 from app.review.reviewer_marks import is_not_checked, live_decisions, reviewer_marks_for
+from reports.redline import ArchitectCompare, ReviewerMark
 from storage.store import ArtifactStore
 from verdict.outcomes import Outcome
 from workflow.draft_cloud import (
@@ -53,9 +54,21 @@ from workflow.draft_cloud import (
     draft_for_request,
     draft_storage_prefix,
 )
-from workflow.redline_outputs import NOT_CHECKED, redline_marks, render_draft_redline
+from workflow.redline_outputs import (
+    NOT_CHECKED,
+    architect_compare_input,
+    redline_marks,
+    render_draft_redline,
+)
 
-__all__ = ["BANNER", "OpenItems", "grouped_by_reason", "open_items", "render_draft_cloud"]
+__all__ = [
+    "BANNER",
+    "OpenItems",
+    "architect_compare_for_draft",
+    "grouped_by_reason",
+    "open_items",
+    "render_draft_cloud",
+]
 
 #: Printed on every page of a draft.
 BANNER: Final = "DRAFT – not signed off"
@@ -159,6 +172,29 @@ def open_items(
     )
 
 
+#: Where the direct compare's results are read (the same function the review items use).
+ARCHITECT_COMPARE_MODULE: Final = "app.review.architect_compare"
+
+
+def architect_compare_for_draft(
+    session: Session, package_revision_id: UUID
+) -> tuple[ArchitectCompare | None, tuple[ReviewerMark, ...]]:
+    """The live direct compare for the draft, and the marks of a person who agreed with one.
+
+    `(None, ())` before the direct compare exists or has run on this revision: the draft is then
+    drawn exactly as before."""
+    import importlib
+
+    try:
+        module = importlib.import_module(ARCHITECT_COMPARE_MODULE)
+    except ModuleNotFoundError as error:
+        if error.name != ARCHITECT_COMPARE_MODULE:
+            raise
+        return None, ()
+    items, counts = module.architect_compare_for_revision(session, package_revision_id)
+    return architect_compare_input(items, counts)
+
+
 def _live_rows(
     session: Session, package_revision_id: UUID
 ) -> list[tuple[Finding, CheckRun, RuleSnapshot, RuleDefinition]]:
@@ -211,6 +247,7 @@ def render_draft_cloud(
         decisions=live_decisions(session, shown),
         until=None,
     )
+    architect, agreed = architect_compare_for_draft(session, package_revision_id)
     drawing = render_draft_redline(
         session,
         store,
@@ -221,7 +258,8 @@ def render_draft_cloud(
         ),
         not_checked=items.not_checked_ids,
         changed_values=changed_values_for_revision(session, package_revision_id),
-        reviewer_marks=redline_marks(marks),
+        reviewer_marks=(*redline_marks(marks), *agreed),
+        architect=architect,
     )
     if drawing.artifact is None:
         raise DraftCloudRefused(f"The draft could not be drawn: {drawing.reason}.")
