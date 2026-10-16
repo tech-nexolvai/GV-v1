@@ -58,6 +58,7 @@ type ChatStepTool = Literal[
     "TaskUpdate",
     "Agent",
     "review_results",
+    "compare_rounds",
 ]
 type ChatStopped = Literal["cost_cap", "cancelled", "error", "turn_limit"]
 type ChatCapHit = Literal["message", "package"]
@@ -261,7 +262,7 @@ class ChatFindingOut(BaseModel):
     )
     sum_text: str | None = Field(
         default=None,
-        description='vendor_arithmetic from the ledger: code\'s sum written out ("12 + 15 1/2 = '
+        description="vendor_arithmetic from the ledger: code's sum written out (\"12 + 15 1/2 = "
         '27 1/2 ≠ 27 1/4 printed (off 1/4)").',
     )
     checks: ChatFindingChecksOut | None = None
@@ -396,6 +397,13 @@ class ChatRoundsOut(BaseModel):
     not_in_later_round: int
     new: int
     line: str
+    unrequested: int = Field(
+        default=0,
+        description="compare_rounds: changes nobody asked for (no finding, no GV markup).",
+    )
+    pairs: list[dict[str, Any]] = Field(
+        default_factory=list, description="compare_rounds: the round pairs compared by code."
+    )
 
 
 class ChatLedgerStringsOut(BaseModel):

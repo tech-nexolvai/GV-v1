@@ -63,6 +63,7 @@ _log = logging.getLogger(__name__)
 
 CHECKS_MODULE: Final = "app.review.assistant.finding_checks"
 SECOND_READ_MODULE: Final = "app.review.assistant.second_read"
+REVISION_DIFF_MODULE: Final = "app.review.assistant.revision_diff"
 #: The outcome word GV Review's records use for a code FAIL (`workflow.findings_composer`).
 _FAIL_WORDS: Final = frozenset({"Needs correction"})
 _PASS_WORDS: Final = frozenset({"Looks right"})

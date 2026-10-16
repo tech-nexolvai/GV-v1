@@ -62,6 +62,7 @@ from app.review.assistant.sandbox import (
 )
 
 __all__ = [
+    "COMPARE_ROUNDS",
     "HELPER_SYSTEM_PROMPT",
     "HELPER_TOOLS",
     "LEAD_SYSTEM_PROMPT",
@@ -305,6 +306,35 @@ _RESULTS: Final[Mapping[str, Any]] = {
         },
     },
 }
+#: `revision_diff.COMPARE_ROUNDS_TOOL`, copied: `app/api/` must not import the renderer that module
+#: needs (`tests/api/test_no_heavy_work.py`); a test keeps the two the same.
+COMPARE_ROUNDS: Final[Mapping[str, Any]] = {
+    "name": "compare_rounds",
+    "description": (
+        "Compare two rounds of the vendor's drawing (e.g. 'First set of comments' and 'Second set "
+        "of comments') by code, pixel by pixel with GV's markup removed: where the drawing changed, "
+        "and for this answer's findings on the round-1 page whether their spot changed. Give "
+        "round1_page; round2_page is found from the headings when omitted. Give neither to list "
+        "the round pairs in the set. Zones say WHERE ink changed, not the new value: read the "
+        "number in a zone before saying what the vendor changed."
+    ),
+    "input_schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "round1_page": {"type": "integer", "description": "Page of the earlier round (from 1)"},
+            "round2_page": {"type": "integer", "description": "Page of the later round (from 1)"},
+            "round1_file": {
+                "type": "string",
+                "description": "Upload holding round 1, when the set has 2+ PDFs",
+            },
+            "round2_file": {
+                "type": "string",
+                "description": "Upload holding round 2, when it is a different PDF",
+            },
+        },
+    },
+}
 #: The lead's tools, in a fixed order (the order is part of the cached, replayed prefix).
 LEAD_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     _BASH,
@@ -323,6 +353,7 @@ LEAD_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     DISMISS_RECORDED,
     CITE,
     *LEDGER_TOOLS,
+    COMPARE_ROUNDS,
 )
 HELPER_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     _BASH,
@@ -344,6 +375,7 @@ _DEFAULT_LABELS: Final[Mapping[str, str]] = {
     "TaskUpdate": "Updated a task",
     "Agent": "Ran helper agents",
     "review_results": "Read the recorded results",
+    "compare_rounds": "Compared two rounds",
 }
 
 

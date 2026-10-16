@@ -101,6 +101,7 @@ from app.review.assistant.chat_tools import (
 )
 from app.review.assistant.chat_trust import (
     CHECKS_MODULE,
+    REVISION_DIFF_MODULE,
     SECOND_READ_MODULE,
     Recorded,
     accuracy,
@@ -134,7 +135,7 @@ _log = logging.getLogger(__name__)
 #: tool's `model` text names Sonnet as the default. chat-v3: helpers run at most at medium effort.
 #: chat-v4: the findings and coverage tools, and the answer-style lines. chat-v5: dismiss_recorded
 #: and cite. chat-v6: record_string and record_reading (the reading ledger) for the lead and the
-#: helpers, and their prompt lines.) Only the request's prefix changes; a chat's stored messages
+#: helpers, and their prompt lines; compare_rounds (the revision diff) for the lead.) Only the request's prefix changes; a chat's stored messages
 #: replay unchanged.
 HARNESS_ID: Final = "chat-v6"
 #: The output allowance of a forced last call (a wrap-up or a final answer at the cap).
@@ -507,6 +508,11 @@ class ChatEngine:
         self._recorded: Recorded | None = None
         self._recorded_document: Mapping[str, Any] | None = None
         self._recorded_read = False
+        # compare_rounds: each finding's round status measured on the drawings (kept over the
+        # status worked out from `round` fields), and each compared pair's summary.
+        self._diff_status: dict[str, str] = {}
+        self._diff_unsure: set[str] = set()
+        self._diff_pairs: dict[tuple[str, int, str, int], dict[str, Any]] = {}
         # One reading ledger per message, shared by the lead and its helpers (thread-safe).
         self.reading_ledger = ReadingLedger(page_count=self.book.page_count or None)
 
@@ -870,6 +876,8 @@ class ChatEngine:
                 return self.task_list.update(raw, step)
             if name == "review_results":
                 return tools.review_results(raw, step)
+            if name == "compare_rounds":
+                return self._compare_rounds(raw, step)
         return ToolResult(
             content=[{"type": "text", "text": f"Refused: there is no tool {name!r}"}],
             step={**step, "ok": False, "output": f"There is no tool {name!r}."},
@@ -1027,6 +1035,184 @@ class ChatEngine:
         if notes:
             text += " " + "; ".join(notes) + "."
         return ToolResult(content=[{"type": "text", "text": text}], step={})
+
+    def _compare_rounds(self, raw: object, step: dict[str, Any]) -> ToolResult:
+        """`compare_rounds` (revision diff, $0 code): where the vendor's drawing changed between two
+        rounds, and each round-1 finding's round status (a changed spot is re-read cheaply)."""
+        started = monotonic()
+
+        def done(text: str, ok: bool, **changes: Any) -> dict[str, Any]:
+            return {
+                **step,
+                **changes,
+                "ok": ok,
+                "output": text[:4000],
+                "seconds": round(monotonic() - started, 1),
+            }
+
+        module = load_module(REVISION_DIFF_MODULE)
+        if module is None:
+            text = "Not run: the revision diff is not available here."
+            return ToolResult([{"type": "text", "text": text}], done(text, False), is_error=True)
+        if not isinstance(raw, Mapping):
+            text = "Refused: the tool's input is not an object"
+            return ToolResult([{"type": "text", "text": text}], done(text, False), is_error=True)
+        findings = self.book.live()
+        try:
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                result = pool.submit(
+                    module.compare_rounds,
+                    raw,
+                    self.book.pdf_paths(),
+                    self.tools.workspace.pictures,
+                    findings=findings,
+                ).result()
+        except ValueError as refused:
+            text = f"Refused: {refused}"
+            return ToolResult([{"type": "text", "text": text}], done(text, False), is_error=True)
+        except Exception as failed:  # noqa: BLE001 - told to the model, never a crash
+            _log.warning("assistant chat compare_rounds failed: %s", type(failed).__name__)
+            text = "Not run: the two rounds could not be compared."
+            return ToolResult([{"type": "text", "text": text}], done(text, False), is_error=True)
+        text = str(result.get("text") or "")
+        notes = self._apply_round_status(result, findings, raw)
+        if notes:
+            text += "\nRe-read of changed spots: " + "; ".join(notes) + "."
+        content: list[dict[str, Any]] = [{"type": "text", "text": text}]
+        picture = result.get("picture")
+        changes: dict[str, Any] = {}
+        if isinstance(picture, Mapping) and picture.get("picture_id"):
+            content.append({"type": "image", "source": {"type": "gv_picture", **picture}})
+            changes["picture_id"] = picture["picture_id"]
+        return ToolResult(content, done(text, True, **changes))
+
+    def _apply_round_status(
+        self,
+        result: Mapping[str, Any],
+        findings: Sequence[Mapping[str, Any]],
+        given: Mapping[str, Any],
+    ) -> list[str]:
+        """Store each finding's round status from a compared pair (CONTRACT3 "Revision diff")."""
+        status = result.get("round_status")
+        if not isinstance(status, Mapping):
+            return []
+        files = list(result.get("files") or [None, None])
+        pairing = result.get("pairing") or {}
+        page_a = given.get("round1_page")
+        page_b = given.get("round2_page") or pairing.get("round2_page")
+        by_id = {str(f.get("id")): f for f in findings}
+        notes: list[str] = []
+        counts = {"fixed_in_later_round": 0, "still_wrong": 0}
+        for item in status.get("findings") or []:
+            finding = by_id.get(str(item.get("finding_id")))
+            measured = str(item.get("round_status"))
+            if finding is None or measured == "not_on_page":
+                continue
+            to_check = False
+            if measured == "changed_check":
+                boxes = item.get("recheck_box") or []
+                box = dict(boxes[0]) if boxes else None
+                if box is not None and files[-1]:
+                    box["file"] = files[-1]
+                measured, read = self._round_reread(finding, box)
+                to_check = read is None
+                notes.append(
+                    f"{finding['id']} {measured}"
+                    + (f" (round 2 reads {read})" if read else " (round 2 could not be read)")
+                )
+            elif measured == "untouched":
+                measured = "single_round"
+            if measured in counts:
+                counts[measured] += 1
+            self._store_round_status(str(finding["id"]), measured, to_check)
+        unrequested = status.get("unrequested_changes") or []
+        key = (str(files[0]), int(page_a or 0), str(files[-1]), int(page_b or 0))
+        with self._lock:
+            self._diff_pairs[key] = {
+                "round1_page": page_a,
+                "round2_page": page_b,
+                "fixed": counts["fixed_in_later_round"],
+                "still_wrong": counts["still_wrong"],
+                "unrequested": len(unrequested),
+                "unrequested_zones": [z.get("id") for z in unrequested],
+            }
+        return notes
+
+    def _store_round_status(self, finding_id: str, status: str, to_check: bool) -> None:
+        with self._lock:
+            self._diff_status[finding_id] = status
+            if to_check:
+                self._diff_unsure.add(finding_id)
+            else:
+                self._diff_unsure.discard(finding_id)
+        current = next((f for f in self.book.live() if f["id"] == finding_id), None)
+        if current is None:
+            return
+        updated = {**current, "round_status": status}
+        if to_check:
+            updated["trust_level"] = "to_check"
+        if self.book.replace(updated):
+            self._show_finding(updated)
+
+    def _round_reread(
+        self, finding: Mapping[str, Any], box: Mapping[str, Any] | None
+    ) -> tuple[str, str | None]:
+        """A changed spot: a second read of the round-2 crop, compared with the architect's value
+        by code. `(round status, value read or None when unsure)`."""
+        module = load_module(SECOND_READ_MODULE)
+        checks = load_module(CHECKS_MODULE)
+        if module is None or checks is None or box is None:
+            return "still_wrong", None
+        picture_id, _why = self.book._picture(box)
+        if picture_id is None:
+            return "still_wrong", None
+        share = _Share(limit=self.settings.message_cap_micros)
+        try:
+            read = module.second_read(
+                {"vendor": self.read_picture(picture_id)},
+                str(finding.get("item") or ""),
+                lambda content: self._second_read_call(content, share),
+            )
+        except (_NoRoom, _Cancelled, ProviderFailure, OSError):
+            return "still_wrong", None
+        except Exception as failed:  # noqa: BLE001 - an unread spot stays "still wrong"
+            _log.warning("assistant chat round re-read failed: %s", type(failed).__name__)
+            return "still_wrong", None
+        value = read.vendor if getattr(read, "sure", True) else None
+        try:
+            new = checks.to_inches(value) if isinstance(value, str) else None
+            wanted = checks.to_inches(str(finding.get("architect") or ""))
+        except Exception:  # noqa: BLE001 - not a number: unsure
+            new = wanted = None
+        if new is None or wanted is None:
+            return "still_wrong", None
+        return ("fixed_in_later_round" if new == wanted else "still_wrong"), str(value)
+
+    def _diff_rounds(self, report: dict[str, Any]) -> None:
+        """The rounds line from the drawings compared by code (over the one from `round` fields)."""
+        with self._lock:
+            pairs = list(self._diff_pairs.values())
+            statuses = dict(self._diff_status)
+        if not pairs:
+            return
+        fixed = sum(1 for s in statuses.values() if s == "fixed_in_later_round")
+        still = sum(1 for s in statuses.values() if s == "still_wrong")
+        unrequested = sum(int(p["unrequested"]) for p in pairs)
+        line = (
+            f"Vendor fixed {fixed} of {fixed + still} round-1 items · {still} still wrong · "
+            f"{unrequested} change{'' if unrequested == 1 else 's'} nobody asked for"
+        )
+        report["rounds"] = {
+            "rounds": [1, 2],
+            "earlier_items": fixed + still,
+            "fixed": fixed,
+            "still_wrong": still,
+            "not_in_later_round": 0,
+            "new": 0,
+            "line": line,
+            "unrequested": unrequested,
+            "pairs": pairs,
+        }
 
     def _ledger_tool(self, name: str, raw: object, by: str) -> ToolResult:
         """`record_string`, `record_reading`: no step on the screen; code's sum (or what other
@@ -1212,12 +1398,19 @@ class ChatEngine:
             return
         skipped = self._second_reads()
         statuses = round_statuses(book.live())
+        with self._lock:
+            statuses.update(self._diff_status)
+            unsure = set(self._diff_unsure)
         for finding in book.live():
             status = statuses.get(finding["id"])
-            if status is not None and finding.get("round_status") != status:
-                updated = {**finding, "round_status": status}
-                if book.replace(updated):
-                    self._show_finding(updated)
+            updated = dict(finding)
+            if status is not None:
+                updated["round_status"] = status
+            if finding["id"] in unsure:
+                # A changed spot the re-read could not read: a person should look.
+                updated["trust_level"] = "to_check"
+            if updated != finding and book.replace(updated):
+                self._show_finding(updated)
         report = trust_report(
             book.live(),
             book.coverage_map() if book.coverage_used else None,
@@ -1226,6 +1419,7 @@ class ChatEngine:
             dismissed=book.dismissed,
         )
         self._ledger_trust(report)
+        self._diff_rounds(report)
         index = self._add_block({"type": "trust", "trust": report})
         self.emit("trust", {"index": index, "trust": json.loads(json.dumps(report))})
 
