@@ -516,9 +516,11 @@ def readiness_and_decisions(
         compare_open=(
             compare_open
             if compare_open is not None
-            else _compare_open(db, [revision_id]).get(revision_id, 0)
-            if findings and not blocked
-            else 0
+            else (
+                _compare_open(db, [revision_id]).get(revision_id, 0)
+                if findings and not blocked
+                else 0
+            )
         ),
     )
     return (
