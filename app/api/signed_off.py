@@ -185,4 +185,9 @@ EXEMPT_WRITES: Final[dict[tuple[str, str], str]] = {
         "POST",
         "/api/v1/projects/{project_id}/packages/{package_id}/assistant/stream",
     ): "answers a question from the records; writes no input or decision",
+    (
+        "POST",
+        "/api/v1/packages/{package_id}/chats",
+    ): "starts a saved assistant chat (#1463); the chat reads the drawings and writes no input or "
+    "decision on the review",
 }
