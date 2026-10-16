@@ -82,6 +82,8 @@ export interface AssistantAnswer {
   model_id: string | null;
   /** The records the answer used, one line each. */
   sources: string[];
+  /** The page whose two drawings the model was shown for this answer (#1431), else null or absent. */
+  looked_at_page?: number | null;
 }
 
 /**

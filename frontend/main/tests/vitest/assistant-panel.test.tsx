@@ -400,6 +400,21 @@ describe('assistant panel', () => {
     expect(document.querySelectorAll('[data-slot="assistant-checked"]')).toHaveLength(1);
   });
 
+  it('says which page the answer looked at, only when the model was shown one (#1431)', async () => {
+    const user = userEvent.setup();
+    server.replies.push(
+      [{ event: 'answer', data: answer({ text: 'Looked answer.', looked_at_page: 4 }) }],
+      [{ event: 'answer', data: answer({ text: 'Records answer.', mode: 'records_only', looked_at_page: null }) }],
+    );
+    mount();
+    await user.type(composer(), 'One{Enter}');
+    await screen.findByText('Looked answer.');
+    expect(thread().getByText('Looked at page 4')).toBeTruthy();
+    await user.type(composer(), 'Two{Enter}');
+    await screen.findByText('Records answer.');
+    expect(document.querySelectorAll('[data-slot="assistant-looked-at"]')).toHaveLength(1);
+  });
+
   it('keeps the starters after a switched-off answer', async () => {
     const user = userEvent.setup();
     server.replies.push([{ event: 'answer', data: answer({ text: 'The assistant is switched off for this set.', mode: 'disabled', checked: false }) }]);

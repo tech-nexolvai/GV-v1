@@ -164,6 +164,8 @@ class AnswerEvent(BaseModel):
     mode: Literal["llm", "records_only", "refused", "disabled"]
     model_id: str | None
     sources: tuple[str, ...]
+    looked_at_page: int | None = None
+    """The page whose two drawings the model was shown for this answer (#1431), else `None`."""
 
 
 class ErrorEvent(BaseModel):

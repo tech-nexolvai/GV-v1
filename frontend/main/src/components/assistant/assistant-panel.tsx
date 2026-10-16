@@ -327,6 +327,11 @@ export function AssistantPanel({
                     onAsk={(question) => void ask(question)}
                     onRevealed={() => patch(turn.id, { reveal: false })}
                   />
+                  {turn.answer.looked_at_page != null && (
+                    <p data-slot="assistant-looked-at" className="text-xs text-muted-foreground">
+                      Looked at page {turn.answer.looked_at_page}
+                    </p>
+                  )}
                   {latest && turn.answer.mode === 'disabled' && starters.length > 0 && (
                     <Starters info={info} starters={starters} records={records} busy={busy} onAsk={(question) => void ask(question)} bare />
                   )}
