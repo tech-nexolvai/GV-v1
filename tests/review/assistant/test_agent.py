@@ -897,3 +897,33 @@ def test_without_the_sandbox_the_answer_is_from_the_records_with_a_note() -> Non
     assert answer.text.startswith(NO_SANDBOX_TEXT)
     assert answer.mode == "records_only"
     assert model.bodies == []
+
+
+def test_helpers_money_is_shared_by_their_pages(workspace: Workspace) -> None:
+    # $0.40 for the question: after the lead's first call, the helpers share 75% of what is left
+    # (about $0.30) by pages, 3 to 1. A helper's first call is estimated at about $0.13 (its
+    # 12,000-token report allowance), so the 3-page helper can work and the 1-page one cannot.
+    @dataclass
+    class ByPages(DispatchModel):
+        def agent_turn(self, body: Mapping[str, Any]) -> Mapping[str, Any]:
+            if body["system"][0]["text"] != SUB_SYSTEM_PROMPT:
+                self.main_bodies.append(json.loads(json.dumps(body)))
+                return self.main.pop(0)
+            task = body["messages"][0]["content"][1]["text"].split("\n", 1)[1]
+            self.helper_bodies.setdefault(task, []).append(body)
+            report = {"summary": "Made-up.", "pages_viewed": [1, 2, 3], "findings": []}
+            return _turn({"type": "text", "text": json.dumps(report)}, stop="end_turn")
+
+    model = ByPages(
+        main=[
+            _turn(
+                _use("a1", "Agent", {"description": "Big", "prompt": "Check pages 1-3"}),
+                _use("a2", "Agent", {"description": "Small", "prompt": "Check page 4"}),
+            ),
+            _final("Done; code: page 4."),
+        ]
+    )
+    answer = _answer(_ask("Which pages differ?", model, workspace, budget=_budget("0.40")))
+    big, small = answer.steps[0].agents
+    assert big.ok and small.stopped == "cost_cap"
+    assert list(model.helper_bodies) == ["Check pages 1-3"]

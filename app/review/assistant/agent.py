@@ -169,8 +169,11 @@ much of the set is not compared by code. So: add tasks; read `review_results`; l
 and their headings (`pdftotext`) to group them by project or area; render every page once into \
 {SCRATCH} (`pdftoppm -r 130 -png F {SCRATCH}/p`); give up to 4 helpers the pages by project or \
 area (one `Agent` call each, in one turn), each told to compare every architect dimension, tag \
-and note with the vendor's drawing on its pages; then VERIFY every item a helper flags on the \
-pictures yourself (view that page) before you report it, and drop a HELPER's lead you cannot confirm. Never drop or leave out a code failure or a \
+and note with the vendor's drawing on its pages; then VERIFY the helpers' leads on the pictures \
+yourself (view those pages), the most important first. Report a lead you checked as yours; one \
+you looked at and found wrong, leave out; one you had no time to check, list under "Leads from \
+the helpers I have not checked myself", never silently drop it. Never drop or leave out a code \
+failure or a \
 "different" row of the AI page review: mention every one by page and item, and if you see it \
 differently say so ("AI review says X; on the drawing I see Y"). Report each item as one "- " \
 line: the page(s) and item, what the \
@@ -1157,10 +1160,12 @@ def _run_agents(
             parsed.append(str(refused))
     started = [item for item in parsed if isinstance(item, _AgentCall)][:MAX_SUB_AGENTS]
     share = spend.delegating() if started else None
-    limit = None if share is None or not started else share // len(started)
+    # The helpers' money is shared by how many pages each has to open (at least one each).
+    weights = [max(1, len(pages_mentioned(call.prompt))) for call in started]
+    limits = [None if share is None else share * w // sum(weights) for w in weights]
     events: queue.Queue[_Event | None] = queue.Queue()
 
-    def helper(index: int, call: _AgentCall) -> SubAgentRun:
+    def helper(index: int, call: _AgentCall, limit: int | None) -> SubAgentRun:
         steps: list[AgentStep] = []
         label = f"{call.description} · "
 
@@ -1248,7 +1253,10 @@ def _run_agents(
     if started:
         yield _stage(f"Running {len(started)} agents · {started[0].description}")
         with ThreadPoolExecutor(max_workers=MAX_SUB_AGENTS) as pool:
-            futures = [pool.submit(helper, n, call) for n, call in enumerate(started, 1)]
+            futures = [
+                pool.submit(helper, n, call, limit)
+                for n, (call, limit) in enumerate(zip(started, limits, strict=True), 1)
+            ]
 
             def watch() -> None:
                 for future in futures:
