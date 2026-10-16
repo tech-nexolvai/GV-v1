@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from app.review.assistant import chat_engine, chat_trust
+from app.review.assistant import chat_engine, chat_trust, read_adjudication
 from app.review.assistant.chat_findings import COVERAGE_CHECK_PREFIX
 from tests.review.assistant.chat_fakes import (
     SONNET,
@@ -319,7 +319,12 @@ def test_second_reads_run_after_the_lead_and_feed_the_trust_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     seen: list[dict[str, Any]] = []
-    _modules(monkeypatch, finding_checks=_fake_checks(), second_read=_fake_second_read(seen))
+    _modules(
+        monkeypatch,
+        finding_checks=_fake_checks(),
+        second_read=_fake_second_read(seen),
+        read_adjudication=read_adjudication,
+    )
     workspace_with_pdf(tmp_path)
 
     def answer(params: Any) -> Any:
@@ -367,7 +372,7 @@ def test_second_reads_run_after_the_lead_and_feed_the_trust_report(
     assert len(thirds) == 1 and thirds[0]["output_config"] == {"effort": "low"}
     assert findings["F2"]["checks"]["adjudication"] == "disagrees"
     assert [read["role"] for read in findings["F2"]["reads"]] == ["first", "second", "third"]
-    assert "adjudication" not in findings["F1"]["checks"]
+    assert findings["F1"]["checks"]["adjudication"] is None and findings["F1"]["reads"] is None
     for call in calls:
         assert call["model"] == HAIKU and call["output_config"] == {"effort": "low"}
         assert call["thinking"] == {"type": "disabled"} and call["max_tokens"] == 1024

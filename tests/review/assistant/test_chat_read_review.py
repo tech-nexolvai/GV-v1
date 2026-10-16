@@ -133,7 +133,7 @@ def test_a_one_line_answer_gets_no_critic(tmp_path: Path) -> None:
     outcome = Harness(tmp_path, provider).run()
 
     finding = _blocks(outcome, "finding")[0]
-    assert "critic" not in finding["checks"] and "critic" not in finding
+    assert finding["checks"]["critic"] is None and finding["critic"] is None
     assert finding["trust_level"] == "confirmed"
     assert len(provider.helper_calls) == 1  # the second read only
 
@@ -164,7 +164,7 @@ def test_at_most_ten_third_reads_per_answer(tmp_path: Path) -> None:
     assert len(thirds) == 10
     assert all("turned a quarter turn" not in asked for asked in thirds)  # wide boxes
     findings = _blocks(outcome, "finding")
-    adjudicated = [f for f in findings if "adjudication" in f["checks"]]
+    adjudicated = [f for f in findings if f["checks"]["adjudication"] is not None]
     assert len(adjudicated) == 10
     assert {f["checks"]["adjudication"] for f in adjudicated} == {"disagrees"}
     assert all(f["trust_level"] == "to_check" for f in findings)
@@ -199,6 +199,6 @@ def test_no_third_read_without_room_under_the_cap(tmp_path: Path) -> None:
 
     finding = _blocks(outcome, "finding")[0]
     assert finding["checks"]["second_read"] == "unsure"
-    assert "adjudication" not in finding["checks"] and "reads" not in finding
+    assert finding["checks"]["adjudication"] is None and finding["reads"] is None
     trust = _blocks(outcome, "trust")[0]
     assert any(line.startswith("Third read not run on 1 ") for line in trust["not_checked"])

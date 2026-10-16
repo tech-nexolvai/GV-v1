@@ -308,6 +308,8 @@ def apply_checks(
         "rule": rule_result(finding, recorded),
         "arithmetic": None,
         "lead_checked": bool(finding.get("verified")),
+        "adjudication": None,
+        "critic": None,
     }
     module = load_module(CHECKS_MODULE)
     if module is not None:
@@ -320,6 +322,9 @@ def apply_checks(
             _log.warning("assistant chat finding check failed: %s", type(failed).__name__)
     architect, vendor = _inches(finding.get("architect")), _inches(finding.get("vendor"))
     out["checks"] = checks
+    # The third read and the critic start again too (#1498): they come after the lead's answer.
+    out["reads"] = None
+    out["critic"] = None
     out["inches"] = {
         "architect": _number(architect),
         "vendor": _number(vendor),

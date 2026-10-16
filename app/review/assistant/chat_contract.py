@@ -190,6 +190,16 @@ class ChatFindingChecksOut(BaseModel):
         default=None, description="adds_up | does_not_add_up | not_a_number (vendor arithmetic)"
     )
     lead_checked: bool
+    adjudication: str | None = Field(
+        default=None,
+        description="The third read's majority when the second read disagreed or was unsure: "
+        "agrees_after_adjudication | disagrees | unsure (#1498).",
+    )
+    critic: str | None = Field(
+        default=None,
+        description="The adversarial critic (whole-set answers): passed | objects | unsure | "
+        "not_run (#1498).",
+    )
 
 
 class ChatFindingInchesOut(BaseModel):
@@ -207,6 +217,36 @@ class ChatSecondReadValuesOut(BaseModel):
 
     architect: str | None = None
     vendor: str | None = None
+
+
+class ChatFindingReadOut(BaseModel):
+    """One reading of a finding's values (#1498): its own, the second read's, the third read's."""
+
+    model_config = ConfigDict(frozen=True)
+
+    role: Literal["first", "second", "third"] | None = None
+    model: str
+    value_arch: str | None = None
+    value_vendor: str | None = None
+    sure: bool | None = Field(default=None, description="null for the finding's own values.")
+    dpi: int | None = Field(default=None, description="The third read's crop resolution.")
+    turned: bool | None = Field(
+        default=None, description="Whether a quarter-turned copy was shown (sideways text)."
+    )
+
+
+class ChatFindingCriticOut(BaseModel):
+    """The critic's look at one finding (#1498)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    result: Literal["passed", "objects", "unsure"]
+    answers: dict[str, str] = Field(
+        default_factory=dict,
+        description="same_item, right_dimension, vendor_ink, architect_side: yes | no | unsure.",
+    )
+    note: str = Field(default="", description="What is wrong, when it objects.")
+    model: str | None = None
 
 
 class ChatFindingOut(BaseModel):
@@ -279,6 +319,10 @@ class ChatFindingOut(BaseModel):
         | None
     ) = None
     second_read_values: ChatSecondReadValuesOut | None = None
+    reads: list[ChatFindingReadOut] | None = Field(
+        default=None, description="Every reading, when a third read settled the second (#1498)."
+    )
+    critic: ChatFindingCriticOut | None = None
 
 
 class ChatFindingBlock(BaseModel):
@@ -347,6 +391,8 @@ class ChatTrustChecksOut(BaseModel):
 
     printed_at_spot: dict[str, int]
     second_read: dict[str, int]
+    adjudication: dict[str, int] | None = None
+    critic: dict[str, int] | None = None
     rules: list[ChatTrustRuleOut]
     arithmetic: dict[str, int]
     lead_checked: int

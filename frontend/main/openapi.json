@@ -4066,6 +4066,18 @@
       "ChatFindingChecksOut": {
         "description": "The checks run on a finding, by code (and one cheap independent AI read).",
         "properties": {
+          "adjudication": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The third read's majority when the second read disagreed or was unsure: agrees_after_adjudication | disagrees | unsure (#1498).",
+            "title": "Adjudication"
+          },
           "arithmetic": {
             "anyOf": [
               {
@@ -4077,6 +4089,18 @@
             ],
             "description": "adds_up | does_not_add_up | not_a_number (vendor arithmetic)",
             "title": "Arithmetic"
+          },
+          "critic": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The adversarial critic (whole-set answers): passed | objects | unsure | not_run (#1498).",
+            "title": "Critic"
           },
           "lead_checked": {
             "title": "Lead Checked",
@@ -4116,6 +4140,50 @@
           "lead_checked"
         ],
         "title": "ChatFindingChecksOut",
+        "type": "object"
+      },
+      "ChatFindingCriticOut": {
+        "description": "The critic's look at one finding (#1498).",
+        "properties": {
+          "answers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "same_item, right_dimension, vendor_ink, architect_side: yes | no | unsure.",
+            "title": "Answers",
+            "type": "object"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "note": {
+            "default": "",
+            "description": "What is wrong, when it objects.",
+            "title": "Note",
+            "type": "string"
+          },
+          "result": {
+            "enum": [
+              "passed",
+              "objects",
+              "unsure"
+            ],
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "ChatFindingCriticOut",
         "type": "object"
       },
       "ChatFindingDroppedBlock": {
@@ -4237,6 +4305,16 @@
             "title": "Created By",
             "type": "string"
           },
+          "critic": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatFindingCriticOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -4298,6 +4376,21 @@
               }
             ],
             "title": "Printed Total"
+          },
+          "reads": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ChatFindingReadOut"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Every reading, when a third read settled the second (#1498).",
+            "title": "Reads"
           },
           "record_id": {
             "anyOf": [
@@ -4493,6 +4586,94 @@
           "created_by"
         ],
         "title": "ChatFindingOut",
+        "type": "object"
+      },
+      "ChatFindingReadOut": {
+        "description": "One reading of a finding's values (#1498): its own, the second read's, the third read's.",
+        "properties": {
+          "dpi": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The third read's crop resolution.",
+            "title": "Dpi"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "enum": [
+                  "first",
+                  "second",
+                  "third"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          },
+          "sure": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "null for the finding's own values.",
+            "title": "Sure"
+          },
+          "turned": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Whether a quarter-turned copy was shown (sideways text).",
+            "title": "Turned"
+          },
+          "value_arch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value Arch"
+          },
+          "value_vendor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value Vendor"
+          }
+        },
+        "required": [
+          "model"
+        ],
+        "title": "ChatFindingReadOut",
         "type": "object"
       },
       "ChatGvChecksOut": {
@@ -5976,12 +6157,40 @@
       },
       "ChatTrustChecksOut": {
         "properties": {
+          "adjudication": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adjudication"
+          },
           "arithmetic": {
             "additionalProperties": {
               "type": "integer"
             },
             "title": "Arithmetic",
             "type": "object"
+          },
+          "critic": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Critic"
           },
           "lead_checked": {
             "title": "Lead Checked",

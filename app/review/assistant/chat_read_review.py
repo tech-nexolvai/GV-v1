@@ -14,6 +14,9 @@ Every call goes through the engine's own call path, so it is streamed, logged on
 (its own prompt id) and counted in the message's cost within its caps; a call that would pass a
 cap is not made (the check is `not_run`). The calls run in parallel; the crops are drawn first,
 one at a time (pdfium is not thread-safe). Code, never a model, decides every outcome.
+
+Both modules are loaded by name, as the other checks are (`chat_trust.load_module`): a server
+without them, or a test that leaves the checks out, simply runs neither.
 """
 
 from __future__ import annotations
@@ -24,11 +27,14 @@ from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from importlib import import_module
 from pathlib import Path
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
-from app.review.assistant import finding_critic, read_adjudication
+from app.review.assistant import chat_trust
 from app.review.assistant.chat_request import BY_SHORT, thinking_config
 from app.review.assistant.chat_trust import trust_level
+
+if TYPE_CHECKING:
+    from app.review.assistant import finding_critic, read_adjudication
 
 __all__ = ["READ_SYSTEM", "review_reads"]
 
@@ -40,6 +46,8 @@ READ_SYSTEM: Final = (
     "see in the pictures; never guess a number you cannot read."
 )
 _WORKERS: Final = 8
+ADJUDICATION_MODULE: Final = "app.review.assistant.read_adjudication"
+CRITIC_MODULE: Final = "app.review.assistant.finding_critic"
 _SECOND_READ_MODEL: Final = "haiku"
 
 
@@ -125,7 +133,7 @@ def _pdf_for(box: Mapping[str, Any], pdf_paths: Mapping[str, Path]) -> Path | No
 
 
 def _adjudication_crops(
-    finding: Mapping[str, Any], pdf_paths: Mapping[str, Path]
+    adjudication: Any, finding: Mapping[str, Any], pdf_paths: Mapping[str, Path]
 ) -> dict[str, read_adjudication.SideCrops]:
     crops: dict[str, read_adjudication.SideCrops] = {}
     for side, key in (("architect", "arch_box"), ("vendor", "vendor_box")):
@@ -136,7 +144,7 @@ def _adjudication_crops(
         if pdf is None or not pdf.is_file():
             continue
         try:
-            drawn = read_adjudication.render_crops(pdf, box)
+            drawn = adjudication.render_crops(pdf, box)
         except Exception as failed:  # noqa: BLE001 - no crop, the third read goes without it
             _log.warning("assistant chat third-read crop failed: %s", type(failed).__name__)
             continue
@@ -165,48 +173,57 @@ def review_reads(engine: Any) -> None:
                 engine._show_finding(updated)
 
     jobs: list[Callable[[], None]] = []
+    adjudication_module = chat_trust.load_module(ADJUDICATION_MODULE)
+    critic_module = chat_trust.load_module(CRITIC_MODULE)
 
     # 1. Third reads.
-    escalate = sorted(
-        (f for f in findings if read_adjudication.needs_adjudication(f)), key=_differences_first
-    )[: read_adjudication.ADJUDICATION_LIMIT]
-    if escalate:
+    escalate: list[dict[str, Any]] = []
+    if adjudication_module is not None:
+        escalate = sorted(
+            (f for f in findings if adjudication_module.needs_adjudication(f)),
+            key=_differences_first,
+        )[: adjudication_module.ADJUDICATION_LIMIT]
+    if adjudication_module is not None and escalate:
         pdf_paths = book.pdf_paths()
-        model = read_adjudication.adjudication_model()
+        model = adjudication_module.adjudication_model()
         read_call = _model_call(
             engine,
             budget,
             short=model,
-            effort=read_adjudication.ADJUDICATION_EFFORT,
+            effort=adjudication_module.ADJUDICATION_EFFORT,
             system=READ_SYSTEM,
-            max_tokens=read_adjudication.ADJUDICATION_MAX_TOKENS,
-            prompt_tokens=read_adjudication.ADJUDICATION_PROMPT_TOKENS,
+            max_tokens=adjudication_module.ADJUDICATION_MAX_TOKENS,
+            prompt_tokens=adjudication_module.ADJUDICATION_PROMPT_TOKENS,
             prompt_id=_prompt_id(engine, "adjudicate"),
         )
         drawing = import_module("app.review.assistant.chat_drawing")
         for finding in escalate:
             with drawing._PDFIUM_LOCK:
-                crops = _adjudication_crops(finding, pdf_paths)
+                crops = _adjudication_crops(adjudication_module, finding, pdf_paths)
             if crops:
-                jobs.append(_third_read_job(engine, finding, crops, read_call, model, update))
+                jobs.append(
+                    _third_read_job(
+                        engine, adjudication_module, finding, crops, read_call, model, update
+                    )
+                )
 
     # 2. The critic, for whole-set and full-check answers only.
     whole_set = bool(book.coverage_used) or getattr(engine.settings, "mode", None) == "full_check"
     judged: list[str] = []
-    if whole_set:
-        candidates = finding_critic.candidates(findings)
+    if whole_set and critic_module is not None:
+        candidates = critic_module.candidates(findings)
         critic_call = _model_call(
             engine,
             budget,
-            short=finding_critic.CRITIC_MODEL,
-            effort=finding_critic.CRITIC_EFFORT,
-            system=finding_critic.SYSTEM,
-            max_tokens=finding_critic.CRITIC_MAX_TOKENS,
-            prompt_tokens=finding_critic.CRITIC_PROMPT_TOKENS,
+            short=critic_module.CRITIC_MODEL,
+            effort=critic_module.CRITIC_EFFORT,
+            system=critic_module.SYSTEM,
+            max_tokens=critic_module.CRITIC_MAX_TOKENS,
+            prompt_tokens=critic_module.CRITIC_PROMPT_TOKENS,
             prompt_id=_prompt_id(engine, "critic"),
         )
-        for batch in finding_critic.batches(candidates):
-            jobs.append(_critic_job(engine, batch, critic_call, update))
+        for batch in critic_module.batches(candidates):
+            jobs.append(_critic_job(engine, critic_module, batch, critic_call, update))
             judged.extend(str(f["id"]) for f in batch)
         for finding in candidates:
             if str(finding["id"]) not in judged:
@@ -226,6 +243,7 @@ def _critic_not_run(finding: dict[str, Any]) -> dict[str, Any]:
 
 def _third_read_job(
     engine: Any,
+    adjudication_module: Any,
     finding: Mapping[str, Any],
     crops: Mapping[str, read_adjudication.SideCrops],
     call: Callable[[list[dict[str, Any]]], str],
@@ -236,7 +254,7 @@ def _third_read_job(
         if engine.cancel.is_set():
             return
         try:
-            result = read_adjudication.adjudicate(
+            result = adjudication_module.adjudicate(
                 finding, crops, call, model=model, second_model=_SECOND_READ_MODEL
             )
         except Exception as failed:  # noqa: BLE001 - not run: no room, cancelled or a failure
@@ -256,6 +274,7 @@ def _third_read_job(
 
 def _critic_job(
     engine: Any,
+    critic_module: Any,
     batch: list[Mapping[str, Any]],
     call: Callable[[list[dict[str, Any]]], str],
     update: Callable[[str, Callable[[dict[str, Any]], dict[str, Any]]], None],
@@ -274,7 +293,7 @@ def _critic_job(
         verdicts: dict[str, finding_critic.CriticVerdict] = {}
         if crops:
             try:
-                verdicts = finding_critic.criticise(batch, crops, call)
+                verdicts = critic_module.criticise(batch, crops, call)
             except Exception as failed:  # noqa: BLE001 - not run: no room, cancelled or a failure
                 if not isinstance(failed, _NoRoom):
                     _log.warning("assistant chat critic not run: %s", type(failed).__name__)
@@ -289,7 +308,7 @@ def _critic_job(
                 current: dict[str, Any], verdict: finding_critic.CriticVerdict = verdict
             ) -> dict[str, Any]:
                 current["checks"] = {**(current.get("checks") or {}), "critic": verdict.result}
-                current["critic"] = verdict.as_dict(finding_critic.CRITIC_MODEL)
+                current["critic"] = verdict.as_dict(critic_module.CRITIC_MODEL)
                 return current
 
             update(finding_id, change)
