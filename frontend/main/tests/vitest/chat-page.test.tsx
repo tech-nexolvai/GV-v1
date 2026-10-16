@@ -356,3 +356,45 @@ describe('model, effort and thinking in the composer', () => {
     expect(stream.send.mock.calls[0][1]).toEqual({ text: 'Hi', model: 'claude-sonnet-5-5', effort: 'max', thinking: true });
   });
 });
+
+describe('the drawing set’s spend under the composer', () => {
+  it('asks for the models with the set, so the spend is this set’s chats (not always $0.00)', async () => {
+    const api = fakeChatApi({ models: vi.fn(async () => modelsOut({ package_spent_usd: '4.27', package_cap_usd: '40.00' })) });
+    renderChat(api);
+    await waitFor(() => expect(api.models).toHaveBeenCalledWith('pkg-1'));
+    expect(api.models.mock.calls.every((call: unknown[]) => call[0] === 'pkg-1')).toBe(true);
+  });
+});
+
+describe('the set’s chat list keeps up', () => {
+  it('a first message lists its chat, titled by the question, as soon as it starts (not when it ends)', async () => {
+    const stream = drivenStream();
+    const list = vi.fn()
+      .mockResolvedValueOnce({ chats: [summary('c-1')] })
+      .mockResolvedValue({ chats: [summary('c-1', { title: 'How many pages?', turns: 1, last_message_at: new Date().toISOString() })] });
+    const api = fakeChatApi({ send: stream.send, list });
+    renderChat(api);
+    expect(await screen.findByRole('button', { name: 'Model: Claude Opus 5.5' })).toBeTruthy();
+    await screen.findByRole('heading', { name: `What do you want to know about ${SET_NAME}?` });
+    await userEvent.setup().type(composer(), 'How many pages?{Enter}');
+    expect(stream.send).toHaveBeenCalledTimes(1);
+    expect(list).toHaveBeenCalledTimes(1);
+
+    act(() => stream.emit({ event: 'message_start', data: { message_id: 'a-9', model: 'claude-opus-5-5', effort: 'high', thinking: true } }));
+
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+    const nav = screen.getByRole('navigation', { name: 'Chats in this drawing set' });
+    expect(await within(nav).findByText('How many pages?')).toBeTruthy();
+  });
+
+  it('a chat started elsewhere is listed when it is opened', async () => {
+    const list = vi.fn()
+      .mockResolvedValueOnce({ chats: [summary('c-old')] })
+      .mockResolvedValue({ chats: [summary('c-1', { title: 'Started by a script', turns: 1 }), summary('c-old')] });
+    const api = fakeChatApi({ list, get: vi.fn(async (id: string) => chatOut(id, [QUESTION], { running: true })) });
+    renderChat(api);
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+    const nav = screen.getByRole('navigation', { name: 'Chats in this drawing set' });
+    expect(await within(nav).findByText('Started by a script')).toBeTruthy();
+  });
+});

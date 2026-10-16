@@ -2,7 +2,8 @@
 
 `run_message` runs in its own thread (the HTTP stream only relays its events):
 
-1. `message_start`; the question is stored at once (so the chat shows it while it is answered).
+1. The question is stored at once, then `message_start` (so the chat and its list show it while
+   it is answered).
 2. The drawing set's money cap: a set that has used its budget is not asked (`stopped: cost_cap`).
 3. The chat's folder: the set's latest PDFs copied into its uploads (again only when they changed),
    the GV review skill built into its skills folder the first time.
@@ -431,6 +432,16 @@ def _safe(emit: Emit, event: str, data: dict[str, Any]) -> None:
 
 def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
     run.started = True
+    # The question is stored before `message_start`, so a chat list read when the screen sees
+    # `message_start` already shows the chat, titled by its first question.
+    try:
+        with job.factory() as session:
+            add_user_message(session, chat_id=job.chat_id, created_by=job.created_by, text=job.text)
+            session.commit()
+    except Exception:  # noqa: BLE001 - told plainly; nothing was sent
+        _log.exception("assistant chat could not store the question")
+        _safe(emit, "error", {"message": _NOT_SAVED})
+        return
     _safe(
         emit,
         "message_start",
@@ -441,14 +452,6 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             "thinking": job.thinking,
         },
     )
-    try:
-        with job.factory() as session:
-            add_user_message(session, chat_id=job.chat_id, created_by=job.created_by, text=job.text)
-            session.commit()
-    except Exception:  # noqa: BLE001 - told plainly; nothing was sent
-        _log.exception("assistant chat could not store the question")
-        _safe(emit, "error", {"message": _NOT_SAVED})
-        return
 
     def finish(outcome: MessageOutcome) -> None:
         _finish(job, run, emit, outcome)

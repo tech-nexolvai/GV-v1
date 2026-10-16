@@ -118,3 +118,10 @@ describe('the chat stream', () => {
     expect(chatFailureWords(new TypeError('Failed to fetch'))).toBe('The assistant could not be reached. Check the connection and try again.');
   });
 });
+
+describe('chat paths', () => {
+  it('the models path carries the drawing set when there is one', () => {
+    expect(chatPaths.models('pkg 1')).toBe('/api/v1/assistant/models?package_id=pkg%201');
+    expect(chatPaths.models()).toBe('/api/v1/assistant/models');
+  });
+});

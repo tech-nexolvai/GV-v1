@@ -350,6 +350,37 @@ def test_a_message_streams_and_ends_with_the_stored_message(postgres_engine, tmp
         assert listed[0]["turns"] == 1 and listed[0]["title"] == chat["title"]
 
 
+def test_the_chat_is_listed_with_its_title_when_its_first_message_starts(postgres_engine, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """The screen reads the chat list when it sees `message_start`: the question is stored by then,
+    so a chat whose first message is still being answered is listed, titled by it."""
+    from app.api import assistant_chats
+    from app.review.assistant.chat_store import chat_summaries
+
+    seen: list[tuple[str | None, int]] = []
+    real = assistant_chats.run_message
+
+    def spy(job, run, emit):  # type: ignore[no-untyped-def]
+        def tap(event: str, data: dict[str, Any]) -> None:
+            if event == "message_start":
+                with job.factory() as session:
+                    listed = chat_summaries(session, job.package_id)[0]
+                    seen.append((listed.title, listed.turns))
+            emit(event, data)
+
+        real(job, run, tap)
+
+    monkeypatch.setattr(assistant_chats, "run_message", spy)
+    with _world(
+        postgres_engine, tmp_path, provider=ScriptedProvider(lead=[reply(text("Hi."))])
+    ) as world:
+        chat_id = world.chat()
+
+        status, events = world.ask(chat_id, "How many pages are in this set?")
+
+    assert status == 200 and events[0][0] == "message_start"
+    assert seen == [("How many pages are in this set?", 1)]
+
+
 def test_the_next_turn_replays_the_stored_history_byte_for_byte(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
     def render(command: str, workspace: Any) -> tuple[str, int]:
         _png(workspace.home / "p4.png")
