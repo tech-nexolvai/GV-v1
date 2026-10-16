@@ -42,20 +42,25 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import uuid
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Protocol
 
 __all__ = [
     "DOCKER_IMAGE",
     "MAX_OUTPUT_CHARS",
+    "OUTPUTS",
     "SCRATCH",
+    "SKILLS",
     "TIMEOUT_SECONDS",
     "UPLOADS",
+    "ChatWorkspace",
     "DockerSandbox",
     "MacSandbox",
+    "Mount",
     "Sandbox",
     "SandboxRefused",
     "SandboxResult",
@@ -75,6 +80,10 @@ DOCKER_IMAGE: Final = "gv-assistant-sandbox"
 #: Where the model sees the files, as on claude.ai.
 UPLOADS: Final = "/mnt/user-data/uploads"
 SCRATCH: Final = "/home/claude"
+#: The chat's folder for files handed to the reviewer (`present_files`), as on claude.ai.
+OUTPUTS: Final = "/mnt/user-data/outputs"
+#: The GV review skill (read-only), as claude.ai mounts its skills.
+SKILLS: Final = "/mnt/skills/gv-review"
 TIMEOUT_SECONDS: Final = 60
 MAX_OUTPUT_CHARS: Final = 20_000
 #: The longest command accepted: a short script, never a file pasted in.
@@ -125,6 +134,49 @@ def safe_file_name(name: str | None, fallback: str) -> str:
 
 
 @dataclass(frozen=True, slots=True)
+class Mount:
+    """One folder the sandbox sees: where the model sees it (`shown`), where it really is, and
+    whether a command may write there."""
+
+    shown: str
+    real: Path
+    writable: bool
+
+
+def _resolve(mounts: Sequence[Mount], default: Path, path: str) -> Path:
+    """`path` as the model writes it (a shown folder's path, or relative to the default folder) as
+    a real path inside one of the mounts, or `SandboxRefused`: nothing else is ever read back, a
+    link out of them included."""
+    text = path.strip()
+    if not text:
+        raise SandboxRefused("the path is empty")
+    allowed = " and ".join(mount.shown for mount in mounts)
+    for mount in mounts:
+        if text == mount.shown or text.startswith(mount.shown + "/"):
+            real, relative = mount.real, text[len(mount.shown) :].lstrip("/")
+            break
+    else:
+        if text.startswith("/"):
+            raise SandboxRefused(f"only {allowed} can be viewed")
+        real, relative = default, text
+    candidate = (real / relative).resolve()
+    if candidate != real and real not in candidate.parents:
+        raise SandboxRefused(f"only {allowed} can be viewed")
+    if not candidate.exists():
+        raise SandboxRefused(f"there is no file or folder {text}")
+    return candidate
+
+
+def _shown(mounts: Sequence[Mount], real: Path) -> str:
+    for mount in mounts:
+        if real == mount.real or mount.real in real.parents:
+            return mount.shown + (
+                "/" + str(real.relative_to(mount.real)) if real != mount.real else ""
+            )
+    return str(real)
+
+
+@dataclass(frozen=True, slots=True)
 class Workspace:
     """One question's folders. `close` removes them."""
 
@@ -153,6 +205,15 @@ class Workspace:
         out.chmod(0o777)
         return cls(root=root, work=work, out=out, file_names=tuple(names))
 
+    @property
+    def mounts(self) -> tuple[Mount, ...]:
+        return (Mount(UPLOADS, self.work, False), Mount(SCRATCH, self.out, True))
+
+    @property
+    def home(self) -> Path:
+        """The real folder a command starts in (the model's `/home/claude`)."""
+        return self.out
+
     def close(self) -> None:
         """Remove the folders; closing twice is harmless."""
         if self.work.exists():
@@ -163,39 +224,109 @@ class Workspace:
         """`path` as the model writes it (`/home/claude/p-03.png`, `/mnt/user-data/uploads/x.pdf`,
         or relative to the scratch folder) as a real path inside one of the two folders, or
         `SandboxRefused`: nothing else is ever read back, a link out of them included."""
-        text = path.strip()
-        if not text:
-            raise SandboxRefused("the path is empty")
-        for shown, real in ((UPLOADS, self.work), (SCRATCH, self.out)):
-            if text == shown or text.startswith(shown + "/"):
-                relative = text[len(shown) :].lstrip("/")
-                break
-        else:
-            if text.startswith("/"):
-                raise SandboxRefused(f"only {UPLOADS} and {SCRATCH} can be viewed")
-            real, relative = self.out, text
-        candidate = (real / relative).resolve()
-        if candidate != real and real not in candidate.parents:
-            raise SandboxRefused(f"only {UPLOADS} and {SCRATCH} can be viewed")
-        if not candidate.exists():
-            raise SandboxRefused(f"there is no file or folder {text}")
-        return candidate
+        return _resolve(self.mounts, self.out, path)
 
     def shown(self, real: Path) -> str:
         """A real path inside the workspace as the model sees it."""
-        for shown, root in ((UPLOADS, self.work), (SCRATCH, self.out)):
-            if real == root or root in real.parents:
-                return shown + ("/" + str(real.relative_to(root)) if real != root else "")
-        return str(real)
+        return _shown(self.mounts, real)
+
+
+@dataclass(frozen=True, slots=True)
+class ChatWorkspace:
+    """One chat's folders (#1463), kept for the whole chat like claude.ai's container: the set's
+    PDFs (read-only), the home folder and the outputs folder (writable, kept across turns), and the
+    GV review skill (read-only). The chat's `pictures/` and `files/` are beside them and never
+    mounted. `close` keeps everything: a chat's folder outlives a message."""
+
+    root: Path
+
+    @property
+    def uploads(self) -> Path:
+        return self.root / "uploads"
+
+    @property
+    def home(self) -> Path:
+        return self.root / "home"
+
+    @property
+    def outputs(self) -> Path:
+        return self.root / "outputs"
+
+    @property
+    def skills(self) -> Path:
+        return self.root / "skills" / "gv-review"
+
+    @property
+    def pictures(self) -> Path:
+        return self.root / "pictures"
+
+    @property
+    def files(self) -> Path:
+        return self.root / "files"
+
+    @classmethod
+    def open(cls, root: Path) -> ChatWorkspace:
+        """The chat's folder, made on first use. The writable folders are open to the sandbox's
+        unprivileged user; the others are the server's."""
+        root.mkdir(parents=True, exist_ok=True)
+        workspace = cls(root=root.resolve())
+        for folder in (workspace.uploads, workspace.skills, workspace.pictures, workspace.files):
+            folder.mkdir(parents=True, exist_ok=True)
+        for folder in (workspace.home, workspace.outputs):
+            folder.mkdir(parents=True, exist_ok=True)
+            folder.chmod(0o777)
+        return workspace
+
+    @property
+    def mounts(self) -> tuple[Mount, ...]:
+        return (
+            Mount(UPLOADS, self.uploads, False),
+            Mount(SCRATCH, self.home, True),
+            Mount(OUTPUTS, self.outputs, True),
+            Mount(SKILLS, self.skills, False),
+        )
+
+    def close(self) -> None:
+        """Nothing to remove: the chat keeps its folder."""
+
+    def resolve(self, path: str) -> Path:
+        return _resolve(self.mounts, self.home, path)
+
+    def shown(self, real: Path) -> str:
+        return _shown(self.mounts, real)
+
+
+class _Workspace(Protocol):
+    """What a sandbox needs of a workspace: its folders and where commands start."""
+
+    @property
+    def root(self) -> Path: ...
+
+    @property
+    def mounts(self) -> tuple[Mount, ...]: ...
+
+    @property
+    def home(self) -> Path: ...
+
+    def resolve(self, path: str) -> Path: ...
+
+    def shown(self, real: Path) -> str: ...
+
+    def close(self) -> None: ...
 
 
 class Sandbox(Protocol):
     """Where the `bash` tool runs. Tests pass a fake or the real one."""
 
     kind: str
-    workspace: Workspace
+
+    @property
+    def workspace(self) -> _Workspace: ...
 
     def run(self, command: str) -> SandboxResult: ...
+
+    def kill_all(self) -> None:
+        """Stop every command running now (a cancelled chat message); harmless when none runs."""
 
 
 def check_command(command: str) -> str:
@@ -227,13 +358,22 @@ def _docker_cli_env() -> dict[str, str]:
 class DockerSandbox:
     """One `docker run` per command in the locked image."""
 
-    workspace: Workspace
+    workspace: _Workspace
     image: str = DOCKER_IMAGE
     timeout_seconds: int = TIMEOUT_SECONDS
     docker: str = "docker"
     kind: str = "docker"
+    cpus: str = "1"
+    memory: str = "768m"
+    pids: int = 128
+    _running: set[str] = field(default_factory=set)
+    _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def argv(self, command: str, name: str) -> list[str]:
+        mounts: list[str] = []
+        for mount in self.workspace.mounts:
+            spec = f"type=bind,source={mount.real},target={mount.shown}"
+            mounts += ["--mount", spec if mount.writable else spec + ",readonly"]
         return [
             self.docker,
             "run",
@@ -246,23 +386,20 @@ class DockerSandbox:
             "--tmpfs",
             "/tmp:rw,size=64m",
             "--cpus",
-            "1",
+            self.cpus,
             "--memory",
-            "768m",
+            self.memory,
             "--memory-swap",
-            "768m",
+            self.memory,
             "--pids-limit",
-            "128",
+            str(self.pids),
             "--cap-drop",
             "ALL",
             "--security-opt",
             "no-new-privileges",
             "--user",
             "65534:65534",
-            "--mount",
-            f"type=bind,source={self.workspace.work},target={UPLOADS},readonly",
-            "--mount",
-            f"type=bind,source={self.workspace.out},target={SCRATCH}",
+            *mounts,
             "--workdir",
             SCRATCH,
             "--env",
@@ -273,9 +410,29 @@ class DockerSandbox:
             command,
         ]
 
+    def _kill(self, name: str) -> None:
+        subprocess.run(
+            [self.docker, "kill", name],
+            capture_output=True,
+            timeout=20,
+            check=False,
+            env=_docker_cli_env(),
+        )
+
+    def kill_all(self) -> None:
+        with self._lock:
+            names = sorted(self._running)
+        for name in names:
+            try:
+                self._kill(name)
+            except (OSError, subprocess.TimeoutExpired):
+                _log.warning("assistant sandbox could not stop a container")
+
     def run(self, command: str) -> SandboxResult:
         name = f"gv-assistant-{uuid.uuid4().hex[:12]}"
         argv = self.argv(check_command(command), name)
+        with self._lock:
+            self._running.add(name)
         try:
             done = subprocess.run(
                 argv,
@@ -285,9 +442,7 @@ class DockerSandbox:
                 env=_docker_cli_env(),
             )
         except subprocess.TimeoutExpired as expired:
-            subprocess.run(
-                [self.docker, "kill", name], capture_output=True, timeout=20, check=False
-            )
+            self._kill(name)
             text, cut = cut_output(_decode(expired.stdout) + _decode(expired.stderr))
             return SandboxResult(
                 output=text + f"\n[Stopped: the command ran over {self.timeout_seconds} s]",
@@ -295,12 +450,19 @@ class DockerSandbox:
                 timed_out=True,
                 truncated=cut,
             )
+        finally:
+            with self._lock:
+                self._running.discard(name)
         text, cut = cut_output(_decode(done.stdout) + _decode(done.stderr))
         return SandboxResult(output=text, exit_code=done.returncode, truncated=cut)
 
 
-def _profile(python_roots: Sequence[str]) -> str:
+def _profile(python_roots: Sequence[str], mounts: Sequence[Mount]) -> str:
     reads = " ".join(f'(subpath "{root}")' for root in python_roots)
+    folders = " ".join(f'(subpath (param "M{n}"))' for n in range(len(mounts)))
+    writes = " ".join(
+        f'(subpath (param "M{n}"))' for n, mount in enumerate(mounts) if mount.writable
+    )
     return f"""(version 1)
 (deny default)
 (allow process-exec process-fork)
@@ -310,8 +472,8 @@ def _profile(python_roots: Sequence[str]) -> str:
 (allow file-read-metadata)
 (allow file-read* (literal "/") (subpath "/usr") (subpath "/bin") (subpath "/System") \
 (subpath "/Library/Apple") (subpath "/private/var/db/dyld") (subpath "/dev") {reads} \
-(subpath (param "WORK")) (subpath (param "OUT")) (subpath (param "SHIMS")))
-(allow file-write* (subpath (param "OUT")) (literal "/dev/null"))
+{folders} (subpath (param "SHIMS")))
+(allow file-write* {writes} (literal "/dev/null"))
 (deny network*)
 """
 
@@ -323,27 +485,35 @@ exit 127
 """
 
 
+def _literal(text: str) -> Callable[[re.Match[str]], str]:
+    """A `re.sub` replacement that inserts `text` as it is (no backslash escapes)."""
+    return lambda _match: text
+
+
 @dataclass(slots=True)
 class MacSandbox:
     """`sandbox-exec` with a deny-by-default profile, for a Mac without the Docker image."""
 
-    workspace: Workspace
+    workspace: _Workspace
     python: str = sys.executable
     timeout_seconds: int = TIMEOUT_SECONDS
     kind: str = "macos-sandbox-exec"
+    _running: set[int] = field(default_factory=set)
+    _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def _shims(self) -> Path:
         shims = self.workspace.root / "bin"
-        if not shims.exists():
-            shims.mkdir()
-            for name in ("python3", "python"):
-                path = shims / name
-                path.write_text(f'#!/bin/sh\nexec "{self.python}" "$@"\n')
-                path.chmod(0o555)
-            for name in _POPPLER:
-                path = shims / name
-                path.write_text(_MISSING_TOOL.format(name=name))
-                path.chmod(0o555)
+        with self._lock:
+            if not (shims / "python3").exists():
+                shims.mkdir(exist_ok=True)
+                for name in ("python3", "python"):
+                    path = shims / name
+                    path.write_text(f'#!/bin/sh\nexec "{self.python}" "$@"\n')
+                    path.chmod(0o555)
+                for name in _POPPLER:
+                    path = shims / name
+                    path.write_text(_MISSING_TOOL.format(name=name))
+                    path.chmod(0o555)
         return shims
 
     def _python_roots(self) -> list[str]:
@@ -353,28 +523,42 @@ class MacSandbox:
         roots.add(sys.prefix)
         return sorted(roots)
 
+    def _by_length(self) -> list[Mount]:
+        return sorted(self.workspace.mounts, key=lambda mount: len(mount.shown), reverse=True)
+
     def _to_real(self, command: str) -> str:
-        work, out = str(self.workspace.work), str(self.workspace.out)
-        command = re.sub(r"(?<![\w./-])/mnt/user-data/uploads(?=/|\b)", work, command)
-        return re.sub(r"(?<![\w./-])/home/claude(?=/|\b)", out, command)
+        for mount in self._by_length():
+            pattern = r"(?<![\w./-])" + re.escape(mount.shown) + r"(?=/|\b)"
+            command = re.sub(pattern, _literal(str(mount.real)), command)
+        return command
 
     def _to_shown(self, text: str) -> str:
-        return text.replace(str(self.workspace.work), UPLOADS).replace(
-            str(self.workspace.out), SCRATCH
-        )
+        for mount in sorted(self.workspace.mounts, key=lambda m: len(str(m.real)), reverse=True):
+            text = text.replace(str(mount.real), mount.shown)
+        return text
+
+    def kill_all(self) -> None:
+        with self._lock:
+            groups = sorted(self._running)
+        for group in groups:
+            try:
+                os.killpg(group, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
 
     def run(self, command: str) -> SandboxResult:
         real = self._to_real(check_command(command))
-        profile = self.workspace.root / "profile.sb"
-        if not profile.exists():
-            profile.write_text(_profile(self._python_roots()))
+        mounts = self.workspace.mounts
+        # One profile file per command: helpers run commands at the same time.
+        profile = self.workspace.root / f"profile-{uuid.uuid4().hex[:12]}.sb"
+        profile.write_text(_profile(self._python_roots(), mounts))
         shims = self._shims()
+        defines: list[str] = []
+        for n, mount in enumerate(mounts):
+            defines += ["-D", f"M{n}={mount.real}"]
         argv = [
             "/usr/bin/sandbox-exec",
-            "-D",
-            f"WORK={self.workspace.work}",
-            "-D",
-            f"OUT={self.workspace.out}",
+            *defines,
             "-D",
             f"SHIMS={shims}",
             "-f",
@@ -383,22 +567,25 @@ class MacSandbox:
             "-c",
             real,
         ]
+        home = self.workspace.home
         env = {
             "PATH": f"{shims}:/usr/bin:/bin",
-            "HOME": str(self.workspace.out),
-            "TMPDIR": str(self.workspace.out),
+            "HOME": str(home),
+            "TMPDIR": str(home),
             "LANG": "en_US.UTF-8",
             "PYTHONDONTWRITEBYTECODE": "1",
         }
         process = subprocess.Popen(
             argv,
-            cwd=self.workspace.out,
+            cwd=home,
             env=env,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
+        with self._lock:
+            self._running.add(process.pid)
         try:
             raw, _ = process.communicate(timeout=self.timeout_seconds)
         except subprocess.TimeoutExpired:
@@ -414,6 +601,10 @@ class MacSandbox:
                 timed_out=True,
                 truncated=cut,
             )
+        finally:
+            with self._lock:
+                self._running.discard(process.pid)
+            profile.unlink(missing_ok=True)
         text, cut = cut_output(self._to_shown(_decode(raw)))
         return SandboxResult(output=text, exit_code=process.returncode, truncated=cut)
 
@@ -436,14 +627,22 @@ def docker_image_ready(image: str = DOCKER_IMAGE, docker: str = "docker") -> boo
 
 
 def open_sandbox(
-    workspace: Workspace, *, python: str | None = None, prefer: str = "auto"
+    workspace: _Workspace,
+    *,
+    python: str | None = None,
+    prefer: str = "auto",
+    timeout_seconds: int = TIMEOUT_SECONDS,
+    docker_limits: tuple[str, str] | None = None,
 ) -> Sandbox | None:
     """The first available backend: Docker with the built image, else macOS `sandbox-exec`, else
-    `None` (the assistant then answers without the shell)."""
+    `None` (the assistant then answers without the shell). `docker_limits` is `(cpus, memory)`."""
     if prefer in ("auto", "docker") and docker_image_ready():
-        return DockerSandbox(workspace)
+        cpus, memory = docker_limits or ("1", "768m")
+        return DockerSandbox(workspace, timeout_seconds=timeout_seconds, cpus=cpus, memory=memory)
     if prefer in ("auto", "macos") and Path("/usr/bin/sandbox-exec").exists():
-        return MacSandbox(workspace, python=python or sys.executable)
+        return MacSandbox(
+            workspace, python=python or sys.executable, timeout_seconds=timeout_seconds
+        )
     _log.info("review assistant has no sandbox here (no Docker image, no sandbox-exec)")
     return None
 
@@ -547,7 +746,7 @@ def _text(path: Path, shown: str, view_range: object) -> Viewed:
     return Viewed(text=f"{shown}:\n{numbered}" if numbered else f"{shown} is empty")
 
 
-def _listing(path: Path, workspace: Workspace) -> Viewed:
+def _listing(path: Path, workspace: _Workspace) -> Viewed:
     found: list[str] = []
     for child in sorted(path.iterdir()):
         if child.name.startswith(".") or child.name == "node_modules":
@@ -564,7 +763,7 @@ def _listing(path: Path, workspace: Workspace) -> Viewed:
 
 
 def view_path(
-    workspace: Workspace, path: str, view_range: object = None, max_edge: int | None = None
+    workspace: _Workspace, path: str, view_range: object = None, max_edge: int | None = None
 ) -> Viewed:
     """The `view` tool: a picture, a text file with numbered lines, or a folder two levels deep.
 
