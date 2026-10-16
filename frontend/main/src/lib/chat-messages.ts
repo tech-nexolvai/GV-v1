@@ -7,7 +7,7 @@
  * message, which then replaces what was built live: a reload and a live answer end up identical.
  */
 
-import type { ChatAgent, ChatBlock, ChatEffort, ChatEvent, ChatFile, ChatMessage, ChatModel, ChatStep, ChatStopped, ChatSummary, ChatTask } from '@/lib/chat-api';
+import type { ChatAgent, ChatBlock, ChatCoverage, ChatEffort, ChatEvent, ChatFile, ChatFinding, ChatMessage, ChatModel, ChatStep, ChatStopped, ChatSummary, ChatTask, ChatTrust } from '@/lib/chat-api';
 import { EFFORT_WORDS } from '@/lib/chat-settings';
 
 /** A helper agent while its Agent step runs: `running` until its `agent_end`. */
@@ -40,6 +40,15 @@ export interface ViewMessage {
   files: ChatFile[];
   /** The latest task list (from `tasks` events, or the last task step of a saved message). */
   tasks: ChatTask[] | null;
+  /**
+   * Chat v2: the answer's findings at their latest version, in the order they were first reported
+   * (an update replaces its finding in place; a dropped one is gone). Absent means none.
+   */
+  findings?: ChatFinding[];
+  /** Chat v2: the page-by-page coverage map of a whole-set answer; absent or null when it kept none. */
+  coverage?: ChatCoverage | null;
+  /** Chat v3: the trust report code built after the answer's checks; absent or null before. */
+  trust?: ChatTrust | null;
   cost_usd: string | null;
   stopped: ChatStopped | null;
   error: string | null;
@@ -62,14 +71,42 @@ export function tasksOf(blocks: readonly (ChatBlock | ViewBlock)[]): ChatTask[] 
   return null;
 }
 
+/** A finding added, or put in place of its earlier version (same id); the list given is never changed. */
+export function withFinding(findings: readonly ChatFinding[], finding: ChatFinding): ChatFinding[] {
+  return findings.some((known) => known.id === finding.id)
+    ? findings.map((known) => (known.id === finding.id ? finding : known))
+    : [...findings, finding];
+}
+
+/**
+ * The findings and coverage a saved message's blocks hold: each finding at its latest version (a
+ * later block with the same id replaces it), and the last coverage block. A dropped finding is
+ * simply not in the stored blocks; a `finding_dropped` block, if a server ever stores one, removes it.
+ */
+export function evidenceOf(blocks: readonly ChatBlock[]): { findings: ChatFinding[]; coverage: ChatCoverage | null; trust: ChatTrust | null } {
+  let findings: ChatFinding[] = [];
+  let coverage: ChatCoverage | null = null;
+  let trust: ChatTrust | null = null;
+  for (const block of blocks as readonly (ChatBlock | { type: 'finding_dropped'; finding_id: string })[]) {
+    if (block.type === 'finding' && block.finding?.id) findings = withFinding(findings, block.finding);
+    else if (block.type === 'finding_dropped') findings = findings.filter((finding) => finding.id !== block.finding_id);
+    else if (block.type === 'coverage' && block.coverage) coverage = block.coverage;
+    else if (block.type === 'trust' && block.trust) trust = block.trust;
+  }
+  return { findings, coverage, trust };
+}
+
 /** A saved message, as the screen shows it. A saved answer with words but no blocks shows its words. */
 export function fromSaved(message: ChatMessage): ViewMessage {
   const saved = message.blocks ?? [];
-  const blocks: ViewBlock[] = saved.length
-    ? saved.map((block): ViewBlock =>
+  // Findings and coverage are drawn by the screen in their own places, not in the order of the work.
+  const shown = saved.filter((block) => block.type === 'thinking' || block.type === 'text' || block.type === 'step');
+  const { findings, coverage, trust } = evidenceOf(saved);
+  const blocks: ViewBlock[] = shown.length
+    ? shown.map((block): ViewBlock =>
         block.type === 'thinking' ? { type: 'thinking', text: block.text ?? '', seconds: block.seconds ?? null, live: false }
         : block.type === 'step' ? { type: 'step', step: block.step, live: false }
-        : { type: 'text', text: block.text ?? '' })
+        : { type: 'text', text: block.type === 'text' ? block.text ?? '' : '' })
     : message.role === 'assistant' && message.text ? [{ type: 'text', text: message.text }] : [];
   return {
     key: message.id,
@@ -83,6 +120,9 @@ export function fromSaved(message: ChatMessage): ViewMessage {
     blocks,
     files: message.files ?? [],
     tasks: tasksOf(saved),
+    findings,
+    coverage,
+    trust,
     cost_usd: message.cost_usd ?? null,
     stopped: message.stopped ?? null,
     error: message.error ?? null,
@@ -199,14 +239,26 @@ export function applyChatEvent(message: ViewMessage, event: ChatEvent): ViewMess
       return { ...message, cost_usd: event.data.cost_usd };
     case 'error':
       return { ...message, error: event.data.message };
+    case 'finding':
+      return event.data.finding?.id ? { ...message, findings: withFinding(message.findings ?? [], event.data.finding) } : message;
+    case 'finding_dropped':
+      return { ...message, findings: (message.findings ?? []).filter((finding) => finding.id !== event.data.finding_id) };
+    case 'coverage':
+      return { ...message, coverage: event.data.coverage ?? message.coverage ?? null };
+    case 'trust':
+      return { ...message, trust: event.data.trust ?? message.trust ?? null };
     case 'message_end': {
-      // The stored message wins; the live task list and files stay if it somehow left them out.
+      // The stored message wins; the live task list, files, findings and coverage stay if it somehow
+      // left them out.
       const stored = fromSaved(event.data.message);
       return {
         ...stored,
         key: message.key,
         tasks: stored.tasks ?? message.tasks,
         files: stored.files.length ? stored.files : message.files,
+        findings: stored.findings?.length ? stored.findings : message.findings ?? [],
+        coverage: stored.coverage ?? message.coverage ?? null,
+        trust: stored.trust ?? message.trust ?? null,
         error: stored.error ?? message.error,
       };
     }
