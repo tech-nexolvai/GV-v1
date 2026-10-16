@@ -69,6 +69,8 @@ def _read(
     store: LocalStore,
     monkeypatch: pytest.MonkeyPatch,
     product: ProductType | None,
+    *,
+    cabinet_ai_reading: bool = False,
 ) -> tuple[PackageRevision, FakeReaders, list[object], list[object]]:
     """One headed page with a vendor row on it, for a package of `product`, through the extraction
     stage: what reached the slot reader, the whole-page reader and the fake model clients."""
@@ -93,6 +95,7 @@ def _read(
     readers = FakeReaders(lambda _model, _png: '2"')
     stages = _stages(readers)
     stages._store = store
+    stages._cabinet_ai_reading = cabinet_ai_reading
 
     stages.extract_pages(session, revision.id)
     session.commit()
@@ -169,6 +172,33 @@ def test_a_countertop_package_is_read_exactly_as_before(
     assert len(slot_pages) == 1
     assert not ai_reading_skipped(session, revision.id)
     assert results_note(session, revision.id, None if product is None else product.value) is None
+
+
+def test_with_the_cabinet_reading_setting_on_a_cabinet_package_is_read_like_a_countertop(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`GV_CABINET_AI_READING` (cabinets e2e): the same page reaches the same slot reader, and no
+    skip is recorded, so the run can be proposed from its widths."""
+    revision, _readers, slot_pages, _whole = _read(
+        session, store, monkeypatch, ProductType.CABINET, cabinet_ai_reading=True
+    )
+
+    assert len(slot_pages) == 1
+    assert not ai_reading_skipped(session, revision.id)
+
+
+@pytest.mark.parametrize(("stated", "expected"), [(None, False), ("0", False), ("1", True)])
+def test_the_cabinet_reading_setting_is_off_unless_switched_on(
+    monkeypatch: pytest.MonkeyPatch, stated: str | None, expected: bool
+) -> None:
+    from workflow.sutradhar import CABINET_AI_READING_VARIABLE, cabinet_ai_reading_configuration
+
+    if stated is None:
+        monkeypatch.delenv(CABINET_AI_READING_VARIABLE, raising=False)
+    else:
+        monkeypatch.setenv(CABINET_AI_READING_VARIABLE, stated)
+
+    assert cabinet_ai_reading_configuration() is expected
 
 
 def test_a_cabinet_package_read_before_the_change_gets_the_plain_line(

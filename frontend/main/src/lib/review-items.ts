@@ -48,6 +48,7 @@ export const ACTION_LABELS: Record<ItemAction, string> = {
   agree: 'Agree',
   settle_group: 'Clear all as not checked',
   mark_cabinets: 'Save marks',
+  use_cabinet_run: 'Use this run',
   job_values: 'Save and check again',
 };
 

@@ -88,6 +88,7 @@ from app.models.evidence import (
     ObservationCandidate,
 )
 from app.review.approval import readiness_and_decisions
+from app.review.cabinet_run_proposal import CabinetRunProposalOut, cabinet_run_proposal_for
 from app.review.depth_readings import depth_readings_for
 from app.review.requirements import BLOCKING_OUTCOMES
 from app.review.reviewed_readings import ReviewedReading, reviewed_readings
@@ -136,6 +137,7 @@ ItemKind = Literal[
     "architect",
     "depth_reading",
     "cabinet_kinds",
+    "cabinet_run",
     "other_result",
 ]
 Status = Literal["open", "done", "rechecking"]
@@ -190,6 +192,7 @@ _ACTIONS: Final[Mapping[str, tuple[str, ...]]] = {
     "architect": ("answer",),
     "depth_reading": ("confirm", "not_this"),
     "cabinet_kinds": ("mark_cabinets",),
+    "cabinet_run": ("use_cabinet_run",),
     "other_result": ("checked_right", "checked_wrong"),
     "failure": ("agree",),
     "not_checked": ("settle_group",),
@@ -398,7 +401,14 @@ class ReviewItemOut(BaseModel):
     )
     cabinet_choices: list[CabinetChoiceOut] = Field(
         default_factory=list,
-        description="`cabinet_kinds` only: the kinds a cabinet may be marked as.",
+        description="`cabinet_kinds` and `cabinet_run`: the kinds a cabinet may be marked as.",
+    )
+    cabinet_proposal: CabinetRunProposalOut | None = Field(
+        default=None,
+        description=(
+            "`cabinet_run` only: the runs proposed from the AI's stored width readings for a person "
+            "to confirm, the rows not proposed and why, and the site wall-to-wall saved so far."
+        ),
     )
     settings: list[NotCheckedSettingOut] = Field(
         default_factory=list,
@@ -1279,6 +1289,28 @@ def review_items_for_revision(
                     )
                 )
                 continue
+            # No run on Measurements: propose one from the AI's stored readings (cabinets e2e).
+            proposal = cabinet_run_proposal_for(session, revision.id)
+            first = proposal.runs[0] if proposal.runs else None
+            items.append(
+                ReviewItemOut(
+                    key=f"cabinet-run:{finding.id}",
+                    kind="cabinet_run",
+                    page=None if first is None else first.page,
+                    vendor_ref=None if first is None else first.vendor_ref,
+                    what="Which cabinets keep their width?",
+                    why=why,
+                    actions=actions("cabinet_run", state),
+                    status=state,
+                    decided_by=decided_by,
+                    decided_at=decided_at,
+                    finding_id=finding.id,
+                    cabinet_choices=cabinet_choices(),
+                    cabinet_proposal=proposal,
+                    settings=settings_for(finding.id),
+                )
+            )
+            continue
         kind: ItemKind = "architect" if rule_id == ARCHITECT_RULE else "other_result"
         items.append(
             ReviewItemOut(

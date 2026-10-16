@@ -3379,6 +3379,123 @@ export interface components {
             vendor_width?: string | null;
         };
         /**
+         * CabinetRunIn
+         * @description `use_cabinet_run`: the run chosen, what each piece is, and the site wall-to-wall.
+         */
+        CabinetRunIn: {
+            /**
+             * Pieces
+             * @description One answer per piece, left to right: `filler`, or a `cabinet_choices` category. 409 when the run's pieces changed.
+             */
+            pieces: string[];
+            /**
+             * Row Id
+             * Format: uuid
+             * @description The proposed run's `row_id`.
+             */
+            row_id: string;
+            /**
+             * Site Width
+             * @description The site wall-to-wall, measured on site, in inches (e.g. `75 1/2"`). Required unless one is already saved (`cabinet_proposal.site_width`).
+             */
+            site_width?: string | null;
+        };
+        /**
+         * CabinetRunNotProposedOut
+         * @description A vendor row that was read but not proposed, and why (never silent).
+         */
+        CabinetRunNotProposedOut: {
+            /** Page */
+            page: number;
+            /** Row Id */
+            row_id?: string | null;
+            /** Why */
+            why: string;
+        };
+        /**
+         * CabinetRunOut
+         * @description One vendor row whose every width two AIs read alike and code checked.
+         */
+        CabinetRunOut: {
+            /**
+             * Architect Note
+             * @description What the architect's drawings give for this run.
+             */
+            architect_note: string;
+            /**
+             * Checks
+             * @description What code checked, in plain words.
+             */
+            checks: string[];
+            /**
+             * Page
+             * @description 1-based vendor page.
+             */
+            page: number;
+            /** Pieces */
+            pieces: components["schemas"]["CabinetRunPieceOut"][];
+            /**
+             * Row Id
+             * Format: uuid
+             * @description The row's first piece reading; sent back to use this run.
+             */
+            row_id: string;
+            /** @description The pieces added up: the run as the vendor drew it. */
+            total: components["schemas"]["ExactValueOut"];
+            vendor_ref?: components["schemas"]["RowLocation"] | null;
+        };
+        /**
+         * CabinetRunPieceOut
+         * @description One piece of a proposed run, left to right, as two AIs read its printed width.
+         */
+        CabinetRunPieceOut: {
+            /**
+             * Candidate Id
+             * Format: uuid
+             * @description The sealed reading this width comes from.
+             */
+            candidate_id: string;
+            /**
+             * Position
+             * @description 1-based place on the row, left to right.
+             */
+            position: number;
+            /**
+             * Printed
+             * @description The label as printed, e.g. `610 [24]`.
+             */
+            printed: string;
+            /**
+             * Printed Kind
+             * @description What the vendor's own printed word names it (`filler`, `cabinet`, `appliance_space`), or null when nothing printed names it. Never from its width or its place.
+             */
+            printed_kind?: string | null;
+            /**
+             * Proposed
+             * @description Pre-selected answer: `filler` only where the vendor printed "Filler".
+             */
+            proposed?: string | null;
+            /** @description The sealed width, exact inches. */
+            width: components["schemas"]["ExactValueOut"];
+        };
+        /**
+         * CabinetRunProposalOut
+         * @description The runs a person may use for the cabinet check, and the rows that could not be used.
+         */
+        CabinetRunProposalOut: {
+            /** Not Proposed */
+            not_proposed?: components["schemas"]["CabinetRunNotProposedOut"][];
+            /**
+             * Note
+             * @description Why nothing is proposed; null when a run is proposed.
+             */
+            note?: string | null;
+            /** Runs */
+            runs?: components["schemas"]["CabinetRunOut"][];
+            /** @description The site wall-to-wall already saved for this check (the client's F_Wall_2_Wall_Dim, measured on site); null until a person enters it. */
+            site_width?: components["schemas"]["ExactValueOut"] | null;
+        };
+        /**
          * CalculationTraceOut
          * @description The arithmetic, when arithmetic ran. Mirrors `verdict.trace.CalculationTrace`.
          */
@@ -7336,6 +7453,8 @@ export interface components {
              * @description With `mark_cabinets`: one kind per cabinet shown, left to right (a `cabinet_choices` category). Required; 409 when the run's cabinets changed.
              */
             cabinet_kinds?: string[] | null;
+            /** @description With `use_cabinet_run`: the proposed run chosen (`row_id`), what each piece is, and the site wall-to-wall in inches. 409 when the run is no longer proposed. */
+            cabinet_run?: components["schemas"]["CabinetRunIn"] | null;
             /**
              * Expected Finding Id
              * @description The `finding_id` of the item as the screen showed it. Required for an item with a result; 409 when the item now names another result or is no longer listed. Null for a page listed with no countertop and for a group key.
@@ -7409,9 +7528,11 @@ export interface components {
             best_guess?: components["schemas"]["BestGuessOut"] | null;
             /**
              * Cabinet Choices
-             * @description `cabinet_kinds` only: the kinds a cabinet may be marked as.
+             * @description `cabinet_kinds` and `cabinet_run`: the kinds a cabinet may be marked as.
              */
             cabinet_choices?: components["schemas"]["CabinetChoiceOut"][];
+            /** @description `cabinet_run` only: the runs proposed from the AI's stored width readings for a person to confirm, the rows not proposed and why, and the site wall-to-wall saved so far. */
+            cabinet_proposal?: components["schemas"]["CabinetRunProposalOut"] | null;
             /**
              * Cabinets
              * @description `cabinet_kinds` only: each cabinet of the run, left to right, to mark.
@@ -7435,7 +7556,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "number" | "countertop_by_hand" | "wall_choice" | "no_countertop_page" | "architect" | "depth_reading" | "cabinet_kinds" | "other_result";
+            kind: "number" | "countertop_by_hand" | "wall_choice" | "no_countertop_page" | "architect" | "depth_reading" | "cabinet_kinds" | "cabinet_run" | "other_result";
             /**
              * Page
              * @description 1-based vendor page number.

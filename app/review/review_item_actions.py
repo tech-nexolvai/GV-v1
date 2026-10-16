@@ -57,6 +57,7 @@ from app.models import Finding, ObservationCandidate, Package, PackageRevision
 from app.models.document import PackageRevisionDocument
 from app.models.evidence import CanonicalObservation, EvidenceSupportingCandidate
 from app.models.review import ReviewAction, ReviewActionKind, ReviewSession
+from app.review.cabinet_run_answer import CabinetRunIn
 from app.review.review_items import (
     CABINET_RULE,
     CABINET_TYPE_INPUT,
@@ -133,6 +134,7 @@ _TAKES: Final[dict[str, frozenset[str]]] = {
     "architect": frozenset({"answer"}),
     "depth_reading": frozenset({"confirm", "not_this"}),
     "cabinet_kinds": frozenset({"mark_cabinets"}),
+    "cabinet_run": frozenset({"use_cabinet_run"}),
     "failure": frozenset({"agree"}),
     "not_checked": frozenset({"clear_not_checked", "settle_group"}),
 }
@@ -222,6 +224,13 @@ class ReviewItemActionIn(BaseModel):
         description=(
             "With `mark_cabinets`: one kind per cabinet shown, left to right (a "
             "`cabinet_choices` category). Required; 409 when the run's cabinets changed."
+        ),
+    )
+    cabinet_run: CabinetRunIn | None = Field(
+        default=None,
+        description=(
+            "With `use_cabinet_run`: the proposed run chosen (`row_id`), what each piece is, and "
+            "the site wall-to-wall in inches. 409 when the run is no longer proposed."
         ),
     )
     expected_keys: list[str] | None = Field(

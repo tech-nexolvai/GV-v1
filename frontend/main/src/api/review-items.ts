@@ -32,6 +32,12 @@ export type WallChoice = Schemas['WallChoiceOut'];
 /** One cabinet of a run to mark, and one kind it may be marked as (#648). */
 export type CabinetRow = Schemas['CabinetRowOut'];
 export type CabinetChoice = Schemas['CabinetChoiceOut'];
+/** A cabinet run proposed from the AI's stored widths, for a person to confirm (cabinets e2e). */
+export type CabinetRunProposal = Schemas['CabinetRunProposalOut'];
+export type CabinetRun = Schemas['CabinetRunOut'];
+export type CabinetRunPiece = Schemas['CabinetRunPieceOut'];
+/** The answer to a proposed cabinet run: which run, what each piece is, and the site width. */
+export type CabinetRunAnswer = Schemas['CabinetRunIn'];
 /** What to check on a countertop checked by hand: each piece, the overall and the rule (stored records only). */
 export type WhatToCheck = Schemas['WhatToCheckOut'];
 /** A spot on a stored page. `polygon` is in stored page space (0..1), as strings. */
@@ -59,6 +65,7 @@ export const ITEM_ACTIONS = [
   'agree',
   'settle_group',
   'mark_cabinets',
+  'use_cabinet_run',
   'job_values',
 ] as const;
 export type ItemAction = (typeof ITEM_ACTIONS)[number];
@@ -81,6 +88,8 @@ export interface ActionBody {
   expected_keys?: string[];
   /** A cabinet run's marks, one kind per cabinet shown, left to right (#648). */
   cabinet_kinds?: string[];
+  /** A proposed cabinet run used: the run, what each piece is, the site width in inches. */
+  cabinet_run?: CabinetRunAnswer;
   architect_view?: ArchitectViewAnswer;
   architect_pairing?: ArchitectPairingAnswer;
   /** This job's values, in inches, saved on the project and checked again (#1403). */
@@ -175,6 +184,7 @@ const W3_ACTION: Record<ItemAction, 'confirm' | 'fix' | 'answer' | 'agree' | 'cl
   answer: 'answer',
   not_this: 'answer',
   mark_cabinets: 'answer',
+  use_cabinet_run: 'answer',
   job_values: 'answer',
 };
 
