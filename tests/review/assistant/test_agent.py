@@ -689,11 +689,11 @@ def test_helpers_share_the_question_budget(workspace: Workspace) -> None:
 
 
 def test_a_delegating_question_gets_the_larger_cap(workspace: Workspace) -> None:
-    # The question cap ($0.06) allows the lead's first call only; once it delegates, the
+    # The question cap ($0.062) allows the lead's first call only; once it delegates, the
     # delegating cap ($3) lets the helpers and the lead's answer through.
     budget = AssistantBudget(
         package_cap_micros=10_000_000,
-        question_cap_micros=60_000,
+        question_cap_micros=62_000,
         delegate_cap_micros=3_000_000,
         spent_micros=lambda: 0,
         rates=_rates(),
