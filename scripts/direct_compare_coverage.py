@@ -48,14 +48,18 @@ def _reason_group(reason: str) -> str:
 def _pair_group(reason: str) -> str:
     if "named the vendor's" in reason:
         return "no vendor drawing on the sheet"
-    if "draws no" in reason:
-        return "the vendor draws no line this long"
+    if "what kind of view" in reason:
+        return "the architect view's kind is not printed"
     if "only match for" in reason:
         return "one vendor line matches several architect dimensions"
-    if "dimensions are drawn this long" in reason:
-        return "several vendor lines are drawn this long"
-    if "does not line up" in reason:
-        return "vendor view has no scale and does not line up"
+    if "dimension lines are drawn at this place" in reason:
+        return "several vendor lines at this place"
+    if "draws no labelled" in reason:
+        return "the vendor draws no labelled line at this place and length"
+    if "prints no scale" in reason or "is of no printed kind" in reason or "is a " in reason:
+        return "no vendor view of the same kind with a printed scale"
+    if "floor" in reason or "widths" in reason:
+        return "the views share no floor or run ends to line up"
     return "the architect's dimension is held or on no line"
 
 

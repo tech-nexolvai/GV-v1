@@ -18,15 +18,16 @@ registers, the other axis uses its stretch and needs only a shift.
 `[m0, m1]`. Every vendor span on the same axis whose two ticks are each within
 `max(tick_tolerance_in, candidate_fraction × the architect's length)` of `m0` and `m1` is a
 candidate; nearest first. The vendor may draw the span a little differently (that is what the
-compare is for), so the window is wider than the registration's. `pair.py` keeps only those
-drawn as long as the architect's span, and pairs only when exactly one is left.
+compare is for), so the window is wider than the registration's. **Not used for pairing**: lining
+up by ticks alone paired wrong spans on the client's sets (#1418's audit), so `pair.py` lines the
+views up on the floor and the run's ends instead. Kept for a later, better-witnessed lining-up.
 When none fits but both ends land on vendor ticks of one line with pieces between, the reason says
 the vendor prints only the pieces.
 
 Floats are never used: every comparison is on exact `Fraction`s of page points.
 
 Pure: stdlib only, no database, no models. Source: the direct-compare issue · Verification:
-`tests/extraction/compare/test_pair.py`
+none yet (unused)
 """
 
 from __future__ import annotations
