@@ -332,6 +332,11 @@ export function AssistantPanel({
                       Looked at page {turn.answer.looked_at_page}
                     </p>
                   )}
+                  {turn.answer.mode === 'llm' && (
+                    <p data-slot="assistant-ai-reading" className="text-xs text-muted-foreground">
+                      AI reading of the drawing — not a decision
+                    </p>
+                  )}
                   {latest && turn.answer.mode === 'disabled' && starters.length > 0 && (
                     <Starters info={info} starters={starters} records={records} busy={busy} onAsk={(question) => void ask(question)} bare />
                   )}

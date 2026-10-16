@@ -255,6 +255,39 @@ class RevisionPagePictures:
             pictures.append(PagePicture(role=role, png=png, width_px=x1 - x0, height_px=y1 - y0))
         return tuple(pictures)
 
+    def ai_review_overview(self) -> tuple[Mapping[str, Any], ...]:
+        """Each page the AI page review read: its status, how many rows of each result, and its
+        `different` rows in short (what it measures, the architect's and the vendor's numbers,
+        why, open or done), so "what did the vendor get wrong?" can be answered for the whole set
+        without a page named."""
+        try:
+            module = import_module("app.review.ai_review")
+        except ModuleNotFoundError:
+            return ()
+        review = module.ai_review_for_revision(self.session, self.revision_id)
+        overview: list[Mapping[str, Any]] = []
+        for page in getattr(review, "pages", ()):
+            counts: dict[str, int] = {}
+            different: list[Mapping[str, Any]] = []
+            for row in page.rows:
+                counts[row.result] = counts.get(row.result, 0) + 1
+                if row.result == "different":
+                    different.append(
+                        {
+                            "key": row.key,
+                            "measures": row.measures,
+                            "architect": row.architect_text,
+                            "vendor": row.vendor_text,
+                            "why": row.why,
+                            "status": row.status,
+                        }
+                    )
+            entry: dict[str, Any] = {"page": page.page, "status": page.status, **counts}
+            if different:
+                entry["different_rows"] = different
+            overview.append(entry)
+        return tuple(overview)
+
     def _ai_review_rows(self, page_number: int) -> tuple[Mapping[str, Any], ...]:
         try:
             module = import_module("app.review.ai_review")

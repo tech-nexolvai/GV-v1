@@ -157,10 +157,8 @@ def test_the_order_is_failures_by_largest_difference_then_held_then_waiting() ->
 
 
 def test_a_realistic_refused_answer_falls_back_to_what_needs_you() -> None:
-    # A plain question the model answered by ranking two records in one sentence: refused.
-    model = _Model(
-        text="The countertops on {C1.page} and {C2.page} look most worrying because they need you."
-    )
+    # A plain question the model answered with advice to approve: refused.
+    model = _Model(text="The countertops on {C1.page} and {C2.page} are fine to approve.")
     answer = _ask("Tell me about this review in plain words", model)
     assert model.calls == 1
     assert answer.mode == "records_only"
@@ -200,7 +198,7 @@ def test_with_nothing_open_the_fallback_still_answers() -> None:
             readiness=syn.Readiness(can_approve=True, blocking_findings=0, blocking_finding_ids=())
         )
     )
-    answer = _ask("Tell me a story", _Model(text="Yes."), ready)
+    answer = _ask("Tell me a story", _Model(text="Yes, it is safe to sign off."), ready)
     assert answer.text.startswith(COULD_NOT_CHECK)
     assert "You can sign off." in answer.text
 
@@ -246,8 +244,8 @@ def test_the_queue_fill_stays_when_no_outcome_is_stated() -> None:
     assert "review queue" in text
 
 
-def test_the_prompt_says_not_to_repeat_the_outcome_with_the_queue_fill() -> None:
-    assert "Do not add" in SYSTEM_PROMPT and "{C1.needs_you}" in SYSTEM_PROMPT
+def test_the_prompt_says_to_quote_a_recorded_result_with_its_placeholder() -> None:
+    assert "{C1.outcome}" in SYSTEM_PROMPT and "quote it with its placeholder" in SYSTEM_PROMPT
 
 
 # ---- 3. the reason is visible ---------------------------------------------------------------------
@@ -262,7 +260,9 @@ def test_the_drop_reason_code_is_logged_at_warning_without_text(
             f"Tell me about {secret}", _Model(text="Page {C1.page} is fine, unique-answer-marker.")
         )
     warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
-    assert any("answer dropped: word-not-allowed" in record.getMessage() for record in warnings)
+    assert any(
+        "answer dropped: readiness-in-own-words" in record.getMessage() for record in warnings
+    )
     for record in caplog.records:
         assert secret not in record.getMessage()
         assert "unique-answer-marker" not in record.getMessage()

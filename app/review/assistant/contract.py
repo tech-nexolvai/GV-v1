@@ -47,7 +47,7 @@ type StageId = Literal["records", "model", "guard"]
 STAGE_LABELS: Final[dict[str, str]] = {
     "records": "Reading this review's records",
     "model": "Asking Claude Sonnet",
-    "guard": "Checking every number against the records",
+    "guard": "Checking the answer against the records",
 }
 
 
