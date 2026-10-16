@@ -224,6 +224,21 @@ export function ringOf(points: readonly [number, number][]): { cx: number; cy: n
   };
 }
 
+/**
+ * The part of the page around a spot, in the same 0..1 space: the spot with room around it, so the
+ * dimension text above and below a row's line is in view. Never past the page's edges.
+ */
+export function stripOf(points: readonly [number, number][]): { x: number; y: number; w: number; h: number } {
+  const xs = points.map(([x]) => x);
+  const ys = points.map(([, y]) => y);
+  const [minX, maxX, minY, maxY] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+  const padX = Math.max((maxX - minX) * 0.1, 0.02);
+  const padY = Math.max((maxY - minY) * 1.5, 0.04);
+  const x = Math.max(0, minX - padX);
+  const y = Math.max(0, minY - padY);
+  return { x, y, w: Math.min(1, maxX + padX) - x, h: Math.min(1, maxY + padY) - y };
+}
+
 /** Who decided a done item, in words. */
 export function decidedWord(decidedBy: string | null): string {
   if (decidedBy === null) return 'Checked';

@@ -245,6 +245,46 @@ describe('ItemDetail', () => {
     expect(onAct).toHaveBeenCalledWith('checked_wrong');
   });
 
+  it('a countertop by hand says what to check: each piece, the overall and the rule', () => {
+    // Made-up numbers: one piece read, one equal-share label, one under GV markup.
+    const byHand = {
+      ...item('countertop:find-5'),
+      what_to_check: {
+        pieces: [
+          { position: 1, kind: 'filler', value: '2"', note: null },
+          { position: 2, kind: 'cabinet', value: null, note: 'written as 90"(5 EQ) — 5 equal pieces in one number' },
+          { position: 3, kind: null, value: null, note: 'under GV markup — check by hand' },
+        ],
+        overall: '96"',
+        overall_note: null,
+        rule: 'The pieces should add up to the overall: 96".',
+        walls_note: 'Field cut recorded: 1" at each of 2 ends.',
+      },
+    };
+    render(
+      <PicturesProvider load={pictures}>
+        <ItemDetail item={byHand} busy={null} error={null} onAct={() => {}} onOpenPdfs={() => {}} />
+      </PicturesProvider>,
+    );
+    const block = screen.getByTestId('what-to-check');
+    const rows = within(block).getAllByRole('listitem');
+    expect(rows).toHaveLength(3);
+    expect(rows[0].textContent).toContain('Piece 1');
+    expect(rows[0].textContent).toContain('filler');
+    expect(within(rows[0]).getByText('2"').className).toContain('num');
+    expect(rows[1].textContent).toContain("Couldn't read");
+    expect(rows[1].textContent).toContain('5 equal pieces in one number');
+    expect(rows[2].textContent).toContain('under GV markup');
+    expect(block.textContent).toContain('The pieces should add up to the overall: 96".');
+    expect(block.textContent).toContain('Field cut recorded');
+  });
+
+  it('a countertop by hand with no close-up shows the row strip, not a blank box', async () => {
+    renderDetail('countertop:find-5');
+    expect(await screen.findByRole('img', { name: /The row on page 5/ })).toBeTruthy();
+    expect(screen.getByRole('img', { name: /Vendor page 5, the row ringed/ })).toBeTruthy();
+  });
+
   it('a no-countertop page offers its two answers', () => {
     renderDetail('page:rec-9');
     expect(screen.getByRole('button', { name: /No countertop here/ })).toBeTruthy();

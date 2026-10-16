@@ -46,6 +46,12 @@ as `wall_choice` even when the readers proposed a layout, never as checked by ha
 right" would confirm a result that depends on walls nobody chose). Each layout is offered with the
 result the width check recorded for it, the readers' proposal pre-selected.
 
+**A countertop checked by hand says what to check** (`what_to_check`, #1411): each piece (what was
+read, or why not: an equal-share label, readers who disagree, GV's markup, no label), the printed
+overall with the plain rule, and the walls or field cut only when recorded. From the stored result
+and held readings only; GV's markup is never quoted. Its spot is the row's own: one labelled number
+keeps its close-up, otherwise there is none and the screen shows the row's strip of the page.
+
 **Status is the result's, not the number's.** Several `number` items of one width result share its
 finding id and its status. Nothing records a decision on one held number yet; when W3/W2 add one,
 each number's own status should be read from it.
@@ -53,8 +59,9 @@ each number's own status should be read from it.
 **Reader texts** come from the reading's own record (`reader:<model>:<text>` on the candidate), so
 nothing under `extraction/` is imported (`tests/api/test_no_heavy_work.py`).
 
-Source: issues #1338, #1360, #1386. Verification: `tests/api/test_review_items.py`,
-`tests/api/test_review_item_depth.py`, `tests/api/test_review_header_accuracy.py`.
+Source: issues #1338, #1360, #1386, #1411. Verification: `tests/api/test_review_items.py`,
+`tests/api/test_review_item_depth.py`, `tests/api/test_review_header_accuracy.py`,
+`tests/api/test_review_item_what_to_check.py`.
 """
 
 from __future__ import annotations
@@ -285,6 +292,51 @@ class CabinetRowOut(BaseModel):
     )
 
 
+class PieceToCheckOut(BaseModel):
+    """One piece of a countertop checked by hand: what was read for it, or why nothing was."""
+
+    position: int | None = Field(
+        description="1-based place on the row, left to right; null when no place was recorded."
+    )
+    kind: str | None = Field(
+        default=None, description='What the piece is, when it was named (e.g. "filler", "cabinet").'
+    )
+    value: str | None = Field(
+        default=None,
+        description=(
+            'What was read for it, e.g. `24"`: a confirmed reading, a typed width, or a held '
+            "reading's stored value. Never GV's markup. Null when nothing could be read."
+        ),
+    )
+    note: str | None = Field(
+        default=None,
+        description=(
+            "Why it could not be read, or why a read value is not confirmed yet, in plain words. "
+            "Null for a confirmed reading."
+        ),
+    )
+
+
+class WhatToCheckOut(BaseModel):
+    """What a person checks on a countertop checked by hand, from the stored records only.
+
+    Nothing here is worked out: no sum, no verdict. It lists what the row's records say.
+    """
+
+    pieces: list[PieceToCheckOut] = Field(default_factory=list)
+    overall: str | None = Field(
+        default=None, description='The printed overall the check stored, e.g. `96"`; else null.'
+    )
+    overall_note: str | None = Field(
+        default=None, description="Why the overall was not read, when its reading was held."
+    )
+    rule: str = Field(description="The plain rule: what the pieces should add up to.")
+    walls_note: str | None = Field(
+        default=None,
+        description="The walls and field cut the check recorded for this row; null when none.",
+    )
+
+
 class ReviewItemOut(BaseModel):
     """One question a person answers."""
 
@@ -353,6 +405,13 @@ class ReviewItemOut(BaseModel):
         description=(
             "`cabinet_kinds` only: the per-type cabinet width limits the run lacked, each a "
             "Company settings field (no company value; set per project). Never guessed."
+        ),
+    )
+    what_to_check: WhatToCheckOut | None = Field(
+        default=None,
+        description=(
+            "`countertop_by_hand` from a width result only: each piece (what was read, or why "
+            "not), the printed overall and the plain rule, from the stored records. Null otherwise."
         ),
     )
 
@@ -1423,6 +1482,10 @@ def _width_items(
         "architect_ref": architect,
     }
     hold = result.hold
+    held: list[ObservationCandidate] = []
+    if row is not None:
+        # Every held number, a record with no `slot:` place too (checked by hand, never skipped).
+        held = [candidate for candidate in row.candidates if not candidate_is_sealed(candidate)]
     if hold is not None and hold.code != _NUMBER_LEVEL_HOLD:
         return [
             ReviewItemOut(
@@ -1432,6 +1495,7 @@ def _width_items(
                 why=plain_why(hold.reason, why),
                 vendor_ref=result.row_location,
                 actions=actions("countertop_by_hand", state),
+                what_to_check=what_to_check(result, held),
                 **common,  # type: ignore[arg-type]
             )
         ]
@@ -1439,10 +1503,6 @@ def _width_items(
         piece.index: piece.location for piece in result.pieces
     }
     locations[None] = result.printed_overall_location
-    held: list[ObservationCandidate] = []
-    if row is not None:
-        # Every held number, a record with no `slot:` place too (checked by hand, never skipped).
-        held = [candidate for candidate in row.candidates if not candidate_is_sealed(candidate)]
     found: list[ReviewItemOut] = []
     by_hand: list[ObservationCandidate] = []
     for candidate in held:
@@ -1477,6 +1537,7 @@ def _width_items(
     ]
     if by_hand or (not found and (hold is not None or missing_positions)):
         first = by_hand[0] if by_hand else None
+        only = first if len(by_hand) == 1 and _labelled(by_hand[0]) else None
         unplaced = sum(1 for candidate in by_hand if _slot(candidate) == -1)
         positions = [position for candidate in by_hand if (position := _slot(candidate)) != -1] or (
             [] if unplaced else missing_positions
@@ -1501,13 +1562,18 @@ def _width_items(
                     or (None if hold is None else hold.reason),
                     why,
                 ),
+                # One labelled number: its own spot and close-up. Several, or one with no label:
+                # the row's dimension line, never the first piece's span (it may show a tag).
                 vendor_ref=(
-                    (locations.get(_slot(first)) if first is not None else None)
+                    (locations.get(_slot(only)) if only is not None else None)
                     or result.row_location
+                    or result.printed_overall_location
+                    or (locations.get(_slot(first)) if first is not None else None)
                 ),
-                zoom_ref=None if first is None else zoom(first),
+                zoom_ref=None if only is None else zoom(only),
                 actions=actions("countertop_by_hand", state),
                 candidate_id=None,
+                what_to_check=what_to_check(result, held),
                 **common,  # type: ignore[arg-type]
             )
         )
@@ -1523,9 +1589,164 @@ def _width_items(
             why=why,
             vendor_ref=result.row_location,
             actions=actions("countertop_by_hand", state),
+            what_to_check=what_to_check(result, held),
             **common,  # type: ignore[arg-type]
         )
     ]
+
+
+# --- what to check on a countertop checked by hand ------------------------------------------------
+
+#: A label that holds several pieces in one number: `181"(10 EQ)` (N equal pieces) or `3"+2"`.
+_EQUAL_SHARES = re.compile(r"\(\s*(\d+)\s*EQ\b", re.IGNORECASE)
+_SUMMED = re.compile(r"\d\s*\"?\s*\+\s*\d")
+
+
+def _labelled(candidate: object) -> bool:
+    """Whether a label was found for this number, so its own close-up shows it."""
+    return "no-label" not in _flags(candidate)
+
+
+def _named_kind(kind: str | None) -> str | None:
+    if not kind or kind == "unknown":
+        return None
+    return kind.replace("_", " ")
+
+
+def _flag_kind(candidate: object) -> str | None:
+    return _named_kind(
+        next(
+            (flag.removeprefix("kind:") for flag in _flags(candidate) if flag.startswith("kind:")),
+            None,
+        )
+    )
+
+
+def unread_reason(candidate: object, what: str = "this piece") -> str:
+    """Why a held number has no value to confirm, in plain words, from its own record only.
+
+    GV's markup is named, never quoted; reader texts are quoted only when the record is positively
+    the vendor's one label (`vendor_ink_only`, the same rule as the best guess)."""
+    flags = _flags(candidate)
+    if under_gv_markup(flags):
+        return "under GV markup — check by hand"
+    if "no-label" in flags:
+        return f"no dimension label was found for {what}"
+    if not vendor_ink_only(flags):
+        if "two-labels" in flags:
+            return f"more than one label sits on {what} — check by hand"
+        if "ink-unchecked" in flags:
+            return "the ink was not checked as the vendor's — check by hand"
+        return plain_why(
+            reviewer_reason(flags, None), "the reading cannot be shown — check by hand"
+        )
+    texts = reader_texts(flags)
+    for _source, text in texts:
+        shares = _EQUAL_SHARES.search(text)
+        if shares is not None:
+            return f"written as {text} — {shares.group(1)} equal pieces in one number"
+    for _source, text in texts:
+        if _SUMMED.search(text):
+            return f"written as {text} — several pieces in one number"
+    read = [_parsed(text) for source, text in texts if source != TEXT_LAYER_SOURCE]
+    distinct = list(dict.fromkeys(value for value in read if value is not None))
+    if len(distinct) >= 2:
+        shown = " vs ".join(f'{format_inches(value)}"' for value in distinct)
+        return f"two readers disagree: {shown}"
+    return plain_why(
+        reviewer_reason(flags, getattr(candidate, "review_reason", None)),
+        "the AI could not read it — check by hand",
+    )
+
+
+def _held_piece(candidate: object, position: int | None, kind: str | None) -> PieceToCheckOut:
+    guess = best_guess(candidate)
+    if guess is not None:
+        return PieceToCheckOut(
+            position=position,
+            kind=kind,
+            value=guess.text,
+            note="read, not confirmed yet"
+            + ("" if position is not None else ": no place recorded"),
+        )
+    note = unread_reason(candidate)
+    if position is None:
+        note = f"its place on the row was not recorded; {note}"
+    return PieceToCheckOut(position=position, kind=kind, note=note)
+
+
+def what_to_check(result: CountertopResultOut, held: Sequence[object]) -> WhatToCheckOut:
+    """Each piece, the printed overall and the plain rule for a countertop checked by hand.
+
+    Read from the stored result and the row's held numbers only: nothing is added up or decided."""
+    by_slot: dict[int, object] = {}
+    overall_held: object | None = None
+    unplaced: list[object] = []
+    for candidate in held:
+        position = _slot(candidate)
+        if position == -1:
+            unplaced.append(candidate)
+        elif position is None:
+            overall_held = overall_held or candidate
+        else:
+            by_slot.setdefault(position, candidate)
+    pieces = {piece.index: piece for piece in result.pieces}
+    lines: list[PieceToCheckOut] = []
+    for index in sorted(set(pieces) | set(by_slot)):
+        piece = pieces.get(index)
+        candidate = by_slot.get(index)
+        kind = _named_kind(piece.kind if piece is not None else None) or (
+            None if candidate is None else _flag_kind(candidate)
+        )
+        if candidate is not None:
+            lines.append(_held_piece(candidate, index + 1, kind))
+        elif piece is not None and piece.value is not None:
+            note = "typed by a person" if piece.source == "typed" else None
+            lines.append(
+                PieceToCheckOut(position=index + 1, kind=kind, value=piece.value.display, note=note)
+            )
+        else:
+            lines.append(
+                PieceToCheckOut(
+                    position=index + 1, kind=kind, note="nothing was read for this piece"
+                )
+            )
+    lines.extend(_held_piece(candidate, None, _flag_kind(candidate)) for candidate in unplaced)
+
+    overall = None if result.printed_overall is None else result.printed_overall.display
+    overall_note = None
+    if overall is None and overall_held is not None:
+        guess = best_guess(overall_held)
+        if guess is not None:
+            overall_note = f"read as {guess.text}, not confirmed yet"
+        else:
+            overall_note = unread_reason(overall_held, "the overall")
+    if overall is not None:
+        rule = f"The pieces should add up to the overall: {overall}."
+    else:
+        rule = (
+            "The overall for this row is not stored, so there is nothing here to add the pieces "
+            "up to. Find the overall on the drawing and check the pieces add up to it."
+        )
+
+    walls: list[str] = []
+    if result.wall_layout.line:
+        walls.append(f"Walls: {result.wall_layout.line}.")
+    if result.field_cut_per_end is not None:
+        count = result.field_cut_count
+        cut = result.field_cut_per_end.display
+        walls.append(
+            f"Field cut recorded: {cut} per end."
+            if count is None
+            else f"Field cut recorded: {cut} at each of {count} {'end' if count == 1 else 'ends'}."
+        )
+    return WhatToCheckOut(
+        pieces=lines,
+        overall=overall,
+        overall_note=overall_note,
+        rule=rule,
+        walls_note=" ".join(walls) or None,
+    )
 
 
 def _published_wall_layouts(session: Session) -> tuple[str, ...]:

@@ -16,20 +16,26 @@ import { FixDialog } from './fix-dialog';
 import { PagePicture, PictureUnavailable, ZoomPicture } from './item-pictures';
 import type { SaveError } from './failures-strip';
 import { WallChoices } from './wall-choices';
+import { WhatToCheckBlock } from './what-to-check';
 import { Kbd, NumText } from './words';
 
 /** The pictures side by side: the close-up large, the vendor page and the architect page beside it. */
 function Evidence({ item }: { item: ReviewItem }) {
   const architect = item.architect_ref?.location ?? null;
-  const hasZoom = Boolean(item.zoom_ref);
+  // A countertop with no close-up of its own: the row's strip, cut from the page, stands in for it
+  // (never the first piece's span, which may show only a cabinet tag).
+  const rowStrip = !item.zoom_ref && item.kind === 'countertop_by_hand' && item.vendor_ref ? item.vendor_ref : null;
+  const hasZoom = Boolean(item.zoom_ref) || rowStrip !== null;
   const page = item.vendor_ref?.page_number ?? item.page;
   return (
     <div className="grid gap-4 md:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
       <figure className="flex min-w-0 flex-col gap-2">
-        <figcaption className="text-[13px] text-muted-foreground">{hasZoom ? 'Close-up' : 'Vendor page'}</figcaption>
+        <figcaption className="text-[13px] text-muted-foreground">{rowStrip ? 'The row' : hasZoom ? 'Close-up' : 'Vendor page'}</figcaption>
         <div className="h-72">
           {item.zoom_ref ? (
             <ZoomPicture path={item.zoom_ref} label={`Close-up of the number on page ${page}`} />
+          ) : rowStrip ? (
+            <PagePicture pageRef={rowStrip} focus label={`The row on page ${page}, its dimension line ringed`} />
           ) : item.vendor_ref ? (
             <PagePicture pageRef={item.vendor_ref} label={`Vendor page ${page}, the spot ringed`} />
           ) : (
@@ -45,7 +51,7 @@ function Evidence({ item }: { item: ReviewItem }) {
             </figcaption>
             <div className="h-40">
               {item.vendor_ref ? (
-                <PagePicture pageRef={item.vendor_ref} label={`Vendor page ${page}, the number ringed`} />
+                <PagePicture pageRef={item.vendor_ref} label={`Vendor page ${page}, the ${rowStrip ? 'row' : 'number'} ringed`} />
               ) : (
                 <PictureUnavailable>No spot is stored on this page.</PictureUnavailable>
               )}
@@ -173,6 +179,7 @@ export function ItemDetail({
       ) : (
         <Guess item={item} />
       )}
+      {item.what_to_check && <WhatToCheckBlock block={item.what_to_check} />}
       <NumText text={item.why} className="block max-w-[68ch] text-[13px] leading-5 text-muted-foreground" />
 
       {error && (

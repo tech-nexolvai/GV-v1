@@ -6174,6 +6174,32 @@ export interface components {
             drawings: components["schemas"]["DrawingOut"][];
         };
         /**
+         * PieceToCheckOut
+         * @description One piece of a countertop checked by hand: what was read for it, or why nothing was.
+         */
+        PieceToCheckOut: {
+            /**
+             * Kind
+             * @description What the piece is, when it was named (e.g. "filler", "cabinet").
+             */
+            kind?: string | null;
+            /**
+             * Note
+             * @description Why it could not be read, or why a read value is not confirmed yet, in plain words. Null for a confirmed reading.
+             */
+            note?: string | null;
+            /**
+             * Position
+             * @description 1-based place on the row, left to right; null when no place was recorded.
+             */
+            position: number | null;
+            /**
+             * Value
+             * @description What was read for it, e.g. `24"`: a confirmed reading, a typed width, or a held reading's stored value. Never GV's markup. Null when nothing could be read.
+             */
+            value?: string | null;
+        };
+        /**
          * PlannedFindingOut
          * @description One live result that belongs to a countertop: its row's, or the countertop's own.
          */
@@ -7455,6 +7481,8 @@ export interface components {
              * @description What is being checked, in plain words.
              */
             what: string;
+            /** @description `countertop_by_hand` from a width result only: each piece (what was read, or why not), the printed overall and the plain rule, from the stored records. Null otherwise. */
+            what_to_check?: components["schemas"]["WhatToCheckOut"] | null;
             /**
              * Why
              * @description Why a person is asked, in plain words.
@@ -9137,6 +9165,36 @@ export interface components {
             source: string;
             /** Value */
             value: string;
+        };
+        /**
+         * WhatToCheckOut
+         * @description What a person checks on a countertop checked by hand, from the stored records only.
+         *
+         *     Nothing here is worked out: no sum, no verdict. It lists what the row's records say.
+         */
+        WhatToCheckOut: {
+            /**
+             * Overall
+             * @description The printed overall the check stored, e.g. `96"`; else null.
+             */
+            overall?: string | null;
+            /**
+             * Overall Note
+             * @description Why the overall was not read, when its reading was held.
+             */
+            overall_note?: string | null;
+            /** Pieces */
+            pieces?: components["schemas"]["PieceToCheckOut"][];
+            /**
+             * Rule
+             * @description The plain rule: what the pieces should add up to.
+             */
+            rule: string;
+            /**
+             * Walls Note
+             * @description The walls and field cut the check recorded for this row; null when none.
+             */
+            walls_note?: string | null;
         };
         /**
          * WithdrawPartIn

@@ -3,7 +3,7 @@ import { ImageOff } from 'lucide-react';
 
 import type { PageRef } from '@/api/review-items';
 import { cn } from '@/lib/utils';
-import { pointsOf, ringOf } from '@/lib/review-items';
+import { pointsOf, ringOf, stripOf } from '@/lib/review-items';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 
@@ -80,11 +80,14 @@ export function PagePicture({
   pageRef,
   label,
   className,
+  focus = false,
 }: {
   pageRef: PageRef;
   /** What the picture shows, for a screen reader ("Vendor page 3, the number ringed"). */
   label: string;
   className?: string;
+  /** Show only a strip around the spot (e.g. a row's dimension line), not the whole page. */
+  focus?: boolean;
 }) {
   const [state, retry] = usePicture({ kind: 'page', page: pageRef.page_number, documentVersionId: pageRef.document_version_id });
   // The page's own size, read from the picture once it loads: the ring is drawn in the same
@@ -92,6 +95,7 @@ export function PagePicture({
   const [natural, setNatural] = useState<{ url: string; w: number; h: number } | null>(null);
   const points = pointsOf(pageRef);
   const ring = points ? ringOf(points) : null;
+  const strip = focus && points ? stripOf(points) : null;
   if (state.status === 'error') return <Unavailable onRetry={retry}>This page's picture could not be loaded: {state.message}</Unavailable>;
   const size = state.status === 'ready' && natural?.url === state.url ? natural : null;
   return (
@@ -107,7 +111,11 @@ export function PagePicture({
       {size === null ? (
         <Skeleton className="h-full min-h-24 w-full" />
       ) : (
-        <svg viewBox={`0 0 ${size.w} ${size.h}`} preserveAspectRatio="xMidYMid meet" className="size-full">
+        <svg
+          viewBox={strip ? `${strip.x * size.w} ${strip.y * size.h} ${strip.w * size.w} ${strip.h * size.h}` : `0 0 ${size.w} ${size.h}`}
+          preserveAspectRatio="xMidYMid meet"
+          className="size-full"
+        >
           <image href={state.status === 'ready' ? state.url : ''} width={size.w} height={size.h} />
           {ring && (
             <g aria-hidden="true" fill="none">
