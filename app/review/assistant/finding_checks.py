@@ -55,7 +55,9 @@ __all__ = [
     "arithmetic_check",
     "arithmetic_off_by",
     "check_finding",
+    "critic_passed",
     "printed_at_spot",
+    "read_result",
     "to_inches",
     "trust_level",
 ]
@@ -407,23 +409,42 @@ def _side(value: object, box: object, pdf_paths: Mapping[str, Path]) -> PrintedR
 # ---- trust level ---------------------------------------------------------------------------------
 
 
+def read_result(checks: Mapping[str, Any]) -> object:
+    """The read's result: the third read's majority when one was made (#1498), else the second
+    read's. A third read that ends unsure leaves the second read's result as it was (a second read
+    that disagreed still counts against the finding)."""
+    adjudication = checks.get("adjudication")
+    if adjudication == "agrees_after_adjudication":
+        return "agrees"
+    if adjudication == "disagrees":
+        return "disagrees"
+    return checks.get("second_read")
+
+
+def critic_passed(checks: Mapping[str, Any]) -> bool:
+    return checks.get("critic") == "passed"
+
+
 def trust_level(checks: Mapping[str, Any], *, status: str | None = None) -> TrustLevel:
     """Confirmed / Likely / To check from a finding's full checks (CONTRACT3).
 
     `checks` holds `printed_architect`, `printed_vendor`, `second_read`, `rule`, `arithmetic` and
-    `lead_checked`. Code backs the finding when both values are printed at their spots, or GV's
-    rule check agrees, or code's arithmetic does. Then:
+    `lead_checked`, and may hold `adjudication` (the third read, #1498) and `critic`. Code backs the
+    finding when both values are printed at their spots, or GV's rule check agrees, or code's
+    arithmetic does. The read is the third read's majority when there is one (`read_result`).
+    Then:
 
-    - **confirmed**: code backs it AND the second read agrees;
-    - **likely**: two of code backs it, the second read agrees, the lead checked it on the drawing;
-    - **to_check**: anything else, and always when a check disagrees: the second read, the rule
-      check, or (given the finding's `status`) code's arithmetic (`adds_up` on a "different"
-      finding, `does_not_add_up` on a "same" one).
+    - **confirmed**: code backs it AND the read agrees;
+    - **likely**: two of code backs it, the read agrees, the lead checked it on the drawing, the
+      critic passed it (an AI witness: it never makes Confirmed on its own);
+    - **to_check**: anything else, and always when a check disagrees: the read, the rule check,
+      the critic (it objects), or (given the finding's `status`) code's arithmetic (`adds_up` on a
+      "different" finding, `does_not_add_up` on a "same" one).
     """
-    second = checks.get("second_read")
+    second = read_result(checks)
     rule = checks.get("rule")
     arithmetic = checks.get("arithmetic")
-    if second == "disagrees" or rule == "disagrees":
+    if second == "disagrees" or rule == "disagrees" or checks.get("critic") == "objects":
         return "to_check"
     if (arithmetic == "adds_up" and status == "different") or (
         arithmetic == "does_not_add_up" and status == "same"
@@ -434,6 +455,7 @@ def trust_level(checks: Mapping[str, Any], *, status: str | None = None) -> Trus
     agrees = second == "agrees"
     if code_backs and agrees:
         return "confirmed"
-    if sum((code_backs, agrees, checks.get("lead_checked") is True)) >= 2:
+    witnesses = (code_backs, agrees, checks.get("lead_checked") is True, critic_passed(checks))
+    if sum(witnesses) >= 2:
         return "likely"
     return "to_check"

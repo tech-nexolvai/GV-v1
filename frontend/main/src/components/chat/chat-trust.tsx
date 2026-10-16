@@ -1,10 +1,11 @@
 import { useId, useState } from 'react';
-import { BadgeCheck, Calculator, ChevronRight, Eye, Scale, ScanText, ShieldAlert, ShieldCheck, ShieldHalf } from 'lucide-react';
+import { BadgeCheck, Calculator, ChevronRight, Eye, Scale, ScanText, ShieldAlert, ShieldCheck, ShieldHalf, ShieldQuestion } from 'lucide-react';
 
 import { Collapse } from '@/components/chat/chat-motion';
 import type { ChatCoverage, ChatFinding, ChatTrust, TrustLevel } from '@/lib/chat-api';
 import { coverageCounts, coverageWords } from '@/lib/chat-findings';
 import {
+  allChecks,
   checkCounts,
   checkLines,
   findingChecks,
@@ -76,7 +77,7 @@ export function TrustChip({ finding }: { finding: ChatFinding }) {
 
 // ── Check icons ─────────────────────────────────────────────
 
-const CHECK_ICON = { printed: ScanText, second_read: Eye, verified: BadgeCheck, rule: Scale } as const;
+const CHECK_ICON = { printed: ScanText, second_read: Eye, verified: BadgeCheck, rule: Scale, critic: ShieldQuestion } as const;
 
 /** The state's mark beside the icon, so it reads without colour: ✓ passed, ✗ disagreed, ? unsure, – not run. */
 const STATE_MARK: Record<CheckState, string> = { pass: '✓', fail: '✗', unsure: '?', not_run: '–' };
@@ -116,7 +117,7 @@ export function CheckIcons({ finding }: { finding: ChatFinding }) {
 
 /** The checks as words, for the evidence viewer (under the crops). */
 export function CheckList({ finding, only }: { finding: ChatFinding; only?: readonly CheckResult['key'][] }) {
-  const checks = findingChecks(finding).filter((check) => !only || only.includes(check.key));
+  const checks = allChecks(finding).filter((check) => !only || only.includes(check.key));
   return (
     <ul data-slot="chat-check-list" aria-label="Checks" className="grid gap-1 text-[13px]">
       {checks.map((check) => (

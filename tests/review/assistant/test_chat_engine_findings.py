@@ -13,9 +13,10 @@ from typing import Any
 
 import pytest
 
-from app.review.assistant import chat_engine, chat_trust
+from app.review.assistant import chat_engine, chat_trust, read_adjudication
 from app.review.assistant.chat_findings import COVERAGE_CHECK_PREFIX
 from tests.review.assistant.chat_fakes import (
+    SONNET,
     ScriptedProvider,
     events_named,
     reply,
@@ -318,11 +319,19 @@ def test_second_reads_run_after_the_lead_and_feed_the_trust_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     seen: list[dict[str, Any]] = []
-    _modules(monkeypatch, finding_checks=_fake_checks(), second_read=_fake_second_read(seen))
+    _modules(
+        monkeypatch,
+        finding_checks=_fake_checks(),
+        second_read=_fake_second_read(seen),
+        read_adjudication=read_adjudication,
+    )
     workspace_with_pdf(tmp_path)
 
     def answer(params: Any) -> Any:
         asked = next(b["text"] for b in params["messages"][0]["content"] if b["type"] == "text")
+        if params["model"] == SONNET:  # the third read (#1498) of the finding the second disputes
+            third = {"architect": "12", "vendor": "13", "sure": True}
+            return reply(text(json.dumps(third)), model=SONNET)
         if "Sink centre" in asked:
             return reply(text(json.dumps({"architect": "12", "vendor": "13"})), model=HAIKU)
         return reply(text(json.dumps({"architect": '37"', "vendor": "3'-10\""})), model=HAIKU)
@@ -356,13 +365,21 @@ def test_second_reads_run_after_the_lead_and_feed_the_trust_report(
     assert trust["checks"]["second_read"]["agrees"] == 1
     # The second reads: the cheap model, low effort, thinking off, no tools; counted and recorded.
     calls = [_sent(raw) for raws in provider.helper_calls.values() for raw in raws]
+    thirds = [call for call in calls if call["model"] == SONNET]
+    calls = [call for call in calls if call["model"] != SONNET]
     assert len(calls) == 2
+    # F2's second read disagreed: one third read, and both reads outvote the finding's values.
+    assert len(thirds) == 1 and thirds[0]["output_config"] == {"effort": "low"}
+    assert findings["F2"]["checks"]["adjudication"] == "disagrees"
+    assert [read["role"] for read in findings["F2"]["reads"]] == ["first", "second", "third"]
+    assert findings["F1"]["checks"]["adjudication"] is None and findings["F1"]["reads"] is None
     for call in calls:
         assert call["model"] == HAIKU and call["output_config"] == {"effort": "low"}
         assert call["thinking"] == {"type": "disabled"} and call["max_tokens"] == 1024
         assert "tools" not in call and "tool_choice" not in call
     prompt_ids = [row["prompt_id"] for row in harness.ledger.rows]
     assert prompt_ids.count("review-assistant-chat-check-anthropic-chat-v7") == 2
+    assert prompt_ids.count("review-assistant-chat-adjudicate-anthropic-chat-v7") == 1
     assert outcome.cost_micros > 0
 
 

@@ -8,7 +8,7 @@
  * does arithmetic on the AI's numbers: the inches and the difference are code's (`finding.inches`).
  */
 
-import type { ChatCoverage, ChatFinding, ChatTrust, FindingCategory, LedgerReport, PrintedResult, RoundStatus, TrustLeftOut, TrustLevel } from '@/lib/chat-api';
+import type { ChatCoverage, ChatFinding, ChatTrust, FindingCategory, FindingRead, LedgerReport, PrintedResult, RoundStatus, TrustLeftOut, TrustLevel } from '@/lib/chat-api';
 import { categoryOf, CATEGORY_WORDS, pageWords, sourceTag, STATUS_WORDS, verifiedWords } from '@/lib/chat-findings';
 
 // ── Levels ──────────────────────────────────────────────────
@@ -24,7 +24,7 @@ export const TRUST_WORDS: Record<TrustLevel, string> = {
 /** What each level means, for its chip's tooltip. */
 export const TRUST_MEANING: Record<TrustLevel, string> = {
   confirmed: 'Printed at the spot (or a GV rule / code arithmetic) and the second read agrees',
-  likely: 'Two of: printed at the spot, second read agrees, checked on the drawing',
+  likely: 'Two of: printed at the spot, second read agrees, checked on the drawing, the critic passed it',
   to_check: 'Fewer checks passed, or one disagreed: a person should look',
 };
 
@@ -128,7 +128,7 @@ export function changeWords(finding: Pick<ChatFinding, 'architect' | 'vendor' | 
 /** pass ✓, fail ✗ (it disagreed), unsure ?, not_run – (not run, or not possible for this one). */
 export type CheckState = 'pass' | 'fail' | 'unsure' | 'not_run';
 
-export type CheckKey = 'printed' | 'second_read' | 'verified' | 'rule';
+export type CheckKey = 'printed' | 'second_read' | 'verified' | 'rule' | 'critic';
 
 export interface CheckResult {
   key: CheckKey;
@@ -177,9 +177,50 @@ function printedCheck(finding: ChatFinding): CheckResult {
   return { key: 'printed', name, state, words: `Printed at this spot: ${words}` };
 }
 
+const ADJUDICATION_WORDS = { agrees_after_adjudication: 'agrees', disagrees: 'disagrees', unsure: 'unsure' } as const;
+
+function readValue(read: FindingRead): string {
+  const values = [read.value_arch, read.value_vendor].filter((value): value is string => !!value?.trim());
+  const shown = values.length ? values.join(' / ') : 'nothing read';
+  return read.sure === false ? `${shown} (not sure)` : shown;
+}
+
+function modelName(model: string): string {
+  return model ? model.charAt(0).toUpperCase() + model.slice(1) : 'AI';
+}
+
+/**
+ * The reads behind a settled second read (#1498), in code's words:
+ * "Second read: 46 · Third read (Sonnet, 300 dpi): 46 → agrees". Null when there was no third read.
+ */
+export function readsWords(finding: Pick<ChatFinding, 'reads' | 'checks'>): string | null {
+  const outcome = finding.checks?.adjudication;
+  if (!outcome || !(outcome in ADJUDICATION_WORDS)) return null;
+  const reads = finding.reads ?? [];
+  const second = reads.find((read) => read.role === 'second');
+  const third = reads.find((read) => read.role === 'third');
+  const parts: string[] = [];
+  if (second) parts.push(`Second read: ${readValue(second)}`);
+  if (third) {
+    const how = [modelName(third.model), third.dpi ? `${third.dpi} dpi` : null, third.turned ? 'turned' : null].filter(Boolean).join(', ');
+    parts.push(`Third read (${how}): ${readValue(third)}`);
+  }
+  if (!parts.length) parts.push('Third read');
+  return `${parts.join(' · ')} → ${ADJUDICATION_WORDS[outcome]}`;
+}
+
 function secondReadCheck(finding: ChatFinding): CheckResult {
   const read = finding.checks?.second_read;
   const name = '2nd read';
+  const adjudication = finding.checks?.adjudication;
+  const words = readsWords(finding);
+  if (adjudication && words) {
+    // A tie leaves a second read that disagreed standing (the server's rule).
+    const state: CheckState = adjudication === 'agrees_after_adjudication' ? 'pass'
+      : adjudication === 'disagrees' || read === 'disagrees' ? 'fail'
+      : 'unsure';
+    return { key: 'second_read', name, state, words };
+  }
   if (read === 'agrees') return { key: 'second_read', name, state: 'pass', words: 'Second read agrees' };
   if (read === 'disagrees') return { key: 'second_read', name, state: 'fail', words: 'Second read disagrees' };
   if (read === 'unsure') return { key: 'second_read', name, state: 'unsure', words: 'Second read unsure' };
@@ -222,12 +263,32 @@ export function findingChecks(finding: ChatFinding): CheckResult[] {
   return [printedCheck(finding), secondReadCheck(finding), verifiedCheck(finding), ruleCheck(finding)];
 }
 
+/** The critic's look (#1498, whole-set answers), in words; null when it did not look at this one. */
+export function criticCheck(finding: Pick<ChatFinding, 'checks' | 'critic'>): CheckResult | null {
+  const result = finding.checks?.critic;
+  const name = 'Critic';
+  if (result === 'objects') {
+    const note = finding.critic?.note?.trim();
+    return { key: 'critic', name, state: 'fail', words: `Critic: ${note || 'objects to this finding'}` };
+  }
+  if (result === 'passed') return { key: 'critic', name, state: 'pass', words: 'Critic: passed (same item, right dimension, the vendor’s own ink, the architect’s drawing)' };
+  if (result === 'unsure') return { key: 'critic', name, state: 'unsure', words: 'Critic: unsure' };
+  if (result === 'not_run') return { key: 'critic', name, state: 'not_run', words: 'Critic: not run (limit or cap)' };
+  return null;
+}
+
+/** Every check in words, for the evidence viewer: the four, then the critic when it looked. */
+export function allChecks(finding: ChatFinding): CheckResult[] {
+  const critic = criticCheck(finding);
+  return critic ? [...findingChecks(finding), critic] : findingChecks(finding);
+}
+
 /**
  * Why a finding is To check, in code's words: the checks that disagreed ("Second read disagrees"),
  * else how many checks passed; null when it is not To check and nothing disagreed.
  */
 export function trustReason(finding: ChatFinding): string | null {
-  const checks = findingChecks(finding);
+  const checks = allChecks(finding);
   const failed = checks.filter((check) => check.state === 'fail');
   if (failed.length) return failed.map((check) => check.words).join('; ');
   if (trustLevelOf(finding) !== 'to_check') return null;
