@@ -96,15 +96,19 @@ export interface AssistantAnswer {
   stopped?: 'cost_cap' | null;
 }
 
-/** One line of the assistant's task list. */
+/** One task of the assistant's task list (claude.ai's Progress panel). */
 export interface AssistantPlanTask {
-  title: string;
-  status: 'pending' | 'in_progress' | 'done';
+  id: string;
+  subject: string;
+  /** Shown while it is in progress ("Verifying findings"). */
+  active_form?: string | null;
+  status: 'pending' | 'in_progress' | 'completed';
 }
 
-/** One tool the assistant used: a sandbox command and its output, a picture, the results, its plan, helper agents. */
+/** One tool the assistant used: a sandbox command and its output, a file or picture it viewed, the results, a task, helper agents. */
 export interface AssistantStep {
-  kind: 'bash' | 'view' | 'review_results' | 'plan' | 'delegate';
+  kind: 'bash' | 'view' | 'review_results' | 'task' | 'agents';
+  /** The model's own description of the step ("Inspect page 2 text"), or "Added task: …", "Ran 4 agents · …". */
   label: string;
   command?: string | null;
   path?: string | null;
@@ -115,10 +119,10 @@ export interface AssistantStep {
   agents?: AssistantSubAgent[];
 }
 
-/** One helper agent the assistant ran in parallel, with its own steps and short report. */
+/** One helper agent the assistant ran in parallel (`Agent`), with its own steps and report. */
 export interface AssistantSubAgent {
-  title: string;
-  pages: number[];
+  description: string;
+  model: 'sonnet' | 'opus';
   steps: AssistantStep[];
   report: string;
   ok: boolean;

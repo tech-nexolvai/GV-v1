@@ -10,21 +10,21 @@ import { stepsSummary } from '@/lib/assistant-steps';
  * list shows as "Progress". Read-only: nothing here changes the review.
  */
 
-const STATUS_WORDS: Record<AssistantPlanTask['status'], string> = { pending: 'To do', in_progress: 'Working on it', done: 'Done' };
+const STATUS_WORDS: Record<AssistantPlanTask['status'], string> = { pending: 'To do', in_progress: 'Working on it', completed: 'Done' };
 
 export function PlanList({ tasks }: { tasks: AssistantPlanTask[] }) {
   if (!tasks.length) return null;
-  const done = tasks.filter((task) => task.status === 'done').length;
+  const done = tasks.filter((task) => task.status === 'completed').length;
   return (
     <div data-slot="assistant-plan" className="rounded-md border border-border px-3 py-2 text-xs">
       <p className="mb-1 font-medium text-foreground">
         Progress <span className="num text-muted-foreground">{done}/{tasks.length}</span>
       </p>
       <ul className="flex flex-col gap-0.5">
-        {tasks.map((task, index) => (
-          <li key={index} className="flex gap-2">
-            <span aria-hidden="true" className="w-3 shrink-0 text-muted-foreground">{task.status === 'done' ? '✓' : task.status === 'in_progress' ? '›' : '○'}</span>
-            <span className={task.status === 'done' ? 'text-muted-foreground line-through' : undefined}>{task.title}</span>
+        {tasks.map((task) => (
+          <li key={task.id} className="flex gap-2">
+            <span aria-hidden="true" className="w-3 shrink-0 text-muted-foreground">{task.status === 'completed' ? '✓' : task.status === 'in_progress' ? '›' : '○'}</span>
+            <span className={task.status === 'completed' ? 'text-muted-foreground line-through' : undefined}>{task.status === 'in_progress' && task.active_form ? task.active_form : task.subject}</span>
             <span className="sr-only">({STATUS_WORDS[task.status]})</span>
           </li>
         ))}
@@ -46,7 +46,7 @@ function Fold({ summary, children, slot }: { summary: string; children: React.Re
 }
 
 function StepItem({ step }: { step: AssistantStep }) {
-  if (step.kind === 'delegate' && step.agents?.length) {
+  if (step.kind === 'agents' && step.agents?.length) {
     return (
       <div data-slot="assistant-step" className="flex flex-col gap-1.5">
         <p className="text-foreground">{step.label}</p>
@@ -54,7 +54,7 @@ function StepItem({ step }: { step: AssistantStep }) {
           <Fold
             key={index}
             slot="assistant-agent"
-            summary={`${agent.title} · ${agent.ok ? stepsSummary(agent.steps) || 'reported' : agent.stopped === 'cost_cap' ? 'stopped: cost cap' : 'did not finish'}`}
+            summary={`${agent.description} · ${agent.ok ? stepsSummary(agent.steps) || 'reported' : agent.stopped === 'cost_cap' ? 'stopped: cost cap' : 'did not finish'}`}
           >
             {agent.steps.map((inner, at) => <StepItem key={at} step={inner} />)}
             <p className="whitespace-pre-wrap break-words text-muted-foreground">{agent.report}</p>
@@ -63,7 +63,7 @@ function StepItem({ step }: { step: AssistantStep }) {
       </div>
     );
   }
-  if (step.kind === 'plan') {
+  if (step.kind === 'task') {
     return <p data-slot="assistant-step" className="text-muted-foreground">{step.label}</p>;
   }
   return (

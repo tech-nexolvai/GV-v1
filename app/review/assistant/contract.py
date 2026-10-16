@@ -155,46 +155,53 @@ Action = Annotated[
 
 
 class PlanTask(BaseModel):
-    """One line of the assistant's task list (the "Progress" panel, like claude.ai)."""
+    """One task of the assistant's task list (claude.ai's "Progress" panel; `TaskCreate`)."""
 
     model_config = ConfigDict(frozen=True)
 
-    title: str
-    status: Literal["pending", "in_progress", "done"]
+    id: str
+    subject: str
+    active_form: str | None = Field(default=None, description="Shown while it is in progress.")
+    status: Literal["pending", "in_progress", "completed"]
 
 
 class AgentStep(BaseModel):
     """One tool the assistant used for an answer, shown like claude.ai's steps (owner, 2026-10-16):
-    a command it ran in the locked sandbox and its output, a picture it looked at, the recorded
-    results it read, its task list, or the helper agents it ran. Read-only; none changes the
-    review."""
+    a command it ran in the locked sandbox and its output, a file or picture it viewed, the
+    recorded results it read, a task it added or updated, or the helper agents it ran. Read-only;
+    none changes the review."""
 
     model_config = ConfigDict(frozen=True)
 
-    kind: Literal["bash", "view", "review_results", "plan", "delegate"]
-    label: str = Field(description="Plain words: 'Ran a command', 'Viewed /out/p-02.png'.")
+    kind: Literal["bash", "view", "review_results", "task", "agents"]
+    label: str = Field(
+        description="The step in plain words: the model's own `description` of a command or a "
+        "view ('Inspect page 2 text'), 'Added task: …', 'Running 4 agents · …'."
+    )
     command: str | None = Field(default=None, description="The command it ran (bash only).")
-    path: str | None = Field(default=None, description="The picture it viewed (view only).")
+    path: str | None = Field(default=None, description="What it viewed (view only).")
     page: int | None = Field(default=None, description="The page of results it read, if one.")
     output: str | None = Field(
         default=None, description="What the tool answered, cut for the screen; null for a picture."
     )
     ok: bool = Field(description="False when the tool refused or the command failed or timed out.")
-    tasks: tuple[PlanTask, ...] = Field(default=(), description="The task list (plan only).")
+    tasks: tuple[PlanTask, ...] = Field(
+        default=(), description="The task list after this step (task only)."
+    )
     agents: tuple[SubAgentRun, ...] = Field(
-        default=(), description="The helper agents and what each did (delegate only)."
+        default=(), description="The helper agents run together, and what each did (agents only)."
     )
 
 
 class SubAgentRun(BaseModel):
-    """One helper agent the assistant ran in parallel on some pages, with its steps and report."""
+    """One helper agent (`Agent`), run in parallel with the others of its turn."""
 
     model_config = ConfigDict(frozen=True)
 
-    title: str
-    pages: tuple[int, ...]
+    description: str = Field(description="Its 3-5 word title, as the assistant gave it.")
+    model: Literal["sonnet", "opus"]
     steps: tuple[AgentStep, ...]
-    report: str = Field(description="Its short report, as the assistant read it.")
+    report: str = Field(description="Its report, as the assistant read it.")
     ok: bool
     stopped: Literal["cost_cap", "failed"] | None = None
 

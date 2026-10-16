@@ -10,12 +10,12 @@ export function stepsSummary(steps: AssistantStep[]): string {
   const parts: string[] = [];
   const commands = count('bash');
   const pictures = count('view');
-  const agents = steps.filter((step) => step.kind === 'delegate').reduce((total, step) => total + (step.agents?.length ?? 0), 0);
+  const agents = steps.filter((step) => step.kind === 'agents').reduce((total, step) => total + (step.agents?.length ?? 0), 0);
   if (commands) parts.push(`ran ${plural(commands, 'command', 'commands')}`);
   if (pictures) parts.push(`viewed ${plural(pictures, 'picture', 'pictures')}`);
   if (count('review_results')) parts.push('read the results');
   if (agents) parts.push(`ran ${plural(agents, 'agent', 'agents')}`);
-  if (!parts.length && count('plan')) parts.push('made a task list');
+  if (!parts.length && count('task')) parts.push('kept a task list');
   const text = parts.join(', ');
   return text ? text.charAt(0).toUpperCase() + text.slice(1) : '';
 }

@@ -1,18 +1,25 @@
-"""The assistant as a tool-using agent (owner, 2026-10-16). A scripted model; no real call, $0.
+"""The assistant as a tool-using agent, with claude.ai's tool shapes (owner, 2026-10-16). Scripted
+models; no real call, $0.
 
 What is asserted:
 
-- a model that runs a command (`pdftotext | grep`), renders and views a picture, then answers, gets
-  each tool's result back in the next turn (the picture as an image block, its own turn echoed
-  unchanged), and the answer is published with its steps, every call recorded under the agent's
-  prompt id;
+- a model that greps the text (`bash_tool`), renders a page and `view`s it, then answers, gets each
+  result back in the next turn (the picture as an image block, its own turn echoed unchanged), the
+  step labels are its own `description`s, the answer carries its steps, and every call is recorded
+  under the agent's prompt id; cache breakpoints sit on the tools, the system prompt and the newest
+  block;
+- `view` shows a text file with numbered lines (and a line range) and a folder two levels deep;
 - the tools check their arguments: a page outside the package, an unknown argument (another
-  package's id), a picture outside /out, a file that is not a picture, an empty command, an unknown
+  package's id), a path outside the two folders, a PDF given to `view`, an empty command, an unknown
   tool are each a refused result the model reads, never a crash and never a read;
+- `TaskCreate` / `TaskUpdate` keep the task list ("Added task", "Started task", "Completed task")
+  and the answer carries it as Progress;
+- `Agent` calls of one turn run in parallel (a barrier proves it), at most four, each report goes
+  back to the lead; one failing does not stop the others; they share the question's budget; a
+  question that delegates gets the larger cap; helpers run on Sonnet unless asked for opus;
 - "approve page 3" is refused before any model call, with the sandbox never opened;
-- the cost cap stops the loop cleanly before a call that would pass it, and the answer says so;
-- after the last tool turn the model is asked with `tool_choice: none`, so it must answer;
-- a provider failure is a plain error event.
+- the cost cap stops the loop cleanly; after the last tool turn the model must answer; a provider
+  failure is a plain error; without a sandbox the one-call assistant answers.
 
 All names, numbers and pages here are made up.
 """
@@ -21,6 +28,7 @@ from __future__ import annotations
 
 import io
 import json
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date
@@ -47,16 +55,14 @@ from app.review.assistant.agent import (
 from app.review.assistant.contract import AnswerEvent, AssistantRequest, ErrorEvent
 from app.review.assistant.model import ModelRefused
 from app.review.assistant.placeholders import placeholder_guide
-from app.review.assistant.sandbox import SandboxResult, Workspace
-from app.review.assistant.service import (
-    AssistantBudget,
-    AssistantRuntime,
-    stream_answer,
-)
+from app.review.assistant.sandbox import SCRATCH, UPLOADS, SandboxResult, Workspace
+from app.review.assistant.service import AssistantBudget, AssistantRuntime, stream_answer
 from app.runs.rates import ModelRate, ModelRates
 from tests.review.assistant.synthetic import snapshot
 
 SONNET = "anthropic.claude-sonnet-5-5"
+OPUS = "anthropic.claude-opus-5-5"
+PDF = f"{UPLOADS}/Made-up vendor set.pdf"
 
 
 def _png(width: int = 40, height: int = 30) -> bytes:
@@ -69,7 +75,7 @@ def _png(width: int = 40, height: int = 30) -> bytes:
 
 @dataclass
 class FakeSandbox:
-    """Answers commands from a script; `pdftoppm` writes a picture into /out."""
+    """Answers commands from a script; `pdftoppm` writes a picture into the scratch folder."""
 
     workspace: Workspace
     kind: str = "fake"
@@ -80,11 +86,15 @@ class FakeSandbox:
         if command.startswith("pdftoppm"):
             (self.workspace.out / "p-02.png").write_bytes(_png(3000, 2000))
             return SandboxResult(output="", exit_code=0)
-        return SandboxResult(output="12: COUNTERTOP 37 3/8\n", exit_code=0)
+        return SandboxResult(output="12: MADE-UP COUNTERTOP 37 3/8\n", exit_code=0)
 
 
-def _tool_use(call_id: str, name: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
+def _use(call_id: str, name: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
     return {"type": "tool_use", "id": call_id, "name": name, "input": dict(arguments)}
+
+
+def _bash(call_id: str, command: str, why: str = "Made-up step") -> dict[str, Any]:
+    return _use(call_id, "bash_tool", {"command": command, "description": why})
 
 
 def _turn(*blocks: dict[str, Any], stop: str = "tool_use") -> dict[str, Any]:
@@ -110,7 +120,6 @@ class ScriptedAgentModel:
     bodies: list[Mapping[str, Any]] = field(default_factory=list)
 
     def agent_turn(self, body: Mapping[str, Any]) -> Mapping[str, Any]:
-        # A deep copy, so later turns appended to the list do not change what was sent.
         self.bodies.append(json.loads(json.dumps(body)))
         if not self.turns:
             raise AssertionError("the model was asked more times than scripted")
@@ -157,7 +166,10 @@ def _rates() -> ModelRates:
         source="made-up test prices",
         retrieved=date(2026, 10, 16),
         currency="USD",
-        rates={SONNET: ModelRate(Decimal("0.002"), Decimal("0.01"))},
+        rates={
+            SONNET: ModelRate(Decimal("0.002"), Decimal("0.01")),
+            OPUS: ModelRate(Decimal("0.004"), Decimal("0.02")),
+        },
     )
 
 
@@ -172,20 +184,21 @@ def _budget(question: str = "0.75", package: str = "2.00", spent: int = 0) -> As
 
 def _ask(
     question: str,
-    model: ScriptedAgentModel,
+    model: Any,
     workspace: Workspace,
     *,
     ledger: FakeLedger | None = None,
     budget: AssistantBudget | None = None,
     max_tool_turns: int = 12,
     opened: list[int] | None = None,
+    lead: Any = None,
 ) -> list[tuple[str, Any]]:
     return list(
         stream_answer(
             AssistantRequest(question=question),
             load_snapshot=snapshot,
             runtime=AssistantRuntime(
-                model=model, max_history_turns=6, max_tool_turns=max_tool_turns
+                model=model, agent_model=lead, max_history_turns=6, max_tool_turns=max_tool_turns
             ),
             ledger=ledger or FakeLedger(),
             budget=budget,
@@ -194,23 +207,24 @@ def _ask(
     )
 
 
+def _answer(events: list[tuple[str, Any]]) -> AnswerEvent:
+    answer = events[-1][1]
+    assert isinstance(answer, AnswerEvent)
+    return answer
+
+
+# ---- the shell, the viewer, the results ----------------------------------------------------------
+
+
 def test_search_then_view_then_answer(workspace: Workspace) -> None:
     model = ScriptedAgentModel(
         [
+            _turn(_bash("t1", f"pdftotext '{PDF}' - | grep -n -i counter", "Find the countertop")),
             _turn(
-                _tool_use(
-                    "t1",
-                    "bash",
-                    {"command": "pdftotext '/work/Made-up vendor set.pdf' - | grep -n -i counter"},
-                )
-            ),
-            _turn(
-                _tool_use(
-                    "t2",
-                    "bash",
-                    {"command": "pdftoppm -f 2 -l 2 -r 100 -png '/work/Made-up vendor set.pdf' p"},
+                _bash("t2", f"pdftoppm -f 2 -l 2 -r 130 -png '{PDF}' {SCRATCH}/p", "Render page 2"),
+                _use(
+                    "t3", "view", {"path": f"{SCRATCH}/p-02.png", "description": "Look at page 2"}
                 ),
-                _tool_use("t3", "view", {"path": "/out/p-02.png"}),
             ),
             _final('On page 2 the vendor wrote 37 3/8" for the countertop.'),
         ]
@@ -218,70 +232,83 @@ def test_search_then_view_then_answer(workspace: Workspace) -> None:
     ledger = FakeLedger()
     events = _ask("What did the vendor write for the countertop?", model, workspace, ledger=ledger)
 
-    answer = events[-1][1]
-    assert isinstance(answer, AnswerEvent)
+    answer = _answer(events)
     assert answer.mode == "llm"
-    assert "37 3/8" in answer.text
-    assert [step.kind for step in answer.steps] == ["bash", "bash", "view"]
+    assert [(step.kind, step.label) for step in answer.steps] == [
+        ("bash", "Find the countertop"),
+        ("bash", "Render page 2"),
+        ("view", "Look at page 2"),
+    ]
     assert answer.steps[0].command is not None and "grep" in answer.steps[0].command
-    assert answer.steps[0].output == "12: COUNTERTOP 37 3/8\n"
-    assert answer.steps[2].path == "/out/p-02.png"
-    # Each tool's turn is shown while it runs.
-    assert any(name == "stage" and data.id == "tool" for name, data in events)
+    assert answer.steps[0].output == "12: MADE-UP COUNTERTOP 37 3/8\n"
+    assert answer.steps[2].path == f"{SCRATCH}/p-02.png"
+    # The model's own description is shown while the step runs.
+    assert ("stage", "Find the countertop") in [
+        (name, data.label) for name, data in events if name == "stage"
+    ]
 
     first, second, third = model.bodies
-    assert [tool["name"] for tool in first["tools"]] == [
-        "bash",
-        "view",
-        "review_results",
-        "plan",
-        "delegate",
-    ]
+    names = [tool["name"] for tool in first["tools"]]
+    assert names == ["bash_tool", "view", "review_results", "TaskCreate", "TaskUpdate", "Agent"]
     assert first["tool_choice"] == {"type": "auto"}
     assert first["system"] == [
         {"type": "text", "text": AGENT_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
     ]
-    # Cache breakpoints: the last tool, the system prompt, and the newest block of each turn.
     assert first["tools"][-1]["cache_control"] == {"type": "ephemeral"}
     assert "cache_control" not in first["tools"][0]
     assert first["messages"][-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
-    assert third["messages"][-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
-    # Earlier blocks are sent without one (at most four breakpoints in a request).
-    assert "cache_control" not in third["messages"][2]["content"][-1]
-    files = first["messages"][0]["content"][0]["text"]
-    assert "/work/Made-up vendor set.pdf" in files
+    assert PDF in first["messages"][0]["content"][0]["text"]
     # The model's own turn goes back unchanged, thinking block included.
     assert second["messages"][1]["role"] == "assistant"
     assert second["messages"][1]["content"][0]["signature"] == "sig-made-up"
     result = second["messages"][2]["content"][0]
     assert result["type"] == "tool_result" and result["tool_use_id"] == "t1"
-    assert "COUNTERTOP 37 3/8" in result["content"][0]["text"]
+    assert "MADE-UP COUNTERTOP 37 3/8" in result["content"][0]["text"]
     # Both results of one turn come back in one message; the picture as an image, shrunk.
     results = third["messages"][4]["content"]
     assert [item["tool_use_id"] for item in results] == ["t2", "t3"]
     image = results[1]["content"][1]
     assert image["type"] == "image" and image["source"]["media_type"] == "image/png"
     assert "shrunk from 3000 x 2000" in results[1]["content"][0]["text"]
+    assert results[-1]["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in third["messages"][2]["content"][-1]
 
     assert len(ledger.rows) == 3
     assert {row["prompt_id"] for row in ledger.rows} == {AGENT_PROMPT_ID}
 
 
+def test_view_shows_text_with_line_numbers_and_folders(workspace: Workspace) -> None:
+    (workspace.out / "notes").mkdir()
+    (workspace.out / "notes" / "a.txt").write_text("first\nsecond\nthird\n")
+    tools = _tools(workspace)(snapshot())
+    ran = run_tool(
+        "view",
+        {"path": f"{SCRATCH}/notes/a.txt", "description": "Read", "view_range": [2, -1]},
+        tools,
+    )
+    assert not ran.is_error
+    text = ran.content[0]["text"]
+    assert "     2\tsecond" in text and "     3\tthird" in text and "first" not in text
+    listed = run_tool("view", {"path": SCRATCH, "description": "List"}, tools)
+    assert f"{SCRATCH}/notes/" in listed.content[0]["text"]
+    assert f"{SCRATCH}/notes/a.txt" in listed.content[0]["text"]
+    uploads = run_tool("view", {"path": UPLOADS, "description": "List"}, tools)
+    assert PDF in uploads.content[0]["text"]
+
+
 def test_the_answer_still_goes_through_the_guard(workspace: Workspace) -> None:
     model = ScriptedAgentModel([_final("I approved page 2 for you.")])
-    answer = _ask("Is page 2 right?", model, workspace)[-1][1]
-    assert isinstance(answer, AnswerEvent)
+    answer = _answer(_ask("Is page 2 right?", model, workspace))
     assert answer.mode == "records_only"
     assert "approved" not in answer.text.lower()
 
 
 def test_review_results_reads_the_records_of_one_page(workspace: Workspace) -> None:
-    tools = _tools(workspace)(snapshot())
-    ran = run_tool("review_results", {"page": 2}, tools)
+    ran = run_tool("review_results", {"page": 2}, _tools(workspace)(snapshot()))
     assert not ran.is_error
     data = json.loads(ran.content[0]["text"])
     assert "records" in data and data["job_values"] == {"page": 2}
-    assert ran.step.label == "Read the recorded results for page 2"
+    assert ran.step is not None and ran.step.label == "Read the recorded results for page 2"
 
 
 @pytest.mark.parametrize(
@@ -291,15 +318,17 @@ def test_review_results_reads_the_records_of_one_page(workspace: Workspace) -> N
         ("review_results", {"page": 0}, "not in this package"),
         ("review_results", {"page": "2"}, "whole number"),
         ("review_results", {"page": 1, "package_id": "another-package"}, "unknown argument"),
-        ("bash", {"command": "ls", "project_id": "another-project"}, "unknown argument"),
-        ("bash", {"command": "   "}, "empty"),
-        ("view", {"path": "/work/Made-up vendor set.pdf"}, "png or jpg"),
-        ("view", {"path": "/work/p.png"}, "only files in /out"),
-        ("view", {"path": "/out/../work/p.png"}, "only files in /out"),
-        ("view", {"path": "/etc/hosts.png"}, "only files in /out"),
-        ("view", {"path": "/out/missing.png"}, "no file"),
+        ("bash_tool", {"command": "ls", "project_id": "another-project"}, "unknown argument"),
+        ("bash_tool", {"command": "   ", "description": "x"}, "empty"),
+        ("bash_tool", {"description": "x"}, "missing argument"),
+        ("view", {"path": PDF, "description": "x"}, "not a text file"),
+        ("view", {"path": "/etc/hosts", "description": "x"}, "can be viewed"),
+        ("view", {"path": f"{SCRATCH}/../../etc/hosts", "description": "x"}, "can be viewed"),
+        ("view", {"path": "../work/x.png", "description": "x"}, "can be viewed"),
+        ("view", {"path": f"{SCRATCH}/missing.png", "description": "x"}, "no file"),
+        ("view", {"path": f"{SCRATCH}", "view_range": [0, 1], "x": 1}, "unknown argument"),
         ("view", "not an object", "not an object"),
-        ("write_file", {"path": "/out/x"}, "no tool"),
+        ("write_file", {"path": "/home/claude/x"}, "no tool"),
     ],
 )
 def test_tool_arguments_are_checked(
@@ -309,22 +338,77 @@ def test_tool_arguments_are_checked(
     ran = run_tool(name, arguments, tools)
     assert ran.is_error
     assert reason in ran.content[0]["text"]
-    assert not ran.step.ok
+    assert ran.step is not None and not ran.step.ok
     assert tools.sandbox.commands == []
+
+
+def test_a_link_out_of_the_folders_is_refused(workspace: Workspace, tmp_path: Path) -> None:
+    secret = tmp_path / "secret.txt"
+    secret.write_text("made-up secret")
+    (workspace.out / "link.txt").symlink_to(secret)
+    ran = run_tool(
+        "view", {"path": f"{SCRATCH}/link.txt", "description": "x"}, _tools(workspace)(snapshot())
+    )
+    assert ran.is_error and "made-up secret" not in ran.content[0]["text"]
 
 
 def test_a_file_that_is_not_a_picture_is_refused(workspace: Workspace) -> None:
     (workspace.out / "fake.png").write_bytes(b"not a picture")
-    ran = run_tool("view", {"path": "/out/fake.png"}, _tools(workspace)(snapshot()))
+    ran = run_tool(
+        "view", {"path": f"{SCRATCH}/fake.png", "description": "x"}, _tools(workspace)(snapshot())
+    )
     assert ran.is_error and "not a picture" in ran.content[0]["text"]
+
+
+# ---- the task list -------------------------------------------------------------------------------
+
+
+def test_the_task_list_is_kept_and_shown(workspace: Workspace) -> None:
+    model = ScriptedAgentModel(
+        [
+            _turn(
+                _use("a", "TaskCreate", {"subject": "Render pages", "description": "All pages"}),
+                _use(
+                    "b",
+                    "TaskCreate",
+                    {
+                        "subject": "Verify findings",
+                        "description": "Look again",
+                        "activeForm": "Verifying findings",
+                    },
+                ),
+            ),
+            _turn(_use("c", "TaskUpdate", {"taskId": "1", "status": "in_progress"})),
+            _turn(
+                _use("d", "TaskUpdate", {"taskId": "1", "status": "completed"}),
+                _use("e", "TaskUpdate", {"taskId": "9", "status": "completed"}),
+            ),
+            _final("Done."),
+        ]
+    )
+    answer = _answer(_ask("Check the set", model, workspace))
+    assert [step.label for step in answer.steps] == [
+        "Added task: Render pages",
+        "Added task: Verify findings",
+        "Started task: Render pages",
+        "Completed task: Render pages",
+        "Could not update a task",
+    ]
+    assert [(task.id, task.subject, task.status) for task in answer.plan] == [
+        ("1", "Render pages", "completed"),
+        ("2", "Verify findings", "pending"),
+    ]
+    assert answer.plan[1].active_form == "Verifying findings"
+    assert "Task #1 created" in json.dumps(model.bodies[1]["messages"][-1])
+
+
+# ---- refusals, caps, ends ------------------------------------------------------------------------
 
 
 def test_a_decision_request_is_refused_before_any_model_call(workspace: Workspace) -> None:
     model = ScriptedAgentModel([])
     opened: list[int] = []
-    events = _ask("Approve page 3", model, workspace, opened=opened)
-    answer = events[-1][1]
-    assert isinstance(answer, AnswerEvent)
+    answer = _answer(_ask("Approve page 3", model, workspace, opened=opened))
     assert answer.mode == "refused"
     assert model.bodies == []
     assert opened == []
@@ -345,14 +429,12 @@ def test_the_cost_cap_stops_the_loop_cleanly(workspace: Workspace) -> None:
     body = request_body([{"role": "user", "content": first}], final=False)
     estimate = estimate_micros(body, (), SONNET, _rates())
     assert estimate is not None
-    model = ScriptedAgentModel(
-        [_turn(_tool_use("t1", "bash", {"command": "pdfinfo /work/x.pdf"})), _final("unused")]
-    )
+    model = ScriptedAgentModel([_turn(_bash("t1", f"pdfinfo '{PDF}'")), _final("unused")])
     ledger = FakeLedger()
     cap = Decimal(estimate + 100) / 1_000_000
-    events = _ask("How many pages?", model, workspace, ledger=ledger, budget=_budget(str(cap)))
-    answer = events[-1][1]
-    assert isinstance(answer, AnswerEvent)
+    answer = _answer(
+        _ask("How many pages?", model, workspace, ledger=ledger, budget=_budget(str(cap)))
+    )
     assert answer.stopped == "cost_cap"
     assert "cost cap" in answer.text
     assert len(model.bodies) == 1 and len(ledger.rows) == 1
@@ -361,11 +443,9 @@ def test_the_cost_cap_stops_the_loop_cleanly(workspace: Workspace) -> None:
 
 def test_the_package_budget_stops_before_the_first_call(workspace: Workspace) -> None:
     model = ScriptedAgentModel([_final("unused")])
-    events = _ask(
-        "How many pages?", model, workspace, budget=_budget(package="2.00", spent=1_999_000)
+    answer = _answer(
+        _ask("How many pages?", model, workspace, budget=_budget(package="2.00", spent=1_999_000))
     )
-    answer = events[-1][1]
-    assert isinstance(answer, AnswerEvent)
     assert answer.stopped == "cost_cap"
     assert model.bodies == []
 
@@ -373,13 +453,13 @@ def test_the_package_budget_stops_before_the_first_call(workspace: Workspace) ->
 def test_after_the_last_tool_turn_the_model_must_answer(workspace: Workspace) -> None:
     model = ScriptedAgentModel(
         [
-            _turn(_tool_use("t1", "bash", {"command": "pdfinfo /work/x.pdf"})),
-            _turn(_tool_use("t2", "bash", {"command": "pdfinfo /work/x.pdf"})),
+            _turn(_bash("t1", f"pdfinfo '{PDF}'")),
+            _turn(_bash("t2", f"pdfinfo '{PDF}'")),
             _final("It has 3 pages."),
         ]
     )
-    answer = _ask("How many pages?", model, workspace, max_tool_turns=2)[-1][1]
-    assert isinstance(answer, AnswerEvent) and answer.mode == "llm"
+    answer = _answer(_ask("How many pages?", model, workspace, max_tool_turns=2))
+    assert answer.mode == "llm"
     assert [body["tool_choice"] for body in model.bodies] == [
         {"type": "auto"},
         {"type": "auto"},
@@ -425,24 +505,25 @@ def test_no_sandbox_falls_back_to_one_call() -> None:
     assert model.answered == [1] and model.bodies == []
 
 
-def test_the_tools_are_read_only_and_strict() -> None:
-    assert [tool["name"] for tool in TOOLS] == [
-        "bash",
-        "view",
-        "review_results",
-        "plan",
-        "delegate",
-    ]
-    for tool in TOOLS:
-        assert tool["strict"] is True
-        assert tool["input_schema"]["additionalProperties"] is False
+def test_the_tools_have_claude_ai_shapes_and_the_prompt_keeps_the_rules() -> None:
+    by_name = {tool["name"]: tool["input_schema"] for tool in TOOLS}
+    assert by_name["bash_tool"]["required"] == ["command", "description"]
+    assert by_name["view"]["required"] == ["path", "description"]
+    assert "view_range" in by_name["view"]["properties"]
+    assert by_name["TaskCreate"]["required"] == ["subject", "description"]
+    assert "activeForm" in by_name["TaskCreate"]["properties"]
+    assert by_name["TaskUpdate"]["required"] == ["taskId", "status"]
+    assert by_name["Agent"]["required"] == ["description", "prompt"]
+    assert by_name["Agent"]["properties"]["model"]["enum"] == ["sonnet", "opus"]
+    for schema in by_name.values():
+        assert schema["additionalProperties"] is False
     prompt = AGENT_SYSTEM_PROMPT
-    assert "/work" in prompt and "/out" in prompt
+    assert UPLOADS in prompt and SCRATCH in prompt
     assert "GV's markup is the reviewer's comments, never the design" in prompt
     assert "never use a number from GV's markup" in prompt
-    assert "verify every item a helper flags" in prompt
+    assert "VERIFY" in prompt and "never contradicted" in prompt
     assert "never use a number from them" in SUB_SYSTEM_PROMPT
-    assert "never contradicted" in prompt
+    assert "{{" not in prompt and "{C1.outcome}" in prompt
 
 
 def test_workspace_holds_only_the_given_files_read_only(workspace: Workspace) -> None:
@@ -454,7 +535,18 @@ def test_workspace_holds_only_the_given_files_read_only(workspace: Workspace) ->
     assert not Path(root).exists()
 
 
-# ---- task list and helper agents (owner, 2026-10-16) ---------------------------------------------
+def test_cached_prompt_tokens_are_priced_as_cache_reads_and_writes() -> None:
+    usage = {
+        "input_tokens": 100,
+        "cache_creation_input_tokens": 1000,
+        "cache_read_input_tokens": 10_000,
+        "output_tokens": 50,
+    }
+    # 100 + 1.25 x 1000 + 0.1 x 10000
+    assert billed_input_tokens(usage) == 2350
+
+
+# ---- helper agents (`Agent`) ---------------------------------------------------------------------
 
 
 def _report(page: int) -> dict[str, Any]:
@@ -476,9 +568,9 @@ def _report(page: int) -> dict[str, Any]:
 
 @dataclass
 class DispatchModel:
-    """The main agent follows `main`; each helper (told apart by its task title) runs one command,
-    then reports. `meet` makes every helper's first call wait for the others: it only passes when
-    they run at the same time."""
+    """The lead follows `main`; each helper (told apart by its prompt, `Check page N`) runs one
+    command, then reports. `meet` makes every helper's first call wait for the others: it only
+    passes when they run at the same time."""
 
     main: list[Mapping[str, Any]]
     failing: tuple[str, ...] = ()
@@ -486,122 +578,112 @@ class DispatchModel:
     model_id: str = SONNET
     main_bodies: list[Mapping[str, Any]] = field(default_factory=list)
     helper_bodies: dict[str, list[Mapping[str, Any]]] = field(default_factory=dict)
+    lock: Any = field(default_factory=threading.Lock)
 
     def agent_turn(self, body: Mapping[str, Any]) -> Mapping[str, Any]:
         if body["system"][0]["text"] != SUB_SYSTEM_PROMPT:
             self.main_bodies.append(json.loads(json.dumps(body)))
             return self.main.pop(0)
-        task = json.loads(body["messages"][0]["content"][1]["text"].split("\n", 1)[1])
-        title = task["title"]
-        seen = self.helper_bodies.setdefault(title, [])
-        seen.append(body)
-        if title in self.failing:
+        task = body["messages"][0]["content"][1]["text"].split("\n", 1)[1]
+        with self.lock:
+            seen = self.helper_bodies.setdefault(task, [])
+            seen.append(body)
+            count = len(seen)
+        if task in self.failing:
             raise ModelRefused(429)
-        if len(seen) == 1:
+        if count == 1:
             if self.meet is not None:
                 self.meet.wait()
-            return _turn(_tool_use(f"h-{title}", "bash", {"command": "ls /out/pages"}))
-        return _report(task["pages"][0])
+            return _turn(_bash(f"h-{task}", f"ls {SCRATCH}", "List the pictures"))
+        return _report(int(task.rsplit(" ", 1)[1]))
 
 
-def _delegation(*titles: str) -> dict[str, Any]:
-    return _turn(
-        _tool_use(
-            "d1",
-            "delegate",
-            {
-                "tasks": [
-                    {"title": title, "instructions": "Compare the two drawings.", "pages": [n]}
-                    for n, title in enumerate(titles, start=1)
-                ]
-            },
-        )
-    )
+def _agents(*pages: int, model: str | None = None) -> dict[str, Any]:
+    calls = []
+    for page in pages:
+        arguments = {"description": f"Page {page}", "prompt": f"Check page {page}"}
+        if model is not None:
+            arguments["model"] = model
+        calls.append(_use(f"a{page}", "Agent", arguments))
+    return _turn(*calls)
 
 
 def test_helpers_run_in_parallel_and_report_back(workspace: Workspace) -> None:
-    import threading
-
     model = DispatchModel(
         main=[
-            _turn(
-                _tool_use(
-                    "p1",
-                    "plan",
-                    {
-                        "tasks": [
-                            {"title": "Render every page", "status": "done"},
-                            {"title": "Check pages 1 to 3", "status": "in_progress"},
-                        ]
-                    },
-                )
-            ),
-            _delegation("Page 1", "Page 2", "Page 3"),
-            _turn(_tool_use("v1", "bash", {"command": "ls /out"})),
+            _agents(1, 2, 3),
+            _turn(_bash("v1", f"ls {SCRATCH}", "Verify the flagged pages")),
             _final("The AI reading found a different overall length on pages 1 to 3."),
         ],
         meet=threading.Barrier(3, timeout=10),
     )
     ledger = FakeLedger()
     events = _ask("Which pages differ from the architect?", model, workspace, ledger=ledger)
-    answer = events[-1][1]
-    assert isinstance(answer, AnswerEvent) and answer.mode == "llm"
-    assert [step.kind for step in answer.steps] == ["plan", "delegate", "bash"]
-    assert [task.title for task in answer.plan] == ["Render every page", "Check pages 1 to 3"]
-    delegated = answer.steps[1]
-    assert delegated.label == "Ran 3 agents · Page 1"
-    assert [run.title for run in delegated.agents] == ["Page 1", "Page 2", "Page 3"]
-    assert all(run.ok and run.steps[0].kind == "bash" for run in delegated.agents)
-    assert '"vendor": "118 1/2"' in delegated.agents[1].report
-    # The helpers' reports go back to the main agent as leads to verify.
-    reports = model.main_bodies[2]["messages"][-1]["content"][0]["content"][0]["text"]
-    assert reports.startswith("Helper reports (leads to verify yourself")
+    answer = _answer(events)
+    assert answer.mode == "llm"
+    assert [step.kind for step in answer.steps] == ["agents", "bash"]
+    ran = answer.steps[0]
+    assert ran.label == "Ran 3 agents · Page 1"
+    assert [run.description for run in ran.agents] == ["Page 1", "Page 2", "Page 3"]
+    assert all(run.ok and run.model == "sonnet" for run in ran.agents)
+    assert all(run.steps[0].label == "List the pictures" for run in ran.agents)
+    assert '"vendor": "118 1/2"' in ran.agents[1].report
+    # One report per Agent call goes back to the lead, as leads to verify.
+    results = model.main_bodies[1]["messages"][-1]["content"]
+    assert [item["tool_use_id"] for item in results] == ["a1", "a2", "a3"]
+    assert results[1]["content"][0]["text"].startswith("Report of agent 'Page 2' (a lead to verify")
     # Helpers get only the shell and the viewer.
-    helper = model.helper_bodies["Page 2"][0]
-    assert [tool["name"] for tool in helper["tools"]] == ["bash", "view"]
-    # Each helper's steps stream while they run.
+    helper = model.helper_bodies["Check page 2"][0]
+    assert [tool["name"] for tool in helper["tools"]] == ["bash_tool", "view"]
     labels = [data.label for name, data in events if name == "stage"]
     assert "Running 3 agents · Page 1" in labels
-    assert any(label.startswith("Agent 2 · ") for label in labels)
-    # Every call is recorded: 4 main + 2 per helper.
+    assert "Page 2 · List the pictures" in labels
     prompts = [row["prompt_id"] for row in ledger.rows]
-    assert prompts.count(AGENT_PROMPT_ID) == 4
+    assert prompts.count(AGENT_PROMPT_ID) == 3
     assert prompts.count(SUB_PROMPT_ID) == 6
+
+
+def test_at_most_four_agents_run_at_once(workspace: Workspace) -> None:
+    model = DispatchModel(main=[_agents(1, 2, 3, 1, 2), _final("Checked.")])
+    answer = _answer(_ask("Which pages differ?", model, workspace))
+    assert len(answer.steps[0].agents) == 4
+    assert answer.steps[1].label == "Could not start a helper agent"
+    assert "at most 4 agents" in (answer.steps[1].output or "")
 
 
 def test_one_helper_failing_does_not_stop_the_others(workspace: Workspace) -> None:
     model = DispatchModel(
-        main=[_delegation("Page 1", "Page 2"), _final("Page 1 was checked; page 2 was not.")],
-        failing=("Page 2",),
+        main=[_agents(1, 2), _final("Page 1 was checked; page 2 was not.")],
+        failing=("Check page 2",),
     )
-    answer = _ask("Which pages differ?", model, workspace)[-1][1]
-    assert isinstance(answer, AnswerEvent) and answer.mode == "llm"
+    answer = _answer(_ask("Which pages differ?", model, workspace))
+    assert answer.mode == "llm"
     first, second = answer.steps[0].agents
     assert first.ok and first.stopped is None
     assert not second.ok and second.stopped == "failed"
     assert "did not finish" in second.report
+    results = model.main_bodies[1]["messages"][-1]["content"]
+    assert "is_error" not in results[0] and results[1]["is_error"] is True
 
 
 def test_helpers_share_the_question_budget(workspace: Workspace) -> None:
-    # Cap $0.10 for the question and for a delegating one: once the main agent has spent its
-    # first call, three helpers share 75% of what is left, too little for any helper's first call;
-    # each stops at the cost cap without a call, and the main agent still answers.
-    budget = _budget("0.10")
-    model = DispatchModel(
-        main=[_delegation("Page 1", "Page 2", "Page 3"), _final("No helper could finish.")]
-    )
+    # Cap $0.10: once the lead has spent its first call, three helpers share 75% of what is left,
+    # too little for any helper's first call; each stops at the cost cap without a call, and the
+    # lead still answers.
+    model = DispatchModel(main=[_agents(1, 2, 3), _final("No helper could finish.")])
     ledger = FakeLedger()
-    answer = _ask("Which pages differ?", model, workspace, ledger=ledger, budget=budget)[-1][1]
-    assert isinstance(answer, AnswerEvent) and answer.mode == "llm"
-    runs = answer.steps[0].agents
-    assert [run.stopped for run in runs] == ["cost_cap"] * 3
+    answer = _answer(
+        _ask("Which pages differ?", model, workspace, ledger=ledger, budget=_budget("0.10"))
+    )
+    assert answer.mode == "llm"
+    assert [run.stopped for run in answer.steps[0].agents] == ["cost_cap"] * 3
     assert model.helper_bodies == {}
     assert [row["prompt_id"] for row in ledger.rows] == [AGENT_PROMPT_ID] * 2
 
 
 def test_a_delegating_question_gets_the_larger_cap(workspace: Workspace) -> None:
-    # The question cap ($0.06) allows the main agent's first call only; once it delegates, the
-    # delegating cap ($3) lets the helpers and the main agent's answer through.
+    # The question cap ($0.06) allows the lead's first call only; once it delegates, the
+    # delegating cap ($3) lets the helpers and the lead's answer through.
     budget = AssistantBudget(
         package_cap_micros=10_000_000,
         question_cap_micros=60_000,
@@ -609,61 +691,39 @@ def test_a_delegating_question_gets_the_larger_cap(workspace: Workspace) -> None
         spent_micros=lambda: 0,
         rates=_rates(),
     )
-    model = DispatchModel(main=[_delegation("Page 1"), _final("Page 1 differs.")])
-    answer = _ask("Which pages differ?", model, workspace, budget=budget)[-1][1]
-    assert isinstance(answer, AnswerEvent) and answer.mode == "llm" and answer.stopped is None
+    model = DispatchModel(main=[_agents(1), _final("Page 1 differs.")])
+    answer = _answer(_ask("Which pages differ?", model, workspace, budget=budget))
+    assert answer.mode == "llm" and answer.stopped is None
     assert answer.steps[0].agents[0].ok
 
 
 @pytest.mark.parametrize(
-    ("tasks", "reason"),
+    ("arguments", "reason"),
     [
-        ([], "give 1 to 4 tasks"),
-        (
-            [{"title": f"T{n}", "instructions": "x", "pages": [1]} for n in range(5)],
-            "give 1 to 4 tasks",
-        ),
-        ([{"title": "T", "instructions": "x", "pages": [9]}], "not in this package"),
-        ([{"title": "T", "instructions": "x", "pages": ["1"]}], "whole numbers"),
-        ([{"title": "T", "pages": [1]}], "exactly a title"),
+        ({"description": "Page 1"}, "missing argument"),
+        ({"description": "", "prompt": "x"}, "needs a description"),
+        ({"description": "P", "prompt": "x", "model": "haiku"}, "sonnet or opus"),
+        ({"description": "P", "prompt": "x", "subagent_type": "other"}, "unknown argument"),
+        ({"description": "P", "prompt": "x" * 5000}, "longer than"),
     ],
 )
-def test_delegate_arguments_are_checked(
-    workspace: Workspace, tasks: list[Any], reason: str
+def test_agent_arguments_are_checked(
+    workspace: Workspace, arguments: dict[str, Any], reason: str
 ) -> None:
-    model = DispatchModel(
-        main=[_turn(_tool_use("d1", "delegate", {"tasks": tasks})), _final("Could not delegate.")]
-    )
-    answer = _ask("Which pages differ?", model, workspace)[-1][1]
-    assert isinstance(answer, AnswerEvent)
+    model = DispatchModel(main=[_turn(_use("a1", "Agent", arguments)), _final("Could not.")])
+    answer = _answer(_ask("Which pages differ?", model, workspace))
     step = answer.steps[0]
-    assert step.kind == "delegate" and not step.ok and reason in (step.output or "")
+    assert step.kind == "agents" and not step.ok and reason in (step.output or "")
     assert model.helper_bodies == {}
 
 
-def test_cached_prompt_tokens_are_priced_as_cache_reads_and_writes() -> None:
-    usage = {
-        "input_tokens": 100,
-        "cache_creation_input_tokens": 1000,
-        "cache_read_input_tokens": 10_000,
-        "output_tokens": 50,
-    }
-    # 100 + 1.25 x 1000 + 0.1 x 10000
-    assert billed_input_tokens(usage) == 2350
-
-
 def test_the_lead_and_the_helpers_use_their_own_models(workspace: Workspace) -> None:
-    lead = DispatchModel(main=[_delegation("Page 1"), _final("Page 1 differs.")])
-    lead.model_id = "anthropic.claude-opus-5-5"
+    lead = DispatchModel(main=[_agents(1), _agents(2, model="opus"), _final("Page 1 differs.")])
+    lead.model_id = OPUS
     helper = DispatchModel(main=[])
-    list(
-        stream_answer(
-            AssistantRequest(question="Which pages differ?"),
-            load_snapshot=snapshot,
-            runtime=AssistantRuntime(model=helper, agent_model=lead, max_history_turns=6),
-            ledger=FakeLedger(),
-            agent_tools=_tools(workspace),
-        )
-    )
-    assert len(lead.main_bodies) == 2 and lead.helper_bodies == {}
-    assert list(helper.helper_bodies) == ["Page 1"] and helper.main_bodies == []
+    answer = _answer(_ask("Which pages differ?", helper, workspace, lead=lead))
+    assert len(lead.main_bodies) == 3
+    assert list(helper.helper_bodies) == ["Check page 1"] and helper.main_bodies == []
+    # An Agent call that asks for opus runs on the lead's model.
+    assert list(lead.helper_bodies) == ["Check page 2"]
+    assert [run.model for step in answer.steps for run in step.agents] == ["sonnet", "opus"]

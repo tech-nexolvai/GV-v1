@@ -4,12 +4,12 @@ What is asserted, on the backend this machine has (each real-sandbox test is ski
 backend is missing; the Docker ones need the built `gv-assistant-sandbox` image):
 
 - no network: a socket connection is refused;
-- only /work and /out: /work cannot be written, the user's home and another folder cannot be read,
-  and a file outside /out is never viewed;
+- only the uploads and the scratch folder: the uploads cannot be written, the user's home and another folder cannot be read,
+  and nothing outside the two folders is read back;
 - a command over its time limit is stopped and says so;
 - long output is cut with "Output truncated";
 - no server environment variable reaches the command;
-- Docker's command line keeps the locks (no network, read-only root and /work, no capabilities,
+- Docker's command line keeps the locks (no network, read-only root and uploads, no capabilities,
   limits, an unprivileged user), checked without Docker.
 
 All file names and contents here are made up.
@@ -25,6 +25,8 @@ import pytest
 
 from app.review.assistant.sandbox import (
     MAX_OUTPUT_CHARS,
+    SCRATCH,
+    UPLOADS,
     DockerSandbox,
     MacSandbox,
     SandboxRefused,
@@ -69,13 +71,13 @@ def test_only_work_and_out(workspace: Workspace, tmp_path: Path) -> None:
     secret = tmp_path / "secret.txt"
     secret.write_text("made-up secret")
     for sandbox in _backends(workspace):
-        listed = sandbox.run("ls /work")
+        listed = sandbox.run(f"ls {UPLOADS}")
         assert listed.output.split() == ["Made-up", "set.pdf"]
-        wrote = sandbox.run("echo x > /work/new.txt && echo wrote")
+        wrote = sandbox.run(f"echo x > {UPLOADS}/new.txt && echo wrote")
         assert "wrote" not in wrote.output
         read = sandbox.run(f"cat {secret}; cat ~/.ssh/known_hosts")
         assert "made-up secret" not in read.output
-        scratch = sandbox.run("echo kept > /out/note.txt && cat /out/note.txt")
+        scratch = sandbox.run(f"echo kept > {SCRATCH}/note.txt && cat {SCRATCH}/note.txt")
         assert scratch.output.strip() == "kept"
     assert (workspace.out / "note.txt").read_text().strip() == "kept"
 
@@ -113,24 +115,32 @@ def test_cut_output_keeps_short_text() -> None:
 
 @pytest.mark.skipif(not _MAC, reason="macOS sandbox-exec only")
 def test_the_mac_fallback_says_poppler_is_missing(workspace: Workspace) -> None:
-    result = MacSandbox(workspace).run("pdftotext '/work/Made-up set.pdf' -")
+    result = MacSandbox(workspace).run(f"pdftotext '{UPLOADS}/Made-up set.pdf' -")
     assert result.exit_code == 127
     assert "not available in this sandbox" in result.output
     assert "python3" in result.output
 
 
 @pytest.mark.parametrize(
-    "path", ["/work/Made-up set.pdf", "/etc/hosts", "../work/x", "/out/../work/x", "/out/"]
+    "path", ["/etc/hosts", "/work/x", f"{SCRATCH}/../../etc/hosts", "../x", f"{UPLOADS}/../x", ""]
 )
-def test_only_files_in_out_are_read_back(workspace: Workspace, path: str) -> None:
+def test_only_the_two_folders_are_read_back(workspace: Workspace, path: str) -> None:
     with pytest.raises(SandboxRefused):
-        workspace.out_file(path)
+        workspace.resolve(path)
 
 
-def test_a_link_out_of_out_is_refused(workspace: Workspace) -> None:
-    (workspace.out / "link.png").symlink_to(workspace.work / "Made-up set.pdf")
+def test_paths_resolve_inside_the_two_folders(workspace: Workspace) -> None:
+    (workspace.out / "p-1.png").write_bytes(b"x")
+    assert workspace.resolve(f"{UPLOADS}/Made-up set.pdf") == workspace.work / "Made-up set.pdf"
+    assert workspace.resolve(f"{SCRATCH}/p-1.png") == workspace.out / "p-1.png"
+    assert workspace.resolve("p-1.png") == workspace.out / "p-1.png"
+    assert workspace.shown(workspace.out / "p-1.png") == f"{SCRATCH}/p-1.png"
+
+
+def test_a_link_out_of_the_folders_is_refused(workspace: Workspace, tmp_path: Path) -> None:
+    (workspace.out / "link.png").symlink_to(tmp_path)
     with pytest.raises(SandboxRefused):
-        workspace.out_file("/out/link.png")
+        workspace.resolve(f"{SCRATCH}/link.png")
 
 
 def test_file_names_stay_plain() -> None:
@@ -141,7 +151,7 @@ def test_file_names_stay_plain() -> None:
 
 
 def test_docker_command_line_keeps_the_locks(workspace: Workspace) -> None:
-    argv = DockerSandbox(workspace).argv("pdfinfo /work/x.pdf", "gv-assistant-made-up")
+    argv = DockerSandbox(workspace).argv(f"pdfinfo {UPLOADS}/x.pdf", "gv-assistant-made-up")
     joined = " ".join(argv)
     for lock in (
         "--network none",
@@ -152,10 +162,10 @@ def test_docker_command_line_keeps_the_locks(workspace: Workspace) -> None:
         "--memory 768m",
         "--cpus 1",
         "--user 65534:65534",
-        f"source={workspace.work},target=/work,readonly",
-        f"source={workspace.out},target=/out",
+        f"source={workspace.work},target={UPLOADS},readonly",
+        f"source={workspace.out},target={SCRATCH}",
     ):
         assert lock in joined
-    assert argv[-3:] == ["bash", "-c", "pdfinfo /work/x.pdf"]
+    assert argv[-3:] == ["bash", "-c", f"pdfinfo {UPLOADS}/x.pdf"]
     # No host environment is passed in: only the one HOME for the container's user.
-    assert [argv[i + 1] for i, item in enumerate(argv) if item == "--env"] == ["HOME=/out"]
+    assert [argv[i + 1] for i, item in enumerate(argv) if item == "--env"] == [f"HOME={SCRATCH}"]

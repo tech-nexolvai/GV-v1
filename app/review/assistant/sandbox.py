@@ -4,25 +4,28 @@ The owner asked for the harness claude.ai uses on a drawing set: the model runs 
 (`pdfinfo`, `pdftotext`, `pdftoppm`, a short `python3` with pypdf or pdfplumber) on the PDFs, then
 looks at the pictures it rendered. This module is where those commands run.
 
-**What a command can reach.** One question gets one workspace: `work/` holds copies of THIS package
-revision's PDFs, read-only, under the names they were uploaded with; `out/` is an empty scratch
-folder the command may write. Nothing else of the host: no other package, no database, no key, no
+**What a command can reach.** One question gets one workspace, with claude.ai's folder names:
+`/mnt/user-data/uploads` holds copies of THIS package revision's PDFs, read-only, under the names
+they were uploaded with; `/home/claude` is an empty scratch folder the command may write. Nothing else of the host: no other package, no database, no key, no
 environment variable of the server, and no network.
 
 **Two backends, the first that is available:**
 
 - **Docker** (`DockerSandbox`, the primary): the local image `gv-assistant-sandbox`
   (`deploy/assistant_sandbox/Dockerfile`: python 3.12-slim, poppler-utils, pypdf, pdfplumber,
-  pypdfium2), run per command with `--network none`, a read-only root, `work` mounted read-only at
-  `/work`, `out` at `/out`, no capabilities, an unprivileged user, and CPU, memory and process
+  pypdfium2), run per command with `--network none`, a read-only root, the uploads mounted
+  read-only, the scratch folder writable, no capabilities, an unprivileged user, and CPU, memory and process
   limits. Docker passes the container no environment variable of the host.
 - **macOS `sandbox-exec`** (`MacSandbox`, the fallback when Docker is not running or the image is
   not built): a deny-by-default profile that allows reading only the system's own programs, the
   Python runtime and the two folders, writing only `out/`, and no network. The command runs with an
   empty environment (a PATH and HOME only). It has no poppler: `pdftotext` and friends answer
   plainly that they are not here, and Python with pypdf, pdfplumber and pypdfium2 is. Its folders
-  are real temporary folders, so `/work` and `/out` in a command are rewritten to them and back in
+  are real temporary folders, so the two folder names in a command are rewritten to them and back in
   the output, and the model sees the same paths as with Docker.
+
+`view_path` is the `view` tool: a picture (shrunk to what the model reads), a text file with
+numbered lines, or a folder listed two levels deep, from those two folders only.
 
 Every command has a time limit (60 s by default) and its output is cut at about 20 KB with
 "Output truncated", as claude.ai does. A command that runs over its time is killed with its
@@ -48,22 +51,29 @@ from typing import Final, Protocol
 __all__ = [
     "DOCKER_IMAGE",
     "MAX_OUTPUT_CHARS",
+    "SCRATCH",
     "TIMEOUT_SECONDS",
+    "UPLOADS",
     "DockerSandbox",
     "MacSandbox",
     "Sandbox",
     "SandboxRefused",
     "SandboxResult",
+    "Viewed",
     "Workspace",
     "check_command",
     "cut_output",
     "open_sandbox",
     "safe_file_name",
+    "view_path",
 ]
 
 _log = logging.getLogger(__name__)
 
 DOCKER_IMAGE: Final = "gv-assistant-sandbox"
+#: Where the model sees the files, as on claude.ai.
+UPLOADS: Final = "/mnt/user-data/uploads"
+SCRATCH: Final = "/home/claude"
 TIMEOUT_SECONDS: Final = 60
 MAX_OUTPUT_CHARS: Final = 20_000
 #: The longest command accepted: a short script, never a file pasted in.
@@ -73,7 +83,8 @@ _POPPLER: Final = ("pdfinfo", "pdftotext", "pdftoppm", "pdfimages", "pdftocairo"
 
 
 class SandboxRefused(ValueError):
-    """A request the sandbox does not run: an empty or over-long command, a path outside `/out`."""
+    """A request the sandbox does not run: an empty or over-long command, a path outside the two
+    folders."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,24 +153,34 @@ class Workspace:
             self.work.chmod(0o755)
         shutil.rmtree(self.root, ignore_errors=True)
 
-    def out_file(self, path: str) -> Path:
-        """`path` (as the model writes it, `/out/p-03.png`) as a real file inside `out`, or
-        `SandboxRefused`: nothing outside the scratch folder is ever read back."""
+    def resolve(self, path: str) -> Path:
+        """`path` as the model writes it (`/home/claude/p-03.png`, `/mnt/user-data/uploads/x.pdf`,
+        or relative to the scratch folder) as a real path inside one of the two folders, or
+        `SandboxRefused`: nothing else is ever read back, a link out of them included."""
         text = path.strip()
-        if text.startswith("/out/"):
-            relative = text[len("/out/") :]
-        elif text.startswith("out/"):
-            relative = text[len("out/") :]
-        elif not text.startswith("/") and ".." not in Path(text).parts:
-            relative = text
+        if not text:
+            raise SandboxRefused("the path is empty")
+        for shown, real in ((UPLOADS, self.work), (SCRATCH, self.out)):
+            if text == shown or text.startswith(shown + "/"):
+                relative = text[len(shown) :].lstrip("/")
+                break
         else:
-            raise SandboxRefused("only files in /out can be viewed")
-        candidate = (self.out / relative).resolve()
-        if candidate == self.out or self.out not in candidate.parents:
-            raise SandboxRefused("only files in /out can be viewed")
-        if not candidate.is_file():
-            raise SandboxRefused(f"there is no file {text}")
+            if text.startswith("/"):
+                raise SandboxRefused(f"only {UPLOADS} and {SCRATCH} can be viewed")
+            real, relative = self.out, text
+        candidate = (real / relative).resolve()
+        if candidate != real and real not in candidate.parents:
+            raise SandboxRefused(f"only {UPLOADS} and {SCRATCH} can be viewed")
+        if not candidate.exists():
+            raise SandboxRefused(f"there is no file or folder {text}")
         return candidate
+
+    def shown(self, real: Path) -> str:
+        """A real path inside the workspace as the model sees it."""
+        for shown, root in ((UPLOADS, self.work), (SCRATCH, self.out)):
+            if real == root or root in real.parents:
+                return shown + ("/" + str(real.relative_to(root)) if real != root else "")
+        return str(real)
 
 
 class Sandbox(Protocol):
@@ -222,13 +243,13 @@ class DockerSandbox:
             "--user",
             "65534:65534",
             "--mount",
-            f"type=bind,source={self.workspace.work},target=/work,readonly",
+            f"type=bind,source={self.workspace.work},target={UPLOADS},readonly",
             "--mount",
-            f"type=bind,source={self.workspace.out},target=/out",
+            f"type=bind,source={self.workspace.out},target={SCRATCH}",
             "--workdir",
-            "/out",
+            SCRATCH,
             "--env",
-            "HOME=/out",
+            f"HOME={SCRATCH}",
             self.image,
             "bash",
             "-c",
@@ -317,12 +338,12 @@ class MacSandbox:
 
     def _to_real(self, command: str) -> str:
         work, out = str(self.workspace.work), str(self.workspace.out)
-        command = re.sub(r"(?<![\w./-])/work(?=/|\b)", work, command)
-        return re.sub(r"(?<![\w./-])/out(?=/|\b)", out, command)
+        command = re.sub(r"(?<![\w./-])/mnt/user-data/uploads(?=/|\b)", work, command)
+        return re.sub(r"(?<![\w./-])/home/claude(?=/|\b)", out, command)
 
     def _to_shown(self, text: str) -> str:
-        return text.replace(str(self.workspace.work), "/work").replace(
-            str(self.workspace.out), "/out"
+        return text.replace(str(self.workspace.work), UPLOADS).replace(
+            str(self.workspace.out), SCRATCH
         )
 
     def run(self, command: str) -> SandboxResult:
@@ -407,3 +428,126 @@ def open_sandbox(
         return MacSandbox(workspace, python=python or sys.executable)
     _log.info("review assistant has no sandbox here (no Docker image, no sandbox-exec)")
     return None
+
+
+# ---- the `view` tool -----------------------------------------------------------------------------
+
+#: Claude's picture limits (the model reads a picture this size unresized).
+_MAX_EDGE_PX: Final = 2576
+_MAX_VISUAL_TOKENS: Final = 4784
+_TILE_PX: Final = 28
+_MAX_PICTURE_BYTES: Final = 40_000_000
+_MAX_DECODE_PIXELS: Final = 100_000_000
+_IMAGE_SUFFIXES: Final = (".png", ".jpg", ".jpeg", ".gif", ".webp")
+#: A text file longer than this is shown from its start and its end (claude.ai's 16,000).
+MAX_VIEW_CHARS: Final = 16_000
+_MAX_TEXT_BYTES: Final = 5_000_000
+_MAX_LISTED: Final = 500
+
+
+@dataclass(frozen=True, slots=True)
+class Viewed:
+    """What `view` shows: a picture (PNG bytes and sizes) or text (a file's lines, a listing)."""
+
+    text: str
+    png: bytes | None = None
+    width: int = 0
+    height: int = 0
+    original: tuple[int, int] = (0, 0)
+
+
+def _fit(width: int, height: int) -> tuple[int, int]:
+    """The largest size, keeping the shape, that the model reads unresized."""
+    scale = min(1.0, _MAX_EDGE_PX / max(width, height, 1))
+    while True:
+        w, h = max(1, int(width * scale)), max(1, int(height * scale))
+        tiles = -(-w // _TILE_PX) * -(-h // _TILE_PX)
+        if tiles <= _MAX_VISUAL_TOKENS and w <= _MAX_EDGE_PX and h <= _MAX_EDGE_PX:
+            return w, h
+        scale *= 0.95
+
+
+def _picture(path: Path, shown: str) -> Viewed:
+    from io import BytesIO
+
+    from PIL import Image  # loaded only when a picture is viewed
+
+    if path.stat().st_size > _MAX_PICTURE_BYTES:
+        raise SandboxRefused("the picture file is too large")
+    Image.MAX_IMAGE_PIXELS = _MAX_DECODE_PIXELS
+    try:
+        with Image.open(path) as opened:
+            opened.load()
+            original = opened.size
+            picture = opened.convert("RGB")
+    except Image.DecompressionBombError:
+        raise SandboxRefused("the picture has too many pixels; render it smaller") from None
+    except (OSError, ValueError):
+        raise SandboxRefused("the file is not a picture this can open") from None
+    size = _fit(*picture.size)
+    if size != picture.size:
+        picture = picture.resize(size, Image.Resampling.LANCZOS)
+    out = BytesIO()
+    picture.save(out, format="PNG", optimize=True)
+    note = f"Picture {shown}, {size[0]} x {size[1]} px"
+    if size != original:
+        note += (
+            f" (shrunk from {original[0]} x {original[1]} px; render an area sharper to read it)"
+        )
+    return Viewed(text=note, png=out.getvalue(), width=size[0], height=size[1], original=original)
+
+
+def _text(path: Path, shown: str, view_range: object) -> Viewed:
+    if path.stat().st_size > _MAX_TEXT_BYTES:
+        raise SandboxRefused("the file is too large to view; use bash_tool (head, grep)")
+    raw = path.read_bytes()
+    if b"\x00" in raw[:8192] or raw[:5] == b"%PDF-":
+        raise SandboxRefused(
+            f"{shown} is not a text file; use bash_tool (pdfinfo, pdftotext, pdftoppm) on it"
+        )
+    lines = raw.decode("utf-8", errors="backslashreplace").splitlines()
+    start, end = 1, len(lines)
+    if view_range is not None:
+        if (
+            not isinstance(view_range, list)
+            or len(view_range) != 2
+            or not all(isinstance(n, int) and not isinstance(n, bool) for n in view_range)
+        ):
+            raise SandboxRefused("view_range must be [start_line, end_line]")
+        start, end = view_range[0], (len(lines) if view_range[1] == -1 else view_range[1])
+        if start < 1 or end < start:
+            raise SandboxRefused("view_range must start at 1 or later and not end before it")
+    numbered = "\n".join(f"{n:6}\t{lines[n - 1]}" for n in range(start, min(end, len(lines)) + 1))
+    if len(numbered) > MAX_VIEW_CHARS:
+        half = MAX_VIEW_CHARS // 2
+        numbered = (
+            numbered[:half] + "\n\n[... middle of the file not shown ...]\n\n" + numbered[-half:]
+        )
+    return Viewed(text=f"{shown}:\n{numbered}" if numbered else f"{shown} is empty")
+
+
+def _listing(path: Path, workspace: Workspace) -> Viewed:
+    found: list[str] = []
+    for child in sorted(path.iterdir()):
+        if child.name.startswith(".") or child.name == "node_modules":
+            continue
+        found.append(workspace.shown(child) + ("/" if child.is_dir() else ""))
+        if child.is_dir():
+            for inner in sorted(child.iterdir()):
+                if not inner.name.startswith("."):
+                    found.append(workspace.shown(inner) + ("/" if inner.is_dir() else ""))
+        if len(found) >= _MAX_LISTED:
+            found.append(f"[... more than {_MAX_LISTED} entries; use bash_tool (ls, find)]")
+            break
+    return Viewed(text=f"{workspace.shown(path)}:\n" + ("\n".join(found) or "(empty)"))
+
+
+def view_path(workspace: Workspace, path: str, view_range: object = None) -> Viewed:
+    """The `view` tool: a picture, a text file with numbered lines, or a folder two levels deep."""
+    real = workspace.resolve(path)
+    shown = workspace.shown(real)
+    if real.is_dir():
+        return _listing(real, workspace)
+    if real.suffix.lower() in _IMAGE_SUFFIXES:
+        return _picture(real, shown)
+    return _text(real, shown, view_range)
