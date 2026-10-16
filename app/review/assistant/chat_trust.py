@@ -42,6 +42,7 @@ from app.review.assistant.chat_findings import page_ranges
 
 __all__ = [
     "CHECKS_MODULE",
+    "recorded_missing",
     "SECOND_READ_MODULE",
     "Recorded",
     "apply_checks",
@@ -91,8 +92,18 @@ class Recorded:
         self.readable = readable
 
 
+def _evaluated(row: Mapping[str, Any]) -> bool:
+    """An AI page review row the evaluator checked (or that our cloud PDF will cloud)."""
+    keys = ("verified_by", "evaluator_reason", "will_be_clouded_on_our_cloud_pdf")
+    if not any(key in row for key in keys):
+        return True
+    return any(bool(row.get(key)) for key in keys)
+
+
 def recorded_from(document: Mapping[str, Any] | None) -> Recorded:
-    """`review_results`' whole-set document, read for what it recorded."""
+    """`review_results`' whole-set document, read for what it recorded. Each recorded difference
+    has a `record_id`: the code record's id, or `ai-review:p<page>:<key>` for an AI page review
+    row (those have no id of their own)."""
     if not isinstance(document, Mapping):
         return Recorded(readable=False)
     differences: list[dict[str, Any]] = []
@@ -106,10 +117,15 @@ def recorded_from(document: Mapping[str, Any] | None) -> Recorded:
             if item.get("outcome") in _FAIL_WORDS:
                 differences.append(
                     {
+                        "record_id": str(item["id"]),
                         "source": "code",
                         "id": str(item["id"]),
                         "page": item.get("page"),
                         "what": str(item.get("label") or "countertop"),
+                        "category": "countertop",
+                        "architect": item.get("needed_overall"),
+                        "vendor": item.get("printed_overall"),
+                        "why": item.get("difference") and f"Difference {item['difference']}",
                     }
                 )
         for item in records.get("other_checks") or []:
@@ -118,25 +134,37 @@ def recorded_from(document: Mapping[str, Any] | None) -> Recorded:
             results[str(item["id"])] = str(item.get("outcome") or "")
             if item.get("outcome") in _FAIL_WORDS:
                 pages = [p for p in item.get("pages") or [] if isinstance(p, int)]
+                values = [str(v) for v in item.get("values") or []]
                 differences.append(
                     {
+                        "record_id": str(item["id"]),
                         "source": "code",
                         "id": str(item["id"]),
                         "page": pages[0] if pages else None,
                         "what": str(item.get("check") or "GV check"),
+                        "category": "other",
+                        "architect": item.get("comparison"),
+                        "vendor": "; ".join(values) or None,
+                        "why": item.get("reason"),
                     }
                 )
     for sheet in document.get("ai_page_review") or []:
         if not isinstance(sheet, Mapping):
             continue
         for row in sheet.get("different") or []:
-            if isinstance(row, Mapping):
+            if isinstance(row, Mapping) and _evaluated(row):
+                key = str(row.get("key") or row.get("measures") or "item")
                 differences.append(
                     {
+                        "record_id": f"ai-review:p{sheet.get('page')}:{key}",
                         "source": "ai_page_review",
                         "id": None,
                         "page": sheet.get("page"),
-                        "what": str(row.get("key") or row.get("measures") or "item"),
+                        "what": key,
+                        "category": "other",
+                        "architect": row.get("architect_text"),
+                        "vendor": row.get("vendor_text"),
+                        "why": row.get("why"),
                     }
                 )
     return Recorded(differences, results)
@@ -155,6 +183,29 @@ def rule_result(finding: Mapping[str, Any], recorded: Recorded | None) -> str | 
     if outcome in _PASS_WORDS:
         return "agrees" if finding.get("status") == "same" else "disagrees"
     return "not_run"
+
+
+def recorded_missing(
+    findings: Sequence[Mapping[str, Any]], recorded: Recorded, dismissed: Mapping[str, str]
+) -> list[str]:
+    """The recorded differences an answer neither reports nor dismissed (with a reason): a finding
+    carries the record's id (`record_id`, or `rule_check_id` for a code check), or, for a record
+    without an id of its own, a finding on its page names its item."""
+    ids = {
+        str(f.get(key)) for f in findings for key in ("record_id", "rule_check_id") if f.get(key)
+    }
+    on_page = {
+        (f.get("page"), _key(f)) for f in findings if f.get("status") in ("different", "check")
+    }
+    missing: list[str] = []
+    for item in recorded.differences:
+        record_id = item["record_id"]
+        if record_id in ids or record_id in dismissed:
+            continue
+        if item.get("id") is None and (item.get("page"), _key({"item": item["what"]})) in on_page:
+            continue
+        missing.append(record_id)
+    return missing
 
 
 # ---- checks and trust --------------------------------------------------------------------------
@@ -344,8 +395,10 @@ def trust_report(
     recorded: Recorded | None,
     *,
     second_reads_skipped: int = 0,
+    dismissed: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """The answer's trust report, built by code from its findings and coverage."""
+    """The answer's trust report, built by code from its findings and coverage. `dismissed`:
+    recorded differences the lead set aside, with its reason."""
     counts = {level: 0 for level in LEVELS}
     by_category: dict[str, dict[str, int]] = {}
     printed = {k: 0 for k in ("match", "not_found", "no_text", "not_a_number", "no_box", "not_run")}
@@ -382,22 +435,19 @@ def trust_report(
         lead_checked += bool(checks.get("lead_checked"))
     gv_checks: dict[str, Any] | None = None
     if recorded is not None and recorded.readable:
-        pages = {
-            p
-            for f in findings
-            if f.get("status") in ("different", "check")
-            for p in (f.get("page"), f.get("vs_page"))
-            if p
-        }
-        ids = {str(f.get("rule_check_id")) for f in findings if f.get("rule_check_id")}
+        missing = set(recorded_missing(findings, recorded, dismissed or {}))
         left_out = [
-            item
+            {k: item.get(k) for k in ("record_id", "source", "id", "page", "what")}
             for item in recorded.differences
-            if not ((item.get("id") and item["id"] in ids) or item.get("page") in pages)
+            if item["record_id"] in missing
         ]
         gv_checks = {
             "recorded": len(recorded.differences),
-            "included": len(recorded.differences) - len(left_out),
+            "included": len(recorded.differences) - len(left_out) - len(dismissed or {}),
+            "dismissed": [
+                {"record_id": record_id, "reason": reason}
+                for record_id, reason in sorted((dismissed or {}).items())
+            ],
             "left_out": left_out,
         }
     not_checked: list[str] = []

@@ -41,6 +41,7 @@ from app.review.assistant.sandbox import UPLOADS, ChatWorkspace, SandboxRefused
 
 __all__ = [
     "COVERAGE_CHECK_PREFIX",
+    "DISMISS_RECORDED",
     "DROP_FINDING",
     "FINDING_TOOL_NAMES",
     "HELPER_FINDING_TOOL_NAMES",
@@ -52,6 +53,7 @@ __all__ = [
     "live_findings",
     "main_upload",
     "make_markup_file",
+    "make_report_file",
     "markup_name",
     "page_ranges",
     "read_listing",
@@ -61,7 +63,7 @@ _log = logging.getLogger(__name__)
 
 CATEGORIES: Final = ("countertop", "cabinet", "other")
 STATUSES: Final = ("different", "check", "same")
-SOURCES: Final = ("architect", "brand_prototype", "rules", "vendor_arithmetic")
+SOURCES: Final = ("architect", "brand_prototype", "rules", "vendor_arithmetic", "gv_review")
 COVERAGE_STATUSES: Final = ("same", "different", "not_comparable", "not_opened")
 MAX_FINDINGS: Final = 300
 _MAX_ITEM: Final = 160
@@ -125,6 +127,11 @@ _FINDING_FIELDS: Final[Mapping[str, Any]] = {
     "rule_check_id": {
         "type": "string",
         "description": "rules: the id of the GV check in review_results this finding is about",
+    },
+    "record_id": {
+        "type": "string",
+        "description": "The id of a difference GV Review already recorded that this finding is "
+        "(a code check's id, or ai-review:p<page>:<key>)",
     },
     "round": {
         "type": "integer",
@@ -214,8 +221,25 @@ SET_COVERAGE: Final[Mapping[str, Any]] = {
         },
     },
 }
+DISMISS_RECORDED: Final[Mapping[str, Any]] = {
+    "name": "dismiss_recorded",
+    "description": (
+        "Set aside a difference GV Review already recorded (review_results) that you checked and "
+        "found not to be a difference, with your reason. Every recorded difference must come "
+        "back as a finding or be dismissed."
+    ),
+    "input_schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["record_id", "reason"],
+        "properties": {
+            "record_id": {"type": "string"},
+            "reason": {"type": "string", "description": "Why, one short line"},
+        },
+    },
+}
 FINDING_TOOL_NAMES: Final = frozenset(
-    {"report_finding", "update_finding", "drop_finding", "set_coverage"}
+    {"report_finding", "update_finding", "drop_finding", "set_coverage", "dismiss_recorded"}
 )
 HELPER_FINDING_TOOL_NAMES: Final = frozenset({"report_finding", "set_coverage"})
 
@@ -315,6 +339,10 @@ class FindingBook:
     dropped: dict[str, str] = field(default_factory=dict)
     coverage: dict[int, dict[str, Any]] = field(default_factory=dict)
     coverage_used: bool = False
+    dismissed: dict[str, str] = field(default_factory=dict)
+    """Recorded differences the lead set aside: record id -> its reason."""
+    record_ids: frozenset[str] = frozenset()
+    """The recorded differences this answer must account for (set by the engine)."""
     _count: int = 0
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -433,7 +461,7 @@ class FindingBook:
                 raise SandboxRefused("parts must be a list of at most 40 values")
             else:
                 out["parts"] = [_text({"part": p}, "part", _MAX_VALUE) for p in parts]
-        for name in ("printed_total", "rule_check_id"):
+        for name in ("printed_total", "rule_check_id", "record_id"):
             if name in present:
                 out[name] = None if given[name] is None else _text(given, name, _MAX_VALUE)
         if "round" in present:
@@ -474,6 +502,7 @@ class FindingBook:
             "parts": fields.get("parts"),
             "printed_total": fields.get("printed_total"),
             "rule_check_id": fields.get("rule_check_id"),
+            "record_id": fields.get("record_id"),
             "round": fields.get("round"),
             "arch_picture_id": arch_picture,
             "vendor_picture_id": vendor_picture,
@@ -544,9 +573,65 @@ class FindingBook:
         finding_id = self._known(raw)
         reason = _text(raw, "reason", _MAX_NOTE)
         with self._lock:
-            self.findings.pop(finding_id, None)
+            dropped = self.findings.pop(finding_id, None) or {}
             self.dropped[finding_id] = reason
+            if dropped.get("record_id"):
+                # Dropping a recorded difference's finding dismisses it, with the same reason.
+                self.dismissed[str(dropped["record_id"])] = reason
         return finding_id, reason
+
+    def dismiss(self, raw: object) -> tuple[str, str]:
+        if not isinstance(raw, Mapping):
+            raise SandboxRefused("the tool's input is not an object")
+        unknown = set(raw) - {"record_id", "reason"}
+        if unknown:
+            raise SandboxRefused(f"unknown argument {min(unknown)!r}")
+        record_id = _text(raw, "record_id", _MAX_VALUE)
+        reason = _text(raw, "reason", _MAX_NOTE)
+        if self.record_ids and record_id not in self.record_ids:
+            raise SandboxRefused(f"there is no recorded difference {record_id!r}")
+        with self._lock:
+            self.dismissed[record_id] = reason
+        return record_id, reason
+
+    def seed(self, record: Mapping[str, Any]) -> dict[str, Any] | None:
+        """A finding made by code from a difference GV Review recorded (full check): the lead
+        checks it (boxes, verified) or drops it with a reason; it is never silently lost."""
+        page = record.get("page")
+        if not isinstance(page, int) or page < 1:
+            return None
+        with self._lock:
+            self._count += 1
+            finding_id = f"F{self._count}"
+        code = record.get("source") == "code"
+        finding: dict[str, Any] = {
+            "id": finding_id,
+            "page": page,
+            "vs_page": None,
+            "item": " ".join(str(record.get("what") or "Recorded difference").split())[:_MAX_ITEM],
+            "category": record.get("category") if record.get("category") in CATEGORIES else "other",
+            "architect": str(record.get("architect") or "see GV Review's record")[:_MAX_VALUE],
+            "vendor": str(record.get("vendor") or "see GV Review's record")[:_MAX_VALUE],
+            "status": "different",
+            "why": (str(record["why"])[:_MAX_WHY] if record.get("why") else None),
+            "verified": False,
+            "arch_box": None,
+            "vendor_box": None,
+            "source": "rules" if code else "gv_review",
+            "parts": None,
+            "printed_total": None,
+            "rule_check_id": record.get("id") if code else None,
+            "record_id": record.get("record_id"),
+            "round": None,
+            "arch_picture_id": None,
+            "vendor_picture_id": None,
+            "created_by": "gv_review",
+        }
+        if self.checker is not None:
+            finding = self.checker(finding)
+        with self._lock:
+            self.findings[finding_id] = finding
+        return dict(finding)
 
     def by(self, created_by: str) -> list[dict[str, Any]]:
         with self._lock:
@@ -660,9 +745,9 @@ def live_findings(blocks: Sequence[Mapping[str, Any]] | None) -> list[dict[str, 
     ]
 
 
-def markup_name(source_name: str) -> str:
+def markup_name(source_name: str, kind: str = "AI markup") -> str:
     stem = source_name[:-4] if source_name.lower().endswith(".pdf") else source_name
-    return f"{stem} - AI markup.pdf"[:255]
+    return f"{stem} - {kind}.pdf"[:255]
 
 
 @dataclass(frozen=True, slots=True)
@@ -673,7 +758,10 @@ class MarkupFile:
 
 
 def make_markup_file(
-    workspace: ChatWorkspace, findings: Sequence[Mapping[str, Any]], out: Path
+    workspace: ChatWorkspace,
+    findings: Sequence[Mapping[str, Any]],
+    out: Path,
+    kind: str = "AI markup",
 ) -> MarkupFile:
     """The marked-up copy of the vendor's file, written to `out`: a cloud and a note at each
     finding's vendor box (else its architect box) when that box is on the vendor's file, the draft
@@ -701,4 +789,20 @@ def make_markup_file(
     drawing = import_module("app.review.assistant.chat_drawing")
     drawing.markup_pdf(workspace.uploads / name, placed, out)
     data = out.read_bytes()
-    return MarkupFile(markup_name(name), len(data), hashlib.sha256(data).hexdigest())
+    return MarkupFile(markup_name(name, kind), len(data), hashlib.sha256(data).hexdigest())
+
+
+def make_report_file(
+    workspace: ChatWorkspace,
+    summary: Mapping[str, Any],
+    findings: Sequence[Mapping[str, Any]],
+    not_checked: Sequence[str],
+    out: Path,
+) -> MarkupFile:
+    """The full check's report PDF (`chat_drawing.check_report_pdf`), written to `out`."""
+    main = main_upload(read_listing(workspace))
+    name = "drawing set" if main is None else str(main["name"])
+    drawing = import_module("app.review.assistant.chat_drawing")
+    drawing.check_report_pdf(out, summary, findings, not_checked)
+    data = out.read_bytes()
+    return MarkupFile(markup_name(name, "AI check report"), len(data), hashlib.sha256(data).hexdigest())

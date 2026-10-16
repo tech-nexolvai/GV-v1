@@ -29,7 +29,16 @@ from pypdf import PdfReader, PdfWriter
 from reportlab.lib.colors import Color, white  # type: ignore[import-untyped]
 from reportlab.pdfgen import canvas  # type: ignore[import-untyped]
 
-__all__ = ["MARKUP_TITLE", "crop_png", "markup_pdf", "page_sizes"]
+__all__ = [
+    "MARKUP_TITLE",
+    "REPORT_TITLE",
+    "check_report_pdf",
+    "cloud_kind",
+    "crop_png",
+    "markup_pdf",
+    "needs_text",
+    "page_sizes",
+]
 
 _log = logging.getLogger(__name__)
 
@@ -40,6 +49,7 @@ CROP_DPI: Final = 170
 CROP_PAD_PT: Final = 24.0
 CROP_MAX_PX: Final = 1600
 _RED: Final = Color(0.85, 0.05, 0.05)
+_AMBER: Final = Color(0.85, 0.5, 0.0)
 _CLOUD_PAD: Final = 6.0
 _CLOUD_RADIUS: Final = 5.0
 _NOTE_SIZE: Final = 8.0
@@ -131,12 +141,32 @@ def _cloud(c: canvas.Canvas, x0: float, y0: float, x1: float, y1: float) -> None
             c.arc(cx - r, cy - r, cx + r, cy + r, start, 180)
 
 
+def cloud_kind(finding: Mapping[str, Any]) -> str | None:
+    """`wrong` (red: a difference its checks do not put in doubt), `check` (amber: to check), or
+    `None` (right: never clouded)."""
+    if finding.get("status") == "same":
+        return None
+    if finding.get("status") == "different" and finding.get("trust_level") != "to_check":
+        return "wrong"
+    return "check"
+
+
+def needs_text(finding: Mapping[str, Any]) -> str:
+    """What the vendor's value needs to be: code's inches when it read the architect's value."""
+    inches = (finding.get("inches") or {}).get("architect")
+    return f'{inches}"' if inches else str(finding.get("architect"))
+
+
 def _note_text(number: int, finding: Mapping[str, Any]) -> str:
-    text = (
-        f"AI {number}: {finding.get('item')} — architect {finding.get('architect')}; "
-        f"vendor {finding.get('vendor')}"
-    )
-    return text if len(text) <= _NOTE_CHARS else text[: _NOTE_CHARS - 1] + "…"
+    vendor, architect = finding.get("vendor"), str(finding.get("architect"))
+    if cloud_kind(finding) == "wrong":
+        needs = needs_text(finding)
+        text = f"AI {number} {finding.get('item')}: Vendor: {vendor} \u2014 Needs: {needs}"
+        if needs != architect:
+            text += f" (architect {architect})"
+    else:
+        text = f"AI {number} ? Check: {finding.get('item')}: vendor {vendor}; architect {architect}"
+    return text if len(text) <= _NOTE_CHARS else text[: _NOTE_CHARS - 1] + "\u2026"
 
 
 def _overlay(width: float, height: float, draw: Any) -> Any:
@@ -157,21 +187,29 @@ def _draw_marks(
         bx, by = _shown_to_user(page, max(x0, x1), max(y0, y1))
         left, right = min(ax, bx) - _CLOUD_PAD, max(ax, bx) + _CLOUD_PAD
         low, high = min(ay, by) - _CLOUD_PAD, max(ay, by) + _CLOUD_PAD
-        c.setStrokeColor(_RED)
+        wrong = cloud_kind(finding) == "wrong"
+        colour = _RED if wrong else _AMBER
+        c.setStrokeColor(colour)
         c.setLineWidth(1.2)
         _cloud(c, left, low, right, high)
-        # The note reads left to right on the shown page, just right of the box's top corner.
+        # The note reads left to right on the shown page, just right of the box's top corner; a
+        # wrong item's note starts with a drawn cross (the standard fonts have no such sign).
         note = _note_text(number, finding)
         nx, ny = _shown_to_user(page, max(x0, x1) + _CLOUD_PAD + 8, min(y0, y1) - _CLOUD_PAD)
         c.saveState()
         c.translate(nx, ny)
         c.rotate(rotation)
         c.setFont("Helvetica-Bold", _NOTE_SIZE)
-        width = c.stringWidth(note, "Helvetica-Bold", _NOTE_SIZE)
+        lead = _NOTE_SIZE + 2 if wrong else 0
+        width = c.stringWidth(note, "Helvetica-Bold", _NOTE_SIZE) + lead
         c.setFillColor(white)
         c.rect(-2, -_NOTE_SIZE - 2, width + 4, _NOTE_SIZE + 4, stroke=0, fill=1)
-        c.setFillColor(_RED)
-        c.drawString(0, -_NOTE_SIZE + 1, note)
+        c.setFillColor(colour)
+        if wrong:
+            c.setLineWidth(1.4)
+            c.line(0, -_NOTE_SIZE + 1, _NOTE_SIZE - 2, -1)
+            c.line(0, -1, _NOTE_SIZE - 2, -_NOTE_SIZE + 1)
+        c.drawString(lead, -_NOTE_SIZE + 1, note)
         c.restoreState()
 
 
@@ -218,20 +256,28 @@ def _notes_pages(width: float, height: float, lines: Sequence[tuple[str, bool]])
     return list(PdfReader(buffer).pages)
 
 
+LEGEND: Final = (
+    "Red cloud with a cross: the vendor's value is wrong; the note says what it needs to be. "
+    "Amber cloud with ?: to check. Right items are not clouded; they are listed below."
+)
+
+
 def markup_pdf(
     source: Path,
     findings: Sequence[tuple[int, Mapping[str, Any], int | None, Box | None, str]],
     out: Path,
 ) -> None:
-    """A copy of `source` with a red cloud and a short note at each placed finding, the draft stamp
-    on page 1, and a notes page listing every finding. `findings`: (number, finding, page, box,
-    where) with `page`/`box` `None` when the finding cannot be placed on this file (`where` says
-    why, for the notes page)."""
+    """A copy of `source` with a cloud and a short note at each placed finding that is not right
+    (red: wrong, amber: to check), the draft stamp on page 1, and a legend and notes page listing
+    every finding. `findings`: (number, finding, page, box, where) with `page`/`box` `None` when
+    the finding cannot be placed on this file (`where` says why, for the notes page)."""
     writer = PdfWriter(clone_from=PdfReader(str(source)))
     by_page: dict[int, list[tuple[int, Mapping[str, Any], Box]]] = {}
     listed: list[tuple[int, Mapping[str, Any], str]] = []
     for number, finding, page_number, box, where in findings:
-        if page_number is not None and box is not None:
+        if cloud_kind(finding) is None:
+            where = "Right: not clouded."
+        elif page_number is not None and box is not None:
             if 1 <= page_number <= len(writer.pages):
                 by_page.setdefault(page_number, []).append((number, finding, box))
             else:
@@ -255,16 +301,18 @@ def markup_pdf(
     width, height = float(first.cropbox.width), float(first.cropbox.height)
     if int(first.get("/Rotate", 0) or 0) % 180 == 90:
         width, height = height, width
-    lines: list[tuple[str, bool]] = []
+    lines: list[tuple[str, bool]] = [(LEGEND, False)]
     for number, finding, where in listed:
-        status = str(finding.get("status") or "")
-        checked = "verified" if finding.get("verified") else "not verified"
+        kind = {"wrong": "Wrong", "check": "To check", None: "Right"}[cloud_kind(finding)]
+        checked = str(finding.get("trust_level") or ("verified" if finding.get("verified") else ""))
         vs = f" (architect page {finding['vs_page']})" if finding.get("vs_page") else ""
         head = f"AI {number}  page {finding.get('page')}{vs}  {finding.get('item')}  "
-        lines.append((head + f"[{status}, {checked}]", True))
+        lines.append((head + f"[{kind}{', ' + checked if checked else ''}]", True))
         lines.append(
             (f"Architect: {finding.get('architect')}   Vendor: {finding.get('vendor')}", False)
         )
+        if cloud_kind(finding) == "wrong":
+            lines.append((f"Needs: {needs_text(finding)}", False))
         if finding.get("why"):
             lines.append((f"Why: {finding['why']}", False))
         lines.append((where, False))
@@ -273,3 +321,104 @@ def markup_pdf(
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("wb") as handle:
         writer.write(handle)
+
+
+# ---- the check report ----------------------------------------------------------------------------
+
+REPORT_TITLE: Final = "AI check report: draft, not GV's signed review"
+
+
+def check_report_pdf(
+    out: Path,
+    summary: Mapping[str, Any],
+    findings: Sequence[Mapping[str, Any]],
+    not_checked: Sequence[str],
+) -> None:
+    """The full check's report: a cover (set, products, date, model and effort, counts, coverage,
+    trust), then What's wrong, To check, What's right and Not checked."""
+    from xml.sax.saxutils import escape
+
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import landscape, letter
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import (
+        PageBreak,
+        Paragraph,
+        SimpleDocTemplate,
+        Spacer,
+        Table,
+        TableStyle,
+    )
+
+    styles = getSampleStyleSheet()
+    body, small = styles["BodyText"], styles["BodyText"].clone("small", fontSize=8, leading=10)
+
+    def p(text: object, style: Any = small) -> Any:
+        return Paragraph(escape("" if text is None else str(text)), style)
+
+    def table(header: Sequence[str], rows: Sequence[Sequence[object]], widths: Sequence[float]) -> Any:
+        data = [[p(h, small) for h in header], *[[p(c) for c in row] for row in rows]]
+        grid = Table(data, colWidths=list(widths), repeatRows=1)
+        grid.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eeeeee")),
+                    ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#999999")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ]
+            )
+        )
+        return grid
+
+    story: list[Any] = [Paragraph(escape(REPORT_TITLE), styles["Title"])]
+    for label, value in summary.items():
+        story.append(Paragraph(f"<b>{escape(str(label))}:</b> {escape(str(value))}", body))
+    number = {id(f): n for n, f in enumerate(findings, start=1)}
+    wrong = [f for f in findings if cloud_kind(f) == "wrong"]
+    check = [f for f in findings if cloud_kind(f) == "check"]
+    right = [f for f in findings if cloud_kind(f) is None]
+    sections = (
+        (
+            f"What's wrong ({len(wrong)})",
+            ["AI", "Page", "Item", "Vendor", "Needs", "Architect", "Source", "Trust"],
+            [
+                [number[id(f)], f.get("page"), f.get("item"), f.get("vendor"), needs_text(f),
+                 f.get("architect"), f.get("source"), f.get("trust_level")]
+                for f in wrong
+            ],
+            [26, 34, 170, 90, 70, 90, 80, 60],
+        ),
+        (
+            f"To check ({len(check)})",
+            ["AI", "Page", "Item", "Vendor", "Architect", "Why", "Trust"],
+            [
+                [number[id(f)], f.get("page"), f.get("item"), f.get("vendor"), f.get("architect"),
+                 f.get("why"), f.get("trust_level")]
+                for f in check
+            ],
+            [26, 34, 170, 90, 90, 150, 60],
+        ),
+        (
+            f"What's right ({len(right)})",
+            ["AI", "Page", "Item", "Value", "Matches"],
+            [
+                [number[id(f)], f.get("page"), f.get("item"), f.get("vendor"),
+                 f"{'architect' if f.get('source') == 'architect' else f.get('source')}: "
+                 f"{f.get('architect')}"]
+                for f in right
+            ],
+            [26, 34, 230, 120, 210],
+        ),
+    )
+    for title, header, rows, widths in sections:
+        story += [Spacer(1, 10), Paragraph(escape(title), styles["Heading2"])]
+        story.append(table(header, rows, widths) if rows else p("None.", body))
+    story += [Spacer(1, 10), Paragraph("Not checked", styles["Heading2"])]
+    story += [p(line, body) for line in not_checked] or [p("Nothing left out.", body)]
+    story.insert(len(summary) + 1, PageBreak())
+    out.parent.mkdir(parents=True, exist_ok=True)
+    document = SimpleDocTemplate(
+        str(out), pagesize=landscape(letter), title=REPORT_TITLE, invariant=1,
+        leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36,
+    )
+    document.build(story)
