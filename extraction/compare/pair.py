@@ -62,6 +62,7 @@ __all__ = [
     "compare_pdf",
     "own_label",
     "pair_page",
+    "real_lines",
 ]
 
 
@@ -121,6 +122,14 @@ class Pairing:
     """In plain words: why this is the pair, or why there is none."""
     vendor_label: Box | None = None
     """The paired line's own label: where the vendor's number is printed."""
+    paired_by: str = "geometry"
+    """Who found the pair: `geometry` (this module) or `two AIs` (`ai_pair.py`: both AIs chose the
+    same line and code's checks did not contradict them)."""
+    vendor_inches: Fraction | None = None
+    """The vendor's number on the paired line, exact inches, when the AI pairing read it (two AIs
+    reading it alike, or a stored reading of that label). `None`: not read here."""
+    vendor_inches_reason: str | None = None
+    """Where `vendor_inches` came from, or why it is not known (an AI pair only)."""
 
 
 def _across(axis: Axis, box: Box) -> tuple[Decimal, Decimal, Decimal]:
@@ -158,9 +167,11 @@ def own_label(line: DrawnDimension, lines: Sequence[DrawnDimension], reach: Deci
     return None
 
 
-def _real_lines(
+def real_lines(
     view: VendorViewDimensions, settings: PairSettings
 ) -> list[tuple[DrawnDimension, Box]]:
+    """The view's real dimension lines, each with its own label: slash ticks at both ends and a
+    label of its own on it (`own_label`). A witness-ticked span or an unlabelled one is not one."""
     found: list[tuple[DrawnDimension, Box]] = []
     for line in view.lines:
         if line.tick_source is not TickSource.SLASH:
@@ -242,7 +253,7 @@ def _candidates(
             notes.append(f"vendor view {view.number} prints no scale")
             continue
         vendor_ppi = Fraction(view.points_per_inch)
-        real = _real_lines(view, settings)
+        real = real_lines(view, settings)
         lines = [line for line, _label in real]
         ref = _reference(lines, axis, settings)
         if ref is None:
