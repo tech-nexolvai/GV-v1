@@ -3,18 +3,19 @@
  * The chat page's claude.ai look (#1471): the composer (Enter / Shift+Enter, placeholders, Send and
  * Stop), the one model button and its menu (keyboard, Opus's locked thinking, thinking off holding
  * effort at High, the money footnote), models that are not available, the disclaimer, the empty
- * chat's centred composer and starters, the "Scroll to bottom" button, the chats list folding (and
- * remembering it) and the drawer on narrow screens. Synthetic data only.
+ * chat's centred composer and starters, the "Scroll to bottom" button and a new chat's title fading
+ * in. The one sidebar (folding, the phone drawer) is tested through the app in chat-shell.test.tsx.
+ * Synthetic data only.
  */
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ChatComposer } from '@/components/chat/chat-composer';
 import { ShellSlotsContext } from '@/components/shell/shellSlots';
 import type { ChatApi, ChatModel } from '@/lib/chat-api';
-import { LIST_COLLAPSED_KEY, type ChatChoice } from '@/lib/chat-settings';
+import type { ChatChoice } from '@/lib/chat-settings';
 import { ChatPage } from '@/pages/ChatPage';
 import { chatOut, drivenStream, fakeChatApi, HAIKU, modelsOut, OPUS, QUESTION, SAVED_ANSWER, SET_NAME, SONNET, summary } from './fixtures/chat';
 
@@ -25,7 +26,6 @@ beforeEach(() => {
     // no storage in this environment
   }
 });
-afterEach(() => vi.unstubAllGlobals());
 
 const MODELS: ChatModel[] = [OPUS, SONNET, HAIKU];
 const DEFAULT: ChatChoice = { model: OPUS.id, effort: 'high', thinking: true };
@@ -67,10 +67,11 @@ function Composer({ running = false, blocked = null, models = MODELS, onSend = v
 
 const box = () => screen.getByRole('textbox', { name: 'Your message' });
 
-function renderPage(api: ChatApi, chatId: string | null = 'c-1', actions: HTMLElement | null = null) {
+function renderPage(api: ChatApi, chatId: string | null = 'c-1') {
   const onOpenChat = vi.fn();
+  const chats = document.body.appendChild(document.createElement('div'));
   const view = render(
-    <ShellSlotsContext.Provider value={{ title: null, actions }}>
+    <ShellSlotsContext.Provider value={{ title: null, actions: null, chats }}>
       <ChatPage packageId="pkg-1" chatId={chatId} api={api} onOpenChat={onOpenChat} stopGraceMs={0} />
     </ShellSlotsContext.Provider>,
   );
@@ -228,31 +229,6 @@ describe('the page around it', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Scroll to bottom' })).toBeNull());
   });
 
-  it('the chats list folds to a rail and remembers it', async () => {
-    const api = fakeChatApi({ list: vi.fn(async () => ({ chats: [summary('c-1', { title: 'Widths', turns: 1 })] })) });
-    const first = renderPage(api);
-    const aside = await screen.findByRole('complementary', { name: 'Chats' });
-    expect(aside.getAttribute('data-collapsed')).toBe('false');
-    await screen.findByRole('link', { name: 'Widths' });
-    const hide = screen.getByRole('button', { name: 'Hide chats' });
-    expect(hide.getAttribute('aria-expanded')).toBe('true');
-    await userEvent.setup().click(hide);
-    expect(aside.getAttribute('data-collapsed')).toBe('true');
-    expect(window.localStorage.getItem(LIST_COLLAPSED_KEY)).toBe('1');
-    expect(screen.queryByRole('link', { name: 'Widths' })).toBeNull();
-    // New chat stays on the rail.
-    expect(screen.getByRole('button', { name: 'New chat' })).toBeTruthy();
-    first.unmount();
-
-    renderPage(api);
-    expect((await screen.findByRole('complementary', { name: 'Chats' })).getAttribute('data-collapsed')).toBe('true');
-    const show = screen.getByRole('button', { name: 'Show chats' });
-    expect(show.getAttribute('aria-expanded')).toBe('false');
-    await userEvent.setup().click(show);
-    expect(window.localStorage.getItem(LIST_COLLAPSED_KEY)).toBe('0');
-    expect(await screen.findByRole('link', { name: 'Widths' })).toBeTruthy();
-  });
-
   it('a new chat’s title fades in once its first message names it', async () => {
     const stream = drivenStream();
     const list = vi.fn()
@@ -265,35 +241,5 @@ describe('the page around it', () => {
     await act(async () => stream.end({ ...SAVED_ANSWER, id: 'a-9' }));
     const link = await screen.findByRole('link', { name: 'Which items are wrong' });
     expect(link.querySelector('[data-fresh="true"]')).not.toBeNull();
-  });
-
-  it('on a narrow page the chats open as a drawer from the top bar, and close when one is picked', async () => {
-    vi.stubGlobal('ResizeObserver', class {
-      report: ResizeObserverCallback;
-      constructor(report: ResizeObserverCallback) {
-        this.report = report;
-      }
-      observe() {
-        this.report([{ contentRect: { width: 375 } } as ResizeObserverEntry], this as unknown as ResizeObserver);
-      }
-      unobserve() {}
-      disconnect() {}
-    });
-    const actions = document.createElement('div');
-    document.body.appendChild(actions);
-    renderPage(fakeChatApi({ list: vi.fn(async () => ({ chats: [summary('c-1', { title: 'Widths', turns: 1 }), summary('c-2', { title: 'Sinks', turns: 1 })] })) }), 'c-1', actions);
-    await screen.findByRole('heading', { name: `What do you want to know about ${SET_NAME}?` });
-    expect(screen.queryByRole('complementary', { name: 'Chats' })).toBeNull();
-
-    const open = within(actions).getByRole('button', { name: 'Show chats' });
-    expect(within(actions).getByRole('link', { name: 'Review list' }).getAttribute('href')).toBe('#/review/pkg-1');
-    await userEvent.setup().click(open);
-    const drawer = await screen.findByRole('dialog', { name: 'Chats' });
-    expect(within(drawer).getByRole('heading', { name: 'Recents' })).toBeTruthy();
-    // A drawer has no fold toggle; it closes on a pick, Esc, or the backdrop.
-    expect(within(drawer).queryByRole('button', { name: 'Hide chats' })).toBeNull();
-    await userEvent.setup().click(within(drawer).getByRole('link', { name: 'Sinks' }));
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Chats' })).toBeNull());
-    actions.remove();
   });
 });

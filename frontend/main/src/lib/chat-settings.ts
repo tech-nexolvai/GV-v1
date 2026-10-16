@@ -162,24 +162,3 @@ export function saveChoice(storage: Pick<Storage, 'setItem'> | null, choice: Cha
     // Storage blocked or full: the choice lasts for this visit only.
   }
 }
-
-// ── The chats list: open or collapsed, remembered per browser ──
-
-export const LIST_COLLAPSED_KEY = 'gv.chat.listCollapsed';
-
-/** True when the reviewer collapsed the chats list last time. Unreadable storage counts as open. */
-export function readListCollapsed(storage: Pick<Storage, 'getItem'> | null): boolean {
-  try {
-    return storage?.getItem(LIST_COLLAPSED_KEY) === '1';
-  } catch {
-    return false;
-  }
-}
-
-export function saveListCollapsed(storage: Pick<Storage, 'setItem'> | null, collapsed: boolean): void {
-  try {
-    storage?.setItem(LIST_COLLAPSED_KEY, collapsed ? '1' : '0');
-  } catch {
-    // Storage blocked or full: the list keeps its state for this visit only.
-  }
-}

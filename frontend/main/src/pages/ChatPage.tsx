@@ -3,8 +3,11 @@
  *
  * The owner's idea: "When the user uploads the drawing set, it redirects him to the chat. Per
  * drawing set we have many chats. The user asks; the agent has exactly Claude's tools, with efforts,
- * models, thinking." So this page is the product and looks like claude.ai: the set's chats on the
- * left, the conversation in the middle, the composer at the bottom.
+ * models, thinking." So this page is the product and looks and moves like claude.ai (#1471): one
+ * sidebar (the set's chats are listed in the app's sidebar under the set's name), the conversation
+ * in a centred column, the composer at the bottom. An empty chat holds the composer in the middle
+ * under a greeting, and the first message glides it down. Switching chats fades the thread; every
+ * animation stops under "reduce motion".
  *
  * `#/chat/<set>` opens the set's newest chat (or a new empty one) and replaces itself with
  * `#/chat/<set>/<chat>`, so Back does not bounce. A message streams in event by event; when it
@@ -16,12 +19,11 @@
  */
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowDown, CircleAlert, ListChecks, PanelLeft, RotateCw, Sparkle } from 'lucide-react';
+import { ArrowDown, ChevronRight, CircleAlert, ListChecks, RotateCw, Sparkle } from 'lucide-react';
 
 import { formatRoute } from '@/app/route';
-import { HeaderActions } from '@/components/shell/ShellHeader';
+import { HeaderActions, HeaderTitleExtra, SidebarChats } from '@/components/shell/ShellHeader';
 import { Button } from '@/components/ui/button';
-import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/skeleton';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { LiveSteps } from '@/components/assistant/assistant-steps';
@@ -31,7 +33,7 @@ import { AssistantMessage, UserMessage } from '@/components/chat/chat-message';
 import { ApiError } from '@/api/client';
 import { chatFailureWords, isAbort, LIVE_CHAT_API, type Chat, type ChatApi, type ChatModels } from '@/lib/chat-api';
 import { applyChatEvent, CHAT_STARTERS, chatTitle, dollars, fromSaved, localAnswer, localQuestion, settle, type ViewMessage } from '@/lib/chat-messages';
-import { browserStorage, readChoice, readListCollapsed, resolveChoice, saveChoice, saveListCollapsed, type ChatChoice } from '@/lib/chat-settings';
+import { browserStorage, readChoice, resolveChoice, saveChoice, type ChatChoice } from '@/lib/chat-settings';
 import { cn } from '@/lib/utils';
 
 /** A chat with nothing in it yet (one value, so effects that follow the messages do not re-run). */
@@ -39,14 +41,6 @@ const NO_MESSAGES: ViewMessage[] = [];
 
 /** How close to the bottom (px) still counts as "at the bottom" for following new words. */
 const FOLLOW_GAP = 80;
-/**
- * The page's own width (px) from which the chats column shows beside the conversation: a 1024px
- * window with the app sidebar open leaves the page about 768px. Narrower (a phone, a small window),
- * the chats open as a drawer from the top bar. Measured on the page, not the window, because the
- * app sidebar takes its share.
- */
-const CHATS_COLUMN_FROM = 720;
-
 /** claude.ai's words under the composer. */
 const DISCLAIMER = 'Claude can make mistakes. Please double-check responses.';
 
@@ -154,29 +148,8 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   const [announce, setAnnounce] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // ── Room for the chats column; folded or open (remembered), or a drawer on narrow screens ──
-  const pageRef = useRef<HTMLDivElement>(null);
-  const [roomy, setRoomy] = useState(true);
-  const [collapsed, setCollapsed] = useState(() => readListCollapsed(browserStorage()));
-  const [drawerOpen, setDrawerOpen] = useState(false);
   // Chats whose first message was sent here: their title fades in once the server names them.
   const [freshTitles, setFreshTitles] = useState<ReadonlySet<string>>(() => new Set());
-
-  function toggleList() {
-    setCollapsed((now) => {
-      saveListCollapsed(browserStorage(), !now);
-      return !now;
-    });
-  }
-  useEffect(() => {
-    const page = pageRef.current;
-    if (!page || typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(([entry]) => {
-      if (entry && entry.contentRect.width > 0) setRoomy(entry.contentRect.width >= CHATS_COLUMN_FROM);
-    });
-    observer.observe(page);
-    return () => observer.disconnect();
-  }, []);
 
   // ── Following the newest words: on until the reviewer scrolls up, back on at the bottom ──
   const scroller = useRef<HTMLDivElement>(null);
@@ -423,43 +396,32 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   const cap = models.status === 'ready' ? models.data.message_cap_usd : null;
   const showScrollDown = !centred && !atBottom && messages.length > 0;
 
-  const listProps = { packageId, activeChatId: chatId, state: list, creating, onNewChat: () => void newChat(), freshTitles };
+  const chatName = chat?.title?.trim() || activeSummary?.title?.trim() || null;
 
   return (
     <TooltipProvider delayDuration={300}>
-      <div ref={pageRef} data-tw data-slot="chat-page" className="flex min-h-0 w-full min-w-0 flex-1 font-sans text-sm text-foreground antialiased">
+      <div data-tw data-slot="chat-page" className="flex min-h-0 w-full min-w-0 flex-1 font-sans text-sm text-foreground antialiased">
         <HeaderActions>
-          {!roomy && (
-            <Button variant="ghost" size="sm" aria-label="Show chats" aria-expanded={drawerOpen} onClick={() => setDrawerOpen(true)}>
-              <PanelLeft /> <span className="hidden sm:inline">Chats</span>
-            </Button>
-          )}
           <Button variant="ghost" size="sm" asChild>
             <a href={formatRoute({ page: 'review', packageId })} aria-label="Review list">
               <ListChecks /> <span className="hidden sm:inline">Review list</span>
             </a>
           </Button>
         </HeaderActions>
-
-        {roomy ? (
-          <aside
-            aria-label="Chats"
-            data-collapsed={collapsed ? 'true' : 'false'}
-            className={cn(
-              'flex shrink-0 flex-col overflow-hidden border-r bg-background motion-safe:transition-[width] motion-safe:duration-200 motion-safe:ease-out',
-              collapsed ? 'w-[53px]' : 'w-[260px]',
-            )}
-          >
-            <ChatList {...listProps} collapsed={collapsed} onToggle={toggleList} />
-          </aside>
-        ) : (
-          <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
-            <SheetContent side="left" aria-describedby={undefined} className="w-[280px] max-w-[85vw] gap-0 p-0 font-sans data-[state=closed]:duration-200 data-[state=open]:duration-300 motion-reduce:animate-none">
-              <SheetTitle className="sr-only">Chats</SheetTitle>
-              <ChatList {...listProps} onPicked={() => setDrawerOpen(false)} />
-            </SheetContent>
-          </Sheet>
+        {/* The set's name is the top bar's; the open chat's title follows it after a "›". */}
+        {chatName && (
+          <HeaderTitleExtra>
+            <span data-slot="chat-crumb" className="flex min-w-0 items-center gap-1.5 text-sm text-muted-foreground">
+              <ChevronRight className="size-3.5 shrink-0" aria-hidden="true" />
+              <span className="max-w-[18rem] truncate" title={chatName}>{chatName}</span>
+            </span>
+          </HeaderTitleExtra>
         )}
+
+        {/* One sidebar, like claude.ai: this set's chats sit under the set's name in the app's sidebar. */}
+        <SidebarChats>
+          <ChatList packageId={packageId} activeChatId={chatId} state={list} creating={creating} onNewChat={() => void newChat()} freshTitles={freshTitles} />
+        </SidebarChats>
 
         <section aria-label={activeSummary ? chatTitle(activeSummary) : 'Conversation'} className="relative flex min-h-0 min-w-0 flex-1 flex-col">
           {/* Positioned, so screen-reader-only text deep in the thread is placed (and clipped) inside it,
@@ -474,7 +436,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
             {/* Keyed by the chat, so switching chats (or a chat finishing loading) fades the thread in. */}
             <div
               key={`${chatId ?? 'opening'}:${chat ? 'ready' : 'waiting'}`}
-              className="mx-auto flex min-h-full w-full max-w-3xl flex-col gap-8 px-4 pt-8 pb-10 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-150"
+              className="mx-auto flex min-h-full w-full max-w-3xl flex-col gap-8 px-4 pt-8 pb-16 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-150"
             >
               {openError && !chatId && (
                 <Problem words={`The chats could not be opened: ${openError}`} action="Try again" onAction={() => { setOpenError(null); setOpenAsk((n) => n + 1); }} />

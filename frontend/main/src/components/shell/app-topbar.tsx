@@ -27,6 +27,7 @@ export interface Crumb {
 export function AppTopbar({
   title,
   titleHeading = true,
+  brand = true,
   crumbs,
   titleRef,
   actionsRef,
@@ -38,6 +39,8 @@ export function AppTopbar({
    * review this is the page's one `<h1>`, and the panels inside the review use `<h2>`.
    */
   titleHeading?: boolean;
+  /** Graniti Vicentia in the middle; false on a chat, whose top bar stays quiet (#1471). */
+  brand?: boolean;
   crumbs: Crumb[];
   titleRef: (element: HTMLDivElement | null) => void;
   actionsRef: (element: HTMLDivElement | null) => void;
@@ -45,7 +48,7 @@ export function AppTopbar({
   return (
     <header
       data-tw
-      className="grid h-14 shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] gap-2 border-b bg-background px-2 font-sans text-foreground sm:gap-3 sm:px-3"
+      className={`grid h-14 shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center ${brand ? 'sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]' : ''} gap-2 border-b bg-background px-2 font-sans text-foreground sm:gap-3 sm:px-3`}
     >
       {/* A size container, so "Documents" can give way to the review's name when the left half is short of room. */}
       <div data-slot="topbar-where" className="@container flex min-w-0 items-center gap-1.5 sm:gap-2">
@@ -96,10 +99,12 @@ export function AppTopbar({
       </div>
 
       {/* Under 640px there is no room for a centre column: the screen's action needs the space. */}
-      <div className="hidden items-center gap-2 sm:flex" aria-label="Graniti Vicentia">
-        <GVMark size={24} />
-        <span className="hidden text-xs font-semibold tracking-widest uppercase lg:inline">Graniti Vicentia</span>
-      </div>
+      {brand && (
+        <div className="hidden items-center gap-2 sm:flex" aria-label="Graniti Vicentia">
+          <GVMark size={24} />
+          <span className="hidden text-xs font-semibold tracking-widest uppercase lg:inline">Graniti Vicentia</span>
+        </div>
+      )}
 
       <div ref={actionsRef} className="flex min-w-0 items-center justify-end gap-2" />
     </header>

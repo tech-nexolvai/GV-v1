@@ -9,6 +9,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError } from '@/api/client';
+import { ShellSlotsContext } from '@/components/shell/shellSlots';
 import { CHOICE_KEY } from '@/lib/chat-settings';
 import { ChatPage } from '@/pages/ChatPage';
 import type { ChatApi } from '@/lib/chat-api';
@@ -26,7 +27,13 @@ afterEach(() => vi.useRealTimers());
 function renderChat(api: ChatApi, chatId: string | null = 'c-1', props: Partial<React.ComponentProps<typeof ChatPage>> = {}) {
   const onOpenChat = vi.fn();
   const onNameChange = vi.fn();
-  render(<ChatPage packageId="pkg-1" chatId={chatId} api={api} onOpenChat={onOpenChat} onNameChange={onNameChange} stopGraceMs={0} {...props} />);
+  // The place under the open set in the app's sidebar, where the page lists the set's chats.
+  const chats = document.body.appendChild(document.createElement('div'));
+  render(
+    <ShellSlotsContext.Provider value={{ title: null, actions: null, chats }}>
+      <ChatPage packageId="pkg-1" chatId={chatId} api={api} onOpenChat={onOpenChat} onNameChange={onNameChange} stopGraceMs={0} {...props} />
+    </ShellSlotsContext.Provider>,
+  );
   return { onOpenChat, onNameChange };
 }
 
@@ -48,7 +55,7 @@ describe('opening a drawing set’s chats', () => {
     expect(api.create).toHaveBeenCalledTimes(1);
   });
 
-  it('lists the set’s chats as links under Recents, the open one marked, with New chat on top', async () => {
+  it('lists the set’s chats as links (in the sidebar), the open one marked, with New chat on top', async () => {
     const api = fakeChatApi({ list: vi.fn(async () => ({ chats: [summary('c-1', { title: 'Which items are wrong?', turns: 1, last_message_at: new Date().toISOString() }), summary('c-2')] })) });
     renderChat(api);
     const nav = await screen.findByRole('navigation', { name: 'Chats in this drawing set' });
@@ -56,8 +63,7 @@ describe('opening a drawing set’s chats', () => {
     expect(links.map((link) => link.textContent)).toEqual(['Which items are wrong?', 'New chat']);
     expect(links[0].getAttribute('href')).toBe('#/chat/pkg-1/c-1');
     expect(links[0].getAttribute('aria-current')).toBe('page');
-    expect(within(nav).getByRole('heading', { name: 'Recents' })).toBeTruthy();
-    expect(within(nav).getAllByRole('button').map((button) => button.getAttribute('aria-label'))).toEqual(['Hide chats', 'New chat']);
+    expect(within(nav).getAllByRole('button').map((button) => button.textContent)).toEqual(['New chat']);
   });
 });
 

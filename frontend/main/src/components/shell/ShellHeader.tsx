@@ -13,3 +13,9 @@ export function HeaderTitleExtra({ children }: { children: React.ReactNode }) {
   const { title } = useContext(ShellSlotsContext);
   return title ? createPortal(children, title) : null;
 }
+
+/** Renders its children under the open drawing set in the sidebar (the set's chats, #1471). */
+export function SidebarChats({ children }: { children: React.ReactNode }) {
+  const { chats } = useContext(ShellSlotsContext);
+  return chats ? createPortal(children, chats) : null;
+}
