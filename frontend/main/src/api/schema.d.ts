@@ -4479,7 +4479,7 @@ export interface components {
             compared?: boolean | null;
             /**
              * Created By
-             * @description "lead", "helper:<n>", or "gv_review" (made by code from a recorded result).
+             * @description "lead", "helper:<n>", "gv_review" (made by code from a recorded result), or "ledger" (made by code from the reading ledger).
              */
             created_by: string;
             /**
@@ -4492,6 +4492,11 @@ export interface components {
             inches?: components["schemas"]["ChatFindingInchesOut"] | null;
             /** Item */
             item: string;
+            /**
+             * Ledger Ids
+             * @description The reading ledger's entries (S<n>, R<n>) behind it.
+             */
+            ledger_ids?: string[] | null;
             /** Not Compared Why */
             not_compared_why?: ("not_viewed" | "pair_not_covered") | null;
             /** Page */
@@ -4505,6 +4510,11 @@ export interface components {
              * @description The difference GV Review recorded that this finding is.
              */
             record_id?: string | null;
+            /**
+             * Reference Side
+             * @description cross_view: whose drawings disagree. `architect` then holds the REFERENCE view's value and `vendor` this view's.
+             */
+            reference_side?: ("vendor" | "architect") | null;
             /** Round */
             round?: number | null;
             /** Round Status */
@@ -4514,14 +4524,20 @@ export interface components {
             second_read_values?: components["schemas"]["ChatSecondReadValuesOut"] | null;
             /**
              * Source
+             * @description cross_view and completeness are made only by code, from the reading ledger.
              * @enum {string}
              */
-            source: "architect" | "brand_prototype" | "rules" | "vendor_arithmetic" | "gv_review";
+            source: "architect" | "brand_prototype" | "rules" | "vendor_arithmetic" | "gv_review" | "cross_view" | "completeness";
             /**
              * Status
              * @enum {string}
              */
             status: "different" | "check" | "same";
+            /**
+             * Sum Text
+             * @description vendor_arithmetic from the ledger: code's sum written out ("12 + 15 1/2 = 27 1/2 ≠ 27 1/4 printed (off 1/4)").
+             */
+            sum_text?: string | null;
             /** Trust Level */
             trust_level?: ("confirmed" | "likely" | "to_check") | null;
             /** Vendor */
@@ -4554,6 +4570,162 @@ export interface components {
             left_out: components["schemas"]["ChatRecordedDifferenceOut"][];
             /** Recorded */
             recorded: number;
+        };
+        /** ChatLedgerBoxOut */
+        ChatLedgerBoxOut: {
+            /** File */
+            file?: string | null;
+            /** Page */
+            page: number;
+            /** X0 */
+            x0: number;
+            /** X1 */
+            x1: number;
+            /** Y0 */
+            y0: number;
+            /** Y1 */
+            y1: number;
+        };
+        /** ChatLedgerCompletenessOut */
+        ChatLedgerCompletenessOut: {
+            /** Architect Items */
+            architect_items: number;
+            /** Compared */
+            compared: boolean;
+            /** Extra On Vendor */
+            extra_on_vendor?: string[];
+            /** Missing On Vendor */
+            missing_on_vendor?: string[];
+            /** Not Looked At */
+            not_looked_at?: string[];
+            /** Vendor Items */
+            vendor_items: number;
+        };
+        /**
+         * ChatLedgerEntriesOut
+         * @description Everything the reading ledger recorded, so a reload shows the same.
+         */
+        ChatLedgerEntriesOut: {
+            /** Readings */
+            readings?: components["schemas"]["ChatLedgerReadingOut"][];
+            /** Strings */
+            strings?: components["schemas"]["ChatLedgerStringOut"][];
+        };
+        /**
+         * ChatLedgerReadingOut
+         * @description One value the AI recorded.
+         */
+        ChatLedgerReadingOut: {
+            box?: components["schemas"]["ChatLedgerBoxOut"] | null;
+            /** By */
+            by: string;
+            /** Id */
+            id: string;
+            /** Inches */
+            inches?: string | null;
+            /** Instance */
+            instance?: number | null;
+            /** Item */
+            item: string;
+            /** Item Key */
+            item_key: string;
+            /** Kind */
+            kind: string;
+            /** Page */
+            page: number;
+            /**
+             * Rereads
+             * @default 0
+             */
+            rereads: number;
+            /** Side */
+            side: string;
+            /** Value */
+            value: string;
+            /** View */
+            view: string;
+        };
+        /**
+         * ChatLedgerReportOut
+         * @description The reading ledger's counts, by code (CONTRACT3 "Ledger").
+         */
+        ChatLedgerReportOut: {
+            completeness: components["schemas"]["ChatLedgerCompletenessOut"];
+            strings: components["schemas"]["ChatLedgerStringsOut"];
+            views: components["schemas"]["ChatLedgerViewsOut"];
+        };
+        /**
+         * ChatLedgerStringOut
+         * @description One dimension string the AI recorded, and code's sum of it.
+         */
+        ChatLedgerStringOut: {
+            box?: components["schemas"]["ChatLedgerBoxOut"] | null;
+            /** By */
+            by: string;
+            /** Id */
+            id: string;
+            /** Off By */
+            off_by?: string | null;
+            /** Page */
+            page: number;
+            /** Parts */
+            parts: string[];
+            /** Parts Sum */
+            parts_sum?: string | null;
+            /** Printed Total */
+            printed_total: string;
+            /**
+             * Rereads
+             * @default 0
+             */
+            rereads: number;
+            /**
+             * Result
+             * @description adds_up | does_not_add_up | not_a_number
+             */
+            result: string;
+            /** Side */
+            side: string;
+            /** Sum Text */
+            sum_text: string;
+            /** View */
+            view?: string | null;
+        };
+        /**
+         * ChatLedgerStringsOut
+         * @description The vendor's (and architect's) dimension strings the AI recorded, added up by code.
+         */
+        ChatLedgerStringsOut: {
+            /** Add Up */
+            add_up: number;
+            /** Architect Off */
+            architect_off: number;
+            /** Not A Number */
+            not_a_number: number;
+            /** Off */
+            off: number;
+            /** Off List */
+            off_list?: components["schemas"]["ChatLedgerStringOut"][];
+            /** Total */
+            total: number;
+            /** Vendor Off */
+            vendor_off: number;
+        };
+        /**
+         * ChatLedgerViewsOut
+         * @description The same item read on several views or pages, compared by code.
+         */
+        ChatLedgerViewsOut: {
+            /** Consistent */
+            consistent: number;
+            /** Groups */
+            groups: number;
+            /** Inconsistent */
+            inconsistent: number;
+            /** Not Compared */
+            not_compared: number;
+            /** Typical Groups */
+            typical_groups: number;
         };
         /** ChatListOut */
         ChatListOut: {
@@ -4723,6 +4895,62 @@ export interface components {
             /** What */
             what: string;
         };
+        /**
+         * ChatRecordedResultOut
+         * @description A result GV Review recorded (a code FAIL or an evaluator-checked AI page review row).
+         */
+        ChatRecordedResultOut: {
+            /** Architect */
+            architect?: string | null;
+            /** Key */
+            key: string;
+            /** Kind */
+            kind: string;
+            /** Pages */
+            pages?: number[];
+            /** Vendor */
+            vendor?: string | null;
+            /** What */
+            what: string;
+        };
+        /**
+         * ChatRecordedResultsOut
+         * @description GV Review's recorded results (code FAILs, evaluator-checked AI page review differences) and
+         *     how many the answer includes (the ledger's check).
+         */
+        ChatRecordedResultsOut: {
+            /**
+             * Also Left Out
+             * @description Of `missing`, the ones `gv_checks` does not count (e.g. review list failures).
+             */
+            also_left_out?: components["schemas"]["ChatRecordedResultOut"][];
+            /** Dismissed */
+            dismissed: number;
+            /** Included */
+            included: number;
+            /** Missing */
+            missing?: components["schemas"]["ChatRecordedResultOut"][];
+            /** Recorded */
+            recorded: number;
+        };
+        /**
+         * ChatRoundPairOut
+         * @description One round pair compared by code (compare_rounds).
+         */
+        ChatRoundPairOut: {
+            /** Fixed */
+            fixed: number;
+            /** Round1 Page */
+            round1_page?: number | null;
+            /** Round2 Page */
+            round2_page?: number | null;
+            /** Still Wrong */
+            still_wrong: number;
+            /** Unrequested */
+            unrequested: number;
+            /** Unrequested Zones */
+            unrequested_zones?: (string | null)[];
+        };
         /** ChatRoundsOut */
         ChatRoundsOut: {
             /** Earlier Items */
@@ -4735,10 +4963,21 @@ export interface components {
             new: number;
             /** Not In Later Round */
             not_in_later_round: number;
+            /**
+             * Pairs
+             * @description compare_rounds: the round pairs compared by code.
+             */
+            pairs?: components["schemas"]["ChatRoundPairOut"][];
             /** Rounds */
             rounds: number[];
             /** Still Wrong */
             still_wrong: number;
+            /**
+             * Unrequested
+             * @description compare_rounds: changes nobody asked for (no finding, no GV markup).
+             * @default 0
+             */
+            unrequested: number;
         };
         /** ChatSecondReadValuesOut */
         ChatSecondReadValuesOut: {
@@ -4794,7 +5033,7 @@ export interface components {
             tool: components["schemas"]["ChatStepTool"];
         };
         /** @enum {string} */
-        ChatStepTool: "bash_tool" | "view" | "create_file" | "str_replace" | "present_files" | "TaskCreate" | "TaskUpdate" | "Agent" | "review_results";
+        ChatStepTool: "bash_tool" | "view" | "create_file" | "str_replace" | "present_files" | "TaskCreate" | "TaskUpdate" | "Agent" | "review_results" | "compare_rounds";
         /** @enum {string} */
         ChatStopped: "cost_cap" | "cancelled" | "error" | "turn_limit";
         /** ChatSummaryOut */
@@ -4917,6 +5156,8 @@ export interface components {
                 [key: string]: number;
             } | null;
             gv_checks?: components["schemas"]["ChatGvChecksOut"] | null;
+            ledger?: components["schemas"]["ChatLedgerReportOut"] | null;
+            ledger_entries?: components["schemas"]["ChatLedgerEntriesOut"] | null;
             /** Not Checked */
             not_checked: string[];
             /**
@@ -4924,6 +5165,7 @@ export interface components {
              * @description "What's right" items not compared (not counted above).
              */
             not_compared?: number | null;
+            recorded_results?: components["schemas"]["ChatRecordedResultsOut"] | null;
             rounds?: components["schemas"]["ChatRoundsOut"] | null;
             unknowns?: components["schemas"]["ChatTrustUnknownsOut"] | null;
         };

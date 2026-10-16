@@ -72,6 +72,7 @@ _log = logging.getLogger(__name__)
 
 CHECKS_MODULE: Final = "app.review.assistant.finding_checks"
 SECOND_READ_MODULE: Final = "app.review.assistant.second_read"
+REVISION_DIFF_MODULE: Final = "app.review.assistant.revision_diff"
 #: The outcome word GV Review's records use for a code FAIL (`workflow.findings_composer`).
 _FAIL_WORDS: Final = frozenset({"Needs correction"})
 _PASS_WORDS: Final = frozenset({"Looks right"})
@@ -777,6 +778,16 @@ def accuracy(
             points, how = ACCURACY_DISAGREES, against
         elif finding.get("created_by") == "gv_review" and finding.get("status") != "same":
             points, how = 1.0, "GV Review's own recorded result"
+        elif "rule" in witness.witnesses(checks, status) or "arithmetic" in witness.witnesses(
+            checks, status
+        ):
+            # Code decides the whole claim (GV's rule, or the vendor's own sum, the reading
+            # ledger's included): it scores as confirmed (CONTRACT5).
+            points, how = 1.0, (
+                "code (the vendor's own arithmetic, from the reading ledger)"
+                if finding.get("created_by") == "ledger"
+                else "code (GV's rule or the vendor's own arithmetic)"
+            )
         else:
             points = ACCURACY_POINTS.get(level, ACCURACY_POINTS["to_check"]).get(kind, 0.0)
             how = _how(finding, level, kind)

@@ -8,7 +8,7 @@
  * does arithmetic on the AI's numbers: the inches and the difference are code's (`finding.inches`).
  */
 
-import type { ChatCoverage, ChatFinding, ChatTrust, ChatUnknown, EvidenceKind, FindingCategory, PrintedResult, RoundStatus, TrustLevel, UnknownWhy } from '@/lib/chat-api';
+import type { ChatCoverage, ChatFinding, ChatTrust, ChatUnknown, EvidenceKind, FindingCategory, LedgerReport, PrintedResult, RoundStatus, TrustLeftOut, TrustLevel, UnknownWhy } from '@/lib/chat-api';
 import { categoryOf, CATEGORY_WORDS, pageWords, sourceTag, STATUS_WORDS, verifiedWords } from '@/lib/chat-findings';
 
 // ── Levels ──────────────────────────────────────────────────
@@ -390,6 +390,9 @@ export interface RoundCounts {
   still_wrong: number;
   new: number;
   not_in_later?: number | null;
+  unrequested?: number | null;
+  /** The line code wrote (compare_rounds), shown as it is. */
+  line?: string | null;
 }
 
 /** Rounds of comments: the report's counts, else counted from the findings; null with one round. */
@@ -411,13 +414,91 @@ export function roundCounts(findings: readonly ChatFinding[], trust: ChatTrust |
 
 /** "Vendor fixed 3 of 8 round-1 items · 5 still wrong · 1 new". */
 export function roundWords(counts: RoundCounts): string {
+  if (counts.line) return counts.line;
   const notInLater = counts.not_in_later ?? 0;
   const first = counts.fixed + counts.still_wrong + notInLater;
   const parts = [`Vendor fixed ${counts.fixed} of ${first} round-1 ${first === 1 ? 'item' : 'items'}`];
   if (counts.still_wrong) parts.push(`${counts.still_wrong} still wrong`);
   if (notInLater) parts.push(`${notInLater} not in the later round`);
   if (counts.new) parts.push(`${counts.new} new`);
+  if (counts.unrequested) parts.push(`${counts.unrequested} ${counts.unrequested === 1 ? 'change' : 'changes'} nobody asked for`);
   return parts.join(' · ');
+}
+
+// ── The reading ledger ──────────────────────────────────────
+
+/**
+ * The ledger's line for the trust card, all code's counts:
+ * "41 strings · 38 add up · 3 don't · 12 items checked across views · 1 missing on vendor".
+ */
+export function ledgerWords(ledger: LedgerReport | null | undefined): string | null {
+  if (!ledger) return null;
+  const parts: string[] = [];
+  const { strings, views, completeness } = ledger;
+  if (strings.total) {
+    parts.push(`${strings.total} ${strings.total === 1 ? 'string' : 'strings'}`, `${strings.add_up} add up`, `${strings.off} don’t`);
+    if (strings.not_a_number) parts.push(`${strings.not_a_number} not readable as numbers`);
+  }
+  const compared = views.consistent + views.inconsistent;
+  if (compared) {
+    parts.push(`${compared} ${compared === 1 ? 'item' : 'items'} checked across views${views.inconsistent ? ` (${views.inconsistent} disagree)` : ''}`);
+  }
+  if (completeness.compared) {
+    parts.push(`${completeness.missing_on_vendor.length} missing on vendor`);
+    if (completeness.extra_on_vendor.length) parts.push(`${completeness.extra_on_vendor.length} vendor-only`);
+  }
+  return parts.length ? parts.join(' · ') : null;
+}
+
+/** The ledger's named items (missing on the vendor, vendor-only), for the card's disclosure. */
+export function ledgerItems(ledger: LedgerReport | null | undefined): { label: string; names: string[] }[] {
+  if (!ledger?.completeness.compared) return [];
+  return [
+    { label: 'Missing on vendor', names: ledger.completeness.missing_on_vendor },
+    { label: 'Vendor only', names: ledger.completeness.extra_on_vendor },
+    { label: 'Not looked at', names: ledger.completeness.not_looked_at ?? [] },
+  ].filter((group) => group.names.length);
+}
+
+/**
+ * A vendor-arithmetic finding's sum, written out: code's own words from the ledger when it sent
+ * them, else the parts and the printed total as printed (the screen never adds them up itself).
+ */
+export function sumWords(finding: Pick<ChatFinding, 'source' | 'sum_text' | 'parts' | 'printed_total'>): string | null {
+  if (finding.source !== 'vendor_arithmetic') return null;
+  if (finding.sum_text) return finding.sum_text;
+  if (!finding.parts?.length || !finding.printed_total) return null;
+  return `${finding.parts.join(' + ')} vs ${finding.printed_total} printed`;
+}
+
+// ── GV Review's own checks ──────────────────────────────────
+
+export interface GvChecks {
+  matched: number;
+  total: number;
+  leftOut: TrustLeftOut[];
+}
+
+/**
+ * "Matches GV Review's own checks: 9 of 9", from the server's shape (`recorded` / `included`) or
+ * the older screen names, plus the recorded results only the reading ledger's check knows (named in
+ * `also_left_out`: counted as recorded and left out).
+ */
+export function gvChecksOf(trust: ChatTrust | null | undefined): GvChecks | null {
+  const gv = trust?.gv_checks;
+  const also = trust?.recorded_results?.also_left_out ?? [];
+  if (!gv && !trust?.recorded_results) return null;
+  const leftOut: TrustLeftOut[] = (gv?.left_out ?? []).map((item) => ({ ...item, item: item.item ?? item.what ?? item.record_id ?? 'Recorded result' }));
+  for (const item of also) {
+    leftOut.push({ page: item.pages?.[0] ?? null, item: item.what ?? item.key, record_id: item.key, source: 'GV Review’s recorded result' });
+  }
+  if (!gv) {
+    const ledger = trust?.recorded_results;
+    return { matched: ledger?.included ?? 0, total: ledger?.recorded ?? 0, leftOut };
+  }
+  const total = (gv.total ?? gv.recorded ?? 0) + also.length;
+  const matched = gv.matched ?? gv.included ?? 0;
+  return { matched, total, leftOut };
 }
 
 // ── Summary helpers ─────────────────────────────────────────

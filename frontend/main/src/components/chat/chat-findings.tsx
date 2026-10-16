@@ -17,10 +17,11 @@ import {
   STATUS_WORDS,
   type FindingFilter,
   type StatusFilter,
+  sideLabels,
 } from '@/lib/chat-findings';
 import { useReducedMotion } from '@/lib/chat-motion';
 import { matchesWords } from '@/lib/chat-full-check';
-import { differenceOf, differenceWords, NOT_COMPARED_WORDS, notCompared, sideValue } from '@/lib/chat-trust';
+import { differenceOf, differenceWords, NOT_COMPARED_WORDS, notCompared, sideValue, sumWords } from '@/lib/chat-trust';
 import { cn } from '@/lib/utils';
 
 /**
@@ -76,13 +77,26 @@ export function SourceTag({ finding }: { finding: Pick<ChatFinding, 'source'> })
  */
 export function FindingValue({ finding, side }: { finding: ChatFinding; side: 'architect' | 'vendor' }) {
   const value = sideValue(finding, side);
+  // A vendor string's sum, written out by code, on the vendor value's tooltip.
+  const sum = side === 'vendor' ? sumWords(finding) : null;
+  const title = [value.printed ? `As printed: ${value.printed}` : null, sum ? `Code’s sum: ${sum}` : null].filter(Boolean).join('\n');
   return (
     <span data-slot="chat-finding-value" data-side={side} className="inline-flex flex-wrap items-baseline gap-x-1.5">
-      <span className="num break-words" title={value.printed ? `As printed: ${value.printed}` : undefined}>{value.shown}</span>
+      <span className="num break-words" title={title || undefined}>{value.shown}</span>
       {value.printed && <span className="sr-only">(printed {value.printed})</span>}
+      {sum && <span className="sr-only">(code’s sum: {sum})</span>}
       {value.notANumber && <span data-slot="chat-not-a-number" className="text-xs text-muted-foreground">not a number</span>}
     </span>
   );
+}
+
+/**
+ * A cross-view finding compares two views of the same side's drawings: its cells say so
+ * ("Reference view" / "This view") under the table's Architect / Vendor headings.
+ */
+export function SideLabel({ finding, side }: { finding: ChatFinding; side: 'architect' | 'vendor' }) {
+  if (finding.source !== 'cross_view') return null;
+  return <span data-slot="chat-side-label" className="block text-xs text-muted-foreground">{sideLabels(finding)[side]}</span>;
 }
 
 /** Code's difference, "+9 in"; a dash when code has none. */
@@ -122,8 +136,8 @@ export function EvidenceThumb({ src, label }: { src: string | null; label: strin
 function Thumbs({ finding, pictureUrl }: { finding: ChatFinding; pictureUrl: (pictureId: string) => string }) {
   return (
     <span className="flex items-center gap-1">
-      <EvidenceThumb src={finding.arch_picture_id ? pictureUrl(finding.arch_picture_id) : null} label="Architect" />
-      <EvidenceThumb src={finding.vendor_picture_id ? pictureUrl(finding.vendor_picture_id) : null} label="Vendor" />
+      <EvidenceThumb src={finding.arch_picture_id ? pictureUrl(finding.arch_picture_id) : null} label={sideLabels(finding).architect} />
+      <EvidenceThumb src={finding.vendor_picture_id ? pictureUrl(finding.vendor_picture_id) : null} label={sideLabels(finding).vendor} />
     </span>
   );
 }
@@ -208,6 +222,8 @@ export function FindingsTable({ findings, filter, onFilter, onOpen, pictureUrl, 
   const leaving = useLeaving(findings);
   const counts = findingCounts(findings);
   const summary = countWords(counts);
+  // Only cross-view findings shown: the column headings name the views themselves.
+  const allCrossView = findings.length > 0 && findings.every((finding) => finding.source === 'cross_view');
   const leavingIds = new Set(leaving.map((finding) => finding.id));
   const groups = groupFindings([...findings, ...leaving], filter);
   const categories = categoriesPresent(findings);
@@ -317,9 +333,9 @@ export function FindingsTable({ findings, filter, onFilter, onOpen, pictureUrl, 
                       <span className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-[13px]">
                         <span className="text-muted-foreground">Page</span>
                         <span className="num">{pageWords(finding)}</span>
-                        <span className="text-muted-foreground">Architect</span>
+                        <span className="text-muted-foreground">{sideLabels(finding).architect}</span>
                         <span className="min-w-0"><FindingValue finding={finding} side="architect" /><SourceTag finding={finding} /></span>
-                        <span className="text-muted-foreground">Vendor</span>
+                        <span className="text-muted-foreground">{sideLabels(finding).vendor}</span>
                         <span className="min-w-0"><FindingValue finding={finding} side="vendor" /><Matches finding={finding} /></span>
                         {showDifference && <span className="text-muted-foreground">Difference</span>}
                         {showDifference && <FindingDifference finding={finding} />}
@@ -342,8 +358,8 @@ export function FindingsTable({ findings, filter, onFilter, onOpen, pictureUrl, 
               <tr>
                 <th scope="col" className="px-2.5 py-2 text-left font-medium whitespace-nowrap">Page</th>
                 <th scope="col" className="min-w-36 px-2.5 py-2 text-left font-medium">Item</th>
-                <th scope="col" className="px-2.5 py-2 text-left font-medium">Architect</th>
-                <th scope="col" className="px-2.5 py-2 text-left font-medium">Vendor</th>
+                <th scope="col" className="px-2.5 py-2 text-left font-medium">{allCrossView ? 'Reference view' : 'Architect'}</th>
+                <th scope="col" className="px-2.5 py-2 text-left font-medium">{allCrossView ? 'This view' : 'Vendor'}</th>
                 <th scope="col" className="px-2.5 py-2 text-left font-medium">Status</th>
                 <th scope="col" className="px-2.5 py-2 text-left font-medium">Trust</th>
                 <th scope="col" className="px-2.5 py-2 text-left font-medium">Evidence</th>
@@ -379,8 +395,9 @@ export function FindingsTable({ findings, filter, onFilter, onOpen, pictureUrl, 
                         </button>
                         <RoundChip finding={finding} />
                       </th>
-                      <td className="px-2.5 py-2"><FindingValue finding={finding} side="architect" /><SourceTag finding={finding} /></td>
+                      <td className="px-2.5 py-2">{!allCrossView && <SideLabel finding={finding} side="architect" />}<FindingValue finding={finding} side="architect" /><SourceTag finding={finding} /></td>
                       <td className="px-2.5 py-2">
+                        {!allCrossView && <SideLabel finding={finding} side="vendor" />}
                         <FindingValue finding={finding} side="vendor" />
                         <Matches finding={finding} />
                         {showDifference && differenceOf(finding) !== null && <span className="mt-0.5 block text-xs font-medium"><FindingDifference finding={finding} /></span>}

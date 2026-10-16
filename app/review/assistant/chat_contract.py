@@ -60,6 +60,7 @@ type ChatStepTool = Literal[
     "TaskUpdate",
     "Agent",
     "review_results",
+    "compare_rounds",
 ]
 type ChatStopped = Literal["cost_cap", "cancelled", "error", "turn_limit"]
 type ChatCapHit = Literal["message", "package"]
@@ -236,7 +237,17 @@ class ChatFindingOut(BaseModel):
     verified: bool
     arch_box: ChatBoxOut | None = None
     vendor_box: ChatBoxOut | None = None
-    source: Literal["architect", "brand_prototype", "rules", "vendor_arithmetic", "gv_review"]
+    source: Literal[
+        "architect",
+        "brand_prototype",
+        "rules",
+        "vendor_arithmetic",
+        "gv_review",
+        "cross_view",
+        "completeness",
+    ] = Field(
+        description="cross_view and completeness are made only by code, from the reading ledger."
+    )
     parts: list[str] | None = None
     printed_total: str | None = None
     rule_check_id: str | None = None
@@ -249,7 +260,21 @@ class ChatFindingOut(BaseModel):
     )
     vendor_picture_id: str | None = None
     created_by: str = Field(
-        description='"lead", "helper:<n>", or "gv_review" (made by code from a recorded result).'
+        description='"lead", "helper:<n>", "gv_review" (made by code from a recorded result), or '
+        '"ledger" (made by code from the reading ledger).'
+    )
+    ledger_ids: list[str] | None = Field(
+        default=None, description="The reading ledger's entries (S<n>, R<n>) behind it."
+    )
+    reference_side: Literal["vendor", "architect"] | None = Field(
+        default=None,
+        description="cross_view: whose drawings disagree. `architect` then holds the REFERENCE "
+        "view's value and `vendor` this view's.",
+    )
+    sum_text: str | None = Field(
+        default=None,
+        description="vendor_arithmetic from the ledger: code's sum written out (\"12 + 15 1/2 = "
+        '27 1/2 ≠ 27 1/4 printed (off 1/4)").',
     )
     checks: ChatFindingChecksOut | None = None
     inches: ChatFindingInchesOut | None = None
@@ -398,6 +423,162 @@ class ChatRoundsOut(BaseModel):
     not_in_later_round: int
     new: int
     line: str
+    unrequested: int = Field(
+        default=0,
+        description="compare_rounds: changes nobody asked for (no finding, no GV markup).",
+    )
+    pairs: list[ChatRoundPairOut] = Field(
+        default_factory=list, description="compare_rounds: the round pairs compared by code."
+    )
+
+
+class ChatLedgerBoxOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    page: int
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+    file: str | None = None
+
+
+class ChatLedgerStringOut(BaseModel):
+    """One dimension string the AI recorded, and code's sum of it."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    page: int
+    view: str | None = None
+    side: str
+    parts: list[str]
+    printed_total: str
+    box: ChatLedgerBoxOut | None = None
+    by: str
+    result: str = Field(description="adds_up | does_not_add_up | not_a_number")
+    parts_sum: str | None = None
+    off_by: str | None = None
+    rereads: int = 0
+    sum_text: str
+
+
+class ChatLedgerReadingOut(BaseModel):
+    """One value the AI recorded."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    page: int
+    view: str
+    side: str
+    item: str
+    item_key: str
+    instance: int | None = None
+    kind: str
+    value: str
+    inches: str | None = None
+    box: ChatLedgerBoxOut | None = None
+    by: str
+    rereads: int = 0
+
+
+class ChatRecordedResultOut(BaseModel):
+    """A result GV Review recorded (a code FAIL or an evaluator-checked AI page review row)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    key: str
+    kind: str
+    pages: list[int] = Field(default_factory=list)
+    what: str
+    architect: str | None = None
+    vendor: str | None = None
+
+
+class ChatRoundPairOut(BaseModel):
+    """One round pair compared by code (compare_rounds)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    round1_page: int | None = None
+    round2_page: int | None = None
+    fixed: int
+    still_wrong: int
+    unrequested: int
+    unrequested_zones: list[str | None] = Field(default_factory=list)
+
+
+class ChatLedgerStringsOut(BaseModel):
+    """The vendor's (and architect's) dimension strings the AI recorded, added up by code."""
+
+    model_config = ConfigDict(frozen=True)
+
+    total: int
+    add_up: int
+    off: int
+    not_a_number: int
+    vendor_off: int
+    architect_off: int
+    off_list: list[ChatLedgerStringOut] = Field(default_factory=list)
+
+
+class ChatLedgerViewsOut(BaseModel):
+    """The same item read on several views or pages, compared by code."""
+
+    model_config = ConfigDict(frozen=True)
+
+    groups: int
+    consistent: int
+    inconsistent: int
+    not_compared: int
+    typical_groups: int
+
+
+class ChatLedgerCompletenessOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    compared: bool
+    architect_items: int
+    vendor_items: int
+    missing_on_vendor: list[str] = Field(default_factory=list)
+    extra_on_vendor: list[str] = Field(default_factory=list)
+    not_looked_at: list[str] = Field(default_factory=list)
+
+
+class ChatLedgerReportOut(BaseModel):
+    """The reading ledger's counts, by code (CONTRACT3 "Ledger")."""
+
+    model_config = ConfigDict(frozen=True)
+
+    strings: ChatLedgerStringsOut
+    views: ChatLedgerViewsOut
+    completeness: ChatLedgerCompletenessOut
+
+
+class ChatLedgerEntriesOut(BaseModel):
+    """Everything the reading ledger recorded, so a reload shows the same."""
+
+    model_config = ConfigDict(frozen=True)
+
+    strings: list[ChatLedgerStringOut] = Field(default_factory=list)
+    readings: list[ChatLedgerReadingOut] = Field(default_factory=list)
+
+
+class ChatRecordedResultsOut(BaseModel):
+    """GV Review's recorded results (code FAILs, evaluator-checked AI page review differences) and
+    how many the answer includes (the ledger's check)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    recorded: int
+    included: int
+    dismissed: int
+    missing: list[ChatRecordedResultOut] = Field(default_factory=list)
+    also_left_out: list[ChatRecordedResultOut] = Field(
+        default_factory=list,
+        description="Of `missing`, the ones `gv_checks` does not count (e.g. review list failures).",
+    )
 
 
 class ChatTrustUnknownsOut(BaseModel):
@@ -426,6 +607,9 @@ class ChatTrustOut(BaseModel):
     gv_checks: ChatGvChecksOut | None = None
     rounds: ChatRoundsOut | None = None
     not_checked: list[str]
+    ledger: ChatLedgerReportOut | None = None
+    ledger_entries: ChatLedgerEntriesOut | None = None
+    recorded_results: ChatRecordedResultsOut | None = None
 
 
 class ChatTrustBlock(BaseModel):

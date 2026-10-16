@@ -4337,7 +4337,7 @@
             "title": "Compared"
           },
           "created_by": {
-            "description": "\"lead\", \"helper:<n>\", or \"gv_review\" (made by code from a recorded result).",
+            "description": "\"lead\", \"helper:<n>\", \"gv_review\" (made by code from a recorded result), or \"ledger\" (made by code from the reading ledger).",
             "title": "Created By",
             "type": "string"
           },
@@ -4375,6 +4375,21 @@
           "item": {
             "title": "Item",
             "type": "string"
+          },
+          "ledger_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The reading ledger's entries (S<n>, R<n>) behind it.",
+            "title": "Ledger Ids"
           },
           "not_compared_why": {
             "anyOf": [
@@ -4432,6 +4447,22 @@
             "description": "The difference GV Review recorded that this finding is.",
             "title": "Record Id"
           },
+          "reference_side": {
+            "anyOf": [
+              {
+                "enum": [
+                  "vendor",
+                  "architect"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "cross_view: whose drawings disagree. `architect` then holds the REFERENCE view's value and `vendor` this view's.",
+            "title": "Reference Side"
+          },
           "round": {
             "anyOf": [
               {
@@ -4483,12 +4514,15 @@
             ]
           },
           "source": {
+            "description": "cross_view and completeness are made only by code, from the reading ledger.",
             "enum": [
               "architect",
               "brand_prototype",
               "rules",
               "vendor_arithmetic",
-              "gv_review"
+              "gv_review",
+              "cross_view",
+              "completeness"
             ],
             "title": "Source",
             "type": "string"
@@ -4501,6 +4535,18 @@
             ],
             "title": "Status",
             "type": "string"
+          },
+          "sum_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "vendor_arithmetic from the ledger: code's sum written out (\"12 + 15 1/2 = 27 1/2 \u2260 27 1/4 printed (off 1/4)\").",
+            "title": "Sum Text"
           },
           "trust_level": {
             "anyOf": [
@@ -4632,6 +4678,408 @@
           "left_out"
         ],
         "title": "ChatGvChecksOut",
+        "type": "object"
+      },
+      "ChatLedgerBoxOut": {
+        "properties": {
+          "file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "x0": {
+            "title": "X0",
+            "type": "number"
+          },
+          "x1": {
+            "title": "X1",
+            "type": "number"
+          },
+          "y0": {
+            "title": "Y0",
+            "type": "number"
+          },
+          "y1": {
+            "title": "Y1",
+            "type": "number"
+          }
+        },
+        "required": [
+          "page",
+          "x0",
+          "y0",
+          "x1",
+          "y1"
+        ],
+        "title": "ChatLedgerBoxOut",
+        "type": "object"
+      },
+      "ChatLedgerCompletenessOut": {
+        "properties": {
+          "architect_items": {
+            "title": "Architect Items",
+            "type": "integer"
+          },
+          "compared": {
+            "title": "Compared",
+            "type": "boolean"
+          },
+          "extra_on_vendor": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Extra On Vendor",
+            "type": "array"
+          },
+          "missing_on_vendor": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing On Vendor",
+            "type": "array"
+          },
+          "not_looked_at": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Not Looked At",
+            "type": "array"
+          },
+          "vendor_items": {
+            "title": "Vendor Items",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "compared",
+          "architect_items",
+          "vendor_items"
+        ],
+        "title": "ChatLedgerCompletenessOut",
+        "type": "object"
+      },
+      "ChatLedgerEntriesOut": {
+        "description": "Everything the reading ledger recorded, so a reload shows the same.",
+        "properties": {
+          "readings": {
+            "items": {
+              "$ref": "#/components/schemas/ChatLedgerReadingOut"
+            },
+            "title": "Readings",
+            "type": "array"
+          },
+          "strings": {
+            "items": {
+              "$ref": "#/components/schemas/ChatLedgerStringOut"
+            },
+            "title": "Strings",
+            "type": "array"
+          }
+        },
+        "title": "ChatLedgerEntriesOut",
+        "type": "object"
+      },
+      "ChatLedgerReadingOut": {
+        "description": "One value the AI recorded.",
+        "properties": {
+          "box": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatLedgerBoxOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "by": {
+            "title": "By",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "inches": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inches"
+          },
+          "instance": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instance"
+          },
+          "item": {
+            "title": "Item",
+            "type": "string"
+          },
+          "item_key": {
+            "title": "Item Key",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "rereads": {
+            "default": 0,
+            "title": "Rereads",
+            "type": "integer"
+          },
+          "side": {
+            "title": "Side",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          },
+          "view": {
+            "title": "View",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "page",
+          "view",
+          "side",
+          "item",
+          "item_key",
+          "kind",
+          "value",
+          "by"
+        ],
+        "title": "ChatLedgerReadingOut",
+        "type": "object"
+      },
+      "ChatLedgerReportOut": {
+        "description": "The reading ledger's counts, by code (CONTRACT3 \"Ledger\").",
+        "properties": {
+          "completeness": {
+            "$ref": "#/components/schemas/ChatLedgerCompletenessOut"
+          },
+          "strings": {
+            "$ref": "#/components/schemas/ChatLedgerStringsOut"
+          },
+          "views": {
+            "$ref": "#/components/schemas/ChatLedgerViewsOut"
+          }
+        },
+        "required": [
+          "strings",
+          "views",
+          "completeness"
+        ],
+        "title": "ChatLedgerReportOut",
+        "type": "object"
+      },
+      "ChatLedgerStringOut": {
+        "description": "One dimension string the AI recorded, and code's sum of it.",
+        "properties": {
+          "box": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatLedgerBoxOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "by": {
+            "title": "By",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "off_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Off By"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "parts": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Parts",
+            "type": "array"
+          },
+          "parts_sum": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parts Sum"
+          },
+          "printed_total": {
+            "title": "Printed Total",
+            "type": "string"
+          },
+          "rereads": {
+            "default": 0,
+            "title": "Rereads",
+            "type": "integer"
+          },
+          "result": {
+            "description": "adds_up | does_not_add_up | not_a_number",
+            "title": "Result",
+            "type": "string"
+          },
+          "side": {
+            "title": "Side",
+            "type": "string"
+          },
+          "sum_text": {
+            "title": "Sum Text",
+            "type": "string"
+          },
+          "view": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "View"
+          }
+        },
+        "required": [
+          "id",
+          "page",
+          "side",
+          "parts",
+          "printed_total",
+          "by",
+          "result",
+          "sum_text"
+        ],
+        "title": "ChatLedgerStringOut",
+        "type": "object"
+      },
+      "ChatLedgerStringsOut": {
+        "description": "The vendor's (and architect's) dimension strings the AI recorded, added up by code.",
+        "properties": {
+          "add_up": {
+            "title": "Add Up",
+            "type": "integer"
+          },
+          "architect_off": {
+            "title": "Architect Off",
+            "type": "integer"
+          },
+          "not_a_number": {
+            "title": "Not A Number",
+            "type": "integer"
+          },
+          "off": {
+            "title": "Off",
+            "type": "integer"
+          },
+          "off_list": {
+            "items": {
+              "$ref": "#/components/schemas/ChatLedgerStringOut"
+            },
+            "title": "Off List",
+            "type": "array"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          },
+          "vendor_off": {
+            "title": "Vendor Off",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "add_up",
+          "off",
+          "not_a_number",
+          "vendor_off",
+          "architect_off"
+        ],
+        "title": "ChatLedgerStringsOut",
+        "type": "object"
+      },
+      "ChatLedgerViewsOut": {
+        "description": "The same item read on several views or pages, compared by code.",
+        "properties": {
+          "consistent": {
+            "title": "Consistent",
+            "type": "integer"
+          },
+          "groups": {
+            "title": "Groups",
+            "type": "integer"
+          },
+          "inconsistent": {
+            "title": "Inconsistent",
+            "type": "integer"
+          },
+          "not_compared": {
+            "title": "Not Compared",
+            "type": "integer"
+          },
+          "typical_groups": {
+            "title": "Typical Groups",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "groups",
+          "consistent",
+          "inconsistent",
+          "not_compared",
+          "typical_groups"
+        ],
+        "title": "ChatLedgerViewsOut",
         "type": "object"
       },
       "ChatListOut": {
@@ -5129,6 +5577,158 @@
         "title": "ChatRecordedDifferenceOut",
         "type": "object"
       },
+      "ChatRecordedResultOut": {
+        "description": "A result GV Review recorded (a code FAIL or an evaluator-checked AI page review row).",
+        "properties": {
+          "architect": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Architect"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "pages": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Pages",
+            "type": "array"
+          },
+          "vendor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vendor"
+          },
+          "what": {
+            "title": "What",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "kind",
+          "what"
+        ],
+        "title": "ChatRecordedResultOut",
+        "type": "object"
+      },
+      "ChatRecordedResultsOut": {
+        "description": "GV Review's recorded results (code FAILs, evaluator-checked AI page review differences) and\nhow many the answer includes (the ledger's check).",
+        "properties": {
+          "also_left_out": {
+            "description": "Of `missing`, the ones `gv_checks` does not count (e.g. review list failures).",
+            "items": {
+              "$ref": "#/components/schemas/ChatRecordedResultOut"
+            },
+            "title": "Also Left Out",
+            "type": "array"
+          },
+          "dismissed": {
+            "title": "Dismissed",
+            "type": "integer"
+          },
+          "included": {
+            "title": "Included",
+            "type": "integer"
+          },
+          "missing": {
+            "items": {
+              "$ref": "#/components/schemas/ChatRecordedResultOut"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "recorded": {
+            "title": "Recorded",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "recorded",
+          "included",
+          "dismissed"
+        ],
+        "title": "ChatRecordedResultsOut",
+        "type": "object"
+      },
+      "ChatRoundPairOut": {
+        "description": "One round pair compared by code (compare_rounds).",
+        "properties": {
+          "fixed": {
+            "title": "Fixed",
+            "type": "integer"
+          },
+          "round1_page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Round1 Page"
+          },
+          "round2_page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Round2 Page"
+          },
+          "still_wrong": {
+            "title": "Still Wrong",
+            "type": "integer"
+          },
+          "unrequested": {
+            "title": "Unrequested",
+            "type": "integer"
+          },
+          "unrequested_zones": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Unrequested Zones",
+            "type": "array"
+          }
+        },
+        "required": [
+          "fixed",
+          "still_wrong",
+          "unrequested"
+        ],
+        "title": "ChatRoundPairOut",
+        "type": "object"
+      },
       "ChatRoundsOut": {
         "properties": {
           "earlier_items": {
@@ -5151,6 +5751,14 @@
             "title": "Not In Later Round",
             "type": "integer"
           },
+          "pairs": {
+            "description": "compare_rounds: the round pairs compared by code.",
+            "items": {
+              "$ref": "#/components/schemas/ChatRoundPairOut"
+            },
+            "title": "Pairs",
+            "type": "array"
+          },
           "rounds": {
             "items": {
               "type": "integer"
@@ -5160,6 +5768,12 @@
           },
           "still_wrong": {
             "title": "Still Wrong",
+            "type": "integer"
+          },
+          "unrequested": {
+            "default": 0,
+            "description": "compare_rounds: changes nobody asked for (no finding, no GV markup).",
+            "title": "Unrequested",
             "type": "integer"
           }
         },
@@ -5351,7 +5965,8 @@
           "TaskCreate",
           "TaskUpdate",
           "Agent",
-          "review_results"
+          "review_results",
+          "compare_rounds"
         ],
         "type": "string"
       },
@@ -5642,6 +6257,26 @@
               }
             ]
           },
+          "ledger": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatLedgerReportOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ledger_entries": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatLedgerEntriesOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "not_checked": {
             "items": {
               "type": "string"
@@ -5660,6 +6295,16 @@
             ],
             "description": "\"What's right\" items not compared (not counted above).",
             "title": "Not Compared"
+          },
+          "recorded_results": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatRecordedResultsOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "rounds": {
             "anyOf": [
