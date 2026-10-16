@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from collections.abc import Iterator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 import httpx2
@@ -392,3 +394,64 @@ def test_the_system_prompt_is_short_and_names_the_skill_and_the_three_facts() ->
         "Agent",
         "review_results",
     ]
+
+
+class _QuietHandler(BaseHTTPRequestHandler):
+    """Streams the start of an answer over a real socket, then says nothing (a long think)."""
+
+    release = threading.Event()
+
+    def log_message(self, format: str, *args: Any) -> None:
+        pass
+
+    def do_POST(self) -> None:
+        self.rfile.read(int(self.headers.get("content-length") or 0))
+        self.send_response(200)
+        self.send_header("content-type", "text/event-stream")
+        self.end_headers()
+        self.wfile.write(_sse(reply(text("Thinking it over"))[:3]))
+        self.wfile.flush()
+        self.release.wait(30)
+
+
+def test_closing_a_stream_from_another_thread_stops_its_read_at_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancel closes the stream from another thread while the message's thread waits on the
+    socket. Closing alone left that read waiting (until the call's 15-minute read timeout), so a
+    cancelled message never ended and its chat answered 409 to every later message."""
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _QuietHandler)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", f"http://127.0.0.1:{server.server_address[1]}")
+    try:
+        provider = AnthropicSdkProvider(
+            ProviderChoice("anthropic", ANTHROPIC_KEY), timeout_seconds=60
+        )
+        stream = provider.open_stream(_params("claude-haiku-5-5", "high", True))
+        got: list[Any] = []
+
+        def read() -> None:
+            try:
+                for event in stream:
+                    got.append(event["type"])
+            except ProviderFailure as failure:
+                got.append(failure)
+
+        reader = threading.Thread(target=read, daemon=True)
+        reader.start()
+        for _ in range(200):
+            if len(got) >= 3:
+                break
+            threading.Event().wait(0.01)
+        assert got == ["message_start", "content_block_start", "content_block_delta"]
+
+        stream.close()
+        reader.join(timeout=3)
+
+        assert not reader.is_alive()
+        assert isinstance(got[-1], ProviderFailure)
+    finally:
+        _QuietHandler.release.set()
+        server.shutdown()
+        server.server_close()

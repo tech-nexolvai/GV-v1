@@ -320,3 +320,12 @@ describe('model, effort and thinking in the composer', () => {
     expect(stream.send.mock.calls[0][1]).toEqual({ text: 'Hi', model: 'claude-sonnet-5-5', effort: 'max', thinking: true });
   });
 });
+
+describe('the drawing set’s spend under the composer', () => {
+  it('asks for the models with the set, so the spend is this set’s chats (not always $0.00)', async () => {
+    const api = fakeChatApi({ models: vi.fn(async () => modelsOut({ package_spent_usd: '4.27', package_cap_usd: '40.00' })) });
+    renderChat(api);
+    await screen.findByText(/\$4\.27 of \$40\.00 used on this drawing set/);
+    expect(api.models).toHaveBeenCalledWith('pkg-1');
+  });
+});

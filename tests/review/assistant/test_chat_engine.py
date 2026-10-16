@@ -529,7 +529,9 @@ def test_the_lead_at_its_turn_limit_answers_without_tools(tmp_path: Path) -> Non
     assert final["tool_choice"] == {"type": "none"}
     assert final["messages"][-1]["content"][-1]["text"] == TURN_LIMIT_NOTE
     assert outcome.stopped == "turn_limit"
-    assert outcome.text.startswith("Answer from what I have.") and "tool turns" in outcome.text
+    # The stop is carried by `stopped` (the screen says it); the answer is not given a note.
+    assert outcome.text == "Answer from what I have."
+    assert [b["text"] for b in outcome.blocks if b["type"] == "text"] == [outcome.text]
 
 
 def test_at_the_money_cap_the_lead_gets_one_smaller_final_call(tmp_path: Path) -> None:
@@ -543,7 +545,17 @@ def test_at_the_money_cap_the_lead_gets_one_smaller_final_call(tmp_path: Path) -
     final = _sent(provider.lead_calls[0])
     assert final["tool_choice"] == {"type": "none"} and final["max_tokens"] == 16000
     assert final["messages"][-1]["content"][-1]["text"] == COST_CAP_NOTE
-    assert outcome.stopped == "cost_cap" and "cost cap" in outcome.text
+    assert outcome.stopped == "cost_cap" and outcome.text == "Short answer."
+    assert [b["text"] for b in outcome.blocks if b["type"] == "text"] == ["Short answer."]
+
+
+def test_a_forced_final_call_with_no_words_still_answers_with_the_stop(tmp_path: Path) -> None:
+    provider = ScriptedProvider(lead=[reply(thinking("Hmm."))])
+    harness = Harness(tmp_path, provider, message_cap=1 * DOLLARS)
+
+    outcome = harness.run()
+
+    assert outcome.stopped == "cost_cap" and "$1.00 cost cap" in outcome.text
 
 
 def test_over_the_cap_no_call_is_made_and_the_answer_says_so(tmp_path: Path) -> None:

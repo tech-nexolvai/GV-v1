@@ -95,7 +95,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
 
   useEffect(() => {
     let current = true;
-    api.models().then(
+    api.models(packageId).then(
       (data) => current && setModels({ status: 'ready', data }),
       // A failed refresh keeps the models already shown; only a first failure is said.
       (error: unknown) => current && setModels((now) => (now.status === 'ready' ? now : { status: 'error', message: chatFailureWords(error) })),
@@ -103,7 +103,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
     return () => {
       current = false;
     };
-  }, [api, modelsAsk]);
+  }, [api, modelsAsk, packageId]);
 
   const modelList = models.status === 'ready' ? models.data.models : [];
   const choice = models.status === 'ready' ? resolveChoice(modelList, picked ?? remembered) : null;
@@ -302,6 +302,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
         patch((message) => settle(message, { stopped: message.stopped ?? 'cancelled' }));
         setAnnounce('Stopped');
         setListAsk((n) => n + 1);
+        setModelsAsk((n) => n + 1);
       } else if (!started) {
         // Refused before anything began (busy, too long, offline): the question goes back to the box.
         setThread((now) => (now && now.chatId === chatId ? { ...now, messages: now.messages.filter((message) => message.key !== userKey && message.key !== answerKey) } : now));

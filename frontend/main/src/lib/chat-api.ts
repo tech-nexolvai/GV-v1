@@ -225,7 +225,8 @@ const id = (value: string) => encodeURIComponent(value);
 
 /** Every chat route in one place, so a path change from the backend is one edit here. */
 export const chatPaths = {
-  models: () => `${BASE}/assistant/models`,
+  /** With the drawing set, so `package_spent_usd` is that set's chat spend (else always 0.00). */
+  models: (packageId?: string) => `${BASE}/assistant/models${packageId ? `?package_id=${id(packageId)}` : ''}`,
   chats: (packageId: string) => `${BASE}/packages/${id(packageId)}/chats`,
   chat: (chatId: string) => `${BASE}/chats/${id(chatId)}`,
   messages: (chatId: string) => `${BASE}/chats/${id(chatId)}/messages`,
@@ -261,8 +262,8 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
-export function getChatModels(): Promise<ChatModels> {
-  return json<ChatModels>(chatPaths.models());
+export function getChatModels(packageId?: string): Promise<ChatModels> {
+  return json<ChatModels>(chatPaths.models(packageId));
 }
 
 export function listChats(packageId: string): Promise<ChatList> {

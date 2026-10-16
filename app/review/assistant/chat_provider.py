@@ -22,6 +22,7 @@ the SDK client; it never reaches the sandbox, the browser, a log or an event.
 from __future__ import annotations
 
 import logging
+import socket
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any, Final, Literal, Protocol
@@ -194,11 +195,25 @@ def failure_from(error: BaseException) -> ProviderFailure:
     )
 
 
+def _shut_down(raw: Any) -> None:
+    """Shut the stream's connection down, so a read waiting on it in another thread returns at
+    once. Closing the response alone does not wake that read (on macOS it waits until the call's
+    read timeout, 15 minutes by default), so a cancelled message would never end."""
+    try:
+        network = raw.response.extensions.get("network_stream")
+        sock = None if network is None else network.get_extra_info("socket")
+        if sock is not None:
+            sock.shutdown(socket.SHUT_RDWR)
+    except Exception:  # noqa: BLE001 - best effort: an already closed connection is fine
+        _log.debug("assistant chat stream connection was already shut")
+
+
 class _SdkStream:
     """The SDK's raw stream, as plain dicts."""
 
     def __init__(self, raw: Any) -> None:
         self._raw = raw
+        self._finished = False
 
     def __iter__(self) -> Iterator[dict[str, Any]]:
         try:
@@ -206,10 +221,15 @@ class _SdkStream:
                 kind = getattr(event, "type", None)
                 if kind in _RAW_EVENTS:
                     yield event.to_dict(mode="json")
+            self._finished = True
         except Exception as error:  # noqa: BLE001 - every provider failure is told plainly
             raise failure_from(error) from None
 
     def close(self) -> None:
+        """Close the stream; one not read to its end (a cancel, from another thread) has its
+        connection shut down first, so the read waiting on it stops now."""
+        if not self._finished:
+            _shut_down(self._raw)
         try:
             self._raw.close()
         except Exception:  # noqa: BLE001 - closing a finished or broken stream is harmless
