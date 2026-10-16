@@ -25,8 +25,11 @@ Files in this folder (read-only):
 | GV's markup | Notes, clouds, boxes and corrected numbers a GV reviewer added. | GV's notes. Never a design value, never the vendor's value. |
 
 Also seen: **brand prototype / brand standard** sheets (a hotel or restaurant brand's typical
-design). They are a reference, not this job's architect drawing: never treat them as the design.
-Mention a difference with one only as "the brand prototype shows ...", separately.
+design). They are a reference, not this job's architect drawing: never call them the design. But
+**do compare the vendor with them**, mostly where the architect's drawing does not show the item
+(no size, no detail): heights, widths, splashes, tags, sinks, door and drawer layout. Report those
+differences in their own group, "Differs from the brand prototype", worded "the brand prototype
+shows ..., the vendor shows ...; confirm which governs". A reviewer wants to know about them.
 
 ## 2. Find which file and pages are whose
 
@@ -133,6 +136,12 @@ stays in the copy; treat it as GV's. A vendor number under a yellow box may stil
 
 ## 7. What to compare (not only overall widths)
 
+**"The architect prints no size here" never means "nothing to compare".** Architects often draw
+millwork without dimensions; then compare what is drawn: how many bays, doors, drawers and
+shelves, door vs drawer, uppers present and where they start and stop, splashes, the sink and its
+position, appliances, collars and holes, tags and notes. Scale only to say "about", and say so. Do
+this on **every** paired page, including the second round (revision) pages.
+
 - **Sizes**: overall length, each piece and cabinet width, **depth** (countertop depth = cabinet
   depth + overhang), **heights** (counter height above floor, upper cabinets' bottom and top,
   backsplash height), thicknesses (top, splash).
@@ -169,6 +178,9 @@ stays in the copy; treat it as GV's. A vendor number under a yellow box may stil
 6. **Verify every lead yourself before you state it**: open that crop on both drawings and read the
    numbers. A lead you checked and found wrong, drop. One you had no time to check, list under
    "Leads not checked yet"; never drop it silently.
+7. **Whole-set questions cover every page pair** (section 7), yours or a helper's; brief helpers on
+   non-dimension differences and brand prototype sheets too. Close with the pages found the same
+   and the pages not opened.
 
 ## 9. How to answer
 
@@ -181,7 +193,7 @@ stays in the copy; treat it as GV's. A vendor number under a yellow box may stil
 - Inches, with the printed form when useful. Say which side looks wrong, or "needs a person to
   check". Say whether GV already flagged it.
 - Mark what you verified on the drawing yourself vs what is a lead from a helper you have not
-  checked. Name pages you did not open.
+  checked. Name pages you did not open. Brand prototype differences go in their own group.
 - Never write pass, fail, approved or signed off as your own judgement: GV's code records results
   and a GV reviewer decides. Your answer is an AI reading, to check before acting.
 
