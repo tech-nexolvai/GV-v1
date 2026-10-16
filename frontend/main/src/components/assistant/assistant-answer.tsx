@@ -397,6 +397,39 @@ export function CountertopEvidence({
 
 // ── The answer ──────────────────────────────────────────────
 
+/**
+ * A markdown table from an answer (`answerBlocks`), scrolling sideways when it is wider than the
+ * column. Each cell's words go through `renderCell` (page links here, inline markdown in the chat).
+ */
+export function AnswerTable({ header, rows, renderCell }: { header: readonly string[]; rows: readonly (readonly string[])[]; renderCell: (cell: string) => React.ReactNode }) {
+  return (
+    <div className="overflow-x-auto rounded-lg border">
+      <table className="w-full border-collapse text-left text-[13px]">
+        <thead className="bg-muted/60">
+          <tr>
+            {header.map((cell, at) => (
+              <th key={at} scope="col" className="border-b px-3 py-1.5 font-medium">
+                {renderCell(cell)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, at) => (
+            <tr key={at} className="border-b last:border-b-0">
+              {row.map((cell, col) => (
+                <td key={col} className="px-3 py-1.5 align-top">
+                  {renderCell(cell)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export function AnswerView({
   answer,
   records,
@@ -480,30 +513,12 @@ export function AnswerView({
         }
         if (block.kind === 'table') {
           return (
-            <div key={index} className="overflow-x-auto rounded-lg border">
-              <table className="w-full border-collapse text-left text-[13px]">
-                <thead className="bg-muted/60">
-                  <tr>
-                    {block.header.map((cell, at) => (
-                      <th key={at} scope="col" className="border-b px-3 py-1.5 font-medium">
-                        <Inline parts={answerParts(cell, answer.citations, records)} nav={nav} />
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {block.rows.map((row, at) => (
-                    <tr key={at} className="border-b last:border-b-0">
-                      {row.map((cell, col) => (
-                        <td key={col} className="px-3 py-1.5 align-top">
-                          <Inline parts={answerParts(cell, answer.citations, records)} nav={nav} />
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <AnswerTable
+              key={index}
+              header={block.header}
+              rows={block.rows}
+              renderCell={(cell) => <Inline parts={answerParts(cell, answer.citations, records)} nav={nav} />}
+            />
           );
         }
         const text = visibleParts(block.tokens, visible[index]);

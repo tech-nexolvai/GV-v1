@@ -1,4 +1,4 @@
-import { ChevronRight, FileSearch, Image as ImageIcon, ListChecks, SquareTerminal, Users } from 'lucide-react';
+import { ChevronRight, FilePen, FileSearch, Image as ImageIcon, ListChecks, SquareTerminal, Users } from 'lucide-react';
 
 import type { AssistantPlanTask, AssistantStep } from '@/api/assistantTypes';
 import { stepsSummary, type LiveEntry } from '@/lib/assistant-steps';
@@ -57,6 +57,7 @@ function stepIcon(kind: AssistantStep['kind']) {
   if (kind === 'view') return <ImageIcon aria-hidden="true" className={ICON} />;
   if (kind === 'agents') return <Users aria-hidden="true" className={ICON} />;
   if (kind === 'task') return <ListChecks aria-hidden="true" className={ICON} />;
+  if (kind === 'file') return <FilePen aria-hidden="true" className={ICON} />;
   return <FileSearch aria-hidden="true" className={ICON} />;
 }
 
@@ -126,8 +127,9 @@ export function LiveSteps({ entries, stage }: { entries: readonly LiveEntry[]; s
             </p>
             <div className="ml-[7px] flex flex-col gap-1 border-l border-border pl-3.5">
               {entry.agents.map((agent) => (
-                <Fold key={agent.description} slot="assistant-agent" summary={agentSummary(agent, true)} muted>
+                <Fold key={agent.description} slot="assistant-agent" summary={agentSummary(agent, !agent.done)} muted>
                   {agent.steps.map((inner, at) => <StepItem key={at} step={inner} />)}
+                  {agent.done && agent.report && <p className="text-xs whitespace-pre-wrap break-words text-muted-foreground">{agent.report}</p>}
                 </Fold>
               ))}
             </div>

@@ -23,7 +23,10 @@ interface AppShellProps {
   /** The evidence for the finding the reviewer opened, or nothing. Never open on its own. */
   evidencePanel?: React.ReactNode;
   onNavigate: (page: Page) => void;
+  /** A drawing set picked in the sidebar: the app opens its chat (#1464). */
   onOpenPackage: (packageId: string) => void;
+  /** The open drawing set's "Review list" in the sidebar: its review screen (#1464). */
+  onOpenReviewList?: (packageId: string) => void;
   onNewReview: () => void;
   onToggleTheme: () => void;
 }
@@ -59,6 +62,7 @@ export function AppShell({
   evidencePanel,
   onNavigate,
   onOpenPackage,
+  onOpenReviewList,
   onNewReview,
   onToggleTheme,
 }: AppShellProps) {
@@ -97,17 +101,18 @@ export function AppShell({
           liveRestarting={liveRestarting}
           onNavigate={onNavigate}
           onOpenPackage={onOpenPackage}
+          onOpenReviewList={onOpenReviewList}
           onNewReview={onNewReview}
           onToggleTheme={onToggleTheme}
         />
 
         {/* Not shadcn's SidebarInset, which is a <main>: the screen below already is the page's main. */}
         <div className="shell__content flex min-w-0 flex-1 flex-col">
-          {/* One <h1> per page (#1125): every page but an open review names itself with a visible one
-              (PageFrame); on an open review it is this top bar's, and the review's panels use <h2>. */}
+          {/* One <h1> per page (#1125): every page but an open review or chat names itself with a
+              visible one (PageFrame); on those it is this top bar's, and their panels use <h2>. */}
           <AppTopbar
             title={title}
-            titleHeading={activePage === 'review' && activePackage !== null}
+            titleHeading={(activePage === 'review' || activePage === 'chat') && activePackage !== null}
             crumbs={crumbs}
             titleRef={setTitleSlot}
             actionsRef={setActionsSlot}
