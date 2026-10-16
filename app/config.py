@@ -91,8 +91,15 @@ class Settings(BaseSettings):
     # refuses decision requests and answers the starter questions from the records, with no call.
     review_assistant_enabled: bool = False
     review_assistant_model: Literal["anthropic.claude-sonnet-5-5"] = "anthropic.claude-sonnet-5-5"
-    # No spending cap for now (Anant, 2026-10-10); each call's cost is recorded for the Usage page
-    # from `GV_MODEL_RATES_FILE`, or as unknown when no price is stated.
+    # Each call's cost is recorded for the Usage page from `GV_MODEL_RATES_FILE`, or as unknown
+    # when no price is stated. Since #1431 the assistant also looks at the page asked about (its
+    # architect and vendor halves as pictures), within a budget per package revision and a cap per
+    # question (a question over the cap is asked without the pictures).
+    review_assistant_page_pictures: bool = True
+    review_assistant_budget_usd: Decimal = Field(default=Decimal("2.00"), ge=0, allow_inf_nan=False)
+    review_assistant_question_cap_usd: Decimal = Field(
+        default=Decimal("0.25"), gt=0, allow_inf_nan=False
+    )
     review_assistant_timeout_seconds: int = Field(default=60, ge=1, le=300)
     # How many earlier turns of the conversation are sent with a question (the request takes <= 6).
     review_assistant_max_history_turns: int = Field(default=6, ge=0, le=6)

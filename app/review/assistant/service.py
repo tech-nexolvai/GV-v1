@@ -8,8 +8,16 @@
    an unknown cost when no price is stated) and committed; `stage guard`, then the guarded answer,
    or the records-only fallback when the reply was malformed or failed the guard.
 
-No spending cap for now (Anant, 2026-10-10: "first our things should work, then optimization
-later"); every call is still recorded on the Usage page.
+**Looking at the page (#1431).** A question about a page (named in the question, the page in
+focus, or the focused record's page) also sends that page's architect and vendor pictures and its
+AI page review rows (`page_pictures.py`). A question with no page sends the records only. The
+guard is the same either way: the model still writes no fact of its own.
+
+**Cost (#1431).** Every call is recorded on the Usage page. With a budget (`AssistantBudget`), a
+question whose estimated cost is over the per-question cap is asked without its pictures, and
+when the package's assistant spend plus the estimate would pass the package budget the model is
+not asked: the records answer if they can, else a plain "budget used" answer. A call with no
+stated price cannot be estimated, so it is asked and recorded with an unknown cost, as before.
 
 A provider failure is an `error` event in plain English (busy, unavailable), never the provider's
 words. Logs carry ids, lengths and codes only, never the question or the answer.
@@ -21,6 +29,7 @@ import logging
 import re
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
+from decimal import Decimal
 from time import monotonic_ns
 from typing import Any, Final, Literal, Protocol
 from uuid import UUID
@@ -53,8 +62,14 @@ from app.review.assistant.model import (
     build_request,
     parse_answer,
 )
+from app.review.assistant.page_pictures import PageLook, PagePictureSource
 from app.review.assistant.placeholders import placeholder_guide
-from app.review.assistant.records import ReviewItemRecord, ReviewSnapshot, prompt_records
+from app.review.assistant.records import (
+    FindingRecord,
+    ReviewItemRecord,
+    ReviewSnapshot,
+    prompt_records,
+)
 from app.review.assistant.records_only import (
     NO_ANSWER_IN_RECORDS,
     answer_for_question,
@@ -66,12 +81,16 @@ from app.review.assistant.records_only import (
     needs_you_answer,
 )
 from app.runs.invocations import BedrockConverseInvocationRecorder
+from app.runs.rates import ModelRates, call_cost_micros
 
 __all__ = [
+    "BUDGET_TEXT",
     "DISABLED_TEXT",
+    "AssistantBudget",
     "AssistantRuntime",
     "CallLedger",
     "SessionLedger",
+    "assistant_spent_micros",
     "stream_answer",
 ]
 
@@ -80,6 +99,10 @@ _log = logging.getLogger(__name__)
 DISABLED_TEXT: Final = (
     "The review assistant is not switched on here, so I can only answer the suggested questions, "
     "from the records."
+)
+BUDGET_TEXT: Final = (
+    "This package has used its assistant budget, so Claude Sonnet was not asked. The suggested "
+    "questions still work from the records."
 )
 _BUSY: Final = ErrorEvent(
     code="model_busy",
@@ -165,6 +188,84 @@ class AssistantRuntime:
 
     model: AssistantModel | None
     max_history_turns: int
+    page_pictures: bool = False
+    """Whether a question about a page sends that page's pictures (#1431)."""
+    budget_usd: Decimal | None = None
+    """The assistant's budget per package revision; `None` is no budget (tests)."""
+    question_cap_usd: Decimal | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AssistantBudget:
+    """The package's assistant budget and the cap on one question, in millionths of a dollar."""
+
+    package_cap_micros: int
+    question_cap_micros: int
+    spent_micros: Callable[[], int]
+    """What this package's assistant calls have cost so far, from the recorded calls."""
+    rates: ModelRates | None
+
+
+#: Tokens for the API's own framing of a request, on top of what it carries.
+_REQUEST_OVERHEAD_TOKENS: Final = 500
+_TILE_PX: Final = 28
+
+
+def _estimate_micros(
+    request: Mapping[str, Any], look: PageLook | None, model_id: str, rates: ModelRates | None
+) -> int | None:
+    """An upper bound on one call's cost: one token per text byte, each picture's tile count, and
+    the whole output allowance; `None` when the model has no stated price."""
+    tokens = _REQUEST_OVERHEAD_TOKENS
+    for block in request.get("system") or ():
+        tokens += len(str(block.get("text", "")).encode("utf-8"))
+    for message in request.get("messages") or ():
+        for block in message.get("content") or ():
+            if isinstance(block.get("text"), str):
+                tokens += len(block["text"].encode("utf-8"))
+    for picture in () if look is None else look.pictures:
+        tokens += -(-picture.width_px // _TILE_PX) * -(-picture.height_px // _TILE_PX)
+    output = int(request.get("inferenceConfig", {}).get("maxTokens", 0))
+    return call_cost_micros(rates, model_id, tokens, output)
+
+
+def assistant_spent_micros(session: Session, package_revision_id: UUID) -> int:
+    """What the assistant's recorded calls on this revision cost (unpriced calls count as zero)."""
+    from sqlalchemy import func, select
+
+    from app.models import ModelInvocation
+
+    return int(
+        session.scalar(
+            select(func.coalesce(func.sum(ModelInvocation.cost_micros), 0)).where(
+                ModelInvocation.package_revision_id == package_revision_id,
+                ModelInvocation.prompt_id.like("review-assistant-%"),
+            )
+        )
+        or 0
+    )
+
+
+def _asked_page(snapshot: ReviewSnapshot, request: AssistantRequest) -> int | None:
+    """The page a question is about: named in it, else in focus, else the focused record's."""
+    named = page_mentioned(request.question)
+    if named is not None:
+        return named
+    focus = request.focus
+    if focus is None:
+        return None
+    if focus.page_number is not None:
+        return focus.page_number
+    if focus.record_id is None:
+        return None
+    record = snapshot.by_record_id(focus.record_id)
+    if isinstance(record, FindingRecord):
+        # A finding names its pages; one page is looked at only when it names exactly one.
+        return record.pages[0] if len(record.pages) == 1 else None
+    if record is not None:
+        return record.page_number
+    entry = snapshot.review_item_by_key(focus.record_id)
+    return None if entry is None else entry.page_number
 
 
 def _stage(stage: str) -> Event:
@@ -284,6 +385,8 @@ def stream_answer(
     load_snapshot: Callable[[], ReviewSnapshot],
     runtime: AssistantRuntime,
     ledger: CallLedger,
+    pictures: PagePictureSource | None = None,
+    budget: AssistantBudget | None = None,
 ) -> Iterator[Event]:
     """The events for one question, in the order the steps happen."""
     question = request.question
@@ -379,15 +482,66 @@ def stream_answer(
     # assistant wrote is not trusted, so it never reaches the prompt.
     asked = tuple(turn for turn in request.history if turn.role == "user")
     history = asked[-runtime.max_history_turns :] if runtime.max_history_turns else ()
-    built = build_request(
-        model_id=model.model_id,
-        records_json=prompt_records(snapshot),
-        placeholders=placeholder_guide(snapshot),
-        question=question,
-        history=history,
-        focus=request.focus,
-        focus_ids=_focus_ids(snapshot, request),
-    )
+    look: PageLook | None = None
+    page = _asked_page(snapshot, request)
+    if pictures is not None and page is not None:
+        try:
+            look = pictures.for_page(page)
+        except Exception as failed:  # noqa: BLE001 - no pictures never stops the answer
+            _log.warning(
+                "review assistant could not make the page pictures: %s",
+                type(failed).__name__,
+                extra=log,
+            )
+
+    def _built(shown: PageLook | None) -> dict[str, Any]:
+        return build_request(
+            model_id=model.model_id,
+            records_json=prompt_records(snapshot),
+            placeholders=placeholder_guide(snapshot),
+            question=question,
+            history=history,
+            focus=request.focus,
+            focus_ids=_focus_ids(snapshot, request),
+            look=shown,
+        )
+
+    built = _built(look)
+    if budget is not None:
+        estimate = _estimate_micros(built, look, model.model_id, budget.rates)
+        if estimate is not None and estimate > budget.question_cap_micros and look is not None:
+            # Over the cap with the pictures: asked about the records (and AI review rows) only.
+            look = PageLook(
+                page_number=look.page_number, pictures=(), ai_review_rows=look.ai_review_rows
+            )
+            built = _built(look)
+            estimate = _estimate_micros(built, look, model.model_id, budget.rates)
+        try:
+            spent = budget.spent_micros()
+        except Exception:  # noqa: BLE001 - an unknown spend stops the call rather than overspending
+            _log.exception("review assistant could not read its spend", extra=log)
+            spent = budget.package_cap_micros
+        if estimate is not None and (
+            estimate > budget.question_cap_micros or spent + estimate > budget.package_cap_micros
+        ):
+            _log.info("review assistant budget stop", extra=log)
+            draft = answer_for_question(snapshot, question, request.focus)
+            yield _stage("guard")
+            yield (
+                "answer",
+                _publish_safely(
+                    (
+                        _checked_or_plain(draft, snapshot)
+                        if draft is not None
+                        else Draft(text=BUDGET_TEXT)
+                    ),
+                    snapshot,
+                    mode="records_only" if draft is not None else "disabled",
+                    question=question,
+                ),
+            )
+            return
+    looked_at = look.page_number if look is not None and look.pictures else None
     # Nothing is held open in the database while the model thinks.
     try:
         ledger.before_call()
@@ -426,6 +580,8 @@ def stream_answer(
         answer = publish(
             proposed, snapshot, mode="llm", question=question, checked=True, model_id=model.model_id
         )
+        if looked_at is not None:
+            answer = answer.model_copy(update={"looked_at_page": looked_at})
     except (MalformedAnswer, GuardRejected) as dropped:
         # The reason code only (never the question or the answer), at a level a local dev
         # server shows, so a developer can see why an answer fell back.

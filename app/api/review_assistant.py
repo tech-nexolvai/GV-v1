@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Annotated, Final
 from uuid import UUID
 
@@ -21,7 +22,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_session
+from app.api.dependencies import ARTIFACT_STORE_STATE, get_session
 from app.api.reviewer_chat import _live_run_facts
 from app.api.visual_countertops import _countertop_results_for_revision
 from app.auth import Principal, require_project_access
@@ -30,10 +31,18 @@ from app.models import Package, PackageRevision
 from app.review.approval import readiness_and_decisions
 from app.review.assistant.contract import AssistantInfoOut, AssistantRequest
 from app.review.assistant.model import OpenRouterAssistantModel
+from app.review.assistant.page_pictures import RevisionPagePictures
 from app.review.assistant.records import ReviewSnapshot, build_snapshot
-from app.review.assistant.service import AssistantRuntime, SessionLedger, stream_answer
+from app.review.assistant.service import (
+    AssistantBudget,
+    AssistantRuntime,
+    SessionLedger,
+    assistant_spent_micros,
+    stream_answer,
+)
 from app.review.assistant.starters import starters
 from app.review.review_items import review_items_for_revision
+from app.runs.rates import rates_from_environment
 
 router = APIRouter(tags=["review assistant"])
 NOT_FOUND_DETAIL: Final = "Not found"
@@ -96,6 +105,9 @@ def runtime_for(request: Request) -> AssistantRuntime:
             timeout_seconds=settings.review_assistant_timeout_seconds,
         ),
         max_history_turns=settings.review_assistant_max_history_turns,
+        page_pictures=settings.review_assistant_page_pictures,
+        budget_usd=settings.review_assistant_budget_usd,
+        question_cap_usd=settings.review_assistant_question_cap_usd,
     )
 
 
@@ -133,9 +145,11 @@ class _AssistantContext:
     package_id: UUID
     revision: PackageRevision
     runtime: AssistantRuntime
+    store: object | None
 
 
 def _assistant_context(
+    request: Request,
     body: AssistantRequest,
     _: Annotated[Principal, Depends(require_project_access)],
     session: Annotated[Session, Depends(get_session)],
@@ -154,6 +168,30 @@ def _assistant_context(
         package_id=package_id,
         revision=revision,
         runtime=runtime,
+        store=getattr(request.app.state, ARTIFACT_STORE_STATE, None),
+    )
+
+
+_MICROS: Final = Decimal(1_000_000)
+
+
+def _pictures(context: _AssistantContext) -> RevisionPagePictures | None:
+    """The asked page's pictures, when switched on and the drawings' store is configured."""
+    if not context.runtime.page_pictures or context.store is None:
+        return None
+    return RevisionPagePictures(context.session, context.store, context.revision.id)
+
+
+def _budget(context: _AssistantContext) -> AssistantBudget | None:
+    """The package's assistant budget, from its recorded calls and the deployment's prices."""
+    runtime = context.runtime
+    if runtime.budget_usd is None or runtime.question_cap_usd is None:
+        return None
+    return AssistantBudget(
+        package_cap_micros=int(runtime.budget_usd * _MICROS),
+        question_cap_micros=int(runtime.question_cap_usd * _MICROS),
+        spent_micros=lambda: assistant_spent_micros(context.session, context.revision.id),
+        rates=rates_from_environment(),
     )
 
 
@@ -177,6 +215,8 @@ def review_assistant_stream(
         ),
         runtime=context.runtime,
         ledger=SessionLedger(context.session, context.revision.id),
+        pictures=_pictures(context),
+        budget=_budget(context),
     ):
         yield ServerSentEvent(event=name, data=data)
 
