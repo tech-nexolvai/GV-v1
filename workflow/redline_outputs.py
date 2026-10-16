@@ -18,6 +18,7 @@ from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from decimal import Decimal
+from fractions import Fraction
 from io import BytesIO
 from typing import Final
 from uuid import UUID
@@ -217,12 +218,12 @@ def ai_review_input(review: object) -> tuple[ArchitectCompare | None, tuple[Revi
     """The AI page review (`app/review/ai_review.ai_review_for_revision`'s `AiReviewOut`, or the
     copy frozen at sign-off) as the renderer draws it, and the marks of a person who agreed.
 
-    `None` when no page has a row, so nothing about it is printed. Each "different" row is clouded
-    at its `vendor_box` with "✗ Architect: X — vendor: Y (what it measures)"; "Agree: the vendor is
-    wrong" keeps the cloud and adds the person's mark; "Not a difference" is listed, not clouded;
-    a row with no `vendor_box` is listed with its page and words. The counts line is added up from
-    the rows themselves, so it always matches what is listed. An unknown result or answer is
-    refused, never dropped.
+    `None` when no page has a row, so nothing about it is printed. Every "different" row is
+    clouded at its `vendor_box` by itself, "✗ Needs: X (per architect: what it measures) — Vendor
+    drew: Y" (decision 2026-10-16: no person answers it, so a stored answer changes nothing and no
+    mark is made); a row with no `vendor_box` is listed with its page and words. Other rows are
+    counted, never clouded. The counts line is added up from the rows themselves, so it always
+    matches what is listed. An unknown result is refused, never dropped.
     """
     pages = _sequence(None if review is None else _field(review, "pages"))
     rows: list[tuple[object, object]] = [
@@ -232,7 +233,6 @@ def ai_review_input(review: object) -> tuple[ArchitectCompare | None, tuple[Revi
         return None, ()
     totals = dict.fromkeys(("same", "different", "not_shown", "unsure"), 0)
     different: list[ArchitectDifference] = []
-    marks: list[ReviewerMark] = []
     for page, row in rows:
         result = _field(row, "result")
         result = str(getattr(result, "value", result))
@@ -241,40 +241,42 @@ def ai_review_input(review: object) -> tuple[ArchitectCompare | None, tuple[Revi
         totals[_AI_RESULTS[result]] += 1
         if result != "different":
             continue
-        subject = f"Page {page}"
         place, reason = _vendor_place(_field(row, "vendor_box"))
-        said = _field(row, "answer")
-        answer = None if said is None else _ANSWERS.get(str(getattr(said, "value", said)))
-        if said is not None and answer is None:
-            raise ValueError(f"unknown answer on an AI page review row: {said!r}")
-        who = _field(row, "answered_by")
         measures = _field(row, "measures")
-        difference = ArchitectDifference(
-            architect_text=str(_field(row, "architect_text") or "not read"),
-            vendor_text=str(_field(row, "vendor_text") or "not read"),
-            subject=subject,
-            evidence_ref=place,
-            unplaced_reason=reason,
-            answer=answer,
-            answered_by=None if who is None else str(who),
-            measures=measures if isinstance(measures, str) and measures.strip() else None,
-        )
-        different.append(difference)
-        if answer is ArchitectAnswer.AGREED:
-            marks.append(
-                ReviewerMark(
-                    kind=ReviewerMarkKind.CONFIRMED,
-                    words=f"Agreed by {who}: vendor is wrong",
-                    subject=f"Compared with the architect (AI read), {subject}",
-                    details=(difference.words,),
-                    evidence_ref=place,
-                    unplaced_reason=reason,
-                )
+        different.append(
+            ArchitectDifference(
+                architect_text=_architect_words(
+                    _field(row, "architect_text"), _field(row, "architect_inches")
+                ),
+                vendor_text=str(_field(row, "vendor_text") or "not read"),
+                subject=f"Page {page}",
+                evidence_ref=place,
+                unplaced_reason=reason,
+                measures=measures if isinstance(measures, str) and measures.strip() else None,
+                ai_read=True,
             )
+        )
     return (
         ArchitectCompare(counts=AiReviewCounts(**totals), different=tuple(different)),
-        tuple(marks),
+        (),
     )
+
+
+def _architect_words(text: object, inches: object) -> str:
+    """The architect's number as printed; one printed in feet also says its exact inches, as code
+    read them: `2'-9"` with `33` is `2'-9" (33")`."""
+    printed = str(text or "").strip() or "not read"
+    if "'" not in printed or not isinstance(inches, str):
+        return printed
+    try:
+        value = Fraction(inches)
+    except (ValueError, ZeroDivisionError):
+        return printed
+    if value < 0:
+        return printed
+    whole, rest = divmod(value, 1)
+    spoken = str(whole) if rest == 0 else f"{whole} {rest}" if whole else str(rest)
+    return f'{printed} ({spoken}")'
 
 
 def compare_for_render(

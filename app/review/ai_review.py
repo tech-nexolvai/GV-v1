@@ -5,13 +5,15 @@ architect dimension code read on it, already decided by code (`workflow/ai_page_
 `extraction/ai_review/checks.py`). This reads the newest review of each page, with each row's
 newest answer:
 
-* **Nothing becomes PASS.** `same`, `not_shown`, `unsure` and `unreadable` rows are shown and
-  block nothing. A `different` row needs a person: `agree` ("the vendor is wrong": it stays
-  clouded) or `not_this` ("not a difference"). Only open `different` rows hold sign-off.
+* **Nothing becomes PASS, and no row needs a person** (decision 2026-10-16: "we don't want
+  anything from the reviewer"). A `different` row is clouded on the draft and final cloud PDF by
+  itself and never holds sign-off; `same`, `not_shown`, `unsure` and `unreadable` rows are shown
+  on the screen only. The answers table and `record_ai_review_answer` stay (append-only, no longer
+  offered by the screen); a stored answer is still shown but changes nothing.
 * **Where:** the architect's dimension (from code's own boxes) and, when the AI gave a plausible
   box, the vendor's printed number; `None` otherwise (the cloud builder lists unplaced ones).
 
-Read-only but for `record_ai_review_answer`, which appends one answer row.
+Read-only but for `record_ai_review_answer`, which appends one answer row (kept, unused).
 """
 
 from __future__ import annotations
@@ -62,7 +64,6 @@ AI_REVIEW_SENT_AS: Final[Mapping[str, str]] = {
     "not_this": "not_a_difference",
     "not_a_difference": "not_a_difference",
 }
-_OFFERED: Final = ["agree", "not_this"]
 #: Each stored answer as the screen and the cloud PDF name it on a row.
 _SHOWN_AS: Final[Mapping[str, str]] = {"vendor_wrong": "agree", "not_a_difference": "not_this"}
 
@@ -82,19 +83,20 @@ class AiReviewRowOut(BaseModel):
     architect_ref: RowLocation | None
     actions: list[str] = Field(
         default_factory=list,
-        description="`agree` (the vendor is wrong) and `not_this` (not a difference) on an open "
-        "`different` row; empty otherwise.",
+        description="Always empty: no row asks a person anything (decision 2026-10-16).",
     )
-    status: Literal["open", "done"] = "done"
+    status: Literal["open", "done"] = Field(
+        default="done", description="Always `done`: no row waits for a person."
+    )
     answer: str | None = Field(
         default=None,
-        description="The newest answer, as the action is named: `agree` (the vendor is wrong) | "
-        "`not_this` (not a difference).",
+        description="An older stored answer, as the action is named (`agree` | `not_this`); "
+        "it changes nothing.",
     )
     answered_by: str | None = None
     clouded: bool = Field(
         default=False,
-        description="True on a `different` row unless a person answered `not_a_difference`.",
+        description="True on every `different` row: it is clouded by itself.",
     )
 
 
@@ -112,7 +114,9 @@ class AiReviewCountsOut(BaseModel):
     not_shown: int = 0
     unsure: int = 0
     unreadable: int = 0
-    needs_person: int = Field(default=0, description="Open `different` rows: sign-off waits.")
+    needs_person: int = Field(
+        default=0, description="Always 0: no row waits for a person, sign-off never waits on it."
+    )
 
 
 class AiReviewOut(BaseModel):
@@ -257,7 +261,6 @@ def ai_review_many(session: Session, revision_ids: Sequence[UUID]) -> dict[UUID,
                 given = answers.get(row.id)
                 stored = given.answer if given is not None and row.result == "different" else None
                 answer = None if stored is None else _SHOWN_AS[stored]
-                open_ = row.result == "different" and answer is None
                 page_out.rows.append(
                     AiReviewRowOut(
                         key=f"{AI_KEY_PREFIX}{row.id}",
@@ -274,15 +277,14 @@ def ai_review_many(session: Session, revision_ids: Sequence[UUID]) -> dict[UUID,
                         why=row.why,
                         vendor_box=_vendor_ref(page, review.vendor_dpi, row.vendor_box_px),
                         architect_ref=_architect_ref(page, review.vendor_dpi, row.architect_box),
-                        actions=list(_OFFERED) if open_ else [],
-                        status="open" if open_ else "done",
+                        actions=[],
+                        status="done",
                         answer=answer,
                         answered_by=None if answer is None or given is None else given.answered_by,
-                        clouded=row.result == "different" and stored != "not_a_difference",
+                        clouded=row.result == "different",
                     )
                 )
                 setattr(counts, row.result, getattr(counts, row.result) + 1)
-                counts.needs_person += open_
             review_out.pages.append(page_out)
         out[revision_id] = review_out
     return out
@@ -295,8 +297,8 @@ def ai_review_for_revision(session: Session, revision_id: UUID) -> AiReviewOut:
 
 
 def ai_review_open_many(session: Session, revision_ids: Sequence[UUID]) -> dict[UUID, int]:
-    """For each revision, its open `different` rows (sign-off waits); a revision with none is
-    left out."""
+    """For each revision, its rows waiting for a person; a revision with none is left out. Always
+    empty since no row waits (decision 2026-10-16); kept for callers."""
     return {
         revision_id: review.counts.needs_person
         for revision_id, review in ai_review_many(session, revision_ids).items()

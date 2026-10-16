@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
@@ -73,7 +73,7 @@ describe('AiReview', () => {
     );
   });
 
-  it('opens Different and Unsure, folds Same and Not shown', async () => {
+  it('opens Different, folds Unsure, Same and Not shown', async () => {
     render(<AiReview review={REVIEW} onLook={() => {}} />);
     expect(screen.getByRole('button', { name: /^Different/ }).getAttribute('aria-expanded')).toBe('true');
     const rows = within(screen.getByRole('list', { name: 'Different' })).getAllByRole('listitem');
@@ -85,7 +85,10 @@ describe('AiReview', () => {
     expect(rows[0].textContent).toContain('sample overall width');
     expect(rows[0].textContent).toContain('p.3');
 
-    expect(screen.getByRole('button', { name: /^Unsure \/ unreadable/ }).getAttribute('aria-expanded')).toBe('true');
+    const unsureButton = screen.getByRole('button', { name: /^Unsure \/ unreadable/ });
+    expect(unsureButton.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByRole('list', { name: 'Unsure / unreadable' })).toBeNull();
+    await userEvent.click(unsureButton);
     const unsure = screen.getByRole('list', { name: 'Unsure / unreadable' });
     expect(unsure.textContent).toContain(WHY.unsure);
     expect(unsure.textContent).toContain(WHY.unreadable);
@@ -114,21 +117,19 @@ describe('AiReview', () => {
     expect(within(status).queryByRole('button')).toBeNull();
   });
 
-  it('offers only the answers the server lists; an answered row shows a grey check and who', async () => {
+  it('different rows need no person: only Look, never Agree or Not a difference, even if the server lists them', () => {
     const onAct = vi.fn();
-    const review: AiReviewOut = { ...REVIEW, pages: [...REVIEW.pages, page(7, 'done', [row('d3', 'different', { actions: ['agree', 'some_new_answer'] })])] };
-    render(<AiReview review={review} onLook={() => {}} onAct={onAct} />);
+    const review: AiReviewOut = { ...REVIEW, pages: [...REVIEW.pages, page(7, 'done', [row('d3', 'different', { actions: ['agree', 'not_this'] })])] };
+    render(<AiReview review={review} onLook={() => {}} />);
     const rows = within(screen.getByRole('list', { name: 'Different' })).getAllByRole('listitem');
-    await userEvent.click(within(rows[0]).getByRole('button', { name: /^Not a difference/ }));
-    expect(onAct).toHaveBeenCalledWith(expect.objectContaining({ key: 'air:d1' }), 'not_this');
-    expect(within(rows[0]).getByRole('button', { name: /^Agree: the vendor is wrong/ })).toBeTruthy();
-    // Answered: no buttons but Look, a neutral grey check, the answer and who gave it.
-    expect(within(rows[1]).queryByRole('button', { name: /Agree|Not a difference/ })).toBeNull();
-    const done = within(rows[1]).getByTestId('ai-review-answered');
-    expect(done.querySelector('svg')).toBeTruthy();
-    expect(done.textContent).toBe('Not a difference · Sample Reviewer');
-    // An answer the page cannot name is never a button (Look + Agree only).
-    expect(within(rows[2]).getAllByRole('button')).toHaveLength(2);
+    expect(rows).toHaveLength(3);
+    for (const listed of rows) {
+      expect(within(listed).queryByRole('button', { name: /Agree|Not a difference/ })).toBeNull();
+      expect(within(listed).getAllByRole('button').map((b) => b.textContent)).toEqual(['Look']);
+      expect(within(listed).queryByTestId('ai-review-answered')).toBeNull();
+    }
+    expect(screen.queryByRole('button', { name: /Agree|Not a difference/ })).toBeNull();
+    expect(onAct).not.toHaveBeenCalled();
   });
 
   it('Look hands back the row it was pressed on, from the keyboard too', async () => {
@@ -214,17 +215,12 @@ describe('SimpleReviewPage: the AI page review', () => {
     );
   });
 
-  it('answers go to W3 with no finding', async () => {
+  it('offers no answer on the page: nothing is sent for an AI review row', async () => {
     posted = [];
     current = withReview();
     renderPage();
     const section = await screen.findByRole('region', { name: 'Compared with the architect' });
-    await userEvent.click(within(section).getByRole('button', { name: /^Agree: the vendor is wrong/ }));
-    await waitFor(() => expect(posted).toHaveLength(1));
-    expect(posted[0]).toEqual({ key: 'air:d1', action: 'agree', body: { expected_finding_id: null } });
-    await waitFor(() => expect((within(section).getByRole('button', { name: /^Not a difference/ }) as HTMLButtonElement).disabled).toBe(false));
-    await userEvent.click(within(section).getByRole('button', { name: /^Not a difference/ }));
-    await waitFor(() => expect(posted).toHaveLength(2));
-    expect(posted[1]).toEqual({ key: 'air:d1', action: 'answer', body: { expected_finding_id: null, answer: 'not_this' } });
+    expect(within(section).queryByRole('button', { name: /Agree|Not a difference/ })).toBeNull();
+    expect(posted).toHaveLength(0);
   });
 });

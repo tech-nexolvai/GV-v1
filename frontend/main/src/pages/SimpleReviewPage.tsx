@@ -782,14 +782,8 @@ export function SimpleReviewPage({
 
                 <div className="flex flex-col gap-10 pt-2">
                   {/* First: the AI page review, every architect number beside the vendor's. Hidden when absent. */}
-                  <AiReview
-                    review={aiReviewOf(data)}
-                    onLook={lookAtAiRow}
-                    busyKey={busy?.key ?? null}
-                    errors={errors}
-                    // An AI review row names no finding: the key is what W3 checks.
-                    onAct={(row, action) => void act(row.key, action, null)}
-                  />
+                  {/* No person answers its rows: a different row is clouded on the PDF by itself (decision 2026-10-16). */}
+                  <AiReview review={aiReviewOf(data)} onLook={lookAtAiRow} />
 
                   {/* The old direct compare, only for a package with no AI page review (#1421). */}
                   {aiReviewOf(data) === null && <ArchitectCompare
