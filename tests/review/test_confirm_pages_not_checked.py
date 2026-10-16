@@ -212,7 +212,8 @@ def test_a_page_code_proved_blank_is_listed_with_its_proof_and_never_blocks_sign
     # Readiness counts only the page that needs an answer.
     readiness = approval_readiness(session, revision.id)
     assert readiness.unconfirmed_no_countertop_pages == (3,)
-    assert "page 3 is not confirmed yet" in (readiness.reason or "")
+    # Still listed for a person, but optional (owner decision 2026-10-16): it does not lock sign-off.
+    assert readiness.reason is None
 
     _answer(session, project_id, package_id, three, "no_countertop")
 
@@ -484,7 +485,8 @@ def test_a_page_that_is_not_on_the_list_is_refused_with_422(
     empty = client.post(url, json={"pages": []})
     long_note = client.post(url, json=_body((3, records[3]), note="n" * 501))
     other_answer = client.post(
-        url, json={**_body((3, records[3])), "answer": "countertop"}  # only confirmations
+        url,
+        json={**_body((3, records[3])), "answer": "countertop"},  # only confirmations
     )
 
     assert unknown.status_code == 422

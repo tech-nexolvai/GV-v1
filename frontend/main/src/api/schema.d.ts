@@ -2744,7 +2744,7 @@ export interface components {
             unchecked_countertop_pages?: number[];
             /**
              * Unconfirmed No Countertop Pages
-             * @description Page numbers listed with no countertop that no reviewer has confirmed yet (#1191). Sign-off is refused until each has an answer.
+             * @description Page numbers listed with no countertop that no reviewer has confirmed yet (#1191). Optional since 2026-10-16: signed unanswered, each is printed as not confirmed by a person.
              */
             unconfirmed_no_countertop_pages?: number[];
         };
@@ -7667,7 +7667,7 @@ export interface components {
              * @description ai_right as a whole percent of readings_checked; None when none checked.
              */
             ai_right_percent: number | null;
-            /** @description How many of `architect_compare` came out each way, and how many still need a person (sign-off waits for them). `None` when the compare has not run. */
+            /** @description How many of `architect_compare` came out each way, and how many a person may still answer (optional). `None` when the compare has not run. */
             architect_compare_counts?: components["schemas"]["ArchitectCompareCountsOut"] | null;
             /** Blocked Reason */
             blocked_reason?: string | null;
@@ -7699,7 +7699,7 @@ export interface components {
             numbers: number;
             /**
              * Open
-             * @description Items and failures still waiting for a person.
+             * @description Items and failures no person answered yet. Optional (owner decision 2026-10-16): they never hold sign-off; signed unanswered, each is printed as not confirmed.
              */
             open: number;
             /**

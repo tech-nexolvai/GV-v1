@@ -25,3 +25,16 @@ export function allSettled(): ReviewItemsOut {
     draft.header = { ...draft.header, open: 0, failures: 0, not_checked: 0, rechecking: 0, can_finalise: true, blocked_reason: null };
   });
 }
+
+/**
+ * Every question is optional (owner, 2026-10-16): the server unlocks sign-off while items are still
+ * open. Nothing is re-checking; the open items and failures stay open.
+ */
+export function optionalOpen(): ReviewItemsOut {
+  return reviewItems((draft) => {
+    for (const entry of draft.items) {
+      if (entry.status === 'rechecking') entry.status = 'done';
+    }
+    draft.header = { ...draft.header, rechecking: 0, can_finalise: true, blocked_reason: null };
+  });
+}

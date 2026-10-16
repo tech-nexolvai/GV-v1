@@ -9,7 +9,6 @@ import { useAsync } from '@/api/useAsync';
 import type { Page } from '@/app/route';
 import type { Theme } from '@/app/theme';
 import { PackageStatusBadge } from '@/components/ui/package-status-badge';
-import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
 import {
   Sidebar,
   SidebarContent,
@@ -49,7 +48,7 @@ export interface AppSidebarProps {
   theme: Theme;
   /** Bumped after an upload or a sign-off, so the list reloads without a page refresh. */
   refreshKey: number;
-  /** The open review's own, newest "need you" count, which wins over the list's copy. */
+  /** The open review's own, newest optional count (`header.open`), which wins over the list's copy. */
   liveNeedYou: { packageId: string; count: number } | null;
   /**
    * The open review's `reading.retrying` (#1249): its badge says "Restarting after a problem" like
@@ -205,12 +204,11 @@ export function AppSidebar({
                         <span className="w-full truncate font-medium">{pkg.vendor ?? 'Untitled document set'}</span>
                         <span className="flex w-full flex-wrap items-center gap-1.5">
                           <PackageStatusBadge status={pkg.state} restarting={liveRestarting?.packageId === pkg.id && liveRestarting.restarting} />
-                          {/* The open review's number is on its header and Results tab (#1126): here it
-                              only says that it needs you. Other reviews keep their number. */}
+                          {/* Every question is optional (owner, 2026-10-16): the open count is "3 optional",
+                              in grey, never an amber "needs you". */}
                           {count !== undefined && count > 0 && (
-                            <span data-slot="need-you" className="inline-flex items-center gap-1 text-xs text-outcome-review-fg">
-                              <OutcomeIcon outcome="REVIEW_REQUIRED" size={12} className="shrink-0" />
-                              {active ? 'Needs you' : <span><span className="num">{count}</span> {count === 1 ? 'item needs' : 'items need'} you</span>}
+                            <span data-slot="need-you" className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                              <span className="num">{count}</span> optional
                             </span>
                           )}
                           {pkg.current_revision_number > 1 && (

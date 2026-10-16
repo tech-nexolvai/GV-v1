@@ -160,14 +160,62 @@ export function summarize(data: ReviewItemsOut): ReviewSummary {
 /**
  * What is left, for the final bar (#1394): plain words with the counts of the same W1 header the page
  * prints (`open`, `not_checked`, `rechecking`), never counted again here and never a judgment of
- * whether the review may be signed (that is `header.can_finalise`). Only counts above zero.
+ * whether the review may be signed (that is `header.can_finalise`). Only counts above zero. Open
+ * items are optional (owner, 2026-10-16): "3 optional", never "3 items need you".
  */
 export function leftWords(header: Pick<ReviewItemsHeader, 'open' | 'not_checked' | 'rechecking'>): string[] {
   const words: string[] = [];
-  if (header.open > 0) words.push(`${plural(header.open, 'item')} ${header.open === 1 ? 'needs' : 'need'} you`);
+  // Every question is optional (owner, 2026-10-16): an open item never "needs" a person.
+  if (header.open > 0) words.push(`${header.open} optional`);
   if (header.not_checked > 0) words.push(`${header.not_checked} not checked`);
   if (header.rechecking > 0) words.push(`${plural(header.rechecking, 'item')} re-checking`);
   return words;
+}
+
+/**
+ * "Ready to create the final cloud PDF — 3 items left unanswered will be printed as not confirmed":
+ * the final bar's words when the server unlocked sign-off while `header.open` items are still open.
+ */
+export function unansweredWords(open: number): string {
+  return `Ready to create the final cloud PDF — ${plural(open, 'item')} left unanswered will be printed as not confirmed`;
+}
+
+/** The plain words for each kind of open item, in the order the sign-off dialog lists them. */
+const NOT_CONFIRMED_KIND_WORDS: [ReviewItem['kind'], string][] = [
+  ['number', 'Numbers to confirm'],
+  ['depth_reading', 'Depths to confirm'],
+  ['countertop_by_hand', 'Countertops to check by hand'],
+  ['wall_choice', 'Wall choices'],
+  ['no_countertop_page', 'Pages to decide'],
+  ['architect', 'Architect questions'],
+  ['cabinet_kinds', 'Cabinet marks'],
+  ['cabinet_run', 'Cabinet marks'],
+  ['other_result', 'Other results to check'],
+];
+/** A kind this screen does not know yet still gets a line of its own words. */
+const OTHER_QUESTIONS = 'Other questions';
+export const CLOUDED_NOT_AGREED = 'Clouded as wrong, not agreed by a person';
+
+/**
+ * What the final cloud PDF will print as "Not confirmed by a person" (owner, 2026-10-16): the open
+ * items, counted by kind in plain words, then the open failures. Only groups above zero, so a
+ * review with nothing open gives an empty list. Counts what the server sent; decides nothing.
+ */
+export function notConfirmedGroups(data: {
+  items: readonly Pick<ReviewItem, 'kind' | 'status'>[];
+  failures: readonly Pick<ReviewFailure, 'status'>[];
+}): { label: string; count: number }[] {
+  const counts = new Map<string, number>();
+  for (const [, label] of NOT_CONFIRMED_KIND_WORDS) counts.set(label, 0);
+  counts.set(OTHER_QUESTIONS, 0);
+  const words = new Map<string, string>(NOT_CONFIRMED_KIND_WORDS);
+  for (const item of data.items) {
+    if (item.status !== 'open') continue;
+    const label = words.get(item.kind) ?? OTHER_QUESTIONS;
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  counts.set(CLOUDED_NOT_AGREED, data.failures.filter((failure) => failure.status === 'open').length);
+  return [...counts].filter(([, count]) => count > 0).map(([label, count]) => ({ label, count }));
 }
 
 /**

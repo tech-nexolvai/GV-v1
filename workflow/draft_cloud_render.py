@@ -46,6 +46,7 @@ from app.models.package import Package, PackageRevision
 from app.models.rules import RuleDefinition, RuleSnapshot
 from app.models.verdicts import CheckRun, Finding, OutputArtifact, OutputArtifactKind
 from app.review.approval import approval_readiness
+from app.review.left_for_person import cover_groups, left_for_person
 from app.review.reviewer_marks import is_not_checked, live_decisions, reviewer_marks_for
 from reports.redline import (
     AI_REVIEW_NOTE,
@@ -66,6 +67,7 @@ from workflow.redline_outputs import (
     ai_review_input,
     architect_compare_input,
     compare_for_render,
+    left_for_person_marks,
     redline_marks,
     render_draft_redline,
 )
@@ -365,6 +367,10 @@ def render_draft_cloud(
         until=None,
     )
     architect, agreed = architect_compare_for_draft(session, package_revision_id)
+    package = session.get(Package, revision.package_id)
+    # Every question is optional (owner decision 2026-10-16): what nobody answered yet is drawn
+    # grey, "Not confirmed by a person", as the signed file would print it if signed now.
+    left = None if package is None else left_for_person(session, revision, package)
     drawing = render_draft_redline(
         session,
         store,
@@ -375,12 +381,15 @@ def render_draft_cloud(
         ),
         not_checked=items.not_checked_ids,
         changed_values=changed_values_for_revision(session, package_revision_id),
-        reviewer_marks=(*redline_marks(marks), *agreed),
+        reviewer_marks=(
+            *redline_marks(marks),
+            *agreed,
+            *(() if left is None else left_for_person_marks(left)),
+        ),
         architect=architect,
     )
     if drawing.artifact is None:
         raise DraftCloudRefused(f"The draft could not be drawn: {drawing.reason}.")
-    package = session.get(Package, revision.package_id)
     screen_open = _screen_open_count(session, package, revision)
     front = _front_page(
         items,
@@ -392,6 +401,7 @@ def render_draft_cloud(
         architect=architect,
         old_compare_left_out=left_out,
         screen_open=screen_open,
+        left_for_person=() if left is None else cover_groups(left),
     )
     document = with_banner(front, store.get(drawing.artifact.key).read())
 
@@ -473,6 +483,7 @@ def _front_page(
     architect: ArchitectCompare | None = None,
     old_compare_left_out: int = 0,
     screen_open: int | str | None = None,
+    left_for_person: Sequence[tuple[str, Sequence[str]]] = (),
 ) -> bytes:
     width, height = letter
     buffer = BytesIO()
@@ -551,6 +562,20 @@ def _front_page(
         for entry in entries:
             paragraph(entry.label)
             paragraph(entry.reason, "    ")
+        line("")
+    if left_for_person:
+        # Every question is optional (owner decision 2026-10-16): signing now prints each of these
+        # as not confirmed by a person, never drops it.
+        total = sum(len(lines) for _kind, lines in left_for_person)
+        line(f"Left for a person ({total})", font="Helvetica-Bold", at=12.0)
+        paragraph(
+            "Optional. If the review is signed now, each is printed as not confirmed by a person; "
+            "a FAIL stays clouded as wrong."
+        )
+        for kind, lines in left_for_person:
+            paragraph(f"{kind} ({len(lines)})")
+            for text in lines:
+                paragraph(text, "    ")
         line("")
     if ai is not None:
         line(

@@ -53,7 +53,6 @@ from app.models.document import Page
 from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
 from app.models.signed_exports import ApprovalExportSnapshot
 from app.review.approval import (
-    NoCountertopPagesUnconfirmed,
     approval_readiness,
     approval_readiness_many,
     approve_package,
@@ -156,34 +155,23 @@ def _review_session(session: Session, revision_id: UUID) -> UUID:
 # --- sign-off waits for every listed page ---------------------------------------------------------
 
 
-def test_sign_off_is_refused_until_every_listed_page_is_confirmed(
+def test_a_listed_page_is_optional_and_can_still_be_confirmed(
     session: Session, tmp_path: Path
 ) -> None:
     project_id, package_id, revision, record_id = _listed_page(session, tmp_path)
 
-    # Nothing is pre-selected: the page is listed with no confirmation, and sign-off waits.
+    # Nothing is pre-selected: the page is listed with no confirmation. Every question is optional
+    # (owner decision 2026-10-16): it is still listed for a person, but sign-off does not wait.
     (listed,) = _results(session, package_id).pages_without_countertop
     assert (listed.page_number, listed.record_id, listed.confirmation) == (3, record_id, None)
     readiness = approval_readiness(session, revision.id)
     assert readiness.blocking_findings == 0
     assert readiness.unconfirmed_no_countertop_pages == (3,)
-    assert not readiness.can_approve
-    assert readiness.reason == (
-        "Confirm the pages listed with no countertop before signing off: page 3 is not confirmed "
-        'yet. On each, choose "Confirm: no countertop here" or "There is a countertop".'
-    )
+    assert readiness.can_approve
+    assert readiness.reason is None
     # The Documents summary reads the same rule.
     assert approval_readiness_many(session, [revision.id])[revision.id] == readiness
-
     review_id = _review_session(session, revision.id)
-    refused = _client(session, _reviewer(project_id), tmp_path).post(
-        f"/api/v1/projects/{project_id}/review-sessions/{review_id}/approve"
-    )
-    assert refused.status_code == 409
-    assert "page 3 is not confirmed yet" in refused.json()["message"]
-    with pytest.raises(NoCountertopPagesUnconfirmed, match="page 3 is not confirmed yet"):
-        approve_package(session, principal=_reviewer(project_id), review_session_id=review_id)
-    session.rollback()
 
     answered = _answer(session, project_id, package_id, record_id, "no_countertop")
 
@@ -287,20 +275,18 @@ def _older_page(session: Session, tmp_path: Path) -> tuple[UUID, UUID, PackageRe
     return project_id, package_id, revision, record_id
 
 
-def test_an_older_reading_blocks_until_confirmed_and_then_is_a_confirmed_no_countertop_page(
+def test_an_older_reading_is_listed_until_confirmed_and_then_is_a_confirmed_no_countertop_page(
     session: Session, tmp_path: Path
 ) -> None:
-    """Review finding 9: an older all-0 reading gets the same two buttons. Until answered it blocks
-    sign-off; "Confirm" makes it a confirmed no-countertop page, never a "not checkable" result."""
+    """Review finding 9: an older all-0 reading gets the same two buttons. Until answered it is
+    listed for a person (optional since 2026-10-16, so it no longer blocks sign-off); "Confirm"
+    makes it a confirmed no-countertop page, never a "not checkable" result."""
     project_id, package_id, revision, record_id = _older_page(session, tmp_path)
     # The check stage wrote no "needs you" result for it.
     assert all(f.scope_row_candidate_id != record_id for f in _live(session, revision.id))
     readiness = approval_readiness(session, revision.id)
-    assert readiness.unconfirmed_no_countertop_pages == (3,) and not readiness.can_approve
+    assert readiness.unconfirmed_no_countertop_pages == (3,)
     review_id = _review_session(session, revision.id)
-    with pytest.raises(NoCountertopPagesUnconfirmed, match="page 3 is not confirmed yet"):
-        approve_package(session, principal=_reviewer(project_id), review_session_id=review_id)
-    session.rollback()
 
     answered = _answer(session, project_id, package_id, record_id, "no_countertop")
 

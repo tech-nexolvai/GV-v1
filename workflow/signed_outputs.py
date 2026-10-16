@@ -180,6 +180,16 @@ def generate_signed_outputs(
                 drawn_rows, payload.review, frozenset(marks.not_checked_finding_ids)
             )
             cover = replace(cover, not_checked=groups, not_checked_ids=grouped)
+        if payload.left_for_person is not None:
+            # Format 5 (every question optional): what nobody answered, a grey mark at its place
+            # and a cover section grouped by kind. A FAIL keeps its own cloud.
+            from dataclasses import replace
+
+            from app.review.left_for_person import cover_groups
+            from workflow.redline_outputs import left_for_person_marks
+
+            shown_marks = (*(shown_marks or ()), *left_for_person_marks(payload.left_for_person))
+            cover = replace(cover, left_for_person=cover_groups(payload.left_for_person))
     redline = render_evidence_grounded_redline(
         db,
         store,
