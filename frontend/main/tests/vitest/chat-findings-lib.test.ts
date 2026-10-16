@@ -68,7 +68,7 @@ describe('grouping, filtering and counts', () => {
 
   it('counts in plain words', () => {
     const counts = findingCounts(SET);
-    expect(counts).toEqual({ different: 2, check: 1, same: 2, total: 5 });
+    expect(counts).toEqual({ different: 2, check: 1, same: 2, not_compared: 0, total: 5 });
     expect(countWords(counts)).toBe('2 differences · 1 to check');
     expect(countWords({ different: 1, check: 0 })).toBe('1 difference');
     expect(countWords({ different: 0, check: 3 })).toBe('No differences · 3 to check');
@@ -250,7 +250,7 @@ describe('trust', () => {
     const csv = findingsCsv([disagreed, confirmed]);
     expect(csv.charCodeAt(0)).toBe(0xfeff);
     const lines = csv.slice(1).trim().split('\r\n');
-    expect(lines[0]).toContain('Trust,Printed at spot,Second read');
+    expect(lines[0]).toContain('Trust,Evidence,Printed at spot,Second read');
     expect(lines).toHaveLength(3);
     expect(lines[1]).toContain('To check');
     expect(lines[1]).toContain('disagrees');

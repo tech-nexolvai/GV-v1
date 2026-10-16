@@ -4154,6 +4154,8 @@ export interface components {
         ChatAccuracyClaimOut: {
             /** Claim */
             claim: string;
+            /** Evidence Kind */
+            evidence_kind?: ("observed" | "derived" | "inferred") | null;
             /** How */
             how: string;
             /** Points */
@@ -4166,6 +4168,11 @@ export interface components {
         ChatAccuracyOut: {
             /** Breakdown */
             breakdown: components["schemas"]["ChatAccuracyClaimOut"][];
+            /**
+             * Calibration
+             * @description How the points per claim were calibrated on GV's test sets.
+             */
+            calibration?: string | null;
             /** Claims */
             claims: number;
             /** Coverage Factor */
@@ -4177,8 +4184,18 @@ export interface components {
             level: "green" | "orange" | "yellow" | "n/a";
             /** Measured */
             measured: string;
+            /**
+             * Not Compared
+             * @description "What's right" items not compared: not scored.
+             */
+            not_compared?: number | null;
             /** Score */
             score: number | null;
+            /**
+             * Unknowns
+             * @description What the answer did not check.
+             */
+            unknowns?: number | null;
         };
         /**
          * ChatAgentOut
@@ -4249,6 +4266,8 @@ export interface components {
          */
         ChatCiteOut: {
             box?: components["schemas"]["ChatBoxOut"] | null;
+            /** Evidence Kind */
+            evidence_kind?: ("observed" | "derived" | "inferred") | null;
             /** Fact */
             fact?: ("page_count" | "file_name") | null;
             /** File */
@@ -4377,6 +4396,11 @@ export interface components {
             /** Lead Checked */
             lead_checked: boolean;
             /**
+             * Ledger
+             * @description agrees | disagrees: code's reading ledger (a string that adds up, other views agreeing); null: the ledger says nothing about it.
+             */
+            ledger?: string | null;
+            /**
              * Printed Architect
              * @description match | not_found | no_text | no_box | not_a_number | not_run
              */
@@ -4393,6 +4417,11 @@ export interface components {
              * @description agrees | disagrees | unsure | not_run
              */
             second_read: string;
+            /**
+             * Units
+             * @description agrees | disagrees: millimetres and inches printed together (940 [37]).
+             */
+            units?: string | null;
         };
         /**
          * ChatFindingDroppedBlock
@@ -4444,15 +4473,27 @@ export interface components {
             category: "countertop" | "cabinet" | "other";
             checks?: components["schemas"]["ChatFindingChecksOut"] | null;
             /**
+             * Compared
+             * @description A "same" item: true when both sides were seen and its page pair is covered; false: "Not compared" (not counted as right).
+             */
+            compared?: boolean | null;
+            /**
              * Created By
              * @description "lead", "helper:<n>", or "gv_review" (made by code from a recorded result).
              */
             created_by: string;
+            /**
+             * Evidence Kind
+             * @description observed: printed on the drawing at its spots (text layer); derived: worked out by code (rule, arithmetic, ledger, mm/inch); inferred: AI reading only.
+             */
+            evidence_kind?: ("observed" | "derived" | "inferred") | null;
             /** Id */
             id: string;
             inches?: components["schemas"]["ChatFindingInchesOut"] | null;
             /** Item */
             item: string;
+            /** Not Compared Why */
+            not_compared_why?: ("not_viewed" | "pair_not_covered") | null;
             /** Page */
             page: number;
             /** Parts */
@@ -4494,6 +4535,11 @@ export interface components {
             vs_page?: number | null;
             /** Why */
             why?: string | null;
+            /**
+             * Witnesses
+             * @description The non-AI witnesses behind it: printed, rule, arithmetic, ledger, units.
+             */
+            witnesses?: string[] | null;
         };
         /**
          * ChatGvChecksOut
@@ -4559,7 +4605,7 @@ export interface components {
             /** @description The answer's accuracy by code (its `accuracy` block); null on older answers. */
             accuracy?: components["schemas"]["ChatAccuracyOut"] | null;
             /** Blocks */
-            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"])[] | null;
+            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"])[] | null;
             /** @description With `stopped: cost_cap`: `message` (this answer's cap) or `package` (the drawing set's budget ran out). */
             cap_hit?: components["schemas"]["ChatCapHit"] | null;
             /** Cost Usd */
@@ -4863,10 +4909,23 @@ export interface components {
                 [key: string]: number;
             };
             coverage?: components["schemas"]["ChatTrustCoverageOut"] | null;
+            /**
+             * Evidence
+             * @description Findings by evidence kind: observed, derived, inferred.
+             */
+            evidence?: {
+                [key: string]: number;
+            } | null;
             gv_checks?: components["schemas"]["ChatGvChecksOut"] | null;
             /** Not Checked */
             not_checked: string[];
+            /**
+             * Not Compared
+             * @description "What's right" items not compared (not counted above).
+             */
+            not_compared?: number | null;
             rounds?: components["schemas"]["ChatRoundsOut"] | null;
+            unknowns?: components["schemas"]["ChatTrustUnknownsOut"] | null;
         };
         /** ChatTrustRuleOut */
         ChatTrustRuleOut: {
@@ -4876,6 +4935,50 @@ export interface components {
             result?: string | null;
             /** Rule Check Id */
             rule_check_id?: string | null;
+        };
+        /** ChatTrustUnknownsOut */
+        ChatTrustUnknownsOut: {
+            /** By Why */
+            by_why: {
+                [key: string]: number;
+            };
+            /** Total */
+            total: number;
+        };
+        /**
+         * ChatUnknownOut
+         * @description One thing the answer did not check, and what would settle it (built by code).
+         */
+        ChatUnknownOut: {
+            /** Id */
+            id: string;
+            /** Needs */
+            needs: string;
+            /** Page */
+            page?: number | null;
+            /**
+             * Scope
+             * @default item
+             * @enum {string}
+             */
+            scope: "page" | "item";
+            /** What */
+            what: string;
+            /**
+             * Why
+             * @enum {string}
+             */
+            why: "unreadable" | "not_opened" | "missing_job_value" | "pairing_uncertain" | "refused_alignment";
+        };
+        /** ChatUnknownsBlock */
+        ChatUnknownsBlock: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "unknowns";
+            /** Unknowns */
+            unknowns: components["schemas"]["ChatUnknownOut"][];
         };
         /** CheckOut */
         CheckOut: {

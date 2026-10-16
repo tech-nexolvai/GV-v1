@@ -2,11 +2,14 @@ import { useId, useState } from 'react';
 import { BadgeCheck, Calculator, ChevronRight, Eye, Scale, ScanText, ShieldAlert, ShieldCheck, ShieldHalf } from 'lucide-react';
 
 import { Collapse } from '@/components/chat/chat-motion';
-import type { ChatCoverage, ChatFinding, ChatTrust, TrustLevel } from '@/lib/chat-api';
+import type { ChatCoverage, ChatFinding, ChatTrust, ChatUnknown, TrustLevel } from '@/lib/chat-api';
 import { coverageCounts, coverageWords } from '@/lib/chat-findings';
 import {
   checkCounts,
   checkLines,
+  EVIDENCE_WORDS,
+  evidenceKindOf,
+  evidenceWords,
   findingChecks,
   levelCounts,
   notOpenedWords,
@@ -18,6 +21,8 @@ import {
   TRUST_WORDS,
   trustLevelOf,
   trustReason,
+  UNKNOWN_WHY_WORDS,
+  unknownsWords,
   type CheckResult,
   type CheckState,
 } from '@/lib/chat-trust';
@@ -56,7 +61,8 @@ export function TrustChip({ finding }: { finding: ChatFinding }) {
   }
   const Icon = LEVEL_ICON[level];
   const reason = trustReason(finding);
-  const title = reason ? `${TRUST_WORDS[level]}: ${reason}` : `${TRUST_WORDS[level]}: ${TRUST_MEANING[level]}`;
+  const evidence = evidenceWords(finding);
+  const title = (reason ? `${TRUST_WORDS[level]}: ${reason}` : `${TRUST_WORDS[level]}: ${TRUST_MEANING[level]}`) + (evidence ? ` · Evidence: ${evidence}` : '');
   return (
     <span
       data-slot="chat-trust-level"
@@ -67,6 +73,22 @@ export function TrustChip({ finding }: { finding: ChatFinding }) {
       <Icon aria-hidden="true" className="size-3" />
       {TRUST_WORDS[level]}
       {reason && <span className="sr-only">: {reason}</span>}
+    </span>
+  );
+}
+
+/** What backs it, in a few words: "printed on the drawing" / "worked out by code" / "AI reading only". */
+export function EvidenceTag({ finding }: { finding: ChatFinding }) {
+  const kind = evidenceKindOf(finding);
+  if (!kind) return null;
+  return (
+    <span
+      data-slot="chat-evidence-kind"
+      data-kind={kind}
+      title={evidenceWords(finding) ?? undefined}
+      className={cn('w-fit text-xs whitespace-nowrap', kind === 'inferred' ? 'text-outcome-review-fg' : 'text-muted-foreground')}
+    >
+      {EVIDENCE_WORDS[kind]}
     </span>
   );
 }
@@ -174,9 +196,31 @@ export interface TrustSummaryProps {
   coverage: ChatCoverage | null | undefined;
   /** The interactive coverage strip, shown in place of the plain coverage line when given. */
   coverageStrip?: React.ReactNode;
+  /** What the answer did not check (code's records), listed under the card. */
+  unknowns?: readonly ChatUnknown[] | null;
 }
 
-export function TrustSummary({ findings, trust, coverage, coverageStrip }: TrustSummaryProps) {
+/** Under the trust card: "3 not checked", each with why and what is needed to settle it. */
+export function UnknownsList({ unknowns }: { unknowns: readonly ChatUnknown[] }) {
+  const words = unknownsWords(unknowns);
+  if (!words) return null;
+  return (
+    <Disclosure slot="chat-trust-unknowns" label={<><span className="text-foreground">{words}</span>: why · what’s needed</>}>
+      <ul data-slot="chat-unknowns" aria-label="Not checked" className="grid gap-1 text-[13px]">
+        {unknowns.map((unknown) => (
+          <li key={unknown.id} data-why={unknown.why} className="flex min-w-0 flex-wrap items-baseline gap-x-2">
+            {unknown.page != null && <span className="num text-muted-foreground">p.{unknown.page}</span>}
+            <span className="font-medium break-words">{unknown.what}</span>
+            <span className="text-xs text-outcome-review-fg">{UNKNOWN_WHY_WORDS[unknown.why] ?? unknown.why}</span>
+            <span className="min-w-0 text-xs break-words text-muted-foreground">needs: {unknown.needs}</span>
+          </li>
+        ))}
+      </ul>
+    </Disclosure>
+  );
+}
+
+export function TrustSummary({ findings, trust, coverage, coverageStrip, unknowns }: TrustSummaryProps) {
   const levels = levelCounts(findings, trust);
   const rated = levels ? levels.confirmed + levels.likely + levels.to_check : 0;
   const counts = checkCounts(findings, trust);
@@ -234,6 +278,17 @@ export function TrustSummary({ findings, trust, coverage, coverageStrip }: Trust
           </p>
         )
       )}
+
+      {trust?.evidence && (
+        <p data-slot="chat-trust-evidence" className="text-xs tabular-nums text-muted-foreground">
+          Evidence: <span className="text-foreground">{trust.evidence.observed ?? 0}</span> printed on the drawing ·{' '}
+          <span className="text-foreground">{trust.evidence.derived ?? 0}</span> worked out by code ·{' '}
+          <span className="text-foreground">{trust.evidence.inferred ?? 0}</span> AI reading only
+          {trust.not_compared ? <> · <span className="text-foreground">{trust.not_compared}</span> not compared</> : null}
+        </p>
+      )}
+
+      {unknowns && unknowns.length > 0 && <UnknownsList unknowns={unknowns} />}
 
       <Disclosure slot="chat-trust-how" label="How this was checked">
         <ul data-slot="chat-trust-checks" className="grid gap-1 text-[13px]">

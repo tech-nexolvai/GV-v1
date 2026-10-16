@@ -8,7 +8,7 @@
  * does arithmetic on the AI's numbers: the inches and the difference are code's (`finding.inches`).
  */
 
-import type { ChatCoverage, ChatFinding, ChatTrust, FindingCategory, PrintedResult, RoundStatus, TrustLevel } from '@/lib/chat-api';
+import type { ChatCoverage, ChatFinding, ChatTrust, ChatUnknown, EvidenceKind, FindingCategory, PrintedResult, RoundStatus, TrustLevel, UnknownWhy } from '@/lib/chat-api';
 import { categoryOf, CATEGORY_WORDS, pageWords, sourceTag, STATUS_WORDS, verifiedWords } from '@/lib/chat-findings';
 
 // ── Levels ──────────────────────────────────────────────────
@@ -23,10 +23,69 @@ export const TRUST_WORDS: Record<TrustLevel, string> = {
 
 /** What each level means, for its chip's tooltip. */
 export const TRUST_MEANING: Record<TrustLevel, string> = {
-  confirmed: 'Printed at the spot (or a GV rule / code arithmetic) and the second read agrees',
-  likely: 'Two of: printed at the spot, second read agrees, checked on the drawing',
+  confirmed: 'A check that is not AI backs it (printed on the drawing, or worked out by code) and an AI reading agrees',
+  likely: 'Two AI readings agree, or a non-AI check backs it alone',
   to_check: 'Fewer checks passed, or one disagreed: a person should look',
 };
+
+// ── Evidence kind ───────────────────────────────────────────
+
+/** What backs a finding, in the reviewer's words. */
+export const EVIDENCE_WORDS: Record<EvidenceKind, string> = {
+  observed: 'printed on the drawing',
+  derived: 'worked out by code',
+  inferred: 'AI reading only',
+};
+
+const WITNESS_WORDS: Record<string, string> = {
+  printed: 'both values printed at their spots',
+  rule: 'GV’s rule check agrees',
+  arithmetic: 'code added up the dimension string',
+  ledger: 'code’s reading ledger backs it',
+  units: 'the mm and inches printed together agree',
+};
+
+/** A finding's evidence kind, read safely; null on older answers. */
+export function evidenceKindOf(finding: Pick<ChatFinding, 'evidence_kind'>): EvidenceKind | null {
+  const kind = finding.evidence_kind;
+  return kind && kind in EVIDENCE_WORDS ? kind : null;
+}
+
+/** "Worked out by code: GV’s rule check agrees", "AI reading only"; null on older answers. */
+export function evidenceWords(finding: Pick<ChatFinding, 'evidence_kind' | 'witnesses'>): string | null {
+  const kind = evidenceKindOf(finding);
+  if (!kind) return null;
+  const words = EVIDENCE_WORDS[kind];
+  const found = (finding.witnesses ?? []).map((each) => WITNESS_WORDS[each]).filter(Boolean);
+  const head = words[0].toUpperCase() + words.slice(1);
+  return found.length ? `${head}: ${found.join('; ')}` : head;
+}
+
+/** A "What's right" item that was not compared (not seen on both sides, or its page pair not covered). */
+export function notCompared(finding: Pick<ChatFinding, 'compared'>): boolean {
+  return finding.compared === false;
+}
+
+export const NOT_COMPARED_WORDS: Record<'not_viewed' | 'pair_not_covered', string> = {
+  not_viewed: 'both sides were not looked at',
+  pair_not_covered: 'its page pair was not compared',
+};
+
+// ── Unknowns ────────────────────────────────────────────────
+
+export const UNKNOWN_WHY_WORDS: Record<UnknownWhy, string> = {
+  unreadable: 'unreadable (pen strokes)',
+  not_opened: 'not opened',
+  missing_job_value: 'job value missing',
+  pairing_uncertain: 'page pair unsure',
+  refused_alignment: 'rounds would not line up',
+};
+
+/** "3 not checked", or null when there are none. */
+export function unknownsWords(unknowns: readonly ChatUnknown[] | null | undefined): string | null {
+  const count = unknowns?.length ?? 0;
+  return count ? `${count} not checked` : null;
+}
 
 /** A finding's trust level, read safely; null when the checks have not given one yet. */
 export function trustLevelOf(finding: Pick<ChatFinding, 'trust_level'>): TrustLevel | null {
@@ -46,7 +105,7 @@ export function levelCounts(findings: readonly ChatFinding[], trust: ChatTrust |
   let any = false;
   for (const finding of findings) {
     const level = trustLevelOf(finding);
-    if (!level) continue;
+    if (!level || notCompared(finding)) continue;
     counts[level] += 1;
     any = true;
   }
@@ -396,7 +455,7 @@ const BOM = '﻿';
 
 export const CSV_HEADER = [
   'Category', 'Page', 'Item', 'Architect (as printed)', 'Vendor (as printed)', 'Architect (in)', 'Vendor (in)', 'Difference (in)',
-  'Status', 'Trust', 'Printed at spot', 'Second read', 'Checked on drawing', 'Rule / arithmetic', 'Compared with', 'Round', 'Why',
+  'Status', 'Trust', 'Evidence', 'Printed at spot', 'Second read', 'Checked on drawing', 'Rule / arithmetic', 'Compared with', 'Round', 'Why',
 ] as const;
 
 /** The findings as a CSV Excel opens (with its byte-order mark), one row per finding, trust columns included. */
@@ -417,6 +476,7 @@ export function findingsCsv(findings: readonly ChatFinding[]): string {
       finding.inches?.difference ?? null,
       STATUS_WORDS[finding.status] ?? finding.status,
       level ? TRUST_WORDS[level] : '',
+      evidenceKindOf(finding) ? EVIDENCE_WORDS[evidenceKindOf(finding) as EvidenceKind] : '',
       STATE_MARK[printed.state],
       STATE_MARK[secondRead.state],
       verified.state === 'pass' ? 'yes' : 'no',
