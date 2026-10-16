@@ -1008,3 +1008,35 @@ def test_the_prompts_render_small_for_helpers_and_sharp_for_checking() -> None:
     assert "-r 100" in AGENT_SYSTEM_PROMPT
     assert "130 to 300 dpi" in AGENT_SYSTEM_PROMPT
     assert "-r 100" in SUB_SYSTEM_PROMPT
+
+
+def test_a_helper_asks_once_more_when_the_provider_fails(
+    workspace: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.review.assistant import agent as agent_module
+    from app.review.assistant.model import ModelUnavailable
+
+    monkeypatch.setattr(agent_module, "_RETRY_WAIT_SECONDS", 0)
+
+    @dataclass
+    class Flaky(DispatchModel):
+        failures: int = 1
+
+        def agent_turn(self, body: Mapping[str, Any]) -> Mapping[str, Any]:
+            if body["system"][0]["text"] == SUB_SYSTEM_PROMPT:
+                with self.lock:
+                    if self.failures:
+                        self.failures -= 1
+                        raise ModelUnavailable("520")
+            return super().agent_turn(body)
+
+    model = Flaky(main=[_agents(1), _final("Page 1 differs; code: page 4.")])
+    ledger = FakeLedger()
+    answer = _answer(_ask("Which pages differ?", model, workspace, ledger=ledger))
+    assert answer.steps[0].agents[0].ok
+    # The failed call is recorded too.
+    assert sum(1 for row in ledger.rows if row["error"] is not None) == 1
+    # A second failure in the same helper is not retried.
+    twice = Flaky(main=[_agents(1), _final("Page 1 not checked; code: page 4.")], failures=2)
+    answer = _answer(_ask("Which pages differ?", twice, workspace))
+    assert answer.steps[0].agents[0].stopped == "failed"

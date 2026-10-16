@@ -49,7 +49,7 @@ from collections.abc import Set as AbstractSet
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from decimal import ROUND_CEILING, Decimal
-from time import monotonic_ns
+from time import monotonic_ns, sleep
 from typing import Any, Final, Literal
 
 from pydantic import BaseModel
@@ -121,6 +121,8 @@ SUB_MAX_OUTPUT_TOKENS: Final = 6000
 #: The longest side of a picture a helper is shown (Anthropic's suggested size, about 2,100
 #: tokens for a sheet): helpers look at many pages; the lead's checks keep the full 2576.
 HELPER_PICTURE_EDGE_PX: Final = 1568
+#: How long a helper waits before asking again after the provider failed its call.
+_RETRY_WAIT_SECONDS: Final = 3.0
 AGENT_EFFORT: Final = "medium"
 #: What the screen shows of one tool's output; the model gets up to the sandbox's 20 KB.
 _SHOWN_OUTPUT_CHARS: Final = 4000
@@ -1004,6 +1006,7 @@ def _loop(
     label: str = "",
     review: Callable[[Mapping[str, Any]], tuple[str, int] | None] | None = None,
     max_tokens: int = MAX_OUTPUT_TOKENS,
+    retries: int = 0,
 ) -> Generator[_Event, None, _LoopEnd]:
     """One agent's turns: ask, run the tools it calls, ask again, until it answers or must stop.
 
@@ -1012,6 +1015,7 @@ def _loop(
     which gets that many more tool turns (none: it must write the answer again). At most two
     reviews per loop, so it always ends."""
     rewrites = 2 if review is not None else 0
+    retries_left = retries
     messages: list[dict[str, Any]] = [{"role": "user", "content": first}]
     pictures: list[tuple[int, int]] = []
     own = 0
@@ -1056,6 +1060,15 @@ def _loop(
         except Exception:  # noqa: BLE001 - the answer still goes out; the failure is logged
             _log.exception("review assistant agent call could not be recorded")
         if error is not None or payload is None:
+            if retries_left:
+                # A helper's call that the provider failed (a 5xx or a busy answer) is asked once
+                # more after a short wait: one lost call should not cost a whole helper's pages.
+                retries_left -= 1
+                _log.warning(
+                    "review assistant call failed, asking once more: %s", type(error).__name__
+                )
+                sleep(_RETRY_WAIT_SECONDS)
+                continue
             return _LoopEnd(error=error)
         own += spend.add(recorded, model.model_id)
         if recorded is not None:
@@ -1249,6 +1262,7 @@ def _run_agents(
                     label=label,
                     max_tokens=SUB_MAX_OUTPUT_TOKENS,
                     review=review_report,
+                    retries=1,
                 ),
                 events.put,
             )
