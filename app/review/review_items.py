@@ -477,6 +477,14 @@ class ReviewItemsOut(BaseModel):
     unaccounted: list[UnaccountedOut] = Field(
         description="Must be empty. Anything here is a blocking result the list did not place once."
     )
+    can_save_job_values: bool = Field(
+        default=False,
+        description=(
+            "True when the caller may save this project's values (#1403): the not-checked group's "
+            "'Enter this job's values' form. The same checks as Company settings → Projects "
+            "(`may_save_project`); read-only otherwise. The server still checks every save."
+        ),
+    )
 
 
 def _settled_reading_actions(session: Session, readings: Sequence[ReviewedReading]) -> set[UUID]:

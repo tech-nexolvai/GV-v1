@@ -572,54 +572,31 @@ def _project_settings(
     )
 
 
-@router.get(
-    "/company-settings/projects",
-    response_model=ProjectsSettingsOut,
-    summary="Each of your projects' own settings, the value in use and where it comes from",
-)
-def read_project_settings(
-    principal: Annotated[Principal, Depends(require_role(*READERS))],
-    session: Annotated[Session, Depends(get_session)],
-) -> ProjectsSettingsOut:
-    """Only the projects the caller belongs to: every other project is invisible (ADR-0006)."""
-    if not principal.projects:
-        return ProjectsSettingsOut(projects=[])
-    rules = _published_rules(session)
-    projects = session.scalars(
-        select(Project).where(Project.id.in_(principal.projects)).order_by(Project.name, Project.id)
-    ).all()
-    return ProjectsSettingsOut(
-        projects=[_project_settings(session, project, rules, principal) for project in projects]
-    )
-
-
-@router.post(
-    "/company-settings/projects/{project_id}",
-    response_model=ProjectSettingsOut,
-    status_code=status.HTTP_201_CREATED,
-    summary="Record a project's own values; every value not sent stays as it was",
-)
-def save_project_settings(
-    principal: Annotated[Principal, Depends(require_project_access)],
-    _: Annotated[Principal, Depends(require_action(Action.ENTER_VALUES))],
-    session: Annotated[Session, Depends(get_session)],
+def store_project_values(
+    session: Session,
+    principal: Principal,
     project_id: UUID,
-    body: ProjectValuesIn,
-) -> ProjectSettingsOut:
-    """A new version of the project's layer — the one Measurements writes — carrying the rest forward.
+    values_in: list[ProjectValueIn],
+    *,
+    rules: list[Rule] | None = None,
+) -> None:
+    """Check and store a project's values as a new version of its layer, audited; never commits.
 
-    Everything is checked before anything is stored: a name no published check reads, the sink's
-    sizes (the sink card's), a bare number, a zero size or a missing source refuses the whole save.
+    The one path a project's own values are saved by: this page's save, and the simple review's
+    "Enter this job's values" (#1403), which commits it with its re-check request. Everything is
+    checked before anything is stored, as `save_project_settings` says.
     """
-    project = session.get(Project, project_id)
-    if project is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-    rules = _published_rules(session)
+    if not values_in:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Type at least one value."
+        )
+    if rules is None:
+        rules = _published_rules(session)
     declared = _project_declared(rules)
     values = {}
     typed = {}
     sources: dict[str, tuple[Provenance, str | None]] = {}
-    for entry in body.values:
+    for entry in values_in:
         if entry.name in _SINK_SIZES:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -667,6 +644,52 @@ def save_project_settings(
         target_id=saved,
         target_type="project_settings",
     )
+
+
+@router.get(
+    "/company-settings/projects",
+    response_model=ProjectsSettingsOut,
+    summary="Each of your projects' own settings, the value in use and where it comes from",
+)
+def read_project_settings(
+    principal: Annotated[Principal, Depends(require_role(*READERS))],
+    session: Annotated[Session, Depends(get_session)],
+) -> ProjectsSettingsOut:
+    """Only the projects the caller belongs to: every other project is invisible (ADR-0006)."""
+    if not principal.projects:
+        return ProjectsSettingsOut(projects=[])
+    rules = _published_rules(session)
+    projects = session.scalars(
+        select(Project).where(Project.id.in_(principal.projects)).order_by(Project.name, Project.id)
+    ).all()
+    return ProjectsSettingsOut(
+        projects=[_project_settings(session, project, rules, principal) for project in projects]
+    )
+
+
+@router.post(
+    "/company-settings/projects/{project_id}",
+    response_model=ProjectSettingsOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Record a project's own values; every value not sent stays as it was",
+)
+def save_project_settings(
+    principal: Annotated[Principal, Depends(require_project_access)],
+    _: Annotated[Principal, Depends(require_action(Action.ENTER_VALUES))],
+    session: Annotated[Session, Depends(get_session)],
+    project_id: UUID,
+    body: ProjectValuesIn,
+) -> ProjectSettingsOut:
+    """A new version of the project's layer — the one Measurements writes — carrying the rest forward.
+
+    Everything is checked before anything is stored: a name no published check reads, the sink's
+    sizes (the sink card's), a bare number, a zero size or a missing source refuses the whole save.
+    """
+    project = session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    rules = _published_rules(session)
+    store_project_values(session, principal, project_id, body.values, rules=rules)
     try:
         session.commit()
     except Exception:

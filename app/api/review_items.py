@@ -38,6 +38,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.architect_matches import pick_architect_view
+from app.api.company_settings import ProjectValueIn, may_save_project, store_project_values
 from app.api.confirmations import _candidate_crop_artifact, _verified_crop_content
 from app.api.dependencies import get_artifact_store, get_session
 from app.api.measurements import checks_pending, queue_recheck
@@ -95,7 +96,6 @@ def review_items(
     page that blocks sign-off is one item; `unaccounted` names anything that is not, and must be
     empty. Nothing here decides or records anything.
     """
-    del principal
     revision = session.execute(
         select(PackageRevision)
         .join(Package, Package.id == PackageRevision.package_id)
@@ -105,9 +105,11 @@ def review_items(
     ).scalar_one_or_none()
     if revision is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-    return review_items_for_revision(
+    listed = review_items_for_revision(
         session, project_id=project_id, package_id=package_id, revision=revision
     )
+    listed.can_save_job_values = may_save_project(principal, project_id)
+    return listed
 
 
 #: Answers whose record a check reads: the checks run again after them (coalesced).
@@ -172,6 +174,9 @@ def answer_review_item(
     Group keys: `not-checked` with `clear-not-checked` dismisses every open "Not checked" result in
     one transaction; `no-countertop-pages` with `answer` `confirm_no_countertop` confirms every
     listed page at once. Both require `expected_keys` (409 when the group changed).
+    `not-checked` with `answer` `job_values` and `job_values: [{name, value}]` saves this job's
+    values through the project's settings (Company settings → Projects) and queues one coalesced
+    re-check (#1403); it needs no `expected_keys`, because the values belong to the project.
 
     201 when something was recorded; 200 when the answer was already recorded (nothing new).
     """
@@ -549,7 +554,9 @@ def _answer_group(
     """A whole group in one action and one transaction, only for exactly the keys the person saw
     (`expected_keys`, required)."""
     sitting_id: UUID | None = None
-    if key == actions.NOT_CHECKED_GROUP:
+    if key == actions.NOT_CHECKED_GROUP and name == "job_values":
+        words = _save_job_values(session, principal, project_id, revision, body)
+    elif key == actions.NOT_CHECKED_GROUP:
         if name not in ("clear_not_checked", "settle_group"):
             raise actions.ItemRefused(422, "The 'Not checked' group takes 'clear-not-checked'.")
         keys = actions.check_group(listed, actions.NOT_CHECKED_GROUP, body.expected_keys)
@@ -600,16 +607,48 @@ def _answer_group(
         else:
             words = f"{len(pages)} pages confirmed with no countertop."
     session.refresh(revision)
+    listed_now = review_items_for_revision(
+        session, project_id=project_id, package_id=package_id, revision=revision
+    )
+    listed_now.can_save_job_values = may_save_project(principal, project_id)
     return actions.ReviewItemActionOut(
         key=key,
         action=name,
         recorded=words,
         review_session_id=sitting_id,
         rechecking=checks_pending(session, revision),
-        review_items=review_items_for_revision(
-            session, project_id=project_id, package_id=package_id, revision=revision
-        ),
+        review_items=listed_now,
     )
+
+
+def _save_job_values(
+    session: Session,
+    principal: Principal,
+    project_id: UUID,
+    revision: PackageRevision,
+    body: actions.ReviewItemActionIn,
+) -> str:
+    """This job's values (#1403), saved through the project's settings: the path Company settings
+    → Projects saves by (`store_project_values`), never a new one. Then one coalesced re-check, in
+    the same transaction: a refused value saves nothing and queues nothing."""
+    if not may_save_project(principal, project_id):
+        raise actions.ItemRefused(
+            403, "Only this project's reviewers may enter its values. Nothing was saved."
+        )
+    entries = body.job_values or []
+    try:
+        store_project_values(
+            session,
+            principal,
+            project_id,
+            [ProjectValueIn(name=entry.name, value=entry.value) for entry in entries],
+        )
+        queue_recheck(session, revision)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    return f"{len(entries)} of this job's values saved on the project; the checks run again."
 
 
 __all__ = ["router"]

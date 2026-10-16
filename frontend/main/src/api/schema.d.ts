@@ -1682,6 +1682,9 @@ export interface paths {
          *     Group keys: `not-checked` with `clear-not-checked` dismisses every open "Not checked" result in
          *     one transaction; `no-countertop-pages` with `answer` `confirm_no_countertop` confirms every
          *     listed page at once. Both require `expected_keys` (409 when the group changed).
+         *     `not-checked` with `answer` `job_values` and `job_values: [{name, value}]` saves this job's
+         *     values through the project's settings (Company settings → Projects) and queues one coalesced
+         *     re-check (#1403); it needs no `expected_keys`, because the values belong to the project.
          *
          *     201 when something was recorded; 200 when the answer was already recorded (nothing new).
          */
@@ -5092,6 +5095,22 @@ export interface components {
             rules: components["schemas"]["PlannedRuleOut"][];
         };
         /**
+         * JobValueIn
+         * @description One of this job's values, typed on the Not-checked group (#1403).
+         */
+        JobValueIn: {
+            /**
+             * Name
+             * @description The setting's name (`countertop_overhang`).
+             */
+            name: string;
+            /**
+             * Value
+             * @description With its unit, e.g. `1 1/2"`.
+             */
+            value: string;
+        };
+        /**
          * LayoutProposalOut
          * @description A model-proposed discriminator answer, still waiting for reviewer confirmation.
          */
@@ -7261,6 +7280,11 @@ export interface components {
              */
             expected_keys?: string[] | null;
             /**
+             * Job Values
+             * @description With `not-checked` and the answer `job_values` (#1403): this job's values the not-checked checks wait for. Saved through the project's settings (Company settings → Projects), then the checks run again (coalesced).
+             */
+            job_values?: components["schemas"]["JobValueIn"][] | null;
+            /**
              * Shown Value
              * @description With `confirm` on a number: the value the screen showed (`best_guess.text`), e.g. `20"`. Required; 409 when the stored value differs now (#1358). Confirm records exactly the stored value, never another reading.
              */
@@ -7403,6 +7427,12 @@ export interface components {
         };
         /** ReviewItemsOut */
         ReviewItemsOut: {
+            /**
+             * Can Save Job Values
+             * @description True when the caller may save this project's values (#1403): the not-checked group's 'Enter this job's values' form. The same checks as Company settings → Projects (`may_save_project`); read-only otherwise. The server still checks every save.
+             * @default false
+             */
+            can_save_job_values: boolean;
             /** Failures */
             failures: components["schemas"]["FailureOut"][];
             header: components["schemas"]["ReviewHeaderOut"];

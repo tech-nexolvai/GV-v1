@@ -253,6 +253,27 @@ describe('SimpleReviewPage (#1343)', () => {
     ]));
   });
 
+  it("this job's values are sent as one Not-checked answer, then the list reloads (#1403)", async () => {
+    current = reviewItems((draft) => {
+      draft.can_save_job_values = true;
+      draft.not_checked[0].settings = [{ key: 'countertop_overhang', name: 'Countertop overhang', project_id: 'proj-demo', set_now: false }];
+    });
+    renderPage();
+    await screen.findByTestId('ai-read-line');
+    const before = loads;
+    await userEvent.click(screen.getByRole('button', { name: "Enter this job's values" }));
+    await userEvent.type(screen.getByLabelText('Countertop overhang'), '1 1/2');
+    await userEvent.click(screen.getByRole('button', { name: 'Save and check again' }));
+    await waitFor(() => expect(posted).toEqual([
+      {
+        key: 'not-checked',
+        action: 'answer',
+        body: { expected_finding_id: null, job_values: [{ name: 'countertop_overhang', value: '1 1/2"' }], answer: 'job_values' },
+      },
+    ]));
+    await waitFor(() => expect(loads).toBeGreaterThan(before));
+  });
+
   it('a wall choice is one click on a layout, each showing its result; C picks the proposal', async () => {
     renderPage();
     await screen.findByTestId('ai-read-line');
