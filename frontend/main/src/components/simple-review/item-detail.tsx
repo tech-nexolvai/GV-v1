@@ -180,7 +180,10 @@ export function ItemDetail({
         <Guess item={item} />
       )}
       {item.what_to_check && <WhatToCheckBlock block={item.what_to_check} />}
-      <NumText text={item.why} className="block max-w-[68ch] text-[13px] leading-5 text-muted-foreground" />
+      {/* A row held as a whole says its reason once, in the block above; its why is the same reason. */}
+      {!item.what_to_check?.row_reason && (
+        <NumText text={item.why} className="block max-w-[68ch] text-[13px] leading-5 text-muted-foreground" />
+      )}
 
       {error && (
         <p role="alert" className="flex flex-wrap items-center gap-2 rounded-lg border border-outcome-fail-fg/40 bg-outcome-fail-bg px-3 py-2 text-[13px] text-outcome-fail-fg">

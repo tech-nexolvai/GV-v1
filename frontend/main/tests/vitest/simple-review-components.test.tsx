@@ -279,6 +279,44 @@ describe('ItemDetail', () => {
     expect(block.textContent).toContain('Field cut recorded');
   });
 
+  it('a row held as a whole says its reason once, and stored pieces show their inches, not used', () => {
+    // Made-up numbers: a stored value with its mm, a piece with nothing stored.
+    const rowReason =
+      'This line includes a tall appliance (fridge or range), so it may measure wall to wall, not the countertop. The pieces below are not used for the check.';
+    const byHand = {
+      ...item('countertop:find-5'),
+      why: 'This row includes a tall appliance or range bay; it may be the wall-to-wall line, not the countertop.',
+      what_to_check: {
+        row_reason: rowReason,
+        pieces: [
+          { position: 1, kind: 'filler', value: '10"', mm: '254 mm', not_used: true, note: null },
+          { position: 2, kind: null, value: null, mm: null, not_used: false, note: 'no number was recorded for this piece' },
+        ],
+        overall: null,
+        overall_note: null,
+        rule: 'The overall for this row is not stored. Find the overall on the drawing.',
+        walls_note: null,
+      },
+    };
+    render(
+      <PicturesProvider load={pictures}>
+        <ItemDetail item={byHand} busy={null} error={null} onAct={() => {}} onOpenPdfs={() => {}} />
+      </PicturesProvider>,
+    );
+    const block = screen.getByTestId('what-to-check');
+    expect(within(block).getByTestId('what-to-check-row-reason').textContent).toBe(rowReason);
+    const rows = within(block).getAllByRole('listitem');
+    expect(rows[0].textContent).toContain('filler');
+    expect(within(rows[0]).getByText('10"').className).toContain('num');
+    expect(rows[0].textContent).toContain('254 mm');
+    expect(rows[0].textContent).toContain('not used');
+    expect(rows[0].textContent).not.toContain("Couldn't read");
+    expect(rows[1].textContent).toContain("Couldn't read");
+    expect(rows[1].textContent).toContain('no number was recorded for this piece');
+    // The row's reason is said once on the screen, not again per piece or under the block.
+    expect(screen.queryAllByText(/tall appliance/)).toHaveLength(1);
+  });
+
   it('a countertop by hand with no close-up shows the row strip, not a blank box', async () => {
     renderDetail('countertop:find-5');
     expect(await screen.findByRole('img', { name: /The row on page 5/ })).toBeTruthy();
