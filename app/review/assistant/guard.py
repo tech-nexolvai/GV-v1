@@ -1,41 +1,33 @@
 """The deterministic check every assistant answer passes before a reviewer sees it (#1128).
 
-**The model never writes a number, an outcome or a decision. Code writes all of them.** An answer is
-a template: every fact is a placeholder (`{C1.outcome}`, `{C1.printed}`, `{count.needs_you}`,
-`{signoff.status}`, see `placeholders.py`) that code fills from the records and cites. The guard
-checks that the model's own words cannot carry, twist or frame a fact. It sorts sentences into two
-classes:
+**Chat-assistant style (owner, 2026-10-16).** The model talks freely about the drawings: it reads
+numbers off the pictures, counts things, says what a dimension measures, compares the architect
+with the vendor and answers any question in its own words. The screen marks an answer that looked
+at the drawings as "AI reading of the drawing, not a decision". Only these hard rules stay, checked
+here on the model's own words:
 
-**Fact sentences** (any sentence with a placeholder). The model's own words may only be glue from
-a fixed allow-list (articles, "the countertop on", "its", "because", "with", "from", "and", "is",
-"was", "has", the parts of a countertop and of the drawing, directional wall words, "shows",
-"reads", "lists", "open", "see", "queue" …): no negation, hedge, contrast, evaluation or framing
-word can sit beside a fact. Also:
+- **No action, ever.** The assistant has no write tools, so its words may not claim that anything
+  was approved, signed off, confirmed, fixed, agreed, marked, clouded or recorded ("I approved
+  page 4", "page 4 has been signed off", "it is now confirmed"), and may not advise deciding ("you
+  can safely approve it", "it is safe to sign off", "I recommend approving it"). A request to
+  decide never reaches the model (`intent.py`): it is refused and pointed to the item on screen.
+- **A recorded result is quoted as recorded.** A pass or fail in the model's own words is refused
+  ("passes", "failed", "PASS", "within tolerance"): a result comes only through its placeholder
+  (`{C1.outcome}`), which code fills from the record, and a placeholder outcome may not be put on
+  a page that is not its record's ("the countertop on page 7 {C1.outcome}" when C1 is page 4).
+- No citation marker, brace, link or markup and no hidden character (the panel adds markers).
+- Every placeholder must be one the records hold; evidence and actions must name records that
+  exist, the queue button only a record that still needs the reviewer, and the review-list
+  button only a list entry that is still open. No instruction or approval may sit beside the AI's
+  best guess or a printed value placeholder ("Use {R1.guess}").
 
-- one record per sentence, with that record's own page; a page note (`{P3.no_countertop}`,
-  `{P9.second_row}`) is a record of its own; counts and sign-off stand in sentences of their own;
-- an outcome is said of its own subject: "the countertop on {C1.page}", "{C1.label}", "the
-  {F1.check} check", or "the countertop" / "it" / "which" in a sentence that names it; a bare
-  "{C1.page} {C1.outcome}" only when that page has nothing else on it;
-- a list line under a header ("The countertop on {C1.page}:") speaks of the header's record.
+GV's markup being described as GV's (never as the vendor's numbers) is the prompt's rule; the
+pictures the model sees have GV's markup removed (`page_pictures.py`).
 
-**Explanation sentences** (no placeholder). Ordinary words are fine (difference, total, more,
-less, held, decision …), but not: a yes/no interjection; a readiness or finished claim; a
-recommendation to decide or act; a judgement about a result; a first-person action; a count.
-
-**In all model text:** no digit in any script, no number word, no record label in its own words
-(a label comes only through `{Cn.label}`), no link, markup, marker or brace, no hidden or
-non-Latin character, only plain punctuation, no "!", "...", "e.g.", "i.e.", "vs.", "approx.",
-"etc.". Every placeholder must be one the records hold; evidence and actions must name records
-that exist, the queue button only a record that still needs the reviewer, and the review-list
-button (`open_review_item`, #1352) only a list entry that is still open. A list entry (`R1`) is a
-record like any other: one per sentence, and its best guess is a suggestion to confirm that no
-model word may judge, confirm or restate.
-
-Code-written answers (records-only, fallback, judging) pass the same structural checks; their
-fixed wording is code's, so the vocabulary rules apply to model text only. Anything refused here
-is replaced by the records-only answer. Nothing here calls a model, reads the database or changes
-an outcome.
+Code-written answers (records-only, fallback, judging) keep the stricter structural checks they
+were written to: no digit outside a placeholder, one record per sentence, an outcome right after
+its own subject. Anything refused here is replaced by the records-only answer. Nothing here calls
+a model, reads the database or changes an outcome.
 """
 
 from __future__ import annotations
@@ -61,9 +53,6 @@ __all__ = [
     "GROUPS",
     "GuardRejected",
     "check",
-    "explanation_words",
-    "fact_words",
-    "forbidden_words",
     "placeholder_keys",
 ]
 
@@ -77,498 +66,8 @@ _LINKS: Final = re.compile(
     r"https?:|ftp:|javascript:|www\.|\][(]|<[^>]*>|&[a-z]+;|\b[a-z]{2,}\.[a-z]{2,}\b",
     re.IGNORECASE,
 )
-_ABBREVIATIONS: Final = re.compile(
-    r"!|\.\.\.|…|\b(?:e\.g|i\.e|vs|approx|etc|cf|viz|mr|mrs|ms|dr|no)\.", re.IGNORECASE
-)
-#: Punctuation a plain answer needs; anything else (markup, maths, %, &, symbols) is refused.
-_PUNCTUATION: Final = frozenset(" \n.,;:?'\"()-–—’‘“”/")
-#: Three or more single letters in a row ("p-a-s-s"): a word spelled out to slip past the lists.
-_SPELLED: Final = re.compile(r"\b[a-z](?:[\s\-.'_]+[a-z]\b){2,}")
 _WORDS: Final = re.compile(r"[a-z]+(?:'[a-z]+)?")
 
-_NUMBER_WORDS: Final = frozenset(
-    [
-        "zero",
-        "one",
-        "two",
-        "three",
-        "four",
-        "five",
-        "six",
-        "seven",
-        "eight",
-        "nine",
-        "ten",
-        "eleven",
-        "twelve",
-        "thirteen",
-        "fourteen",
-        "fifteen",
-        "sixteen",
-        "seventeen",
-        "eighteen",
-        "nineteen",
-        "twenty",
-        "thirty",
-        "forty",
-        "fifty",
-        "sixty",
-        "seventy",
-        "eighty",
-        "ninety",
-        "hundred",
-        "hundreds",
-        "thousand",
-        "million",
-        "dozen",
-        "dozens",
-        "half",
-        "halves",
-        "quarter",
-        "quarters",
-        "single",
-        "double",
-        "triple",
-        "all",
-        "none",
-        "every",
-        "each",
-        "several",
-        "few",
-        "most",
-        "once",
-        "twice",
-        "thrice",
-        "couple",
-        "pair",
-        "many",
-        "handful",
-        "second",
-        "third",
-        "fourth",
-        "fifth",
-        "sixth",
-        "seventh",
-        "eighth",
-        "ninth",
-        "tenth",
-        "everything",
-    ]
-)
-
-#: The only words a fact sentence may use around its placeholders.
-_GLUE: Final = frozenset(
-    [
-        "a",
-        "an",
-        "the",
-        "this",
-        "that",
-        "these",
-        "those",
-        "it",
-        "its",
-        "they",
-        "them",
-        "their",
-        "there",
-        "here",
-        "what",
-        "which",
-        "where",
-        "who",
-        "whose",
-        "on",
-        "of",
-        "for",
-        "and",
-        "with",
-        "from",
-        "because",
-        "so",
-        "as",
-        "at",
-        "in",
-        "to",
-        "by",
-        "into",
-        "onto",
-        "is",
-        "was",
-        "were",
-        "are",
-        "be",
-        "been",
-        "has",
-        "have",
-        "had",
-        "page",
-        "pages",
-        "sheet",
-        "row",
-        "rows",
-        "run",
-        "wall",
-        "walls",
-        "end",
-        "ends",
-        "side",
-        "sides",
-        "piece",
-        "pieces",
-        "overall",
-        "reading",
-        "readings",
-        "read",
-        "reads",
-        "reader",
-        "readers",
-        "ai",
-        "ais",
-        "drawing",
-        "vendor",
-        "vendor's",
-        "architect",
-        "architect's",
-        "reviewer",
-        "reviewer's",
-        "countertop",
-        "countertop's",
-        "cabinet",
-        "cabinets",
-        "filler",
-        "fillers",
-        "return",
-        "returns",
-        "edge",
-        "edges",
-        "corner",
-        "corners",
-        "line",
-        "lines",
-        "field",
-        "cut",
-        "cuts",
-        "check",
-        "checks",
-        "result",
-        "results",
-        "value",
-        "values",
-        "width",
-        "length",
-        "sink",
-        "top",
-        "shows",
-        "show",
-        "shown",
-        "lists",
-        "listed",
-        "open",
-        "see",
-        "look",
-        "view",
-        "queue",
-        "start",
-        "then",
-        "example",
-        "called",
-        "named",
-        "also",
-        "together",
-        "tell",
-        "app",
-        "records",
-        "detail",
-        "details",
-        "below",
-        "above",
-        "where",
-        "called",
-        "uses",
-        "use",
-        "using",
-        "sits",
-        "sit",
-        "between",
-        "beside",
-        "next",
-        "review",
-        "package",
-        "rulebook",
-        "rule",
-        "against",
-    ]
-)
-#: Further words a sentence that only names a record (its page or label, no fact) may use:
-#: navigation and plain description, never an outcome.
-_SUBJECT_ONLY_EXTRA: Final = frozenset(
-    [
-        "chose",
-        "picked",
-        "different",
-        "disagreed",
-        "nothing",
-        "no",
-        "measured",
-        "measure",
-        "try",
-        "opening",
-        "go",
-        "compare",
-        "comparing",
-        "others",
-        "other",
-        "start",
-        "starts",
-        "about",
-        "you",
-        "your",
-        "can't",
-        "cannot",
-        "find",
-        "there",
-    ]
-)
-_SUBJECT_FIELDS: Final = frozenset({"page", "label", "check", "what"})
-#: Glue phrases removed before the word check: harmless navigation idiom.
-_GLUE_PHRASES: Final = re.compile(r"\ba good place to start\b|\bfor example\b")
-
-#: Words an explanation sentence may not use (judgements, readiness, recommendations, decisions,
-#: first-person actions, interjections). Ordinary words (difference, total, held, decision …) pass.
-_EXPLAIN_WORDS: Final = frozenset(
-    [
-        "ok",
-        "okay",
-        "okayed",
-        "lgtm",
-        "fine",
-        "good",
-        "bad",
-        "great",
-        "perfect",
-        "excellent",
-        "nice",
-        "solid",
-        "safe",
-        "alright",
-        "legit",
-        "proper",
-        "properly",
-        "appropriate",
-        "acceptable",
-        "unacceptable",
-        "satisfactory",
-        "sufficient",
-        "adequate",
-        "true",
-        "false",
-        "untrue",
-        "wrong",
-        "wrongly",
-        "mistake",
-        "mistaken",
-        "mistyped",
-        "misread",
-        "misreading",
-        "slip",
-        "flawed",
-        "faulty",
-        "minor",
-        "negligible",
-        "trivial",
-        "tiny",
-        "small",
-        "cosmetic",
-        "common",
-        "usual",
-        "usually",
-        "typical",
-        "typically",
-        "clean",
-        "tidy",
-        "decent",
-        "spotless",
-        "happy",
-        "worry",
-        "worries",
-        "trouble",
-        "fixed",
-        "handled",
-        "ready",
-        "done",
-        "finished",
-        "complete",
-        "completed",
-        "wrapped",
-        "green",
-        "red",
-        "pass",
-        "passes",
-        "passed",
-        "passing",
-        "fail",
-        "fails",
-        "failed",
-        "failing",
-        "correct",
-        "correctly",
-        "incorrect",
-        "accurate",
-        "inaccurate",
-        "valid",
-        "invalid",
-        "compliant",
-        "noncompliant",
-        "spec",
-        "specs",
-        "off",
-        "approvable",
-        "approve",
-        "approved",
-        "approves",
-        "approving",
-        "approval",
-        "accept",
-        "accepted",
-        "accepting",
-        "reject",
-        "rejected",
-        "rejecting",
-        "dismiss",
-        "dismissed",
-        "confirm",
-        "confirmed",
-        "override",
-        "overridden",
-        "overrule",
-        "waive",
-        "waived",
-        "release",
-        "released",
-        "sign",
-        "signed",
-        "signing",
-        "submit",
-        "submitted",
-        "ship",
-        "shipped",
-        "yes",
-        "nope",
-        "yeah",
-        "yep",
-        "agreed",
-        "absolutely",
-        "certainly",
-        "sure",
-        "indeed",
-        "exactly",
-        "recommend",
-        "recommended",
-        "recommending",
-        "should",
-        "must",
-        "ought",
-        "probably",
-        "likely",
-        "unlikely",
-        "perhaps",
-        "maybe",
-        "supposedly",
-        "allegedly",
-        "apparently",
-        "stored",
-        "unheld",
-        "lifted",
-        "marked",
-        "recorded",
-        "logged",
-        "noted",
-        "mistakes",
-        "redrawn",
-        "redrew",
-        "addressed",
-        "already",
-        "earlier",
-        "previously",
-        "forgot",
-        "forget",
-        "forgotten",
-        "drafting",
-        "saved",
-        "cleared",
-        "resolved",
-        "settled",
-        "closed",
-        "skipped",
-        "ignored",
-        "treated",
-        "considered",
-        "updated",
-        "changed",
-        "trimmed",
-        "trim",
-        "trims",
-        "outstanding",
-        "pending",
-        "awaiting",
-        "blocked",
-        "unblocked",
-        "blocking",
-        "clear",
-        "right",
-        "matches",
-        "match",
-        "matched",
-        "mismatch",
-        "fits",
-        "agrees",
-        "error",
-        "errors",
-        "issue",
-        "issues",
-        "problem",
-        "problems",
-        "discrepancy",
-        "discrepancies",
-        "blocker",
-        "blockers",
-        "free",
-        "broken",
-        "rework",
-        "redone",
-    ]
-)
-_EXPLAIN_PHRASES: Final = re.compile(
-    r"\b(?:wrap(?:ped)? up|nothing stands|nothing else|last item|all set|in the clear|good to go|"
-    r"go for it|go ahead|thumbs up|let (?:it|them|the \w+|this) through|wave[ds]? \w* ?through|"
-    r"(?:is|are|goes|go|put|push|pushed|gets?) through|you can approve|nothing for you|"
-    r"no (?:action|further|need)|nothing is missing|since then|last time|used to|"
-    r"you may|move on|taken care|in order|checks? out|lines? up|spot on|ship shape|"
-    r"good shape|i have|i've|i picked|i chose|i set|i sent|i asked|i would|i recommend|from me|"
-    r"to me|a handful|ask the vendor|"
-    r"have the vendor|out of your hands|no longer|any ?more|nothing to|nothing (?:is |else )?left|"
-    r"nothing remains|nothing more|nothing needs|nothing (?:is |was )?(?:waiting|open|pending|"
-    r"outstanding|blocking)|no (?:more |other )?(?:items?|decisions?|blockers?|findings?) "
-    r"(?:left|remain|need|are)|(?:no|nothing)\b[^.]*\bleft)\b"
-)
-_INTERJECTION: Final = re.compile(
-    r"^(?:yes|no|not yet|nope|yeah|yep|sure|agreed|absolutely|certainly|of course|indeed|"
-    r"exactly|right|correct|ok|okay|got it|understood|done|handled|thanks?)\b"
-)
-
-_DIRECTIONAL_WORD: Final = frozenset({"right", "left", "short", "long"})
-_PARTS: Final = (
-    r"(?:end|side|wall|hand|edge|return|corner|run|piece|leg|angle|panel|filler|cabinet|splash|"
-    r"overhang|depth|length|dimension)s?"
-)
-_DIRECTIONAL: Final = re.compile(
-    r"\b(?:left|right)[- ]hand\b"
-    r"|\b(?:on|to|at|from|towards?|along|by) the (?:far |near )?(?:left|right)\b"
-    rf"|\b(?:left|right) and (?:left|right)(?=[\s-]+{_PARTS}\b)"
-    r"|\bfrom (?:left|right) to (?:left|right)\b"
-    rf"|\b(?:left|right|short|long)(?:[- ]?most)?(?=[\s-]+{_PARTS}\b)"
-)
 #: What an outcome may follow directly: its own subject (code puts the record id in for `X`).
 _SUBJECTS: Final = (
     "the countertop on {X.page} ({X.label})",
@@ -581,48 +80,6 @@ _SUBJECTS: Final = (
 )
 #: What an outcome may follow when its subject is named earlier in the sentence.
 _PRONOUNS: Final = ("the countertop", "it", "which", "that", "this countertop")
-
-#: Labels share these words with ordinary prose about countertops.
-_LABEL_COMMON: Final = frozenset(
-    [
-        "countertop",
-        "countertops",
-        "counter",
-        "top",
-        "tops",
-        "row",
-        "rows",
-        "run",
-        "runs",
-        "line",
-        "lines",
-        "page",
-        "pages",
-        "sheet",
-        "sheets",
-        "stone",
-        "the",
-        "and",
-        "on",
-        "of",
-        "for",
-        "at",
-        "in",
-        "with",
-        "to",
-        "wall",
-        "walls",
-        "back",
-        "side",
-        "end",
-        "ends",
-        "piece",
-        "pieces",
-        "section",
-        "part",
-    ]
-)
-
 
 #: Words that point back to an earlier sentence's subject: a fact sentence that does not name its
 #: own record may not use them ("Here is page 9. Its values: {C1.printed}").
@@ -669,96 +126,233 @@ def _plain(free: str) -> str:
     return re.sub(r"\s+", " ", plain)
 
 
-def _number_words(plain: str) -> list[str]:
-    return [word for word in _WORDS.findall(plain) if word.split("'")[0] in _NUMBER_WORDS]
+# ---- the model's own words: the hard rules -------------------------------------------------------
 
 
-def fact_words(free: str, *, subject_only: bool = False) -> tuple[str, ...]:
-    """The words around placeholders that are not on the glue allow-list (a sentence that only
-    names a record, with no fact placeholder, may also use a few plain navigation words)."""
-    plain = _GLUE_PHRASES.sub(" ", _DIRECTIONAL.sub(" ", _plain(free)))
-    allowed = _GLUE | _SUBJECT_ONLY_EXTRA if subject_only else _GLUE
-    found: list[str] = []
-    if _SPELLED.search(plain):
-        found.append("spelled-out")
-    for word in _WORDS.findall(plain):
-        if word not in allowed and word.split("'")[0] not in allowed:
-            found.append(word)
-    return tuple(found)
+def _forms(*verbs: str) -> str:
+    """Every simple form of each verb ("approve" -> approve, approves, approved, approving)."""
+    out: set[str] = set()
+    for verb in verbs:
+        stem = verb.removesuffix("e")
+        out.update((verb, f"{verb}s", f"{verb}es", f"{stem}ed", f"{stem}ing"))
+    return "|".join(sorted(out, key=len, reverse=True))
 
 
-def explanation_words(free: str) -> tuple[str, ...]:
-    """The words in an explanation sentence that judge, claim readiness, recommend or decide."""
-    plain = re.sub(r"\b(?:minus|plus|negative|positive) signs?\b", " ", _plain(free)).strip()
-    found: list[str] = []
-    if _SPELLED.search(plain):
-        found.append("spelled-out")
-    if _INTERJECTION.match(plain):
-        found.append("interjection")
-    found.extend(match.group(0) for match in _EXPLAIN_PHRASES.finditer(plain))
-    found.extend(_number_words(plain))
-    neutral = _DIRECTIONAL.sub(" ", plain)
-    for word in _WORDS.findall(neutral):
-        base = word.split("'")[0]
-        if base in _EXPLAIN_WORDS or (base in _DIRECTIONAL_WORD and base != "left"):
-            found.append(word)
-    return tuple(found)
+#: What a reviewer does on the screen, and the assistant never does.
+_DECIDING: Final = _forms(
+    "approve",
+    "sign",
+    "confirm",
+    "fix",
+    "agree",
+    "mark",
+    "accept",
+    "reject",
+    "record",
+    "clear",
+    "resolve",
+    "cloud",
+    "dismiss",
+    "tick",
+    "close",
+    "correct",
+    "settle",
+    "submit",
+    "override",
+    "waive",
+    "update",
+    "change",
+    "edit",
+    "rerun",
+    "send",
+)
+_DONE_STATES: Final = (
+    r"approved|signed(?: off)?|confirmed|fixed|agreed|marked|accepted|rejected|recorded|cleared|"
+    r"resolved|clouded|dismissed|ticked|closed|corrected|settled|submitted|overridden|waived|"
+    r"reviewed|updated|changed|sent back"
+)
+#: "I approved …", "I've marked …", "I will sign …", "let me confirm …", "page 4 has been
+#: approved", "it is now confirmed".
+_ACTION_CLAIM: Final = re.compile(
+    rf"\bi(?:'ve|'d|'ll|'m going to|\s+(?:have|had|just|already|now|also|will|went ahead and|"
+    rf"can|could|am going to|then))*\s+(?:{_DECIDING})\b"
+    rf"|\blet me\s+(?:{_DECIDING})\b"
+    rf"|\b(?:has|have|had)\s+(?:now\s+|just\s+|already\s+)?been\s+(?:{_DONE_STATES})\b"
+    rf"|\b(?:is|are|was|were)\s+(?:now|already)\s+(?:{_DONE_STATES}|done)\b"
+)
+#: Advice to decide: "you can safely approve it", "safe to sign off", "I recommend approving",
+#: "I would let it through", "send it back to the vendor".
+_ADVICE: Final = re.compile(
+    r"\byou\s+(?:can|could|may|should|might want to|ought to|are free to|are cleared to)\s+"
+    r"(?:safely\s+|now\s+|just\s+|go ahead and\s+)*(?:approve|sign|accept|reject|release)\b"
+    r"|\b(?:safe|ok|okay|fine|good|ready|free|cleared|clear)\s+(?:to|for)\s+(?:approv\w*|sign\w*|"
+    r"accept\w*|confirm\w*|agree\w*|pass|let\b|release\w*)"
+    r"|\bgo ahead and\s+(?:approve|sign|accept|confirm|agree|reject)\b"
+    r"|\b(?:i|we)\s+(?:would\s+|'d\s+)?(?:recommend|suggest|advise)\s+(?:that you\s+|you\s+)?"
+    r"(?:approv|sign|accept|confirm|agree|reject|let|send|releas|pass)\w*"
+    r"|\b(?:i|we)\s+(?:would|'d)\s+(?:approve|sign|accept|reject|let|send|pass|release)\b"
+    r"|\blet\s+(?:it|them|this|that|the \w+)\s+through\b|\bwave[ds]?\s+(?:\w+\s+)?through\b"
+    r"|\bsen(?:d|ds|t|ding)\s+(?:it|them|this|that|the \w+)\s+back\b"
+    r"|\bshould be\s+(?:sent back|approved|accepted|rejected|signed|released|passed)\b"
+    r"|(?:^|[.?!:;]\s+|\n\s*)(?:please\s+|just\s+|now\s+)?(?:approve|sign|accept|reject|release)\b"
+    r"|\byou can (?:safely |now )?move on\b"
+)
+#: A pass or fail, or the app's own result words, in the model's own words: a result comes only
+#: through `{C1.outcome}`, and sign-off readiness only through `{signoff.status}`.
+_OUTCOME_WORDS: Final = re.compile(
+    r"\b(?:pass(?:es|ed|ing)?|fail(?:s|ed|ing|ure|ures)?|out of (?:tolerance|spec)|"
+    r"(?:with)?in (?:the )?(?:tolerance|allowance|limits?|spec)|in spec|inside the allowed|"
+    r"looks? right|needs? correction|(?:non-?)?compliant|acceptable|approvable|"
+    r"(?:is|are) (?:accurate|valid|invalid)|nothing (?:is )?wrong)\b"
+)
+_READINESS: Final = re.compile(
+    r"\bsign[- ]?off is (?:now )?(?:unblocked|available|possible|clear|allowed|open)\b"
+    r"|\bcan (?:now )?(?:sign|be signed|be released|be approved|go ahead)\b"
+    r"|\b(?:review|package|job|work)(?: here)? is (?:now )?(?:complete|finished|done|ready)\b"
+    r"|\bno (?:further )?(?:action|attention) (?:is )?(?:required|needed)\b|\brequires? no further\b"
+    r"|\b(?:the )?last item\b"
+    r"|\bnothing (?:else |more )?(?:needs|is waiting|is pending|is outstanding|stands|left|"
+    r"remains|to do)\b"
+    r"|\bno (?:more |other )?(?:items?|decisions?|blockers?|findings?) (?:left|remain|need|are "
+    r"(?:left|outstanding|pending|open))\b|\bno blockers?\b"
+    r"|\b(?:all|every) (?:items?|results?|countertops?|findings?) (?:has|have|are|is|look)\b"
+    r"|\bwrap(?:ped)? up\b|\bgo ahead\b|\bgo for it\b|\bthumbs up\b|\bgood to go\b|\ball set\b"
+    r"|\bin the clear\b|\byours to give\b|\bchecks? out\b"
+    r"|\blooks? (?:good|fine|great|clean|ok|okay|correct|perfect)\b"
+    r"|\b(?:is|are) (?:fine|ok|okay|good|perfect|spot on)\b"
+)
+#: Words that twist a recorded result in its own sentence ("it is untrue that … {C1.outcome}").
+_TWIST: Final = re.compile(
+    r"\b(?:not|no longer|never|untrue|isn't|aren't|doesn't|don't|wasn't|didn't|nobody|"
+    r"doubtful|supposedly|allegedly|perhaps|probably|maybe|likely|unlikely|used to|previously|"
+    r"earlier|but|although|though|however|instead|rather|unlike|misread|wrong|ignore\w*|"
+    r"disregard\w*|really)\b|\?"
+)
+#: Three or more single letters in a row ("p-a-s-s"): a word spelled out to slip past the rules.
+_SPELLED: Final = re.compile(r"\b[a-z](?:[\s\-.'_]+[a-z]\b){2,}")
+#: A page named in the model's own words ("page 7", "sheet 7", "p. 7").
+_PAGE_WORDS: Final = re.compile(r"\b(?:page|sheet|pg|p)\.?\s*#?\s*([0-9]+)\b")
 
 
-def forbidden_words(free: str) -> tuple[str, ...]:
-    """Explanation-class findings plus number words (kept for callers that check one text)."""
-    return explanation_words(free)
-
-
-def _label_leaks(free: str, snapshot: ReviewSnapshot) -> bool:
-    """Whether model text names a countertop by its label in its own words ("Run A is …")."""
-    plain = re.sub(r"\s+", " ", unicodedata.normalize("NFKC", free))
-    folded = plain.casefold()
-    for item in snapshot.countertops:
-        label = re.sub(r"\s+", " ", item.label).strip()
-        if not label:
-            continue
-        if label.casefold() in folded:
-            return True
-        tokens = re.findall(r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*", label)
-        for index, token in enumerate(tokens):
-            lowered = token.casefold()
-            if (
-                len(token) >= 3
-                and token.isalpha()
-                and lowered not in _LABEL_COMMON
-                and re.search(rf"\b{re.escape(lowered)}\b", folded)
-            ):
-                return True
-            if len(token) <= 2 and token[:1].isupper():
-                code = re.escape(token)
-                patterns = []
-                if index > 0:
-                    patterns.append(rf"(?i:\b{re.escape(tokens[index - 1])})\s+{code}\b")
-                if index + 1 < len(tokens):
-                    patterns.append(rf"\b{code}\s+(?i:{re.escape(tokens[index + 1])}\b)")
-                if any(re.search(pattern, plain) for pattern in patterns):
-                    return True
-    return False
-
-
-def _check_characters(free: str) -> None:
+def _check_hidden(free: str) -> None:
     for character in free:
-        if character in "\n ":
+        if character in "\n\t":
             continue
         category = unicodedata.category(character)
-        if category[0] == "N":
-            raise GuardRejected("number-in-text")
-        if category[0] in "CZ":
+        if category[0] == "C" or category in ("Zl", "Zp"):
             raise GuardRejected("hidden-character")
-        if category[0] == "L":
-            if "LATIN" not in unicodedata.name(character, ""):
-                raise GuardRejected("non-latin-letter")
-            continue
-        if category[0] == "M":
-            continue
-        if character not in _PUNCTUATION:
-            raise GuardRejected("symbol-in-text")
+        if category[0] == "L" and "LATIN" not in unicodedata.name(character, ""):
+            # A look-alike letter ("lооks" with Cyrillic o) would slip past the word rules.
+            raise GuardRejected("non-latin-letter")
+
+
+#: Result placeholders that must name their own record in their sentence ("the countertop on
+#: {C1.page} {C1.outcome}" or "on page 4, {C1.outcome}"), so one cannot be read as another's.
+_SUBJECT_NEEDED: Final = frozenset({"outcome"})
+_NAMING_FIELDS: Final = frozenset({"page", "label", "check", "what"})
+
+
+def _names_itself(
+    in_sentence: list[Slot], key: str, named: set[int], pages: set[int] | None
+) -> bool:
+    if any(slot.key == key and slot.field in _NAMING_FIELDS for slot in in_sentence):
+        return True
+    return pages is not None and bool(named) and named <= pages
+
+
+def _only_its_page_names_it(in_sentence: list[Slot], key: str, snapshot: ReviewSnapshot) -> bool:
+    """A countertop's result named only by its page, on a page with more than one countertop."""
+    record = snapshot.record(key)
+    if not isinstance(record, CountertopRecord):
+        return False
+    if any(slot.key == key and slot.field in ("label", "check", "what") for slot in in_sentence):
+        return False
+    return sum(1 for item in snapshot.countertops if item.page_number == record.page_number) > 1
+
+
+#: Placeholders that state a recorded result or sign-off state.
+_RESULT_FIELDS: Final = frozenset({"outcome", "decision", "status", "needs_you"})
+
+
+def _record_pages(snapshot: ReviewSnapshot, key: str) -> set[int] | None:
+    """The pages a record is on, or `None` when it names none (a package-wide finding)."""
+    page = _PAGE_ID.match(key)
+    if page is not None:
+        return {int(page.group(1))}
+    record = snapshot.record(key)
+    if record is not None:
+        pages = _pages_of(record)
+        return pages or None
+    if key.startswith("R"):
+        item = snapshot.review_item(key)
+        if item is not None and item.page_number is not None:
+            return {item.page_number}
+    return None
+
+
+def _check_model_words(template: str, snapshot: ReviewSnapshot) -> None:
+    """The hard rules on the model's own words (see the module docstring)."""
+    free_all = PLACEHOLDER.sub(" ", template)
+    _check_hidden(free_all)
+    plain = _plain(free_all)
+    if _SPELLED.search(plain):
+        raise GuardRejected("spelled-out")
+    if _ACTION_CLAIM.search(plain):
+        raise GuardRejected("action-claim")
+    if _ADVICE.search(plain):
+        raise GuardRejected("advice-to-decide")
+    if _OUTCOME_WORDS.search(plain):
+        raise GuardRejected("outcome-in-own-words")
+    if _READINESS.search(plain):
+        raise GuardRejected("readiness-in-own-words")
+    for line in template.split("\n"):
+        previous_keys: set[str] = set()
+        for sentence in split_sentences(line.strip()):
+            in_sentence = slots(sentence)
+            keys_here = {slot.key for slot in in_sentence if slot.is_record}
+            if len(keys_here) == 1 and CONNECTOR.match(sentence):
+                # "Also, {C2.hold_reason}" after a sentence about C1 would read as C1's (code puts
+                # no subject in front of a connector).
+                (key,) = keys_here
+                names_it = any(
+                    slot.key == key and slot.field in _NAMING_FIELDS for slot in in_sentence
+                )
+                if not names_it and previous_keys != {key}:
+                    raise GuardRejected("connector-without-its-subject")
+            if keys_here and not dropped_sentence(sentence, template, snapshot):
+                previous_keys = keys_here
+            facts = [
+                slot for slot in in_sentence if slot.is_record and slot.field not in _NAMING_FIELDS
+            ]
+            free = _plain(PLACEHOLDER.sub(" ", sentence))
+            stated = [
+                slot
+                for slot in in_sentence
+                if slot.field in _RESULT_FIELDS or slot.key in ("count", "signoff")
+            ]
+            if stated and _TWIST.search(free):
+                raise GuardRejected("outcome-twisted")
+            if not facts:
+                continue
+            outcomes = [slot for slot in facts if slot.field in _RESULT_FIELDS]
+            named = {int(page) for page in _PAGE_WORDS.findall(free)}
+            for slot in in_sentence:
+                if slot.field == "page":
+                    named |= _record_pages(snapshot, slot.key) or set()
+            for slot in facts:
+                pages = _record_pages(snapshot, slot.key)
+                if pages is not None and named - pages:
+                    raise GuardRejected("fact-on-another-page")
+            for slot in outcomes:
+                pages = _record_pages(snapshot, slot.key)
+                if slot.field in _SUBJECT_NEEDED and not _names_itself(
+                    in_sentence, slot.key, named, pages
+                ):
+                    raise GuardRejected("outcome-without-its-subject")
+                if slot.field in _SUBJECT_NEEDED and _only_its_page_names_it(
+                    in_sentence, slot.key, snapshot
+                ):
+                    raise GuardRejected("outcome-subject-ambiguous")
 
 
 # ---- structure -----------------------------------------------------------------------------------
@@ -899,42 +493,10 @@ def _check_references(draft: Draft, snapshot: ReviewSnapshot) -> None:
             raise GuardRejected("action-unknown-kind")
 
 
-def _walls_set_by_reviewer(in_sentence: list[Slot], snapshot: ReviewSnapshot) -> bool:
-    """ "You set the walls" is the record's own fact when the walls placeholder's source is you."""
-    for slot in in_sentence:
-        record = snapshot.record(slot.key) if slot.field == "walls" else None
-        if isinstance(record, CountertopRecord) and record.wall_source == "reviewer":
-            return True
-    return False
-
-
-def _check_vocabulary(template: str, snapshot: ReviewSnapshot) -> None:
-    free_all = PLACEHOLDER.sub(" ", template)
-    _check_characters(free_all)
-    if _ABBREVIATIONS.search(free_all):
-        raise GuardRejected("abbreviation-or-exclamation")
-    if _label_leaks(free_all, snapshot):
-        raise GuardRejected("label-in-own-words")
-    for line in template.split("\n"):
-        for sentence in split_sentences(line.strip()):
-            free = PLACEHOLDER.sub(" ", sentence)
-            in_sentence = slots(sentence)
-            if in_sentence:
-                subject_only = all(slot.field in _SUBJECT_FIELDS for slot in in_sentence)
-                words = set(fact_words(free, subject_only=subject_only))
-                if _walls_set_by_reviewer(in_sentence, snapshot):
-                    words -= {"you", "set", "yourself"}
-                if words:
-                    raise GuardRejected("word-not-allowed-beside-a-fact")
-                if subject_only and explanation_words(free):
-                    raise GuardRejected("word-not-allowed-in-an-explanation")
-            elif explanation_words(free):
-                raise GuardRejected("word-not-allowed-in-an-explanation")
-
-
 def check(draft: Draft, snapshot: ReviewSnapshot, *, by_model: bool = True) -> None:
-    """Raise `GuardRejected` unless every fact in `draft` is a placeholder the records fill and
-    the words around it cannot change what it says."""
+    """Raise `GuardRejected` unless `draft` keeps the hard rules: every placeholder is one the
+    records fill, nothing claims or advises a decision, a result is quoted only as recorded, and
+    every evidence id and action names a record that exists (and still needs the reviewer)."""
     text = draft.text
     if not text.strip():
         raise GuardRejected("empty-text")
@@ -948,10 +510,12 @@ def check(draft: Draft, snapshot: ReviewSnapshot, *, by_model: bool = True) -> N
         raise GuardRejected("marker-or-brace-in-text")
     if _LINKS.search(free):
         raise GuardRejected("link-or-markup")
-    if any(unicodedata.category(character)[0] == "N" for character in free):
-        raise GuardRejected("number-in-text")
     if by_model:
-        _check_vocabulary(text, snapshot)
+        _check_model_words(text, snapshot)
+    else:
+        # Code's own wording: no digit outside a placeholder, and the one-record structure.
+        if any(unicodedata.category(character)[0] == "N" for character in free):
+            raise GuardRejected("number-in-text")
+        _check_structure(text, snapshot)
     _check_value_framing(text)
-    _check_structure(text, snapshot)
     _check_references(draft, snapshot)

@@ -415,6 +415,24 @@ describe('assistant panel', () => {
     expect(document.querySelectorAll('[data-slot="assistant-looked-at"]')).toHaveLength(1);
   });
 
+  it('marks every AI-written answer as an AI reading, never a code-written one (2026-10-16)', async () => {
+    const user = userEvent.setup();
+    server.replies.push(
+      [{ event: 'answer', data: answer({ text: 'The vendor shows 34 here.', mode: 'llm', looked_at_page: 2 }) }],
+      [{ event: 'answer', data: answer({ text: 'Records answer.', mode: 'records_only' }) }],
+      [{ event: 'answer', data: answer({ text: 'I cannot approve from the chat.', mode: 'refused' }) }],
+    );
+    mount();
+    await user.type(composer(), 'One{Enter}');
+    await screen.findByText('The vendor shows 34 here.');
+    expect(thread().getByText('AI reading of the drawing — not a decision')).toBeTruthy();
+    await user.type(composer(), 'Two{Enter}');
+    await screen.findByText('Records answer.');
+    await user.type(composer(), 'Three{Enter}');
+    await screen.findByText('I cannot approve from the chat.');
+    expect(document.querySelectorAll('[data-slot="assistant-ai-reading"]')).toHaveLength(1);
+  });
+
   it('keeps the starters after a switched-off answer', async () => {
     const user = userEvent.setup();
     server.replies.push([{ event: 'answer', data: answer({ text: 'The assistant is switched off for this set.', mode: 'disabled', checked: false }) }]);

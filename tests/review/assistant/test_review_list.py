@@ -29,6 +29,7 @@ from app.review.assistant.model import ANSWER_SCHEMA, SYSTEM_PROMPT, parse_answe
 from app.review.assistant.placeholders import Slot, UnknownPlaceholder, record_fields, value_of
 from app.review.assistant.records import ReviewItemRecord, prompt_records
 from app.review.assistant.service import AssistantRuntime, stream_answer
+from tests.review.assistant.chat_style import allowed_now
 from tests.review.assistant.synthetic import (
     FAILURE_KEY,
     ITEM_BY_HAND_KEY,
@@ -211,6 +212,8 @@ def test_the_item_button_goes_only_to_an_item_that_waits(draft: Draft, reason: s
     ],
 )
 def test_model_words_never_decide_confirm_or_state_a_value(text: str) -> None:
+    if allowed_now(text, REVIEW):
+        return
     with pytest.raises(GuardRejected):
         check(Draft(text=text), REVIEW)
 
