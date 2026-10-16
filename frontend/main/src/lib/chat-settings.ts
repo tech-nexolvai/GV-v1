@@ -43,6 +43,15 @@ export function alwaysThinksWords(model: Pick<ChatModel, 'label'>): string {
   return `${shortModelLabel(model)} always thinks`;
 }
 
+/** The one line under each model in the model menu, in claude.ai's words. */
+export function modelBlurb(model: Pick<ChatModel, 'id' | 'label'>): string {
+  const name = `${model.id} ${model.label}`.toLowerCase();
+  if (name.includes('opus')) return 'Most capable for complex work';
+  if (name.includes('sonnet')) return 'Smart, efficient model for everyday use';
+  if (name.includes('haiku')) return 'Fastest model for daily tasks';
+  return '';
+}
+
 /** The server's default model, else its first; null when it offers none. */
 export function defaultModel(models: readonly ChatModel[]): ChatModel | null {
   return models.find((model) => model.default) ?? models[0] ?? null;
@@ -60,7 +69,7 @@ function thinkingOffCap(model: ChatModel): ChatEffort | null {
 export function effortBlockedReason(model: ChatModel, effort: ChatEffort, thinking: boolean): string | null {
   if (!model.efforts.includes(effort)) return `${shortModelLabel(model)} does not offer this effort`;
   const cap = thinkingOffCap(model);
-  if (!thinking && cap !== null && effortRank(effort) > effortRank(cap)) return `Needs thinking on (up to ${EFFORT_WORDS[cap]} without it)`;
+  if (!thinking && cap !== null && effortRank(effort) > effortRank(cap)) return `Needs extended thinking (up to ${EFFORT_WORDS[cap]} without it)`;
   return null;
 }
 
@@ -151,5 +160,26 @@ export function saveChoice(storage: Pick<Storage, 'setItem'> | null, choice: Cha
     storage?.setItem(CHOICE_KEY, JSON.stringify(choice));
   } catch {
     // Storage blocked or full: the choice lasts for this visit only.
+  }
+}
+
+// ── The chats list: open or collapsed, remembered per browser ──
+
+export const LIST_COLLAPSED_KEY = 'gv.chat.listCollapsed';
+
+/** True when the reviewer collapsed the chats list last time. Unreadable storage counts as open. */
+export function readListCollapsed(storage: Pick<Storage, 'getItem'> | null): boolean {
+  try {
+    return storage?.getItem(LIST_COLLAPSED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function saveListCollapsed(storage: Pick<Storage, 'setItem'> | null, collapsed: boolean): void {
+  try {
+    storage?.setItem(LIST_COLLAPSED_KEY, collapsed ? '1' : '0');
+  } catch {
+    // Storage blocked or full: the list keeps its state for this visit only.
   }
 }

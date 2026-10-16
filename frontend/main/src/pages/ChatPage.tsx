@@ -16,19 +16,12 @@
  */
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowDown, ChevronRight, CircleAlert, ListChecks, MessagesSquare, RotateCw, SquarePen } from 'lucide-react';
+import { ArrowDown, CircleAlert, ListChecks, PanelLeft, RotateCw, Sparkle } from 'lucide-react';
 
 import { formatRoute } from '@/app/route';
 import { HeaderActions } from '@/components/shell/ShellHeader';
 import { Button } from '@/components/ui/button';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
+import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/skeleton';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { LiveSteps } from '@/components/assistant/assistant-steps';
@@ -38,7 +31,7 @@ import { AssistantMessage, UserMessage } from '@/components/chat/chat-message';
 import { ApiError } from '@/api/client';
 import { chatFailureWords, isAbort, LIVE_CHAT_API, type Chat, type ChatApi, type ChatModels } from '@/lib/chat-api';
 import { applyChatEvent, CHAT_STARTERS, chatTitle, dollars, fromSaved, localAnswer, localQuestion, settle, type ViewMessage } from '@/lib/chat-messages';
-import { browserStorage, readChoice, resolveChoice, saveChoice, type ChatChoice } from '@/lib/chat-settings';
+import { browserStorage, readChoice, readListCollapsed, resolveChoice, saveChoice, saveListCollapsed, type ChatChoice } from '@/lib/chat-settings';
 import { cn } from '@/lib/utils';
 
 /** A chat with nothing in it yet (one value, so effects that follow the messages do not re-run). */
@@ -47,11 +40,20 @@ const NO_MESSAGES: ViewMessage[] = [];
 /** How close to the bottom (px) still counts as "at the bottom" for following new words. */
 const FOLLOW_GAP = 80;
 /**
- * The page's own width (px) from which the chats column shows beside the conversation, leaving it
- * about 580px. Narrower (a phone, or a laptop with the app sidebar open), the chats move to a menu
- * in the top bar. Measured on the page, not the window, because the app sidebar takes its share.
+ * The page's own width (px) from which the chats column shows beside the conversation: a 1024px
+ * window with the app sidebar open leaves the page about 768px. Narrower (a phone, a small window),
+ * the chats open as a drawer from the top bar. Measured on the page, not the window, because the
+ * app sidebar takes its share.
  */
-const CHATS_COLUMN_FROM = 840;
+const CHATS_COLUMN_FROM = 720;
+
+/** claude.ai's words under the composer. */
+const DISCLAIMER = 'Claude can make mistakes. Please double-check responses.';
+
+/** "$5.00" → "$5", "$3.10" stays: the money line in the model menu. */
+function money(value: string | null | undefined): string | null {
+  return dollars(value)?.replace(/\.00$/, '') ?? null;
+}
 
 type ModelsState = { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready'; data: ChatModels };
 
@@ -152,9 +154,20 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   const [announce, setAnnounce] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // ── Room for the chats column ──
+  // ── Room for the chats column; folded or open (remembered), or a drawer on narrow screens ──
   const pageRef = useRef<HTMLDivElement>(null);
   const [roomy, setRoomy] = useState(true);
+  const [collapsed, setCollapsed] = useState(() => readListCollapsed(browserStorage()));
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  // Chats whose first message was sent here: their title fades in once the server names them.
+  const [freshTitles, setFreshTitles] = useState<ReadonlySet<string>>(() => new Set());
+
+  function toggleList() {
+    setCollapsed((now) => {
+      saveListCollapsed(browserStorage(), !now);
+      return !now;
+    });
+  }
   useEffect(() => {
     const page = pageRef.current;
     if (!page || typeof ResizeObserver === 'undefined') return;
@@ -228,6 +241,28 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
     if (box && follow.current) box.scrollTop = box.scrollHeight;
   }, [messages]);
 
+  // An empty chat holds the composer in the middle, under a greeting; the first message sends it
+  // gliding down to the bottom (it is measured before and after, then slid between the two).
+  const activeSummary = list.status === 'ready' ? list.chats.find((candidate) => candidate.id === chatId) : undefined;
+  const centred = chat
+    ? messages.length === 0 && !answeredElsewhere
+    : Boolean(chatId) && !failedToLoad && activeSummary?.turns === 0;
+  const dock = useRef<HTMLDivElement>(null);
+  const glideFrom = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    const from = glideFrom.current;
+    glideFrom.current = null;
+    const box = dock.current;
+    if (centred || from === null || !box || reducedMotion()) return;
+    const by = from - box.getBoundingClientRect().top;
+    if (Math.abs(by) < 1) return;
+    box.style.transition = 'none';
+    box.style.transform = `translateY(${by}px)`;
+    void box.offsetHeight; // Lay out the starting place before sliding from it.
+    box.style.transition = 'transform 360ms cubic-bezier(0.2, 0.8, 0.2, 1)';
+    box.style.transform = '';
+  }, [centred]);
+
   function onScroll() {
     const box = scroller.current;
     if (!box) return;
@@ -267,6 +302,8 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
     const controller = new AbortController();
     const run = { chatId, controller };
     runRef.current = run;
+    if (centred) glideFrom.current = dock.current?.getBoundingClientRect().top ?? null;
+    if (messages.length === 0) setFreshTitles((now) => new Set(now).add(chatId));
     setRunning(true);
     setStopping(false);
     setNotice(null);
@@ -375,21 +412,28 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   }
 
   const reload = useCallback(() => setLoadAsk((n) => n + 1), []);
-  const capWords =
+  // What a message may cost, in the model menu's footer.
+  const footnote =
     models.status === 'ready' && models.data.available
       ? [
-          dollars(models.data.message_cap_usd) && `Up to ${dollars(models.data.message_cap_usd)} a message`,
-          dollars(models.data.package_spent_usd) && dollars(models.data.package_cap_usd) && `${dollars(models.data.package_spent_usd)} of ${dollars(models.data.package_cap_usd)} used on this drawing set`,
+          money(models.data.message_cap_usd) && `Up to ${money(models.data.message_cap_usd)} per answer`,
+          money(models.data.package_spent_usd) && money(models.data.package_cap_usd) && `${money(models.data.package_spent_usd)} of ${money(models.data.package_cap_usd)} used on this set`,
         ].filter(Boolean).join(' · ')
       : '';
   const cap = models.status === 'ready' ? models.data.message_cap_usd : null;
-  const activeTitle = list.status === 'ready' ? list.chats.find((candidate) => candidate.id === chatId) : undefined;
+  const showScrollDown = !centred && !atBottom && messages.length > 0;
+
+  const listProps = { packageId, activeChatId: chatId, state: list, creating, onNewChat: () => void newChat(), freshTitles };
 
   return (
     <TooltipProvider delayDuration={300}>
       <div ref={pageRef} data-tw data-slot="chat-page" className="flex min-h-0 w-full min-w-0 flex-1 font-sans text-sm text-foreground antialiased">
         <HeaderActions>
-          {!roomy && <ChatsMenu packageId={packageId} chatId={chatId} list={list} creating={creating} onNewChat={() => void newChat()} onOpenChat={onOpenChat} />}
+          {!roomy && (
+            <Button variant="ghost" size="sm" aria-label="Show chats" aria-expanded={drawerOpen} onClick={() => setDrawerOpen(true)}>
+              <PanelLeft /> <span className="hidden sm:inline">Chats</span>
+            </Button>
+          )}
           <Button variant="ghost" size="sm" asChild>
             <a href={formatRoute({ page: 'review', packageId })} aria-label="Review list">
               <ListChecks /> <span className="hidden sm:inline">Review list</span>
@@ -397,17 +441,41 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
           </Button>
         </HeaderActions>
 
-        {roomy && (
-          <aside aria-label="Chats" className="flex w-64 shrink-0 flex-col border-r bg-background">
-            <ChatList packageId={packageId} activeChatId={chatId} state={list} creating={creating} onNewChat={() => void newChat()} />
+        {roomy ? (
+          <aside
+            aria-label="Chats"
+            data-collapsed={collapsed ? 'true' : 'false'}
+            className={cn(
+              'flex shrink-0 flex-col overflow-hidden border-r bg-background motion-safe:transition-[width] motion-safe:duration-200 motion-safe:ease-out',
+              collapsed ? 'w-[53px]' : 'w-[260px]',
+            )}
+          >
+            <ChatList {...listProps} collapsed={collapsed} onToggle={toggleList} />
           </aside>
+        ) : (
+          <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
+            <SheetContent side="left" aria-describedby={undefined} className="w-[280px] max-w-[85vw] gap-0 p-0 font-sans data-[state=closed]:duration-200 data-[state=open]:duration-300 motion-reduce:animate-none">
+              <SheetTitle className="sr-only">Chats</SheetTitle>
+              <ChatList {...listProps} onPicked={() => setDrawerOpen(false)} />
+            </SheetContent>
+          </Sheet>
         )}
 
-        <section aria-label={activeTitle ? chatTitle(activeTitle) : 'Conversation'} className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+        <section aria-label={activeSummary ? chatTitle(activeSummary) : 'Conversation'} className="relative flex min-h-0 min-w-0 flex-1 flex-col">
           {/* Positioned, so screen-reader-only text deep in the thread is placed (and clipped) inside it,
               not against the shell, where it would make the whole page scrollable. */}
-          <div ref={scroller} onScroll={onScroll} data-slot="chat-thread" className="relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain">
-            <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col gap-7 px-4 pt-6 pb-8">
+          <div
+            ref={scroller}
+            onScroll={onScroll}
+            hidden={centred || undefined}
+            data-slot="chat-thread"
+            className="relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain"
+          >
+            {/* Keyed by the chat, so switching chats (or a chat finishing loading) fades the thread in. */}
+            <div
+              key={`${chatId ?? 'opening'}:${chat ? 'ready' : 'waiting'}`}
+              className="mx-auto flex min-h-full w-full max-w-3xl flex-col gap-8 px-4 pt-8 pb-10 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-150"
+            >
               {openError && !chatId && (
                 <Problem words={`The chats could not be opened: ${openError}`} action="Try again" onAction={() => { setOpenError(null); setOpenAsk((n) => n + 1); }} />
               )}
@@ -424,9 +492,6 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                   <Skeleton className="h-4 w-1/2" />
                 </div>
               )}
-              {chat && messages.length === 0 && (
-                <Empty name={chat.package_name} disabled={Boolean(blocked)} onAsk={(question) => void send(question)} />
-              )}
               {chat && chatId && messages.map((message) =>
                 message.role === 'user' ? (
                   <UserMessage key={message.key} message={message} />
@@ -442,20 +507,34 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
             </div>
           </div>
 
-          <div className="relative mx-auto grid w-full max-w-3xl shrink-0 gap-2 px-3 pt-1 pb-[calc(10px+env(safe-area-inset-bottom,0px))] sm:px-4">
-            {!atBottom && messages.length > 0 && (
+          <div
+            data-slot="chat-dock"
+            data-centred={centred ? 'true' : undefined}
+            className={cn(
+              'relative mx-auto flex w-full max-w-3xl flex-col px-3 sm:px-4',
+              centred ? 'flex-1 justify-center gap-0 pb-[14vh]' : 'shrink-0 pt-1 pb-[calc(8px+env(safe-area-inset-bottom,0px))]',
+            )}
+          >
+            {centred && <Greeting name={chat?.package_name ?? null} />}
+            {!centred && (
               <button
                 type="button"
                 onClick={jumpToLatest}
-                aria-label="Jump to the latest message"
-                title="Jump to the latest message"
-                className="absolute -top-11 left-1/2 z-10 grid size-9 -translate-x-1/2 place-items-center rounded-full border bg-background shadow-md hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                aria-label="Scroll to bottom"
+                title="Scroll to bottom"
+                aria-hidden={!showScrollDown || undefined}
+                tabIndex={showScrollDown ? 0 : -1}
+                data-visible={showScrollDown ? 'true' : 'false'}
+                className={cn(
+                  'absolute -top-12 left-1/2 z-10 grid size-9 -translate-x-1/2 place-items-center rounded-full border bg-background text-foreground/80 shadow-md transition-[opacity,transform] duration-150 hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none motion-reduce:transition-none',
+                  showScrollDown ? 'opacity-100' : 'pointer-events-none translate-y-1 opacity-0',
+                )}
               >
                 <ArrowDown className="size-4" aria-hidden="true" />
               </button>
             )}
             {(unavailable || notice) && (
-              <p data-slot="chat-notice" role="alert" className="flex items-start gap-2 rounded-xl border bg-muted/40 px-3 py-2 text-[13px]">
+              <p data-slot="chat-notice" role="alert" className="mb-2 flex items-start gap-2 rounded-xl border bg-muted/40 px-3 py-2 text-[13px]">
                 <CircleAlert className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
                 <span className="min-w-0 flex-1">{notice ?? unavailable}</span>
                 {models.status === 'error' && !notice && (
@@ -465,22 +544,26 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                 )}
               </p>
             )}
-            <ChatComposer
-              value={draft}
-              onChange={setDraft}
-              onSend={() => void send(draft)}
-              onStop={stop}
-              running={running || answeredElsewhere}
-              stopping={stopping}
-              blocked={blocked}
-              models={modelList}
-              choice={choice}
-              onChoice={changeChoice}
-              placeholder={name ? `Ask about ${name}` : 'Ask about this drawing set'}
-              textareaRef={textareaRef}
-            />
-            <p className="text-center text-xs text-muted-foreground">
-              {capWords ? `${capWords} · ` : ''}AI answers: check before acting
+            <div ref={dock} data-slot="chat-composer-glide">
+              <ChatComposer
+                value={draft}
+                onChange={setDraft}
+                onSend={() => void send(draft)}
+                onStop={stop}
+                running={running || answeredElsewhere}
+                stopping={stopping}
+                blocked={blocked}
+                models={modelList}
+                choice={choice}
+                onChoice={changeChoice}
+                placeholder={centred ? 'How can I help you today?' : 'Reply to Claude…'}
+                menuFootnote={footnote}
+                textareaRef={textareaRef}
+              />
+            </div>
+            {centred && <Starters disabled={Boolean(blocked)} onAsk={(question) => void send(question)} />}
+            <p data-slot="chat-disclaimer" className={cn('px-2 text-center text-xs text-muted-foreground', centred ? 'mt-5' : 'mt-2')}>
+              {DISCLAIMER}
             </p>
           </div>
         </section>
@@ -508,85 +591,38 @@ function Problem({ words, action, onAction, href }: { words: string; action: str
   );
 }
 
-/** An empty chat: the question, and three ways to start. */
-function Empty({ name, disabled, onAsk }: { name: string; disabled: boolean; onAsk: (question: string) => void }) {
+/** An empty chat's greeting above the composer: a small spark and the question. */
+function Greeting({ name }: { name: string | null }) {
   return (
-    <div data-slot="chat-empty" className="my-auto flex flex-col gap-5 py-8">
-      <div className="flex flex-col gap-2">
-        <h2 className="text-2xl leading-tight font-semibold text-balance">What do you want to know about {name}?</h2>
-        <p className="max-w-[60ch] text-[13.5px] text-muted-foreground">
-          It opens this drawing set’s PDFs itself, with the same tools Claude has, and shows each step it takes. It cannot change the review.
-        </p>
-      </div>
-      <ul aria-label="Suggested questions" className="grid gap-2">
-        {CHAT_STARTERS.map((question) => (
-          <li key={question}>
-            <button
-              type="button"
-              disabled={disabled}
-              onClick={() => onAsk(question)}
-              className="flex min-h-12 w-full items-center gap-3 rounded-xl border bg-background px-3.5 py-2.5 text-left hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-50"
-            >
-              <span className="min-w-0 flex-1">{question}</span>
-              <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-            </button>
-          </li>
-        ))}
-      </ul>
+    <div data-slot="chat-empty" className="mb-6 flex items-center justify-center gap-3 px-2 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-300">
+      {name ? (
+        <h2 className="flex items-start gap-2.5 text-center text-[1.6rem] leading-tight font-normal tracking-tight text-balance sm:text-[1.9rem]">
+          <Sparkle className="mt-1.5 size-6 shrink-0 fill-current text-foreground/80 sm:size-7" aria-hidden="true" />
+          <span>What do you want to know about {name}?</span>
+        </h2>
+      ) : (
+        <Skeleton aria-label="Loading the chat" className="h-9 w-2/3" />
+      )}
     </div>
   );
 }
 
-/** On a phone (no room for the chats column): the set's chats in a menu in the top bar. */
-function ChatsMenu({
-  packageId,
-  chatId,
-  list,
-  creating,
-  onNewChat,
-  onOpenChat,
-}: {
-  packageId: string;
-  chatId: string | null;
-  list: ChatListState;
-  creating: boolean;
-  onNewChat: () => void;
-  onOpenChat: (chatId: string) => void;
-}) {
+/** The three ways to start, as rounded chips under the composer. */
+function Starters({ disabled, onAsk }: { disabled: boolean; onAsk: (question: string) => void }) {
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="sm" aria-label="Chats">
-          <MessagesSquare />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-72 max-w-[calc(100vw-24px)] font-sans">
-        <DropdownMenuItem disabled={creating} onSelect={onNewChat}>
-          <SquarePen aria-hidden="true" /> New chat
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuLabel>Chats</DropdownMenuLabel>
-        {list.status === 'ready' ? (
-          list.chats.map((candidate) => (
-            <DropdownMenuItem
-              key={candidate.id}
-              onSelect={() => onOpenChat(candidate.id)}
-              aria-current={candidate.id === chatId ? 'page' : undefined}
-              className={cn(candidate.id === chatId && 'font-medium')}
-            >
-              <span className="truncate">{chatTitle(candidate)}</span>
-            </DropdownMenuItem>
-          ))
-        ) : (
-          <DropdownMenuItem disabled>{list.status === 'loading' ? 'Loading chats…' : 'Could not load the chats'}</DropdownMenuItem>
-        )}
-        <DropdownMenuSeparator />
-        <DropdownMenuItem asChild>
-          <a href={formatRoute({ page: 'review', packageId })}>
-            <ListChecks aria-hidden="true" /> Review list
-          </a>
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <ul aria-label="Suggested questions" className="mt-4 flex flex-wrap justify-center gap-2 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-300">
+      {CHAT_STARTERS.map((question) => (
+        <li key={question} className="min-w-0">
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => onAsk(question)}
+            className="min-h-9 max-w-full rounded-xl border bg-background px-3 py-1.5 text-left text-[13px] text-foreground/85 transition-colors duration-150 hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-50 disabled:hover:bg-background"
+          >
+            {question}
+          </button>
+        </li>
+      ))}
+    </ul>
   );
 }
