@@ -506,7 +506,7 @@ from workflow.view_roles import (
     release_contradicted_code_role,
     revision_views,
 )
-from workflow.wall_cases import wall_free_finding
+from workflow.wall_cases import plain_width_failure, wall_free_finding
 
 if TYPE_CHECKING:
     from app.config import Settings
@@ -8923,6 +8923,9 @@ class DatabaseStages:
                                 finding,
                                 notes=(*finding.notes, row_check.wall_provenance),
                             )
+                        # A FAIL in plain words (Set 3 QA): what was needed and what the vendor
+                        # wrote, from the engine's own trace; the outcome is unchanged.
+                        finding = plain_width_failure(finding, row_check.operands)
                         # A PASS on walls set automatically rests on the vendor's drawing: one
                         # reviewer click (#1202 review). A FAIL on them stays automatic.
                         finding = confirm_vendor_walls_pass(

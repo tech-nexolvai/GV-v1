@@ -17,7 +17,7 @@ import json
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 from io import BytesIO
 from typing import Final
@@ -327,7 +327,9 @@ def render_evidence_grounded_redline(
     if not findings:
         return RedlineOutput(None, "this revision has no live findings")
 
-    references = _typed_references(session, findings)
+    references = one_cloud_per_row(
+        (row for row, _, _, _ in findings), _typed_references(session, findings)
+    )
     if not any(references.values()) and signed_review is None:
         return RedlineOutput(
             None,
@@ -401,7 +403,9 @@ def render_draft_redline(
     """
     if not findings:
         return RedlineOutput(None, "this revision has no live findings")
-    references = _typed_references(session, findings)
+    references = one_cloud_per_row(
+        (row for row, _, _, _ in findings), _typed_references(session, findings)
+    )
     package = _source_package(session, store, package_revision_id)
     if package is None:
         return RedlineOutput(
@@ -428,6 +432,66 @@ def render_draft_redline(
         ),
         None,
     )
+
+
+def one_cloud_per_row(
+    rows: Iterable[object], references: Mapping[UUID, tuple[str, ...]]
+) -> dict[UUID, tuple[str, ...]]:
+    """A failing countertop row's references, made one cloud around the row on each page.
+
+    The width check reads one label per piece, so its FAIL carries one reference per piece and was
+    clouded once per piece (six clouds for one six-piece row, Set 3 QA). A FAIL on one countertop
+    row (`scope_row_candidate_id`) is one mistake: its references on the same page become one
+    rectangle around all of them, made from their own recorded corners (no new coordinate is
+    invented). Every other result, a reference that cannot be read as a stored page rectangle, and
+    references on other pages are left as they were.
+    """
+    out = dict(references)
+    for row in rows:
+        finding_id = getattr(row, "id", None)
+        if (
+            finding_id not in references
+            or getattr(row, "scope_row_candidate_id", None) is None
+            or str(getattr(row, "outcome", "")) != Outcome.FAIL.value
+        ):
+            continue
+        merged: list[str] = []
+        boxes: dict[tuple[str, int], list[tuple[str, str]]] = {}
+        slots: dict[tuple[str, int], int] = {}
+        for reference in references[finding_id]:
+            try:
+                decoded = json.loads(reference)
+                key = (str(decoded["document_version_id"]), int(decoded["page"]))
+                points = [(str(x), str(y)) for x, y in decoded["polygon"]]
+                if not all(Decimal(x).is_finite() and Decimal(y).is_finite() for x, y in points):
+                    raise ValueError("a corner is not a finite number")
+            except (ValueError, TypeError, KeyError, InvalidOperation):
+                merged.append(reference)
+                continue
+            if decoded.get("space") != "stored" or not points:
+                merged.append(reference)
+                continue
+            if key not in boxes:
+                slots[key] = len(merged)
+                merged.append("")
+                boxes[key] = []
+            boxes[key].extend(points)
+        for key, points in boxes.items():
+            xs = sorted({x for x, _ in points}, key=Decimal)
+            ys = sorted({y for _, y in points}, key=Decimal)
+            x0, x1, y0, y1 = xs[0], xs[-1], ys[0], ys[-1]
+            merged[slots[key]] = json.dumps(
+                {
+                    "document_version_id": key[0],
+                    "page": key[1],
+                    "polygon": [[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
+                    "space": "stored",
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        out[finding_id] = tuple(merged)
+    return out
 
 
 def _typed_references(

@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fractions import Fraction
 from typing import Any, Final
 
@@ -105,6 +105,81 @@ def _by_count(
             continue
         seen[count] = (expected, item.finding.outcome)
     return [(count, *seen[count]) for count in sorted(seen)]
+
+
+def _pairs(value: object) -> dict[str, object]:
+    return (
+        {
+            str(pair[0]): pair[1]
+            for pair in value
+            if isinstance(pair, tuple) and len(pair) == 2 and isinstance(pair[0], str)
+        }
+        if isinstance(value, tuple)
+        else {}
+    )
+
+
+def _derivation(finding: Finding, name: str) -> dict[str, object]:
+    """One derivation of the engine's own trace, as its named parts (`inputs`, `result`, ...)."""
+    if finding.trace is None:
+        return {}
+    return next(
+        (_pairs(value) for entry, value in finding.trace.intermediates if entry == name), {}
+    )
+
+
+#: Where the field cut is added, by how many wall ends the layout has.
+_CUT_AT: Final = {2: "at each wall end", 1: "at the one wall end"}
+
+
+def plain_width_failure(finding: Finding, operands: Mapping[str, VerdictOperand]) -> Finding:
+    """A width FAIL said in plain words, like the wall-case wording (Set 3 QA).
+
+    The engine says "72 in != 68 in"; the finding's message (the screen, the PDFs and the Assistant
+    read it) says `Needed 68" (30 + 18 + 18 + 1" field cut at each wall end); the vendor wrote 72".`
+    Every number is the engine's own: the pieces and the field cut are the inputs its trace recorded,
+    the needed width is its result, and the vendor's is the sealed operand. Nothing is worked out
+    again except a check that the parts the sentence names add up to the engine's result; when they
+    do not (cabinets, fillers, anything else), or the trace lacks a part, the finding is unchanged.
+    The outcome and trace never change; the engine's words are kept in the notes.
+    """
+    if finding.outcome is not Outcome.FAIL or finding.trace is None:
+        return finding
+    needed = trace_result(finding, "expected_width")
+    vendor_operand = operands.get("countertop_width")
+    vendor = None if vendor_operand is None else vendor_operand.value
+    row_inputs = _pairs(_derivation(finding, "row_width").get("inputs"))
+    cut_inputs = _pairs(_derivation(finding, "field_cut_total").get("inputs"))
+    pieces = row_inputs.get("pieces")
+    per_end = cut_inputs.get("value")
+    count = cut_inputs.get("multiplier")
+    if (
+        not isinstance(needed, Measurement)
+        or not isinstance(vendor, Measurement)
+        or not isinstance(pieces, tuple)
+        or not pieces
+        or not all(isinstance(piece, Measurement) for piece in pieces)
+        or row_inputs.get("cabinets")
+        or row_inputs.get("fillers")
+        or not isinstance(per_end, Measurement)
+        or not isinstance(count, int)
+        or isinstance(count, bool)
+    ):
+        return finding
+    cut_total = per_end.exact * count
+    if sum((piece.exact for piece in pieces), Fraction(0)) + cut_total != needed.exact:
+        return finding
+    parts = " + ".join(format_inches(piece.exact) for piece in pieces)
+    if cut_total == 0:
+        how = f"{parts}, no field cut"
+    else:
+        at = _CUT_AT.get(count, f"at each of {count} wall ends")
+        how = f"{parts} + {_inches(per_end.exact)} field cut {at}"
+    return replace(
+        finding,
+        reason=f"Needed {_inches(needed.exact)} ({how}); the vendor wrote {_inches(vendor.exact)}.",
+        notes=(*finding.notes, f"The engine's comparison: {finding.reason.strip()}"),
+    )
 
 
 def wall_free_finding(
