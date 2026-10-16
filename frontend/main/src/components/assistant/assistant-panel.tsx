@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { ArrowUp, ChevronRight, CircleAlert, CircleHelp, FileX, ListChecks, MessageSquare, Square, SquarePen, TriangleAlert, X } from 'lucide-react';
+import { ArrowUp, ChevronRight, CircleAlert, CircleHelp, FileX, ListChecks, Maximize2, MessageSquare, Minimize2, Square, SquarePen, TriangleAlert, X } from 'lucide-react';
 
 import { getAssistant, streamAssistant } from '@/api/client';
 import type { AssistantAnswer, AssistantInfo } from '@/api/assistantTypes';
@@ -7,7 +7,8 @@ import { cn } from '@/lib/utils';
 import { ASSISTANT_FULL_SCREEN, useMediaQuery } from '@/hooks/use-media-query';
 import { failureWords, focusOf, historyFor, sameContext, starterHint, type AssistantContext, type AssistantRecords, type StarterKind } from '@/lib/assistant';
 import { AnswerView, type AssistantNavigation } from '@/components/assistant/assistant-answer';
-import { AssistantSteps } from '@/components/assistant/assistant-steps';
+import { AssistantSteps, LiveSteps } from '@/components/assistant/assistant-steps';
+import { withStage, withStep, type LiveEntry } from '@/lib/assistant-steps';
 
 export type { AssistantNavigation } from '@/components/assistant/assistant-answer';
 
@@ -20,6 +21,8 @@ export interface AssistantTurn {
   status: 'working' | 'done' | 'error' | 'stopped';
   /** The server's current stage label while working; each replaces the last. */
   stage: string | null;
+  /** The steps finished so far while working, in order (live, like claude.ai). */
+  live?: LiveEntry[];
   answer: AssistantAnswer | null;
   error: string | null;
   /** True for an answer that just arrived: its words are shown a few at a time. */
@@ -49,6 +52,40 @@ function isAbort(error: unknown): boolean {
 }
 
 let turnCounter = 0;
+
+/** The panel's width, dragged by its left edge: at least this, at most 70% of the window. */
+export const PANEL_MIN_WIDTH = 360;
+const PANEL_MAX_SHARE = 0.7;
+const NARROW_WIDTH = 420;
+/** A bit wider once an answer shows its steps: claude.ai's reading width. */
+const WIDE_WIDTH = 560;
+const WIDTH_KEY = 'gv.assistant.width';
+const KEY_STEP = 24;
+
+function maxWidth(): number {
+  return Math.max(PANEL_MIN_WIDTH, Math.floor((typeof window === 'undefined' ? 1440 : window.innerWidth) * PANEL_MAX_SHARE));
+}
+
+function clampWidth(width: number): number {
+  return Math.round(Math.min(maxWidth(), Math.max(PANEL_MIN_WIDTH, width)));
+}
+
+function storedWidth(): number | null {
+  try {
+    const value = Number(window.localStorage.getItem(WIDTH_KEY));
+    return Number.isFinite(value) && value >= PANEL_MIN_WIDTH ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeWidth(width: number) {
+  try {
+    window.localStorage.setItem(WIDTH_KEY, String(width));
+  } catch {
+    // private window or blocked storage: the width just is not remembered
+  }
+}
 
 export interface AssistantPanelProps {
   projectId: string;
@@ -106,8 +143,21 @@ export function AssistantPanel({
   // Docked beside the review when there is room (see the classes below); laid over it otherwise; the
   // whole screen at 900px and below.
   const fullScreen = useMediaQuery(ASSISTANT_FULL_SCREEN) && layout === 'docked';
+  // The reviewer's own width (dragged, remembered), else narrow, and a bit wider once there are steps.
+  const [chosenWidth, setChosenWidth] = useState<number | null>(() => (typeof window === 'undefined' ? null : storedWidth()));
+  const [expanded, setExpanded] = useState(false);
+  const dragRef = useRef<{ startX: number; startWidth: number } | null>(null);
 
   const busy = turns.some((turn) => turn.status === 'working');
+  const wide = turns.some((turn) => (turn.live?.length ?? 0) > 0 || (turn.answer?.steps?.length ?? 0) > 0);
+  const width = clampWidth(chosenWidth ?? (wide ? WIDE_WIDTH : NARROW_WIDTH));
+  const sized = layout === 'docked' && !fullScreen;
+
+  function resizeTo(next: number) {
+    const value = clampWidth(next);
+    setChosenWidth(value);
+    storeWidth(value);
+  }
   const chip = context && !sameContext(context, dismissed) ? context : null;
 
   useEffect(() => {
@@ -153,8 +203,8 @@ export function AssistantPanel({
     if (thread) thread.scrollTop = thread.scrollHeight;
   }, [turns.length, last?.status, last?.stage]);
 
-  function patch(id: string, change: Partial<AssistantTurn>) {
-    setTurns((current) => current.map((turn) => (turn.id === id ? { ...turn, ...change } : turn)));
+  function patch(id: string, change: Partial<AssistantTurn> | ((turn: AssistantTurn) => Partial<AssistantTurn>)) {
+    setTurns((current) => current.map((turn) => (turn.id === id ? { ...turn, ...(typeof change === 'function' ? change(turn) : change) } : turn)));
   }
 
   async function ask(question: string, sendContext: AssistantContext | null = chip, before: readonly AssistantTurn[] = turns) {
@@ -164,7 +214,7 @@ export function AssistantPanel({
     const turnId = `turn-${turnCounter}`;
     const controller = new AbortController();
     abortRef.current = controller;
-    setTurns([...before, { id: turnId, question: text, context: sendContext, status: 'working', stage: null, answer: null, error: null, reveal: true }]);
+    setTurns([...before, { id: turnId, question: text, context: sendContext, status: 'working', stage: null, live: [], answer: null, error: null, reveal: true }]);
     try {
       const answer = await api.stream(
         projectId,
@@ -174,10 +224,13 @@ export function AssistantPanel({
           history: historyFor(before.filter((turn) => turn.status === 'done')),
           ...(sendContext ? { focus: focusOf(sendContext) } : {}),
         },
-        { onStage: (stage) => patch(turnId, { stage: stage.label }) },
+        {
+          onStage: (stage) => patch(turnId, (turn) => ({ stage: stage.label, live: withStage(turn.live ?? [], stage.label) })),
+          onStep: (event) => patch(turnId, (turn) => ({ live: withStep(turn.live ?? [], event) })),
+        },
         controller.signal,
       );
-      patch(turnId, { status: 'done', answer, stage: null });
+      patch(turnId, { status: 'done', answer, stage: null, live: [] });
     } catch (error) {
       patch(turnId, controller.signal.aborted || isAbort(error) ? { status: 'stopped', stage: null } : { status: 'error', error: failureWords(error), stage: null });
     } finally {
@@ -222,7 +275,7 @@ export function AssistantPanel({
   const starters = info.status === 'ready' ? info.info.starters : [];
   const footer =
     info.status === 'ready'
-      ? `${info.info.model_label}${info.info.keeps_no_data ? ' · keeps no data' : ''} · it explains, you decide`
+      ? `${info.info.model_label}${info.info.reads_drawings ? ' · reads the drawings' : ''} · it explains, you decide`
       : 'It explains, you decide';
   // Errors are announced by their own alert; "Answer ready" only once the words are all on screen.
   const status =
@@ -240,15 +293,19 @@ export function AssistantPanel({
       aria-label="Assistant"
       role={fullScreen ? 'dialog' : undefined}
       aria-modal={fullScreen ? true : undefined}
+      data-wide={wide ? 'true' : 'false'}
+      data-expanded={expanded ? 'true' : 'false'}
       hidden={!open}
+      style={sized ? (expanded ? { width: 'min(1100px, calc(100vw - 48px))' } : { width }) : undefined}
       onKeyDown={(event) => {
         if (event.key === 'Escape' && !event.defaultPrevented) {
           event.preventDefault();
-          onClose();
+          if (expanded) setExpanded(false);
+          else onClose();
         }
       }}
       className={cn(
-        'flex-col bg-background font-sans text-sm text-foreground antialiased',
+        'relative flex-col bg-background font-sans text-sm text-foreground antialiased',
         open ? 'flex' : 'hidden',
         layout === 'docked'
           ? cn(
@@ -261,13 +318,65 @@ export function AssistantPanel({
               '@min-[1180px]/review:static @min-[1180px]/review:z-auto @min-[1180px]/review:h-full @min-[1180px]/review:w-[420px] @min-[1180px]/review:shrink-0 @min-[1180px]/review:shadow-none',
             )
           : 'h-full w-full min-w-0',
+        // Expanded: a wide reading view laid over the review, which stays behind it.
+        sized && expanded && 'fixed inset-y-0 right-0 left-auto z-40 h-dvh border-l shadow-2xl @min-[1180px]/review:fixed @min-[1180px]/review:z-40 @min-[1180px]/review:h-dvh @min-[1180px]/review:shadow-2xl',
       )}
     >
+      {sized && !expanded && (
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize the assistant"
+          aria-valuemin={PANEL_MIN_WIDTH}
+          aria-valuemax={maxWidth()}
+          aria-valuenow={width}
+          tabIndex={0}
+          data-slot="assistant-resize"
+          title="Drag to resize (arrow keys work too)"
+          onPointerDown={(event) => {
+            event.preventDefault();
+            dragRef.current = { startX: event.clientX, startWidth: width };
+            event.currentTarget.setPointerCapture?.(event.pointerId);
+          }}
+          onPointerMove={(event) => {
+            const drag = dragRef.current;
+            if (drag) resizeTo(drag.startWidth + (drag.startX - event.clientX));
+          }}
+          onPointerUp={(event) => {
+            dragRef.current = null;
+            event.currentTarget.releasePointerCapture?.(event.pointerId);
+          }}
+          onKeyDown={(event) => {
+            const by = event.shiftKey ? KEY_STEP * 4 : KEY_STEP;
+            if (event.key === 'ArrowLeft') resizeTo(width + by);
+            else if (event.key === 'ArrowRight') resizeTo(width - by);
+            else if (event.key === 'Home') resizeTo(PANEL_MIN_WIDTH);
+            else if (event.key === 'End') resizeTo(maxWidth());
+            else return;
+            event.preventDefault();
+          }}
+          className="group absolute inset-y-0 -left-1 z-10 flex w-2 cursor-col-resize touch-none justify-center focus-visible:outline-none"
+        >
+          <span aria-hidden="true" className="h-full w-px bg-transparent transition-colors group-hover:bg-ring group-focus-visible:w-0.5 group-focus-visible:bg-ring" />
+        </div>
+      )}
       <header className="flex items-center gap-2.5 border-b py-3 pr-3 pl-4">
         <div className="min-w-0 flex-1 leading-tight">
           <h2 className="text-[15px] font-semibold">Assistant</h2>
-          <p className="truncate text-xs text-muted-foreground">{setName} · answers from this review only</p>
+          <p className="truncate text-xs text-muted-foreground">{setName} · reads this set’s drawings and results</p>
         </div>
+        {sized && (
+          <button
+            type="button"
+            onClick={() => setExpanded(!expanded)}
+            title={expanded ? 'Collapse' : 'Expand'}
+            aria-label={expanded ? 'Collapse' : 'Expand'}
+            aria-pressed={expanded}
+            className="grid size-[34px] shrink-0 place-items-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+          >
+            {expanded ? <Minimize2 className="size-[16px]" aria-hidden="true" /> : <Maximize2 className="size-[16px]" aria-hidden="true" />}
+          </button>
+        )}
         <button
           type="button"
           onClick={newChat}
@@ -288,7 +397,8 @@ export function AssistantPanel({
         </button>
       </header>
 
-      <div ref={threadRef} data-slot="assistant-thread" className="flex min-h-0 flex-1 flex-col gap-6 overflow-x-hidden overflow-y-auto overscroll-contain px-4 pt-5 pb-3">
+      <div ref={threadRef} data-slot="assistant-thread" className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain px-4 pt-5 pb-3">
+      <div className="mx-auto flex min-h-full w-full max-w-[760px] flex-col gap-6">
         {turns.length === 0 && (
           <Starters
             info={info}
@@ -310,12 +420,7 @@ export function AssistantPanel({
                 )}
                 {turn.question}
               </div>
-              {turn.status === 'working' && (
-                <div data-slot="assistant-working" className="flex items-center gap-2.5 text-[13px] text-muted-foreground">
-                  <span aria-hidden="true" className="size-3.5 shrink-0 animate-spin rounded-full border-[1.5px] border-border border-t-foreground motion-reduce:animate-none" />
-                  {turn.stage ?? 'Sending your question'}
-                </div>
-              )}
+              {turn.status === 'working' && <LiveSteps entries={turn.live ?? []} stage={turn.stage} />}
               {turn.status === 'done' && turn.answer && (
                 <>
                   <AssistantSteps steps={turn.answer.steps} plan={turn.answer.plan} />
@@ -372,11 +477,12 @@ export function AssistantPanel({
           );
         })}
       </div>
+      </div>
       <p className="sr-only" role="status" aria-live="polite">
         {status}
       </p>
 
-      <div className="grid gap-2 px-3 pt-2.5 pb-[calc(10px+env(safe-area-inset-bottom,0px))]">
+      <div className="mx-auto grid w-full max-w-[784px] gap-2 px-3 pt-2.5 pb-[calc(10px+env(safe-area-inset-bottom,0px))]">
         <form
           data-slot="assistant-composer"
           className="grid gap-1 rounded-[18px] border bg-background py-1.5 pr-1.5 pl-2 shadow-xs focus-within:border-input"

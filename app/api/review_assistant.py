@@ -32,7 +32,12 @@ from app.models import Package, PackageRevision
 from app.models.document import Document, DocumentVersion, PackageRevisionDocument
 from app.review.approval import readiness_and_decisions
 from app.review.assistant.agent import AgentFiles, AgentTools
-from app.review.assistant.contract import AssistantInfoOut, AssistantRequest
+from app.review.assistant.contract import (
+    MODEL_LABEL,
+    AssistantInfoOut,
+    AssistantRequest,
+    model_label,
+)
 from app.review.assistant.model import OpenRouterAssistantModel
 from app.review.assistant.page_pictures import RevisionPagePictures
 from app.review.assistant.records import ReviewSnapshot, build_snapshot
@@ -143,9 +148,13 @@ def review_assistant_info(
     if revision is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
     snapshot = load_snapshot(session, project_id, package_id, revision)
+    tool_using = runtime.model is not None and runtime.sandbox != "off"
+    lead = runtime.agent_model if tool_using and runtime.agent_model is not None else runtime.model
     return AssistantInfoOut(
         enabled=runtime.model is not None,
         starters=starters(snapshot),
+        model_label=model_label(lead.model_id) if lead is not None else MODEL_LABEL,
+        reads_drawings=runtime.model is not None and (tool_using or runtime.page_pictures),
     )
 
 
@@ -250,6 +259,16 @@ _KIND_WORDS: Final = {
 }
 
 
+def ai_review_row_for_model(row: dict[str, Any]) -> dict[str, Any]:
+    """An AI page review row as the model reads it: `clouded` is spelled out as what it means,
+    that THIS APP's cloud PDF will cloud the row, so it is never read as GV's own markup
+    (owner, 2026-10-16)."""
+    out = dict(row)
+    if "clouded" in out:
+        out["will_be_clouded_on_our_cloud_pdf"] = out.pop("clouded")
+    return out
+
+
 def _ai_review_and_job_values(context: _AssistantContext, page: int | None) -> dict[str, Any]:
     """The AI page review rows (one page) or its per-page summary (whole package), and the job's
     values: the ones typed for the project and what the job values reader found."""
@@ -274,7 +293,10 @@ def _ai_review_and_job_values(context: _AssistantContext, page: int | None) -> d
     for sheet in review.pages:
         if page is not None and sheet.page != page:
             continue
-        rows = [row.model_dump(mode="json", include=fields) for row in sheet.rows]
+        rows = [
+            ai_review_row_for_model(row.model_dump(mode="json", include=fields))
+            for row in sheet.rows
+        ]
         if page is None:
             counts: dict[str, int] = {}
             for row in sheet.rows:
@@ -355,4 +377,4 @@ def review_assistant_stream(
         yield ServerSentEvent(event=name, data=data)
 
 
-__all__ = ["load_snapshot", "router", "runtime_for"]
+__all__ = ["ai_review_row_for_model", "load_snapshot", "router", "runtime_for"]

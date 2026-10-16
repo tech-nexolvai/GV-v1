@@ -13,6 +13,8 @@ export interface AssistantInfo {
   model_label: string;
   /** True when the model provider keeps no data from the question. */
   keeps_no_data: boolean;
+  /** True when a question can open this set's drawings: the footer says "reads the drawings". */
+  reads_drawings?: boolean;
   /** Questions that fit this review's state, in the server's order. */
   starters: string[];
 }
@@ -39,7 +41,7 @@ export interface AssistantRequest {
 
 /** `stage`: what the server is doing now. Each one replaces the last. */
 export interface AssistantStage {
-  id: 'records' | 'model' | 'guard';
+  id: 'records' | 'model' | 'tool' | 'guard';
   label: string;
 }
 
@@ -117,6 +119,14 @@ export interface AssistantStep {
   ok: boolean;
   tasks?: AssistantPlanTask[];
   agents?: AssistantSubAgent[];
+  /** A small JPEG of the picture it viewed, as a data URL (view of a picture only). */
+  thumbnail?: string | null;
+}
+
+/** `step`: one tool the assistant just finished, streamed live; `agent` names the helper, null for the lead. */
+export interface AssistantStepEvent {
+  agent: string | null;
+  step: AssistantStep;
 }
 
 /** One helper agent the assistant ran in parallel (`Agent`), with its own steps and report. */

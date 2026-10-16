@@ -37,7 +37,9 @@ __all__ = [
     "PlanTask",
     "StageEvent",
     "StageId",
+    "StepEvent",
     "SubAgentRun",
+    "model_label",
 ]
 
 MAX_QUESTION_LENGTH: Final = 500
@@ -45,6 +47,16 @@ MAX_HISTORY_TURNS: Final = 6
 #: A turn of history is a short chat message; anything longer is cut by the client or refused here.
 MAX_HISTORY_TEXT: Final = 2000
 MODEL_LABEL: Final = "Claude Sonnet 5.5"
+_MODEL_LABELS: Final[dict[str, str]] = {
+    "anthropic.claude-sonnet-5-5": "Claude Sonnet 5.5",
+    "anthropic.claude-opus-5-5": "Claude Opus 5.5",
+}
+
+
+def model_label(model_id: str) -> str:
+    """The model in words, for the panel's footer ("Claude Opus 5.5")."""
+    return _MODEL_LABELS.get(model_id, MODEL_LABEL)
+
 
 type StageId = Literal["records", "model", "tool", "guard"]
 STAGE_LABELS: Final[dict[str, str]] = {
@@ -84,8 +96,17 @@ class AssistantInfoOut(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     enabled: bool
-    model_label: str = MODEL_LABEL
+    model_label: str = Field(
+        default=MODEL_LABEL,
+        description="The model that answers, in words: the lead (Claude Opus 5.5) when the "
+        "tool-using assistant runs, else Claude Sonnet 5.5.",
+    )
     keeps_no_data: bool = True
+    reads_drawings: bool = Field(
+        default=False,
+        description="True when a question can open this set's drawings (the tool-using "
+        "assistant, or the page pictures): the footer says 'reads the drawings'.",
+    )
     starters: tuple[str, ...]
 
 
@@ -94,6 +115,17 @@ class StageEvent(BaseModel):
 
     id: StageId
     label: str
+
+
+class StepEvent(BaseModel):
+    """`step`: one tool the assistant just finished using, streamed as it happens so the panel grows
+    its step list live (owner, 2026-10-16). `agent` is the helper agent's description for a
+    helper's step, `None` for the lead's. The answer still carries the lead's steps in order."""
+
+    model_config = ConfigDict(frozen=True)
+
+    agent: str | None
+    step: AgentStep
 
 
 class Citation(BaseModel):
@@ -191,6 +223,10 @@ class AgentStep(BaseModel):
     agents: tuple[SubAgentRun, ...] = Field(
         default=(), description="The helper agents run together, and what each did (agents only)."
     )
+    thumbnail: str | None = Field(
+        default=None,
+        description="A small JPEG of the picture it viewed, as a data URL (view of a picture only).",
+    )
 
 
 class SubAgentRun(BaseModel):
@@ -262,3 +298,4 @@ class Draft:
 
 
 AgentStep.model_rebuild()
+StepEvent.model_rebuild()

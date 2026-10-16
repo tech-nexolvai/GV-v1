@@ -522,7 +522,7 @@ def test_the_tools_have_claude_ai_shapes_and_the_prompt_keeps_the_rules() -> Non
         assert schema["additionalProperties"] is False
     prompt = AGENT_SYSTEM_PROMPT
     assert UPLOADS in prompt and SCRATCH in prompt
-    assert "GV's markup is the reviewer's comments, never the design" in prompt
+    assert "GV's markup is GV's reviewer comments, never the design" in prompt
     assert "never use a number from GV's markup" in prompt
     assert "VERIFY" in prompt and "never contradicted" in prompt
     assert "never use a number from them" in SUB_SYSTEM_PROMPT
@@ -689,11 +689,11 @@ def test_helpers_share_the_question_budget(workspace: Workspace) -> None:
 
 
 def test_a_delegating_question_gets_the_larger_cap(workspace: Workspace) -> None:
-    # The question cap ($0.06) allows the lead's first call only; once it delegates, the
+    # The question cap ($0.062) allows the lead's first call only; once it delegates, the
     # delegating cap ($3) lets the helpers and the lead's answer through.
     budget = AssistantBudget(
         package_cap_micros=10_000_000,
-        question_cap_micros=60_000,
+        question_cap_micros=62_000,
         delegate_cap_micros=3_000_000,
         spent_micros=lambda: 0,
         rates=_rates(),

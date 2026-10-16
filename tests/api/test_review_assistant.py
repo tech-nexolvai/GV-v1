@@ -120,8 +120,31 @@ def test_info_is_off_by_default_and_offers_starters(postgres_engine) -> None:  #
         "enabled": False,
         "model_label": "Claude Sonnet 5.5",
         "keeps_no_data": True,
+        "reads_drawings": False,
         "starters": ["What is left before sign-off?"],
     }
+
+
+def test_info_names_the_lead_model_when_the_tool_using_assistant_runs(postgres_engine) -> None:  # type: ignore[no-untyped-def]
+    """The footer shows the model that actually leads (owner, 2026-10-16): Opus 5.5 with the
+    sandbox on, and that it reads the drawings; Sonnet 5.5 without it."""
+    from app.api import review_assistant
+    from app.review.assistant.service import AssistantRuntime
+
+    opus = _FakeModel({})
+    opus.model_id = "anthropic.claude-opus-5-5"
+    with _client(postgres_engine) as (client, project_id, package_id, app):
+        url = f"/api/v1/projects/{project_id}/packages/{package_id}/assistant"
+        app.dependency_overrides[review_assistant.runtime_for] = lambda: AssistantRuntime(
+            model=_FakeModel({}), agent_model=opus, sandbox="auto", max_history_turns=6
+        )
+        tool_using = client.get(url).json()
+        app.dependency_overrides[review_assistant.runtime_for] = lambda: AssistantRuntime(
+            model=_FakeModel({}), agent_model=opus, sandbox="off", max_history_turns=6
+        )
+        one_call = client.get(url).json()
+    assert (tool_using["model_label"], tool_using["reads_drawings"]) == ("Claude Opus 5.5", True)
+    assert (one_call["model_label"], one_call["reads_drawings"]) == ("Claude Sonnet 5.5", False)
 
 
 def test_info_is_on_only_when_switched_on_and_the_key_is_set(postgres_engine) -> None:  # type: ignore[no-untyped-def]

@@ -12,7 +12,7 @@
 import type { components, paths } from './schema';
 import { parseSseFrames, type SseFrame } from './sse.js';
 import type { ArchitectViewMatch, ArchitectViewPickIn } from './architect-match';
-import type { AssistantAnswer, AssistantInfo, AssistantRequest, AssistantStage, AssistantStreamError } from './assistantTypes';
+import type { AssistantAnswer, AssistantInfo, AssistantRequest, AssistantStage, AssistantStepEvent, AssistantStreamError } from './assistantTypes';
 
 /** Every failure the API produces has this shape — `app/errors.py`. */
 export interface ErrorEnvelope {
@@ -304,6 +304,8 @@ export function getAssistant(projectId: string, packageId: string) {
 export interface AssistantStreamHandlers {
   /** What the server is doing now; each stage replaces the last. */
   onStage?: (stage: AssistantStage) => void;
+  /** A tool the assistant just finished using (live steps, like claude.ai). */
+  onStep?: (step: AssistantStepEvent) => void;
 }
 
 /**
@@ -362,6 +364,7 @@ export async function streamAssistant(
       }
       for (const frame of frames) {
         if (frame.event === 'stage') handlers.onStage?.(frame.data as AssistantStage);
+        else if (frame.event === 'step') handlers.onStep?.(frame.data as AssistantStepEvent);
         else if (frame.event === 'answer') {
           const answer = frame.data as Partial<AssistantAnswer> | null;
           if (!answer || typeof answer.text !== 'string' || typeof answer.mode !== 'string') throw unreadable();

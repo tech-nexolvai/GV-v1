@@ -184,7 +184,7 @@ afterEach(() => {
 describe('assistant: rules', () => {
   it('turns [[n]] markers into chips and drops markers with no citation or an unknown record', () => {
     const parts = answerParts(PAGE_4.text, PAGE_4.citations, RECORDS);
-    expect(parts.filter((p) => p.kind === 'cite').map((p) => p.kind === 'cite' && p.label)).toEqual(['p4', 'p2']);
+    expect(parts.filter((p) => p.kind === 'cite').map((p) => p.kind === 'cite' && p.label)).toEqual(['p.4', 'p.2']);
     expect(answerParts('A [[7]] b', [], RECORDS)).toEqual([{ kind: 'text', text: 'A  b' }]);
   });
 
@@ -288,7 +288,7 @@ describe('assistant panel', () => {
     const list = await screen.findByRole('list', { name: 'Suggested questions' });
     expect(within(list).getAllByRole('button')).toHaveLength(3);
     expect(list.textContent).toContain('3 items need you');
-    expect(screen.getByText(/Synthetic Model · keeps no data · it explains, you decide/)).toBeTruthy();
+    expect(screen.getByText('Synthetic Model · it explains, you decide')).toBeTruthy();
 
     await user.click(within(list).getByRole('button', { name: /What is left before sign-off/ }));
     await screen.findByText('Synthetic answer.');
@@ -688,7 +688,7 @@ describe('assistant panel: more states', () => {
     const chip = await screen.findByRole('button', { name: 'Open page 4 on the drawing: Needs correction' });
     expect(chip.getAttribute('title')).toBe('Open page 4 on the drawing: Needs correction');
     expect(chip.querySelector('[data-outcome-icon="FAIL"]')).not.toBeNull();
-    expect(chip.textContent).toBe('p4');
+    expect(chip.textContent).toBe('p.4');
     // A page-only chip carries no outcome.
     const page = screen.getByRole('button', { name: 'Open page 2 on the drawing' });
     expect(page.querySelector('[data-outcome-icon]')).toBeNull();
@@ -785,5 +785,149 @@ describe('assistant panel: more states', () => {
     );
     expect(outside.hasAttribute('inert')).toBe(false);
     outside.remove();
+  });
+});
+
+// ── Like claude.ai (owner, 2026-10-16) ──────────────────────
+
+const THUMB = 'data:image/jpeg;base64,c3ludGhldGlj';
+
+describe('assistant: like claude.ai', () => {
+  it('grows the step list live: each step one line, expandable to its command and output or its picture', async () => {
+    const user = userEvent.setup();
+    server.replies.push('hang');
+    mount();
+    await user.type(composer(), 'Why did page 3 fail?{Enter}');
+    await act(async () => server.push({ event: 'stage', data: { id: 'model', label: 'Asking Claude' } }));
+    await act(async () => server.push({ event: 'stage', data: { id: 'tool', label: 'Read page 3 text' } }));
+    await act(async () =>
+      server.push({ event: 'step', data: { agent: null, step: { kind: 'bash', label: 'Read page 3 text', command: 'pdftotext -f 3 -l 3 made-up.pdf -', output: 'MADE-UP OVERALL 40', ok: true } } }),
+    );
+    await act(async () => server.push({ event: 'stage', data: { id: 'tool', label: 'Zoom on the dimension row' } }));
+    await act(async () =>
+      server.push({ event: 'step', data: { agent: null, step: { kind: 'view', label: 'Zoom on the dimension row', path: '/home/claude/p-03.png', ok: true, thumbnail: THUMB } } }),
+    );
+    await act(async () => server.push({ event: 'step', data: { agent: null, step: { kind: 'task', label: 'Added task: Check page 3', ok: true } } }));
+    await act(async () => server.push({ event: 'stage', data: { id: 'tool', label: 'Running 2 agents · Page 1' } }));
+    await act(async () => server.push({ event: 'step', data: { agent: 'Page 1', step: { kind: 'bash', label: 'List the pictures', command: 'ls /home/claude', output: 'p-01.png', ok: true } } }));
+
+    const live = document.querySelector<HTMLElement>('[data-slot="assistant-live-steps"]')!;
+    expect(live).toBeTruthy();
+    const steps = within(live);
+    expect(steps.getByText('Read page 3 text')).toBeTruthy();
+    expect(steps.getByText('Zoom on the dimension row')).toBeTruthy();
+    expect(steps.getByText('Added task: Check page 3')).toBeTruthy();
+    // The running line says what it is doing now; helpers show under it, each expandable.
+    expect(steps.getByText('Running 2 agents · Page 1')).toBeTruthy();
+    expect(steps.getByText('Page 1 · Ran 1 command')).toBeTruthy();
+    // Folded until clicked, like claude.ai.
+    const bash = steps.getByText('Read page 3 text').closest('details')!;
+    expect(bash.open).toBe(false);
+    await user.click(steps.getByText('Read page 3 text'));
+    expect(bash.open).toBe(true);
+    expect(steps.getByText('pdftotext -f 3 -l 3 made-up.pdf -')).toBeTruthy();
+    expect(steps.getByText('MADE-UP OVERALL 40')).toBeTruthy();
+    await user.click(steps.getByText('Zoom on the dimension row'));
+    expect(live.querySelector(`img[src="${THUMB}"]`)).toBeTruthy();
+
+    await act(async () =>
+      server.finish({
+        event: 'answer',
+        data: answer({
+          text: 'Synthetic answer about the countertop.',
+          steps: [
+            { kind: 'bash', label: 'Read page 3 text', command: 'pdftotext -f 3 -l 3 made-up.pdf -', output: 'MADE-UP OVERALL 40', ok: true },
+            { kind: 'view', label: 'Zoom on the dimension row', path: '/home/claude/p-03.png', ok: true, thumbnail: THUMB },
+          ],
+        }),
+      }),
+    );
+    await screen.findByText('Synthetic answer about the countertop.');
+    // After the answer the list stays, folded to one summary line.
+    expect(document.querySelector('[data-slot="assistant-live-steps"]')).toBeNull();
+    expect(screen.getByText('Ran 1 command, viewed 1 picture')).toBeTruthy();
+    expect(panel().getAttribute('data-wide')).toBe('true');
+  });
+
+  it('names the lead model and says it reads the drawings', async () => {
+    server.info = { ...INFO, model_label: 'Claude Opus 5.5', reads_drawings: true };
+    mount();
+    await screen.findByText('Claude Opus 5.5 · reads the drawings · it explains, you decide');
+    expect(screen.queryByText(/keeps no data/)).toBeNull();
+    expect(screen.getByText(/reads this set’s drawings and results/)).toBeTruthy();
+    expect(screen.queryByText(/answers from this review only/)).toBeNull();
+    expect(panel().getAttribute('data-wide')).toBe('false');
+  });
+
+  it('draws a markdown table in an answer as a table', () => {
+    render(
+      <AnswerView
+        answer={answer({ text: 'Page 3 side by side:\n| Item | Architect | Vendor |\n|---|---|---|\n| Overall | 40" | 39" |\nThat is all.' })}
+        records={RECORDS}
+        nav={nav as unknown as AssistantNavigation}
+        reveal={false}
+        latest
+        busy={false}
+        onAsk={() => {}}
+      />,
+    );
+    const table = screen.getByRole('table');
+    expect(within(table).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual(['Item', 'Architect', 'Vendor']);
+    expect(within(table).getAllByRole('cell').map((cell) => cell.textContent)).toEqual(['Overall', '40"', '39"']);
+    // "Page 3" in the answer's own words opens that page, like claude.ai's page references.
+    screen.getByRole('button', { name: 'Go to page 3' }).click();
+    expect(nav.openPage).toHaveBeenCalledWith(3);
+    expect(screen.getByText(/That is all\./)).toBeTruthy();
+    expect(document.body.textContent).not.toContain('|---|');
+  });
+
+  it('resizes from its left edge by keyboard, remembers the width, and expands to a wide view and back', async () => {
+    const user = userEvent.setup();
+    window.localStorage.removeItem('gv.assistant.width');
+    mount();
+    const handle = screen.getByRole('separator', { name: 'Resize the assistant' });
+    expect(handle.getAttribute('aria-valuenow')).toBe('420');
+    expect(handle.getAttribute('aria-valuemin')).toBe('360');
+    handle.focus();
+    await user.keyboard('{ArrowLeft}{ArrowLeft}');
+    expect(handle.getAttribute('aria-valuenow')).toBe('468');
+    expect(panel().style.width).toBe('468px');
+    expect(window.localStorage.getItem('gv.assistant.width')).toBe('468');
+    await user.keyboard('{Home}');
+    expect(handle.getAttribute('aria-valuenow')).toBe('360');
+    // Never past 70% of the window.
+    await user.keyboard('{End}');
+    expect(Number(handle.getAttribute('aria-valuenow'))).toBe(Math.floor(window.innerWidth * 0.7));
+
+    await user.click(screen.getByRole('button', { name: 'Expand' }));
+    expect(panel().getAttribute('data-expanded')).toBe('true');
+    expect(screen.queryByRole('separator')).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Collapse' }));
+    expect(panel().getAttribute('data-expanded')).toBe('false');
+    // Escape leaves the wide view first, then closes.
+    await user.click(screen.getByRole('button', { name: 'Expand' }));
+    await user.keyboard('{Escape}');
+    expect(panel().getAttribute('data-expanded')).toBe('false');
+    window.localStorage.removeItem('gv.assistant.width');
+  });
+
+  it('draws "- " lines as a bulleted list', () => {
+    render(
+      <AnswerView
+        answer={answer({ text: 'The arithmetic:\n- The pieces add up to 40".\n- The printed overall is 39".' })}
+        records={RECORDS}
+        nav={nav as unknown as AssistantNavigation}
+        reveal={false}
+        latest
+        busy={false}
+        onAsk={() => {}}
+      />,
+    );
+    const items = within(screen.getByRole('list', { name: 'Answer list' })).getAllByRole('listitem');
+    expect(items.map((item) => item.textContent)).toEqual(['The pieces add up to 40".', 'The printed overall is 39".']);
+  });
+
+  it('leaves no space before a full stop where a marker was dropped', () => {
+    expect(answerParts('It needs correction [[7]].', [], RECORDS)).toEqual([{ kind: 'text', text: 'It needs correction.' }]);
   });
 });
