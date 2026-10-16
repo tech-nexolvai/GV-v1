@@ -8,6 +8,8 @@ import {
   detailId,
   disagreeAction,
   readerWord,
+  splitReasons,
+  tidyWhy,
 } from '@/lib/review-items';
 import { Button } from '@/components/ui/button';
 import { ArchitectChoices } from './architect-choices';
@@ -17,7 +19,7 @@ import { FixDialog } from './fix-dialog';
 import { PagePicture, PictureUnavailable, ZoomPicture } from './item-pictures';
 import type { SaveError } from './failures-strip';
 import { WallChoices } from './wall-choices';
-import { WhatToCheckBlock } from './what-to-check';
+import { NumberToCheckBlock, WhatToCheckBlock } from './what-to-check';
 import { Kbd, NumText } from './words';
 
 /** The pictures side by side: the close-up large, the vendor page and the architect page beside it. */
@@ -74,13 +76,36 @@ function Evidence({ item }: { item: ReviewItem }) {
               <PagePicture pageRef={architect} label={`Architect page ${architect.page_number}, the matching spot ringed`} />
             ) : (
               <div className="flex h-full min-h-24 items-center rounded-lg border border-dashed border-border px-4 py-3 text-[13px] leading-5 text-muted-foreground">
-                {item.architect_ref?.reason ?? 'No architect page is linked to this item.'}
+                <ArchitectNote reason={item.architect_ref?.reason ?? null} />
               </div>
             )}
           </div>
         </figure>
       </div>
     </div>
+  );
+}
+
+/**
+ * Why there is no architect page. A note joining several reasons with semicolons (some of them
+ * contradicting each other, Set 3 QA) shows its first reason; the others wait behind Why.
+ */
+function ArchitectNote({ reason }: { reason: string | null }) {
+  if (!reason) return <>No architect page is linked to this item.</>;
+  const { first, others } = splitReasons(reason);
+  if (others.length === 0) return <>{reason}</>;
+  return (
+    <span data-testid="architect-note" className="flex flex-col gap-1">
+      <span>{first}</span>
+      <details>
+        <summary className="cursor-pointer text-foreground">Why</summary>
+        <ul className="mt-1 flex flex-col gap-0.5">
+          {others.map((other) => (
+            <li key={other}>{other}</li>
+          ))}
+        </ul>
+      </details>
+    </span>
   );
 }
 
@@ -167,6 +192,7 @@ export function ItemDetail({
   const agree = cards ? null : agreeAction(item);
   const disagree = cards ? null : disagreeAction(item);
   const saving = busy !== null;
+  const numberBlock = (item.kind === 'number' || item.kind === 'depth_reading') && Boolean(item.best_guess) && !item.what_to_check;
 
   return (
     <div id={detailId(item.key)} data-slot="item-detail" className="flex flex-col gap-6 border-t border-border bg-muted/30 px-4 pt-5 pb-6 sm:px-6 sm:pl-[3.25rem]">
@@ -184,9 +210,11 @@ export function ItemDetail({
         <Guess item={item} />
       )}
       {item.what_to_check && <WhatToCheckBlock block={item.what_to_check} />}
+      {/* An AI number says what to check too, its stored reason inside the block (Set 3 QA). */}
+      {numberBlock && <NumberToCheckBlock item={item} agreeLabel={agree ? ACTION_LABELS[agree] : null} disagreeLabel={disagree ? ACTION_LABELS[disagree] : null} />}
       {/* A row held as a whole says its reason once, in the block above; its why is the same reason. */}
-      {!item.what_to_check?.row_reason && (
-        <NumText text={item.why} className="block max-w-[68ch] text-[13px] leading-5 text-muted-foreground" />
+      {!item.what_to_check?.row_reason && !numberBlock && (
+        <NumText text={tidyWhy(item.why)} className="block max-w-[68ch] text-[13px] leading-5 text-muted-foreground" />
       )}
 
       {error && (

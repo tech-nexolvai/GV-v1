@@ -268,3 +268,89 @@ def test_a_format_3_cover_counts_wrong_by_hand_and_lists_the_architect_compare()
     assert 'A1 Needs: 36" (per architect: overall width) — Vendor drew: 35 1/2" — Page 2' in text
     assert "CT-ARCH-WIDTH-001" not in text
     assert "left out: it is switched off" in text
+
+
+def _many_not_checked(count: int) -> SignedReview:
+    at = datetime(2026, 1, 1, tzinfo=UTC)
+    return SignedReview(
+        approval_id=uuid4(),
+        approved_by="Made Up",
+        approved_at=at,
+        findings=(
+            SignedReviewFinding(
+                finding_id=uuid4(), rule_id="CHECK-FAIL", outcome="FAIL", actions=()
+            ),
+            *(
+                SignedReviewFinding(
+                    finding_id=uuid4(),
+                    rule_id="CT-DEPTH-001",
+                    outcome="REVIEW_REQUIRED",
+                    scope_label=f"Countertop {n}",
+                    actions=(),
+                )
+                for n in range(count)
+            ),
+        ),
+    )
+
+
+def test_a_format_4_cover_groups_the_not_checked_results_by_reason() -> None:
+    """Set 3 QA: the final cover listed 174 not-checked results one by one ("REVIEW_REQUIRED: no
+    per-finding action recorded" with raw ids, 28 pages). A format-4 cover groups them by reason,
+    as the draft's front page does."""
+    from reports.signed_review import ReviewCover, review_pdf
+
+    review = _many_not_checked(60)
+    ids = frozenset(f.finding_id for f in review.findings if f.rule_id == "CT-DEPTH-001")
+    labels = tuple(f"Countertop {n} — CT-DEPTH-001" for n in range(60))
+    cover = ReviewCover(
+        not_checked=(("Waiting for values nothing has read yet.", labels),),
+        not_checked_ids=ids,
+    )
+    content = review_pdf(review, cover)
+    text = _cover_text(content)
+
+    assert "NOT CHECKED (60): grouped by reason" in text
+    assert "60 check(s): Waiting for values nothing has read yet." in text
+    # The FAIL only: once under "Will be clouded as wrong", once on its own.
+    assert text.count("no per-finding action recorded") == 2
+    assert all(str(finding_id) not in text for finding_id in ids)
+    from io import BytesIO
+
+    from pypdf import PdfReader
+
+    assert len(PdfReader(BytesIO(content)).pages) <= 3
+
+
+def test_a_format_3_cover_without_groups_is_drawn_as_before() -> None:
+    from reports.signed_review import ReviewCover, review_pdf
+
+    review = _many_not_checked(3)
+    text = _cover_text(review_pdf(review, ReviewCover()))
+    assert "NOT CHECKED (" not in text
+    assert text.count("no per-finding action recorded") == 5  # the FAIL twice, each result once
+
+
+def test_the_signed_outputs_group_only_unanswered_not_checked_results() -> None:
+    from types import SimpleNamespace
+
+    from workflow.signed_outputs import not_checked_groups
+
+    review = _many_not_checked(2)
+    depth = [f for f in review.findings if f.rule_id == "CT-DEPTH-001"]
+    rows = [
+        (
+            SimpleNamespace(
+                id=f.finding_id, reason="Waiting for values.", trace={}, scope_label=f.scope_label
+            ),
+            None,
+            None,
+            SimpleNamespace(rule_id=f.rule_id),
+        )
+        for f in review.findings
+    ]
+    groups, ids = not_checked_groups(rows, review, frozenset(f.finding_id for f in depth))
+    assert groups == (
+        ("Waiting for values.", ("Countertop 0 — CT-DEPTH-001", "Countertop 1 — CT-DEPTH-001")),
+    )
+    assert ids == frozenset(f.finding_id for f in depth)

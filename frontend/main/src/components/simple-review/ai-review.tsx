@@ -138,6 +138,13 @@ function Group({ group, entries, defaultOpen, onLook }: { group: AiReviewGroup; 
   );
 }
 
+/** A stored reason after a colon: first letter small (unless it is a code like "AI"), one full stop. */
+function notRunReason(reason: string): string {
+  const trimmed = reason.trim();
+  const lowered = /^[A-Z][a-z]/.test(trimmed) ? trimmed.charAt(0).toLowerCase() + trimmed.slice(1) : trimmed;
+  return /[.!?]$/.test(lowered) ? lowered : `${lowered}.`;
+}
+
 /** A page still being read, one that failed, or one not read: in plain words, never silent. */
 function PageLine({ page }: { page: AiReviewPage }) {
   if (page.status === 'running') {
@@ -165,7 +172,8 @@ function PageLine({ page }: { page: AiReviewPage }) {
     <li className="flex items-center gap-1.5">
       <Minus aria-hidden="true" className="size-3.5 shrink-0" />
       <span>
-        Page <span className="num">{page.page}</span> was not read by the AI.
+        Page <span className="num">{page.page}</span> was not read by the AI
+        {page.reason ? <>: <NumText text={notRunReason(page.reason)} /></> : '.'}
       </span>
     </li>
   );

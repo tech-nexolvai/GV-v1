@@ -160,3 +160,32 @@ def test_a_check_that_could_not_run_no_longer_holds_sign_off(
     items = open_items(session, revision.id, _live_rows(session, revision.id))
     assert [item.reason for item in items.not_checked] == [WAITING]
     assert items.settled == ()
+
+
+def test_the_draft_cover_uses_the_review_screens_open_count(
+    session: Session, store: LocalStore
+) -> None:
+    """Set 3 QA: the screen said 51 need you, the draft cover 44 + 2. The cover now prints the
+    open-items count the review screen's header shows (W1 `header.open`)."""
+    from app.models.package import Package
+    from app.review.review_items import review_items_for_revision
+    from workflow.draft_cloud import request_draft_cloud
+
+    _, revision = _checked(session, store)
+    package = session.get(Package, revision.package_id)
+    assert package is not None
+    screen = review_items_for_revision(
+        session, project_id=package.project_id, package_id=package.id, revision=revision
+    )
+    request = request_draft_cloud(session, revision.id, requested_by="ana@example.com")
+    session.commit()
+
+    drawn = render_draft_cloud(session, store, revision.id, request, requested_by="a reviewer")
+
+    from app.models import OutputArtifact
+
+    artifact = session.get(OutputArtifact, drawn["draft_id"])
+    assert artifact is not None
+    front = _pages(store.get(artifact.storage_key).read())[0]
+    assert f"Open items: {screen.header.open}, the same count as the review screen." in front
+    assert drawn["open"] == screen.header.open

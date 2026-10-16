@@ -7,7 +7,9 @@ section too, since #1182.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from io import BytesIO
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -28,6 +30,7 @@ from app.review.signed_exports import (
 )
 from reports.findings_pdf import FindingsPdfInput, write_findings_pdf
 from reports.redline import ArchitectCompare, LabelLayout, ReviewerMark
+from reports.signed_review import SignedReview
 from reports.spreadsheet import (
     StoredFinding,
     WorkbookSignoff,
@@ -77,6 +80,26 @@ def frozen_compare_input(
             else architect_compare_input(frozen_compare.items, frozen_compare.counts)
         ),
     )
+
+
+def not_checked_groups(
+    rows: Sequence[tuple[Any, Any, Any, Any]],
+    review: SignedReview,
+    not_checked_ids: frozenset[UUID],
+) -> tuple[tuple[tuple[str, tuple[str, ...]], ...], frozenset[UUID]]:
+    """The signed cover's NOT CHECKED groups (format 4): each stored reason once, in first-seen
+    order, with the label of every result it covers, as the draft's front page words them. A
+    result a person answered keeps its own entry, so its answer is printed."""
+    from workflow.draft_cloud_render import OpenItem, _label, _reason, grouped_by_reason
+
+    answered = {finding.finding_id for finding in review.findings if finding.actions}
+    entries: list[OpenItem] = []
+    grouped: set[UUID] = set()
+    for finding, _run, _snapshot, definition in rows:
+        if finding.id in not_checked_ids and finding.id not in answered:
+            entries.append(OpenItem(_label(finding, definition.rule_id), _reason(finding)))
+            grouped.add(finding.id)
+    return tuple(grouped_by_reason(entries)), frozenset(grouped)
 
 
 def generate_signed_outputs(
@@ -149,6 +172,14 @@ def generate_signed_outputs(
             left_out_rules=left_out,
             left_out_note=old_compare_left_out_words(hidden) if hidden else None,
         )
+        if payload.format_version >= 4 and marks is not None:
+            # Format 4 (Set 3 QA): the not-checked results nobody answered, once per reason.
+            from dataclasses import replace
+
+            groups, grouped = not_checked_groups(
+                drawn_rows, payload.review, frozenset(marks.not_checked_finding_ids)
+            )
+            cover = replace(cover, not_checked=groups, not_checked_ids=grouped)
     redline = render_evidence_grounded_redline(
         db,
         store,

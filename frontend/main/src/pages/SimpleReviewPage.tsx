@@ -62,6 +62,23 @@ export interface SimpleReviewPageProps {
   onNeedYouChange?: (count: number | null) => void;
   /** The review assistant, docked on the right. Off in tests that do not exercise it. */
   assistantAvailable?: boolean;
+  /**
+   * How often the list is read again while something is re-checking, the AI page review is still
+   * reading, or a check run was asked for (Set 3 QA). It stops once nothing is pending.
+   */
+  pollMs?: number;
+  /** Called after sign-off, so the sidebar reads the package's new status. */
+  onPackageChanged?: () => void;
+}
+
+/** The longest the page waits for a check run it asked for (polls), when nothing else shows it. */
+const CHECK_RUN_POLLS = 45;
+
+/** Something the worker is still doing, which the list will show once done (Set 3 QA). */
+function pendingWork(data: ReviewItemsOut): boolean {
+  if (data.header.rechecking > 0) return true;
+  if ([...data.items, ...data.failures, ...data.not_checked].some((entry) => entry.status === 'rechecking')) return true;
+  return (data.ai_review?.pages ?? []).some((page) => page.status === 'running');
 }
 
 type LoadState =
@@ -175,6 +192,8 @@ export function SimpleReviewPage({
   onTitleChange,
   onNeedYouChange,
   assistantAvailable = true,
+  pollMs = 4000,
+  onPackageChanged,
 }: SimpleReviewPageProps) {
   const project = useMemo(() => {
     try {
@@ -279,6 +298,20 @@ export function SimpleReviewPage({
     [data],
   );
   const reload = useCallback(() => setVersion((n) => n + 1), []);
+
+  // Read the list again while the worker is still on it (Set 3 QA: "1 item re-checking" stayed
+  // until a reload). Each answer arms the next ask; nothing pending, no more asks.
+  const checkRunPolls = useRef(0);
+  const loaded = load?.version === version && load.state.status === 'ready' ? load.state.data : null;
+  useEffect(() => {
+    if (loaded === null || pollMs <= 0) return;
+    const waitingForRun = checkRunPolls.current > 0 && !loaded.header.can_finalise && /\brun the checks\b/i.test(loaded.header.blocked_reason ?? '');
+    if (!waitingForRun) checkRunPolls.current = 0;
+    if (!pendingWork(loaded) && !waitingForRun) return;
+    if (waitingForRun) checkRunPolls.current -= 1;
+    const timer = window.setTimeout(reload, pollMs);
+    return () => window.clearTimeout(timer);
+  }, [loaded, pollMs, reload]);
 
   // The newest list, for Retry: after a 409 the list is reloaded first, and Retry then sends the
   // finding the reviewer now sees, never the stale one that was refused.
@@ -880,8 +913,13 @@ export function SimpleReviewPage({
                     // Signed here: the header's draft button follows at once (the package is not read again).
                     setTitle((now) => (now ? { ...now, approved: true } : now));
                     reload();
+                    // The sidebar reads the package's status again ("Awaiting Review" no more).
+                    onPackageChanged?.();
                   }}
-                  onRechecked={reload}
+                  onRechecked={() => {
+                    checkRunPolls.current = CHECK_RUN_POLLS;
+                    reload();
+                  }}
                 />
               </>
             )}

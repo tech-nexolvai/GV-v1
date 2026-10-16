@@ -1,4 +1,5 @@
-import type { WhatToCheck } from '@/api/review-items';
+import type { ReviewItem, WhatToCheck } from '@/api/review-items';
+import { tidyWhy } from '@/lib/review-items';
 import { NumText } from './words';
 
 /**
@@ -54,6 +55,36 @@ export function WhatToCheckBlock({ block }: { block: WhatToCheck }) {
       <NumText text={block.rule} className="text-[13px] leading-5 font-medium text-foreground" />
       {block.overall_note && <NumText text={`Overall: ${block.overall_note}`} className="text-[13px] leading-5 text-muted-foreground" />}
       {block.walls_note && <NumText text={block.walls_note} className="text-[13px] leading-5 text-muted-foreground" />}
+    </section>
+  );
+}
+
+/**
+ * What to check on one AI number (Set 3 QA), like the countertop block: the value to look for,
+ * where it is, and why it was held, in the item's own stored words (W1 fields only). Nothing is
+ * worked out here.
+ */
+export function NumberToCheckBlock({ item, agreeLabel, disagreeLabel }: { item: ReviewItem; agreeLabel: string | null; disagreeLabel: string | null }) {
+  if (!item.best_guess) return null;
+  const place = [item.row_label, item.page != null ? `page ${item.page}` : null].filter(Boolean).join(', ');
+  return (
+    <section data-testid="what-to-check" aria-labelledby="what-to-check-title" className="flex max-w-[68ch] flex-col gap-2 text-[13px] leading-5">
+      <h3 id="what-to-check-title" className="font-semibold text-foreground">
+        What to check
+      </h3>
+      <p className="text-foreground">
+        Does the vendor&apos;s drawing show <span className="num font-medium">{item.best_guess.text}</span> for {item.what}
+        {place ? <> ({place})</> : null}?
+      </p>
+      <p data-testid="what-to-check-why" className="text-outcome-review-fg">
+        Why it was held: <NumText text={tidyWhy(item.why)} />
+      </p>
+      {(agreeLabel || disagreeLabel) && (
+        <p className="text-muted-foreground">
+          {agreeLabel && <>If it does, press {agreeLabel}. </>}
+          {disagreeLabel && <>If not, press {disagreeLabel}{disagreeLabel === 'Fix' ? ' and type what it shows, in inches' : ''}.</>}
+        </p>
+      )}
     </section>
   );
 }
