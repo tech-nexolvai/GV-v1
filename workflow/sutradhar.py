@@ -793,6 +793,7 @@ def run_extraction(
     from app.lifecycle.side_states import enter_needs_input
     from app.models import PackageState, WorkflowRun
     from app.runs.reading_progress import record_progress, side_engine
+    from workflow.after_reading import queue_after_reading
     from workflow.review import _record_failure, run_stage
 
     stages = (stages_factory or build_stages)(timings=timings)
@@ -899,14 +900,19 @@ def run_extraction(
         # the next actor is the reviewer: confirm the untyped proposals and supply the values the
         # reader abstained on. Leaving a zero-result revision in VALIDATING_EVIDENCE makes that
         # honest abstention indistinguishable from a worker that is still running.
+        # **Then ask for what comes next, on its own** (Set 3 QA): the page pictures "Look" needs,
+        # and the check run when nothing it needs is missing. Queued in this transaction, so they
+        # land with the hand-over; what still stops the checks is said in `needed`.
+        after = queue_after_reading(session, package_revision_id)  # type: ignore[arg-type]
+        results["after_reading"] = {
+            "pictures_queued": after.pictures_queued,
+            "checks_queued": after.checks_queued,
+        }
         enter_needs_input(
             session,
             package_revision_id,
             actor="local review worker",
-            needed=(
-                "confirm any AI reading proposals, then provide the dimensions the reader abstained on "
-                "before running deterministic checks"
-            ),
+            needed=after.needed,
         )
     except Exception as error:
         session.rollback()  # type: ignore[attr-defined]

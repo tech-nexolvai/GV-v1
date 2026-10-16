@@ -1099,6 +1099,13 @@ def review_items_for_revision(
     ]
 
     rows = slot_rows(session, revision.id) if projection.countertops_checked else ()
+    # Imported here: `workflow.row_answers` imports this module (`vendor_ink_only`).
+    from workflow.row_answers import answered_labels
+
+    answered_at = {
+        candidate_id: answer.created_at
+        for candidate_id, answer in (answered_labels(session, rows) if rows else {}).items()
+    }
     row_by_id: dict[UUID, SlotRow] = {row.anchor.id: row for row in rows}
     result_by_row: dict[UUID, CountertopResultOut] = {
         item.row_id: item for item in projection.items
@@ -1348,6 +1355,7 @@ def review_items_for_revision(
                     zoom=zoom,
                     architect=architect_ref(result),
                     layouts=layouts,
+                    answered=answered_at,
                 )
             )
             continue
@@ -1602,9 +1610,16 @@ def _width_items(
     zoom: Callable[[ObservationCandidate], str | None],
     architect: ArchitectRefOut,
     layouts: Callable[[], tuple[str, ...]],
+    answered: Mapping[UUID, datetime] | None = None,
 ) -> list[ReviewItemOut]:
     """One width result's questions: a held row is one countertop to check by hand; otherwise one
-    item per held number with a guess, one more for the held numbers without, or the walls."""
+    item per held number with a guess, one more for the held numbers without, or the walls.
+
+    `answered` is when a person last answered each held number (W2's confirm or fix, the answers the
+    width check counts: `workflow/row_answers.answered_labels`). An answered number is never asked
+    again (Set 3 QA): it waits for the re-check when the answer is newer than this result, and is
+    gone once a result was made after it; the by-hand question no longer names it."""
+    answered = answered or {}
     common = {
         "page": result.page_number,
         "countertop": result.countertop_item,
@@ -1621,6 +1636,14 @@ def _width_items(
     if row is not None:
         # Every held number, a record with no `slot:` place too (checked by hand, never skipped).
         held = [candidate for candidate in row.candidates if not candidate_is_sealed(candidate)]
+    # A person's answer is the second judgment on that number: it leaves the questions.
+    waiting = [
+        candidate
+        for candidate in held
+        if candidate.id in answered
+        and (finding.created_at is None or answered[candidate.id] > finding.created_at)
+    ]
+    held = [candidate for candidate in held if candidate.id not in answered]
     if hold is not None and hold.code != _NUMBER_LEVEL_HOLD:
         return [
             ReviewItemOut(
@@ -1712,6 +1735,23 @@ def _width_items(
                 **common,  # type: ignore[arg-type]
             )
         )
+    found.extend(
+        ReviewItemOut(
+            key=f"number:{candidate.id}",
+            kind="number",
+            what=_what(position),
+            best_guess=best_guess(candidate),
+            readers=_readers(candidate),
+            why="A person answered this number; the checks run again to use it.",
+            vendor_ref=locations.get(position),
+            zoom_ref=zoom(candidate),
+            actions=[],
+            candidate_id=candidate.id,
+            **{**common, "status": "rechecking", "decided_by": None, "decided_at": None},  # type: ignore[arg-type]
+        )
+        for candidate in waiting
+        if (position := _slot(candidate)) != -1
+    )
     if found:
         return found
     if _walls_only_open(result, row, finding):

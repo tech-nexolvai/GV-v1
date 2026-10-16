@@ -237,9 +237,15 @@ def test_a_stale_expected_finding_is_409_and_records_nothing(
     assert "expected_finding_id is required" in missing.text
     assert "newer result" not in missing.text
 
-    # The checks ran again since the screen loaded: the item's result was replaced.
+    assert session.scalars(select(ReviewAction)).first() is None
+
+    # The checks ran again since the screen loaded and the result was replaced by the same check's
+    # re-run on the same row with the same outcome (Set 3 QA): nothing a person relies on changed,
+    # so the answer is taken, on the result now standing (the replaced one keeps no action).
     _run_current_checks(session, package_id, tmp_path)
     session.commit()
+    now = _first_by_hand(_items(client, project_id, package_id))
+    assert now["finding_id"] != item["finding_id"]
     replaced = _act(
         client,
         project_id,
@@ -248,9 +254,9 @@ def test_a_stale_expected_finding_is_409_and_records_nothing(
         "checked_right",
         {"expected_finding_id": item["finding_id"]},
     )
-    assert replaced.status_code == 409, replaced.text
+    assert replaced.status_code == 201, replaced.text
     assert _actions(session, str(item["finding_id"])) == []
-    assert session.scalars(select(ReviewAction)).first() is None
+    assert len(_actions(session, str(now["finding_id"]))) == 1
 
 
 def test_an_unknown_item_or_package_is_404_and_an_action_not_offered_is_422(

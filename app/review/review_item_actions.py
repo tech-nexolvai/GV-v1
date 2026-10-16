@@ -53,7 +53,15 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Finding, ObservationCandidate, Package, PackageRevision
+from app.models import (
+    CheckRun,
+    Finding,
+    ObservationCandidate,
+    Package,
+    PackageRevision,
+    RuleDefinition,
+    RuleSnapshot,
+)
 from app.models.document import PackageRevisionDocument
 from app.models.evidence import CanonicalObservation, EvidenceSupportingCandidate
 from app.models.review import ReviewAction, ReviewActionKind, ReviewSession
@@ -94,6 +102,7 @@ __all__ = [
     "record_cabinet_marks",
     "record_finding_actions",
     "reviewer_session",
+    "same_result_rerun",
 ]
 
 #: The fixed notes each finding action carries. A person never types one here. "Checked by hand:
@@ -346,6 +355,10 @@ def find_entry(
     entries: list[Entry] = [*listed.items, *listed.failures, *listed.not_checked]
     entry = next((candidate for candidate in entries if candidate.key == key), None)
     if entry is None:
+        # A key naming a result a re-check replaced (`countertop:<old id>`): the same item of the
+        # same check's new result, when nothing a person relies on changed (`same_result_rerun`).
+        entry = _carried_entry(session, entries, key)
+    if entry is None:
         named = [UUID(found) for found in _UUID.findall(key.lower())]
         if expected_finding_id is not None:
             named.append(expected_finding_id)
@@ -367,7 +380,12 @@ def find_entry(
             422,
             "expected_finding_id is required: say which result you saw. Nothing was saved.",
         )
-    if finding_id is not None and expected_finding_id != finding_id:
+    if (
+        finding_id is not None
+        and expected_finding_id is not None
+        and expected_finding_id != finding_id
+        and not same_result_rerun(session, expected_finding_id, finding_id)
+    ):
         raise ItemRefused(
             409,
             "This item now belongs to a newer result than the one you saw. Nothing was saved. "
@@ -390,6 +408,62 @@ def find_entry(
         )
         raise ItemRefused(409, f"This item is not open. {why} Nothing was saved.")
     return entry, kind
+
+
+def same_result_rerun(session: Session, shown: UUID, current: UUID) -> bool:
+    """Whether `current` is the same check's result, re-run on the same countertop row (or the same
+    countertop) of the same revision with the same outcome, and `shown` was replaced by that re-run.
+
+    Every answer queues a whole-package re-check, which gives every result a new id (Set 3 QA). The
+    screen still names the result it showed; when the re-check of that very check on that very row
+    came out the same, nothing a person relies on changed, so the answer is taken (the item must
+    still be open: `find_entry` refuses it otherwise). A changed outcome, another row, another
+    check, or a result that was not replaced is still stale (409).
+    """
+    if shown == current:
+        return True
+    found = {
+        finding.id: (finding, rule_id, superseded_at)
+        for finding, rule_id, superseded_at in session.execute(
+            select(Finding, RuleDefinition.rule_id, CheckRun.superseded_at)
+            .join(CheckRun, CheckRun.id == Finding.check_run_id)
+            .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
+            .join(RuleDefinition, RuleDefinition.id == RuleSnapshot.rule_definition_id)
+            .where(Finding.id.in_([shown, current]))
+        ).all()
+    }
+    if shown not in found or current not in found:
+        return False
+    old, old_rule, old_superseded = found[shown]
+    new, new_rule, new_superseded = found[current]
+    return (
+        old_superseded is not None
+        and new_superseded is None
+        and old.package_revision_id == new.package_revision_id
+        and old_rule == new_rule
+        and (old.scope_row_candidate_id is not None or old.scope_item_id is not None)
+        and old.scope_row_candidate_id == new.scope_row_candidate_id
+        and old.scope_item_id == new.scope_item_id
+        and old.outcome == new.outcome
+        and old.created_at < new.created_at
+    )
+
+
+def _carried_entry(session: Session, entries: Sequence[Entry], key: str) -> Entry | None:
+    """The entry whose key is `key` with a replaced result's id swapped for its re-run's."""
+    named = {UUID(found) for found in _UUID.findall(key.lower())}
+    for candidate in entries:
+        current = candidate.finding_id
+        if current is None:
+            continue
+        for old in named:
+            if (
+                old != current
+                and candidate.key == key.lower().replace(str(old), str(current))
+                and same_result_rerun(session, old, current)
+            ):
+                return candidate
+    return None
 
 
 def check_shown_value(entry: ReviewItemOut, shown_value: str | None) -> None:

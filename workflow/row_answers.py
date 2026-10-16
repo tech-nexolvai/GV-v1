@@ -23,6 +23,7 @@ Source: issue #1339. Verification: `tests/review/test_held_reading_actions.py`.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import replace
 from fractions import Fraction
 from typing import Final
@@ -52,6 +53,7 @@ from workflow.slot_row_scope import (
 __all__ = [
     "PERSON_ANSWER_FLAG",
     "ROW_PARTIAL",
+    "answered_labels",
     "own_slot_labels",
     "person_answers",
     "qualify_row",
@@ -161,18 +163,33 @@ def person_answers(session: Session, row: SlotRow) -> dict[int | None, Canonical
     readers' seal is its evidence), and nothing citing another row's label is even looked at.
     """
     labels = own_slot_labels(row)
-    held = {
-        candidate.id: position
+    answered = answered_labels(session, (row,))
+    return {
+        position: answered[candidate.id]
         for position, candidate in labels.items()
-        if not candidate_is_sealed(candidate)
-        # Only a label whose value is positively the vendor's own number takes an answer (W1's
-        # rule, `vendor_ink_only`): an answer citing a label under GV's markup, with two labels or
-        # with unchecked ink, from any path, never fills the row (defence in depth, #1339 review).
-        and vendor_ink_only(candidate.ambiguity_flags or ())
+        if candidate.id in answered
     }
+
+
+def answered_labels(session: Session, rows: Iterable[SlotRow]) -> dict[UUID, CanonicalObservation]:
+    """`person_answers` for many rows in one read, keyed by the answered label's id (Set 3 QA).
+
+    The width check counts exactly these (`row_readings`), so the review list and the countertop
+    results read the same answers: a number a person answered is never asked again.
+    """
+    held: dict[UUID, tuple[int | None, ObservationCandidate]] = {}
+    for row in rows:
+        for position, candidate in own_slot_labels(row).items():
+            # Only a label whose value is positively the vendor's own number takes an answer (W1's
+            # rule, `vendor_ink_only`): an answer citing a label under GV's markup, with two labels
+            # or with unchecked ink, from any path, never fills the row (defence in depth, #1339).
+            if not candidate_is_sealed(candidate) and vendor_ink_only(
+                candidate.ambiguity_flags or ()
+            ):
+                held[candidate.id] = (position, candidate)
     if not held:
         return {}
-    answers: dict[int | None, CanonicalObservation] = {}
+    answers: dict[UUID, CanonicalObservation] = {}
     for canonical, cited in session.execute(
         select(CanonicalObservation, EvidenceSupportingCandidate.candidate_id)
         .join(
@@ -185,10 +202,9 @@ def person_answers(session: Session, row: SlotRow) -> dict[int | None, Canonical
         )
         .order_by(CanonicalObservation.created_at.desc(), CanonicalObservation.id.desc())
     ).all():
-        position = held[cited]
-        label = labels[position]
-        if position in answers:
+        if cited in answers:
             continue  # the newest answer about this label already stands
+        position, label = held[cited]
         if (
             canonical.semantic_type != width_semantic(position).value
             or canonical.page_id != label.page_id
@@ -199,7 +215,7 @@ def person_answers(session: Session, row: SlotRow) -> dict[int | None, Canonical
             or Fraction(canonical.value_numerator, canonical.value_denominator) <= 0
         ):
             continue
-        answers[position] = canonical
+        answers[cited] = canonical
     return answers
 
 
