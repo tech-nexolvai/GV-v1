@@ -5,7 +5,7 @@ import { getPackage, ApiError, downloadPagePicture } from '@/api/client';
 import { projectId as configuredProjectId } from '@/api/config';
 import { liveDraftCloudApi, makeDraftCloud, type DraftCloudApi } from '@/api/draft-cloud';
 import { liveFinalCloudApi, type FinalCloudApi } from '@/api/final-cloud';
-import { apiUrl, liveReviewItemsApi, NOT_CHECKED_GROUP, PAGES_GROUP, type ActionExtra, type ItemAction, type JobValueSuggestion, type ReviewFailure, type ReviewItem, type ReviewItemsApi, type ReviewItemsOut } from '@/api/review-items';
+import { apiUrl, architectCompareCountsOf, architectCompareOf, liveReviewItemsApi, NOT_CHECKED_GROUP, PAGES_GROUP, type ActionExtra, type ArchitectCompareEntry, type ItemAction, type JobValueSuggestion, type ReviewFailure, type ReviewItem, type ReviewItemsApi, type ReviewItemsOut } from '@/api/review-items';
 import { agreeAction, disagreeAction, leftWords, openNoCountertopPages, openPagesToDecide, orderItems, proposedWall, summarize, whereWord } from '@/lib/review-items';
 import type { AssistantRecords } from '@/lib/assistant';
 import { AssistantPanel, type AssistantNavigation } from '@/components/assistant/assistant-panel';
@@ -26,6 +26,8 @@ import { liveArchitectLoader, type ArchitectLoader } from '@/components/simple-r
 import { RecordedNumbersPanel, type RecordedPanelSubject } from '@/components/simple-review/recorded-numbers';
 import { liveRecordedNumbers, type RecordedNumbersLoader } from '@/components/simple-review/recorded-numbers-lib';
 import type { ViewerItem } from '@/components/simple-review/dual-pdf-viewer';
+import { ArchitectCompare } from '@/components/simple-review/architect-compare';
+import { compareWhat } from '@/components/simple-review/architect-compare-lib';
 
 // "Open PDFs" opens both full drawings side by side (U3, #1355), loaded only when first opened.
 const DualPdfViewer = lazy(() => import('@/components/simple-review/dual-pdf-viewer').then((m) => ({ default: m.DualPdfViewer })));
@@ -461,6 +463,22 @@ export function SimpleReviewPage({
     else setViewer((now) => ({ opening: (now?.opening ?? 0) + 1, item: at, recorded: { ...failure, tone: 'fail' } }));
   }
 
+  // An architect comparison's Look: both drawings, the vendor's and the architect's numbers ringed.
+  function lookAtCompare(entry: ArchitectCompareEntry) {
+    const spot = (ref: ArchitectCompareEntry['vendor_ref']) => (ref ? { ...ref, page_id: '', coordinate_space: 'stored' } : null);
+    const location = spot(entry.architect_ref);
+    const at: ViewerItem = {
+      key: entry.key,
+      page: entry.vendor_ref?.page_number ?? entry.page,
+      what: compareWhat(entry),
+      status: entry.result === 'same' ? 'done' : 'open',
+      vendor_ref: spot(entry.vendor_ref),
+      architect_ref: { location, reason: location ? null : "No spot on the architect's drawing was recorded for this number." },
+    };
+    if (onOpenPdfs) onOpenPdfs(at);
+    else setViewer((now) => ({ opening: (now?.opening ?? 0) + 1, item: at, recorded: null }));
+  }
+
   // A job value's Look (#1409): the side-by-side viewer at the page the reader found it on, ringed.
   function lookAtJobValue(found: JobValueSuggestion, name: string) {
     const at: ViewerItem = { key: `job-value:${found.name}`, page: found.page, what: `${name} ${found.value}`, status: 'open', vendor_ref: null, architect_ref: { location: found.location ?? null, reason: found.location ? null : 'The reader recorded no spot for this value.' } };
@@ -725,6 +743,9 @@ export function SimpleReviewPage({
                 </p>
 
                 <div className="flex flex-col gap-10 pt-2">
+                  {/* First: every architect number set beside the vendor's. Hidden for older packages. */}
+                  <ArchitectCompare entries={architectCompareOf(data)} counts={architectCompareCountsOf(data)} onLook={lookAtCompare} />
+
                   <FailuresStrip
                     failures={data.failures}
                     busyKey={busy?.key ?? null}
