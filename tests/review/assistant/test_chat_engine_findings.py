@@ -320,7 +320,7 @@ def test_second_reads_run_after_the_lead_and_feed_the_trust_report(
     workspace_with_pdf(tmp_path)
 
     def answer(params: Any) -> Any:
-        asked = params["messages"][0]["content"][0]["text"]
+        asked = next(b["text"] for b in params["messages"][0]["content"] if b["type"] == "text")
         if "Sink centre" in asked:
             return reply(text(json.dumps({"architect": "12", "vendor": "13"})), model=HAIKU)
         return reply(text(json.dumps({"architect": '37"', "vendor": "3'-10\""})), model=HAIKU)
@@ -412,3 +412,27 @@ def test_boxes_default_to_the_architects_file_when_the_set_has_one(
     finding = outcome.blocks[0]["finding"]
     assert finding["arch_box"] == {**ARCH_BOX, "file": "Architect.pdf"}
     assert finding["vendor_box"] == {**VENDOR_BOX, "file": "Vendor set.pdf"}
+
+
+def test_the_real_checks_modules_confirm_a_finding_printed_where_it_says(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With #1485's modules (no stubs): printed at the spot, inches by code, a sure second read."""
+    monkeypatch.setenv("GV_READER_MISSING_SPACE_HEIGHTS", "0.1")
+    workspace_with_pdf(tmp_path)
+    sure = {"architect": '37"', "vendor": "3'-10\"", "sure": True}
+    provider = ScriptedProvider(
+        lead=[
+            reply(tool("r1", "report_finding", finding_input()), stop="tool_use"),
+            reply(text("One difference.")),
+        ],
+        helper_answer=lambda params: reply(text(json.dumps(sure)), model=HAIKU),
+    )
+    outcome = Harness(tmp_path, provider).run()
+
+    finding = outcome.blocks[0]["finding"]
+    assert finding["checks"]["printed_architect"] == "match"
+    assert finding["checks"]["printed_vendor"] == "match"
+    assert finding["inches"] == {"architect": "37", "vendor": "46", "difference": "9"}
+    assert finding["checks"]["second_read"] == "agrees"
+    assert finding["trust_level"] == "confirmed"

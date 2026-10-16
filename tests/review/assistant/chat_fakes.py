@@ -211,7 +211,10 @@ class ScriptedProvider:
                 self.lead_calls.append(sent)
                 script = self._lead.popleft()
             else:
-                task = params["messages"][0]["content"][0]["text"]
+                # A helper's task (its first text block); a second read's question (after its
+                # pictures).
+                first = params["messages"][0]["content"]
+                task = next((b["text"] for b in first if b.get("type") == "text"), "")
                 self.helper_calls.setdefault(task, []).append(sent)
                 if self.helper_answer is not None:
                     script = self.helper_answer(params)

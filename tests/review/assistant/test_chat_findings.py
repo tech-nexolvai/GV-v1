@@ -533,7 +533,7 @@ def test_code_numbers_come_from_the_checks_module(monkeypatch: pytest.MonkeyPatc
                 "arithmetic": None,
             }
         ),
-        trust_level=lambda checks: "likely",
+        trust_level=lambda checks, status=None: "likely" if status == "different" else "?",
     )
     monkeypatch.setattr(chat_trust, "load_module", lambda name: fake)
     checked = chat_trust.apply_checks(finding_input(), {}, None)
