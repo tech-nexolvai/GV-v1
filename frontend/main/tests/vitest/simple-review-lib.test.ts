@@ -18,8 +18,10 @@ import {
   fixValue,
   pagesWord,
   openNoCountertopPages,
+  notConfirmedGroups,
+  unansweredWords,
 } from '@/lib/review-items';
-import { allSettled, reviewItems } from './fixtures/review-items';
+import { allSettled, optionalOpen, reviewItems } from './fixtures/review-items';
 
 // Synthetic data only: nothing here comes from a client drawing.
 
@@ -100,13 +102,52 @@ describe('simple review rules', () => {
   });
 
   it('says what is left in plain words with the header\'s own counts, only those above zero (#1394)', () => {
-    expect(leftWords(data.header)).toEqual(['6 items need you', '6 not checked', '1 item re-checking']);
-    expect(leftWords({ open: 9, not_checked: 54, rechecking: 0 })).toEqual(['9 items need you', '54 not checked']);
-    expect(leftWords({ open: 1, not_checked: 0, rechecking: 0 })).toEqual(['1 item needs you']);
+    // Every question is optional (owner, 2026-10-16): "6 optional", never "6 items need you".
+    expect(leftWords(data.header)).toEqual(['6 optional', '6 not checked', '1 item re-checking']);
+    expect(leftWords({ open: 9, not_checked: 54, rechecking: 0 })).toEqual(['9 optional', '54 not checked']);
+    expect(leftWords({ open: 1, not_checked: 0, rechecking: 0 })).toEqual(['1 optional']);
     // The lists are never counted again: the header's numbers are the ones printed.
     const listsDisagree = reviewItems((draft) => { draft.header.open = 9; });
-    expect(leftWords(listsDisagree.header)[0]).toBe('9 items need you');
+    expect(leftWords(listsDisagree.header)[0]).toBe('9 optional');
     expect(leftWords(allSettled().header)).toEqual([]);
+    expect(leftWords(data.header).join(' ')).not.toMatch(/need you|needs you/);
+  });
+
+  it('says how many unanswered items the final PDF prints as not confirmed, singular and plural', () => {
+    expect(unansweredWords(3)).toBe('Ready to create the final cloud PDF — 3 items left unanswered will be printed as not confirmed');
+    expect(unansweredWords(1)).toBe('Ready to create the final cloud PDF — 1 item left unanswered will be printed as not confirmed');
+  });
+
+  it('groups what will be printed as not confirmed by kind, in plain words, with open failures last', () => {
+    // The fixture's open items: 2 numbers, 1 depth, 1 countertop by hand, 1 wall, 1 page; 2 open failures.
+    expect(notConfirmedGroups(optionalOpen())).toEqual([
+      { label: 'Numbers to confirm', count: 2 },
+      { label: 'Depths to confirm', count: 1 },
+      { label: 'Countertops to check by hand', count: 1 },
+      { label: 'Wall choices', count: 1 },
+      { label: 'Pages to decide', count: 1 },
+      { label: 'Clouded as wrong, not agreed by a person', count: 2 },
+    ]);
+    // Done and re-checking items are never counted; both cabinet kinds share one line; an unknown kind has words too.
+    const mixed = notConfirmedGroups({
+      items: [
+        { kind: 'cabinet_kinds', status: 'open' },
+        { kind: 'cabinet_run', status: 'open' },
+        { kind: 'architect', status: 'open' },
+        { kind: 'architect', status: 'done' },
+        { kind: 'number', status: 'rechecking' },
+        { kind: 'other_result', status: 'open' },
+        { kind: 'made_up_kind' as never, status: 'open' },
+      ],
+      failures: [{ status: 'done' }],
+    });
+    expect(mixed).toEqual([
+      { label: 'Architect questions', count: 1 },
+      { label: 'Cabinet marks', count: 2 },
+      { label: 'Other results to check', count: 1 },
+      { label: 'Other questions', count: 1 },
+    ]);
+    expect(notConfirmedGroups(allSettled())).toEqual([]);
   });
 
   it('a Fix typed as a bare number is in inches; anything else is sent as typed (#1368)', () => {

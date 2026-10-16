@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { CheckCheck, CircleAlert, Download, FileCheck2, Loader2, Lock, RotateCcw } from 'lucide-react';
 
 import type { FinalCloudApi, SignOffFacts, SignedFilesStatus } from '@/api/final-cloud';
-import type { ReviewSummary } from '@/lib/review-items';
+import { notConfirmedGroups, unansweredWords, type ReviewSummary } from '@/lib/review-items';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
@@ -47,6 +47,7 @@ function sentence(text: string): string {
 export function FinalBar({
   summary,
   left,
+  open,
   notChecked,
   api,
   projectId,
@@ -57,8 +58,14 @@ export function FinalBar({
   onRechecked,
 }: {
   summary: ReviewSummary;
-  /** What is left, in words ("9 items need you · 54 not checked"), from the page's W1 header. */
+  /** What is left, in words ("9 optional · 54 not checked"), from the page's W1 header. */
   left: readonly string[];
+  /**
+   * The header's open count (`header.open`): items and failures no person answered. They are
+   * optional (owner, 2026-10-16) and printed "Not confirmed by a person". Without it, the open
+   * items and failures of `summary` are counted.
+   */
+  open?: number;
   /** The header's not-checked count (`header.not_checked`), the same count `left` prints. */
   notChecked?: number;
   api: FinalCloudApi;
@@ -228,6 +235,7 @@ export function FinalBar({
   // `can_finalise` alone, whichever way it answers.
   const onlyNotChecked = notChecked !== undefined && notChecked > 0 && left.length === 1 && summary.rechecking.length === 0;
   const notCheckedWords = `${notChecked} not checked — printed NOT CHECKED on the PDF`;
+  const unanswered = open ?? summary.openItems.length + summary.openFailures.length;
 
   if (phase.kind === 'error') {
     icon = <CircleAlert aria-hidden="true" className="size-4 text-outcome-fail-fg" />;
@@ -258,7 +266,7 @@ export function FinalBar({
     if (phase.files === 'ready') {
       icon = <FileCheck2 aria-hidden="true" className="size-4 text-foreground" />;
       headline = 'Signed off. The final cloud PDF is ready.';
-      sub = 'It marks every item as it was left: confirmed, fixed, wrong and not checked.';
+      sub = 'It marks every item as it was left: confirmed, fixed, wrong, not confirmed and not checked.';
       action = (
         <Button onClick={() => void download()} disabled={downloading}>
           {downloading ? <Loader2 aria-hidden="true" className="animate-spin motion-reduce:animate-none" /> : <Download aria-hidden="true" />}
@@ -289,7 +297,9 @@ export function FinalBar({
     }
   } else if (summary.canFinalise) {
     icon = <CheckCheck aria-hidden="true" className="size-4 text-foreground" />;
-    headline = onlyNotChecked ? notCheckedWords : 'Everything is checked.';
+    // Open questions are optional (owner, 2026-10-16): sign-off is offered, and the bar says what
+    // the PDF prints for the ones left unanswered.
+    headline = unanswered > 0 ? unansweredWords(unanswered) : onlyNotChecked ? notCheckedWords : 'Everything is checked.';
     sub = 'Creating the final cloud PDF signs off this revision first. It cannot be undone.';
     action = (
       <Button onClick={openDialog}>
@@ -317,10 +327,10 @@ export function FinalBar({
     );
   } else {
     icon = <Lock aria-hidden="true" className="size-4 text-muted-foreground" />;
-    // Plain words with the header's own counts (#1394). The server's sentence is shown only when
-    // there is no count to say what is left; it never decides what the bar says is open.
+    // Plain words with the header's own counts (#1394). Open questions are optional (owner,
+    // 2026-10-16), so they never explain the lock: the server's own reason always does.
     headline = onlyNotChecked ? notCheckedWords : left.length > 0 ? left.join(' · ') : 'Not ready for sign-off yet.';
-    sub = left.length > 0 && !onlyNotChecked ? 'The final cloud PDF unlocks once these are settled.' : summary.finalBlocked;
+    sub = summary.finalBlocked;
     action = (
       <Button disabled>
         <FileCheck2 aria-hidden="true" />
@@ -330,6 +340,9 @@ export function FinalBar({
   }
 
   const carried = facts !== null && facts !== 'loading' ? facts.carried : [];
+  // What the PDF will print as not confirmed, so the person signs knowingly (owner, 2026-10-16).
+  const notConfirmed = notConfirmedGroups({ items: summary.openItems, failures: summary.openFailures });
+  const notConfirmedTotal = notConfirmed.reduce((total, group) => total + group.count, 0);
   return (
     <div
       data-slot="final-bar"
@@ -373,6 +386,20 @@ export function FinalBar({
               <strong>This cannot be undone.</strong> A change after sign-off needs a new revision of the drawings.
             </li>
           </ul>
+          {notConfirmedTotal > 0 && (
+            <section aria-labelledby="not-confirmed-title" data-slot="not-confirmed" className="flex flex-col gap-2 rounded-lg border border-border p-3 text-[13px] leading-5">
+              <p id="not-confirmed-title" className="font-medium text-foreground">
+                Will be printed as not confirmed by a person (<span className="num">{notConfirmedTotal}</span>)
+              </p>
+              <ul className="flex list-disc flex-col gap-1 pl-5 text-muted-foreground">
+                {notConfirmed.map((group) => (
+                  <li key={group.label}>
+                    {group.label}: <span className="num">{group.count}</span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
           {carried.length > 0 && (
             <section aria-label="Answers carried from an earlier revision" className="flex flex-col gap-2 rounded-lg border border-border p-3 text-[13px] leading-5">
               <p className="font-medium text-foreground">Answers carried from an earlier revision</p>

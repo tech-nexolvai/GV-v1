@@ -20,7 +20,6 @@ from app.review.approval import (
     ApprovalNotAuthorised,
     DriverFindingRequired,
     FindingOutsideReview,
-    UnaddressedReviewRequired,
     approve_package,
     request_changes,
 )
@@ -100,8 +99,10 @@ def test_approval_pins_the_server_selected_finding_rows(postgres_engine: Engine)
         ) == {first.id, second.id}
 
 
-def test_unaddressed_review_required_cannot_be_approved(postgres_engine: Engine) -> None:
-    """Input: REVIEW REQUIRED with no human action. Outcome: refusal, never silent approval."""
+def test_unaddressed_review_required_is_signed_as_not_confirmed(postgres_engine: Engine) -> None:
+    """Input: REVIEW REQUIRED with no human action. Outcome (owner decision 2026-10-16, every
+    question optional): sign-off goes through, and the result is signed with no answer recorded
+    for it, never as answered; the signed files print it "Not confirmed by a person"."""
     _upgrade(postgres_engine)
     factory = session_factory(postgres_engine)
     with factory.begin() as db:
@@ -109,8 +110,10 @@ def test_unaddressed_review_required_cannot_be_approved(postgres_engine: Engine)
         finding = _review_required_finding(db, revision)
         review = open_session(db, package_revision_id=revision.id, reviewer="anant")
 
-        with pytest.raises(UnaddressedReviewRequired, match=str(finding.id)):
-            approve_package(db, principal=reviewer(), review_session_id=review.id)
+        decision = approve_package(db, principal=reviewer(), review_session_id=review.id)
+
+        assert finding.id in decision.finding_ids
+        assert db.get(PackageRevision, revision.id).state == PackageState.APPROVED.value
 
 
 def test_an_explicit_action_addresses_review_required(postgres_engine: Engine) -> None:

@@ -11,7 +11,7 @@ from app.api.slot_rows import list_slot_rows
 from app.main import API_PREFIX
 from app.models import CheckRun, Finding, Package, PackageRevision, ReviewAction
 from app.models.review import ReviewActionKind
-from app.review.approval import UnaddressedReviewRequired, approve_package
+from app.review.approval import approval_readiness, approve_package
 from app.review.session import open_session, record_action
 from tests.api.test_review_api import _client, _finding, _revision, session
 from tests.api.test_slot_rows import _package_rows, _run_current_checks
@@ -71,13 +71,23 @@ def test_abstention_decision_needs_a_nonblank_note(
 
 
 @pytest.mark.parametrize("outcome", ["FAIL", "REVIEW_REQUIRED", "NOT_FOUND"])
-def test_each_unaddressed_outcome_blocks_approval(session: Session, outcome: str) -> None:
+def test_each_unaddressed_outcome_is_signed_as_not_confirmed(
+    session: Session, outcome: str
+) -> None:
+    """Every question is optional (owner decision 2026-10-16): an unanswered result no longer
+    refuses sign-off. It is signed with no answer recorded for it, never as answered."""
     finding = result(session, outcome)
     review = open_session(
         session, package_revision_id=finding.package_revision_id, reviewer="reviewer"
     )
-    with pytest.raises(UnaddressedReviewRequired, match=str(finding.id)):
-        approve_package(session, principal=reviewer(), review_session_id=review.id)
+    assert (
+        finding.id in approval_readiness(session, finding.package_revision_id).blocking_finding_ids
+    )
+    decision = approve_package(session, principal=reviewer(), review_session_id=review.id)
+    assert finding.id in decision.finding_ids
+    assert not session.scalars(
+        select(ReviewAction).where(ReviewAction.finding_id == finding.id)
+    ).all()
 
 
 @pytest.mark.parametrize("outcome", ["REVIEW_REQUIRED", "NOT_FOUND"])
@@ -161,7 +171,8 @@ def test_readiness_counts_current_findings_and_decrements_only_after_actions(
     client = _client(session, package.project_id)
     url = f"{API_PREFIX}/projects/{package.project_id}/packages/{package.id}/approval-readiness"
     body = client.get(url).json()
-    assert not body["can_approve"]
+    # Open for a person, but optional (owner decision 2026-10-16): sign-off is not locked by them.
+    assert body["can_approve"]
     assert body["blocking_findings"] == 2
     review = open_session(session, package_revision_id=revision.id, reviewer="reviewer")
     for item in session.scalars(select(Finding).where(Finding.package_revision_id == revision.id)):

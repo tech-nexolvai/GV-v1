@@ -2,8 +2,13 @@
 
 The service selects findings from PostgreSQL rather than accepting an approval manifest from the
 caller.  An approval therefore records the exact immutable finding rows that existed for the package
-revision at sign-off. FAIL, REVIEW_REQUIRED and NOT_FOUND each need an explicit review action before
-approval; silence is never treated as resolution. Confirming or dismissing an abstention needs a note.
+revision at sign-off. Every reviewer question is optional (owner decision 2026-10-16: "if he wants
+to add, he can; otherwise it just runs"): a FAIL, REVIEW_REQUIRED or NOT_FOUND nobody answered no
+longer holds sign-off. It is never treated as resolved either: it is frozen into the sign-off
+snapshot and printed "Not confirmed by a person" (`app/review/left_for_person.py`). Only system
+states hold sign-off: no results, a corrected result waiting for its re-run, a page waiting for a
+re-run, inputs changed after the last run, and a package not awaiting review. Confirming or
+dismissing an abstention still needs a note.
 
 Both decisions use :func:`app.lifecycle.states.transition`, the sole package-state writer.  That
 keeps approval unreachable from processing, failure and other side states.  Nothing here commits:
@@ -63,7 +68,6 @@ from app.review.no_countertop import (
     PagesBlockingSignOff,
     pages_blocking_sign_off,
     unchecked_sentence,
-    unconfirmed_sentence,
 )
 from app.review.requirements import BLOCKING_OUTCOMES, NOTE_OUTCOMES
 from app.review.session import complete_session
@@ -467,50 +471,61 @@ class ApprovalReadiness:
     can_approve: bool
     blocking_findings: int
     blocking_finding_ids: tuple[UUID, ...]
+    """The results still open for a person, a corrected one waiting for its re-run included. Since
+    the owner decision of 2026-10-16 only the re-run ones hold sign-off (`rerun_finding_ids`); the
+    rest are optional and printed "Not confirmed by a person" when signed unanswered."""
     reason: str | None
     unconfirmed_no_countertop_pages: tuple[int, ...] = ()
-    """Pages listed with no countertop that no reviewer confirmed yet (#1191): sign-off waits."""
+    """Pages listed with no countertop that no reviewer confirmed yet (#1191). Optional since
+    2026-10-16: printed "Not confirmed by a person" when signed unanswered."""
     unchecked_countertop_pages: tuple[int, ...] = ()
     """Pages that now need the reviewer but have no result on the live run yet (#1191)."""
     not_checked_finding_ids: tuple[UUID, ...] = ()
     """Checks that could not run and nobody settled (decision 2026-10-16): they no longer hold
     sign-off and are printed NOT CHECKED; the screen still offers to settle them (optional)."""
+    rerun_finding_ids: tuple[UUID, ...] = ()
+    """Corrected results waiting for the checks to run again: a system state, so sign-off waits."""
 
 
 def _readiness_reason(
     *,
     has_findings: bool,
-    blocked: tuple[UUID, ...],
+    rerun: tuple[UUID, ...],
     pages: PagesBlockingSignOff,
     inputs_changed: bool,
     revision: PackageRevision | None,
-    compare_open: int = 0,
 ) -> str | None:
-    """One plain sentence for the first thing that keeps sign-off from happening, or None."""
+    """One plain sentence for the first system state that keeps sign-off from happening, or None.
+
+    A question a person has not answered is never one of them (owner decision 2026-10-16): an
+    open result, a page to decide and an architect question are optional, and printed "Not
+    confirmed by a person" when signed unanswered."""
     if not has_findings:
         return "There are no findings to sign off. Run the checks first."
-    if blocked:
-        return f"{len(blocked)} findings still need a valid reviewer decision or a check rerun after correction. Add a note when required."
-    if compare_open:
+    if rerun:
         return (
-            f"{compare_open} {'number' if compare_open == 1 else 'numbers'} compared with the "
-            "architect still need a person: agree or say it is not a difference, or check it by "
-            "hand."
+            f"{len(rerun)} corrected {'result waits' if len(rerun) == 1 else 'results wait'} for "
+            "the checks to run again. Run the checks before signing off."
         )
     if pages.unchecked:
         return unchecked_sentence(pages.unchecked)
     if inputs_changed:
         return INPUTS_CHANGED_NEEDS_RERUN
-    if pages.unconfirmed:
-        return unconfirmed_sentence(pages.unconfirmed)
     if revision is None or revision.state != PackageState.AWAITING_REVIEW.value:
         return "The package is not awaiting review."
     return None
 
 
+def _rerun(blocked: tuple[UUID, ...], records: DecisionRecords) -> tuple[UUID, ...]:
+    """Of the open results, the corrected ones waiting for their re-run (a system state)."""
+    corrected = set(records.corrected)
+    return tuple(identity for identity in blocked if identity in corrected)
+
+
 def _compare_open(db: Session, revision_ids: list[UUID]) -> dict[UUID, int]:
     """For each revision, the numbers compared with the architect that still need a person (#1418):
-    one statement for any number of revisions when none has a compare record (#1426)."""
+    one statement for any number of revisions when none has a compare record (#1426). Shown as
+    optional questions; since 2026-10-16 they no longer hold sign-off."""
     from app.review.architect_compare import open_architect_compare_many
 
     # The old direct compare counts only while `GV_ARCH_COMPARE_RECORDS` is on. The AI page
@@ -542,27 +557,21 @@ def readiness_and_decisions(
     findings = _findings(db, revision_id)
     records = decision_records(db, [finding.id for finding in findings])
     blocked, not_checked = _open_split(findings, records, when=utc_now())
+    rerun = _rerun(blocked, records)
     revision = db.get(PackageRevision, revision_id)
     if pages is None:
         pages = pages_blocking_sign_off(db, [revision_id])[revision_id]
+    # `compare_open` is accepted for the screen's call, but an architect question no longer holds
+    # sign-off (owner decision 2026-10-16).
+    del compare_open
     reason = _readiness_reason(
         has_findings=bool(findings),
-        blocked=blocked,
+        rerun=rerun,
         pages=pages,
         inputs_changed=bool(findings)
-        and not blocked
+        and not rerun
         and revision_id in _revisions_with_unchecked_inputs(db, [revision_id]),
         revision=revision,
-        # Like `inputs_changed`, read only when it can be the reason (#1426).
-        compare_open=(
-            compare_open
-            if compare_open is not None
-            else (
-                _compare_open(db, [revision_id]).get(revision_id, 0)
-                if findings and not blocked
-                else 0
-            )
-        ),
     )
     return (
         ApprovalReadiness(
@@ -574,6 +583,7 @@ def readiness_and_decisions(
             pages.unconfirmed,
             pages.unchecked,
             not_checked,
+            rerun,
         ),
         records,
     )
@@ -612,24 +622,17 @@ def approval_readiness_many(db: Session, revision_ids: list[UUID]) -> dict[UUID,
         revision_id: _unaddressed_from_records(tuple(findings), records, when=when)
         for revision_id, findings in findings_by_revision.items()
     }
-    # One statement for the whole page, and only for the revisions it can be the reason for.
-    can_wait_on_compare = [
-        revision_id
-        for revision_id, findings in findings_by_revision.items()
-        if findings and not blocked_by_revision[revision_id]
-    ]
-    compare_open = _compare_open(db, can_wait_on_compare) if can_wait_on_compare else {}
     result: dict[UUID, ApprovalReadiness] = {}
     for revision_id, findings in findings_by_revision.items():
         blocked = blocked_by_revision[revision_id]
+        rerun = _rerun(blocked, records)
         pages = pages_by_revision.get(revision_id, PagesBlockingSignOff())
         reason = _readiness_reason(
             has_findings=bool(findings),
-            blocked=blocked,
+            rerun=rerun,
             pages=pages,
             inputs_changed=revision_id in unchecked,
             revision=revisions.get(revision_id),
-            compare_open=compare_open.get(revision_id, 0),
         )
         result[revision_id] = ApprovalReadiness(
             revision_id,
@@ -639,6 +642,7 @@ def approval_readiness_many(db: Session, revision_ids: list[UUID]) -> dict[UUID,
             reason,
             pages.unconfirmed,
             pages.unchecked,
+            rerun_finding_ids=rerun,
         )
     return result
 
@@ -650,7 +654,10 @@ def approve_package(
     review_session_id: UUID,
     carried_answers_confirmed: bool = False,
 ) -> ApprovalDecision:
-    """Approve the server-selected finding set after every blocking result was addressed.
+    """Approve the server-selected finding set. Only system states refuse (owner decision
+    2026-10-16): a corrected result waiting for its re-run, a page waiting for a re-run, inputs
+    changed after the last run. A question nobody answered is signed as "Not confirmed by a
+    person" (the snapshot freezes it, `app/review/left_for_person.py`), never as resolved.
 
     When a result rests on an answer carried from an earlier revision (#1180), the signer must say
     those answers still apply (`carried_answers_confirmed`); the confirmation is audited against
@@ -664,11 +671,11 @@ def approve_package(
             "this package revision has no findings to approve; an empty result is not a clean review"
         )
 
-    unresolved = _unaddressed(db, findings)
-    if unresolved:
-        listed = ", ".join(str(finding_id) for finding_id in unresolved)
+    rerun = _rerun(_unaddressed(db, findings), decision_records(db, [f.id for f in findings]))
+    if rerun:
+        listed = ", ".join(str(finding_id) for finding_id in rerun)
         raise UnaddressedReviewRequired(
-            f"FAIL, REVIEW REQUIRED and NOT FOUND findings must each be explicitly addressed before approval: {listed}"
+            f"Corrected results wait for the checks to run again before sign-off: {listed}"
         )
     pages = pages_blocking_sign_off(db, [review.package_revision_id])[review.package_revision_id]
     if pages.unchecked:
@@ -677,9 +684,8 @@ def approve_package(
         db, [review.package_revision_id]
     ):
         raise UnaddressedReviewRequired(INPUTS_CHANGED_NEEDS_RERUN)
-    if pages.unconfirmed:
-        # A page every AI said has no countertop is signed past only once a reviewer confirmed it.
-        raise NoCountertopPagesUnconfirmed(unconfirmed_sentence(pages.unconfirmed))
+    # A page listed with no countertop that nobody confirmed no longer refuses (owner decision
+    # 2026-10-16): it is printed "Not confirmed by a person".
     # Answers carried from an earlier revision (#1180), and confirmations that a page has no
     # countertop carried from an earlier revision's identical page (#1191): the signer says they
     # still apply. A carried "There is a countertop" needs nothing: it already forces a decision.

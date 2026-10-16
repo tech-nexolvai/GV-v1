@@ -244,19 +244,24 @@ describe('app shell', () => {
     expect(document.querySelector('[data-slot="sidebar"][data-state]')?.getAttribute('data-state')).toBe('expanded');
   });
 
-  it('lists recent reviews with their status and how many need you', async () => {
+  it('lists recent reviews with their status and how many questions are optional (owner, 2026-10-16)', async () => {
     render(<Shell openPackage={null} />);
     const sidebar = document.querySelector('[data-slot="sidebar"]') as HTMLElement;
     expect(await within(sidebar).findByText('Synthetic vendor A')).toBeTruthy();
-    await waitFor(() => expect(sidebar.querySelector('[data-slot="need-you"]')?.textContent).toBe('4 items need you')); // with its noun (#1179)
+    await waitFor(() => expect(sidebar.querySelector('[data-slot="need-you"]')?.textContent).toBe('4 optional'));
+    // Grey, never the amber "needs your decision" colour or its glyph.
+    expect(sidebar.querySelector('[data-slot="need-you"]')?.className).toContain('text-muted-foreground');
+    expect(sidebar.querySelector('[data-slot="need-you"]')?.className).not.toContain('outcome-review');
+    expect(sidebar.textContent).not.toMatch(/need you|needs you/i);
     expect(document.querySelector('[data-status="APPROVED"]')).not.toBeNull();
   });
 
-  it('the open review says only that it needs you: its number is on its header and tab (#1126)', async () => {
+  it('the open review shows its optional count in grey too, never an amber "Needs you" (owner, 2026-10-16)', async () => {
     render(<Shell />);
     const sidebar = document.querySelector('[data-slot="sidebar"]') as HTMLElement;
-    await waitFor(() => expect(sidebar.querySelector('[data-slot="need-you"]')?.textContent).toBe('Needs you'));
-    expect(sidebar.querySelector('[data-slot="need-you"] [data-outcome-icon="REVIEW_REQUIRED"]')).not.toBeNull();
+    await waitFor(() => expect(sidebar.querySelector('[data-slot="need-you"]')?.textContent).toMatch(/^\d+ optional$/));
+    expect(sidebar.querySelector('[data-slot="need-you"] [data-outcome-icon="REVIEW_REQUIRED"]')).toBeNull();
+    expect(sidebar.textContent).not.toMatch(/needs you/i);
   });
 
   it('the open review\'s badge says "Restarting" with its header while its reading restarts; other reviews keep "Stopped" (#1249)', async () => {

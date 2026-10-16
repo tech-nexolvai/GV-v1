@@ -582,7 +582,12 @@ class ReviewHeaderOut(BaseModel):
     checked_by_you: int = Field(
         description="Items, failures and not-checked results a person decided."
     )
-    open: int = Field(description="Items and failures still waiting for a person.")
+    open: int = Field(
+        description=(
+            "Items and failures no person answered yet. Optional (owner decision 2026-10-16): "
+            "they never hold sign-off; signed unanswered, each is printed as not confirmed."
+        )
+    )
     failures: int
     not_checked: int
     rechecking: int = Field(description="Items waiting for the next check run.")
@@ -591,8 +596,8 @@ class ReviewHeaderOut(BaseModel):
     architect_compare_counts: ArchitectCompareCountsOut | None = Field(
         default=None,
         description=(
-            "How many of `architect_compare` came out each way, and how many still need a person "
-            "(sign-off waits for them). `None` when the compare has not run."
+            "How many of `architect_compare` came out each way, and how many a person may still "
+            "answer (optional). `None` when the compare has not run."
         ),
     )
 

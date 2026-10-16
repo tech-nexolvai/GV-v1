@@ -279,20 +279,22 @@ def test_a_persons_answer_is_its_own_row_and_sign_off_waits_until_each_is_answer
     assert session.scalars(select(ArchitectCompareAnswer)).all()
 
 
-def test_sign_off_says_the_compared_numbers_need_a_person() -> None:
+def test_compared_numbers_left_for_a_person_no_longer_hold_sign_off() -> None:
+    """Every question is optional (owner decision 2026-10-16): numbers compared with the architect
+    that nobody answered are printed as not confirmed, never a reason to wait."""
+    from app.models.package import PackageRevision
     from app.review.approval import _readiness_reason
     from app.review.no_countertop import PagesBlockingSignOff
 
     reason = _readiness_reason(
         has_findings=True,
-        blocked=(),
+        rerun=(),
         pages=PagesBlockingSignOff(),
         inputs_changed=False,
-        revision=None,
-        compare_open=2,
+        revision=PackageRevision(state="AWAITING_REVIEW"),
     )
 
-    assert reason is not None and "2 numbers compared with the architect" in reason
+    assert reason is None
 
 
 def test_the_worker_stores_every_architect_dimension_once_and_never_twice(

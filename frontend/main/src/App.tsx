@@ -38,7 +38,7 @@ export default function App() {
   const [reviewTitle, setReviewTitle] = useState<{ packageId: string; title: string; revision: number | null } | null>(null);
   // The drawing set whose chats are open, named by the chat page once its chat has loaded (#1464).
   const [chatName, setChatName] = useState<{ packageId: string; name: string } | null>(null);
-  // The open review's newest "need you" count, so the sidebar's copy of it is never stale.
+  // The open review's newest open count (shown as "N optional"), so the sidebar's copy is never stale.
   const [liveNeedYou, setLiveNeedYou] = useState<{ packageId: string; count: number } | null>(null);
   // Whether the open review's failed reading is restarting now (`reading.retrying`, #1249), so the
   // sidebar's badge says the same as the review's header.

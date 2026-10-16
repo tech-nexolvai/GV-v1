@@ -16,7 +16,7 @@ interface AppShellProps {
   activePackage: string | null;
   theme: Theme;
   sidebarRefreshKey: number;
-  /** The open review's newest "need you" count, so the sidebar never shows a stale one for it. */
+  /** The open review's newest open count (shown as "N optional"), so the sidebar never shows a stale one. */
   liveNeedYou: { packageId: string; count: number } | null;
   /** Whether the open review's failed reading is restarting now, so its sidebar badge says so (#1249). */
   liveRestarting?: { packageId: string; restarting: boolean } | null;
