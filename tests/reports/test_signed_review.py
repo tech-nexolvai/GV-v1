@@ -172,3 +172,99 @@ def test_checked_by_hand_wrong_prints_wrong_never_ok_or_accepted(outcome: str) -
     assert other.wording(outcome).startswith("Not checked: dismissed as not checkable")
     confirmed = wrong.model_copy(update={"action": "confirm"})
     assert confirmed.checked_wrong_by_hand is False
+
+
+def _cover_review() -> SignedReview:
+    from app.review.signed_record import CHECKED_WRONG_NOTE
+
+    at = datetime(2026, 1, 1, tzinfo=UTC)
+
+    def finding(rule_id: str, outcome: str, note: str | None) -> SignedReviewFinding:
+        actions = (
+            ()
+            if note is None
+            else (
+                ReviewDisposition(
+                    action_id=uuid4(), action="dismiss", reviewer="Made Up", at=at, note=note
+                ),
+            )
+        )
+        return SignedReviewFinding(
+            finding_id=uuid4(), rule_id=rule_id, outcome=outcome, actions=actions
+        )
+
+    return SignedReview(
+        approval_id=uuid4(),
+        approved_by="Made Up",
+        approved_at=at,
+        findings=(
+            finding("CHECK-FAIL", "FAIL", None),
+            finding("CHECK-HAND", "REVIEW_REQUIRED", CHECKED_WRONG_NOTE),
+            finding("CHECK-PASS", "PASS", None),
+            finding("CT-ARCH-WIDTH-001", "NO_APPLICABLE_RULE", None),
+        ),
+    )
+
+
+def _cover_text(content: bytes) -> str:
+    from io import BytesIO
+
+    from pypdf import PdfReader
+
+    return " ".join(
+        " ".join((page.extract_text() or "") for page in PdfReader(BytesIO(content)).pages).split()
+    )
+
+
+def test_an_older_snapshots_cover_is_drawn_exactly_as_before() -> None:
+    from reports.signed_review import review_pdf
+
+    review = _cover_review()
+    assert review_pdf(review) == review_pdf(review, None)
+    text = _cover_text(review_pdf(review))
+    assert "Will be clouded as wrong" not in text
+    assert "CT-ARCH-WIDTH-001" in text
+
+
+def test_a_format_3_cover_counts_wrong_by_hand_and_lists_the_architect_compare() -> None:
+    """Final QA 2026-10-16: the final cover counts a result checked by hand as wrong under "Will
+    be clouded as wrong", lists the compare with every difference as the draft does, and leaves the
+    old compare's row out (said once) while it was switched off."""
+    from reports.redline import (
+        AiReviewCounts,
+        ArchitectCompare,
+        ArchitectDifference,
+        review_cover_for,
+    )
+    from reports.signed_review import review_pdf
+
+    compare = ArchitectCompare(
+        counts=AiReviewCounts(same=3, different=1, not_shown=2, unsure=0),
+        different=(
+            ArchitectDifference(
+                architect_text='36"',
+                vendor_text='35 1/2"',
+                subject="Page 2",
+                unplaced_reason="made up",
+                measures="overall width",
+                ai_read=True,
+            ),
+        ),
+    )
+    cover = review_cover_for(
+        compare,
+        left_out_rules=frozenset({"CT-ARCH-WIDTH-001"}),
+        left_out_note="1 result(s) of the old architect check left out: it is switched off.",
+    )
+    text = _cover_text(review_pdf(_cover_review(), cover))
+
+    assert "Will be clouded as wrong (2)" in text
+    assert "CHECK-FAIL" in text and "CHECK-HAND: Checked by reviewer: WRONG" in text
+    assert "Compared with the architect (AI read) (1 different)" in text
+    assert (
+        "Compared with the architect (AI read): 3 same · 1 different · 2 not shown · 0 unsure"
+        in text
+    )
+    assert 'A1 Needs: 36" (per architect: overall width) — Vendor drew: 35 1/2" — Page 2' in text
+    assert "CT-ARCH-WIDTH-001" not in text
+    assert "left out: it is switched off" in text

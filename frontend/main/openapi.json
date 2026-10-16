@@ -5719,6 +5719,12 @@
             "title": "Actions",
             "type": "array"
           },
+          "checked_wrong_by_hand": {
+            "default": false,
+            "description": "True when the standing answer is \"Checked by hand: wrong\" (#1358), read from the signed record's own mark (`ReviewDisposition.checked_wrong_by_hand`), never from words. The screen then says \"Checked by hand: WRONG\"; the result stays as recorded.",
+            "title": "Checked Wrong By Hand",
+            "type": "boolean"
+          },
           "countertop": {
             "anyOf": [
               {
@@ -7792,6 +7798,12 @@
             "description": "The check in plain words.",
             "title": "Check",
             "type": "string"
+          },
+          "checked_wrong_by_hand": {
+            "default": false,
+            "description": "True when the standing answer is \"Checked by hand: wrong\" (#1358), read from the signed record's own mark (`ReviewDisposition.checked_wrong_by_hand`), never from words. The screen then says \"Checked by hand: WRONG\"; the result stays as recorded.",
+            "title": "Checked Wrong By Hand",
+            "type": "boolean"
           },
           "countertop": {
             "anyOf": [
@@ -11443,6 +11455,12 @@
               }
             ],
             "title": "Candidate Id"
+          },
+          "checked_wrong_by_hand": {
+            "default": false,
+            "description": "True when the standing answer is \"Checked by hand: wrong\" (#1358), read from the signed record's own mark (`ReviewDisposition.checked_wrong_by_hand`), never from words. The screen then says \"Checked by hand: WRONG\"; the result stays as recorded.",
+            "title": "Checked Wrong By Hand",
+            "type": "boolean"
           },
           "countertop": {
             "anyOf": [

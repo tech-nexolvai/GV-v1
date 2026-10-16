@@ -4986,6 +4986,12 @@ export interface components {
         FailureOut: {
             /** Actions */
             actions: string[];
+            /**
+             * Checked Wrong By Hand
+             * @description True when the standing answer is "Checked by hand: wrong" (#1358), read from the signed record's own mark (`ReviewDisposition.checked_wrong_by_hand`), never from words. The screen then says "Checked by hand: WRONG"; the result stays as recorded.
+             * @default false
+             */
+            checked_wrong_by_hand: boolean;
             countertop?: components["schemas"]["CountertopItemRefOut"] | null;
             /** Decided At */
             decided_at?: string | null;
@@ -5922,6 +5928,12 @@ export interface components {
              * @description The check in plain words.
              */
             check: string;
+            /**
+             * Checked Wrong By Hand
+             * @description True when the standing answer is "Checked by hand: wrong" (#1358), read from the signed record's own mark (`ReviewDisposition.checked_wrong_by_hand`), never from words. The screen then says "Checked by hand: WRONG"; the result stays as recorded.
+             * @default false
+             */
+            checked_wrong_by_hand: boolean;
             countertop?: components["schemas"]["CountertopItemRefOut"] | null;
             /** Decided At */
             decided_at?: string | null;
@@ -7830,6 +7842,12 @@ export interface components {
             cabinets?: components["schemas"]["CabinetRowOut"][];
             /** Candidate Id */
             candidate_id?: string | null;
+            /**
+             * Checked Wrong By Hand
+             * @description True when the standing answer is "Checked by hand: wrong" (#1358), read from the signed record's own mark (`ReviewDisposition.checked_wrong_by_hand`), never from words. The screen then says "Checked by hand: WRONG"; the result stays as recorded.
+             * @default false
+             */
+            checked_wrong_by_hand: boolean;
             countertop?: components["schemas"]["CountertopItemRefOut"] | null;
             /** Decided At */
             decided_at?: string | null;

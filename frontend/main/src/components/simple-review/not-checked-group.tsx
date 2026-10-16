@@ -4,12 +4,12 @@ import { Check, ChevronRight, Loader2 } from 'lucide-react';
 import type { JobValueSuggestion, NotCheckedItem, NotCheckedSetting } from '@/api/review-items';
 import { formatRoute } from '@/app/route';
 import { cn } from '@/lib/utils';
-import { inchValue, jobValuesWaiting, whereWord } from '@/lib/review-items';
+import { checkedWrongByHand, inchValue, jobValuesWaiting, whereWord } from '@/lib/review-items';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
 import type { SaveError } from './failures-strip';
-import { PageTag } from './words';
+import { PageTag, WrongByHand } from './words';
 
 /**
  * The checks that never ran (the reader they need is off). Quiet and closed by default: they are not
@@ -132,6 +132,7 @@ export function NotCheckedGroup({
                 </span>
                 {item.settings && item.settings.length > 0 && <SettingLinks settings={item.settings} />}
               </span>
+              {item.status === 'done' && checkedWrongByHand(item) && <WrongByHand decidedBy={item.decided_by ?? null} className="shrink-0" />}
               <PageTag page={item.page} />
             </li>
           ))}

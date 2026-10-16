@@ -48,6 +48,7 @@ from reports.redline import (
     ArchitectCompare,
     ArchitectCompareCounts,
     ArchitectDifference,
+    LabelLayout,
     RedlineFinding,
     RedlinePackage,
     RedlinePage,
@@ -57,7 +58,7 @@ from reports.redline import (
     VendorClearance,
     render_redline,
 )
-from reports.signed_review import SignedReview
+from reports.signed_review import ReviewCover, SignedReview
 from storage.hashing import ArtifactCorrupt, IntegrityRecordMissing
 from storage.store import ArtifactStore, StoredArtifact
 from verdict.outcomes import Outcome, Severity, is_decision
@@ -314,6 +315,8 @@ def render_evidence_grounded_redline(
     reviewer_marks: Sequence[ReviewerMark] | None = None,
     not_checked: frozenset[UUID] = frozenset(),
     architect: ArchitectCompare | None = None,
+    label_layout: LabelLayout = LabelLayout.AS_BEFORE,
+    review_cover: ReviewCover | None = None,
 ) -> RedlineOutput:
     """Render one internal redline only when a finding has a typed, stored location.
 
@@ -368,6 +371,8 @@ def render_evidence_grounded_redline(
             countertop_labels=countertop_labels,
             reviewer_marks=reviewer_marks,
             architect=architect,
+            label_layout=label_layout,
+            review_cover=review_cover,
         ),
         None,
     )
@@ -418,6 +423,8 @@ def render_draft_redline(
             changed_values=changed_values,
             reviewer_marks=reviewer_marks,
             architect=architect,
+            # The draft is new each time: always tags only (QA 2026-10-16).
+            label_layout=LabelLayout.TAGS,
         ),
         None,
     )

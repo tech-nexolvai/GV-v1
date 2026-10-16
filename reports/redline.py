@@ -79,7 +79,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from io import BytesIO
-from typing import Final
+from typing import Any, Final
 from uuid import UUID
 
 from pypdf import PageObject, PdfReader, PdfWriter
@@ -96,7 +96,7 @@ from reportlab.pdfgen.canvas import Canvas  # type: ignore[import-untyped]
 
 from evidence.coordinates import PageTransform, PdfPoint, StoredPoint
 from evidence.polygon import Polygon
-from reports.signed_review import SignedReview, with_review_pdf
+from reports.signed_review import ReviewCover, SignedReview, with_review_pdf
 from storage.hashing import content_key, sha256_stream
 from storage.store import ArtifactStore, StoredArtifact
 from verdict.finding import Finding
@@ -112,6 +112,20 @@ LISTING_FONT_SIZE: Final = 9.0
 #: Label text drawn beside a mark on the drawing, in points. Small on purpose: the drawing has to
 #: stay readable underneath, and the full text of every finding is on the summary pages anyway.
 MARK_FONT_SIZE: Final = 7.0
+
+
+class LabelLayout(StrEnum):
+    """How a mark is named on the drawing (QA 2026-10-16).
+
+    * `AS_BEFORE`: the words beside the cloud, as every cloud PDF before the final QA was drawn
+      (a sign-off snapshot of format 1 or 2 is drawn this way, byte for byte).
+    * `TAGS`: only the short tag (01, A1, R1) beside the cloud, in a free spot off the page's own
+      text, the other clouds and the tags already placed; the full words are in the margin note
+      and the summary. The draft and every snapshot of format 3 or later.
+    """
+
+    AS_BEFORE = "as_before"
+    TAGS = "tags"
 
 
 class ReportMode(StrEnum):
@@ -532,6 +546,32 @@ class ArchitectCompare:
             raise TypeError("different must hold ArchitectDifference values")
 
 
+def review_cover_for(
+    architect: ArchitectCompare | None,
+    *,
+    left_out_rules: frozenset[str] = frozenset(),
+    left_out_note: str | None = None,
+) -> ReviewCover:
+    """The signed cover's additions (format 3): the compare section as the draft's front page
+    words it, every difference listed, and the rules left out. The cover is plain Helvetica,
+    which has no ✗: the heading says "different" instead."""
+    if architect is None:
+        return ReviewCover(None, (), left_out_rules, left_out_note)
+    ai = isinstance(architect.counts, AiReviewCounts)
+    title = (
+        f"Compared with the architect{' (AI read)' if ai else ''} "
+        f"({len(architect.different)} different)"
+    )
+    lines = [architect.counts.line, *([AI_REVIEW_NOTE] if ai else [])]
+    if not architect.different:
+        lines.append("None. No architect dimension was found different from the vendor's.")
+    lines.extend(
+        f"A{number} {item.words.removeprefix(f'{ARCHITECT_DIFFERENT_GLYPH} ')} \u2014 {item.subject}"
+        for number, item in enumerate(architect.different, start=1)
+    )
+    return ReviewCover(title, tuple(lines), left_out_rules, left_out_note)
+
+
 @dataclass(frozen=True, slots=True)
 class _ArchitectPlaced:
     """A "different" result, its number (A1, A2, ...) and the polygon its cloud is drawn at."""
@@ -781,6 +821,8 @@ def render_redline(
     countertop_labels: Sequence[str] = (),
     reviewer_marks: Sequence[ReviewerMark] | None = None,
     architect: ArchitectCompare | None = None,
+    label_layout: LabelLayout = LabelLayout.AS_BEFORE,
+    review_cover: ReviewCover | None = None,
 ) -> StoredArtifact:
     """Overlay the findings onto the source pages and store the result.
 
@@ -828,6 +870,8 @@ def render_redline(
         raise TypeError("reviewer_marks must be a sequence of ReviewerMark values")
     if architect is not None and not isinstance(architect, ArchitectCompare):
         raise TypeError("architect must be an ArchitectCompare")
+    if not isinstance(label_layout, LabelLayout):
+        raise TypeError("label_layout must be a LabelLayout")
 
     if clearance is not None and not isinstance(clearance, VendorClearance):
         raise TypeError("clearance must be a VendorClearance")
@@ -869,11 +913,12 @@ def render_redline(
         ),
         architect_placed,
         None if architect is None else _ArchitectListing(architect, architect_unplaced),
+        label_layout,
     )
     if signed_review is not None:
         if clearance is None or signed_review.approval_id != clearance.approval_id:
             raise VendorApprovalUnavailable("signed redline review does not match its approval")
-        document = with_review_pdf(document, signed_review)
+        document = with_review_pdf(document, signed_review, review_cover)
 
     digest, _ = sha256_stream(BytesIO(document))
     key = content_key(f"redlines/{package.package_revision_id}/{mode.value}", digest, suffix=".pdf")
@@ -1171,6 +1216,7 @@ def _compose(
     reviewer_listing: _ReviewerListing | None = None,
     architect_placed: dict[int, list[_ArchitectPlaced]] | None = None,
     architect_listing: _ArchitectListing | None = None,
+    label_layout: LabelLayout = LabelLayout.AS_BEFORE,
 ) -> bytes:
     """Merge the overlays onto the original pages and append the summary pages.
 
@@ -1230,6 +1276,17 @@ def _compose(
                 placements[len(ordered) : after_reviewer],
                 architect_ordered,
                 placements[after_reviewer:],
+                (
+                    _Ink(
+                        page_ink(
+                            package.source_pdf,
+                            index,
+                            _sheet(entry, text_angle(entry.transform.rotation)),
+                        )
+                    )
+                    if label_layout is LabelLayout.TAGS
+                    else None
+                ),
             )
             _append_overlay(writer, page, overlay, expanded)
 
@@ -1382,8 +1439,12 @@ def _overlay(
     reviewer_placements: Sequence[tuple[int, Decimal, tuple[str, ...]]] = (),
     architect: Sequence[_ArchitectPlaced] = (),
     architect_placements: Sequence[tuple[int, Decimal, tuple[str, ...]]] = (),
+    ink: _Ink | None = None,
 ) -> PageObject:
-    """Build the transparent vector mark and callout page."""
+    """Build the transparent vector mark and callout page.
+
+    `ink` (the page's own drawing, `page_ink`) switches the drawing to tags only
+    (`LabelLayout.TAGS`); `None` draws the labels exactly as before."""
     left, bottom, right, top = expanded[0]
     canvas, buffer = _canvas(right - left, top - bottom)
     canvas.translate(float(-left), float(-bottom))
@@ -1392,10 +1453,30 @@ def _overlay(
 
     sheet = _sheet(entry, angle)
     taken: list[tuple[float, float, float, float]] = []
+    tags: _Tags | None = None
+    if ink is not None:
+        tags = _Tags(
+            sheet,
+            angle,
+            ink.page,
+            tuple(
+                _turned_box(polygon_pdf_points(polygon, entry.transform), angle, pad)
+                for polygon, pad in (
+                    *((mark.polygon, _CLOUD_REACH) for mark in marks),
+                    *((placed.polygon, _CLOUD_REACH) for placed in architect),
+                    *((item.polygon, _FRAME_REACH) for item in reviewer),
+                )
+            ),
+        )
     for index, (mark, (column, cursor, lines)) in enumerate(
         zip(marks, placements, strict=True), start=1
     ):
-        _draw_mark(canvas, mark, entry.transform, angle, index, sheet, taken)
+        if tags is None:
+            _draw_mark(canvas, mark, entry.transform, angle, index, sheet, taken)
+        else:
+            points = polygon_pdf_points(mark.polygon, entry.transform)
+            _draw_cloud(canvas, points, _style(mark.finding))
+            tags.draw(canvas, points, _CLOUD_REACH, f"{index:02d}", _style(mark.finding).stroke)
         u = visible_width + column * CALLOUT_COLUMN_WIDTH + CALLOUT_MARGIN
         x, y = _visual_point(entry, u, cursor)
         style = _style(mark.finding)
@@ -1418,7 +1499,12 @@ def _overlay(
         canvas.restoreState()
 
     for placed, (column, cursor, lines) in zip(architect, architect_placements, strict=True):
-        _draw_architect(canvas, placed, entry.transform, angle, sheet, taken)
+        if tags is None:
+            _draw_architect(canvas, placed, entry.transform, angle, sheet, taken)
+        else:
+            points = polygon_pdf_points(placed.polygon, entry.transform)
+            _draw_cloud(canvas, points, ARCHITECT_STYLE)
+            tags.draw(canvas, points, _CLOUD_REACH, f"A{placed.number}", ARCHITECT_STYLE.stroke)
         u = visible_width + column * CALLOUT_COLUMN_WIDTH + CALLOUT_MARGIN
         x, y = _visual_point(entry, u, cursor)
         heading = _heading_lines(f"A{placed.number}  {placed.item.words}", "Courier-Bold")
@@ -1437,7 +1523,14 @@ def _overlay(
 
     reviewer_taken: list[tuple[Decimal, Decimal, Decimal, Decimal]] = []
     for item, (column, cursor, lines) in zip(reviewer, reviewer_placements, strict=True):
-        _draw_reviewer_mark(canvas, item, entry, angle, reviewer_taken)
+        if tags is None:
+            _draw_reviewer_mark(canvas, item, entry, angle, reviewer_taken)
+        else:
+            points = polygon_pdf_points(item.polygon, entry.transform)
+            _draw_reviewer_frame(canvas, points, _REVIEWER_STROKES[item.mark.kind])
+            tags.draw(
+                canvas, points, _FRAME_REACH, f"R{item.number}", _REVIEWER_STROKES[item.mark.kind]
+            )
         u = visible_width + column * CALLOUT_COLUMN_WIDTH + CALLOUT_MARGIN
         x, y = _visual_point(entry, u, cursor)
         heading = _heading_lines(f"R{item.number}  {item.mark.text}", "Helvetica-Bold")
@@ -1798,6 +1891,207 @@ def _draw_architect(
     canvas.restoreState()
 
 
+def _draw_reviewer_frame(
+    canvas: Canvas, points: Sequence[PdfPoint], stroke: tuple[float, float, float]
+) -> None:
+    """A person's mark: a dotted frame around the region (never a cloud, which is a check's)."""
+    left = min(float(point.x) for point in points) - 3
+    right = max(float(point.x) for point in points) + 3
+    bottom = min(float(point.y) for point in points) - 3
+    top = max(float(point.y) for point in points) + 3
+    canvas.saveState()
+    canvas.setStrokeColorRGB(*stroke)
+    canvas.setLineWidth(0.9)
+    canvas.setDash(1, 2)
+    canvas.rect(left, bottom, right - left, top - bottom, stroke=1, fill=0)
+    canvas.restoreState()
+
+
+# ---------------------------------------------------------------------------
+# Tags only (`LabelLayout.TAGS`, QA 2026-10-16)
+# ---------------------------------------------------------------------------
+
+#: How far a cloud's scallops reach past its evidence polygon (8 of padding and a 5 radius).
+_CLOUD_REACH: Final = 13.0
+
+#: How far a person's dotted frame reaches past its region.
+_FRAME_REACH: Final = 3.0
+
+#: The tag's size on the drawing, and the gap kept between a tag and its cloud.
+TAG_FONT_SIZE: Final = 7.0
+_TAG_GAP: Final = 1.5
+
+
+def _turned_box(points: Sequence[PdfPoint], angle: int, pad: float) -> _Box:
+    """The box around `points`, `pad` points out, in the page's visible (turned) frame."""
+    inverse = (360 - angle) % 360
+    turned = [_turn(point.x, point.y, inverse) for point in points]
+    return (
+        float(min(x for x, _ in turned)) - pad,
+        float(min(y for _, y in turned)) - pad,
+        float(max(x for x, _ in turned)) + pad,
+        float(max(y for _, y in turned)) + pad,
+    )
+
+
+#: The scale the page is drawn at to find its ink (pixels per point), and how dark a pixel must
+#: be to count as ink.
+_INK_SCALE: Final = 2.0
+_INK_DARK: Final = 170
+
+
+@dataclass(frozen=True, slots=True)
+class PageInk:
+    """The page's own drawing, as dark pixels, to keep a tag off its words and lines.
+
+    Drawn from the source page (pypdfium2), so it sees every mark the page makes: real text, text
+    drawn as pen strokes, dimension lines and hatching. Only used to choose where a tag goes; it
+    decides nothing."""
+
+    image: Any
+    sheet: _Box
+
+    def cost(self, box: _Box) -> int:
+        """How many dark pixels of the page are under `box` (in the turned frame)."""
+        height = self.sheet[3] - self.sheet[1]
+        left = int((box[0] - self.sheet[0]) * _INK_SCALE)
+        right = int((box[2] - self.sheet[0]) * _INK_SCALE) + 1
+        top = int((height - (box[3] - self.sheet[1])) * _INK_SCALE)
+        bottom = int((height - (box[1] - self.sheet[1])) * _INK_SCALE) + 1
+        width, tall = self.image.size
+        left, right = max(0, left), min(width, right)
+        top, bottom = max(0, top), min(tall, bottom)
+        if right <= left or bottom <= top:
+            return 0
+        region = self.image.crop((left, top, right, bottom))
+        return int(sum(region.histogram()[:_INK_DARK]))
+
+
+def page_ink(source_pdf: bytes, index: int, sheet: _Box) -> PageInk | None:
+    """Page `index` drawn in grey, its visible sheet (`_sheet`) top-left at the image's. `None` when
+    the page cannot be drawn: tags are then kept off the clouds and each other only."""
+    import pypdfium2 as pdfium  # type: ignore[import-untyped]
+
+    try:
+        document = pdfium.PdfDocument(source_pdf)
+        try:
+            image = document[index].render(scale=_INK_SCALE, grayscale=True).to_pil().convert("L")
+        finally:
+            document.close()
+    except Exception:  # noqa: BLE001 - placement help only; a page that cannot be drawn has no ink
+        return None
+    return PageInk(image, sheet)
+
+
+def _overlap(box: _Box, other: _Box) -> float:
+    width = min(box[2], other[2]) - max(box[0], other[0])
+    height = min(box[3], other[3]) - max(box[1], other[1])
+    return width * height if width > 0 and height > 0 else 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class _Ink:
+    """Tags only on this page, with the page's ink when it could be drawn."""
+
+    page: PageInk | None
+
+
+@dataclass(slots=True)
+class _Tags:
+    """The tags on one page: each put beside its cloud in the first free spot (QA 2026-10-16).
+
+    Free means inside the sheet, off the page's own words, off every cloud and frame, and off
+    every tag already placed. Spots are tried nearest first, round the cloud (above, right, left,
+    below), then a little further out each ring. When none is free, the spot that covers the
+    least of the drawing's words and clouds is used, never one on another tag."""
+
+    sheet: _Box
+    angle: int
+    ink: PageInk | None
+    clouds: tuple[_Box, ...]
+    placed: list[_Box] | None = None
+
+    def spot(self, cloud: _Box, width: float, size: float) -> _Box:
+        placed = self.placed if self.placed is not None else []
+        left, bottom, right, top = (
+            self.sheet[0] + LABEL_INSET,
+            self.sheet[1] + LABEL_INSET,
+            self.sheet[2] - LABEL_INSET,
+            self.sheet[3] - LABEL_INSET,
+        )
+        height = size * 1.25
+        best: tuple[float, _Box] | None = None
+        for ring in range(6):
+            gap = _TAG_GAP + ring * height
+            x0, y0, x1, y1 = cloud
+            middle = (y0 + y1) / 2 - height / 2
+            candidates = (
+                (x0, y1 + gap),  # above, from its left
+                (x1 - width, y1 + gap),  # above, to its right
+                (x1 + gap, y1 - height),  # right, high
+                (x1 + gap, middle),  # right, middle
+                (x0 - gap - width, y1 - height),  # left, high
+                (x0 - gap - width, middle),  # left, middle
+                (x0, y0 - gap - height),  # below, from its left
+                (x1 - width, y0 - gap - height),  # below, to its right
+                (x1 + gap, y0),  # right, low
+                (x0 - gap - width, y0),  # left, low
+            )
+            for x, y in candidates:
+                x = max(left, min(x, right - width))
+                y = max(bottom, min(y, top - height))
+                box = (x, y, x + width, y + height)
+                if any(_overlap(box, other) > 0 for other in placed):
+                    continue
+                # Ink in pixels; a cloud's area counts as fully inked, twice over; a further ring
+                # costs a little, so a near spot wins a tie.
+                cost = (
+                    (0 if self.ink is None else self.ink.cost(box))
+                    + 2 * _INK_SCALE**2 * sum(_overlap(box, other) for other in self.clouds)
+                    + (ring * 2 if ring else 0)
+                )
+                if cost == 0:
+                    return box
+                if best is None or cost < best[0]:
+                    best = (cost, box)
+        if best is not None:
+            return best[1]
+        # Every spot round the cloud is taken by another tag: stack above them, inside the sheet.
+        x = max(left, min(cloud[0], right - width))
+        y = cloud[3] + _TAG_GAP
+        while any(_overlap((x, y, x + width, y + height), other) > 0 for other in placed):
+            y += height
+        y = min(y, top - height)
+        return (x, y, x + width, y + height)
+
+    def draw(
+        self,
+        canvas: Canvas,
+        points: Sequence[PdfPoint],
+        reach: float,
+        tag: str,
+        stroke: tuple[float, float, float],
+    ) -> None:
+        if self.placed is None:
+            self.placed = []
+        size = TAG_FONT_SIZE
+        width = _text_width(tag, "Helvetica-Bold", size) + 2
+        box = self.spot(_turned_box(points, self.angle, reach), width, size)
+        self.placed.append(box)
+        x, y = _turn(Decimal(str(box[0] + 1)), Decimal(str(box[1] + size * 0.3)), self.angle)
+        canvas.saveState()
+        canvas.translate(float(x), float(y))
+        canvas.rotate(self.angle)
+        # A pale backing so the tag reads over the line work; the drawing still shows through.
+        canvas.setFillColorRGB(1, 1, 1)
+        canvas.setFillAlpha(0.85)
+        canvas.rect(-1, -size * 0.3, width, size * 1.25, stroke=0, fill=1)
+        canvas.setFillAlpha(1)
+        canvas.setFillColorRGB(*stroke)
+        _draw_text(canvas, 0.0, 0.0, tag, "Helvetica-Bold", size)
+        canvas.restoreState()
+
+
 def _draw_reviewer_mark(
     canvas: Canvas,
     item: _ReviewerPlaced,
@@ -1815,16 +2109,7 @@ def _draw_reviewer_mark(
     """
     points = polygon_pdf_points(item.polygon, entry.transform)
     stroke = _REVIEWER_STROKES[item.mark.kind]
-    left = min(float(point.x) for point in points) - 3
-    right = max(float(point.x) for point in points) + 3
-    bottom = min(float(point.y) for point in points) - 3
-    top = max(float(point.y) for point in points) + 3
-    canvas.saveState()
-    canvas.setStrokeColorRGB(*stroke)
-    canvas.setLineWidth(0.9)
-    canvas.setDash(1, 2)
-    canvas.rect(left, bottom, right - left, top - bottom, stroke=1, fill=0)
-    canvas.restoreState()
+    _draw_reviewer_frame(canvas, points, stroke)
 
     inverse = (360 - angle) % 360
     turned = [_turn(point.x, point.y, inverse) for point in points]

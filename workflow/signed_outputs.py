@@ -27,7 +27,7 @@ from app.review.signed_exports import (
     load_snapshot,
 )
 from reports.findings_pdf import FindingsPdfInput, write_findings_pdf
-from reports.redline import ArchitectCompare, ReviewerMark
+from reports.redline import ArchitectCompare, LabelLayout, ReviewerMark
 from reports.spreadsheet import (
     StoredFinding,
     WorkbookSignoff,
@@ -131,17 +131,37 @@ def generate_signed_outputs(
     shown_marks = None if marks is None else redline_marks(marks)
     if agreed:
         shown_marks = (*(shown_marks or ()), *agreed)
+    # Format 3 (QA 2026-10-16): tags only on the drawing, and a cover that lists what is clouded
+    # as wrong and the architect compare; the old compare's leftover rows are left out, and said
+    # once, while it was switched off at sign-off. Formats 1 and 2 are drawn exactly as before.
+    tags = payload.format_version >= 3
+    drawn_rows = rows
+    cover = None
+    if tags:
+        from reports.redline import review_cover_for
+        from workflow.draft_cloud_render import OLD_COMPARE_RULE, old_compare_left_out_words
+
+        left_out = frozenset({OLD_COMPARE_RULE}) if payload.old_compare_off else frozenset()
+        drawn_rows = [row for row in rows if row[3].rule_id not in left_out]
+        hidden = len(rows) - len(drawn_rows)
+        cover = review_cover_for(
+            architect,
+            left_out_rules=left_out,
+            left_out_note=old_compare_left_out_words(hidden) if hidden else None,
+        )
     redline = render_evidence_grounded_redline(
         db,
         store,
         package_revision_id=payload.package_revision_id,
-        findings=tuple((f, r, d.rule_id, s.snapshot_id) for f, r, s, d in rows),
+        findings=tuple((f, r, d.rule_id, s.snapshot_id) for f, r, s, d in drawn_rows),
         changed_values=payload.changed_values,
         signed_review=payload.review,
         countertop_labels=countertop_labels,
         reviewer_marks=shown_marks,
         not_checked=frozenset(() if marks is None else marks.not_checked_finding_ids),
         architect=architect,
+        label_layout=LabelLayout.TAGS if tags else LabelLayout.AS_BEFORE,
+        review_cover=cover,
     )
     if redline.artifact is None:
         raise SignedExportRefused(f"signed drawing unavailable: {redline.reason}")

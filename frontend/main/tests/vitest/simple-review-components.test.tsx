@@ -26,7 +26,7 @@ const pictures = vi.fn(async () => 'data:image/png;base64,iVBORw0KGgo=');
 
 describe('ReviewHeader', () => {
   it('names the set and says what the AI read, numbers in the number face', () => {
-    render(<ReviewHeader title="Sample Stoneworks" revision={2} header={data.header} onOpenPdfs={() => {}} onDraftCloud={() => {}} draft={{ status: 'idle' }} />);
+    render(<ReviewHeader title="Sample Stoneworks" revision={2} header={data.header} onOpenPdfs={() => {}} onDraftCloud={() => {}} draft={{ status: 'idle' }} signedOff={false} />);
     expect(screen.getByRole('heading', { level: 2, name: 'Sample Stoneworks' })).toBeTruthy();
     const line = screen.getByTestId('ai-read-line');
     expect(line.textContent).toBe('AI read 12 pages · 148 numbers · 131 settled by both AIs (89%) · 17 not settled by the AIs');
@@ -36,7 +36,7 @@ describe('ReviewHeader', () => {
   });
 
   it("says how often the AI was right on the numbers you checked, all from the server (#1386)", () => {
-    render(<ReviewHeader title="Sample Stoneworks" revision={2} header={data.header} onOpenPdfs={() => {}} onDraftCloud={() => {}} draft={{ status: 'idle' }} />);
+    render(<ReviewHeader title="Sample Stoneworks" revision={2} header={data.header} onOpenPdfs={() => {}} onDraftCloud={() => {}} draft={{ status: 'idle' }} signedOff={false} />);
     expect(screen.getByTestId('accuracy-line').textContent).toBe('Your answers so far: 12 · AI right on 11 (92%)');
     // A number both AIs settled that a person corrected stays in sight.
     expect(screen.getByTestId('settled-check-line').textContent).toBe('Of the numbers both AIs settled that you checked: 2 right of 3');
@@ -44,7 +44,7 @@ describe('ReviewHeader', () => {
 
   it('with nothing checked it shows no accuracy at all, never 0% or 100% (#1386)', () => {
     const header = { ...data.header, readings_checked: 0, ai_right: 0, ai_right_percent: null, settled_checked: 0, settled_right: 0 };
-    render(<ReviewHeader title="Sample Stoneworks" revision={2} header={header} onOpenPdfs={() => {}} onDraftCloud={() => {}} draft={{ status: 'idle' }} />);
+    render(<ReviewHeader title="Sample Stoneworks" revision={2} header={header} onOpenPdfs={() => {}} onDraftCloud={() => {}} draft={{ status: 'idle' }} signedOff={false} />);
     expect(screen.getByTestId('accuracy-line').textContent).toBe('Accuracy: shown after you check some numbers');
     expect(screen.queryByTestId('settled-check-line')).toBeNull();
   });
@@ -52,24 +52,24 @@ describe('ReviewHeader', () => {
   it('prints the percentages the server sent, never its own (#1386)', () => {
     // Deliberately not 131/148: the screen must print the server's number, not work one out.
     const header = { ...data.header, settled_percent: 7, ai_right_percent: 3 };
-    render(<ReviewHeader title="Sample Stoneworks" revision={2} header={header} onOpenPdfs={() => {}} onDraftCloud={() => {}} draft={{ status: 'idle' }} />);
+    render(<ReviewHeader title="Sample Stoneworks" revision={2} header={header} onOpenPdfs={() => {}} onDraftCloud={() => {}} draft={{ status: 'idle' }} signedOff={false} />);
     expect(screen.getByTestId('ai-read-line').textContent).toContain('131 settled by both AIs (7%)');
     expect(screen.getByTestId('accuracy-line').textContent).toContain('AI right on 11 (3%)');
   });
 
   it('a draft being made says so; a failed one is named with Retry (#1394)', async () => {
     const onDraft = vi.fn();
-    const { rerender } = render(<ReviewHeader title="Sample Stoneworks" revision={2} header={data.header} onOpenPdfs={() => {}} onDraftCloud={onDraft} draft={{ status: 'working' }} />);
+    const { rerender } = render(<ReviewHeader title="Sample Stoneworks" revision={2} header={data.header} onOpenPdfs={() => {}} onDraftCloud={onDraft} draft={{ status: 'working' }} signedOff={false} />);
     expect((screen.getByRole('button', { name: /Making draft/ }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByRole('status').textContent).toContain('Making the draft cloud PDF');
-    rerender(<ReviewHeader title="Sample Stoneworks" revision={2} header={data.header} onOpenPdfs={() => {}} onDraftCloud={onDraft} draft={{ status: 'error', message: 'Run the checks first.' }} />);
+    rerender(<ReviewHeader title="Sample Stoneworks" revision={2} header={data.header} onOpenPdfs={() => {}} onDraftCloud={onDraft} draft={{ status: 'error', message: 'Run the checks first.' }} signedOff={false} />);
     expect(screen.getByRole('alert').textContent).toBe('The draft cloud PDF could not be made: Run the checks first.');
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(onDraft).toHaveBeenCalledTimes(1);
   });
 
   it('a draft that cannot be made yet is named, not hidden', () => {
-    render(<ReviewHeader title="Sample Stoneworks" revision={2} header={data.header} onOpenPdfs={() => {}} onDraftCloud={null} draft={{ status: 'idle' }} />);
+    render(<ReviewHeader title="Sample Stoneworks" revision={2} header={data.header} onOpenPdfs={() => {}} onDraftCloud={null} draft={{ status: 'idle' }} signedOff={false} />);
     const button = screen.getByRole('button', { name: /Draft cloud PDF/ }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
     expect(button.title).toMatch(/cannot be asked for/i);
@@ -1012,5 +1012,42 @@ describe('screen polish (2026-10-16)', () => {
     render(<FinalBar summary={summarize(source)} left={leftWords(source.header)} notChecked={source.header.not_checked} api={api} projectId="proj-demo" packageId="pkg-demo" revision={2} approved={false} onSigned={vi.fn()} />);
     expect(screen.getByRole('status').textContent).toBe('3 items need you · 5 not checked');
     expect(screen.getByText('The final cloud PDF unlocks once these are settled.')).toBeTruthy();
+  });
+});
+
+describe('"Checked by hand: wrong" on the screen (QA 3)', () => {
+  it('a done item checked by hand as wrong says so, with a glyph and the word, by you or by name', () => {
+    const wrong = { ...item('number:cand-090'), checked_wrong_by_hand: true };
+    const { rerender } = render(<ItemRow item={wrong} open={false} active={false} onToggle={() => {}} />);
+    const word = document.querySelector('[data-slot="status-word"]')!;
+    expect(word.textContent).toBe('✗Checked by hand: WRONG by you');
+    expect(word.getAttribute('data-wrong-by-hand')).toBe('true');
+    expect(word.className).toContain('text-outcome-fail-fg');
+    expect(screen.queryByText('Checked by you')).toBeNull();
+    rerender(<ItemRow item={{ ...wrong, decided_by: 'Sample Checker' }} open={false} active={false} onToggle={() => {}} />);
+    expect(document.querySelector('[data-slot="status-word"]')!.textContent).toBe('✗Checked by hand: WRONG by Sample Checker');
+    rerender(<ItemRow item={{ ...wrong, decided_by: null }} open={false} active={false} onToggle={() => {}} />);
+    expect(document.querySelector('[data-slot="status-word"]')!.textContent).toBe('✗Checked by hand: WRONG');
+    // Without the mark the words stay as they were.
+    rerender(<ItemRow item={{ ...wrong, checked_wrong_by_hand: false }} open={false} active={false} onToggle={() => {}} />);
+    expect(screen.getByText('Checked by you')).toBeTruthy();
+  });
+
+  it('a failure and a not-checked entry checked by hand as wrong say so too', async () => {
+    const marked = reviewItems((draft) => {
+      Object.assign(draft.failures[0], { status: 'done', actions: [], decided_by: 'REVIEWER', checked_wrong_by_hand: true });
+      Object.assign(draft.not_checked[0], { status: 'done', decided_by: 'Sample Checker', checked_wrong_by_hand: true });
+    });
+    const { unmount } = render(<FailuresStrip failures={marked.failures} busyKey={null} errors={{}} onAgree={() => {}} onLook={() => {}} onSelect={() => {}} />);
+    const rows = screen.getAllByRole('listitem');
+    expect(rows[0].textContent).toContain('✗Checked by hand: WRONG by you');
+    expect(rows[0].textContent).not.toContain('Agreed');
+    expect(rows[1].textContent).not.toContain('Checked by hand');
+    unmount();
+    render(<NotCheckedGroup items={marked.not_checked} note={null} busy={false} error={null} onClearAll={() => {}} />);
+    await userEvent.click(screen.getByRole('button', { name: /Not checked/ }));
+    const listed = document.querySelectorAll('#not-checked-list li');
+    expect(listed[0].textContent).toContain('✗Checked by hand: WRONG by Sample Checker');
+    expect(listed[1].textContent).not.toContain('Checked by hand');
   });
 });

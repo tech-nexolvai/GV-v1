@@ -79,7 +79,12 @@ class FrozenCountertops(BaseModel):
 #: * 2 (#1363): adds `reviewer_marks`, a person's confirms, fixes and answers and the results
 #:   printed NOT CHECKED, which the signed cloud PDF draws. A format-1 snapshot has none and its
 #:   cloud PDF is drawn exactly as before (`tests/reports/test_redline_old_format_golden.py`).
-SNAPSHOT_FORMAT_VERSION = 2
+#: * 3 (QA 2026-10-16): adds `old_compare_off`, whether the old row-by-row architect compare was
+#:   switched off at sign-off. Its cloud PDF names each mark by its tag only (01, A1, R1) off the
+#:   drawing's words, and its cover lists what is clouded as wrong and the architect compare; the
+#:   old compare's leftover rows are left out of the cover and the drawing's summary while it was
+#:   off. A format-1 or format-2 snapshot is drawn exactly as before.
+SNAPSHOT_FORMAT_VERSION = 3
 
 
 class FrozenArchitectCompare(BaseModel):
@@ -126,6 +131,10 @@ class ExportSnapshot(BaseModel):
     not run, or on a snapshot frozen before it."""
     ai_review: FrozenAiReview | None = None
     """The AI page review at sign-off; `None` when it had not run, or on an older snapshot."""
+    old_compare_off: bool | None = None
+    """Format 3: whether the old row-by-row architect compare (`GV_ARCH_COMPARE_RECORDS`) was
+    switched off at sign-off, frozen so a re-made file never follows a later setting. `None`
+    exactly on formats 1 and 2."""
 
     @model_validator(mode="after")
     def known_format(self) -> ExportSnapshot:
@@ -133,7 +142,19 @@ class ExportSnapshot(BaseModel):
             raise ValueError(f"unknown sign-off snapshot format {self.format_version}")
         if (self.format_version >= 2) != (self.reviewer_marks is not None):
             raise ValueError("a format-2 snapshot carries reviewer marks, and only it")
+        if (self.format_version >= 3) != (self.old_compare_off is not None):
+            raise ValueError(
+                "a format-3 snapshot says whether the old compare was off, and only it"
+            )
         return self
+
+
+def _old_compare_off() -> bool:
+    """Whether the old row-by-row architect compare is switched off now (the very switch the
+    review screen and the draft read)."""
+    from app.review.architect_compare import arch_compare_records_on
+
+    return not arch_compare_records_on()
 
 
 def _freeze_compare(db: Session, revision_id: UUID) -> FrozenArchitectCompare | None:
@@ -554,6 +575,7 @@ def _request_signed_exports(
         ),
         architect_compare=_freeze_compare(db, revision.id),
         ai_review=_freeze_ai_review(db, revision.id),
+        old_compare_off=_old_compare_off(),
     )
     encoded = canonical(payload.model_dump(mode="json"))
     snapshot = ApprovalExportSnapshot(

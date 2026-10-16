@@ -180,6 +180,9 @@ def test_checked_by_hand_records_the_finding_action_with_a_fixed_note_in_a_sessi
     after = _first_by_hand(body["review_items"])
     assert (after["status"], after["decided_by"], after["actions"]) == ("done", REVIEWER, [])
     assert body["review_items"]["header"]["checked_by_you"] == 1
+    # "It is wrong" is said as WRONG on the screen, from the signed record's own mark (QA
+    # 2026-10-16); "it is right" is not.
+    assert after["checked_wrong_by_hand"] is (note == review_item_actions.CHECKED_WRONG_NOTE)
 
     # A second answer to the same item records nothing and says why (it is no longer open).
     again = _act(

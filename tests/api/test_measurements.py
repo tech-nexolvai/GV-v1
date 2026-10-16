@@ -408,6 +408,23 @@ def test_a_new_run_is_accepted_once_the_last_was_handed_over_and_finished(sessio
     assert _client(session).post(url).status_code == 202
 
 
+def test_an_abandoned_run_does_not_block_running_the_checks_again(session: Session) -> None:
+    """An abandoned run (the outbox gave up on it) is never handed to the worker, so it is not
+    "running": "Run the checks again" is accepted, as the queueing code already treats it."""
+    package = _package(session)
+    url = f"/api/v1/projects/{PROJECT}/packages/{package}/checks"
+    assert _client(session).post(url).status_code == 202
+    entry = session.execute(select(OutboxEntry)).scalar_one()
+    entry.abandoned_at = datetime.now(UTC)
+    entry.abandoned_reason = "Made-up refusal for the test."
+    session.commit()
+
+    again = _client(session).post(url)
+
+    assert again.status_code == 202, again.text
+    assert len(list(session.execute(select(OutboxEntry)).scalars())) == 2
+
+
 def test_a_package_in_another_project_is_not_found(session: Session) -> None:
     """404 in the same words as absent. A 403 would confirm the package exists (ADR-0006)."""
     other = uuid4()

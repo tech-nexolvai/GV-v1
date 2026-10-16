@@ -565,7 +565,10 @@ def _blocking_own(session: Session, revision_id: UUID) -> tuple[int, int]:
             )
         ).all()
     )
-    blocking = set(approval_readiness(session, revision_id).blocking_finding_ids)
+    readiness = approval_readiness(session, revision_id)
+    # Still asked: blocking, or a check that could not run and nobody settled (which no longer
+    # holds sign-off since decision 2026-10-16, but is still offered to settle).
+    blocking = set(readiness.blocking_finding_ids) | set(readiness.not_checked_finding_ids)
     return len(own), len(own & blocking)
 
 

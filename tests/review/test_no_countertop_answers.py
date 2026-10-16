@@ -248,7 +248,10 @@ def test_there_is_a_countertop_makes_the_page_a_blocking_split_item(
         if f.id in holds and f.scope_row_candidate_id == record_id
     }
     assert len(its_own) == 6 and len(holds) == 18
-    assert set(readiness.blocking_finding_ids) == {finding.id} | its_own
+    # The holds wait for values nothing has read: they no longer hold sign-off (decision
+    # 2026-10-16) and are printed NOT CHECKED; they are still offered to settle.
+    assert set(readiness.blocking_finding_ids) == {finding.id}
+    assert set(readiness.not_checked_finding_ids) == its_own
     assert readiness.unchecked_countertop_pages == ()
     _decide(session, revision.id)
     session.commit()

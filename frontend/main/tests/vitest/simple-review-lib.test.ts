@@ -146,3 +146,15 @@ describe('simple review rules', () => {
     expect(splitNumbers('39 1/2 in != 41 5/8 in').filter((part) => part.number).map((part) => part.text)).toEqual(['39 1/2 in', '41 5/8 in']);
   });
 });
+
+describe('answerWord: "Checked by hand: wrong" (QA 3)', () => {
+  it('says WRONG and who, from the mark, else the usual words', async () => {
+    const { answerWord } = await import('@/lib/review-items');
+    expect(answerWord({ decided_by: 'REVIEWER', checked_wrong_by_hand: true })).toBe('Checked by hand: WRONG by you');
+    expect(answerWord({ decided_by: 'Sample Checker', checked_wrong_by_hand: true })).toBe('Checked by hand: WRONG by Sample Checker');
+    expect(answerWord({ decided_by: null, checked_wrong_by_hand: true })).toBe('Checked by hand: WRONG');
+    expect(answerWord({ decided_by: 'REVIEWER', checked_wrong_by_hand: false })).toBe('Checked by you');
+    // Older answers without the field read as before.
+    expect(answerWord({ decided_by: 'AI' })).toBe('Confirmed by AI');
+  });
+});
