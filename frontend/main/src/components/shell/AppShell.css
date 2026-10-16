@@ -96,8 +96,9 @@
   .shell__partner { display: none; }
 }
 .shell[data-evidence-open='true'] .shell__partner { display: none; }
-/* Nor on the review assistant's composer, docked at the bottom right (#1129). */
+/* Nor on the review assistant's composer, docked at the bottom right (#1129), nor the chat's (#1464). */
 .shell:has([data-slot='assistant-panel']:not([hidden])) .shell__partner { display: none; }
+.shell:has([data-slot='chat-page']) .shell__partner { display: none; }
 
 /* ── Skip link ─────────────────────────────────────────────── */
 .shell__skip {

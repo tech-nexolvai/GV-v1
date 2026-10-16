@@ -107,9 +107,12 @@ export interface AssistantPlanTask {
   status: 'pending' | 'in_progress' | 'completed';
 }
 
-/** One tool the assistant used: a sandbox command and its output, a file or picture it viewed, the results, a task, helper agents. */
+/**
+ * One tool the assistant used: a sandbox command and its output, a file or picture it viewed, the
+ * results, a task, helper agents, or (the chat, #1464) a file it made, edited or handed over.
+ */
 export interface AssistantStep {
-  kind: 'bash' | 'view' | 'review_results' | 'task' | 'agents';
+  kind: 'bash' | 'view' | 'review_results' | 'task' | 'agents' | 'file';
   /** The model's own description of the step ("Inspect page 2 text"), or "Added task: …", "Ran 4 agents · …". */
   label: string;
   command?: string | null;
@@ -119,7 +122,7 @@ export interface AssistantStep {
   ok: boolean;
   tasks?: AssistantPlanTask[];
   agents?: AssistantSubAgent[];
-  /** A small JPEG of the picture it viewed, as a data URL (view of a picture only). */
+  /** The picture it viewed: a small JPEG as a data URL, or (the chat) the picture's URL. */
   thumbnail?: string | null;
 }
 

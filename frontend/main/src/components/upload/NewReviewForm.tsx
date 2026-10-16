@@ -35,7 +35,13 @@ import type { ProductChoicesState } from './ProductTypeField';
 import { UploadProgressPanel } from './upload-progress';
 
 interface NewReviewFormProps {
+  /** The upload finished: the app goes straight to the drawing set's chat (#1464). */
   onCreated: (packageId: string) => void;
+  /**
+   * A later upload step failed after the set was made: "Open saved document set" opens it to
+   * inspect (the review screen). Without it, the same as `onCreated`.
+   */
+  onOpenSaved?: (packageId: string) => void;
 }
 
 type Slot = 'architectural' | 'shop';
@@ -54,7 +60,7 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export function NewReviewForm({ onCreated }: NewReviewFormProps) {
+export function NewReviewForm({ onCreated, onOpenSaved = onCreated }: NewReviewFormProps) {
   const [vendor, setVendor] = useState('');
   const products = useAsync(() => listProductTypes(), []);
   const [chosenProduct, setChosenProduct] = useState<ProductType | null>(null);
@@ -280,7 +286,7 @@ export function NewReviewForm({ onCreated }: NewReviewFormProps) {
           </p>
           <p className="text-xs text-muted-foreground [overflow-wrap:anywhere]">{error}</p>
           {savedPackageId && (
-            <Button type="button" variant="outline" size="sm" onClick={() => onCreated(savedPackageId)}>
+            <Button type="button" variant="outline" size="sm" onClick={() => onOpenSaved(savedPackageId)}>
               Open saved document set
             </Button>
           )}

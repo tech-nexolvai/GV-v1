@@ -63,6 +63,11 @@ export interface SimpleReviewPageProps {
   /** The review assistant, docked on the right. Off in tests that do not exercise it. */
   assistantAvailable?: boolean;
   /**
+   * The drawing set's chats (#1464). With it, "Assistant" opens the chat page instead of the docked
+   * panel (the panel's code stays for now), and the panel no longer opens by itself on wide screens.
+   */
+  onOpenChat?: () => void;
+  /**
    * How often the list is read again while something is re-checking, the AI page review is still
    * reading, or a check run was asked for (Set 3 QA). It stops once nothing is pending.
    */
@@ -192,6 +197,7 @@ export function SimpleReviewPage({
   onTitleChange,
   onNeedYouChange,
   assistantAvailable = true,
+  onOpenChat,
   pollMs = 4000,
   onPackageChanged,
 }: SimpleReviewPageProps) {
@@ -231,7 +237,7 @@ export function SimpleReviewPage({
   // Opened from a wrong row (#1388) or a countertop item (#1399), `recorded` is what it is about: the
   // numbers its check recorded sit beside the drawings.
   const [viewer, setViewer] = useState<{ opening: number; item: ViewerItem | null; recorded: RecordedPanelSubject | null } | null>(null);
-  const [assistantOpen, setAssistantOpen] = useState(() => assistantAvailable && typeof window !== 'undefined' && window.matchMedia('(min-width: 1440px)').matches);
+  const [assistantOpen, setAssistantOpen] = useState(() => assistantAvailable && !onOpenChat && typeof window !== 'undefined' && window.matchMedia('(min-width: 1440px)').matches);
   const [assistantMounted, setAssistantMounted] = useState(assistantOpen);
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
 
@@ -765,7 +771,12 @@ export function SimpleReviewPage({
       <ArchitectProvider projectId={project} packageId={packageId} loader={architect}>
       <div data-tw data-slot="simple-review" className="@container/review flex h-full min-h-0 w-full min-w-0 font-sans text-foreground antialiased">
         <HeaderActions>
-          {assistantAvailable && (
+          {assistantAvailable && onOpenChat && (
+            <Button variant="ghost" size="sm" onClick={onOpenChat} aria-label="Assistant" title="Open this drawing set's chats">
+              <MessageSquare /> <span className="hidden xl:inline">Assistant</span>
+            </Button>
+          )}
+          {assistantAvailable && !onOpenChat && (
             <Button
               variant={assistantOpen ? 'secondary' : 'ghost'}
               size="sm"
