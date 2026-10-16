@@ -70,7 +70,10 @@ REFUSED = 2
 DEFAULT_RATES = REPO / "deploy" / "model_rates.us-east-1.json"
 MAX_CAP_USD = Decimal(3)
 #: The output a reply is expected to use, for the estimate only (the cap reserves the maximum).
-EXPECTED_OUTPUT_TOKENS = 1500
+#: The pair's stored whole-view answers came to about 300 output tokens a call (2026-10-16); the
+#: estimate prints a high bound too, at `EXPECTED_OUTPUT_TOKENS_HIGH`.
+EXPECTED_OUTPUT_TOKENS = 400
+EXPECTED_OUTPUT_TOKENS_HIGH = 1500
 
 
 class Refused(Exception):
@@ -116,7 +119,9 @@ def prepare_set(pdf: Path, *, architect_file: bool) -> list[PreparedPanel]:
     return panels
 
 
-def estimate_usd(panels: Sequence[PreparedPanel], rates: Any) -> Decimal:
+def estimate_usd(
+    panels: Sequence[PreparedPanel], rates: Any, output_tokens: int = EXPECTED_OUTPUT_TOKENS
+) -> Decimal:
     """What one run would cost: each chosen drawing's tokens at each reader's stated price."""
     chosen, _left = choose_panels(panels, MEASURED_JOB_VALUES_SETTINGS)
     total = Decimal(0)
@@ -126,7 +131,7 @@ def estimate_usd(panels: Sequence[PreparedPanel], rates: Any) -> Decimal:
             rate = rates.rate_for(model)
             total += (
                 Decimal(tokens) * rate.input_per_1k_tokens
-                + Decimal(EXPECTED_OUTPUT_TOKENS) * rate.output_per_1k_tokens
+                + Decimal(output_tokens) * rate.output_per_1k_tokens
             ) / 1000
     return total
 
@@ -207,18 +212,21 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     prepared: dict[str, list[PreparedPanel]] = {}
     estimate = Decimal(0)
+    high = Decimal(0)
     for name, (pdf, architect_file) in sets.items():
         prepared[name] = prepare_set(pdf, architect_file=architect_file)
         chosen, left = choose_panels(prepared[name], MEASURED_JOB_VALUES_SETTINGS)
         cost = estimate_usd(prepared[name], rates)
         estimate += cost
+        high += estimate_usd(prepared[name], rates, EXPECTED_OUTPUT_TOKENS_HIGH)
         print(
             f"{name}: {len(prepared[name])} architect drawing(s); a paid run sends {len(chosen)} "
             f"(pages {sorted({p.panel.page_index + 1 for p in chosen})}), about ${cost:.2f} a run; "
             f"{len(left)} not sent"
         )
     print(
-        f"estimate: about ${estimate:.2f} a run, ${estimate * args.runs:.2f} for {args.runs} run(s)"
+        f"estimate: about ${estimate:.2f} a run (up to ${high:.2f} if replies run long), "
+        f"${estimate * args.runs:.2f} to ${high * args.runs:.2f} for {args.runs} run(s)"
     )
 
     clients: Mapping[str, Any] | None = None
@@ -248,7 +256,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         found = ledger.stored.get((model, JOB_VALUES_PROMPT_ID, identity or ""))
         return None if found is None else found[0]
 
-    report: dict[str, Any] = {"runs": [], "estimate_usd": str(estimate)}
+    report: dict[str, Any] = {"runs": [], "estimate_usd": str(estimate), "high_usd": str(high)}
     passed = True
     for run in range(1, args.runs + 1):
         tally: Counter[str] = Counter()
