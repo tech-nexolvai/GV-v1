@@ -369,6 +369,13 @@ def test_skill_md_stays_short_and_says_the_rules_that_matter() -> None:
         "/mnt/user-data/outputs",
         "present_files",
         "Never invent a number",
+        "report_finding",
+        "set_coverage",
+        "update_finding",
+        "drop_finding",
+        "never write the findings again as a markdown table",
+        "Download marked-up PDF",
+        "origin top-left",
     ):
         assert words in SKILL_TEXT, words
 

@@ -108,6 +108,8 @@ def _world(  # type: ignore[no-untyped-def]
     available: bool = True,
     handler: Callable[[str, Any], tuple[str, int]] | None = None,
     settings: Mapping[str, Any] | None = None,
+    pdf: bytes = PDF,
+    pages: int = 62,
 ) -> Iterator[World]:
     from fastapi.testclient import TestClient
     from sqlalchemy.orm import Session
@@ -152,14 +154,14 @@ def _world(  # type: ignore[no-untyped-def]
         )
         session.add(revision)
         session.flush()
-        digest = hashlib.sha256(PDF).hexdigest()
+        digest = hashlib.sha256(pdf).hexdigest()
         document = Document(package_id=package.id, kind=DocumentKind.SHOP)
         session.add(document)
         session.flush()
         artifact = SourceArtifact(
             storage_key=f"originals/{uuid4().hex}.pdf",
             sha256=digest,
-            size=len(PDF),
+            size=len(pdf),
             backend_version_id=None,
         )
         session.add(artifact)
@@ -168,7 +170,7 @@ def _world(  # type: ignore[no-untyped-def]
             document_id=document.id,
             source_artifact_id=artifact.id,
             sha256=digest,
-            page_count=62,
+            page_count=pages,
             file_name="Vendor set.pdf",
         )
         session.add(version)
@@ -182,7 +184,7 @@ def _world(  # type: ignore[no-untyped-def]
             )
         )
         session.commit()
-        store.put(storage_key(document.id, digest), io.BytesIO(PDF), content_type="application/pdf")
+        store.put(storage_key(document.id, digest), io.BytesIO(pdf), content_type="application/pdf")
 
         app = create_app(
             Settings(
@@ -605,7 +607,7 @@ def test_each_call_is_recorded_for_the_usage_page_labelled_by_chat(postgres_engi
         ).all()
         assert len(rows) == 2
         assert {row.template_id for row in rows} == {f"chat:{chat_id}"}
-        assert {row.prompt_id for row in rows} == {"review-assistant-chat-anthropic-chat-v3"}
+        assert {row.prompt_id for row in rows} == {"review-assistant-chat-anthropic-chat-v4"}
         assert all(row.package_revision_id == world.revision_id for row in rows)
         assert rows[0].outcome != "ok" and rows[1].outcome == "ok"
         models = world.client.get(f"/api/v1/assistant/models?package_id={world.package_id}").json()

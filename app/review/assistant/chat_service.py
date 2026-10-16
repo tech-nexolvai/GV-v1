@@ -571,6 +571,7 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             page_count=max((int(item.get("pages") or 0) for item in listing), default=0),
             results=job.results,
             register_file=register_file,
+            uploads=listing,
         ),
         ledger=SessionChatLedger(job.factory, job.revision_id, job.chat_id),
         emit=lambda event, data: _safe(emit, event, data),

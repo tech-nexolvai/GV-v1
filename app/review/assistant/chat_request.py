@@ -291,6 +291,9 @@ def call_params(
         "thinking": dict(thinking),
         "output_config": {"effort": effort},
     }
+    if not listed:
+        # A call without tools (a finding's second read) sends neither field.
+        del params["tools"], params["tool_choice"]
     if provider == "anthropic":
         if model.fallbacks:
             params["betas"] = [FALLBACK_BETA]

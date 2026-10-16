@@ -57,6 +57,15 @@ from app.review.assistant.agent import (
     estimate_micros,
     prompt_tokens_upper,
 )
+from app.review.assistant.chat_findings import (
+    FINDING_TOOL_NAMES,
+    HELPER_FINDING_TOOL_NAMES,
+    FindingBook,
+    coverage_note,
+    main_upload,
+    page_ranges,
+    read_listing,
+)
 from app.review.assistant.chat_provider import ChatProvider, ProviderFailure, failure_from
 from app.review.assistant.chat_request import (
     BY_SHORT,
@@ -82,6 +91,16 @@ from app.review.assistant.chat_tools import (
     arguments,
     new_step,
 )
+from app.review.assistant.chat_trust import (
+    SECOND_READ_MODULE,
+    Recorded,
+    apply_checks,
+    load_module,
+    recorded_from,
+    round_statuses,
+    trust_report,
+    with_second_read,
+)
 from app.review.assistant.sandbox import SandboxRefused
 from app.runs.rates import ModelRates, call_cost_micros
 
@@ -98,9 +117,10 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 #: Names the system prompts and tools: a change to either is a new id. (chat-v2: the `Agent`
-#: tool's `model` text names Sonnet as the default. chat-v3: helpers run at most at medium effort.)
+#: tool's `model` text names Sonnet as the default. chat-v3: helpers run at most at medium effort.
+#: chat-v4: the findings and coverage tools, and the answer-style lines.)
 #: Only the request's prefix changes; a chat's stored messages replay unchanged.
-HARNESS_ID: Final = "chat-v3"
+HARNESS_ID: Final = "chat-v4"
 #: The output allowance of a forced last call (a wrap-up or a final answer at the cap).
 WRAP_UP_MAX_TOKENS: Final = 8000
 FINAL_MAX_TOKENS: Final = 16000
@@ -113,6 +133,18 @@ HELPER_DEFAULT_MODEL: Final[Mapping[str, str]] = {
     "sonnet": "sonnet",
     "haiku": "haiku",
 }
+#: Second reads (CONTRACT3): a cheap model, no tools, at most this many findings per answer.
+SECOND_READ_MODEL: Final = "haiku"
+SECOND_READ_EFFORT: Final = "low"
+SECOND_READ_MAX_TOKENS: Final = 1024
+SECOND_READ_LIMIT: Final = 30
+#: An upper bound of one second read's prompt: two crops (at most 1600 px a side, about 3,400
+#: tokens each) and the question.
+_SECOND_READ_PROMPT_TOKENS: Final = 8_000
+SECOND_READ_SYSTEM: Final = (
+    "You read values printed on crops of construction drawings. Answer only from what you can "
+    "see in the pictures; never guess a number you cannot read."
+)
 _RETRY_WAIT_SECONDS: Final = 3.0
 _MAX_REPORT_CHARS: Final = 40_000
 _MAX_PROMPT_CHARS: Final = 20_000
@@ -142,6 +174,11 @@ def prompt_ids(provider: str) -> tuple[str, str]:
         f"review-assistant-chat-{provider}-{HARNESS_ID}",
         f"review-assistant-chat-helper-{provider}-{HARNESS_ID}",
     )
+
+
+def second_read_prompt_id(provider: str) -> str:
+    """A finding's second read, on the Usage page (counted in the chat's spend)."""
+    return f"review-assistant-chat-check-{provider}-{HARNESS_ID}"
 
 
 def cost_text(micros: int) -> str:
@@ -253,6 +290,10 @@ class _Reply:
 
 class _Cancelled(Exception):
     """The message was cancelled in the middle of a call."""
+
+
+class _NoRoom(Exception):
+    """A second read would pass the message's caps: it is not made."""
 
 
 #: The display side of a streamed call (the lead's): called with each raw event.
@@ -381,6 +422,7 @@ class _Agent:
     description: str
     prompt: str
     model: ChatModel
+    number: int = 0
 
 
 @dataclass(slots=True)
@@ -423,6 +465,7 @@ class ChatEngine:
         # Waits before a retry; returns True when cancelled during the wait.
         self._sleep = sleep or (lambda seconds: cancel.wait(seconds))
         self.lead_prompt_id, self.helper_prompt_id = prompt_ids(provider.name)
+        self.check_prompt_id = second_read_prompt_id(provider.name)
         self.blocks: list[dict[str, Any]] = []
         self._discarded: set[int] = set()
         self._lock = threading.RLock()
@@ -430,6 +473,19 @@ class ChatEngine:
         self._attempt_blocks: list[int] = []
         self._streams: set[Any] = set()
         self.task_list = TaskList()
+        listing = list(tools.uploads) or read_listing(tools.workspace)
+        main = main_upload(listing)
+        self.book = FindingBook(
+            workspace=tools.workspace,
+            listing=listing,
+            page_count=int(main.get("pages") or 0) if main is not None else tools.page_count,
+            checker=self._checked,
+        )
+        self._positions: dict[str, int] = {}
+        self._coverage_index: int | None = None
+        self._helpers_started = 0
+        self._recorded: Recorded | None = None
+        self._recorded_read = False
 
     # ---- the screen ------------------------------------------------------------------------------
 
@@ -811,6 +867,11 @@ class ChatEngine:
             if id(call) in reply.bad_inputs:
                 results[id(call)] = self._not_run(call, "its input was cut off or not valid JSON")
                 continue
+            if name in FINDING_TOOL_NAMES:
+                results[id(call)] = self._result(
+                    call, self._finding_tool(name, call.get("input"), "lead")
+                )
+                continue
             step = new_step(str(call.get("id")), name, call.get("input"))
             index = self._add_block({"type": "step", "step": step})
             self.emit("step_start", {"index": index, "step": step})
@@ -824,6 +885,210 @@ class ChatEngine:
         if agents:
             results.update(self._run_agents(agents))
         return [results[id(call)] for call in calls]
+
+    # ---- findings, coverage and trust (chat v2 / v3) ---------------------------------------------
+
+    def _recorded_checks(self) -> Recorded:
+        """What GV Review's own checks recorded for the set, read once per message."""
+        with self._lock:
+            if self._recorded_read and self._recorded is not None:
+                return self._recorded
+        loader = self.tools.results
+        recorded = Recorded(readable=False)
+        if loader is not None:
+            try:
+                recorded = recorded_from(loader(None))
+            except Exception as failed:  # noqa: BLE001 - the report says it could not be read
+                _log.warning("assistant chat could not read the records: %s", type(failed).__name__)
+        with self._lock:
+            self._recorded, self._recorded_read = recorded, True
+        return recorded
+
+    def _checked(self, finding: dict[str, Any]) -> dict[str, Any]:
+        """A finding with code's checks (its second read starts again: its values may be new)."""
+        recorded = self._recorded_checks() if finding.get("source") == "rules" else None
+        checked = apply_checks(finding, self.book.pdf_paths(), recorded)
+        checked.setdefault("round_status", None)
+        checked.setdefault("second_read_values", None)
+        return checked
+
+    def _show_finding(self, finding: dict[str, Any]) -> None:
+        """A new or changed finding: its block (replaced in place) and the `finding` event."""
+        with self._lock:
+            index = self._positions.get(finding["id"])
+            if index is None:
+                self.blocks.append({"type": "finding", "finding": finding})
+                index = len(self.blocks) - 1
+                self._positions[finding["id"]] = index
+            else:
+                self.blocks[index] = {"type": "finding", "finding": finding}
+        self.emit("finding", {"index": index, "finding": json.loads(json.dumps(finding))})
+
+    def _show_coverage(self, coverage: dict[str, Any]) -> None:
+        with self._lock:
+            index = self._coverage_index
+            if index is None:
+                self.blocks.append({"type": "coverage", "coverage": coverage})
+                index = self._coverage_index = len(self.blocks) - 1
+            else:
+                self.blocks[index] = {"type": "coverage", "coverage": coverage}
+        self.emit("coverage", {"index": index, "coverage": json.loads(json.dumps(coverage))})
+
+    def _finding_tool(self, name: str, raw: object, by: str) -> ToolResult:
+        """`report_finding`, `update_finding`, `drop_finding`, `set_coverage`: no step on the
+        screen; the finding and coverage blocks are what the reviewer sees."""
+        book = self.book
+        try:
+            if name == "report_finding":
+                finding, notes = book.report(raw, by)
+                self._show_finding(finding)
+                text = f"Finding {finding['id']} recorded."
+            elif name == "update_finding":
+                finding, notes = book.update(raw)
+                self._show_finding(finding)
+                text = f"Finding {finding['id']} updated."
+            elif name == "drop_finding":
+                finding_id, reason = book.drop(raw)
+                notes = []
+                with self._lock:
+                    index = self._positions.get(finding_id)
+                    block = {"type": "finding_dropped", "finding_id": finding_id, "reason": reason}
+                    if index is not None:
+                        self.blocks[index] = block
+                self.emit("finding_dropped", {"index": index, **block})
+                text = f"Finding {finding_id} dropped."
+            else:
+                coverage = book.set_coverage(raw, by)
+                self._show_coverage(coverage)
+                counts = coverage["counts"]
+                gaps = book.coverage_gaps()
+                text = (
+                    f"Coverage: {counts['same']} same, {counts['different']} different, "
+                    f"{counts['not_comparable']} not comparable, of {counts['total']} pages."
+                )
+                if gaps:
+                    text += f" Not accounted for yet: pages {page_ranges(gaps)}."
+                notes = []
+        except SandboxRefused as refused:
+            return ToolResult(
+                content=[{"type": "text", "text": f"Refused: {refused}"}],
+                step={},
+                is_error=True,
+            )
+        if notes:
+            text += " " + "; ".join(notes) + "."
+        return ToolResult(content=[{"type": "text", "text": text}], step={})
+
+    def _second_read_call(self, content: list[dict[str, Any]], share: _Share) -> str:
+        """One second read: the cheap model, no tools, within the message's caps."""
+        model = BY_SHORT[SECOND_READ_MODEL]
+        thinking = thinking_config(model, False)
+        estimate = self._price(model, _SECOND_READ_PROMPT_TOKENS, SECOND_READ_MAX_TOKENS)
+        if not self._fits(estimate) or not self._hold(share, estimate):
+            raise _NoRoom
+        try:
+            reply = self._call(
+                model=model,
+                effort=SECOND_READ_EFFORT,
+                thinking=thinking,
+                system=SECOND_READ_SYSTEM,
+                tools=(),
+                messages=[{"role": "user", "content": content}],
+                final=False,
+                max_tokens=SECOND_READ_MAX_TOKENS,
+                prompt_id=self.check_prompt_id,
+                display=None,
+            )
+        finally:
+            self._release(share, estimate or 0)
+        if reply.stop_reason == "refusal":
+            raise ProviderFailure("declined", status=None, retryable=False)
+        return reply.text()
+
+    def _second_reads(self) -> int:
+        """Second reads of the findings with evidence pictures, in parallel (at most
+        `SECOND_READ_LIMIT`); returns how many findings were left without one."""
+        module = load_module(SECOND_READ_MODULE)
+        findings = [
+            f for f in self.book.live() if f.get("arch_picture_id") or f.get("vendor_picture_id")
+        ]
+        if module is None or not findings:
+            return len(findings) if module is None else 0
+        # Differences first: they are what a reviewer acts on.
+        findings.sort(key=lambda f: {"different": 0, "check": 1}.get(str(f.get("status")), 2))
+        chosen, skipped = findings[:SECOND_READ_LIMIT], len(findings) - SECOND_READ_LIMIT
+        share = _Share(limit=self.settings.message_cap_micros)
+        left = [max(0, skipped)]
+
+        def one(finding: dict[str, Any]) -> None:
+            if self.cancel.is_set():
+                left[0] += 1
+                return
+            crops: dict[str, bytes] = {}
+            for side, key in (("architect", "arch_picture_id"), ("vendor", "vendor_picture_id")):
+                if finding.get(key):
+                    try:
+                        crops[side] = self.read_picture(str(finding[key]))
+                    except OSError:
+                        continue
+            try:
+                read = module.second_read(
+                    crops,
+                    str(finding.get("item") or ""),
+                    lambda content: self._second_read_call(content, share),
+                )
+                read = module.compare_read(read, finding)
+                result = str(read.result)
+                values = {"architect": read.architect, "vendor": read.vendor}
+            except (_NoRoom, _Cancelled, ProviderFailure):
+                left[0] += 1
+                return
+            except Exception as failed:  # noqa: BLE001 - a failed read is "not run"
+                _log.warning("assistant chat second read failed: %s", type(failed).__name__)
+                left[0] += 1
+                return
+            if result not in ("agrees", "disagrees", "unsure"):
+                result = "unsure"
+            current = next((f for f in self.book.live() if f["id"] == finding["id"]), None)
+            if current is None:
+                return
+            updated = {**with_second_read(current, result), "second_read_values": values}
+            if self.book.replace(updated):
+                self._show_finding(updated)
+
+        with ThreadPoolExecutor(max_workers=MAX_AGENTS) as pool:
+            for future in [pool.submit(one, finding) for finding in chosen]:
+                future.result()
+        return left[0]
+
+    def _trust_phase(self) -> None:
+        """After the lead's answer: second reads, round links, then the trust report."""
+        book = self.book
+        if not book.live() and not book.coverage_used:
+            return
+        skipped = self._second_reads()
+        statuses = round_statuses(book.live())
+        for finding in book.live():
+            status = statuses.get(finding["id"])
+            if status is not None and finding.get("round_status") != status:
+                updated = {**finding, "round_status": status}
+                if book.replace(updated):
+                    self._show_finding(updated)
+        report = trust_report(
+            book.live(),
+            book.coverage_map() if book.coverage_used else None,
+            self._recorded_checks(),
+            second_reads_skipped=skipped,
+        )
+        index = self._add_block({"type": "trust", "trust": report})
+        self.emit("trust", {"index": index, "trust": json.loads(json.dumps(report))})
+
+    def _coverage_gaps_note(self) -> str | None:
+        """The whole-set guard's note, when coverage was used and pages are unaccounted for."""
+        if not self.book.coverage_used:
+            return None
+        gaps = self.book.coverage_gaps()
+        return coverage_note(gaps, self.book.main_file) if gaps else None
 
     # ---- helpers (`Agent`) -----------------------------------------------------------------------
 
@@ -865,6 +1130,9 @@ class ChatEngine:
                     call, f"at most {MAX_AGENTS} agents run at once; start it again next turn"
                 )
                 continue
+            with self._lock:
+                self._helpers_started += 1
+                agent.number = self._helpers_started
             accepted.append((call, agent))
         if not accepted:
             return results
@@ -931,10 +1199,21 @@ class ChatEngine:
             self.blocks[index] = {"type": "step", "step": finished}
         self.emit("step_end", {"index": index, "step": finished})
         for (call, agent), entry in zip(accepted, entries, strict=True):
+            reported = self.book.by(f"helper:{agent.number}")
+            listed = "".join(
+                f"\n- {f['id']} page {f['page']}: {f['item']}: architect {f['architect']}; "
+                f"vendor {f['vendor']} ({f['status']})"
+                for f in reported
+            )
+            if listed:
+                listed = (
+                    "\n\nFindings it reported (not verified: check each, then update_finding "
+                    "with verified true, correct it, or drop_finding):" + listed
+                )
             text = (
                 f"Report from helper agent '{agent.description}' (check what it flags before you "
                 "state it):\n" + str(entry["report"])
-            )[:_MAX_REPORT_CHARS]
+            )[: _MAX_REPORT_CHARS - len(listed)] + listed
             result: dict[str, Any] = {
                 "type": "tool_result",
                 "tool_use_id": call.get("id"),
@@ -1042,6 +1321,12 @@ class ChatEngine:
                         results.append(self._not_run(call, "its input was cut off"))
                         continue
                     name = str(call.get("name"))
+                    if name in HELPER_FINDING_TOOL_NAMES:
+                        by = f"helper:{agent.number}"
+                        results.append(
+                            self._result(call, self._finding_tool(name, call.get("input"), by))
+                        )
+                        continue
                     step = new_step(str(call.get("id")), name, call.get("input"))
                     outcome = self._dispatch(name, call.get("input"), step, helper=True)
                     with self._lock:
@@ -1092,6 +1377,7 @@ class ChatEngine:
         error: str | None = None
         cap_hit: str | None = None
         text = ""
+        guard_sent = False
         while True:
             if self.cancel.is_set():
                 stopped = "cancelled"
@@ -1168,6 +1454,28 @@ class ChatEngine:
                     forced = "turn_limit"
                     _append_note(turn, TURN_LIMIT_NOTE)
                 continue
+            note = None if final or calls or guard_sent else self._coverage_gaps_note()
+            if note is not None and reply.stop_reason == "end_turn":
+                # The whole-set guard: once, and only when the caps leave room for more work.
+                guard_sent = True
+                probe = [*turn, {"role": "user", "content": [{"type": "text", "text": note}]}]
+                estimate = self._estimate(
+                    model,
+                    self._body(
+                        model=model,
+                        thinking=thinking,
+                        system=LEAD_SYSTEM_PROMPT,
+                        tools=LEAD_TOOLS,
+                        messages=[*self.history, *probe],
+                        final=False,
+                        max_tokens=LEAD_MAX_TOKENS,
+                    ),
+                    cached,
+                    previous,
+                )
+                if tool_turns < settings.lead_max_turns and self._fits(estimate):
+                    turn.append(probe[-1])
+                    continue
             if calls:
                 turn.append(
                     {
@@ -1201,6 +1509,11 @@ class ChatEngine:
                 if block.get("type") == "text" and block.get("text", "").strip()
             )
             _close_open_calls(turn)
+        if stopped not in ("cancelled", "error"):
+            try:
+                self._trust_phase()
+            except Exception:  # noqa: BLE001 - the answer is stored without its trust report
+                _log.exception("assistant chat trust report failed")
         if not answered:
             api_content: list[dict[str, Any]] = []
         else:

@@ -3562,6 +3562,52 @@
         "title": "ChatAgentOut",
         "type": "object"
       },
+      "ChatBoxOut": {
+        "description": "Where an item is: PDF points of the upload page as shown, origin top-left.",
+        "properties": {
+          "file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The upload's file name the box is on.",
+            "title": "File"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "x0": {
+            "title": "X0",
+            "type": "number"
+          },
+          "x1": {
+            "title": "X1",
+            "type": "number"
+          },
+          "y0": {
+            "title": "Y0",
+            "type": "number"
+          },
+          "y1": {
+            "title": "Y1",
+            "type": "number"
+          }
+        },
+        "required": [
+          "page",
+          "x0",
+          "y0",
+          "x1",
+          "y1"
+        ],
+        "title": "ChatBoxOut",
+        "type": "object"
+      },
       "ChatCancelOut": {
         "properties": {
           "cancelled": {
@@ -3581,6 +3627,136 @@
           "package"
         ],
         "type": "string"
+      },
+      "ChatCoverageBlock": {
+        "properties": {
+          "coverage": {
+            "$ref": "#/components/schemas/ChatCoverageOut"
+          },
+          "type": {
+            "const": "coverage",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "coverage"
+        ],
+        "title": "ChatCoverageBlock",
+        "type": "object"
+      },
+      "ChatCoverageCountsOut": {
+        "properties": {
+          "different": {
+            "title": "Different",
+            "type": "integer"
+          },
+          "not_comparable": {
+            "title": "Not Comparable",
+            "type": "integer"
+          },
+          "not_opened": {
+            "title": "Not Opened",
+            "type": "integer"
+          },
+          "same": {
+            "title": "Same",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "same",
+          "different",
+          "not_comparable",
+          "not_opened"
+        ],
+        "title": "ChatCoverageCountsOut",
+        "type": "object"
+      },
+      "ChatCoverageOut": {
+        "description": "Every page of the vendor's file (a page never recorded is not_opened), and the counts.",
+        "properties": {
+          "counts": {
+            "$ref": "#/components/schemas/ChatCoverageCountsOut"
+          },
+          "pages": {
+            "items": {
+              "$ref": "#/components/schemas/ChatCoveragePageOut"
+            },
+            "title": "Pages",
+            "type": "array"
+          }
+        },
+        "required": [
+          "pages",
+          "counts"
+        ],
+        "title": "ChatCoverageOut",
+        "type": "object"
+      },
+      "ChatCoveragePageOut": {
+        "properties": {
+          "by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Who recorded it; null: never recorded.",
+            "title": "By"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pair_page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pair Page"
+          },
+          "status": {
+            "enum": [
+              "same",
+              "different",
+              "not_comparable",
+              "not_opened"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "page",
+          "status"
+        ],
+        "title": "ChatCoveragePageOut",
+        "type": "object"
       },
       "ChatCreatedOut": {
         "properties": {
@@ -3646,6 +3822,424 @@
           "url"
         ],
         "title": "ChatFileOut",
+        "type": "object"
+      },
+      "ChatFindingBlock": {
+        "properties": {
+          "finding": {
+            "$ref": "#/components/schemas/ChatFindingOut"
+          },
+          "type": {
+            "const": "finding",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "finding"
+        ],
+        "title": "ChatFindingBlock",
+        "type": "object"
+      },
+      "ChatFindingChecksOut": {
+        "description": "The checks run on a finding, by code (and one cheap independent AI read).",
+        "properties": {
+          "arithmetic": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "adds_up | does_not_add_up | not_a_number (vendor arithmetic)",
+            "title": "Arithmetic"
+          },
+          "lead_checked": {
+            "title": "Lead Checked",
+            "type": "boolean"
+          },
+          "printed_architect": {
+            "description": "match | not_found | no_text | no_box | not_a_number | not_run",
+            "title": "Printed Architect",
+            "type": "string"
+          },
+          "printed_vendor": {
+            "title": "Printed Vendor",
+            "type": "string"
+          },
+          "rule": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "agrees | disagrees | not_run (rules)",
+            "title": "Rule"
+          },
+          "second_read": {
+            "description": "agrees | disagrees | unsure | not_run",
+            "title": "Second Read",
+            "type": "string"
+          }
+        },
+        "required": [
+          "printed_architect",
+          "printed_vendor",
+          "second_read",
+          "lead_checked"
+        ],
+        "title": "ChatFindingChecksOut",
+        "type": "object"
+      },
+      "ChatFindingDroppedBlock": {
+        "description": "A finding the assistant dropped (in the place its finding block was).",
+        "properties": {
+          "finding_id": {
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "type": {
+            "const": "finding_dropped",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "finding_id",
+          "reason"
+        ],
+        "title": "ChatFindingDroppedBlock",
+        "type": "object"
+      },
+      "ChatFindingInchesOut": {
+        "description": "Code's numbers (decimal strings, inches): never the AI's arithmetic.",
+        "properties": {
+          "architect": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Architect"
+          },
+          "difference": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Vendor minus architect.",
+            "title": "Difference"
+          },
+          "vendor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vendor"
+          }
+        },
+        "title": "ChatFindingInchesOut",
+        "type": "object"
+      },
+      "ChatFindingOut": {
+        "description": "One difference the assistant reported, with code-made evidence and checks.",
+        "properties": {
+          "arch_box": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatBoxOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "arch_picture_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Evidence crop: GET /chats/{chat_id}/pictures/{picture_id}.",
+            "title": "Arch Picture Id"
+          },
+          "architect": {
+            "title": "Architect",
+            "type": "string"
+          },
+          "category": {
+            "enum": [
+              "countertop",
+              "cabinet",
+              "other"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "checks": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatFindingChecksOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_by": {
+            "description": "\"lead\" or \"helper:<n>\".",
+            "title": "Created By",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "inches": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatFindingInchesOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "item": {
+            "title": "Item",
+            "type": "string"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "parts": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parts"
+          },
+          "printed_total": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Printed Total"
+          },
+          "round": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Round"
+          },
+          "round_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "fixed_in_later_round",
+                  "still_wrong",
+                  "new_in_later_round",
+                  "not_in_later_round",
+                  "single_round"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Round Status"
+          },
+          "rule_check_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rule Check Id"
+          },
+          "second_read_values": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatSecondReadValuesOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "enum": [
+              "architect",
+              "brand_prototype",
+              "rules",
+              "vendor_arithmetic"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "different",
+              "check",
+              "same"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "trust_level": {
+            "anyOf": [
+              {
+                "enum": [
+                  "confirmed",
+                  "likely",
+                  "to_check"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trust Level"
+          },
+          "vendor": {
+            "title": "Vendor",
+            "type": "string"
+          },
+          "vendor_box": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatBoxOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "vendor_picture_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vendor Picture Id"
+          },
+          "verified": {
+            "title": "Verified",
+            "type": "boolean"
+          },
+          "vs_page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vs Page"
+          },
+          "why": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Why"
+          }
+        },
+        "required": [
+          "id",
+          "page",
+          "item",
+          "category",
+          "architect",
+          "vendor",
+          "status",
+          "verified",
+          "source",
+          "created_by"
+        ],
+        "title": "ChatFindingOut",
+        "type": "object"
+      },
+      "ChatGvChecksOut": {
+        "description": "Of the differences GV Review's own checks recorded, how many this answer includes.",
+        "properties": {
+          "included": {
+            "title": "Included",
+            "type": "integer"
+          },
+          "left_out": {
+            "items": {
+              "$ref": "#/components/schemas/ChatRecordedDifferenceOut"
+            },
+            "title": "Left Out",
+            "type": "array"
+          },
+          "recorded": {
+            "title": "Recorded",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "recorded",
+          "included",
+          "left_out"
+        ],
+        "title": "ChatGvChecksOut",
         "type": "object"
       },
       "ChatListOut": {
@@ -3726,9 +4320,13 @@
                 "items": {
                   "discriminator": {
                     "mapping": {
+                      "coverage": "#/components/schemas/ChatCoverageBlock",
+                      "finding": "#/components/schemas/ChatFindingBlock",
+                      "finding_dropped": "#/components/schemas/ChatFindingDroppedBlock",
                       "step": "#/components/schemas/ChatStepBlock",
                       "text": "#/components/schemas/ChatTextBlock",
-                      "thinking": "#/components/schemas/ChatThinkingBlock"
+                      "thinking": "#/components/schemas/ChatThinkingBlock",
+                      "trust": "#/components/schemas/ChatTrustBlock"
                     },
                     "propertyName": "type"
                   },
@@ -3741,6 +4339,18 @@
                     },
                     {
                       "$ref": "#/components/schemas/ChatStepBlock"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChatFindingBlock"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChatFindingDroppedBlock"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChatCoverageBlock"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChatTrustBlock"
                     }
                   ]
                 },
@@ -4019,6 +4629,124 @@
           "messages"
         ],
         "title": "ChatOut",
+        "type": "object"
+      },
+      "ChatRecordedDifferenceOut": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "source": {
+            "enum": [
+              "code",
+              "ai_page_review"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "what": {
+            "title": "What",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "what"
+        ],
+        "title": "ChatRecordedDifferenceOut",
+        "type": "object"
+      },
+      "ChatRoundsOut": {
+        "properties": {
+          "earlier_items": {
+            "title": "Earlier Items",
+            "type": "integer"
+          },
+          "fixed": {
+            "title": "Fixed",
+            "type": "integer"
+          },
+          "line": {
+            "title": "Line",
+            "type": "string"
+          },
+          "new": {
+            "title": "New",
+            "type": "integer"
+          },
+          "not_in_later_round": {
+            "title": "Not In Later Round",
+            "type": "integer"
+          },
+          "rounds": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Rounds",
+            "type": "array"
+          },
+          "still_wrong": {
+            "title": "Still Wrong",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rounds",
+          "earlier_items",
+          "fixed",
+          "still_wrong",
+          "not_in_later_round",
+          "new",
+          "line"
+        ],
+        "title": "ChatRoundsOut",
+        "type": "object"
+      },
+      "ChatSecondReadValuesOut": {
+        "properties": {
+          "architect": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Architect"
+          },
+          "vendor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vendor"
+          }
+        },
+        "title": "ChatSecondReadValuesOut",
         "type": "object"
       },
       "ChatStepBlock": {
@@ -4312,6 +5040,203 @@
           "seconds"
         ],
         "title": "ChatThinkingBlock",
+        "type": "object"
+      },
+      "ChatTrustBlock": {
+        "properties": {
+          "trust": {
+            "$ref": "#/components/schemas/ChatTrustOut"
+          },
+          "type": {
+            "const": "trust",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "trust"
+        ],
+        "title": "ChatTrustBlock",
+        "type": "object"
+      },
+      "ChatTrustChecksOut": {
+        "properties": {
+          "arithmetic": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Arithmetic",
+            "type": "object"
+          },
+          "lead_checked": {
+            "title": "Lead Checked",
+            "type": "integer"
+          },
+          "printed_at_spot": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Printed At Spot",
+            "type": "object"
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/ChatTrustRuleOut"
+            },
+            "title": "Rules",
+            "type": "array"
+          },
+          "second_read": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Second Read",
+            "type": "object"
+          }
+        },
+        "required": [
+          "printed_at_spot",
+          "second_read",
+          "rules",
+          "arithmetic",
+          "lead_checked"
+        ],
+        "title": "ChatTrustChecksOut",
+        "type": "object"
+      },
+      "ChatTrustCoverageOut": {
+        "properties": {
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "pages_not_opened": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Pages Not Opened",
+            "type": "array"
+          }
+        },
+        "required": [
+          "counts",
+          "pages_not_opened"
+        ],
+        "title": "ChatTrustCoverageOut",
+        "type": "object"
+      },
+      "ChatTrustOut": {
+        "description": "Why the answer can be believed, built by code from its findings and coverage.",
+        "properties": {
+          "by_category": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            "title": "By Category",
+            "type": "object"
+          },
+          "checks": {
+            "$ref": "#/components/schemas/ChatTrustChecksOut"
+          },
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "confirmed, likely, to_check, total.",
+            "title": "Counts",
+            "type": "object"
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatTrustCoverageOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "gv_checks": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatGvChecksOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "not_checked": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Not Checked",
+            "type": "array"
+          },
+          "rounds": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatRoundsOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "counts",
+          "by_category",
+          "checks",
+          "not_checked"
+        ],
+        "title": "ChatTrustOut",
+        "type": "object"
+      },
+      "ChatTrustRuleOut": {
+        "properties": {
+          "finding_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finding Id"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          },
+          "rule_check_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rule Check Id"
+          }
+        },
+        "title": "ChatTrustRuleOut",
         "type": "object"
       },
       "CheckOut": {
@@ -16900,6 +17825,108 @@
           }
         },
         "summary": "Follow a message: its events so far, then live until it ends",
+        "tags": [
+          "assistant chats"
+        ]
+      }
+    },
+    "/api/v1/chats/{chat_id}/messages/{message_id}/findings.csv": {
+      "get": {
+        "operationId": "findings_spreadsheet_api_v1_chats__chat_id__messages__message_id__findings_csv_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chat_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Chat Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "message_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Message Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No such stored answer in this chat (or no access)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The answer's findings with their checks, as a spreadsheet (CSV)",
+        "tags": [
+          "assistant chats"
+        ]
+      }
+    },
+    "/api/v1/chats/{chat_id}/messages/{message_id}/markup-pdf": {
+      "post": {
+        "description": "Red clouds and notes (\"AI n: item, architect X; vendor Y\") at each finding's vendor box (else\nits architect box), \"AI markup: draft, not GV's signed review\" on page 1, and a notes page\nlisting every finding. Kept as a file of the answer; asking again returns the same file.",
+        "operationId": "markup_pdf_api_v1_chats__chat_id__messages__message_id__markup_pdf_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chat_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Chat Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "message_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Message Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatFileOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No such stored answer in this chat (or no access)."
+          },
+          "409": {
+            "description": "`uploads_missing`: the chat has no copy of the set's PDFs."
+          },
+          "422": {
+            "description": "`no_findings`: the answer has no findings to mark up."
+          }
+        },
+        "summary": "The answer's findings drawn on a copy of the vendor's PDF (by code, no AI call)",
         "tags": [
           "assistant chats"
         ]

@@ -172,88 +172,48 @@ this on **every** paired page, including the second round (revision) pages.
    (`-x -y -W -H` are pixels at that dpi: points x 300 / 72). Then `view` it.
 5. For many pages, split them across helpers (`Agent`, up to 4 at once) **by building or area**, so
    each helper has both the architect's and the vendor's pages of its areas. Tell each one where
-   the pictures are, and to read this file's sections 4, 5 and 7 first (they can open it too). Ask for
-   page-by-page findings: page numbers, item, the exact printed value on each side, whether GV
-   flagged it, how sure, and the list of pages it opened.
-6. **Verify every lead yourself before you state it**: open that crop on both drawings and read the
-   numbers. A lead you checked and found wrong, drop. One you had no time to check, list under
-   "Leads not checked yet"; never drop it silently.
-7. **Whole-set questions cover every page pair** (section 7), yours or a helper's; brief helpers on
-   non-dimension differences and brand prototype sheets too. Close with the pages found the same
-   and the pages not opened.
+   the pictures are, to read this file's sections 4, 5, 7, 9 and 10 first, to record each
+   difference with `report_finding` (with boxes) and the pages it compared with `set_coverage`,
+   and to list the pages it opened. Brief them on non-dimension differences and brand prototypes.
+6. **Verify every lead yourself before you state it** (a helper's finding is a lead): open that
+   crop on both drawings and read the numbers, then `update_finding` with `verified: true` (or
+   correct it). A finding you checked and found wrong: `drop_finding`. One you had no time to check
+   stays unverified.
+7. **Whole-set questions cover every page pair** (section 7), yours or a helper's. Record every
+   page with `set_coverage`: same, different, not_comparable (note why) or not_opened (note why).
+   The app sends you back once if a page is not accounted for.
 
 ## 9. How to answer
 
-- Lead with a short summary, then a table, countertop items first, then cabinets, then the rest:
-
-| Page | Item | Architect shows | Vendor shows | Why it matters |
-|---|---|---|---|---|
-| 7 (arch p.6) | Pantry top depth | 26 1/4" | 25 3/4" | Top 1/2" short of the design |
-
-- Inches, with the printed form when useful. Say which side looks wrong, or "needs a person to
-  check". Say whether GV already flagged it.
-- Mark what you verified on the drawing yourself vs what is a lead from a helper you have not
-  checked. Name pages you did not open. Brand prototype differences go in their own group.
+- **Every difference is a finding**: `report_finding` for each, with the page, item, category,
+  what the architect shows and what the vendor shows **as printed** (inches), status, source, and
+  boxes where each value is printed (section 10). The app crops the evidence at the boxes, checks
+  the printed values and draws the table: never write the findings again as a markdown table.
+- `source`: `architect`; `brand_prototype` (section 1); `rules` with `rule_check_id` (the check's
+  id in `review_results`); `vendor_arithmetic` with `parts` and `printed_total` (a dimension string
+  that does not add up). `verified: true` only when you read both values on the drawing yourself.
+- Sets in rounds (a first and a later submittal): give each finding its `round` (1, 2, ...) and
+  name the same item the same way in every round, so the app can link them.
+- Match the question: yes/no or a number, one line; "summarize", one or two lines; a list, a short
+  list; a comparison, the findings plus at most two plain lines. No preamble, no disclaimer, no
+  restating the question. One line on what you did not check when it matters. Unclear: ask one
+  short question back.
 - Never write pass, fail, approved or signed off as your own judgement: GV's code records results
-  and a GV reviewer decides. Your answer is an AI reading, to check before acting.
+  and a GV reviewer decides.
 
-## 10. Making a marked-up PDF
+## 10. Boxes, and the marked-up PDF
 
-When asked for a marked-up PDF: work on a **copy** of the vendor's PDF (never the upload), draw a
-red cloud and a short numbered note at each item, put "AI markup: draft, not GV's signed review" on
-the first page, list every note again on a page added at the end, save to
-`/mnt/user-data/outputs/`, check it, and hand it over with `present_files`.
+A box is where the value is printed: `{page, x0, y0, x1, y1}` in PDF points of the page as shown,
+origin top-left, a little larger than the number. Give `file` only when the set has more than one
+PDF and the box is not on the default (architect box: the architect's file; vendor box: the vendor's).
+`pdftotext -f N -l N -bbox F.pdf /home/claude/words.html` lists each word's box in exactly these
+units (it also reads text inside stamps). For a number drawn as lines, measure it on a picture:
+points = pixels x 72 / dpi (add the crop's offset when you rendered part of a page).
 
-Where an item is: `pdftotext -f N -l N -bbox F.pdf /home/claude/words.html` lists each word's box
-in points, origin top-left (it also reads text inside stamps; pdfplumber's `extract_words` reads
-only page-content text). For a number drawn as lines, measure it on a picture:
-points = pixels x 72 / dpi. PDF drawing space starts bottom-left: `y = page_height - y_top`. Check
-`page.rotation` and the mediabox origin; if either is not 0, convert accordingly. On a sheet whose
-drawings are pasted stamps, the drawing is painted over your marks: put each note in clear space.
-
-```python
-import io, logging; logging.disable(logging.WARNING)
-from pypdf import PdfReader, PdfWriter
-from reportlab.pdfgen import canvas
-from reportlab.lib.colors import red
-SRC, OUT = "/mnt/user-data/uploads/F.pdf", "/mnt/user-data/outputs/F - AI markup.pdf"
-ITEMS = [(7, (412, 300, 470, 312), 'Arch 26 1/4" deep, vendor 25 3/4"')]  # page, (x0, top, x1, bottom), note
-TITLE = "AI markup: draft, not GV's signed review"
-
-def cloud(c, x0, y0, x1, y1, r=5):  # scallops outward along the four edges of a box
-    for ax, ay, bx, by, start in ((x0, y0, x1, y0, 180), (x1, y0, x1, y1, 270),
-                                  (x1, y1, x0, y1, 0), (x0, y1, x0, y0, 90)):
-        n = max(2, int(max(abs(bx - ax), abs(by - ay)) // (2 * r)))
-        for i in range(n):
-            cx, cy = ax + (bx - ax) * (i + .5) / n, ay + (by - ay) * (i + .5) / n
-            c.arc(cx - r, cy - r, cx + r, cy + r, start, 180)
-
-def overlay(pw, ph, draw):  # one transparent page drawn with reportlab
-    buf = io.BytesIO(); c = canvas.Canvas(buf, pagesize=(pw, ph))
-    c.setStrokeColor(red); c.setFillColor(red); draw(c); c.save(); buf.seek(0)
-    return PdfReader(buf).pages[0]
-
-w = PdfWriter(clone_from=PdfReader(SRC))
-numbered = list(enumerate(ITEMS, 1))
-for n, page in enumerate(w.pages, 1):
-    pw, ph = float(page.mediabox.width), float(page.mediabox.height)
-    marks = [(k, box, note) for k, (p, box, note) in numbered if p == n]
-    def draw(c, marks=marks, n=n, ph=ph):
-        if n == 1:
-            c.setFont("Helvetica-Bold", 14); c.drawString(24, ph - 30, TITLE)
-        for k, (x0, top, x1, bottom), note in marks:
-            cloud(c, x0 - 6, ph - bottom - 6, x1 + 6, ph - top + 6)
-            c.setFont("Helvetica-Bold", 10); c.drawString(x1 + 10, ph - top + 4, f"AI {k}: {note}")
-    if marks or n == 1:
-        page.merge_page(overlay(pw, ph, draw))
-pw, ph = float(w.pages[0].mediabox.width), float(w.pages[0].mediabox.height)
-def notes(c):  # every note again, on a page added at the end
-    c.setFont("Helvetica-Bold", 14); c.drawString(36, ph - 40, TITLE); c.setFont("Helvetica", 10)
-    for i, (k, (p, _box, note)) in enumerate(numbered):
-        c.drawString(36, ph - 64 - 14 * i, f"AI {k}  (page {p})  {note}")
-w.add_blank_page(pw, ph).merge_page(overlay(pw, ph, notes))
-w.write(OUT)
-```
-Then render each marked page (`pdftoppm -f N -l N -r 80 -png ...`) and `view` it to check every
-cloud sits on its item before you call `present_files`. Keep notes short and in inches; one cloud
-per item; the note says what the architect shows and what the vendor shows.
+The reviewer's **Download marked-up PDF** button draws, by code, a red cloud and a note at each
+finding's vendor box (else its architect box) on a copy of the vendor's PDF, the stamp
+"AI markup: draft, not GV's signed review" on page 1 and a notes page. So when asked for a marked-up PDF,
+report the findings with good boxes and say the button under the answer makes it. Draw one
+yourself (reportlab and pypdf on a copy, never the upload, saved in `/mnt/user-data/outputs/`; the
+same stamp and notes page; check it by rendering; `present_files`) only when the reviewer asks for
+something the button does not make.
