@@ -45,23 +45,23 @@ def by_source(findings: list[dict[str, Any]], source: str) -> list[dict[str, Any
 def test_fraction_string_off_by_an_eighth_is_a_vendor_arithmetic_finding() -> None:
     ledger = ReadingLedger(page_count=60)
     text, error = string(
-        ledger, parts=["12", '15 1/2"', '12 1/8"'], printed_total='39 1/2"', box=BOX
+        ledger, parts=["10", '14 1/4"', '10 1/8"'], printed_total='34 1/4"', box=BOX
     )
 
     assert not error
-    assert '12 + 15 1/2" + 12 1/8" = 39 5/8" ≠ 39 1/2" printed (off 1/8")' in text
+    assert '10 + 14 1/4" + 10 1/8" = 34 3/8" ≠ 34 1/4" printed (off 1/8")' in text
     assert 'replaces "S1"' in text
     entry = ledger.strings[0]
     assert entry.result == "does_not_add_up"
-    assert entry.parts_sum == Decimal("39.625")
+    assert entry.parts_sum == Decimal("34.375")
     assert entry.off_by == Decimal("-0.125")
 
     (finding,) = ledger.ledger_findings()
     assert finding["source"] == "vendor_arithmetic"
     assert finding["status"] == "different"
-    assert finding["parts"] == ["12", '15 1/2"', '12 1/8"']
-    assert finding["printed_total"] == '39 1/2"'
-    assert finding["architect"] == '39 5/8"' and finding["vendor"] == '39 1/2"'
+    assert finding["parts"] == ["10", '14 1/4"', '10 1/8"']
+    assert finding["printed_total"] == '34 1/4"'
+    assert finding["architect"] == '34 3/8"' and finding["vendor"] == '34 1/4"'
     assert finding["vendor_box"] == {"page": 3, "x0": 10.0, "y0": 20.0, "x1": 60.0, "y1": 32.0}
     assert finding["verified"] is False
 
@@ -119,7 +119,7 @@ def test_an_architect_string_that_is_off_is_counted_but_never_a_vendor_finding()
 
 
 def test_format_inches() -> None:
-    assert format_inches(Decimal("39.625")) == '39 5/8"'
+    assert format_inches(Decimal("34.375")) == '34 3/8"'
     assert format_inches(Decimal(36)) == '36"'
     assert format_inches(Decimal("-0.125")) == '-1/8"'
 
