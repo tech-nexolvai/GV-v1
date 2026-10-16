@@ -38,7 +38,7 @@ export function WhatToCheckBlock({ block }: { block: WhatToCheck }) {
                   <span className="num font-medium text-foreground">{piece.value}</span>
                   {piece.mm && <span className="num text-muted-foreground">{piece.mm}</span>}
                   {piece.not_used && (
-                    <span className="rounded border border-border px-1.5 text-[11px] leading-4 text-muted-foreground">not used</span>
+                    <span className="rounded border border-border px-1.5 text-xs leading-4 text-muted-foreground">not used</span>
                   )}
                 </>
               ) : (
