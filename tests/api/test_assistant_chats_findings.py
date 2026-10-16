@@ -66,6 +66,29 @@ def _whole_set_script() -> list[list[dict[str, Any]] | BaseException]:
     ]
 
 
+def _fast_script() -> list[list[dict[str, Any]] | BaseException]:
+    """#fast (#1497): a narrow question answered the way Claude does: one reply asks for the set
+    pack's status, two zoom crops and the recorded results at once; the next reports one finding
+    and answers. Two model calls in all."""
+    crops = [
+        {"page": 1, "box": {"x0": 40, "y0": 40, "x1": 200, "y1": 90}, "label": "overall"},
+        {"page": 2, "box": {"x0": 40, "y0": 40, "x1": 200, "y1": 90}, "label": "depth"},
+    ]
+    return [
+        reply(
+            tool(
+                "b1",
+                "bash_tool",
+                {"command": "cat /mnt/user-data/set/status.json", "description": "Pack"},
+            ),
+            tool("z1", "zoom", {"crops": crops, "description": "Read the two values"}),
+            tool("r0", "review_results", {"page": 2}),
+            stop="tool_use",
+        ),
+        reply(text("One difference, on page 2.")),
+    ]
+
+
 def test_findings_stream_are_stored_and_reload_the_same_with_their_pictures(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
     provider = ScriptedProvider(lead=_whole_set_script())
     with _world(postgres_engine, tmp_path, provider=provider, pdf=PDF3, pages=3) as world:
@@ -264,7 +287,9 @@ class _FakeAnthropic(BaseHTTPRequestHandler):
         start = max(i for i, m in enumerate(messages) if question(m))
         step = sum(1 for m in messages[start:] if m["role"] == "assistant")
         tag = re.search(r"#(\w+)", json.dumps(messages[start]["content"]))
-        script = _whole_set_script() if tag and tag.group(1) == "findings" else [reply(text("?"))]
+        scripts = {"findings": _whole_set_script, "fast": _fast_script}
+        chosen = scripts.get(tag.group(1)) if tag else None
+        script = chosen() if chosen is not None else [reply(text("?"))]
         events = script[min(step, len(script) - 1)]
         self.send_response(200)
         self.send_header("content-type", "text/event-stream")
@@ -309,6 +334,59 @@ def test_a_whole_set_answer_end_to_end_against_a_fake_anthropic_server(postgres_
             made = world.client.post(f"/api/v1/chats/{chat_id}/messages/{message['id']}/markup-pdf")
             assert made.status_code == 200
             assert UUID(made.json()["id"])
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_narrow_answer_asks_for_its_tools_at_once_end_to_end(postgres_engine, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """#fast through the real SDK and route: three tools in one reply run together and go back in
+    one message, in order; the zoom's two crops reach the model as pictures; two calls in all."""
+    from app.api.assistant_chats import ChatRuntime, chat_runtime
+    from app.review.assistant.chat_provider import AnthropicSdkProvider, ProviderChoice
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeAnthropic)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", f"http://127.0.0.1:{server.server_address[1]}")
+    _FakeAnthropic.requests, _FakeAnthropic.problems = [], []
+    try:
+        with _world(postgres_engine, tmp_path, pdf=PDF3, pages=3) as world:
+            scripted = world.app.dependency_overrides[chat_runtime]()
+            choice = ProviderChoice("anthropic", "sk-ant-fake-qa")
+            world.app.dependency_overrides[chat_runtime] = lambda: ChatRuntime(
+                choice=choice,
+                provider=lambda: AnthropicSdkProvider(choice, timeout_seconds=30),
+                open_sandbox=scripted.open_sandbox,
+                skill_builder=scripted.skill_builder,
+                rates=scripted.rates,
+            )
+            chat_id = world.chat()
+            status, events = world.ask(
+                chat_id, "Is the depth on page 2 the architect's? #fast", **ASK
+            )
+            assert status == 200
+            message = _named(events, "message_end")[0]["message"]
+            assert message["stopped"] is None, message
+            assert len(_FakeAnthropic.requests) == 2 and _FakeAnthropic.problems == []
+            second = _FakeAnthropic.requests[1]["messages"]
+            results = second[-1]["content"]
+            assert [r["tool_use_id"] for r in results] == ["b1", "z1", "r0"]
+            zoomed = results[1]["content"]
+            assert [b["type"] for b in zoomed] == ["text", "image", "text", "image"]
+            assert all(b["source"]["type"] == "base64" for b in zoomed if b["type"] == "image")
+            assert "drawings only" in zoomed[0]["text"]
+            steps = [b["step"] for b in message["blocks"] if b["type"] == "step"]
+            assert [step["tool"] for step in steps] == ["bash_tool", "view", "review_results"]
+            assert steps[1]["label"] == "Read the two values" and steps[1]["picture_id"]
+            assert (
+                world.client.get(
+                    f"/api/v1/chats/{chat_id}/pictures/{steps[1]['picture_id']}"
+                ).content[:4]
+                == b"\x89PNG"
+            )
+            tools = [t["name"] for t in _FakeAnthropic.requests[0]["tools"]]
+            assert tools[:3] == ["bash_tool", "view", "zoom"]
     finally:
         server.shutdown()
         server.server_close()
