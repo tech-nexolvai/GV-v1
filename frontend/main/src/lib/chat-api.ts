@@ -120,7 +120,161 @@ export interface ChatMessage {
 export type ChatBlock =
   | { type: 'thinking'; text: string; seconds: number | null }
   | { type: 'text'; text: string }
-  | { type: 'step'; step: ChatStep };
+  | { type: 'step'; step: ChatStep }
+  | { type: 'finding'; finding: ChatFinding }
+  | { type: 'coverage'; coverage: ChatCoverage }
+  | { type: 'trust'; trust: ChatTrust };
+
+// ── Chat v2 (CONTRACT2-findings): findings with evidence, and page coverage ──
+
+/** Which group a finding sits in. */
+export type FindingCategory = 'countertop' | 'cabinet' | 'other';
+
+/** `different`: the drawings disagree. `check`: a person should look. `same`: they agree. */
+export type FindingStatus = 'different' | 'check' | 'same';
+
+/**
+ * What the vendor's value was compared with: the architect's drawing (the usual case), the brand's
+ * prototype, GV's rules, or the vendor's own numbers adding up ("vendor's own string").
+ */
+export type FindingSource = 'architect' | 'brand_prototype' | 'rules' | 'vendor_arithmetic';
+
+/** A spot on a page, in PDF points of the original upload (origin top-left). */
+export interface FindingBox {
+  page: number;
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+/**
+ * One difference (or match) the assistant reported with `report_finding`, at its latest version.
+ * `architect` and `vendor` are shown exactly as written: the screen never re-types a number.
+ */
+export interface ChatFinding {
+  id: string;
+  /** The page the finding is on (the vendor's page). */
+  page: number;
+  /** The page it was compared with (the architect's), when it is a different one. */
+  vs_page?: number | null;
+  item: string;
+  category: FindingCategory;
+  architect: string | null;
+  vendor: string | null;
+  status: FindingStatus;
+  why?: string | null;
+  /** True when the lead checked it on the drawing itself; false for a helper's lead not yet checked. */
+  verified: boolean;
+  arch_box?: FindingBox | null;
+  vendor_box?: FindingBox | null;
+  source: FindingSource;
+  /** The evidence crops code made from the boxes, served by the chat's pictures route. */
+  arch_picture_id?: string | null;
+  vendor_picture_id?: string | null;
+  /** "lead", or "helper:<n>". */
+  created_by?: string | null;
+  /** Chat v3 (CONTRACT3-trust): code's own reading of the two values, in inches. */
+  inches?: FindingInches | null;
+  /** Chat v3: the checks code ran on this finding (and the second read's result). */
+  checks?: FindingChecks | null;
+  /** Chat v3: the trust level code worked out from the checks. */
+  trust_level?: TrustLevel | null;
+  /** Chat v3: what happened to it across the set's rounds of comments. */
+  round_status?: RoundStatus | null;
+  /** Chat v3, `source: vendor_arithmetic`: the vendor's parts and the total it printed, as printed. */
+  parts?: string[] | null;
+  printed_total?: string | null;
+  /** Chat v3, `source: rules`: the GV check code ran for it. */
+  rule_check_id?: string | null;
+  /** Chat v3: which round of comments it is from. */
+  round?: number | null;
+}
+
+/**
+ * Code's numbers for a finding (never the AI's arithmetic), as decimal strings ("37", "37.5"); the
+ * difference is vendor minus architect. A value code could not read as a length is null ("not a
+ * number": the printed words are shown as written instead).
+ */
+export interface FindingInches {
+  architect: string | number | null;
+  vendor: string | number | null;
+  difference: string | number | null;
+}
+
+/** Confirmed: printed and second read agree. Likely: two checks pass. To check: anything else. */
+export type TrustLevel = 'confirmed' | 'likely' | 'to_check';
+
+/**
+ * Printed at the spot: `match` (the value is printed in its box), `not_found`, `no_text` (drawn as
+ * pen strokes, cannot be checked this way), `no_box` (no box to search), `not_a_number`, `not_run`.
+ */
+export type PrintedResult = 'match' | 'not_found' | 'no_text' | 'no_box' | 'not_a_number' | 'not_run';
+
+/** The checks code recorded on a finding (CONTRACT3 "Backend changes"). */
+export interface FindingChecks {
+  printed_architect?: PrintedResult | null;
+  printed_vendor?: PrintedResult | null;
+  /** A fresh model saw only the two crops; code compared its numbers with the finding. */
+  second_read?: 'agrees' | 'disagrees' | 'unsure' | 'not_run' | null;
+  /** The recorded result of the GV check code ran (`source: rules`). */
+  rule?: 'agrees' | 'disagrees' | 'not_run' | null;
+  /** The vendor's parts added up by code (`source: vendor_arithmetic`). */
+  arithmetic?: 'adds_up' | 'does_not_add_up' | 'not_a_number' | null;
+  /** The lead checked it on the drawing itself. */
+  lead_checked?: boolean | null;
+}
+
+export type RoundStatus = 'fixed_in_later_round' | 'still_wrong' | 'new_in_later_round' | 'not_in_later_round' | 'single_round';
+
+/** One difference GV Review's own checks recorded that the answer did not include. */
+export interface TrustLeftOut {
+  page?: number | null;
+  item: string;
+  /** e.g. "architect 30" · vendor 31"" as code wrote it. */
+  values?: string | null;
+  /** "code rule" or "AI page review". */
+  source?: string | null;
+}
+
+/**
+ * The trust report code builds after an answer's checks (block `trust`, event `trust`). Its shape
+ * is the screen's proposal (the backend notes do not fix it yet): every field is optional, and the
+ * screen counts levels and checks from the findings themselves when a field is missing.
+ */
+export interface ChatTrust {
+  levels?: { confirmed: number; likely: number; to_check: number } | null;
+  checks?: {
+    printed?: { match: number; not_found: number; no_text: number } | null;
+    second_read?: { agrees: number; disagrees: number; unsure: number } | null;
+    verified?: { checked: number; total: number } | null;
+    rules?: string[] | null;
+    arithmetic?: { checked: number; agrees: number } | null;
+  } | null;
+  /** Of the differences GV Review's own checks recorded for this set, how many the answer includes. */
+  gv_checks?: { matched: number; total: number; left_out?: TrustLeftOut[] | null } | null;
+  /** What it did NOT check, in code's plain words (pen-stroke numbers, pages not opened…). */
+  not_checked?: string[] | null;
+  /** Rounds of comments: round-1 differences fixed in a later round, still wrong, not in it, and new ones. */
+  rounds?: { fixed: number; still_wrong: number; new: number; not_in_later?: number | null } | null;
+}
+
+export type CoverageStatus = 'same' | 'different' | 'not_comparable' | 'not_opened';
+
+export interface CoveragePage {
+  page: number;
+  /** The page it was paired with (the architect's). */
+  pair_page?: number | null;
+  status: CoverageStatus;
+  /** Why it is not comparable, or what differs. */
+  note?: string | null;
+}
+
+/** The page-by-page map of a whole-set answer: which pages were compared and how they came out. */
+export interface ChatCoverage {
+  pages: CoveragePage[];
+  counts?: { total: number; same: number; different: number; not_comparable: number; not_opened: number } | null;
+}
 
 export type ChatTool =
   | 'bash_tool'
@@ -208,13 +362,18 @@ export type ChatEvent =
   | { event: 'file'; data: { file: ChatFile } }
   | { event: 'usage'; data: { cost_usd: string } }
   | { event: 'message_end'; data: { message: ChatMessage } }
-  | { event: 'error'; data: { message: string } };
+  | { event: 'error'; data: { message: string } }
+  | { event: 'finding'; data: { finding: ChatFinding } }
+  | { event: 'finding_dropped'; data: { finding_id: string } }
+  | { event: 'coverage'; data: { coverage: ChatCoverage } }
+  | { event: 'trust'; data: { trust: ChatTrust } };
 
 export type ChatEventName = ChatEvent['event'];
 
 const EVENT_NAMES: ReadonlySet<string> = new Set<ChatEventName>([
   'message_start', 'thinking_start', 'thinking_delta', 'thinking_end', 'text_delta', 'step_start', 'step_end',
   'tasks', 'agent_start', 'agent_step', 'agent_end', 'file', 'usage', 'message_end', 'error',
+  'finding', 'finding_dropped', 'coverage', 'trust',
 ]);
 
 /**
@@ -245,6 +404,8 @@ export const chatPaths = {
   cancel: (chatId: string) => `${BASE}/chats/${id(chatId)}/cancel`,
   file: (chatId: string, fileId: string) => `${BASE}/chats/${id(chatId)}/files/${id(fileId)}`,
   picture: (chatId: string, pictureId: string) => `${BASE}/chats/${id(chatId)}/pictures/${id(pictureId)}`,
+  /** Chat v2: code draws the message's findings on a copy of the upload and returns it as a file. */
+  markupPdf: (chatId: string, messageId: string) => `${BASE}/chats/${id(chatId)}/messages/${id(messageId)}/markup-pdf`,
 };
 
 // ── Requests ────────────────────────────────────────────────
@@ -293,6 +454,11 @@ export function getChat(chatId: string): Promise<Chat> {
 /** Stop the running message between steps (its sandbox command and helpers too). */
 export function cancelChat(chatId: string): Promise<{ cancelled: boolean }> {
   return json<{ cancelled: boolean }>(chatPaths.cancel(chatId), { method: 'POST', body: '{}' });
+}
+
+/** Make the marked-up PDF of a finished message's findings (code only, no AI call); returns the file. */
+export function makeMarkupPdf(chatId: string, messageId: string): Promise<ChatFile> {
+  return json<ChatFile>(chatPaths.markupPdf(chatId, messageId), { method: 'POST', body: '{}' });
 }
 
 /**
@@ -409,6 +575,7 @@ export interface ChatApi {
   send: typeof streamChatMessage;
   follow: typeof followChatMessage;
   cancel: typeof cancelChat;
+  markup: typeof makeMarkupPdf;
 }
 
 export const LIVE_CHAT_API: ChatApi = {
@@ -419,4 +586,5 @@ export const LIVE_CHAT_API: ChatApi = {
   send: streamChatMessage,
   follow: followChatMessage,
   cancel: cancelChat,
+  markup: makeMarkupPdf,
 };

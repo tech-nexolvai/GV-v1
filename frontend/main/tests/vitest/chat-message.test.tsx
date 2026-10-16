@@ -87,7 +87,8 @@ describe('the work behind an answer', () => {
 
 describe('thinking', () => {
   it('is folded to "Thought for 12s" and opens to the thinking, smaller and muted', async () => {
-    const node = show(answer({ blocks: [{ type: 'thinking', text: 'Compare the **two sets**.', seconds: 12, live: false }, { type: 'text', text: 'Answer.' }] }));
+    // A full answer (three lines): a one-line answer shows only its words (#1483).
+    const node = show(answer({ blocks: [{ type: 'thinking', text: 'Compare the **two sets**.', seconds: 12, live: false }, { type: 'text', text: 'Answer.\n\nMore.\n\nEnd.' }] }));
     const button = within(node).getByRole('button', { name: 'Thought for 12s' });
     expect(button.getAttribute('aria-expanded')).toBe('false');
     const body = document.getElementById(button.getAttribute('aria-controls')!)!;
@@ -275,7 +276,7 @@ describe('reduced motion', () => {
   });
 
   it('with motion allowed, folds animate their height', () => {
-    const node = show(answer({ blocks: [{ type: 'thinking', text: 'Reading', seconds: 3, live: false }, { type: 'text', text: 'Words.' }] }));
+    const node = show(answer({ blocks: [{ type: 'thinking', text: 'Reading', seconds: 3, live: false }, { type: 'text', text: 'Words.\n\nMore.\n\nEnd.' }] }));
     expect(node.querySelector('[data-slot="chat-collapse"]')?.className).toContain('transition-[grid-template-rows,opacity]');
   });
 });

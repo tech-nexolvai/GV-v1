@@ -523,6 +523,8 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                     onReload={reload}
                     onRetry={canRetry ? () => void send(question) : undefined}
                     latest={at === messages.length - 1}
+                    makeMarkupPdf={(messageId) => api.markup(chatId, messageId)}
+                    fullPageHref={formatRoute({ page: 'review', packageId })}
                   />
                 );
               })}

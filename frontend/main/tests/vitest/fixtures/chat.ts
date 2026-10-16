@@ -4,7 +4,7 @@
  */
 import { vi } from 'vitest';
 
-import type { Chat, ChatApi, ChatEvent, ChatMessage, ChatModel, ChatModels, ChatSummary } from '@/lib/chat-api';
+import type { Chat, ChatApi, ChatEvent, ChatFinding, ChatMessage, ChatModel, ChatModels, ChatSummary } from '@/lib/chat-api';
 
 const ALL = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 
@@ -104,6 +104,15 @@ export function fakeChatApi(change: Partial<ChatApi> = {}): ChatApi & { [K in ke
     send: vi.fn(async () => SAVED_ANSWER),
     follow: vi.fn(async () => SAVED_ANSWER),
     cancel: vi.fn(async () => ({ cancelled: true })),
+    markup: vi.fn(async () => ({ id: 'f-markup', name: 'marked-up.pdf', size: 2048, mime: 'application/pdf', url: '/api/v1/chats/c-1/files/f-markup' })),
     ...change,
   } as never;
+}
+
+/** A made-up finding (chat v2/v3): a countertop width that differs, checked by the lead, with both crops. */
+export function finding(id: string, change: Partial<ChatFinding> = {}): ChatFinding {
+  return {
+    id, page: 3, vs_page: null, item: `Item ${id}`, category: 'countertop', architect: '24"', vendor: '25"', status: 'different',
+    why: null, verified: true, source: 'architect', arch_picture_id: `arch-${id}`, vendor_picture_id: `vend-${id}`, created_by: 'lead', ...change,
+  };
 }

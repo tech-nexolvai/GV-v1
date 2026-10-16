@@ -1,10 +1,17 @@
 import { useId, useState } from 'react';
-import { ChevronRight, CircleAlert, Download, FileImage, FileSpreadsheet, FileText, File as FileIcon, RotateCw } from 'lucide-react';
+import { ChevronRight, CircleAlert, Download, FileDown, Sheet, FileImage, FileSpreadsheet, FileText, File as FileIcon, RotateCw } from 'lucide-react';
 
 import { ActivityRow, TaskChecklist } from '@/components/chat/chat-activity';
+import { CoverageStrip } from '@/components/chat/chat-coverage';
+import { EvidenceViewer } from '@/components/chat/chat-evidence';
+import { FindingsTable } from '@/components/chat/chat-findings';
+import { TrustSummary } from '@/components/chat/chat-trust';
 import { ChatMarkdown } from '@/components/chat/chat-markdown';
-import { Collapse, CopyButton, Shimmer, Spark } from '@/components/chat/chat-motion';
+import { Collapse, CopyButton, Shimmer, Spark, Spinner } from '@/components/chat/chat-motion';
 import { chatPaths, type ChatFile, type ChatModel } from '@/lib/chat-api';
+import { groupFindings, isShortAnswer, NO_FILTER, shownInOrder, type FindingFilter } from '@/lib/chat-findings';
+import { downloadFile, downloadFindingsCsv, markupFailureWords } from '@/lib/chat-exports';
+import { hasTrust, roundCounts } from '@/lib/chat-trust';
 import {
   answerItems,
   fileKind,
@@ -124,6 +131,52 @@ export function FileCards({ files, chatId }: { files: readonly ChatFile[]; chatI
   );
 }
 
+// ── The marked-up PDF ──────────────────────────────────────
+
+/**
+ * "Download marked-up PDF": code draws clouds and notes from this answer's findings on a copy of the
+ * upload (no AI call, the same every time). The new file appears as a card and downloads at once.
+ */
+function MarkupButton({ make, onMade }: { make: () => Promise<ChatFile>; onMade: (file: ChatFile) => void }) {
+  const [state, setState] = useState<{ kind: 'idle' } | { kind: 'running' } | { kind: 'failed'; words: string }>({ kind: 'idle' });
+  const running = state.kind === 'running';
+  const click = () => {
+    if (running) return;
+    setState({ kind: 'running' });
+    make().then(
+      (file) => {
+        setState({ kind: 'idle' });
+        onMade(file);
+      },
+      (error: unknown) => setState({ kind: 'failed', words: markupFailureWords(error) }),
+    );
+  };
+  return (
+    <>
+      <button
+        data-slot="chat-markup"
+        type="button"
+        onClick={click}
+        disabled={running}
+        aria-busy={running}
+        className={cn(EXPORT_BUTTON, 'disabled:cursor-progress disabled:opacity-70')}
+      >
+        {running ? <Spinner /> : <FileDown className="size-4" aria-hidden="true" />}
+        {running ? 'Making the marked-up PDF…' : 'Download marked-up PDF'}
+      </button>
+      {state.kind === 'failed' && (
+        <p role="alert" data-slot="chat-markup-error" className="inline-flex min-w-0 basis-full items-start gap-1.5 text-sm text-muted-foreground">
+          <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          <span>{state.words}</span>
+        </p>
+      )}
+    </>
+  );
+}
+
+const EXPORT_BUTTON =
+  'inline-flex h-8 items-center gap-1.5 rounded-lg border bg-background px-3 text-sm font-medium transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none motion-reduce:transition-none';
+
 // ── The answer ──────────────────────────────────────────────
 
 function RetryButton({ onRetry, withWords = false }: { onRetry: () => void; withWords?: boolean }) {
@@ -145,6 +198,12 @@ function RetryButton({ onRetry, withWords = false }: { onRetry: () => void; with
   );
 }
 
+/** One or two lines of words (no table or code): set with tight spacing. */
+function isFewLines(text: string): boolean {
+  const lines = text.split('\n').filter((line) => line.trim());
+  return lines.length <= 2 && !lines.some((line) => /^\s*(\||```)/.test(line));
+}
+
 export interface AssistantMessageProps {
   message: ViewMessage;
   chatId: string;
@@ -159,13 +218,43 @@ export interface AssistantMessageProps {
   onRetry?: () => void;
   /** The newest answer: its Copy and Retry stay shown; on older answers they appear on hover. */
   latest?: boolean;
+  /**
+   * Chat v2: make the marked-up PDF of this answer's findings (`POST …/markup-pdf`). The button
+   * shows on a finished answer with findings when this is given.
+   */
+  makeMarkupPdf?: (messageId: string) => Promise<ChatFile>;
+  /** Chat v2: where the evidence viewer's "Open in review screen" goes; left out when absent. */
+  fullPageHref?: string | null;
 }
 
-export function AssistantMessage({ message, chatId, models, messageCapUsd, onReload, onRetry, latest = false }: AssistantMessageProps) {
+export function AssistantMessage({ message, chatId, models, messageCapUsd, onReload, onRetry, latest = false, makeMarkupPdf, fullPageHref }: AssistantMessageProps) {
   const running = message.status === 'running';
   const pictureUrl = (pictureId: string) => chatPaths.picture(chatId, pictureId);
+  const [filter, setFilter] = useState<FindingFilter>(NO_FILTER);
+  const [viewing, setViewing] = useState<string | null>(null);
+  const [madeFiles, setMadeFiles] = useState<ChatFile[]>([]);
+  const findings = message.findings ?? [];
+  const coverage = message.coverage ?? null;
+  // A one- or two-line answer with no work, findings or files: just its words and the meta line.
+  const short = isShortAnswer(message);
   const blocks = shownBlocks(message);
-  const { items } = answerItems(blocks, Boolean(message.tasks?.length));
+  const { items: allItems } = answerItems(blocks, Boolean(message.tasks?.length));
+  const items = short ? allItems.filter((item) => item.kind === 'text') : allItems;
+  // The viewer's arrows step through the findings in the table's order, under its filter.
+  const ordered = shownInOrder(groupFindings(findings, filter));
+  const files = [...message.files, ...madeFiles.filter((made) => !message.files.some((file) => file.id === made.id))];
+  const messageId = message.id;
+  const finished = !running && message.status === 'done' && findings.length > 0;
+  const canMarkup = finished && messageId !== null && makeMarkupPdf !== undefined;
+  const showTrust = findings.length > 0 && (hasTrust(findings, message.trust) || roundCounts(findings, message.trust) !== null);
+  // The coverage strip sits in the trust summary when there is one, else on its own under the table.
+  const coverageStrip = coverage ? (
+    <CoverageStrip
+      coverage={coverage}
+      page={filter.page}
+      onPickPage={findings.length ? (page) => setFilter({ ...filter, status: 'all', page: filter.page === page ? null : page }) : undefined}
+    />
+  ) : null;
   const streaming = textStreaming(message);
   const stopped = stoppedWords(message, messageCapUsd);
   const answerText = (message.stopped ? withoutStopNote(message.text) : message.text)
@@ -179,7 +268,13 @@ export function AssistantMessage({ message, chatId, models, messageCapUsd, onRel
   const looseTasks = tasks?.length && lastTaskAt < 0 ? <TaskChecklist tasks={tasks} running={running} /> : null;
 
   return (
-    <article data-slot="chat-assistant-message" data-status={message.status} aria-label="Answer" className="group/message chat-rise flex min-w-0 flex-col gap-3">
+    <article
+      data-slot="chat-assistant-message"
+      data-status={message.status}
+      data-short={short ? 'true' : undefined}
+      aria-label="Answer"
+      className={cn('group/message chat-rise flex min-w-0 flex-col', short ? 'gap-1' : 'gap-3')}
+    >
       {items.map((item, at) => {
         const last = at === items.length - 1;
         return (
@@ -202,6 +297,8 @@ export function AssistantMessage({ message, chatId, models, messageCapUsd, onRel
               <ChatMarkdown
                 text={(blocks[item.index] as Extract<ViewBlock, { type: 'text' }>).text}
                 streaming={streaming && last && item.index === blocks.length - 1}
+                // A short answer's lines sit close together; a long answer keeps its reading rhythm.
+                className={short || isFewLines((blocks[item.index] as Extract<ViewBlock, { type: 'text' }>).text) ? 'gap-2' : undefined}
               />
             )}
           </div>
@@ -209,7 +306,41 @@ export function AssistantMessage({ message, chatId, models, messageCapUsd, onRel
       })}
       {looseTasks}
 
-      <FileCards files={message.files} chatId={chatId} />
+      {showTrust && <TrustSummary findings={findings} trust={message.trust} coverage={coverage} coverageStrip={coverageStrip} />}
+
+      {findings.length > 0 && (
+        <FindingsTable findings={findings} filter={filter} onFilter={setFilter} onOpen={(finding) => setViewing(finding.id)} pictureUrl={pictureUrl} />
+      )}
+      {findings.length > 0 && (
+        <EvidenceViewer findings={ordered} openId={viewing} onOpen={setViewing} pictureUrl={pictureUrl} fullPageHref={fullPageHref} />
+      )}
+
+      {coverage && !showTrust && coverageStrip}
+
+      {finished && (
+        <div data-slot="chat-exports" className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+          {canMarkup && (
+            <MarkupButton
+              make={() => makeMarkupPdf(messageId)}
+              onMade={(file) => {
+                setMadeFiles((known) => (known.some((made) => made.id === file.id) ? known : [...known, file]));
+                downloadFile(file.url || chatPaths.file(chatId, file.id), file.name);
+              }}
+            />
+          )}
+          <button
+            type="button"
+            data-slot="chat-csv"
+            onClick={() => downloadFindingsCsv(findings, `findings-${(messageId ?? 'answer').slice(0, 8)}.csv`)}
+            className={EXPORT_BUTTON}
+          >
+            <Sheet className="size-4" aria-hidden="true" />
+            Download Excel (CSV)
+          </button>
+        </div>
+      )}
+
+      <FileCards files={files} chatId={chatId} />
 
       {stopped && message.stopped !== 'error' && (
         <p data-slot="chat-stopped" data-stopped={message.stopped ?? undefined} className="text-sm text-muted-foreground">{stopped}</p>
@@ -252,7 +383,7 @@ export function AssistantMessage({ message, chatId, models, messageCapUsd, onRel
             data-slot="chat-actions"
             className={cn(
               'flex min-h-7 items-center gap-0.5 transition-opacity duration-150 focus-within:opacity-100 group-hover/message:opacity-100 [@media(hover:none)]:opacity-100 motion-reduce:transition-none',
-              latest ? 'opacity-100' : 'opacity-0',
+              latest && !short ? 'opacity-100' : 'opacity-0',
             )}
           >
             {answerText.trim() && <CopyButton text={answerText} />}
