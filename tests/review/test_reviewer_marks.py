@@ -250,7 +250,7 @@ def test_the_snapshot_freezes_every_persons_answer_as_a_mark(
     revision, _anchors, _findings = _answered(session, tmp_path)
     payload = _snapshot(session, _approve(session, revision))
 
-    assert payload.format_version == 2
+    assert payload.format_version == 3
     assert payload.reviewer_marks is not None
     marks = _by_words(payload.reviewer_marks)
     assert marks["Confirmed by AB"].kind == "confirmed"
@@ -341,13 +341,14 @@ def test_a_snapshot_frozen_before_1363_loads_as_format_1_and_draws_no_marks(
     `tests/reports/test_redline_old_format_golden.py` pins that those draw the same bytes."""
     monkeypatch.setattr("app.review.signed_exports.SNAPSHOT_FORMAT_VERSION", 1)
     monkeypatch.setattr("app.review.signed_exports.reviewer_marks_for", lambda *_a, **_k: None)
+    monkeypatch.setattr("app.review.signed_exports._old_compare_off", lambda: None)
     revision, _anchors, _findings = _answered(session, tmp_path)
     approval = _approve(session, revision)
     snapshot = session.scalars(
         select(ApprovalExportSnapshot).where(ApprovalExportSnapshot.approval_id == approval.id)
     ).one()
     stored = json.loads(snapshot.canonical_json)
-    del stored["format_version"], stored["reviewer_marks"]
+    del stored["format_version"], stored["reviewer_marks"], stored["old_compare_off"]
     old = ExportSnapshot.model_validate(stored)
     assert old.format_version == 1 and old.reviewer_marks is None
     monkeypatch.undo()
@@ -470,3 +471,28 @@ def test_the_draft_cloud_pdf_shows_the_same_marks_from_the_live_records(
         "✍ No countertop on this page: confirmed by OD",
         "✗ Checked by reviewer AB: WRONG",
     } <= texts
+
+
+@pytest.mark.parametrize(("version", "tags"), [(3, True), (2, False)])
+def test_a_format_3_snapshot_is_drawn_with_tags_and_the_new_cover_only(
+    session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, version: int, tags: bool
+) -> None:
+    """Final QA 2026-10-16: a snapshot frozen from now on (format 3) is drawn with tags only and
+    the cover that counts what is clouded wrong; a format-2 snapshot exactly as before."""
+    from reports.redline import LabelLayout
+
+    if version == 2:
+        monkeypatch.setattr("app.review.signed_exports.SNAPSHOT_FORMAT_VERSION", 2)
+        monkeypatch.setattr("app.review.signed_exports._old_compare_off", lambda: None)
+    revision, _anchors, _findings = _answered(session, tmp_path)
+    approval = _approve(session, revision)
+    payload = _snapshot(session, approval)
+    assert payload.format_version == version
+    assert (payload.old_compare_off is not None) is tags
+    monkeypatch.undo()
+
+    given = _capture_redline(monkeypatch)
+    generate_signed_outputs(session, LocalStore(root=tmp_path / "signed"), approval.id)
+
+    assert given[0]["label_layout"] is (LabelLayout.TAGS if tags else LabelLayout.AS_BEFORE)
+    assert (given[0]["review_cover"] is not None) is tags

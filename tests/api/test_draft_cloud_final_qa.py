@@ -103,3 +103,36 @@ def test_the_old_compare_row_is_left_out_of_the_draft_while_the_old_compare_is_o
     assert ("left out: the old architect check" in front) is not listed
     assert ("is switched off, so nothing was compared by it" in front) is not listed
     assert NOTHING_COMPARED  # the row the helper writes
+
+
+def test_the_draft_banner_is_a_thin_strip_above_the_pages_content(
+    session: Session, store: LocalStore
+) -> None:
+    """The banner covered side notes (QA 2026-10-16): it now sits in a thin strip added above
+    each page's visible top, so nothing of the page is under it."""
+    import pdfplumber
+
+    from app.models import OutputArtifact
+    from workflow.draft_cloud import request_draft_cloud
+    from workflow.draft_cloud_render import BANNER_STRIP
+
+    _, revision = _checked(session, store)
+    request = request_draft_cloud(session, revision.id, requested_by="ana@example.com")
+    session.commit()
+    drawn = render_draft_cloud(session, store, revision.id, request, requested_by="a reviewer")
+    artifact = session.get(OutputArtifact, drawn["draft_id"])
+    assert artifact is not None
+    content = store.get(artifact.storage_key).read()
+
+    with pdfplumber.open(io.BytesIO(content)) as pdf:
+        assert len(pdf.pages) >= 2
+        for page in pdf.pages:
+            banner = [char for char in page.chars if char["fontname"].endswith("Helvetica-Bold")]
+            words = "".join(char["text"] for char in banner if char["bottom"] <= float(BANNER_STRIP) + 0.5)
+            assert "DRAFT" in words, "the banner is in the strip at the very top"
+            below = [
+                char
+                for char in page.chars
+                if char["top"] < float(BANNER_STRIP) - 0.5 and char not in banner
+            ]
+            assert not below, "nothing of the page itself is in the banner's strip"

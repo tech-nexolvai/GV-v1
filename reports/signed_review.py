@@ -1,17 +1,54 @@
-"""Worker-only rendering of the stored signed review."""
+"""Worker-only rendering of the stored signed review.
+
+**The cover of a format-3 snapshot (QA 2026-10-16)** (`ReviewCover`) adds what the draft's front
+page already says: "Will be clouded as wrong" (every FAIL, and every result a person checked by
+hand and found wrong, by the signed record's own mark), and "Compared with the architect" with
+every difference. A rule left out (the old compare while it is switched off) is said once, never
+dropped silently. With no `ReviewCover` (an older snapshot) the cover is drawn exactly as before.
+"""
+
+from dataclasses import dataclass
 
 from app.review.signed_record import ReviewDisposition, SignedReview, SignedReviewFinding
 
 __all__ = [
+    "ReviewCover",
     "ReviewDisposition",
     "SignedReview",
     "SignedReviewFinding",
+    "clouded_wrong",
     "review_pdf",
     "with_review_pdf",
 ]
 
 
-def review_pdf(review: SignedReview) -> bytes:
+@dataclass(frozen=True, slots=True)
+class ReviewCover:
+    """What a format-3 signed cover adds, every line from the frozen snapshot."""
+
+    compare_title: str | None = None
+    """E.g. "Compared with the architect (AI read) (2 different)"; `None` when nothing was
+    compared."""
+    compare_lines: tuple[str, ...] = ()
+    """The counts line, the note, then one line per difference ("A1 ... — Page 2")."""
+    left_out_rules: frozenset[str] = frozenset()
+    """Rules whose results are not printed here (the old compare while it is switched off)."""
+    left_out_note: str | None = None
+    """Said once when a result was left out, so nothing vanishes silently."""
+
+
+def clouded_wrong(review: SignedReview) -> tuple[SignedReviewFinding, ...]:
+    """Every FAIL, and every result a person checked by hand and found wrong (#1358), by the
+    signed record's own mark (`ReviewDisposition.checked_wrong_by_hand`)."""
+    return tuple(
+        finding
+        for finding in review.findings
+        if finding.outcome == "FAIL"
+        or (finding.actions and finding.actions[-1].checked_wrong_by_hand)
+    )
+
+
+def review_pdf(review: SignedReview, cover: ReviewCover | None = None) -> bytes:
     """A readable publication record, generated solely from stored fields."""
     from io import BytesIO
     from xml.sax.saxutils import escape
@@ -31,7 +68,26 @@ def review_pdf(review: SignedReview) -> bytes:
         Paragraph(escape(review.signoff), styles["Normal"]),
         Spacer(1, 16),
     ]
-    for finding in review.findings:
+    shown = review.findings
+    if cover is not None:
+        shown = tuple(f for f in review.findings if f.rule_id not in cover.left_out_rules)
+        wrong = [f for f in clouded_wrong(review) if f.rule_id not in cover.left_out_rules]
+        story.append(Paragraph(f"Will be clouded as wrong ({len(wrong)})", styles["Heading2"]))
+        if not wrong:
+            story.append(Paragraph("None. No result is wrong.", styles["Normal"]))
+        for finding in wrong:
+            label = finding.rule_id + (f" - {finding.scope_label}" if finding.scope_label else "")
+            story.append(Paragraph(escape(f"{label}: {finding.wording}"), styles["Normal"]))
+        story.append(Spacer(1, 12))
+        if cover.compare_title is not None:
+            story.append(Paragraph(escape(cover.compare_title), styles["Heading2"]))
+            for text in cover.compare_lines:
+                story.append(Paragraph(escape(text), styles["Normal"]))
+            story.append(Spacer(1, 12))
+        if cover.left_out_note is not None and len(shown) != len(review.findings):
+            story.append(Paragraph(escape(cover.left_out_note), styles["Normal"]))
+            story.append(Spacer(1, 12))
+    for finding in shown:
         story.append(
             Paragraph(
                 escape(
@@ -60,14 +116,16 @@ def review_pdf(review: SignedReview) -> bytes:
     return output.getvalue()
 
 
-def with_review_pdf(document: bytes, review: SignedReview) -> bytes:
+def with_review_pdf(
+    document: bytes, review: SignedReview, cover: ReviewCover | None = None
+) -> bytes:
     """Prepend the signed record without changing the deterministic pages or drawing."""
     from io import BytesIO
 
     from pypdf import PdfReader, PdfWriter
 
     writer = PdfWriter()
-    writer.append(PdfReader(BytesIO(review_pdf(review))))
+    writer.append(PdfReader(BytesIO(review_pdf(review, cover))))
     writer.append(PdfReader(BytesIO(document)))
     output = BytesIO()
     writer.write(output)

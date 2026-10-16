@@ -36,6 +36,7 @@ from typing import Final
 from uuid import UUID
 
 from pypdf import PageObject, PdfReader, PdfWriter
+from pypdf.generic import RectangleObject
 from reportlab.lib.pagesizes import letter  # type: ignore[import-untyped]
 from reportlab.pdfgen.canvas import Canvas  # type: ignore[import-untyped]
 from sqlalchemy import select
@@ -166,7 +167,9 @@ def open_items(
             # A person checked it by hand and found it wrong (#1358): clouded as wrong, counted
             # here, by the signed record's own mark. The recorded result is unchanged.
             failures.append(
-                OpenItem(item.label, f"Checked by hand: WRONG by {decision.reviewer}. {item.reason}")
+                OpenItem(
+                    item.label, f"Checked by hand: WRONG by {decision.reviewer}. {item.reason}"
+                )
             )
         elif is_not_checked(finding.outcome, item.reason, standing.get(finding.id)):
             # Settling a check that never ran does not make it checked (decision 1): still
@@ -579,32 +582,60 @@ def _user_point(
     return x0 + u, y0 + v
 
 
+#: The DRAFT strip added above each page's visible top (QA 2026-10-16), in points: the banner
+#: sits in it, never over the drawing's content.
+BANNER_STRIP: Final = Decimal(14)
+
+
+def _grow_top(page: PageObject, rotation: int, amount: Decimal) -> None:
+    """Add `amount` points above the page's visible top edge, to both its boxes."""
+    for name in ("/MediaBox", "/CropBox"):
+        box = page.mediabox if name == "/MediaBox" else page.cropbox
+        x0, y0, x1, y1 = (
+            Decimal(str(value)) for value in (box.left, box.bottom, box.right, box.top)
+        )
+        if rotation == 0:
+            y1 += amount
+        elif rotation == 90:
+            x0 -= amount
+        elif rotation == 180:
+            y0 -= amount
+        else:
+            x1 += amount
+        grown = (float(x0), float(y0), float(x1), float(y1))
+        if name == "/MediaBox":
+            page.mediabox = RectangleObject(grown)
+        else:
+            page.cropbox = RectangleObject(grown)
+
+
 def _banner_overlay(page: PageObject) -> PageObject:
+    """A thin red strip with the DRAFT words, in the strip `_grow_top` added above the page."""
     rotation = (page.rotation or 0) % 360
     box = _box(page)
     shown_width = box[2] - box[0] if rotation in (0, 180) else box[3] - box[1]
     shown_height = box[3] - box[1] if rotation in (0, 180) else box[2] - box[0]
-    size = max(Decimal(10), min(Decimal(28), shown_width / 40))
+    size = BANNER_STRIP * Decimal("0.7")
     buffer = BytesIO()
     media = page.mediabox
-    canvas = Canvas(buffer, pagesize=(float(media.right), float(media.top)), invariant=1)
+    canvas = Canvas(
+        buffer,
+        pagesize=(float(media.right) - float(media.left), float(media.top) - float(media.bottom)),
+        invariant=1,
+    )
+    canvas.translate(-float(media.left), -float(media.bottom))
     text_width = Decimal(str(canvas.stringWidth(BANNER, "Helvetica-Bold", float(size))))
-    pad = size / 2
-    box_width = text_width + 2 * pad
-    box_height = size + pad
-    u = (shown_width - box_width) / 2
-    v = shown_height - box_height - pad
-    x, y = _user_point(rotation, box, u, v)
+    x, y = _user_point(rotation, box, Decimal(0), shown_height - BANNER_STRIP)
     canvas.saveState()
     canvas.translate(float(x), float(y))
     canvas.rotate(rotation)
-    canvas.setFillAlpha(0.85)
     canvas.setFillColorRGB(0.75, 0.05, 0.05)
-    canvas.rect(0, 0, float(box_width), float(box_height), stroke=0, fill=1)
-    canvas.setFillAlpha(1)
+    canvas.rect(0, 0, float(shown_width), float(BANNER_STRIP), stroke=0, fill=1)
     canvas.setFillColorRGB(1, 1, 1)
     canvas.setFont("Helvetica-Bold", float(size))
-    canvas.drawString(float(pad), float(pad * Decimal("0.9")), BANNER)
+    canvas.drawString(
+        float((shown_width - text_width) / 2), float(BANNER_STRIP * Decimal("0.27")), BANNER
+    )
     canvas.restoreState()
     canvas.showPage()
     canvas.save()
@@ -617,6 +648,9 @@ def with_banner(front: bytes, drawing: bytes) -> bytes:
     writer.append(PdfReader(BytesIO(front)))
     writer.append(PdfReader(BytesIO(drawing)))
     for page in writer.pages:
+        # A thin strip above the page's visible top carries the banner, so it never covers a
+        # note or a dimension (QA 2026-10-16).
+        _grow_top(page, (page.rotation or 0) % 360, BANNER_STRIP)
         page.merge_page(_banner_overlay(page))
     output = BytesIO()
     writer.write(output)
