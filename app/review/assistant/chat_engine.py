@@ -114,6 +114,7 @@ from app.review.assistant.chat_trust import (
     trust_report,
     with_second_read,
 )
+from app.review.assistant.ledger import LEDGER_TOOL_NAMES, ReadingLedger, recorded_results_check
 from app.review.assistant.sandbox import SandboxRefused
 from app.runs.rates import ModelRates, call_cost_micros
 
@@ -132,8 +133,10 @@ _log = logging.getLogger(__name__)
 #: Names the system prompts and tools: a change to either is a new id. (chat-v2: the `Agent`
 #: tool's `model` text names Sonnet as the default. chat-v3: helpers run at most at medium effort.
 #: chat-v4: the findings and coverage tools, and the answer-style lines. chat-v5: dismiss_recorded
-#: and cite.) Only the request's prefix changes; a chat's stored messages replay unchanged.
-HARNESS_ID: Final = "chat-v5"
+#: and cite. chat-v6: record_string and record_reading (the reading ledger) for the lead and the
+#: helpers, and their prompt lines.) Only the request's prefix changes; a chat's stored messages
+#: replay unchanged.
+HARNESS_ID: Final = "chat-v6"
 #: The output allowance of a forced last call (a wrap-up or a final answer at the cap).
 WRAP_UP_MAX_TOKENS: Final = 8000
 FINAL_MAX_TOKENS: Final = 16000
@@ -502,7 +505,10 @@ class ChatEngine:
         self._coverage_index: int | None = None
         self._helpers_started = 0
         self._recorded: Recorded | None = None
+        self._recorded_document: Mapping[str, Any] | None = None
         self._recorded_read = False
+        # One reading ledger per message, shared by the lead and its helpers (thread-safe).
+        self.reading_ledger = ReadingLedger(page_count=self.book.page_count or None)
 
     # ---- the screen ------------------------------------------------------------------------------
 
@@ -889,6 +895,11 @@ class ChatEngine:
                     call, self._finding_tool(name, call.get("input"), "lead")
                 )
                 continue
+            if name in LEDGER_TOOL_NAMES:
+                results[id(call)] = self._result(
+                    call, self._ledger_tool(name, call.get("input"), "lead")
+                )
+                continue
             step = new_step(str(call.get("id")), name, call.get("input"))
             index = self._add_block({"type": "step", "step": step})
             self.emit("step_start", {"index": index, "step": step})
@@ -912,13 +923,17 @@ class ChatEngine:
                 return self._recorded
         loader = self.tools.results
         recorded = Recorded(readable=False)
+        document: Mapping[str, Any] | None = None
         if loader is not None:
             try:
-                recorded = recorded_from(loader(None))
+                loaded = loader(None)
+                document = loaded if isinstance(loaded, Mapping) else None
+                recorded = recorded_from(loaded)
             except Exception as failed:  # noqa: BLE001 - the report says it could not be read
                 _log.warning("assistant chat could not read the records: %s", type(failed).__name__)
         with self._lock:
             self._recorded, self._recorded_read = recorded, True
+            self._recorded_document = document
         return recorded
 
     def _checked(self, finding: dict[str, Any]) -> dict[str, Any]:
@@ -1013,6 +1028,89 @@ class ChatEngine:
             text += " " + "; ".join(notes) + "."
         return ToolResult(content=[{"type": "text", "text": text}], step={})
 
+    def _ledger_tool(self, name: str, raw: object, by: str) -> ToolResult:
+        """`record_string`, `record_reading`: no step on the screen; code's sum (or what other
+        views of the item show) goes back to the model."""
+        text, is_error = self.reading_ledger.run_tool(name, raw, by=by)
+        return ToolResult(content=[{"type": "text", "text": text}], step={}, is_error=is_error)
+
+    def _ledger_used(self) -> bool:
+        ledger = self.reading_ledger
+        return bool(ledger.strings or ledger.readings)
+
+    def _ledger_findings(self) -> None:
+        """At finish: code's findings from the reading ledger (vendor sums that don't add up, the
+        same item read differently across views, items one side shows and the other never does),
+        added through the finding book like any finding, so they get the same checks."""
+        if not self._ledger_used():
+            return
+        book = self.book
+        live = book.live()
+        coverage = book.coverage_map() if book.coverage_used else None
+        reported_sums = {
+            (f.get("page"), str(f.get("printed_total") or "").strip())
+            for f in live
+            if f.get("source") == "vendor_arithmetic"
+        }
+        for extra in self.reading_ledger.ledger_findings(live, coverage):
+            if (
+                extra.get("source") == "vendor_arithmetic"
+                and (
+                    extra.get("page"),
+                    str(extra.get("printed_total") or "").strip(),
+                )
+                in reported_sums
+            ):
+                continue  # the lead already reported this string
+            if extra.get("source") == "vendor_arithmetic":
+                entry = next(
+                    (e for e in self.reading_ledger.strings if e.id in extra.get("ledger_ids", [])),
+                    None,
+                )
+                if entry is not None:
+                    extra = {**extra, "sum_text": entry.sum_text()}
+            added = book.add_code_finding(extra)
+            if added is not None:
+                self._show_finding(added)
+
+    def _ledger_trust(self, report: dict[str, Any]) -> None:
+        """The ledger's counts (and everything it recorded, for a reload) in the trust report."""
+        if self._ledger_used():
+            book = self.book
+            coverage = book.coverage_map() if book.coverage_used else None
+            live = [f for f in book.live() if f.get("created_by") != "ledger"]
+            report["ledger"] = self.reading_ledger.ledger_report(live, coverage)
+            report["ledger_entries"] = self.reading_ledger.as_dict()
+        check = self._recorded_results_check()
+        if check is not None:
+            report["recorded_results"] = {
+                key: check[key] for key in ("recorded", "included", "dismissed", "missing")
+            }
+
+    def _ledger_dismissed(self) -> dict[str, str]:
+        """The lead's dismissals keyed both ways: a record id, and an AI page review row's key."""
+        out: dict[str, str] = {}
+        for record_id, reason in self.book.dismissed.items():
+            out[record_id] = reason
+            if record_id.startswith("ai-review:p") and ":" in record_id[len("ai-review:p") :]:
+                out.setdefault(record_id.split(":", 2)[2], reason)
+        return out
+
+    def _recorded_results_check(self) -> dict[str, Any] | None:
+        """The ledger's "never drop a recorded result" check (whole-set work only)."""
+        if self.settings.mode != "full_check" and not self.book.coverage_used:
+            return None
+        self._recorded_checks()
+        with self._lock:
+            document = self._recorded_document
+        if document is None:
+            return None
+        try:
+            return recorded_results_check(document, self.book.live(), self._ledger_dismissed())
+        except Exception as failed:  # noqa: BLE001 - the existing check still runs
+            _log.warning("assistant chat recorded results check failed: %s", type(failed).__name__)
+            return None
+
     def _second_read_call(self, content: list[dict[str, Any]], share: _Share) -> str:
         """One second read: the cheap model, no tools, within the message's caps."""
         model = BY_SHORT[SECOND_READ_MODEL]
@@ -1106,7 +1204,11 @@ class ChatEngine:
     def _trust_phase(self) -> None:
         """After the lead's answer: second reads, round links, then the trust report."""
         book = self.book
-        if not book.live() and not book.coverage_used:
+        try:
+            self._ledger_findings()
+        except Exception:  # noqa: BLE001 - the answer goes on without the ledger's findings
+            _log.exception("assistant chat ledger findings failed")
+        if not book.live() and not book.coverage_used and not self._ledger_used():
             return
         skipped = self._second_reads()
         statuses = round_statuses(book.live())
@@ -1123,6 +1225,7 @@ class ChatEngine:
             second_reads_skipped=skipped,
             dismissed=book.dismissed,
         )
+        self._ledger_trust(report)
         index = self._add_block({"type": "trust", "trust": report})
         self.emit("trust", {"index": index, "trust": json.loads(json.dumps(report))})
 
@@ -1157,6 +1260,23 @@ class ChatEngine:
             if gaps:
                 parts.append(coverage_note(gaps, self.book.main_file))
         missing = self._recorded_missing()
+        # The ledger's recorded-results check finds a few more (the review list's failures):
+        # folded into this one note, never a second send-back.
+        recorded = self._recorded
+        known = {str(item["record_id"]) for item in missing}
+        if recorded is not None:
+            known |= {str(item["record_id"]) for item in recorded.differences}
+            known |= set(recorded.results)
+        check = self._recorded_results_check()
+        for item in (check or {}).get("missing") or []:
+            pages = item.get("pages") or []
+            key = str(item.get("key"))
+            if {key, *(f"ai-review:p{page}:{key}" for page in pages)} & known:
+                continue  # the check above already counts this one
+            known.add(key)
+            missing.append(
+                {"record_id": key, "page": pages[0] if pages else None, "what": item.get("what")}
+            )
         if missing:
             listed = "; ".join(
                 f"{item['record_id']} (page {item.get('page')}: {item.get('what')})"
@@ -1499,6 +1619,12 @@ class ChatEngine:
                         by = f"helper:{agent.number}"
                         results.append(
                             self._result(call, self._finding_tool(name, call.get("input"), by))
+                        )
+                        continue
+                    if name in LEDGER_TOOL_NAMES:
+                        by = f"helper:{agent.number}"
+                        results.append(
+                            self._result(call, self._ledger_tool(name, call.get("input"), by))
                         )
                         continue
                     step = new_step(str(call.get("id")), name, call.get("input"))

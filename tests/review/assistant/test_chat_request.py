@@ -447,7 +447,10 @@ def test_the_system_prompt_is_short_and_names_the_skill_and_the_three_facts() ->
         "set_coverage",
         "dismiss_recorded",
         "cite",
+        "record_string",
+        "record_reading",
     ]
+    assert "record_string" in LEAD_SYSTEM_PROMPT and "record_reading" in LEAD_SYSTEM_PROMPT
 
 
 def test_the_system_prompt_carries_the_answer_style_rules() -> None:

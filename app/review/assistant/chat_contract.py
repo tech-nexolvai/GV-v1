@@ -8,7 +8,7 @@ and their own steps. The SSE events (`chat_engine.py`) carry the same shapes.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -225,7 +225,17 @@ class ChatFindingOut(BaseModel):
     verified: bool
     arch_box: ChatBoxOut | None = None
     vendor_box: ChatBoxOut | None = None
-    source: Literal["architect", "brand_prototype", "rules", "vendor_arithmetic", "gv_review"]
+    source: Literal[
+        "architect",
+        "brand_prototype",
+        "rules",
+        "vendor_arithmetic",
+        "gv_review",
+        "cross_view",
+        "completeness",
+    ] = Field(
+        description="cross_view and completeness are made only by code, from the reading ledger."
+    )
     parts: list[str] | None = None
     printed_total: str | None = None
     rule_check_id: str | None = None
@@ -238,7 +248,21 @@ class ChatFindingOut(BaseModel):
     )
     vendor_picture_id: str | None = None
     created_by: str = Field(
-        description='"lead", "helper:<n>", or "gv_review" (made by code from a recorded result).'
+        description='"lead", "helper:<n>", "gv_review" (made by code from a recorded result), or '
+        '"ledger" (made by code from the reading ledger).'
+    )
+    ledger_ids: list[str] | None = Field(
+        default=None, description="The reading ledger's entries (S<n>, R<n>) behind it."
+    )
+    reference_side: Literal["vendor", "architect"] | None = Field(
+        default=None,
+        description="cross_view: whose drawings disagree. `architect` then holds the REFERENCE "
+        "view's value and `vendor` this view's.",
+    )
+    sum_text: str | None = Field(
+        default=None,
+        description='vendor_arithmetic from the ledger: code\'s sum written out ("12 + 15 1/2 = '
+        '27 1/2 ≠ 27 1/4 printed (off 1/4)").',
     )
     checks: ChatFindingChecksOut | None = None
     inches: ChatFindingInchesOut | None = None
@@ -374,6 +398,74 @@ class ChatRoundsOut(BaseModel):
     line: str
 
 
+class ChatLedgerStringsOut(BaseModel):
+    """The vendor's (and architect's) dimension strings the AI recorded, added up by code."""
+
+    model_config = ConfigDict(frozen=True)
+
+    total: int
+    add_up: int
+    off: int
+    not_a_number: int
+    vendor_off: int
+    architect_off: int
+    off_list: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ChatLedgerViewsOut(BaseModel):
+    """The same item read on several views or pages, compared by code."""
+
+    model_config = ConfigDict(frozen=True)
+
+    groups: int
+    consistent: int
+    inconsistent: int
+    not_compared: int
+    typical_groups: int
+
+
+class ChatLedgerCompletenessOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    compared: bool
+    architect_items: int
+    vendor_items: int
+    missing_on_vendor: list[str] = Field(default_factory=list)
+    extra_on_vendor: list[str] = Field(default_factory=list)
+    not_looked_at: list[str] = Field(default_factory=list)
+
+
+class ChatLedgerReportOut(BaseModel):
+    """The reading ledger's counts, by code (CONTRACT3 "Ledger")."""
+
+    model_config = ConfigDict(frozen=True)
+
+    strings: ChatLedgerStringsOut
+    views: ChatLedgerViewsOut
+    completeness: ChatLedgerCompletenessOut
+
+
+class ChatLedgerEntriesOut(BaseModel):
+    """Everything the reading ledger recorded, so a reload shows the same."""
+
+    model_config = ConfigDict(frozen=True)
+
+    strings: list[dict[str, Any]] = Field(default_factory=list)
+    readings: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ChatRecordedResultsOut(BaseModel):
+    """GV Review's recorded results (code FAILs, evaluator-checked AI page review differences) and
+    how many the answer includes (the ledger's check)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    recorded: int
+    included: int
+    dismissed: int
+    missing: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class ChatTrustOut(BaseModel):
     """Why the answer can be believed, built by code from its findings and coverage."""
 
@@ -386,6 +478,9 @@ class ChatTrustOut(BaseModel):
     gv_checks: ChatGvChecksOut | None = None
     rounds: ChatRoundsOut | None = None
     not_checked: list[str]
+    ledger: ChatLedgerReportOut | None = None
+    ledger_entries: ChatLedgerEntriesOut | None = None
+    recorded_results: ChatRecordedResultsOut | None = None
 
 
 class ChatTrustBlock(BaseModel):
