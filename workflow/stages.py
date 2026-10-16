@@ -315,6 +315,7 @@ from verdict.outcomes import Outcome, is_decision
 from vocabulary.cabinet_codes import is_cabinet_code
 from vocabulary.part_kinds import PartKind
 from workflow.ai_budget import AiBudget
+from workflow.architect_compare import persist_architect_compare
 from workflow.architect_match_contract import MatchLookup
 from workflow.architect_match_records import persist_architect_matches, remembered_matches
 from workflow.architect_matching import (
@@ -2393,6 +2394,20 @@ class DatabaseStages:
             # Never silent (#1163): each page's architect notes — views found without a role,
             # views refused, why no view was found — travel with that page's result.
             results = _with_architect_notes(results, architect)
+            # The direct compare (#1418): where each architect dimension on a combined sheet was
+            # paired with the vendor's line, by geometry only, stored once for the review to read.
+            if not _one_file_as_both_roles(session, package_revision_id):
+                for version in _shop_document_versions_for(session, package_revision_id):
+                    compare_data = verified_data.get(version)
+                    if compare_data is not None:
+                        persist_architect_compare(
+                            session,
+                            package_revision_id=package_revision_id,
+                            version_id=version,
+                            data=compare_data,
+                            task_run_id=task_run.id,
+                            dpi=self._dpi,
+                        )
         product = _revision_product(session, package_revision_id)
         read_anyway = self._cabinet_ai_reading and product is ProductType.CABINET
         if (

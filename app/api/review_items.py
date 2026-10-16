@@ -65,6 +65,7 @@ from app.api.visual_countertops import (
 from app.auth import Action, Principal, require_action, require_project_access
 from app.models import Package, PackageRevision
 from app.models.review import ReviewActionKind
+from app.review import architect_compare as compare
 from app.review import review_item_actions as actions
 from app.review.cabinet_run_answer import CabinetRunRefused, cabinet_run_answer
 from app.review.evidence_actions import (
@@ -193,6 +194,10 @@ def answer_review_item(
     """
     try:
         revision, listed = actions.current_items(session, project_id, package_id)
+        if key.startswith(compare.KEY_PREFIX) or key == compare.NOT_COMPARED_GROUP:
+            return _answer_compare(
+                session, principal, project_id, package_id, revision, key, action, body, response
+            )
         if key in (actions.NOT_CHECKED_GROUP, actions.PAGES_GROUP):
             name = actions.answer_name(action, body, "group")
             return _answer_group(
@@ -310,6 +315,55 @@ def answer_review_item(
         action=name,
         recorded=recorded,
         review_session_id=sitting_id,
+        rechecking=checks_pending(session, revision),
+        review_items=review_items_for_revision(
+            session, project_id=project_id, package_id=package_id, revision=revision
+        ),
+    )
+
+
+def _answer_compare(
+    session: Session,
+    principal: Principal,
+    project_id: UUID,
+    package_id: UUID,
+    revision: PackageRevision,
+    key: str,
+    action: str,
+    body: actions.ReviewItemActionIn,
+    response: Response,
+) -> actions.ReviewItemActionOut:
+    """An answer on a number compared with the architect (#1418): `agree` (the vendor is wrong) or
+    `not_this` (not a difference) on a different one, `checked_right` / `checked_wrong` on one with
+    no match or not read, or on the group `architect-not-compared` `clear_not_compared` with the
+    `expected_keys` shown. Its own append-only row; the compare's record is never edited."""
+    name = action.strip().lower().replace("-", "_")
+    if name == "answer":
+        if body.answer is None:
+            raise _unprocessable('Say which answer in the body, e.g. {"answer": "checked_right"}.')
+        name = body.answer.strip().lower().replace("-", "_")
+    try:
+        written = compare.record_compare_answers(
+            session,
+            revision_id=revision.id,
+            key=key,
+            answer=name,
+            actor=principal.id,
+            expected_keys=body.expected_keys,
+        )
+        session.commit()
+    except compare.CompareRefused as refused:
+        session.rollback()
+        raise HTTPException(status_code=refused.status, detail=refused.detail) from refused
+    if not written:
+        response.status_code = status.HTTP_200_OK
+    session.refresh(revision)
+    stored = compare.SENT_AS[name]
+    return actions.ReviewItemActionOut(
+        key=key,
+        action=name,
+        recorded=compare.ANSWER_NOTES[stored],
+        review_session_id=None,
         rechecking=checks_pending(session, revision),
         review_items=review_items_for_revision(
             session, project_id=project_id, package_id=package_id, revision=revision

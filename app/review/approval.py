@@ -446,12 +446,19 @@ def _readiness_reason(
     pages: PagesBlockingSignOff,
     inputs_changed: bool,
     revision: PackageRevision | None,
+    compare_open: int = 0,
 ) -> str | None:
     """One plain sentence for the first thing that keeps sign-off from happening, or None."""
     if not has_findings:
         return "There are no findings to sign off. Run the checks first."
     if blocked:
         return f"{len(blocked)} findings still need a valid reviewer decision or a check rerun after correction. Add a note when required."
+    if compare_open:
+        return (
+            f"{compare_open} {'number' if compare_open == 1 else 'numbers'} compared with the "
+            "architect still need a person: agree or say it is not a difference, or check it by "
+            "hand."
+        )
     if pages.unchecked:
         return unchecked_sentence(pages.unchecked)
     if inputs_changed:
@@ -463,20 +470,33 @@ def _readiness_reason(
     return None
 
 
+def _compare_open(db: Session, revision_ids: list[UUID]) -> dict[UUID, int]:
+    """For each revision, the numbers compared with the architect that still need a person (#1418):
+    one statement for any number of revisions when none has a compare record (#1426)."""
+    from app.review.architect_compare import open_architect_compare_many
+
+    return open_architect_compare_many(db, revision_ids)
+
+
 def approval_readiness(db: Session, revision_id: UUID) -> ApprovalReadiness:
     """The live finding set and lifecycle, shared by the screen and the approval write."""
     return readiness_and_decisions(db, revision_id)[0]
 
 
 def readiness_and_decisions(
-    db: Session, revision_id: UUID, *, pages: PagesBlockingSignOff | None = None
+    db: Session,
+    revision_id: UUID,
+    *,
+    pages: PagesBlockingSignOff | None = None,
+    compare_open: int | None = None,
 ) -> tuple[ApprovalReadiness, DecisionRecords]:
     """Readiness plus the decision records it was computed from, for a screen that shows both.
 
     The countertop results read the standing decision of every row from the very records sign-off
     readiness used, so the two cannot disagree and the decisions are not read twice. They also pass
     the pages that block sign-off (#1191), computed from the very pages they list; any other caller
-    leaves `pages` out and they are read here.
+    leaves `pages` out and they are read here. The review items screen likewise passes how many
+    architect-compare numbers still need a person (#1418), from the compare it shows.
     """
     findings = _findings(db, revision_id)
     records = decision_records(db, [finding.id for finding in findings])
@@ -492,6 +512,16 @@ def readiness_and_decisions(
         and not blocked
         and revision_id in _revisions_with_unchecked_inputs(db, [revision_id]),
         revision=revision,
+        # Like `inputs_changed`, read only when it can be the reason (#1426).
+        compare_open=(
+            compare_open
+            if compare_open is not None
+            else (
+                _compare_open(db, [revision_id]).get(revision_id, 0)
+                if findings and not blocked
+                else 0
+            )
+        ),
     )
     return (
         ApprovalReadiness(
@@ -536,9 +566,20 @@ def approval_readiness_many(db: Session, revision_ids: list[UUID]) -> dict[UUID,
     when = utc_now()
     unchecked = _revisions_with_unchecked_inputs(db, revision_ids)
     pages_by_revision = pages_blocking_sign_off(db, revision_ids)
+    blocked_by_revision = {
+        revision_id: _unaddressed_from_records(tuple(findings), records, when=when)
+        for revision_id, findings in findings_by_revision.items()
+    }
+    # One statement for the whole page, and only for the revisions it can be the reason for.
+    can_wait_on_compare = [
+        revision_id
+        for revision_id, findings in findings_by_revision.items()
+        if findings and not blocked_by_revision[revision_id]
+    ]
+    compare_open = _compare_open(db, can_wait_on_compare) if can_wait_on_compare else {}
     result: dict[UUID, ApprovalReadiness] = {}
     for revision_id, findings in findings_by_revision.items():
-        blocked = _unaddressed_from_records(tuple(findings), records, when=when)
+        blocked = blocked_by_revision[revision_id]
         pages = pages_by_revision.get(revision_id, PagesBlockingSignOff())
         reason = _readiness_reason(
             has_findings=bool(findings),
@@ -546,6 +587,7 @@ def approval_readiness_many(db: Session, revision_ids: list[UUID]) -> dict[UUID,
             pages=pages,
             inputs_changed=revision_id in unchecked,
             revision=revisions.get(revision_id),
+            compare_open=compare_open.get(revision_id, 0),
         )
         result[revision_id] = ApprovalReadiness(
             revision_id,

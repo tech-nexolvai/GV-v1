@@ -470,6 +470,265 @@
         "title": "ArchitectCandidateCodeOut",
         "type": "object"
       },
+      "ArchitectCompareCountsOut": {
+        "properties": {
+          "different": {
+            "default": 0,
+            "title": "Different",
+            "type": "integer"
+          },
+          "needs_person": {
+            "default": 0,
+            "title": "Needs Person",
+            "type": "integer"
+          },
+          "rule": {
+            "default": 0,
+            "title": "Rule",
+            "type": "integer"
+          },
+          "same": {
+            "default": 0,
+            "title": "Same",
+            "type": "integer"
+          },
+          "unpaired": {
+            "default": 0,
+            "title": "Unpaired",
+            "type": "integer"
+          },
+          "unread": {
+            "default": 0,
+            "title": "Unread",
+            "type": "integer"
+          }
+        },
+        "title": "ArchitectCompareCountsOut",
+        "type": "object"
+      },
+      "ArchitectCompareOut": {
+        "description": "One dimension the architect printed, and what the vendor's drawing shows for the same span.",
+        "properties": {
+          "actions": {
+            "description": "The answers this item takes now: `agree` (the vendor is wrong; URL action `agree`) and `not_this` (not a difference) on `different`; `checked_right` and `checked_wrong` on `unpaired`/`unread` (URL action `answer`, the name in the body).",
+            "items": {
+              "type": "string"
+            },
+            "title": "Actions",
+            "type": "array"
+          },
+          "answer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A person's newest answer, as stored: `vendor_wrong` | `not_a_difference` (on `different`), `checked_right` | `checked_wrong` | `not_compared` (on `unpaired` or `unread`; `not_compared` is the group's 'Clear all as not compared').",
+            "title": "Answer"
+          },
+          "answered_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answered By"
+          },
+          "architect_inches": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Exact inches as `n/d` (or `n`); null when the architect's label is held.",
+            "title": "Architect Inches"
+          },
+          "architect_ref": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RowLocation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "architect_text": {
+            "title": "Architect Text",
+            "type": "string"
+          },
+          "clouded": {
+            "default": false,
+            "description": "True when the cloud PDF marks it at the vendor's dimension: `different` unless a person answered `not_a_difference`, or a person answered `checked_wrong`.",
+            "title": "Clouded",
+            "type": "boolean"
+          },
+          "finding_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When `rule`: that rule's finding.",
+            "title": "Finding Id"
+          },
+          "key": {
+            "description": "`arch:<record id>`: stable for this reading.",
+            "title": "Key",
+            "type": "string"
+          },
+          "needs_person": {
+            "default": false,
+            "description": "True while a `different`, `unpaired` or `unread` item has no answer: sign-off waits.",
+            "title": "Needs Person",
+            "type": "boolean"
+          },
+          "page": {
+            "description": "The sheet, from 1.",
+            "title": "Page",
+            "type": "integer"
+          },
+          "paired_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`geometry` (code alone) or `two AIs`; null when unpaired.",
+            "title": "Paired By"
+          },
+          "result": {
+            "enum": [
+              "same",
+              "different",
+              "rule",
+              "unpaired",
+              "unread"
+            ],
+            "title": "Result",
+            "type": "string"
+          },
+          "rule_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When `rule`: the published rule shown instead.",
+            "title": "Rule Id"
+          },
+          "rule_outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When `rule`: that rule's current outcome.",
+            "title": "Rule Outcome"
+          },
+          "status": {
+            "default": "done",
+            "description": "`open` while it needs a person (`needs_person`).",
+            "enum": [
+              "open",
+              "done"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "vendor_inches": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Exact inches, `n/d`; null when not read.",
+            "title": "Vendor Inches"
+          },
+          "vendor_ref": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RowLocation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "vendor_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The vendor's number as the AIs read it.",
+            "title": "Vendor Text"
+          },
+          "view": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The architect view's printed title, when it has one.",
+            "title": "View"
+          },
+          "why": {
+            "description": "In plain words.",
+            "title": "Why",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "page",
+          "view",
+          "architect_text",
+          "architect_inches",
+          "vendor_text",
+          "vendor_inches",
+          "result",
+          "rule_id",
+          "rule_outcome",
+          "why",
+          "finding_id",
+          "architect_ref",
+          "vendor_ref"
+        ],
+        "title": "ArchitectCompareOut",
+        "type": "object"
+      },
       "ArchitectComparedOut": {
         "description": "One width both drawings print for the same thing, as the architect check compared it.",
         "properties": {
@@ -10502,6 +10761,17 @@
             "description": "ai_right as a whole percent of readings_checked; None when none checked.",
             "title": "Ai Right Percent"
           },
+          "architect_compare_counts": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArchitectCompareCountsOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How many of `architect_compare` came out each way, and how many still need a person (sign-off waits for them). `None` when the compare has not run."
+          },
           "blocked_reason": {
             "anyOf": [
               {
@@ -11106,6 +11376,14 @@
       },
       "ReviewItemsOut": {
         "properties": {
+          "architect_compare": {
+            "description": "Compared with the architect (#1418): every dimension the architect printed, exactly once, with the vendor's number for the same span and what code decided: same, different (REVIEW, clouded), rule (a published rule's result shown instead), unpaired or unread ('?'). Empty when the compare has not run.",
+            "items": {
+              "$ref": "#/components/schemas/ArchitectCompareOut"
+            },
+            "title": "Architect Compare",
+            "type": "array"
+          },
           "can_save_job_values": {
             "default": false,
             "description": "True when the caller may save this project's values (#1403): the not-checked group's 'Enter this job's values' form. The same checks as Company settings \u2192 Projects (`may_save_project`); read-only otherwise. The server still checks every save.",

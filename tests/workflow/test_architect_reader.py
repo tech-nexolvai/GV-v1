@@ -329,3 +329,27 @@ def test_code_never_confirms_over_a_persons_earlier_confirmation(
 
     assert written is None
     assert view.role == ViewRole.SHOP.value
+
+
+def test_reading_a_combined_sheet_stores_the_direct_compare_once_per_architect_dimension(
+    session: Session, store: LocalStore
+) -> None:
+    """#1418: with the architect reader on, every architect dimension of the sheet gets one
+    compare record; with it off, none."""
+    from app.models.architect_compare import ArchitectCompareRecord
+
+    revision = _upload(session, store, combined_sheet())
+    _extract(session, store, revision)
+
+    records = session.scalars(select(ArchitectCompareRecord)).all()
+    assert len(records) == 4
+    assert {record.package_revision_id for record in records} == {revision.id}
+
+
+def test_with_the_reader_off_no_compare_is_stored(session: Session, store: LocalStore) -> None:
+    from app.models.architect_compare import ArchitectCompareRecord
+
+    revision = _upload(session, store, combined_sheet())
+    _extract(session, store, revision, enabled=False)
+
+    assert session.scalars(select(ArchitectCompareRecord)).all() == []

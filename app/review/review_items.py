@@ -91,6 +91,11 @@ from app.models.evidence import (
     ObservationCandidate,
 )
 from app.review.approval import readiness_and_decisions
+from app.review.architect_compare import (
+    ArchitectCompareCountsOut,
+    ArchitectCompareOut,
+    architect_compare_for_revision,
+)
 from app.review.cabinet_run_proposal import CabinetRunProposalOut, cabinet_run_proposal_for
 from app.review.depth_readings import depth_readings_for
 from app.review.requirements import BLOCKING_OUTCOMES
@@ -557,6 +562,13 @@ class ReviewHeaderOut(BaseModel):
     rechecking: int = Field(description="Items waiting for the next check run.")
     can_finalise: bool
     blocked_reason: str | None = None
+    architect_compare_counts: ArchitectCompareCountsOut | None = Field(
+        default=None,
+        description=(
+            "How many of `architect_compare` came out each way, and how many still need a person "
+            "(sign-off waits for them). `None` when the compare has not run."
+        ),
+    )
 
 
 class JobValueSuggestionOut(BaseModel):
@@ -601,6 +613,15 @@ class ReviewItemsOut(BaseModel):
         description=(
             "What the job values reader found (#1409), one per value it found: shown beside the "
             "'Enter this job's values' fields. Empty when the reader has not run or found nothing."
+        ),
+    )
+    architect_compare: list[ArchitectCompareOut] = Field(
+        default_factory=list,
+        description=(
+            "Compared with the architect (#1418): every dimension the architect printed, exactly "
+            "once, with the vendor's number for the same span and what code decided: same, "
+            "different (REVIEW, clouded), rule (a published rule's result shown instead), unpaired "
+            "or unread ('?'). Empty when the compare has not run."
         ),
     )
     can_save_job_values: bool = Field(
@@ -1021,7 +1042,11 @@ def review_items_for_revision(
     from app.api.visual_countertops import _countertop_results_for_revision
 
     projection = _countertop_results_for_revision(session, package_id, revision)
-    readiness, records = readiness_and_decisions(session, revision.id)
+    # Read once: the compare it shows is the one sign-off readiness waits on (#1418).
+    compared, compare_counts = architect_compare_for_revision(session, revision.id)
+    readiness, records = readiness_and_decisions(
+        session, revision.id, compare_open=compare_counts.needs_person
+    )
     open_ids = set(readiness.blocking_finding_ids)
     corrected = set(records.corrected)
     live = _live_findings(session, revision.id)
@@ -1469,6 +1494,7 @@ def review_items_for_revision(
         rechecking=sum(1 for entry in everything if entry.status == "rechecking"),
         can_finalise=readiness.can_approve,
         blocked_reason=readiness.reason,
+        architect_compare_counts=compare_counts if compared else None,
     )
     return ReviewItemsOut(
         package_id=package_id,
@@ -1480,6 +1506,7 @@ def review_items_for_revision(
         not_checked=not_checked,
         unaccounted=unaccounted,
         job_value_suggestions=_job_value_suggestions(session, revision.id),
+        architect_compare=compared,
     )
 
 
