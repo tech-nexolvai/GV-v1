@@ -113,6 +113,9 @@ class DrawnDimension:
     """Where something is printed on it (text or pen strokes), nearest first; empty when nothing."""
     label_text: str | None
     """The label as real text when it is real text; `None` for pen strokes or nothing."""
+    tick_source: TickSource = TickSource.SLASH
+    """How its ticks were found: the drawing's own slashes, or witness lines crossing it (an edge of
+    something drawn can look like that too, so the vendor side uses slash ticks only)."""
 
     @property
     def length_pt(self) -> Decimal:
@@ -246,6 +249,7 @@ def drawn_dimensions(
                         index=index,
                         label_boxes=boxes,
                         label_text=text,
+                        tick_source=row.tick_source,
                     )
                 )
             number += 1

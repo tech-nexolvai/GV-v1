@@ -82,6 +82,16 @@ class FrozenCountertops(BaseModel):
 SNAPSHOT_FORMAT_VERSION = 2
 
 
+class FrozenArchitectCompare(BaseModel):
+    """The direct compare as the review showed it at sign-off (#1418), kept as plain JSON (for the
+    reason `FrozenCountertops` gives): every compared number and the counts. The signed cloud PDF
+    prints it from here (`workflow/signed_outputs.py`), never from the live database."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    items: tuple[dict[str, Any], ...]
+    counts: dict[str, Any]
+
+
 class ExportSnapshot(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     format_version: int = 1
@@ -102,6 +112,9 @@ class ExportSnapshot(BaseModel):
     reviewer_marks: FrozenReviewerMarks | None = None
     """Format 2 (#1363): every person's confirm, fix and answer at sign-off, and the results whose
     check could not run, as the signed cloud PDF prints them. `None` exactly on format 1."""
+    architect_compare: FrozenArchitectCompare | None = None
+    """The numbers compared with the architect at sign-off (#1418); `None` when the compare had
+    not run, or on a snapshot frozen before it."""
 
     @model_validator(mode="after")
     def known_format(self) -> ExportSnapshot:
@@ -110,6 +123,18 @@ class ExportSnapshot(BaseModel):
         if (self.format_version >= 2) != (self.reviewer_marks is not None):
             raise ValueError("a format-2 snapshot carries reviewer marks, and only it")
         return self
+
+
+def _freeze_compare(db: Session, revision_id: UUID) -> FrozenArchitectCompare | None:
+    from app.review.architect_compare import architect_compare_for_revision
+
+    items, counts = architect_compare_for_revision(db, revision_id)
+    if not items:
+        return None
+    return FrozenArchitectCompare(
+        items=tuple(item.model_dump(mode="json") for item in items),
+        counts=counts.model_dump(mode="json"),
+    )
 
 
 def freeze_countertops(results: CountertopResultsOut) -> FrozenCountertops:
@@ -504,6 +529,7 @@ def _request_signed_exports(
             decisions=review_record.findings,
             until=approval.created_at,
         ),
+        architect_compare=_freeze_compare(db, revision.id),
     )
     encoded = canonical(payload.model_dump(mode="json"))
     snapshot = ApprovalExportSnapshot(

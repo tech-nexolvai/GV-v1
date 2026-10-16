@@ -446,12 +446,19 @@ def _readiness_reason(
     pages: PagesBlockingSignOff,
     inputs_changed: bool,
     revision: PackageRevision | None,
+    compare_open: int = 0,
 ) -> str | None:
     """One plain sentence for the first thing that keeps sign-off from happening, or None."""
     if not has_findings:
         return "There are no findings to sign off. Run the checks first."
     if blocked:
         return f"{len(blocked)} findings still need a valid reviewer decision or a check rerun after correction. Add a note when required."
+    if compare_open:
+        return (
+            f"{compare_open} {'number' if compare_open == 1 else 'numbers'} compared with the "
+            "architect still need a person: agree or say it is not a difference, or check it by "
+            "hand."
+        )
     if pages.unchecked:
         return unchecked_sentence(pages.unchecked)
     if inputs_changed:
@@ -461,6 +468,13 @@ def _readiness_reason(
     if revision is None or revision.state != PackageState.AWAITING_REVIEW.value:
         return "The package is not awaiting review."
     return None
+
+
+def _compare_open(db: Session, revision_id: UUID) -> int:
+    """The numbers compared with the architect that still need a person (#1418)."""
+    from app.review.architect_compare import open_architect_compare
+
+    return open_architect_compare(db, revision_id)
 
 
 def approval_readiness(db: Session, revision_id: UUID) -> ApprovalReadiness:
@@ -492,6 +506,7 @@ def readiness_and_decisions(
         and not blocked
         and revision_id in _revisions_with_unchecked_inputs(db, [revision_id]),
         revision=revision,
+        compare_open=_compare_open(db, revision_id),
     )
     return (
         ApprovalReadiness(
@@ -546,6 +561,7 @@ def approval_readiness_many(db: Session, revision_ids: list[UUID]) -> dict[UUID,
             pages=pages,
             inputs_changed=revision_id in unchecked,
             revision=revisions.get(revision_id),
+            compare_open=_compare_open(db, revision_id),
         )
         result[revision_id] = ApprovalReadiness(
             revision_id,

@@ -2652,6 +2652,140 @@ export interface components {
              */
             run_length_error_display: string | null;
         };
+        /** ArchitectCompareCountsOut */
+        ArchitectCompareCountsOut: {
+            /**
+             * Different
+             * @default 0
+             */
+            different: number;
+            /**
+             * Needs Person
+             * @default 0
+             */
+            needs_person: number;
+            /**
+             * Rule
+             * @default 0
+             */
+            rule: number;
+            /**
+             * Same
+             * @default 0
+             */
+            same: number;
+            /**
+             * Unpaired
+             * @default 0
+             */
+            unpaired: number;
+            /**
+             * Unread
+             * @default 0
+             */
+            unread: number;
+        };
+        /**
+         * ArchitectCompareOut
+         * @description One dimension the architect printed, and what the vendor's drawing shows for the same span.
+         */
+        ArchitectCompareOut: {
+            /**
+             * Actions
+             * @description The answers this item takes now: `agree` (the vendor is wrong; URL action `agree`) and `not_this` (not a difference) on `different`; `checked_right` and `checked_wrong` on `unpaired`/`unread` (URL action `answer`, the name in the body).
+             */
+            actions?: string[];
+            /**
+             * Answer
+             * @description A person's newest answer, as stored: `vendor_wrong` | `not_a_difference` (on `different`), `checked_right` | `checked_wrong` | `not_compared` (on `unpaired` or `unread`; `not_compared` is the group's 'Clear all as not compared').
+             */
+            answer?: string | null;
+            /** Answered By */
+            answered_by?: string | null;
+            /**
+             * Architect Inches
+             * @description Exact inches as `n/d` (or `n`); null when the architect's label is held.
+             */
+            architect_inches: string | null;
+            architect_ref: components["schemas"]["RowLocation"] | null;
+            /** Architect Text */
+            architect_text: string;
+            /**
+             * Clouded
+             * @description True when the cloud PDF marks it at the vendor's dimension: `different` unless a person answered `not_a_difference`, or a person answered `checked_wrong`.
+             * @default false
+             */
+            clouded: boolean;
+            /**
+             * Finding Id
+             * @description When `rule`: that rule's finding.
+             */
+            finding_id: string | null;
+            /**
+             * Key
+             * @description `arch:<record id>`: stable for this reading.
+             */
+            key: string;
+            /**
+             * Needs Person
+             * @description True while a `different`, `unpaired` or `unread` item has no answer: sign-off waits.
+             * @default false
+             */
+            needs_person: boolean;
+            /**
+             * Page
+             * @description The sheet, from 1.
+             */
+            page: number;
+            /**
+             * Paired By
+             * @description `geometry` (code alone) or `two AIs`; null when unpaired.
+             */
+            paired_by?: string | null;
+            /**
+             * Result
+             * @enum {string}
+             */
+            result: "same" | "different" | "rule" | "unpaired" | "unread";
+            /**
+             * Rule Id
+             * @description When `rule`: the published rule shown instead.
+             */
+            rule_id: string | null;
+            /**
+             * Rule Outcome
+             * @description When `rule`: that rule's current outcome.
+             */
+            rule_outcome: string | null;
+            /**
+             * Status
+             * @description `open` while it needs a person (`needs_person`).
+             * @default done
+             * @enum {string}
+             */
+            status: "open" | "done";
+            /**
+             * Vendor Inches
+             * @description Exact inches, `n/d`; null when not read.
+             */
+            vendor_inches: string | null;
+            vendor_ref: components["schemas"]["RowLocation"] | null;
+            /**
+             * Vendor Text
+             * @description The vendor's number as the AIs read it.
+             */
+            vendor_text: string | null;
+            /**
+             * View
+             * @description The architect view's printed title, when it has one.
+             */
+            view: string | null;
+            /**
+             * Why
+             * @description In plain words.
+             */
+            why: string;
+        };
         /**
          * ArchitectComparedOut
          * @description One width both drawings print for the same thing, as the architect check compared it.
@@ -7371,6 +7505,8 @@ export interface components {
              * @description ai_right as a whole percent of readings_checked; None when none checked.
              */
             ai_right_percent: number | null;
+            /** @description How many of `architect_compare` came out each way, and how many still need a person (sign-off waits for them). `None` when the compare has not run. */
+            architect_compare_counts?: components["schemas"]["ArchitectCompareCountsOut"] | null;
             /** Blocked Reason */
             blocked_reason?: string | null;
             /** Can Finalise */
@@ -7628,6 +7764,11 @@ export interface components {
         };
         /** ReviewItemsOut */
         ReviewItemsOut: {
+            /**
+             * Architect Compare
+             * @description Compared with the architect (#1418): every dimension the architect printed, exactly once, with the vendor's number for the same span and what code decided: same, different (REVIEW, clouded), rule (a published rule's result shown instead), unpaired or unread ('?'). Empty when the compare has not run.
+             */
+            architect_compare?: components["schemas"]["ArchitectCompareOut"][];
             /**
              * Can Save Job Values
              * @description True when the caller may save this project's values (#1403): the not-checked group's 'Enter this job's values' form. The same checks as Company settings → Projects (`may_save_project`); read-only otherwise. The server still checks every save.
