@@ -69,6 +69,7 @@ __all__ = [
     "SHARPEN_MODEL",
     "SHARPEN_PROMPT_ID",
     "SHARPEN_SYSTEM",
+    "SPEC_SCHEMA",
     "SharpenContext",
     "Sharpened",
     "apply_sharpen",
@@ -159,9 +160,7 @@ _MICROS: Final = Decimal(1_000_000)
 
 SHARPEN_SYSTEM: Final = """You turn a reviewer's question about a millwork shop-drawing set (the vendor's drawings checked against the architect's) into a task spec for the AI that will answer it. You never answer the question.
 
-Reply with ONE JSON object and nothing else:
-{"task": "...", "intent": "...", "scope": {"kind": "whole_set", "pages": [], "area": null}, "products": [], "what_to_compare": [], "checks_to_run": [], "output_shape": "...", "assumptions": [], "question_back": null}
-
+The spec's fields:
 - task: one short imperative line (at most 12 words) in the reviewer's own terms, e.g. "Compare outlet heights (architect vs vendor)".
 - intent: fact (one value, count or yes/no), compare (vendor vs architect on some items), whole_set (everything wrong across the set), rules (GV's rules), arithmetic (does a dimension string add up), rounds (what changed between rounds or revisions), file (make a PDF, CSV or other file), summary, clarify, refuse_action (asks to approve, sign off, send, or change GV's review).
 - scope: kind "pages" with the pages the question names or clearly means (also a page from the previous exchange, e.g. "that same sheet"); kind "area" only with an area from the list given; else kind "whole_set" with no pages.
@@ -172,6 +171,70 @@ Reply with ONE JSON object and nothing else:
 - assumptions: 0 to 3 short notes on what you assumed.
 - question_back: only with intent clarify, one short question to the reviewer. Use clarify only when no reasonable reading exists (e.g. "Is it ok?" with nothing before it); otherwise null.
 Never add a number or value that is not in the question."""
+
+
+def _nullable(kind: str, words: str) -> dict[str, Any]:
+    return {"anyOf": [{"type": kind}, {"type": "null"}], "description": words}
+
+
+def _texts(words: str) -> dict[str, Any]:
+    return {"type": "array", "items": {"type": "string"}, "description": words}
+
+
+#: The reply's shape (structured outputs: the API returns exactly this JSON). Code still checks
+#: every field (`validate`): the schema shapes the reply, it does not decide what is allowed.
+SPEC_SCHEMA: Final[Mapping[str, Any]] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "task",
+        "intent",
+        "scope",
+        "products",
+        "what_to_compare",
+        "checks_to_run",
+        "output_shape",
+        "assumptions",
+        "question_back",
+    ],
+    "properties": {
+        "task": {"type": "string", "description": "One short imperative line"},
+        "intent": {"type": "string", "enum": list(INTENTS), "description": "What it asks"},
+        "scope": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["kind", "pages", "area"],
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "enum": ["whole_set", "pages", "area"],
+                    "description": "Whole set, named pages, or a named area",
+                },
+                "pages": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "The pages, for kind pages",
+                },
+                "area": _nullable("string", "The area, for kind area"),
+            },
+            "description": "Which part of the set the question is about",
+        },
+        "products": _texts("Products, only from those given"),
+        "what_to_compare": _texts("0 to 6 short items to read or compare"),
+        "checks_to_run": {
+            "type": "array",
+            "items": {"type": "string", "enum": list(CHECKS)},
+            "description": "Checks to run",
+        },
+        "output_shape": {
+            "type": "string",
+            "enum": list(OUTPUT_SHAPES),
+            "description": "The answer's shape",
+        },
+        "assumptions": _texts("0 to 3 short notes on what you assumed"),
+        "question_back": _nullable("string", "Only with intent clarify: one short question"),
+    },
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -734,6 +797,7 @@ def _engine_ask(engine: ChatEngine) -> Ask:
             max_tokens=SHARPEN_MAX_TOKENS,
             prompt_id=SHARPEN_PROMPT_ID.format(provider=engine.provider.name),
             display=None,
+            output_format=SPEC_SCHEMA,
         )
         if reply.stop_reason == "refusal":
             raise ProviderFailure("declined", status=None, retryable=False)

@@ -152,8 +152,8 @@ def test_a_dummy_product_reaches_messages_categories_words_and_the_brief(
     assert products_words(["countertop", DUMMY]) == "Countertops and Dummy widgets"
     # The full check's brief carries its checklist and GV standards, after the shared items.
     brief = helper_brief([2, 3], file_name="/mnt/user-data/uploads/v.pdf", products=[DUMMY])
-    assert "CHECKLIST, for every page:" in brief
-    assert brief.index("- hardware:") < brief.index("Dummy widgets (category dummy_widget")
+    assert "WHAT TO COMPARE: " in brief
+    assert brief.index("WHAT TO COMPARE: ") < brief.index("Dummy widgets (category dummy_widget")
     assert "- widget knob: Knob count and finish code." in brief
     assert "Knob finish matches GV's made-up standard" in brief
     assert "Countertops (category" not in brief
