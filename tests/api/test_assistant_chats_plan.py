@@ -42,6 +42,17 @@ def _pack_folder(root: Path) -> Path:
     return folders[0]
 
 
+def _pictures_made(pack: Path, seconds: float = 60) -> None:
+    """Waits for the pack's page pictures (made after the page map; slower on a busy machine)."""
+    ends = time.monotonic() + seconds
+    while time.monotonic() < ends:
+        status = json.loads((pack / "status.json").read_text(encoding="utf-8"))
+        if "pages" in (status.get("done") or []) or status.get("state") == "ready":
+            return
+        time.sleep(0.2)
+    raise AssertionError("the page pictures were not made")
+
+
 def _half(role: str, y: float, round_: int | None = None) -> dict[str, Any]:
     return {"box": [36, y, 576, y + 300], "role": role, "heading": None, "round": round_}
 
@@ -58,6 +69,7 @@ def test_the_plan_check_asks_where_unsure_and_keeps_the_answers(postgres_engine,
         # A page map with one unsure drawing: p2's lower drawing is headed as a brand prototype
         # and no architect's drawing of its area was found.
         pack = _pack_folder(world.root)
+        _pictures_made(pack)
         page_map = json.loads((pack / "page_map.json").read_text(encoding="utf-8"))
         entry = page_map["pages"][1]
         entry.update(
