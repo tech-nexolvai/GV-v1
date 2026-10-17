@@ -102,16 +102,17 @@ def test_the_tool_schemas_are_strict() -> None:
     for tool in (REPORT_FINDING, UPDATE_FINDING, DROP_FINDING, SET_COVERAGE):
         assert tool["input_schema"]["additionalProperties"] is False
     report = REPORT_FINDING["input_schema"]
+    # The two values may come from numbered labels (architect_dim / vendor_dim, #1558); code
+    # still refuses a finding with neither a value nor a label.
     assert set(report["required"]) == {
         "page",
         "item",
         "category",
-        "architect",
-        "vendor",
         "status",
         "verified",
         "source",
     }
+    assert {"architect_dim", "vendor_dim"} <= set(report["properties"])
     props = report["properties"]
     # #1547: every active product of the registry, then "other".
     assert props["category"]["enum"][:2] == ["countertop", "cabinet"]

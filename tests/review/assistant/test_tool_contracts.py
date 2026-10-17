@@ -215,5 +215,7 @@ def test_the_prompts_stay_within_their_budgets() -> None:
     prompts = _prompts()
     for where, most in budgets.items():
         assert len(prompts[where]) <= most, (where, len(prompts[where]))
-    assert len(json.dumps(list(LEAD_TOOLS))) <= 44_000
+    # chat-v15 (#1558): the numbered dimension labels' fields (zoom marks and guides,
+    # architect_dim / vendor_dim on report and update, cite's dim) took about 900 characters.
+    assert len(json.dumps(list(LEAD_TOOLS))) <= 45_000
     assert len(json.dumps(list(HELPER_TOOLS))) <= 29_000

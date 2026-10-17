@@ -449,6 +449,24 @@ class ChatFindingDecisionHelpOut(BaseModel):
     confirm: str = Field(description="What the reviewer should confirm, and with whom.")
 
 
+class ChatFindingDimOut(BaseModel):
+    """A numbered dimension label a finding's side was built from (#1558)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str = Field(description="The label's id on its page (D17).")
+    page: int
+    file: str | None = None
+    text: str = Field(description="The value as printed.")
+    inches: str
+    route: Literal["text", "drawn"] = Field(
+        description="text: the drawing's characters; drawn: the vendor's drawn ink, by two OCR "
+        "engines."
+    )
+    side: str | None = Field(default=None, description="architect, vendor, brand or unknown.")
+    box: list[float] = Field(description="x0, y0, x1, y1: PDF points, origin top-left.")
+
+
 class ChatFindingImpactOut(BaseModel):
     """How much a Wrong item matters (#1569), by code: ordering only, never a status or colour."""
 
@@ -586,6 +604,11 @@ class ChatFindingOut(BaseModel):
         default=None,
         description="Why two printed values that differ still need a person (#1545); without "
         "one, code makes such a finding Wrong.",
+    )
+    dims: dict[str, ChatFindingDimOut] | None = Field(
+        default=None,
+        description="The numbered dimension label each side was built from (#1558), by side "
+        "(architect, vendor); code filled that side's value and box from it.",
     )
     updated_in: ChatFindingLaterOut | None = Field(
         default=None,

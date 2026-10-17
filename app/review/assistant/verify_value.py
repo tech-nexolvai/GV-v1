@@ -535,6 +535,16 @@ _WHOLE: Final = re.compile(r"(\d+'\s*-?\s*)?\d+")
 def _compose(label: Sequence[_Char]) -> tuple[list[tuple[str, bool]], bool]:
     """A label's readings: `(text, composed fraction)` per row or stacked fraction, and whether
     stacked digits were left that code could not put together."""
+    parts, doubtful = compose_parts(label)
+    return [(text, fraction) for text, fraction, _chars in parts], doubtful
+
+
+def compose_parts(
+    label: Sequence[_Char],
+) -> tuple[list[tuple[str, bool, tuple[_Char, ...]]], bool]:
+    """`_compose` with the characters behind each reading (the dimension labels' boxes, #1558): a
+    composed fraction's text with its characters, and each row's characters left over (its text
+    is `_row_text` of them)."""
     font = max(char.size for char in label)
     rows: list[list[_Char]] = []
     for char in sorted(label, key=lambda c: -c.across):
@@ -544,7 +554,7 @@ def _compose(label: Sequence[_Char]) -> tuple[list[tuple[str, bool]], bool]:
                 break
         else:
             rows.append([char])
-    out: list[tuple[str, bool]] = []
+    out: list[tuple[str, bool, tuple[_Char, ...]]] = []
     consumed: set[int] = set()
     for base in rows:
         level = base[0].across
@@ -572,10 +582,11 @@ def _compose(label: Sequence[_Char]) -> tuple[list[tuple[str, bool]], bool]:
             continue
         before = _row_text([c for c in base if c.along < start], font).strip()
         after = _row_text([c for c in base if c.along > end], font).strip()
+        chars = (*above, *below, *base)
         if before and _WHOLE.fullmatch(before):
-            out.append((f"{before} {numerator}/{denominator}{after or chr(34)}", True))
+            out.append((f"{before} {numerator}/{denominator}{after or chr(34)}", True, chars))
         elif not before:
-            out.append((f"{numerator}/{denominator}{after or chr(34)}", True))
+            out.append((f"{numerator}/{denominator}{after or chr(34)}", True, chars))
         else:
             continue
         consumed |= {id(c) for c in above + below} | {id(c) for c in base}
@@ -597,14 +608,14 @@ def _compose(label: Sequence[_Char]) -> tuple[list[tuple[str, bool]], bool]:
             numerator = "".join(c.text for c in sorted(upper, key=lambda c: c.along))
             denominator = "".join(c.text for c in sorted(lower, key=lambda c: c.along))
             if _fraction_ok(numerator, denominator):
-                out.append((f'{numerator}/{denominator}"', True))
+                out.append((f'{numerator}/{denominator}"', True, (*upper, *lower)))
             else:
                 doubtful = True
             consumed |= {id(c) for c in upper + lower}
     for row in rows:
         rest = [c for c in row if id(c) not in consumed]
         if rest:
-            out.append((_row_text(rest, font), False))
+            out.append((_row_text(rest, font), False, tuple(rest)))
     return out, doubtful
 
 
