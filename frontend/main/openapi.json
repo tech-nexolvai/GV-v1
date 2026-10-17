@@ -4073,6 +4073,13 @@
         "title": "ChatCreatedOut",
         "type": "object"
       },
+      "ChatDecision": {
+        "enum": [
+          "agree",
+          "not_a_problem"
+        ],
+        "type": "string"
+      },
       "ChatDismissedOut": {
         "properties": {
           "reason": {
@@ -4290,6 +4297,67 @@
         "title": "ChatFindingCriticOut",
         "type": "object"
       },
+      "ChatFindingDecisionIn": {
+        "additionalProperties": false,
+        "description": "The reviewer's \u2713 Agree / \u2717 Not a problem on one finding (#1521).",
+        "properties": {
+          "decision": {
+            "$ref": "#/components/schemas/ChatDecision"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "title": "ChatFindingDecisionIn",
+        "type": "object"
+      },
+      "ChatFindingDecisionOut": {
+        "description": "A finding's latest decision: what, by whom (the signed-in principal), when.",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "by": {
+            "title": "By",
+            "type": "string"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/ChatDecision"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "required": [
+          "decision",
+          "by",
+          "at"
+        ],
+        "title": "ChatFindingDecisionOut",
+        "type": "object"
+      },
       "ChatFindingDroppedBlock": {
         "description": "A finding the assistant dropped (in the place its finding block was).",
         "properties": {
@@ -4430,6 +4498,17 @@
                 "type": "null"
               }
             ]
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatFindingDecisionOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The reviewer's latest decision on this finding (#1521); null: not decided."
           },
           "evidence_kind": {
             "anyOf": [
@@ -19442,6 +19521,59 @@
         ]
       }
     },
+    "/api/v1/chats/{chat_id}/messages/{message_id}/cloud-drawing": {
+      "post": {
+        "description": "Red clouds only at the findings the reviewer agreed with (\"\u2717 Vendor: X \u2014 Needs: Y\n(architect Z)\"); not-yet-decided, not-a-problem and right items listed on the notes page and in\nthe report, never clouded; \"Reviewed by <name>\" once every item needing a decision was decided,\nelse the draft stamp. A new cloud drawing and check report each time (older files are kept);\nreturns the cloud drawing.",
+        "operationId": "cloud_drawing_api_v1_chats__chat_id__messages__message_id__cloud_drawing_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chat_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Chat Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "message_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Message Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatFileOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No such stored answer in this chat (or no access)."
+          },
+          "409": {
+            "description": "`message_running`: the answer is still being written; `uploads_missing`: the chat has no copy of the set's PDFs."
+          },
+          "422": {
+            "description": "`no_findings`: the answer has no findings."
+          }
+        },
+        "summary": "The cloud drawing (and check report) made again from the reviewer's decisions",
+        "tags": [
+          "assistant chats"
+        ]
+      }
+    },
     "/api/v1/chats/{chat_id}/messages/{message_id}/events": {
       "get": {
         "description": "For a running message, every event so far (the same events as the `POST` stream, with\nstreamed words merged), then each new one until `message_end`. For a finished message,\n`message_end` with the stored message at once. Leaving changes nothing for the message.",
@@ -19558,6 +19690,85 @@
           }
         },
         "summary": "The answer's findings with their checks, as a spreadsheet (CSV)",
+        "tags": [
+          "assistant chats"
+        ]
+      }
+    },
+    "/api/v1/chats/{chat_id}/messages/{message_id}/findings/{finding_id}/decision": {
+      "post": {
+        "description": "One more decision row, by the signed-in person; the latest per finding is the one read.",
+        "operationId": "decide_finding_api_v1_chats__chat_id__messages__message_id__findings__finding_id__decision_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chat_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Chat Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "message_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Message Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "finding_id",
+            "required": true,
+            "schema": {
+              "title": "Finding Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatFindingDecisionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatFindingDecisionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No such stored answer or finding in this chat (or no access)."
+          },
+          "409": {
+            "description": "`message_running`: the answer is still being written."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The reviewer agrees with a finding, or marks it not a problem (kept append-only)",
         "tags": [
           "assistant chats"
         ]

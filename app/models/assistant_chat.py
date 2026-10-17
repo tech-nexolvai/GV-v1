@@ -12,12 +12,15 @@
 * `AssistantChatFile`: a file the assistant handed over with `present_files`. Its bytes are a copy in
   the chat's folder; `message_id` is the answer it belongs to, which is written when the answer ends
   (so it has no foreign key).
+* `AssistantFindingDecision` (#1521): the reviewer's ✓ Agree / ✗ Not a problem on one finding of an
+  answer. A changed mind is a new row; the latest row per finding wins when read.
 
-All three are append-only (the same trigger and grants as every other record table).
+All four are append-only (the same trigger and grants as every other record table).
 """
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -33,7 +36,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSON, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import Base, Immutable, TimestampedUUID
+from app.db.base import Base, Immutable, TimestampedUUID, UTCDateTime, utc_now
 
 CHAT_ROLES: tuple[str, ...] = ("user", "assistant")
 #: Why an answer stopped before it finished; NULL when it finished.
@@ -135,10 +138,43 @@ class AssistantChatFile(Base, TimestampedUUID, Immutable):
     )
 
 
+#: The reviewer's decision on one finding (#1521).
+FINDING_DECISIONS: tuple[str, ...] = ("agree", "not_a_problem")
+
+
+class AssistantFindingDecision(Base, TimestampedUUID, Immutable):
+    """The reviewer's decision on one finding of a stored answer (#1521). The latest row per
+    (answer, finding) is the one that counts."""
+
+    __tablename__ = "assistant_finding_decisions"
+
+    chat_id: Mapped[UUID] = mapped_column(
+        ForeignKey("assistant_chats.id", ondelete="RESTRICT"), index=True
+    )
+    message_id: Mapped[UUID] = mapped_column(
+        ForeignKey("assistant_chat_messages.id", ondelete="RESTRICT"), index=True
+    )
+    finding_id: Mapped[str] = mapped_column(String(64))
+    decision: Mapped[str] = mapped_column(String(16))
+    note: Mapped[str | None] = mapped_column(Text, default=None)
+    decided_by: Mapped[str] = mapped_column(String(200))
+    """The principal who decided."""
+    decided_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utc_now)
+
+    __table_args__ = (
+        CheckConstraint(
+            f"decision IN ({_listed(FINDING_DECISIONS)})", name="assistant_finding_decision_value"
+        ),
+        CheckConstraint("finding_id <> ''", name="assistant_finding_decision_finding"),
+    )
+
+
 __all__ = [
     "CHAT_ROLES",
     "CHAT_STOPS",
+    "FINDING_DECISIONS",
     "AssistantChat",
     "AssistantChatFile",
     "AssistantChatMessage",
+    "AssistantFindingDecision",
 ]
