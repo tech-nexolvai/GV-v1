@@ -23,7 +23,7 @@
  * becomes a recorded result.
  */
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, ChevronRight, CircleAlert, ListChecks, RotateCw } from 'lucide-react';
 
 import { formatRoute } from '@/app/route';
@@ -37,8 +37,9 @@ import { FullCheckButton, ProductChips } from '@/components/chat/chat-full-check
 import { ChatList, type ChatListState } from '@/components/chat/chat-list';
 import { PlusMenu } from '@/components/chat/chat-plus-menu';
 import { AssistantMessage, UserMessage } from '@/components/chat/chat-message';
+import { UnderstoodLine } from '@/components/chat/chat-understood';
 import { ApiError } from '@/api/client';
-import { chatFailureWords, chatPaths, CONTINUE_TEXT, isAbort, LIVE_CHAT_API, type Chat, type ChatApi, type ChatEvent, type ChatMessage, type ChatMode, type ChatModels, type ChatPlanAnswer, type ChatProduct } from '@/lib/chat-api';
+import { chatFailureWords, chatPaths, CONTINUE_TEXT, isAbort, LIVE_CHAT_API, type Chat, type ChatApi, type ChatEvent, type ChatMessage, type ChatMode, type ChatModels, type ChatPlanAnswer, type ChatProduct, type ChatTaskEdit } from '@/lib/chat-api';
 import { confirmWords, effectiveProducts, FULL_CHECK_TEXT, isFullCheck, readProducts, saveProducts, toggleProduct } from '@/lib/chat-full-check';
 import { knownAreas, lastFindings, withPrompt } from '@/lib/chat-plus-actions';
 import { applyChatEvent, CHAT_STARTERS, chatTitle, dollars, followedAnswer, fromSaved, localAnswer, localQuestion, previousQuestion, settle, type ViewMessage } from '@/lib/chat-messages';
@@ -373,7 +374,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   const blocked = unavailable ?? (models.status === 'loading' ? 'Loading the models…' : chatId && !chat ? 'Opening the chat…' : null);
 
   /** `continueFrom` (#1514): the interrupted answer Continue goes on from, and how it was asked. */
-  async function send(text: string, mode: ChatMode = 'chat', continueFrom?: { id: string; mode: ChatMode }, planAnswers?: ChatPlanAnswer[]) {
+  async function send(text: string, mode: ChatMode = 'chat', continueFrom?: { id: string; mode: ChatMode }, task?: ChatTaskEdit, planAnswers?: ChatPlanAnswer[]) {
     const question = text.trim();
     if (!question || runRef.current || blocked || !choice) return;
     counter.current += 1;
@@ -432,6 +433,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
           ...(mode === 'full_check' ? { mode } : {}),
           ...(products ? { products } : {}),
           ...(continueFrom ? { continue_from: continueFrom.id } : {}),
+          ...(task ? { task } : {}),
           ...(mode === 'full_check' && planAnswers?.length ? { plan_answers: planAnswers } : {}),
         }, onEvent, signal).catch((error: unknown) => {
           refusal = error;
@@ -491,7 +493,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   const pickedModel = choice ? modelList.find((model) => model.id === choice.model) ?? null : null;
   const fullCheckSummary = confirmWords(products, pickedModel ? shortModelLabel(pickedModel) : null, choice ? EFFORT_WORDS[choice.effort] : null, money(cap));
   const fullCheckBlocked = blocked ?? (running ? 'A message is still running in this chat.' : null);
-  const runFullCheck = (answers?: ChatPlanAnswer[]) => void send(FULL_CHECK_TEXT, 'full_check', undefined, answers);
+  const runFullCheck = (answers?: ChatPlanAnswer[]) => void send(FULL_CHECK_TEXT, 'full_check', undefined, undefined, answers);
   // #1569: the plan check before a paid full check (a fake API may leave it out: no questions).
   const planApi = api.plan;
   const loadPlan = useMemo(() => (planApi ? () => planApi(packageId) : undefined), [planApi, packageId]);
@@ -554,7 +556,20 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                 if (message.role === 'user') {
                   // A saved full check's bubble names the effort its answer ran at.
                   const answer = messages[at + 1];
-                  return <UserMessage key={message.key} message={message} effort={message.effort ?? (answer?.role === 'assistant' ? answer.effort : null)} />;
+                  // #1551: how the app understood a typed question, with Edit to correct it and resend.
+                  const understood = answer?.role === 'assistant' && message.mode !== 'full_check' ? answer.understood : null;
+                  return (
+                    <Fragment key={message.key}>
+                      <UserMessage message={message} effort={message.effort ?? (answer?.role === 'assistant' ? answer.effort : null)} />
+                      {understood && (
+                        <UnderstoodLine
+                          understood={understood}
+                          disabled={running || Boolean(blocked)}
+                          onResend={(task) => void send(message.text, 'chat', undefined, task)}
+                        />
+                      )}
+                    </Fragment>
+                  );
                 }
                 const asked = messages[at - 1];
                 // Retry asks the answer's question again, as a new message (claude.ai's Retry).

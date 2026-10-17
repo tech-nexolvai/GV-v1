@@ -150,6 +150,11 @@ class Settings(BaseSettings):
     assistant_sandbox: Literal["auto", "docker", "macos"] = "auto"
     # One model call's time limit (a streamed call with long thinking can take minutes).
     assistant_call_timeout_seconds: int = Field(default=900, ge=30, le=3600)
+    # #1551: a typed question no code rule settles is sharpened into a task spec by Claude Haiku
+    # 5.5 (low effort, one short JSON reply) before any tool runs; a reply later than the deadline
+    # is not waited for (the chat then runs as before, with no spec).
+    assistant_sharpen: bool = True
+    assistant_sharpen_deadline_seconds: float = Field(default=1.5, gt=0, le=10)
     # The Usage page can show what OpenRouter reports this key has used (all projects using the
     # key), beside the recorded total (#1165): a free, read-only request with `OPENROUTER_API_KEY`.
     # Off by default, and off whenever no key is set.

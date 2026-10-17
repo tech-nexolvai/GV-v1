@@ -151,6 +151,8 @@ export interface ChatMessage {
   scope?: ChatScope | null;
   /** With `stopped: "interrupted"`: how Continue picks up (#1514). */
   resume?: ChatResume | null;
+  /** #1551: how the app understood the question (the answer's `understood` block); null when none. */
+  understood?: ChatUnderstood | null;
 }
 
 /** A full check's progress, by code (#1524): the last one is stored as a block. */
@@ -177,6 +179,47 @@ export interface ChatScope {
   label?: string | null;
 }
 
+/** #1551: what a typed question asks for, as the app's sharpen step read it. */
+export type ChatIntent = 'fact' | 'compare' | 'whole_set' | 'rules' | 'arithmetic' | 'rounds' | 'file' | 'summary' | 'clarify' | 'refuse_action';
+export type ChatOutputShape = 'one_line' | 'short' | 'findings' | 'file';
+
+/**
+ * #1551: how the app understood a typed question before any tool ran (its task spec). Shown as a
+ * quiet "Understood as: <label> · Edit" line under the question. A guide for the AI only: the
+ * reviewer's own words are always sent unchanged.
+ */
+export interface ChatUnderstood {
+  task: string;
+  intent: ChatIntent;
+  scope: { kind: 'whole_set' | 'pages' | 'area'; pages?: number[] | null; area?: string | null; label: string };
+  products?: string[] | null;
+  what_to_compare?: string[] | null;
+  checks_to_run?: string[] | null;
+  output_shape: ChatOutputShape;
+  assumptions?: string[] | null;
+  /** With intent `clarify`: a question back the lead may ask (the lead always answers). */
+  question_back?: string | null;
+  /** A short hint for the lead (an unclear question, or an order only a person carries out). */
+  hint?: string | null;
+  /** "Compare outlet heights (architect vs vendor) · page 4 · short answer". */
+  label: string;
+  /** Code rules ($0), the cheap model, or the reviewer's own correction. */
+  path: 'code' | 'model' | 'edited';
+  seconds?: number | null;
+  cost_usd?: string | null;
+}
+
+/** #1551: the reviewer's correction of an "Understood as" line, sent with the same question. */
+export interface ChatTaskEdit {
+  task: string;
+  intent?: ChatIntent;
+  what_to_compare?: string[];
+  checks_to_run?: string[];
+  /** Empty: the whole set. */
+  pages?: number[];
+  output_shape?: ChatOutputShape;
+}
+
 /** The reviewer's answer on one finding (PATH step 5), recorded append-only by the server. */
 export type FindingDecisionValue = 'agree' | 'not_a_problem';
 
@@ -199,7 +242,8 @@ export type ChatBlock =
   | { type: 'cite'; cite: ChatCite }
   | { type: 'accuracy'; accuracy: ChatAccuracy }
   | { type: 'unknowns'; unknowns: ChatUnknown[] }
-  | { type: 'resume'; resume: ChatResume };
+  | { type: 'resume'; resume: ChatResume }
+  | { type: 'understood'; understood: ChatUnderstood };
 
 // ── Chat v2 (CONTRACT2-findings): findings with evidence, and page coverage ──
 
@@ -739,6 +783,8 @@ export interface SendMessageBody {
   continue_from?: string;
   /** #1569, a full check only: the answers to the plan check's questions. */
   plan_answers?: ChatPlanAnswer[];
+  /** #1551: the reviewer's corrected "Understood as" (Edit), sent with the question unchanged. */
+  task?: ChatTaskEdit;
 }
 
 /** The stream's events, in the contract's words. `index` is the block's place in `blocks`. */
@@ -763,6 +809,7 @@ export type ChatEvent =
   | { event: 'coverage'; data: { coverage: ChatCoverage } }
   | { event: 'progress'; data: { index?: number; progress: ChatProgress } }
   | { event: 'scope'; data: { index?: number | null; scope: ChatScope } }
+  | { event: 'understood'; data: { index?: number | null; understood: ChatUnderstood } }
   | { event: 'trust'; data: { trust: ChatTrust } }
   | { event: 'cite'; data: { cite: ChatCite } }
   | { event: 'accuracy'; data: { accuracy: ChatAccuracy } }
@@ -773,7 +820,7 @@ export type ChatEventName = ChatEvent['event'];
 const EVENT_NAMES: ReadonlySet<string> = new Set<ChatEventName>([
   'message_start', 'thinking_start', 'thinking_delta', 'thinking_end', 'text_delta', 'step_start', 'step_end',
   'tasks', 'agent_start', 'agent_step', 'agent_end', 'file', 'usage', 'message_end', 'error',
-  'finding', 'finding_dropped', 'coverage', 'progress', 'scope', 'trust', 'cite', 'accuracy', 'unknowns',
+  'finding', 'finding_dropped', 'coverage', 'progress', 'scope', 'trust', 'cite', 'accuracy', 'unknowns', 'understood',
 ]);
 
 /**

@@ -94,6 +94,7 @@ from app.review.assistant.plan_check import (
     record_answers,
 )
 from app.review.assistant.sandbox import UPLOADS, ChatWorkspace, Sandbox, safe_file_name
+from app.review.assistant.sharpen import apply_sharpen
 from app.runs.rates import ModelRates
 
 __all__ = [
@@ -631,6 +632,12 @@ class MessageJob:
     """A full check's drawn-things helper per page group (#1569)."""
     plan_answers: Mapping[str, str] | None = None
     """The reviewer's answers to the plan check (#1569), kept with the set pack before the run."""
+    sharpen_model: bool = False
+    """#1551: a question no code rule settles is sharpened by the cheap model (off: code rules
+    only, and no spec otherwise)."""
+    sharpen_deadline_seconds: float = 1.5
+    task_edit: Mapping[str, Any] | None = None
+    """#1551: the task spec the reviewer corrected on the screen ("Understood as … Edit")."""
 
 
 _NO_SANDBOX: Final = (
@@ -896,6 +903,16 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             )
         except Exception:  # noqa: BLE001 - the check goes on; it just redoes more
             _log.exception("assistant chat could not carry over the interrupted findings")
+    if job.mode == "chat" and job.continue_from is None:
+        # #1551: the question sharpened into a task spec before any tool or helper runs.
+        apply_sharpen(
+            engine,
+            history=replay,
+            products=job.products,
+            use_model=job.sharpen_model,
+            edit=job.task_edit,
+            deadline_seconds=job.sharpen_deadline_seconds,
+        )
     if run.cancel.is_set():
         stop_with("", "cancelled")
         return

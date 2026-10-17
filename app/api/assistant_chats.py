@@ -292,6 +292,10 @@ class ChatRuntime:
     open_sandbox: Callable[[ChatWorkspace], Sandbox | None]
     skill_builder: Callable[[], SkillBuilder | None]
     rates: Callable[[str], ModelRates | None]
+    sharpen: bool = False
+    """#1551: sharpen a question no code rule settles with the cheap model (a deployment turns it
+    on; a test runtime keeps code rules only unless it asks)."""
+    sharpen_deadline_seconds: float = 1.5
 
 
 def _secret(value: Any) -> str | None:
@@ -324,6 +328,8 @@ def chat_runtime(request: Request) -> ChatRuntime:
         open_sandbox=sandbox,
         skill_builder=default_skill_builder,
         rates=_rates,
+        sharpen=settings.assistant_sharpen,
+        sharpen_deadline_seconds=settings.assistant_sharpen_deadline_seconds,
     )
 
 
@@ -1022,6 +1028,9 @@ def _message(
                 if mode != "full_check" or not body.plan_answers
                 else {answer.id: answer.answer for answer in body.plan_answers}
             ),
+            sharpen_model=runtime.sharpen,
+            sharpen_deadline_seconds=runtime.sharpen_deadline_seconds,
+            task_edit=None if body.task is None else body.task.model_dump(),
         )
     except BaseException:
         registry.release(run)
