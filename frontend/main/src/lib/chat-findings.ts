@@ -545,13 +545,17 @@ export function reviewerWords(original: ChatFinding): ReviewerWords {
     : status === 'not_compared' ? `${finding.not_compared_why === 'pair_not_covered' ? 'Its page pair was not compared' : 'Both sides were not looked at'}, so this is not counted as right.`
     : `The vendor’s drawing matches the ${whom}.`;
   const tell = status !== 'different' ? null
+    // The vendor's own numbers (#1584): no architect value to match.
+    : finding.source === 'vendor_arithmetic' && architect !== null ? `Correct the string: its parts add up to ${inchWords(architect)} in${vendor !== null ? `, but its overall prints ${inchWords(vendor)} in` : ''}.`
+    : finding.source === 'cross_view' && architect !== null ? `Print one value for this span: the drawing measures ${inchWords(architect)} in${vendor !== null ? `, this view prints ${inchWords(vendor)} in` : ''}.`
     : finding.source === 'brand_prototype' ? `Confirm which governs: the brand prototype shows ${architect !== null ? `${inchWords(architect)} in` : fullValue(finding.architect)}, the vendor drew ${vendor !== null ? `${inchWords(vendor)} in` : fullValue(finding.vendor)}.`
     : architect !== null ? `Change it to ${inchWords(architect)} in to match the ${whom}${vendor !== null ? ` (now ${inchWords(vendor)} in)` : ''}.`
     : finding.source === 'rules' ? `Fix it to meet GV’s rule: ${fullValue(finding.architect)}.`
     : `Match the ${whom}: ${fullValue(finding.architect)}.`;
   return {
     referenceLabel: referenceLabel(finding),
-    reference: sideWords(finding, 'architect'),
+    // Code's sum of the vendor's parts is not printed anywhere: no "(printed …)".
+    reference: finding.source === 'vendor_arithmetic' && architect !== null ? `${inchWords(architect)} in` : sideWords(finding, 'architect'),
     vendorLabel: finding.source === 'cross_view' ? 'This view shows' : 'Vendor drew',
     vendor: sideWords(finding, 'vendor'),
     whyLabel: { different: 'Why it’s wrong', check: 'What you need to decide', same: 'Why it’s right', not_compared: 'Why it was not compared' }[status],
@@ -592,11 +596,13 @@ export function decisionHelpRows(finding: Pick<ChatFinding, 'decision_help'>): D
 }
 
 /** How sure, in one plain line: what backs it, never a check's name. */
-export function sureWords(finding: Pick<ChatFinding, 'trust_level' | 'checks'>): string {
+export function sureWords(finding: Pick<ChatFinding, 'trust_level' | 'checks' | 'witnesses'>): string {
   const checks = finding.checks;
   // Only a check that said "no_text" may say pen strokes: most stroke numbers will get a witness.
   const strokes = checks?.printed_architect === 'no_text' || checks?.printed_vendor === 'no_text';
   if (finding.trust_level === 'confirmed') return 'Code found the values printed on the drawing (or worked them out), and an AI reading agrees.';
+  // Likely from code alone (a non-AI witness, no AI reading yet), or from two AI readings.
+  if (finding.trust_level === 'likely' && finding.witnesses?.length) return 'Code proved it from the drawing; no AI reading has checked it yet.';
   if (finding.trust_level === 'likely') return 'Two separate AI readings agree; no code check could read it.';
   if (checks?.second_read === 'disagrees' || checks?.critic === 'objects') return 'A second AI look disagreed, so check the pictures yourself.';
   if (strokes) return 'The numbers are drawn as pen strokes, so no independent check could read them.';
