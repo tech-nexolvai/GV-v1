@@ -44,6 +44,7 @@ __all__ = [
     "GROUPS",
     "GROUP_WORDS",
     "KEEP_WORDS",
+    "LEFT_CAPTIONS",
     "PAIRING_METHODS",
     "PAIRING_REASON",
     "RULE_LINE",
@@ -62,6 +63,7 @@ __all__ = [
     "should_be",
     "should_be_value",
     "unproved_reason",
+    "vendor_own",
     "vendor_value",
 ]
 
@@ -130,6 +132,7 @@ _SOURCE_WORDS: Final[Mapping[str, str]] = {
     "architect": "architect",
     "brand_prototype": "brand prototype",
     "rules": "GV rule",
+    "cross_view": "the vendor's own other dimension of the same span",
     # A difference GV Review's page review recorded is the vendor against the architect.
     "gv_review": "architect",
     "vendor_arithmetic": "the vendor's own parts",
@@ -194,9 +197,33 @@ def needs_pairing(finding: Mapping[str, Any]) -> bool:
     brand prototype's, or a difference GV Review's page review recorded), so a red cloud needs
     proof that both numbers measure the same thing. GV's rule, GV's limits and the vendor's own
     sum compare nothing drawn by someone else: they need none."""
-    if _gv_limits(finding) is not None:
+    if _gv_limits(finding) is not None or vendor_own(finding) == "span":
         return False
     return finding.get("source") not in _NO_PAIRING_SOURCES
+
+
+def vendor_own(finding: Mapping[str, Any]) -> str | None:
+    """`sum` when the proof is the vendor's own string (its parts against its printed total),
+    `span` when the vendor prints the same span twice and code proved it by geometry (the
+    consistency check: both dimension lines end on the same two extension lines), else `None`:
+    then there is no architect's side to show."""
+    if finding.get("source") == "vendor_arithmetic":
+        return "sum"
+    if (
+        finding.get("source") == "cross_view"
+        and finding.get("reference_side") == "vendor"
+        and finding.get("created_by") == "consistency"
+    ):
+        return "span"
+    return None
+
+
+#: The proof page's left caption, by `vendor_own` (else the architect's or GV's rule).
+LEFT_CAPTIONS: Final[Mapping[str | None, str]] = {
+    "sum": "Vendor's own parts (green: their sum)",
+    "span": "Vendor's other dimension of the same span (green: what governs)",
+    None: "Architect / rule (green: what governs)",
+}
 
 
 def pairing_proved(finding: Mapping[str, Any]) -> bool:

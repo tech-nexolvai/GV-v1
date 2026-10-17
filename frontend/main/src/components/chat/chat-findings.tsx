@@ -18,6 +18,7 @@ import {
   pagesWords,
   pageWords,
   reviewerWords,
+  sideLabels,
   sourceTag,
   spotInsets,
   STATUS_WORDS,
@@ -146,7 +147,7 @@ export function EvidenceThumb({ src, label, className }: { src: string | null; l
 }
 
 /** One side of a row's pair: 96 px tall, labelled A or V, larger on hover or focus; a click opens the viewer. */
-function PairSide({ src, side, label, onOpen }: { src: string | null; side: 'A' | 'V'; label: string; onOpen: () => void }) {
+function PairSide({ src, side, label, onOpen, first = false }: { src: string | null; side: string; label: string; onOpen: () => void; first?: boolean }) {
   const reduced = useReducedMotion();
   if (!src) return <EvidenceThumb src={null} label={label} className="h-24" />;
   return (
@@ -165,7 +166,7 @@ function PairSide({ src, side, label, onOpen }: { src: string | null; side: 'A' 
         aria-hidden="true"
         className={cn(
           'pointer-events-none absolute top-1/2 z-30 hidden w-[26rem] -translate-y-1/2 rounded-xl bg-white p-1.5 opacity-0 shadow-[0_16px_40px_rgb(0_0_0/0.18),0_0_0_1px_rgb(0_0_0/0.06)] lg:block',
-          side === 'A' ? 'right-[calc(200%+1.125rem)]' : 'right-[calc(100%+0.625rem)]',
+          first ? 'right-[calc(200%+1.125rem)]' : 'right-[calc(100%+0.625rem)]',
           'group-hover/pic:opacity-100 group-focus-visible/pic:opacity-100',
           !reduced && 'scale-[0.97] transition-[opacity,transform] duration-200 ease-out group-hover/pic:scale-100 group-focus-visible/pic:scale-100',
         )}
@@ -177,10 +178,11 @@ function PairSide({ src, side, label, onOpen }: { src: string | null; side: 'A' 
 }
 
 function EvidencePair({ finding, pictureUrl, onOpen }: { finding: ChatFinding; pictureUrl: (pictureId: string) => string; onOpen: () => void }) {
+  const sides = sideLabels(finding);
   return (
     <span data-slot="chat-finding-thumbs" className="grid w-full max-w-80 grid-cols-2 gap-2 lg:w-64">
-      <PairSide side="A" label="Architect" src={finding.arch_picture_id ? pictureUrl(finding.arch_picture_id) : null} onOpen={onOpen} />
-      <PairSide side="V" label="Vendor" src={finding.vendor_picture_id ? pictureUrl(finding.vendor_picture_id) : null} onOpen={onOpen} />
+      <PairSide side={sides.architectTag} first label={sides.architect} src={finding.arch_picture_id ? pictureUrl(finding.arch_picture_id) : null} onOpen={onOpen} />
+      <PairSide side={sides.vendorTag} label={sides.vendor} src={finding.vendor_picture_id ? pictureUrl(finding.vendor_picture_id) : null} onOpen={onOpen} />
     </span>
   );
 }
@@ -335,8 +337,8 @@ export function FindingCard({ finding, pictureUrl, onOpen, fullPageHref }: {
       </div>
       <div className="grid min-w-0 content-start gap-3">
         <div className="grid min-w-0 gap-3 sm:grid-cols-2">
-          <LargePicture src={finding.arch_picture_id ? pictureUrl(finding.arch_picture_id) : null} label={finding.source === 'cross_view' ? 'Reference view' : 'Architect'} page={architectPage(finding)} box={finding.arch_box} tone={status} onOpen={onOpen} />
-          <LargePicture src={finding.vendor_picture_id ? pictureUrl(finding.vendor_picture_id) : null} label={finding.source === 'cross_view' ? 'This view' : 'Vendor'} page={vendorPage(finding)} box={finding.vendor_box} tone={status} onOpen={onOpen} />
+          <LargePicture src={finding.arch_picture_id ? pictureUrl(finding.arch_picture_id) : null} label={sideLabels(finding).architect} page={architectPage(finding)} box={finding.arch_box} tone={status} onOpen={onOpen} />
+          <LargePicture src={finding.vendor_picture_id ? pictureUrl(finding.vendor_picture_id) : null} label={sideLabels(finding).vendor} page={vendorPage(finding)} box={finding.vendor_box} tone={status} onOpen={onOpen} />
         </div>
         <div className="flex flex-wrap justify-end gap-2">
           <button type="button" onClick={onOpen} className="inline-flex h-8 items-center gap-1.5 rounded-lg border bg-background px-3 text-[13px] font-medium hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
