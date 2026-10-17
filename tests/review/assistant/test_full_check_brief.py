@@ -193,7 +193,7 @@ def test_the_brief_carries_pages_recorded_results_leads_and_the_checklist() -> N
     assert "- p8: unsure: wall to first outlet" in brief
     for name, text in PAGE_CHECKLIST:
         assert f"- {name}: {text}" in brief
-    assert "EACH SEGMENT of a chain" in brief
+    assert "each segment of a chain" in brief
     assert "CHECKLIST p<N>: architect a/b; notes a/b; strings a/b; not compared:" in brief
     assert "starting with its area" in brief
     assert "{" not in brief and "}" not in brief  # every slot filled
@@ -330,10 +330,10 @@ NEW_ITEMS: dict[str, tuple[str, ...]] = {
     "construction": ("Construction notes", "brand sheet", "contradicts", "metal lining"),
     "position": ("centred on or aligned with", "collides with a neighbour", "its own opening"),
     "extent": ("vendor omits", "extra pieces", "doors, drawers, bins and fronts", "island faces"),
-    "brand": ("ID set vs brand prototype", "Your decision: which governs"),
+    "brand": ("ID set vs brand prototype", "Your decision", "which_governs"),
     "scaled": ("measure_on_drawing", "only ever status check", "never different (Wrong)"),
     # #1545: what a dimension spans, and the reasoning on every Your-decision item.
-    "span": ("measure_on_drawing with `dimension`", "box, soffit", "different_extent", "PRINTED"),
+    "span": ("measure_on_drawing with `dimension`", "box, soffit", "different_extent", "printed"),
     "decision": ("decision_help", "what it measures", "best estimate", "what to confirm"),
 }
 
@@ -381,9 +381,9 @@ def test_skill_md_says_what_to_compare_beyond_dimensions() -> None:
         "**Construction notes**",
         "metal lining",
         "**ID set vs brand prototype**",
-        '"Your decision: which governs"',
+        "`check_reason:\n  which_governs`",
         "**Scaled values**",
-        '"about X (±T)": status `check`, never `different` (Wrong)',
+        '"about X (±T)": status `check` (Your decision), never `different` (Wrong)',
         "**Extent first**",
         "`check_reason: different_extent`",
         "**Printed vs printed is Wrong**",

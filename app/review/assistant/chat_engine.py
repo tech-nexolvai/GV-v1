@@ -102,6 +102,7 @@ from app.review.assistant.chat_findings import (
 from app.review.assistant.chat_progress import FullCheckProgress
 from app.review.assistant.chat_provider import ChatProvider, ProviderFailure, failure_from
 from app.review.assistant.chat_read_review import (
+    READ_SYSTEM,
     Budget,
     critic_jobs,
     needs_third_read,
@@ -212,9 +213,11 @@ _log = logging.getLogger(__name__)
 #: scope note. chat-v9: zoom takes up to 8 crops; a full check's helpers are planned by code, with
 #: the recall brief, and the lead gets their reports with a verify-only instruction. chat-v10: the
 #: verify_value tool and its prompt lines, #1531. chat-v11: measure_on_drawing, decision_help and
-#: check_reason, #1545.) Only the request's prefix changes; a chat's
-#: stored messages replay unchanged.
-HARNESS_ID: Final = "chat-v11"
+#: check_reason, #1545. chat-v12: the prompt and tool audit: one vocabulary, every tool says when
+#: to use it, what it returns and one example, every schema field described, the box units said
+#: one way, the lead prompt without its tool catalogue.) Only the request's prefix changes; a
+#: chat's stored messages replay unchanged.
+HARNESS_ID: Final = "chat-v12"
 #: Helpers that may run at once, at most, whatever the setting says.
 MAX_PARALLEL_AGENTS_LIMIT: Final = 12
 #: The second reads, third reads and critic calls of one message that run at once.
@@ -256,10 +259,7 @@ SECOND_READ_LIMIT: Final = 30
 #: An upper bound of one second read's prompt: two crops (at most 1600 px a side, about 3,400
 #: tokens each) and the question.
 _SECOND_READ_PROMPT_TOKENS: Final = 8_000
-SECOND_READ_SYSTEM: Final = (
-    "You read values printed on crops of construction drawings. Answer only from what you can "
-    "see in the pictures; never guess a number you cannot read."
-)
+SECOND_READ_SYSTEM: Final = READ_SYSTEM
 _RETRY_WAIT_SECONDS: Final = 3.0
 _MAX_REPORT_CHARS: Final = 40_000
 _MAX_PROMPT_CHARS: Final = 20_000
@@ -282,33 +282,30 @@ WRAP_UP_NOTE: Final = (
     "parts you did not get to."
 )
 
+#: The 5-6 line summary that ends every full check (both instructions below end with it).
+_FULL_CHECK_SUMMARY: Final = """End with a 5-6 line plain-English summary for the reviewer (no tables, no disclaimers: the app draws the cloud drawing, the report and the lists):
+1. What was checked: pages, products, rounds.
+2. The overall verdict in one line (how many items are Wrong, need the reviewer's decision, are Right).
+3. The top 3-5 issues by impact, each with its page, item, and architect vs vendor value.
+4. What needs the reviewer's decision.
+5. The next step (e.g. "send the cloud drawing to the vendor; confirm the 3 items that need your decision").
+If you are told to stop early, still write this summary from what you have."""
+
 #: The full check's own instruction (CONTRACT4): the reviewer presses a button, never types it.
 #: The lead follows it when it plans the helpers itself (no page map).
-FULL_CHECK_INSTRUCTION: Final = """Full check of this drawing set (the reviewer pressed Run full check). Read /mnt/skills/gv-review/SKILL.md and rules.md first, and call review_results for the whole set.
+FULL_CHECK_INSTRUCTION: Final = f"""Full check of this drawing set (the reviewer pressed Run full check). Read /mnt/skills/gv-review/SKILL.md and rules.md first, and call review_results for the whole set.
 
-Review the WHOLE set: GV's rules for the picked products first, then compare everything on the vendor's drawings with the architect's (brand prototype differences as their own group). Report EVERY item you compare with report_finding, the right ones too (status same), with boxes. Check each finding the app made from GV Review's recorded results. Brief helpers to report findings and set_coverage, and on every page to record every dimension string with record_string and every value they read with record_reading (both sides; name an item the same way on every page and view), so code adds them up and compares the views. Record every page with set_coverage. Verify leads.
+Review the whole set: GV's rules for the picked products first, then everything on the vendor's drawings against the architect's (brand prototype differences as their own group). Report every item you compare with report_finding, the Right ones too (status same), with boxes. Check each finding the app made from GV Review's recorded results. Split the pages across helpers as SKILL.md section 8a says: each reports its findings and records every dimension string and every value it reads with record_string and record_reading (both sides; an item named the same way on every page and view), so code adds them up and compares the views. Verify each helper finding the app does not list as backed. Every page ends up in set_coverage.
 
-End with a 5-6 line plain-English summary for the reviewer (no tables, no disclaimers: the app draws the cloud drawing, the report and the lists):
-1. What was checked: pages, products, rounds.
-2. The overall verdict in one line (how many items look wrong, need the reviewer's decision, match).
-3. The top 3-5 issues by impact, each with its page, item, and architect vs vendor value.
-4. What needs the reviewer's decision.
-5. The next step (e.g. "send the cloud drawing to the vendor; confirm the 3 items that need your decision").
-If you are told to stop early, still write this summary from what you have."""
+{_FULL_CHECK_SUMMARY}"""
 
 #: What the lead is told instead when code planned and ran the helpers (#1512).
-FULL_CHECK_LEAD_INSTRUCTION: Final = """Full check of this drawing set (the reviewer pressed Run full check). The app has already split the set by area and run one helper per part with GV's per-page checklist, made a finding for each difference GV Review recorded, and read the helpers' findings a second time. Their reports and every finding follow. You verify and sum up; you do not plan. In this order, since a cap can stop you before the end:
+FULL_CHECK_LEAD_INSTRUCTION: Final = f"""Full check of this drawing set (the reviewer pressed Run full check). The app has already split the set by area and run one helper per part with GV's per-page checklist, made a finding for each difference GV Review recorded, and read the helpers' findings a second time. Their reports and every finding follow. You verify and sum up; you do not plan. In this order, since a cap can stop you before the end:
 - First the "Checklist gaps" and each "not compared" line in the helper reports: zoom and compare what was left (report_finding for each item), or say why it cannot be compared.
-- Then the findings listed under "To verify": zoom on both sides of four findings per zoom call (8 crops) and put several zoom calls in one reply; then, in one reply, update_finding for each (verified true, or the values as printed) or drop_finding with your reason. Findings under "Backed" need no re-check.
+- Then the findings listed under "To verify": zoom on both sides of four findings per zoom call (8 crops) and put several zoom calls in one reply; then, in one reply, update_finding for each (verified true, or the values as printed) or drop_finding with your reason. Findings listed as backed need no re-check.
 - Each finding the app made from GV Review's recorded results that is still without boxes: check it on the drawing (update_finding with boxes) or drop_finding with your reason.
 - Pages listed as not accounted for: set_coverage, or compare them yourself (a helper only for several pages).
-End with a 5-6 line plain-English summary for the reviewer (no tables, no disclaimers: the app draws the cloud drawing, the report and the lists):
-1. What was checked: pages, products, rounds.
-2. The overall verdict in one line (how many items look wrong, need the reviewer's decision, match).
-3. The top 3-5 issues by impact, each with its page, item, and architect vs vendor value.
-4. What needs the reviewer's decision.
-5. The next step (e.g. "send the cloud drawing to the vendor; confirm the 3 items that need your decision").
-If you are told to stop early, still write this summary from what you have."""
+{_FULL_CHECK_SUMMARY}"""
 
 
 def prompt_ids(provider: str) -> tuple[str, str]:
@@ -2223,8 +2220,8 @@ class ChatEngine:
                     "with verified true, correct it, or drop_finding):" + listed
                 )
             text = (
-                f"Report from helper agent '{agent.description}' (check what it flags before you "
-                "state it):\n" + str(entry["report"])
+                f"Report from helper agent '{agent.description}' (its findings are leads: verify "
+                "them before you state them):\n" + str(entry["report"])
             )[: _MAX_REPORT_CHARS - len(listed)] + listed
             result: dict[str, Any] = {
                 "type": "tool_result",
