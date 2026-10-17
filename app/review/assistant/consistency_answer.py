@@ -29,6 +29,7 @@ from app.review.assistant.vendor_consistency import (
 
 __all__ = [
     "CHECK_MODEL",
+    "NO_MODEL_CALL_MICROS",
     "QUESTION",
     "ConsistencyAnswer",
     "PackNotReady",
@@ -40,6 +41,8 @@ __all__ = [
 QUESTION: Final = "Vendor consistency check"
 #: The answer's "model": code, not an AI (the footer reads "Code Check").
 CHECK_MODEL: Final = "code-check"
+#: What a code-only answer costs: it makes no model call at all (not a cost left unrecorded).
+NO_MODEL_CALL_MICROS: Final = 0
 #: The finding fields the engine's checker always sets (`ChatEngine._checked`).
 _ALWAYS: Final = (
     "ledger_ids",

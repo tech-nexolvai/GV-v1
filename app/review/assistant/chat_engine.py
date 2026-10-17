@@ -752,6 +752,7 @@ class ChatEngine:
         self._unknowns: list[dict[str, Any]] = []
         # The vendor consistency check's grey items (#1584), for the "not checked" list.
         self.consistency_gaps: list[dict[str, Any]] = []
+        self.consistency_line: str | None = None
         # The decision items code settled itself (#1554), for the cloud drawing and the report.
         self._settled: list[dict[str, Any]] = []
         """What this answer did not check (`chat_unknowns`), set by the trust phase."""
@@ -2464,7 +2465,13 @@ class ChatEngine:
                 names = self._full_check_files()
             except Exception:  # noqa: BLE001 - the answer still ends, with its summary
                 _log.exception("assistant chat full-check files failed")
+        line = self.consistency_line
         if not needs_code_summary(text, stopped):
+            if line:
+                # The vendor consistency check's line (#1584), after the AI's own summary.
+                index = self._add_block({"type": "text", "text": line, "by": "code"})
+                self.emit("text_delta", {"index": index, "text": line, "by": "code"})
+                text = f"{text}\n\n{line}"
             return text
         book, settings = self.book, self.settings
         summary = code_summary(
@@ -2478,6 +2485,7 @@ class ChatEngine:
             budget_usd=cap_text(settings.package_cap_micros),
             turns=settings.lead_max_turns,
             files=names,
+            also=[line] if line else (),
         )
         index = self._add_block({"type": "text", "text": summary, "by": "code"})
         self.emit("text_delta", {"index": index, "text": summary, "by": "code"})

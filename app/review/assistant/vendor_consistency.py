@@ -1173,7 +1173,7 @@ def add_to_answer(engine: Any) -> ConsistencyResult | None:
     """The engine's hook (a full check, at its finish, $0): the check over the set pack; its Wrong
     items added through the finding book like the ledger's (the same checks and trust rule), unless
     the answer already has them; its grey items kept for the "not checked" list
-    (`engine.consistency_gaps`); one line for the summary, as a code text block."""
+    (`engine.consistency_gaps`); one line for the summary (`engine.consistency_line`)."""
     if getattr(engine.settings, "mode", None) != "full_check":
         return None
     workspace = engine.tools.workspace
@@ -1191,7 +1191,6 @@ def add_to_answer(engine: Any) -> ConsistencyResult | None:
                 engine._show_finding(added)
                 live.append(added)
     engine.consistency_gaps = list(result.unknowns)
-    line = summary_line(result)
-    index = engine._add_block({"type": "text", "text": line, "by": "code"})
-    engine.emit("text_delta", {"index": index, "text": line, "by": "code"})
+    # The summary's line: code's own summary carries it, else it follows the AI's (the engine).
+    engine.consistency_line = summary_line(result)
     return result

@@ -154,6 +154,7 @@ from app.review.assistant.chat_tools import ResultsLoader
 from app.review.assistant.chat_trust import findings_csv
 from app.review.assistant.consistency_answer import (
     CHECK_MODEL,
+    NO_MODEL_CALL_MICROS,
     QUESTION,
     PackNotReady,
     run_check,
@@ -814,7 +815,7 @@ def consistency_check(
             text=made.text,
             blocks=made.blocks,
             api_content=made.api_content,
-            cost_micros=0,
+            cost_micros=NO_MODEL_CALL_MICROS,
             stopped=None,
             error=None,
             mode="chat",

@@ -353,6 +353,17 @@ def test_the_summary_line_says_what_was_added_up() -> None:
     )
 
 
+def test_codes_own_summary_carries_the_line_before_the_next_step() -> None:
+    from app.review.assistant.chat_summary import code_summary
+
+    line = "Vendor consistency (by code, $0): 3 dimension strings added up, all add up."
+    summary = code_summary(
+        [], coverage=None, page_count=3, products=["countertop"], stopped=None, also=[line]
+    )
+    lines = summary.splitlines()
+    assert lines[lines.index(line) + 1].startswith("Next:")
+
+
 # ---- the full check's hook -----------------------------------------------------------------------
 
 
@@ -380,6 +391,7 @@ class _Engine:
         self.blocks: list[dict[str, Any]] = []
         self.events: list[tuple[str, dict[str, Any]]] = []
         self.consistency_gaps: list[dict[str, Any]] = []
+        self.consistency_line: str | None = None
 
     def _show_finding(self, finding: dict[str, Any]) -> None:
         self.shown.append(finding)
@@ -418,15 +430,14 @@ def test_the_hook_adds_new_findings_gaps_and_a_summary_line(
     assert [(g["page"], by) for g, by in engine.book.added] == [(4, "consistency")]
     assert [f["id"] for f in engine.shown] == ["F1"]
     assert engine.consistency_gaps == [{"page": 9, "why": "missing_round"}]
-    (block,) = engine.blocks
-    assert block["by"] == "code" and block["text"].startswith("Vendor consistency (by code, $0)")
+    assert (engine.consistency_line or "").startswith("Vendor consistency (by code, $0)")
 
 
 def test_the_hook_runs_only_in_a_full_check(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(vc, "check_pack", lambda folder, uploads: _result())
     engine = _Engine("chat", [])
     assert vc.add_to_answer(engine) is None
-    assert engine.book.added == [] and engine.blocks == []
+    assert engine.book.added == [] and engine.consistency_line is None
 
 
 def test_check_pack_reads_the_pack_files(tmp_path: Path) -> None:
