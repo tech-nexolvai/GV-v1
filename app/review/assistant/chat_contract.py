@@ -404,6 +404,32 @@ class ChatCoverageBlock(BaseModel):
     coverage: ChatCoverageOut
 
 
+class ChatScopeOut(BaseModel):
+    """What the answer is about, worked out by code (#1520): the whole set, or some pages or an
+    area. Only a whole-set answer gets the whole-set panels (all pages' coverage, every recorded
+    difference); a page or area answer's coverage, recorded results and trust counts cover its
+    pages only."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["whole_set", "pages", "area"]
+    pages: list[int] = Field(
+        default_factory=list, description="The scope's pages; empty for the whole set."
+    )
+    area: str | None = Field(default=None, description="The area named, as typed on the set.")
+    why: Literal[
+        "full_check", "whole_set_words", "nothing_named", "wide_work", "pages_named", "area_named"
+    ]
+    label: str = Field(description='In plain words: "page 8 (Bussing station)", "the whole set".')
+
+
+class ChatScopeBlock(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["scope"]
+    scope: ChatScopeOut
+
+
 class ChatTrustRuleOut(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -656,6 +682,9 @@ class ChatTrustOut(BaseModel):
     ledger: ChatLedgerReportOut | None = None
     ledger_entries: ChatLedgerEntriesOut | None = None
     recorded_results: ChatRecordedResultsOut | None = None
+    scope: ChatScopeOut | None = Field(
+        default=None, description="What the counts above cover (null on older answers)."
+    )
 
 
 class ChatTrustBlock(BaseModel):
@@ -758,7 +787,8 @@ ChatBlock = Annotated[
     | ChatTrustBlock
     | ChatCiteBlock
     | ChatAccuracyBlock
-    | ChatUnknownsBlock,
+    | ChatUnknownsBlock
+    | ChatScopeBlock,
     Field(discriminator="type"),
 ]
 
@@ -804,6 +834,11 @@ class ChatMessageOut(BaseModel):
     accuracy: ChatAccuracyOut | None = Field(
         default=None,
         description="The answer's accuracy by code (its `accuracy` block); null on older answers.",
+    )
+    scope: ChatScopeOut | None = Field(
+        default=None,
+        description="What the answer is about (its `scope` block): the whole set, or pages or an "
+        "area; null on older answers.",
     )
 
 

@@ -236,7 +236,7 @@ def test_a_tool_turn_runs_the_tool_and_sends_the_reply_back_unchanged(tmp_path: 
     assert [b["type"] for b in outcome.blocks] == ["thinking", "text", "step", "text", "accuracy"]
     assert len(harness.ledger.rows) == 2
     assert {row["prompt_id"] for row in harness.ledger.rows} == {
-        "review-assistant-chat-anthropic-chat-v7"
+        "review-assistant-chat-anthropic-chat-v8"
     }
 
 

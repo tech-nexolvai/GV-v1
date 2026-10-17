@@ -437,6 +437,9 @@ class FindingBook:
     dropped: dict[str, str] = field(default_factory=dict)
     coverage: dict[int, dict[str, Any]] = field(default_factory=dict)
     coverage_used: bool = False
+    scope_pages: frozenset[int] | None = None
+    """A page or area answer's pages (`chat_scope`): the coverage map lists only those and the
+    pages recorded; `None` (the whole set): every page of the vendor's file."""
     dismissed: dict[str, str] = field(default_factory=dict)
     """Recorded differences the lead set aside: record id -> its reason."""
     record_ids: frozenset[str] = frozenset()
@@ -958,18 +961,23 @@ class FindingBook:
         return self.coverage_map()
 
     def coverage_map(self) -> dict[str, Any]:
-        """Every page of the vendor's file (a page never recorded: not opened), and the counts."""
+        """Every page of the vendor's file (a page never recorded: not opened), and the counts. A
+        page or area answer (`scope_pages`): only its pages and the pages recorded."""
         with self._lock:
             recorded = dict(self.coverage)
-        total = max(self.page_count, max(recorded, default=0))
+            scope = self.scope_pages
+        if scope is None:
+            numbers = list(range(1, max(self.page_count, max(recorded, default=0)) + 1))
+        else:
+            numbers = sorted(set(scope) | set(recorded))
         pages = [
             recorded.get(
                 page,
                 {"page": page, "pair_page": None, "status": "not_opened", "note": None, "by": None},
             )
-            for page in range(1, total + 1)
+            for page in numbers
         ]
-        counts = {"total": total, **{status: 0 for status in COVERAGE_STATUSES}}
+        counts = {"total": len(pages), **{status: 0 for status in COVERAGE_STATUSES}}
         for entry in pages:
             counts[entry["status"]] += 1
         return {"pages": [dict(entry) for entry in pages], "counts": counts}

@@ -402,8 +402,8 @@ def test_second_reads_run_after_the_lead_and_feed_the_trust_report(
         assert call["thinking"] == {"type": "disabled"} and call["max_tokens"] == 1024
         assert "tools" not in call and "tool_choice" not in call
     prompt_ids = [row["prompt_id"] for row in harness.ledger.rows]
-    assert prompt_ids.count("review-assistant-chat-check-anthropic-chat-v7") == 2
-    assert prompt_ids.count("review-assistant-chat-adjudicate-anthropic-chat-v7") == 1
+    assert prompt_ids.count("review-assistant-chat-check-anthropic-chat-v8") == 2
+    assert prompt_ids.count("review-assistant-chat-adjudicate-anthropic-chat-v8") == 1
     assert outcome.cost_micros > 0
 
 
