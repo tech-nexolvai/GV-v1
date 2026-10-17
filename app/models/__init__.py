@@ -18,7 +18,12 @@ from __future__ import annotations
 from app.audit.events import AuditEvent
 from app.models.ai_review import AiPageReview, AiPageReviewAnswer, AiPageReviewRow
 from app.models.architect_compare import ArchitectCompareAnswer, ArchitectCompareRecord
-from app.models.assistant_chat import AssistantChat, AssistantChatFile, AssistantChatMessage
+from app.models.assistant_chat import (
+    AssistantChat,
+    AssistantChatFile,
+    AssistantChatMessage,
+    AssistantFindingDecision,
+)
 from app.models.document import (
     Document,
     DocumentKind,
@@ -165,6 +170,7 @@ __all__ = [
     "AssistantChat",
     "AssistantChatFile",
     "AssistantChatMessage",
+    "AssistantFindingDecision",
     "AuditEvent",
     "CanonicalObservation",
     "CaseResult",

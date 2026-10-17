@@ -30,6 +30,8 @@ __all__ = [
     "ChatCreatedOut",
     "ChatFileOut",
     "ChatFindingBlock",
+    "ChatFindingDecisionIn",
+    "ChatFindingDecisionOut",
     "ChatFindingDroppedBlock",
     "ChatFindingOut",
     "ChatListOut",
@@ -270,6 +272,29 @@ class ChatFindingCriticOut(BaseModel):
     model: str | None = None
 
 
+type ChatDecision = Literal["agree", "not_a_problem"]
+
+
+class ChatFindingDecisionIn(BaseModel):
+    """The reviewer's ✓ Agree / ✗ Not a problem on one finding (#1521)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    decision: ChatDecision
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class ChatFindingDecisionOut(BaseModel):
+    """A finding's latest decision: what, by whom (the signed-in principal), when."""
+
+    model_config = ConfigDict(frozen=True)
+
+    decision: ChatDecision
+    note: str | None = None
+    by: str
+    at: datetime
+
+
 class ChatFindingOut(BaseModel):
     """One difference the assistant reported, with code-made evidence and checks."""
 
@@ -359,6 +384,10 @@ class ChatFindingOut(BaseModel):
         default=None, description="Every reading, when a third read settled the second (#1498)."
     )
     critic: ChatFindingCriticOut | None = None
+    decision: ChatFindingDecisionOut | None = Field(
+        default=None,
+        description="The reviewer's latest decision on this finding (#1521); null: not decided.",
+    )
 
 
 class ChatFindingBlock(BaseModel):
