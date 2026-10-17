@@ -29,10 +29,13 @@ every time, so the history is byte for byte what was sent before.
 from __future__ import annotations
 
 import base64
+import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from importlib import import_module
 from typing import Any, Final, Literal
+
+from app.review.assistant.chat_context import CONTEXT_BETA
 
 __all__ = [
     "DEFAULT_EFFORT",
@@ -282,6 +285,7 @@ def call_params(
     messages: Sequence[Mapping[str, Any]],
     final: bool,
     max_tokens: int,
+    context_management: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The keyword arguments of one streamed call (`client.beta.messages.create(stream=True)` on
     Anthropic's API with a beta, else `client.messages.create(stream=True)`): everything that
@@ -303,9 +307,16 @@ def call_params(
         # A call without tools (a finding's second read) sends neither field.
         del params["tools"], params["tool_choice"]
     if provider == "anthropic":
+        betas: list[str] = []
         if model.fallbacks:
-            params["betas"] = [FALLBACK_BETA]
+            betas.append(FALLBACK_BETA)
             params["fallbacks"] = "default"
+        if context_management:
+            # Old tool results and thinking cleared server-side (`chat_context`, #1548).
+            betas.append(CONTEXT_BETA)
+            params["context_management"] = json.loads(json.dumps(context_management))
+        if betas:
+            params["betas"] = betas
     else:
         params["extra_body"] = {"provider": _openrouter_routing()}
     return params

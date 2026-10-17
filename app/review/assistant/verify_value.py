@@ -25,11 +25,26 @@ read that redrawing upright and turned both ways, with a stacked fraction split 
 part read alone; both also read a picture of the vendor's layer with coloured pixels whitened. That
 is four reads. **`match` only when at least two of the four read exactly the expected value, both
 engines among them, and no read gives a near-miss of it** (one digit different, or the expected value
-as a fragment of a longer number). A box over `BIG_BOX_PT2` holding several numbers is refused: draw
-the box round the one dimension. And a `1` must look like a `1`: both engines read one architect's
+as a fragment of a longer number). In a box over `BIG_BOX_PT2` holding several numbers these reads
+cannot tell which number is where, so they confirm nothing (route 2b below still reads it label by
+label). And a `1` must look like a `1`: both engines read one architect's
 hand-lettered `7 5/8"` as `1 5/8"`, so every glyph Tesseract read as `1` in the value must be a
 narrow stroke (`_ONE_MAX_WIDTH`), and a value with a `1` that no engine could show the shape of is
 not a match.
+
+**Route 2b: label by label (#1561).** When those four reads do not settle it, the vendor's ink
+near the box is split into labels from its vector paths (`ink_labels`: one path is one stroke, so
+a stacked fraction's numerator, bar and denominator are known), and every label is redrawn upright
+on one line with its fraction moved onto the line, then read alone by each engine at two sizes. A
+row ending in an inch mark is drawn without it and read as inches by RapidOCR (which reads `"` as
+`99`); a foot mark is always kept. A label counts for the value only when a **whole row** reads as exactly
+that one dimension (`63 1 1//` never counts for `63"`). **`match` only when one label is read so
+by two engines, no label anywhere in the box reads as a near-miss of it, and a `1` is shaped as
+one.** A box holding more than `ink_labels.MAX_LABELS` labels (a whole view) is not read this way.
+The labels also watch the four reads above: a match there is refused when a label's whole row
+reads the same whole number with a fraction (an engine on the whole box that lost a stacked
+fraction reads `63` for `63 1/2"`), and so is any drawn match when the box's own text prints a
+near-miss of the value.
 
 **What it never does.** It never calls a model, never reads GV's coloured markup as a value, and
 never says `mismatch` from OCR alone: only when the box's text was read, none of it is the value,
@@ -68,6 +83,7 @@ import numpy as np
 import pdfplumber
 import pikepdf
 
+from app.review.assistant import ink_labels
 from app.review.assistant.finding_checks import claim_value, dimension_tokens, to_inches
 from extraction.reader import pixel_placement
 from extraction.stamp_text import carries_drawing, drawing_ink, path_ink
@@ -721,6 +737,8 @@ class TesseractReader:
     """Tesseract (Apache-2.0) through pytesseract, sparse text or one line."""
 
     name = "Tesseract"
+    reads_inch_marks = True
+    """Told the characters a dimension is written with (`_WHITELIST`), it reads `"` as `"`."""
 
     def __init__(self) -> None:
         self._tesseract = import_module("pytesseract")
@@ -758,6 +776,8 @@ class RapidReader:
     """RapidOCR (Apache-2.0, ONNX models inside the package), one instance, one call at a time."""
 
     name = "RapidOCR"
+    reads_inch_marks = False
+    """It reads any character it knows, and often reads an inch mark as `99`."""
 
     def __init__(self) -> None:
         ocr = import_module("extraction.ocr")
@@ -1074,6 +1094,10 @@ def near_miss(expected: Decimal, read: Decimal) -> bool:
 class _InkRead:
     name: str
     engine: str
+    label: int | None = None
+    """The label read (`_label_reads`), or `None` for a read of the whole box."""
+    whole: set[Decimal] = field(default_factory=set)
+    """A label's rows that read as exactly one dimension, whole row (only these vote)."""
     lines: list[str] = field(default_factory=list)
     values: set[Decimal] = field(default_factory=set)
     passes: list[tuple[frozenset[Decimal], tuple[float, ...] | None]] = field(default_factory=list)
@@ -1174,6 +1198,120 @@ def _ones_unsure(votes: Sequence[_InkRead], wanted: Decimal) -> str | None:
     if shaped:
         return None
     return "a drawn 1 may be a hand-lettered 7, and no engine could show its shape"
+
+
+# ---- route 2b: label by label --------------------------------------------------------------------
+
+
+_LABEL_READS_CACHE: OrderedDict[
+    tuple[int, tuple[float, ...], tuple[int, ...]], list[_InkRead] | None
+] = OrderedDict()
+
+
+def _label_reads(
+    page: _Page, spot: tuple[float, float, float, float], readers: Sequence[InkReader]
+) -> list[_InkRead] | None:
+    """Each label of the vendor's ink at the spot (`ink_labels`) re-typeset on one line per row
+    (stacked fractions moved onto the line) and read alone by each engine, at two sizes and in
+    each plausible reading direction. `None` when the box holds more labels than one dimension
+    has (`ink_labels.MAX_LABELS`). Cached per page, spot and engines."""
+    key = (id(page), spot, tuple(id(reader) for reader in readers))
+    with _CACHE_LOCK:
+        if key in _LABEL_READS_CACHE and _PAGE_CACHE.get(_page_key(page)) is page:
+            _LABEL_READS_CACHE.move_to_end(key)
+            return _LABEL_READS_CACHE[key]
+    found = ink_labels.labels(_ink_paths_near(page, spot), spot)
+    reads: list[_InkRead] | None = None
+    if len(found) <= ink_labels.MAX_LABELS:
+        reads = []
+        for number, label in enumerate(found, start=1):
+            for reader in readers:
+                read = _InkRead(f"vendor ink label {number}, {reader.name}", reader.name, number)
+                for turn in ink_labels.turns(label):
+                    for row in ink_labels.rows(label, turn):
+                        # An inch mark carries no digit, and an engine with no list of the
+                        # characters to look for reads it as `99` (`34 99`, a near-miss of 34"):
+                        # such an engine reads a row ending in one without it, as inches.
+                        mark = getattr(reader, "reads_inch_marks", True) or not (
+                            ink_labels.inch_mark_at_end(row, turn)
+                        )
+                        for height in ink_labels.HEIGHTS_PX:
+                            picture = ink_labels.row_picture(row, turn, height, inch_mark=mark)
+                            if picture is None:
+                                continue
+                            # One picture is one row: its pieces are one line of text.
+                            line = " ".join(reader(picture, single_line=True)).strip()
+                            read.add(reader, picture, [line] if line else [], True)
+                            whole = _row_value(line, inch_mark=mark)
+                            if whole is not None:
+                                read.whole.add(whole)
+                reads.append(read)
+    with _CACHE_LOCK:
+        _LABEL_READS_CACHE[key] = reads
+        while len(_LABEL_READS_CACHE) > _READS_CACHE_SIZE:
+            _LABEL_READS_CACHE.popitem(last=False)
+    return reads
+
+
+def _row_value(line: str, *, inch_mark: bool) -> Decimal | None:
+    """The one dimension a row reads as, or `None`: everything from its first digit to its last
+    (and a mark right after) must be exactly one dimension; words round it are allowed (`57"
+    (INCLUDING FIELD CUT)`). `63 1/2"` is one, `63 1 1//` and `34 99` are not (an engine that lost
+    a fraction or read an inch mark as 99 must not vote). A row drawn without its inch mark reads
+    as inches."""
+    text = _DASHED_FRACTION.sub(r"\1 \2", _plain(line))
+    digits = [i for i, ch in enumerate(text) if ch.isdigit()]
+    if not digits:
+        return None
+    first, last = digits[0], digits[-1] + 1
+    while last < len(text) and text[last] in "'\"]":
+        last += 1
+    if first > 0 and text[first - 1] == "[":
+        first -= 1
+    core = text[first:last].strip()
+    bracketed = re.fullmatch(r"\[\s*([^\[\]]+?)\s*\]", core)
+    if bracketed:  # the inches under a millimetre value: `[34]`
+        core = bracketed.group(1).rstrip('"').strip()
+        inch_mark = False
+    if not inch_mark:
+        if not re.fullmatch(r"\d+(?:\s+\d+/\d+)?|\d+/\d+", core):
+            return None
+        core += '"'
+    return to_inches(core)
+
+
+def _ink_paths_near(page: _Page, spot: tuple[float, float, float, float]) -> list[_Path]:
+    """The character-sized paths near the spot, wide enough for a label the box clips."""
+    reach = ink_labels.GATHER_PT
+    x0, y0, x1, y1 = spot
+    return [
+        path
+        for path in page.paths
+        if path.box[0] >= x0 - reach
+        and path.box[2] <= x1 + reach
+        and path.box[1] >= y0 - reach
+        and path.box[3] <= y1 + reach
+    ]
+
+
+def _label_match(reads: Sequence[_InkRead], wanted: Decimal) -> tuple[bool, str]:
+    """Whether the label reads confirm `wanted`, and why not: one label read exactly as it by
+    two engines, no label read anywhere in the box as a near-miss of it, and a `1` shaped as one."""
+    by_label: dict[int, set[str]] = {}
+    for read in reads:
+        if read.label is not None and wanted in read.whole:
+            by_label.setdefault(read.label, set()).add(read.engine)
+    agreeing = [label for label, engines in by_label.items() if len(engines) >= 2]
+    if not agreeing:
+        return False, "no label here is read as it by two OCR engines"
+    misses = sorted({v for read in reads for v in read.values if near_miss(wanted, v)})
+    if misses:
+        near = ", ".join(_inches_text(v) for v in misses[:3])
+        return False, f"a label here reads as a near-miss of it ({near})"
+    ones = _ones_unsure([read for read in reads if read.label in agreeing], wanted)
+    if ones is not None:
+        return False, ones
+    return True, ""
 
 
 # ---- the one entry point -------------------------------------------------------------------------
@@ -1374,6 +1512,13 @@ def _drawn(
         return Verified(
             "cannot_read", "none", None, text_reads, "no OCR engine is installed here", value
         )
+    # The box's own text is exact: when it prints a near-miss of the value (`63 1/2"` when `63"`
+    # is claimed), no OCR read of the ink may confirm it (an engine loses a stacked fraction).
+    in_text = sorted(v for v in text.values if near_miss(wanted, v))
+    if in_text:
+        near = ", ".join(_inches_text(v) for v in in_text[:3])
+        reason = f"the drawing's text here prints a near-miss of it ({near})"
+        return Verified("cannot_read", "text", None, text_reads, reason, value)
     reads = _drawn_reads(page, spot, engines)
     all_reads = text_reads + tuple(
         f"{read.name}: {' | '.join(line.strip() for line in read.lines)}"
@@ -1385,16 +1530,33 @@ def _drawn(
     others = {v for read in reads for v in read.values if v != wanted}
     area = (spot[2] - spot[0]) * (spot[3] - spot[1])
     engines_voting = {read.engine for read in votes}
-    if len(votes) >= _VOTES_NEEDED and len(engines_voting) >= 2 and not misses:
-        if area > BIG_BOX_PT2 and others:
-            reason = (
-                "the box is too big and holds several numbers: draw the box round the one "
-                "dimension"
-            )
-            return Verified("cannot_read", "drawn", None, all_reads, reason, value)
+    too_big = ""
+    agreed = len(votes) >= _VOTES_NEEDED and len(engines_voting) >= 2 and not misses
+    if agreed and area > BIG_BOX_PT2 and others:
+        # The whole-box reads cannot tell which number is where; the labels below can.
+        too_big = (
+            "the box is too big and holds several numbers: draw the box round the one dimension"
+        )
+    if agreed and not too_big:
         ones = _ones_unsure(votes, wanted)
         if ones is not None:
             return Verified("cannot_read", "drawn", None, all_reads, ones, value)
+        # The labels must agree too: a label whose whole row reads the same whole number with a
+        # fraction (`63 1/2"` when `63"` is claimed: an engine on the whole box lost the stacked
+        # fraction) refuses it.
+        checked = _label_reads(page, spot, engines) or []
+        lost = sorted(
+            {
+                v
+                for r in checked
+                for v in r.whole
+                if v != wanted and math.floor(v) == math.floor(wanted)
+            }
+        )
+        if lost:
+            near = ", ".join(_inches_text(v) for v in lost[:3])
+            reason = f"a label here reads it with another fraction ({near})"
+            return Verified("cannot_read", "drawn", None, all_reads, reason, value)
         engines_agreeing = " and ".join(read.name for read in votes)
         return Verified(
             "match",
@@ -1404,11 +1566,34 @@ def _drawn(
             f"read from the vendor's drawn ink ({engines_agreeing})",
             value,
         )
+    labelled = _label_reads(page, spot, engines)
+    label_reason = ""
+    if labelled:
+        all_reads += tuple(
+            f"{read.name}: {' | '.join(line.strip() for line in read.lines)}"
+            for read in labelled
+            if read.lines
+        )
+        confirmed, label_reason = _label_match(labelled, wanted)
+        if confirmed:
+            engines_agreeing = " and ".join(sorted({read.engine for read in labelled}))
+            return Verified(
+                "match",
+                "drawn",
+                _inches_text(wanted),
+                all_reads,
+                f"read from the vendor's drawn ink, label by label ({engines_agreeing})",
+                value,
+            )
     if printed and not votes and not text.doubtful:
         return Verified(
             "mismatch", "text", printed, all_reads, f"the drawing prints {printed} here", value
         )
-    if misses:
+    if too_big:
+        reason = too_big
+    elif labelled and not votes and not misses:
+        reason = label_reason
+    elif misses:
         near = ", ".join(_inches_text(v) for v in misses[:3])
         reason = f"an OCR engine read a near-miss of it here ({near})"
     elif len(votes) == 1:

@@ -382,6 +382,8 @@ def apply_checks(
     # Nobody has decided on a finding being written (#1521): the reviewer's decision is added when
     # the stored answer is read.
     out["decision"] = None
+    # A later message may correct it (#1548): marked when the stored answer is read.
+    out["updated_in"] = None
     out["inches"] = {
         "architect": _number(architect),
         "vendor": _number(vendor),

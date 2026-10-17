@@ -87,6 +87,7 @@ from app.review.assistant.chat_contract import (
     ChatMessageIn,
     ChatOut,
 )
+from app.review.assistant.chat_corrections import corrections_by_answer, with_corrections
 from app.review.assistant.chat_decisions import (
     decided_findings,
     decided_summary,
@@ -98,6 +99,7 @@ from app.review.assistant.chat_decisions import (
 from app.review.assistant.chat_engine import cost_text
 from app.review.assistant.chat_feed import MessageFeed
 from app.review.assistant.chat_findings import live_findings, make_markup_file
+from app.review.assistant.chat_memory import add_note, decision_note
 from app.review.assistant.chat_provider import (
     AnthropicSdkProvider,
     ChatProvider,
@@ -465,13 +467,17 @@ def read_chat(
     first = first_question(messages)
     run = registry.get(chat_id)
     decisions = latest_decisions(session, chat_id)
+    corrections = corrections_by_answer(messages)
     return ChatOut(
         id=chat.id,
         package_id=package.id,
         package_name=package_name(package),
         title=chat.title or (chat_title(first) if first else None),
         created_at=chat.created_at,
-        messages=[message_out(message, files, decisions.get(message.id)) for message in messages],
+        messages=[
+            message_out(message, files, decisions.get(message.id), corrections.get(str(message.id)))
+            for message in messages
+        ],
         running=run is not None,
         running_message_id=None if run is None else run.message_id,
     )
@@ -545,6 +551,13 @@ def read_picture(
 _MARKUP_NAMESPACE: Final = uuid.UUID("6c1f4a8e-1d1b-4c6e-9a54-6a1d2e7f0b3c")
 
 
+def _corrections(
+    session: Session, chat_id: UUID, row: AssistantChatMessage
+) -> dict[str, dict[str, Any]]:
+    """Later messages' newest correction of each of this answer's findings (#1548)."""
+    return corrections_by_answer(messages_of(session, chat_id)).get(str(row.id), {})
+
+
 def _answer(session: Session, chat_id: UUID, message_id: UUID) -> AssistantChatMessage:
     row = session.get(AssistantChatMessage, message_id)
     if row is None or row.chat_id != chat_id or row.role != "assistant":
@@ -574,7 +587,7 @@ def markup_pdf(
     listing every finding. Kept as a file of the answer; asking again returns the same file."""
     _chat(session, chat_id, principal)
     row = _answer(session, chat_id, message_id)
-    findings = live_findings(row.blocks)
+    findings = live_findings(with_corrections(row.blocks, _corrections(session, chat_id, row)))
     if not findings:
         raise CodedHTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -640,7 +653,7 @@ def findings_spreadsheet(
     _chat(session, chat_id, principal)
     row = _answer(session, chat_id, message_id)
     decided = latest_decisions(session, chat_id, message_id).get(message_id)
-    body = findings_csv(decided_findings(row, decided))
+    body = findings_csv(decided_findings(row, decided, _corrections(session, chat_id, row)))
     return Response(
         content=body.encode("utf-8"),
         media_type="text/csv; charset=utf-8",
@@ -684,7 +697,9 @@ def decide_finding(
     _chat(session, chat_id, principal)
     _not_running(registry, chat_id, message_id)
     row = _answer(session, chat_id, message_id)
-    if not any(str(finding.get("id")) == finding_id for finding in live_findings(row.blocks)):
+    corrected = live_findings(with_corrections(row.blocks, _corrections(session, chat_id, row)))
+    finding = next((f for f in corrected if str(f.get("id")) == finding_id), None)
+    if finding is None:
         raise _not_found()
     decided = record_decision(
         session,
@@ -695,6 +710,20 @@ def decide_finding(
         note=body.note,
         decided_by=principal.id,
     )
+    # The set's memory (#1548): every later chat on the set knows what the reviewer decided.
+    text, page = decision_note(finding, body.decision, principal.id, body.note)
+    chat = session.get(AssistantChat, chat_id)
+    if chat is not None:
+        add_note(
+            session,
+            package_id=chat.package_id,
+            note=text,
+            page=page,
+            source="decision",
+            chat_id=chat_id,
+            message_id=message_id,
+            created_by=principal.id,
+        )
     session.commit()
     return ChatFindingDecisionOut.model_validate(decision_out(decided))
 
@@ -728,7 +757,11 @@ def cloud_drawing(
     chat, package = _chat(session, chat_id, principal)
     _not_running(registry, chat_id, message_id)
     row = _answer(session, chat_id, message_id)
-    findings = decided_findings(row, latest_decisions(session, chat_id, message_id).get(message_id))
+    findings = decided_findings(
+        row,
+        latest_decisions(session, chat_id, message_id).get(message_id),
+        _corrections(session, chat_id, row),
+    )
     if not findings:
         raise CodedHTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
