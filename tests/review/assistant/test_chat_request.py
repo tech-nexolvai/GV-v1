@@ -422,7 +422,7 @@ def test_usage_rows_name_the_route_and_the_purpose() -> None:
 
 def test_the_system_prompt_is_short_and_names_the_skill_and_the_three_facts() -> None:
     # Short like claude.ai's (chat-v6 added the ledger line; chat-v7 the set pack, zoom, effort).
-    assert len(LEAD_SYSTEM_PROMPT) < 3150  # chat-v11: measure_on_drawing
+    assert len(LEAD_SYSTEM_PROMPT) < 3270  # chat-v11: measure_on_drawing; #1558: zoom marks
     for words in (
         "/mnt/skills/gv-review/SKILL.md",
         "inches",

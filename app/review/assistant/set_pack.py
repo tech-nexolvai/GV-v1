@@ -17,6 +17,10 @@ that set-up once per upload, in the background, and the agent sees it read-only 
   (`vocabulary/panel_headings.py`), its round ("first / second set of comments"), the area or title
   GV typed ("2. Buffet"; carried to the next pages until another), and sheet numbers printed on
   the page. It is a hint for the agent, read by code from GV's labels: the drawings decide.
+- `dims.json` (#1558): every printed dimension on every page, numbered per page (`D17`), with its
+  value, inches, box, whose drawing it is on, and its dimension and extension lines when found
+  (`dim_labels.py`). The `zoom` tool draws these ids on a crop; findings name them. Written as
+  it grows, page by page, after the pictures; a page not in it yet is read when it is asked for.
 - `status.json`: `building`, `ready` or `failed`, and the steps done. The agent can work before
   the pack is ready (the first message never waits); the `zoom` tool makes the drawings-only copy
   it needs at once if the pack has not made it yet.
@@ -46,6 +50,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from importlib import import_module
 from pathlib import Path
 from typing import Any, Final
 from uuid import uuid4
@@ -73,8 +78,13 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 #: Changes when what the pack holds changes: an older pack is built again.
-PACK_VERSION: Final = 1
+PACK_VERSION: Final = 2
 RENDER_DPI: Final = 100
+#: Seconds the dimension labels' drawn-ink route (OCR) may spend on one set
+#: (`GV_DIM_LABELS_DRAWN_BUDGET_S`). Off by default: measured on a real set, reading drawn numbers
+#: with no expected value found almost none in 100 s a page (#1558); drawn values keep the typed
+#: path and `verify_value`.
+DIMS_DRAWN_BUDGET_S: Final = 0.0
 #: Contact sheets: pages per picture (3 x 3) and each tile's size, so a sheet is at most 2576 px.
 CONTACT_COLUMNS: Final = 3
 CONTACT_ROWS: Final = 3
@@ -512,6 +522,8 @@ annotations.json       every annotation: file, page, kind, author, text, box (GV
 *_drawings_only.pdf    each PDF with only the pasted drawings kept: GV's markup hidden.
 pages/<file>/p-NNN.png every page at 100 dpi (drawings only). Zoom to read numbers.
 contact/*.png          nine pages per picture, page numbers stamped: the whole set at a glance.
+dims.json              every printed dimension code found, numbered per page (D17): value,
+                       inches, box, side, dimension line. zoom marks: true draws the ids.
 status.json            building / ready / failed.
 
 Boxes are PDF points of the page as shown, origin top-left (as pdftotext -bbox and zoom use).
@@ -550,10 +562,36 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
             pages = _render_pages(copies[name], folder / "pages" / stem(name), RENDER_DPI)
             _contact_sheets(name, pages, folder / "contact")
         done += ["pages", "contact_sheets"]
+        _set_status(folder, "building", done, files=names)
+        try:
+            _dims(folder, uploads, names, page_map)
+            done.append("dims")
+        except Exception as failed:  # noqa: BLE001 - the pack works without labels
+            _log.warning("assistant set pack labels failed: %s", type(failed).__name__)
     except Exception as failed:
         _set_status(folder, "failed", done, files=names, error=type(failed).__name__)
         raise
     _set_status(folder, "ready", done, files=names)
+
+
+def _drawn_budget() -> float:
+    try:
+        return max(0.0, float(os.environ.get("GV_DIM_LABELS_DRAWN_BUDGET_S", DIMS_DRAWN_BUDGET_S)))
+    except ValueError:
+        return DIMS_DRAWN_BUDGET_S
+
+
+def _dims(
+    folder: Path, uploads: Path, names: Sequence[str], page_map: Sequence[dict[str, Any]]
+) -> None:
+    """`dims.json`: the numbered dimension labels (`dim_labels.build_dims`), written as it grows."""
+    labels = import_module("app.review.assistant.dim_labels")
+    labels.build_dims(
+        {name: uploads / name for name in names},
+        {"pages": list(page_map)},
+        drawn_budget_s=_drawn_budget(),
+        on_page=lambda document: _write_json(folder / "dims.json", document),
+    )
 
 
 def ensure_pack(
