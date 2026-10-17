@@ -394,7 +394,8 @@ def test_a_narrow_answer_asks_for_its_tools_at_once_end_to_end(postgres_engine, 
                 == b"\x89PNG"
             )
             tools = [t["name"] for t in _FakeAnthropic.requests[0]["tools"]]
-            assert tools[:3] == ["bash_tool", "view", "zoom"]
+            # Anthropic's tool search leads the tools; the rarer ones are deferred (#1606).
+            assert tools[:4] == ["tool_search_tool_regex", "bash_tool", "view", "zoom"]
     finally:
         server.shutdown()
         server.server_close()
