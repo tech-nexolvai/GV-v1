@@ -68,6 +68,11 @@ class Settings(BaseSettings):
 
     environment: str = Field(default="development", min_length=1)
     request_id_header: str = Field(default="X-Request-ID", min_length=1)
+    # The host names the API answers to besides this machine's own (`localhost`, `127.0.0.1`,
+    # `::1`): a deployment's public name, as a JSON list (`GV_TRUSTED_HOSTS='["gv.example.com"]'`).
+    # Any other `Host` is refused, and so is a browser write from another site's page
+    # (`app/host_guard.py`, against DNS rebinding).
+    trusted_hosts: tuple[str, ...] = ()
 
     # The reviewer chat is optional presentation over completed findings.  It shares the deployment's
     # configured Bedrock identity. An API without model credentials still serves the plain deterministic
