@@ -629,23 +629,23 @@ MEASURE_ON_DRAWING: Final[Mapping[str, Any]] = {
     "description": (
         "Measure a length the drawing does not print, by code ($0, no AI). Use it where the "
         "architect prints no size, and before you call a height or width Wrong, to check what "
-        "the architect's dimension spans. Give the length's two ends and at least two PRINTED "
-        "dimensions of the same view to calibrate (each the two ends of its extension lines and "
-        "the value as printed). Code snaps each end to the nearest drawn line end or extension "
-        "line and checks the printed dimensions agree on one scale (it refuses over 3%). "
+        "the architect's dimension spans. Give the length's two ends. Code uses the drawing's "
+        "scale it measured from the view's own printed dimensions (scales.json); only where it "
+        "has none (it says so) give calibrate: two or more PRINTED dimensions of the same view "
+        "(each the two ends of its extension lines and the value as printed; they must agree on "
+        "one scale within 3%). Code snaps each end to the nearest drawn line end or extension "
+        "line. "
         "Optional dimension: a printed dimension's two ends, to check its extent (does it span "
         "the unit itself, from-to, or more: a box, soffit or blocking beyond it?). Returns "
-        "'about X in (±T)' and the extent check. A scaled value is only ever Your decision "
-        "(status check), never Wrong. "
+        "'about X in (±T)', which scale it used, and the extent check. A scaled value is only "
+        "ever Your decision (status check), never Wrong. "
         'Example: {"page": 7, "from": {"x": 300, "y": 520}, "to": {"x": 300, "y": 610}, "axis": '
-        '"v", "calibrate": [{"from": {"x": 250, "y": 400}, "to": {"x": 250, "y": 610}, '
-        '"printed": "34\\""}, {"from": {"x": 320, "y": 640}, "to": {"x": 500, "y": 640}, '
-        '"printed": "30\\""}]}'
+        '"v"}'
     ),
     "input_schema": {
         "type": "object",
         "additionalProperties": False,
-        "required": ["page", "from", "to", "calibrate"],
+        "required": ["page", "from", "to"],
         "properties": {
             "page": {"type": "integer", "minimum": 1, "description": "Page (from 1)"},
             "from": point_schema("One end of the length to measure"),
@@ -660,7 +660,8 @@ MEASURE_ON_DRAWING: Final[Mapping[str, Any]] = {
                 "minItems": 2,
                 "maxItems": 8,
                 "items": _SPAN,
-                "description": "At least two printed dimensions of the same view",
+                "description": "Only where code has no measured scale here: at least two "
+                "printed dimensions of the same view",
             },
             "dimension": {
                 **_SPAN,
@@ -1063,7 +1064,7 @@ class ChatTools:
                 frozenset(
                     {"page", "from", "to", "axis", "calibrate", "dimension", "file", "description"}
                 ),
-                frozenset({"page", "from", "to", "calibrate"}),
+                frozenset({"page", "from", "to"}),
             )
             # The file and page are checked as a zoom crop's are (a dummy box).
             name, page, _box, _label = self._crop_request(
@@ -1077,15 +1078,35 @@ class ChatTools:
         except SandboxRefused as refused:
             return _refused(step, started, str(refused).replace("crops[0].", ""))
         module = import_module("app.review.assistant.measure")
+        scale = None
+        if given.get("calibrate") is None:
+            # The drawing's scale code measured from its printed dimensions (`scales.json`).
+            scales = import_module("app.review.assistant.view_scales")
+            points = [given["from"], given["to"]]
+            try:
+                xs = [float(point["x"]) for point in points]
+                ys = [float(point["y"]) for point in points]
+            except (KeyError, TypeError, ValueError):
+                xs = ys = []
+            found = (
+                scales.scale_at(
+                    scales.scales_on(self.workspace.set_pack, name, page),
+                    (min(xs), min(ys), max(xs), max(ys)),
+                )
+                if xs
+                else None
+            )
+            scale = None if found is None else found.as_dict()
         try:
             measured = module.measure_on_drawing(
                 self.workspace.uploads / name,
                 page,
                 given["from"],
                 given["to"],
-                given["calibrate"],
+                given.get("calibrate"),
                 given.get("axis", "along"),
                 given.get("dimension"),
+                scale=scale,
             )
         except module.MeasureRefused as refused:
             return _refused(step, started, str(refused))

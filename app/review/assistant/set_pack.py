@@ -23,6 +23,9 @@ that set-up once per upload, in the background, and the agent sees it read-only 
   it grows, page by page, after the pictures; a page not in it yet is read when it is asked for.
   Every page's text labels come first; then the vendor's drawn numbers (pen strokes, read by two
   OCR engines) are added page by page within `DIMS_DRAWN_BUDGET_S`, after the text ids.
+- `scales.json`: each drawing's scale measured from its own printed dimensions
+  (`view_scales.py`; printed scale notes are wrong where GV resized a pasted drawing), written
+  with `dims.json`. `measure_on_drawing` uses it when no calibration is given.
 - `status.json`: `building`, `ready` or `failed`, and the steps done. The agent can work before
   the pack is ready (the first message never waits); the `zoom` tool makes the drawings-only copy
   it needs at once if the pack has not made it yet.
@@ -538,6 +541,10 @@ dims.json              every printed dimension code found, numbered per page (D1
                        inches, box, side, dimension line. zoom marks: true draws the ids.
                        route "drawn": the vendor's drawn numbers read by two OCR engines
                        (added later; check one with zoom before you rely on it).
+scales.json            each drawing's scale measured from its own printed dimensions (labels
+                       that agree within 1%), its box, and the printed scale note beside it
+                       (note_agrees false: GV resized the drawing; trust the measured scale).
+                       Per label: drawn_in, off_by, drawn_to_value.
 status.json            building / ready / failed.
 hires/                 code's 300-dpi tiles of the pages zoom has cut from (not for reading:
                        zoom gives you any area sharp).
@@ -650,10 +657,14 @@ def write_dims(
     server's process id; the labels' own process stops when the server is gone."""
     labels = import_module("app.review.assistant.dim_labels")
 
+    scales = import_module("app.review.assistant.view_scales")
+
     def written(document: dict[str, Any]) -> None:
         if parent is not None and os.getppid() != parent:
             raise SystemExit(0)
         _write_json(folder / "dims.json", document)
+        # Each drawing's scale, measured from its printed dimensions (a few milliseconds).
+        _write_json(folder / scales.SCALES_FILE, scales.set_scales(document))
 
     labels.build_dims(
         {name: uploads / name for name in names},

@@ -109,12 +109,21 @@ class Measured:
     calibrations: tuple[_Calibration, ...]
     snapped: tuple[str, str]
     extent: dict[str, Any] | None = field(default=None)
+    scale_from: tuple[str, ...] = ()
+    """The labels code measured the drawing's scale from (`view_scales`), when no calibration
+    was given."""
 
     def words(self) -> str:
         """The answer in one or two plain lines."""
+        how = (
+            f"scale measured by code from {len(self.scale_from)} printed dims of this drawing "
+            f"({', '.join(self.scale_from[:6])}{', ...' if len(self.scale_from) > 6 else ''})"
+            if self.scale_from
+            else f"scale checked against {len(self.calibrations)} printed dims"
+        )
         text = (
             f'about {_inches_text(self.value_in)}" (±{_inches_text(self.plus_minus_in)}") '
-            f"— scale checked against {len(self.calibrations)} printed dims, spread "
+            f"— {how}, spread "
             f"{self.spread_percent:.1f}% (drawing about 1:{round(self.scale_ratio)}). Ends: "
             f"{self.snapped[0]}, {self.snapped[1]}. Scaled, not printed: use it only to help a "
             "person decide (status check), never as a Wrong by itself."
@@ -141,6 +150,7 @@ class Measured:
                 for c in self.calibrations
             ],
             "ends": list(self.snapped),
+            "scale_from": list(self.scale_from),
             "extent": self.extent,
             "words": self.words(),
         }
@@ -404,13 +414,19 @@ def measure_on_drawing(
     calibrate: object,
     axis: object = "along",
     dimension: object = None,
+    *,
+    scale: Mapping[str, Any] | None = None,
 ) -> Measured:
     """The length from `start` to `end` on page `page` (from 1) of `pdf`, in inches, scaled
-    against the printed dimensions in `calibrate` (each `{from, to, printed}`, at least two), and
+    against the printed dimensions in `calibrate` (each `{from, to, printed}`, at least two), or,
+    when `calibrate` is `None`, against `scale` (the drawing's scale code measured from its own
+    printed dimensions: `view_scales`, `{in_per_pt, from_labels, spread_percent}`), and
     optionally the extent check of a printed `dimension` against it. Raises `MeasureRefused`."""
     if axis not in ("h", "v", "along"):
         raise MeasureRefused('axis must be "h", "v" or "along"')
     chosen: Axis = axis
+    if calibrate is None:
+        return _measured_by_scale(pdf, page, start, end, chosen, dimension, scale)
     if not isinstance(calibrate, Sequence) or isinstance(calibrate, str):
         raise MeasureRefused("calibrate must be a list of printed dimensions")
     if not MIN_CALIBRATIONS <= len(calibrate) <= MAX_CALIBRATIONS:
@@ -460,4 +476,55 @@ def measure_on_drawing(
         calibrations=calibrations,
         snapped=(_words(first), _words(second)),
         extent=extent,
+    )
+
+
+def _measured_by_scale(
+    pdf: Path,
+    page: object,
+    start: object,
+    end: object,
+    axis: Axis,
+    dimension: object,
+    scale: Mapping[str, Any] | None,
+) -> Measured:
+    """`measure_on_drawing` with the drawing's measured scale instead of a hand calibration."""
+    if not isinstance(scale, Mapping) or not isinstance(scale.get("in_per_pt"), (int, float)):
+        raise MeasureRefused(
+            "code has no measured scale where these points are (fewer than three printed "
+            "dimensions of this drawing agree on one): give calibrate, two or more printed "
+            "dimensions of the same view"
+        )
+    a, b = _point(start, "from"), _point(end, "to")
+    if isinstance(page, bool) or not isinstance(page, int) or page < 1:
+        raise MeasureRefused("page must be a whole number from 1")
+    try:
+        segments = _segments(pdf, page - 1)
+    except IndexError as missing:
+        raise MeasureRefused(f"page {page} is not in {pdf.name}") from missing
+    mean = float(scale["in_per_pt"])
+    spread = float(scale.get("spread_percent") or 0.0)
+    first, second = _snap(a, axis, segments), _snap(b, axis, segments)
+    drawn = _span(first.point, second.point, axis)
+    if drawn < _SHORTEST_PT:
+        raise MeasureRefused(f"the two points are {drawn:.1f} pt apart: too close to measure")
+    value = drawn * mean
+    plus_minus = (_uncertain(first) + _uncertain(second)) * mean + value * max(spread, 0.5) / 100
+    plus_minus = math.ceil(plus_minus * 8) / 8
+    extent = (
+        None
+        if dimension is None
+        else _extent(dimension, (first, second), axis, mean, segments, plus_minus)
+    )
+    return Measured(
+        value_in=round(value * 16) / 16,
+        plus_minus_in=plus_minus,
+        axis=axis,
+        drawn_pt=drawn,
+        scale_ratio=mean * 72,
+        spread_percent=spread,
+        calibrations=(),
+        snapped=(_words(first), _words(second)),
+        extent=extent,
+        scale_from=tuple(str(label) for label in scale.get("from_labels") or ()),
     )
