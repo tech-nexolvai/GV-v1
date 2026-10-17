@@ -7,7 +7,7 @@
  * message, which then replaces what was built live: a reload and a live answer end up identical.
  */
 
-import type { ChatAccuracy, ChatAgent, ChatBlock, ChatCite, ChatCoverage, ChatEffort, ChatEvent, ChatFile, ChatFinding, ChatMessage, ChatMode, ChatModel, ChatProduct, ChatProgress, ChatResume, ChatScope, ChatStep, ChatStopped, ChatSummary, ChatTask, ChatTrust, ChatUnknown } from '@/lib/chat-api';
+import type { ChatAccuracy, ChatAgent, ChatBlock, ChatCite, ChatCoverage, ChatEffort, ChatEvent, ChatFile, ChatFinding, ChatMessage, ChatMode, ChatModel, ChatProduct, ChatProgress, ChatResume, ChatScope, ChatStep, ChatStopped, ChatSummary, ChatTask, ChatTrust, ChatUnderstood, ChatUnknown } from '@/lib/chat-api';
 import { EFFORT_WORDS } from '@/lib/chat-settings';
 
 /** A helper agent while its Agent step runs: `running` until its `agent_end`. */
@@ -64,6 +64,8 @@ export interface ViewMessage {
   unknowns?: ChatUnknown[];
   /** With `stopped: "interrupted"`: how Continue picks up (#1514). */
   resume?: ChatResume | null;
+  /** #1551: how the app understood the question before the work; shown under the question. */
+  understood?: ChatUnderstood | null;
   cost_usd: string | null;
   stopped: ChatStopped | null;
   error: string | null;
@@ -131,6 +133,12 @@ function scopeOf(blocks: readonly ChatBlock[]): ChatScope | null {
   return scope;
 }
 
+/** The `understood` block of an answer (#1551), or null. */
+export function understoodOf(blocks: readonly ChatBlock[]): ChatUnderstood | null {
+  for (const block of blocks) if (block.type === 'understood' && block.understood) return block.understood;
+  return null;
+}
+
 /** The `resume` block of an interrupted answer (#1514), or null. */
 export function resumeOf(blocks: readonly ChatBlock[]): ChatResume | null {
   for (let at = blocks.length - 1; at >= 0; at -= 1) {
@@ -175,6 +183,7 @@ export function fromSaved(message: ChatMessage): ViewMessage {
     unknowns,
     progress,
     resume: message.resume ?? resumeOf(saved),
+    understood: message.understood ?? understoodOf(saved),
     cost_usd: message.cost_usd ?? null,
     stopped: message.stopped ?? null,
     error: message.error ?? null,
@@ -308,6 +317,8 @@ export function applyChatEvent(message: ViewMessage, event: ChatEvent): ViewMess
       return { ...message, coverage: event.data.coverage ?? message.coverage ?? null };
     case 'scope':
       return event.data.scope ? { ...message, scope: event.data.scope } : message;
+    case 'understood':
+      return event.data.understood ? { ...message, understood: event.data.understood } : message;
     case 'progress':
       return { ...message, progress: event.data.progress ?? message.progress ?? null };
     case 'trust':
@@ -332,6 +343,7 @@ export function applyChatEvent(message: ViewMessage, event: ChatEvent): ViewMess
         trust: stored.trust ?? message.trust ?? null,
         mode: stored.mode ?? message.mode ?? null,
         scope: stored.scope ?? message.scope ?? null,
+        understood: stored.understood ?? message.understood ?? null,
         cites: stored.cites?.length ? stored.cites : message.cites ?? [],
         accuracy: stored.accuracy ?? message.accuracy ?? null,
         unknowns: stored.unknowns?.length ? stored.unknowns : message.unknowns ?? [],
