@@ -202,22 +202,24 @@ def _draw_marks(
         c.restoreState()
 
 
-def _stamp(c: canvas.Canvas, page: Any) -> None:
+def _stamp(c: canvas.Canvas, page: Any, title: str = MARKUP_TITLE) -> None:
     rotation = int(page.get("/Rotate", 0) or 0) % 360
     x, y = _shown_to_user(page, 24, 30)
     c.saveState()
     c.translate(x, y)
     c.rotate(rotation)
     c.setFont("Helvetica-Bold", 14)
-    width = c.stringWidth(MARKUP_TITLE, "Helvetica-Bold", 14)
+    width = c.stringWidth(title, "Helvetica-Bold", 14)
     c.setFillColor(white)
     c.rect(-3, -5, width + 6, 20, stroke=0, fill=1)
     c.setFillColor(_RED)
-    c.drawString(0, 0, MARKUP_TITLE)
+    c.drawString(0, 0, title)
     c.restoreState()
 
 
-def _notes_pages(width: float, height: float, lines: Sequence[tuple[str, bool]]) -> list[Any]:
+def _notes_pages(
+    width: float, height: float, lines: Sequence[tuple[str, bool]], title: str = MARKUP_TITLE
+) -> list[Any]:
     """The notes listed again, on as many pages as they need (bold: a heading line)."""
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=(width, height), invariant=1)
@@ -226,7 +228,7 @@ def _notes_pages(width: float, height: float, lines: Sequence[tuple[str, bool]])
     def heading() -> float:
         c.setFillColor(_RED)
         c.setFont("Helvetica-Bold", 14)
-        c.drawString(36, height - 40, MARKUP_TITLE)
+        c.drawString(36, height - 40, title)
         c.setFillColor(Color(0, 0, 0))
         return height - 64
 
