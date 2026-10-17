@@ -1327,8 +1327,11 @@ class ChatTools:
             return _refused(step, started, str(refused).replace("crops[0].", ""))
         module = import_module("app.review.assistant.drawing_facts")
         text = module.page_facts(self.workspace.set_pack, name, page, facts)
+        # The facts quote the drawings' own text (values, notes, tags): fenced as data.
+        head, _, body = text.partition("\n")
+        fenced = f"{head}\n{fence(body, 'drawing_facts')}" if body else head
         return ToolResult(
-            content=[{"type": "text", "text": text}],
+            content=[{"type": "text", "text": fenced}],
             step=_done(
                 step, started, ok=True, label=f"Read code's facts, page {page}", output=_shown(text)
             ),
