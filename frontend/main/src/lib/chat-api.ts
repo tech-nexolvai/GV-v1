@@ -245,7 +245,17 @@ export type ChatBlock =
   | { type: 'unknowns'; unknowns: ChatUnknown[] }
   | { type: 'resume'; resume: ChatResume }
   | { type: 'resolver'; resolver: ChatResolver }
-  | { type: 'understood'; understood: ChatUnderstood };
+  | { type: 'understood'; understood: ChatUnderstood }
+  | { type: 'fallback'; fallback: ChatFallback };
+
+/**
+ * #1577: Anthropic's refusal fallback answered instead of the model asked (the model asked
+ * declined; another model wrote the answer). Model ids, e.g. "claude-fable-5-1" → "claude-opus-4-8".
+ */
+export interface ChatFallback {
+  from_model: string;
+  to_model: string;
+}
 
 // ── Chat v2 (CONTRACT2-findings): findings with evidence, and page coverage ──
 
@@ -917,7 +927,8 @@ export type ChatEvent =
   | { event: 'cite'; data: { cite: ChatCite } }
   | { event: 'accuracy'; data: { accuracy: ChatAccuracy } }
   | { event: 'unknowns'; data: { unknowns: ChatUnknown[] } }
-  | { event: 'resolver'; data: { index?: number; resolver: ChatResolver } };
+  | { event: 'resolver'; data: { index?: number; resolver: ChatResolver } }
+  | { event: 'fallback'; data: { index?: number; fallback: ChatFallback } };
 
 export type ChatEventName = ChatEvent['event'];
 
@@ -925,7 +936,7 @@ const EVENT_NAMES: ReadonlySet<string> = new Set<ChatEventName>([
   'message_start', 'thinking_start', 'thinking_delta', 'thinking_end', 'text_delta', 'step_start', 'step_end',
   'tasks', 'agent_start', 'agent_step', 'agent_end', 'file', 'usage', 'message_end', 'error',
   'finding', 'finding_dropped', 'finding_update', 'coverage', 'progress', 'scope', 'trust', 'cite', 'accuracy', 'unknowns', 'understood',
-  'resolver',
+  'resolver', 'fallback',
 ]);
 
 /**

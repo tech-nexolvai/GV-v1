@@ -4098,6 +4098,45 @@
         "title": "ChatDismissedOut",
         "type": "object"
       },
+      "ChatFallbackBlock": {
+        "properties": {
+          "fallback": {
+            "$ref": "#/components/schemas/ChatFallbackOut"
+          },
+          "type": {
+            "const": "fallback",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "fallback"
+        ],
+        "title": "ChatFallbackBlock",
+        "type": "object"
+      },
+      "ChatFallbackOut": {
+        "description": "#1577: Anthropic's refusal fallback answered instead of the model asked.",
+        "properties": {
+          "from_model": {
+            "description": "The model that declined (\"claude-fable-5-1\").",
+            "title": "From Model",
+            "type": "string"
+          },
+          "to_model": {
+            "description": "The model that answered instead (\"claude-opus-4-8\").",
+            "title": "To Model",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from_model",
+          "to_model"
+        ],
+        "title": "ChatFallbackOut",
+        "type": "object"
+      },
       "ChatFileOut": {
         "properties": {
           "id": {
@@ -6165,6 +6204,7 @@
                       "accuracy": "#/components/schemas/ChatAccuracyBlock",
                       "cite": "#/components/schemas/ChatCiteBlock",
                       "coverage": "#/components/schemas/ChatCoverageBlock",
+                      "fallback": "#/components/schemas/ChatFallbackBlock",
                       "finding": "#/components/schemas/ChatFindingBlock",
                       "finding_dropped": "#/components/schemas/ChatFindingDroppedBlock",
                       "finding_update": "#/components/schemas/ChatFindingUpdateBlock",
@@ -6229,6 +6269,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ChatUnderstoodBlock"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChatFallbackBlock"
                     }
                   ]
                 },

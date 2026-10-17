@@ -43,7 +43,7 @@ def test_the_shipped_price_file_is_usd_dated_and_covers_every_reader() -> None:
     shipped = load_model_rates(SHIPPED)
 
     assert shipped.currency == "USD"
-    assert shipped.retrieved == date(2026, 10, 8)
+    assert shipped.retrieved == date(2026, 10, 18)
     assert "price list" in shipped.source
     # Every reader a deployment or the agent can run: a measured space, or no rectangle asked (#907).
     runnable = [reader for reader in VISION_READERS if reader.answers_readably]
@@ -67,6 +67,46 @@ def test_claude_reader_models_are_priced_at_anthropics_published_rates() -> None
         Decimal("0.002"),
         Decimal("0.01"),
     )
+
+
+def test_fable_and_the_refusal_fallback_models_are_priced_with_fables_own_cache_prices() -> None:
+    """#1577: Claude Fable 5.1 at $10 / $50, 5-minute cache writes $12.50 and cache reads $0.25 per
+    million tokens; the models a refusal fallback can answer on are priced too."""
+    shipped = load_model_rates(SHIPPED)
+
+    fable = shipped.rate_for("anthropic.claude-fable-5-1")
+    assert fable is not None
+    assert (fable.input_per_1k_tokens, fable.output_per_1k_tokens) == (
+        Decimal("0.01"),
+        Decimal("0.05"),
+    )
+    assert fable.cache_factors() == (Decimal("1.25"), Decimal("0.025"))
+    # Opus 5.5 reads its cache at 0.05 times ($0.20 per million tokens), the others at 0.1 times.
+    opus = shipped.rate_for("anthropic.claude-opus-5-5")
+    assert opus is not None and opus.cache_factors() == (Decimal("1.25"), Decimal("0.05"))
+    for other in ("anthropic.claude-sonnet-5-5", "anthropic.claude-haiku-5-5"):
+        rate = shipped.rate_for(other)
+        assert rate is not None and rate.cache_factors() == (Decimal("1.25"), Decimal("0.1"))
+    for fallback in ("anthropic.claude-opus-5", "anthropic.claude-opus-4-8"):
+        rate = shipped.rate_for(fallback)
+        assert rate is not None
+        assert (rate.input_per_1k_tokens, rate.output_per_1k_tokens) == (
+            Decimal("0.005"),
+            Decimal("0.025"),
+        )
+    assert shipped.rate_for("anthropic.claude-sonnet-5") is not None
+
+
+def test_a_stated_cache_price_must_be_a_decimal_string(tmp_path: Path) -> None:
+    rates = {
+        "vendor.model-a": {
+            "input_per_1k_tokens": "0.01",
+            "output_per_1k_tokens": "0.05",
+            "cache_read_per_1k_tokens": 0.00025,
+        }
+    }
+    with pytest.raises(TypeError, match="cache_read_per_1k_tokens"):
+        load_model_rates(_price_file(tmp_path, rates=rates))
 
 
 def test_kimi_k3_is_priced_at_the_aws_us_cris_standard_rate() -> None:
