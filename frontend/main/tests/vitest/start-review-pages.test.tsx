@@ -110,7 +110,7 @@ describe('Start a review (#1125)', () => {
   it('keeps Start review disabled, saying what is missing, until the vendor and both drawings are set', async () => {
     routes['GET /products'] = () => json(PRODUCTS);
     const { user, architect, shop, start } = await setUp();
-    await screen.findByRole('option', { name: 'Countertop' });
+    await screen.findByRole('option', { name: 'Countertops' });
 
     expect(start.hasAttribute('disabled')).toBe(true);
     const reason = document.getElementById(start.getAttribute('aria-describedby') ?? '');

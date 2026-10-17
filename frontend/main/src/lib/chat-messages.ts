@@ -530,7 +530,7 @@ export function previousQuestion(messages: readonly Pick<ViewMessage, 'key' | 'r
 /** The three questions an empty chat offers (the contract's words). */
 export const CHAT_STARTERS: readonly string[] = [
   'Which items are wrong comparing the vendor and architect drawings?',
-  'Summarise every countertop and cabinet issue',
+  'Summarise every issue, product by product',
   'Make me a marked-up PDF of the problems',
 ];
 

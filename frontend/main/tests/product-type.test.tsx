@@ -51,9 +51,9 @@ const ready = renderToStaticMarkup(
   />,
 );
 assert.match(ready, /What is this drawing set for\?/);
-assert.match(ready, /<option value="countertop" title="Countertop description" selected="">Countertop<\/option>/);
-assert.match(ready, /<option value="cabinet" title="Cabinet description">Cabinet<\/option>/);
-assert.match(ready, /<option value="lighting" disabled="" title="Lighting description">Lighting \(coming later\)<\/option>/);
+assert.match(ready, /<option value="countertop" title="Countertop description" selected="">Countertops<\/option>/);
+assert.match(ready, /<option value="cabinet" title="Cabinet description">Cabinets<\/option>/);
+assert.match(ready, /<option value="lighting" disabled="" title="Lighting description">Lightings \(coming later\)<\/option>/);
 assert.equal((ready.match(/<option /g) ?? []).length, 3, 'only the API choices are offered');
 assert.match(ready, /Only the checks for this product are run\./);
 // #1125: the shadcn input classes name `disabled:` states, so the attribute itself is asserted.
@@ -68,7 +68,7 @@ const unchecked = renderToStaticMarkup(
     onChange={() => undefined}
   />,
 );
-assert.match(unchecked, /disabled="" title="Dummy widget description">Dummy widget \(no checks published yet\)<\/option>/);
+assert.match(unchecked, /disabled="" title="Dummy widget description">Dummy widgets \(no checks published yet\)<\/option>/);
 console.log('a product added to the registry appears with no frontend change');
 
 const empty = renderToStaticMarkup(

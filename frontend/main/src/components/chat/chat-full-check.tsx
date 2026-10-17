@@ -52,7 +52,7 @@ export function ProductChips({ products, onToggle, disabled }: { products: reado
           data-slot="chat-products-later"
           aria-disabled="true"
           title={`Coming later: ${later.map((product) => product.plural).join(', ')}`}
-          className="inline-flex h-7 shrink-0 cursor-default items-center rounded-full border border-dashed px-2.5 text-xs text-muted-foreground opacity-60"
+          className="hidden h-7 shrink-0 cursor-default items-center rounded-full border border-dashed px-2.5 text-xs text-muted-foreground opacity-60 sm:inline-flex"
         >
           {later.length} coming later
         </span>

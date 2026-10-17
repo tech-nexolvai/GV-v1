@@ -64,7 +64,7 @@ export function ProductTypeField({ state, value, onChange, disabled = false }: P
           )}
           {choices.map((choice) => (
             <option key={choice.id} value={choice.id} disabled={!canUploadFor(choice)} title={choice.description}>
-              {`${choice.label}${choice.active ? (choice.published_checks > 0 ? '' : ' (no checks published yet)') : ' (coming later)'}`}
+              {`${choice.plural}${choice.active ? (choice.published_checks > 0 ? '' : ' (no checks published yet)') : ' (coming later)'}`}
             </option>
           ))}
         </select>
