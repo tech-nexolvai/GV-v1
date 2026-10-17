@@ -10,6 +10,7 @@
 
 import type { ChatCoverage, ChatFinding, ChatTimings, ChatTrust, ChatUnknown, EvidenceKind, FindingRead, LedgerReport, PrintedResult, RoundStatus, TrustLeftOut, TrustLevel, UnknownWhy } from '@/lib/chat-api';
 import { categoryOf, categoryOrderFor, categoryWords, pageWords, sourceTag, STATUS_WORDS, verifiedWords } from '@/lib/chat-findings';
+import { PROOF_WORDS, proofGroup } from '@/lib/chat-proof';
 
 // ── Levels ──────────────────────────────────────────────────
 
@@ -690,7 +691,20 @@ const BOM = '﻿';
 export const CSV_HEADER = [
   'Category', 'Page', 'Item', 'Architect (as printed)', 'Vendor (as printed)', 'Architect (in)', 'Vendor (in)', 'Difference (in)',
   'Status', 'Trust', 'Evidence', 'Printed at spot', 'Second read', 'Checked on drawing', 'Rule / arithmetic', 'Compared with', 'Round', 'Why',
+  'Should be', 'Proof',
 ] as const;
+
+/**
+ * #1581: "Should be" (Wrong items: what it should be and what governs it) and "Proof" (where the
+ * zero-click cloud drawing puts it, and the check that proved it or why it is not clouded), as the
+ * server worked them out; the group alone for a finding that came without them.
+ */
+function proofCells(finding: ChatFinding): [string, string] {
+  const group = proofGroup(finding);
+  const sent = finding.proof?.group === group ? finding.proof : null;
+  const detail = sent?.proof ?? sent?.reason ?? null;
+  return [finding.proof?.should_be ?? '', detail ? `${PROOF_WORDS[group]}: ${detail}` : PROOF_WORDS[group]];
+}
 
 /** The findings as a CSV Excel opens (with its byte-order mark), one row per finding, trust columns included. */
 export function findingsCsv(findings: readonly ChatFinding[]): string {
@@ -719,6 +733,7 @@ export function findingsCsv(findings: readonly ChatFinding[]): string {
       sourceTag(finding) ?? 'architect',
       finding.round_status ? ROUND_WORDS[finding.round_status] ?? '' : '',
       finding.why ?? '',
+      ...proofCells(finding),
     ].map(csvCell).join(',');
   });
   return `${BOM}${[CSV_HEADER.map(csvCell).join(','), ...rows].join('\r\n')}\r\n`;

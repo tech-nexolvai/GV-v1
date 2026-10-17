@@ -6,18 +6,19 @@ blocks are never rewritten: each finding's latest decision is added when the ans
 (`with_decisions`), and the cloud drawing and check report are remade from them on request
 (`make_decided_files`, by code, no AI call).
 
-The PDF drawing is in `decided_drawing.py`, loaded by name (`tests/api/test_no_heavy_work.py`).
+Since #1581 (owner, 2026-10-18: no human step) the decisions are optional overrides of the
+zero-click drawing: it is complete without any, an agreed item is clouded and an item marked not a
+problem is left out. The PDF is drawn by `proof_drawing.py`, loaded by name
+(`tests/api/test_no_heavy_work.py`).
 """
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from importlib import import_module
 from pathlib import Path
-from typing import Any, Final
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -28,17 +29,15 @@ from app.review.assistant.chat_corrections import with_corrections
 from app.review.assistant.chat_findings import (
     MarkupFile,
     live_findings,
-    main_upload,
-    markup_name,
-    place_findings,
-    read_listing,
+    make_proof_file,
+    make_report_file,
 )
 from app.review.assistant.chat_trust import cloud_kind
 from app.review.assistant.impact import by_impact
+from app.review.assistant.proof import proof_of
 from app.review.assistant.sandbox import ChatWorkspace
 
 __all__ = [
-    "DRAWING_MODULE",
     "DecidedFiles",
     "decided_findings",
     "decided_summary",
@@ -46,10 +45,9 @@ __all__ = [
     "latest_decisions",
     "make_decided_files",
     "record_decision",
+    "resolver_settled",
     "with_decisions",
 ]
-
-DRAWING_MODULE: Final = "app.review.assistant.decided_drawing"
 
 type Decisions = Mapping[UUID, Mapping[str, Mapping[str, Any]]]
 
@@ -107,17 +105,19 @@ def latest_decisions(
 def with_decisions(
     blocks: Sequence[Mapping[str, Any]] | None, decided: Mapping[str, Mapping[str, Any]] | None
 ) -> list[dict[str, Any]] | None:
-    """An answer's blocks with each finding's latest decision added under `decision` (the stored
-    blocks are not changed)."""
-    if blocks is None or not decided:
-        return None if blocks is None else [dict(block) for block in blocks]
+    """An answer's blocks with each finding's latest decision added under `decision`, and where
+    the zero-click cloud drawing puts it under `proof` (#1581: it follows the decision); the stored
+    blocks are not changed."""
+    if blocks is None:
+        return None
     out: list[dict[str, Any]] = []
     for block in blocks:
         finding = block.get("finding")
         if block.get("type") == "finding" and isinstance(finding, Mapping):
-            decision = decided.get(str(finding.get("id")))
+            decision = (decided or {}).get(str(finding.get("id")))
             if decision is not None:
-                block = {**block, "finding": {**finding, "decision": dict(decision)}}
+                finding = {**finding, "decision": dict(decision)}
+            block = {**block, "finding": {**finding, "proof": proof_of(finding)}}
         out.append(dict(block))
     return out
 
@@ -208,6 +208,15 @@ class DecidedFiles:
     report: MarkupFile
 
 
+def resolver_settled(blocks: Sequence[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
+    """What code settled by itself in the answer (#1554, its `resolver` block), for the files."""
+    for block in reversed(list(blocks or [])):
+        resolver = block.get("resolver") if block.get("type") == "resolver" else None
+        if isinstance(resolver, Mapping):
+            return [dict(e) for e in resolver.get("settled") or [] if isinstance(e, Mapping)]
+    return []
+
+
 def make_decided_files(
     workspace: ChatWorkspace,
     findings: Sequence[Mapping[str, Any]],
@@ -215,22 +224,18 @@ def make_decided_files(
     not_checked: Sequence[str],
     drawing_out: Path,
     report_out: Path,
+    *,
+    settled: Sequence[Mapping[str, Any]] = (),
 ) -> DecidedFiles:
-    """The cloud drawing and the check report from the findings' decisions, written to the two
-    paths. Raises `LookupError` when the chat has no copy of the set's PDFs. The biggest items
-    first (#1569), so the drawing's and the report's numbers agree."""
+    """The cloud drawing and the check report made again with the reviewer's decisions as
+    overrides (#1581, replacing #1521's only-agreed drawing): the same zero-click drawing as the
+    full check's (`chat_findings.make_proof_file`), where an agreed item is clouded and an item
+    marked not a problem is left out, stamped "… and reviewed by <name>". Raises `LookupError`
+    when the chat has no copy of the set's PDFs. The biggest items first (#1569), so the drawing's
+    and the report's numbers agree."""
     findings = by_impact(findings)
-    name, placed = place_findings(workspace, findings)
-    module = import_module(DRAWING_MODULE)
-    module.decided_markup_pdf(workspace.uploads / name, placed, drawing_out)
-    main = main_upload(read_listing(workspace))
-    set_name = name if main is None else str(main["name"])
-    module.decided_report_pdf(report_out, summary, findings, not_checked)
-
-    def made(path: Path, kind: str) -> MarkupFile:
-        data = path.read_bytes()
-        return MarkupFile(markup_name(set_name, kind), len(data), hashlib.sha256(data).hexdigest())
-
-    return DecidedFiles(
-        drawing=made(drawing_out, "AI cloud drawing"), report=made(report_out, "AI check report")
+    drawing = make_proof_file(workspace, findings, drawing_out, settled=settled)
+    report = make_report_file(
+        workspace, summary, findings, not_checked, report_out, settled=settled
     )
+    return DecidedFiles(drawing=drawing, report=report)

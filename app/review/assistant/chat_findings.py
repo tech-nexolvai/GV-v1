@@ -33,6 +33,7 @@ import re
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from decimal import Decimal
 from fractions import Fraction
 from importlib import import_module
@@ -51,6 +52,7 @@ from vocabulary.product_registry import registry
 __all__ = [
     "CHECK_REASONS",
     "CITE",
+    "CLOUD_DRAWING_KIND",
     "CODE_SOURCES",
     "COVERAGE_CHECK_PREFIX",
     "DECISION_LIKELY",
@@ -58,6 +60,7 @@ __all__ = [
     "DROP_FINDING",
     "FINDING_TOOL_NAMES",
     "HELPER_FINDING_TOOL_NAMES",
+    "PROOF_MODULE",
     "REPORT_FINDING",
     "SET_COVERAGE",
     "UPDATE_FINDING",
@@ -73,6 +76,7 @@ __all__ = [
     "live_findings",
     "main_upload",
     "make_markup_file",
+    "make_proof_file",
     "make_report_file",
     "markup_base",
     "markup_name",
@@ -81,6 +85,7 @@ __all__ = [
     "printed_conflict",
     "products_words",
     "read_listing",
+    "reviewers",
 ]
 
 _log = logging.getLogger(__name__)
@@ -1717,6 +1722,68 @@ def make_markup_file(
     )
     data = out.read_bytes()
     return MarkupFile(markup_name(name, kind), len(data), hashlib.sha256(data).hexdigest())
+
+
+#: The zero-click drawing (#1581) is drawn by this module, loaded by name.
+PROOF_MODULE: Final = "app.review.assistant.proof_drawing"
+#: The cloud drawing's file name ends with this.
+CLOUD_DRAWING_KIND: Final = "AI cloud drawing"
+
+
+def reviewers(findings: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Who decided anything on these findings (#1521), in the order they first did."""
+    names: list[str] = []
+    for finding in findings:
+        decision = finding.get("decision")
+        name = decision.get("by") if isinstance(decision, Mapping) else None
+        if name and str(name) not in names:
+            names.append(str(name))
+    return names
+
+
+def make_proof_file(
+    workspace: ChatWorkspace,
+    findings: Sequence[Mapping[str, Any]],
+    out: Path,
+    base: Any = None,
+    *,
+    settled: Sequence[Mapping[str, Any]] = (),
+    today: str | None = None,
+) -> MarkupFile:
+    """The zero-click red/green proof drawing of a full check (#1581,
+    `proof_drawing.proof_markup_pdf`), written to `out`: a red cloud and a red/green note at each
+    Wrong item code proved, a proof entry each, a cover with the counts, the rule, the stamp and
+    what code assumed about the page map, and the rest listed in grey. The reviewer's decisions
+    (on `findings`, when there are any) override: agreed = clouded, not a problem = left out.
+    Raises `LookupError` when the chat has no copy of the set's PDFs."""
+    ordered = by_impact(findings)
+    name, placed = place_findings(workspace, ordered)
+    listing = read_listing(workspace)
+    files = {
+        str(item["name"]): workspace.uploads / str(item["name"])
+        for item in listing
+        if (workspace.uploads / str(item["name"])).is_file()
+    }
+    plan = import_module("app.review.assistant.full_check_plan")
+    pack = workspace.set_pack
+    drawing = import_module(PROOF_MODULE)
+    date = today or datetime.now(UTC).strftime("%Y-%m-%d")
+    drawing.proof_markup_pdf(
+        workspace.uploads / name,
+        placed,
+        out,
+        set_name=name,
+        stamp=drawing.stamp_line(date, reviewers(findings)),
+        base=base,
+        files=files,
+        cache=None if pack is None else pack / "hires",
+        assumptions=plan.plan_assumptions(pack, name),
+        settled=settled,
+    )
+    data = out.read_bytes()
+    return MarkupFile(
+        markup_name(name, CLOUD_DRAWING_KIND), len(data), hashlib.sha256(data).hexdigest()
+    )
 
 
 type Placed = tuple[int, Mapping[str, Any], int | None, tuple[float, ...] | None, str]

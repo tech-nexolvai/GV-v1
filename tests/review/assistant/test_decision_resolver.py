@@ -796,15 +796,22 @@ def test_every_count_shown_comes_from_the_final_list(
     )
     assert f"What's wrong ({final['wrong']})" in report
     assert f"Your decision ({final['decision']})" in report
+    # The zero-click cloud drawing's cover (#1581): its groups split the same final list.
+    from app.review.assistant.proof import proof_counts
+
+    groups = proof_counts(live)
+    assert groups["clouded"] + groups["not_verified"] == final["wrong"]
+    assert groups["could_not_compare"] == final["decision"]
+    assert groups["right"] == final["right"]
     drawing = PdfReader(str(harness.workspace.files / harness.files[0]["id"]))
-    notes = " ".join(page.extract_text() for page in drawing.pages[-2:])
-    found = re.search(r"(\d+) items: (\d+) wrong .*?(\d+) your decision .*?(\d+) right", notes)
-    assert found is not None
-    assert (int(found[2]), int(found[3]), int(found[4])) == (
-        final["wrong"],
-        final["decision"],
-        final["right"],
-    )
+    cover = drawing.pages[0].extract_text()
+    for count, words in (
+        (groups["clouded"], "Wrong, clouded"),
+        (groups["not_verified"], "Not verified by code"),
+        (groups["could_not_compare"], "Could not compare"),
+        (groups["right"], "Right"),
+    ):
+        assert re.search(rf"\b{count}\s+{words}", cover), (count, words)
 
 
 # ---- trust follows how code settled it (#1554 review) ------------------------------------------
@@ -912,7 +919,7 @@ def test_a_vendor_string_carries_code_s_sum_for_its_line(tmp_path: Path) -> None
 def test_the_cloud_drawing_marks_every_page_an_item_is_also_on(tmp_path: Path) -> None:
     from pypdf import PdfReader
 
-    from app.review.assistant import decided_drawing
+    from app.review.assistant import proof_drawing
     from tests.review.assistant.test_chat_findings import workspace_with_pdf
 
     workspace = workspace_with_pdf(tmp_path)
@@ -940,5 +947,8 @@ def test_the_cloud_drawing_marks_every_page_an_item_is_also_on(tmp_path: Path) -
 
     agreed = dict(wrong, decision={"decision": "agree", "by": "R", "at": "2026-10-17T10:00:00Z"})
     out = tmp_path / "decided.pdf"
-    decided_drawing.decided_markup_pdf(pdf, [(1, agreed, 2, placed[0][3], "")], out)
-    assert '45"' in PdfReader(str(out)).pages[2].extract_text()
+    proof_drawing.proof_markup_pdf(
+        pdf, [(1, agreed, 2, placed[0][3], "")], out, set_name="Vendor set.pdf", stamp="Checked"
+    )
+    # The zero-click drawing starts with its cover: the vendor's page 3 is the PDF's fourth.
+    assert '45"' in PdfReader(str(out)).pages[3].extract_text()

@@ -40,7 +40,7 @@ from app.review.assistant.cloud_layout import (
     place_notes,
     wrap,
 )
-from app.review.assistant.decided_drawing import decided_markup_pdf
+from app.review.assistant.proof_drawing import proof_markup_pdf
 from app.review.assistant.verify_value import printed_spots
 
 WIDTH, HEIGHT = 1000.0, 700.0
@@ -350,34 +350,42 @@ def test_only_wrong_items_are_clouded_and_decisions_get_a_numbered_marker(tmp_pa
     assert "Your decision: Bay sizes" in PdfReader(str(clouded)).pages[0].extract_text()
 
 
-def test_the_decided_drawing_clouds_only_the_agreed_items(tmp_path: Path) -> None:
+def test_the_remade_drawing_clouds_agreed_items_and_leaves_ai_only_ones_grey(
+    tmp_path: Path,
+) -> None:
+    """#1581: the reviewer's Agree is an override (clouded whatever code proved); an undecided
+    Wrong item only AI readings back is not clouded, it is listed in grey."""
     sheet = _sheet(tmp_path / "sheet.pdf", ink=False)
     agreed_box, open_box = (300.0, 300.0, 340.0, 316.0), (600.0, 150.0, 640.0, 166.0)
     findings = [
         _finding(
             vendor='99"',
+            trust_level="to_check",
             vendor_box=_box(*agreed_box),
             decision={"decision": "agree", "by": "Reviewer One"},
         ),
-        _finding(item="Bay sizes", vendor='98"', vendor_box=_box(*open_box)),
+        _finding(
+            item="Bay sizes", vendor='98"', trust_level="to_check", vendor_box=_box(*open_box)
+        ),
     ]
     out = tmp_path / "out.pdf"
-    decided_markup_pdf(sheet, _placed(findings), out)
-    picture = _render(out)
+    proof_markup_pdf(
+        sheet, _placed(findings), out, set_name="sheet.pdf", stamp="Checked automatically"
+    )
+    picture = _render(out, page=2)  # page 1 is the cover
     assert (
-        _red(picture, (agreed_box[2] + 2, agreed_box[1] - 4, agreed_box[2] + 14, agreed_box[3] + 4))
+        _red(
+            picture,
+            (agreed_box[0] - 16, agreed_box[1] - 16, agreed_box[2] + 16, agreed_box[3] + 16),
+        )
         > 5
     )
     assert (
         _red(picture, (open_box[0] - 16, open_box[1] - 16, open_box[2] + 16, open_box[3] + 16)) == 0
     )
-    assert (
-        _amber(picture, (open_box[0] - 16, open_box[1] - 16, open_box[2] + 16, open_box[3] + 16))
-        == 0
-    )
-    notes = "".join(page.extract_text() for page in PdfReader(str(out)).pages[1:])
-    for words in ("Agreed: needs correction (1)", "Not yet decided (1)", "Decided by Reviewer One"):
-        assert words in notes
+    words = "".join(page.extract_text() for page in PdfReader(str(out)).pages)
+    assert "Agreed by Reviewer One" in words
+    assert "Not verified by code: check before sending (1)" in words
 
 
 # ---- a clean copy --------------------------------------------------------------------------------

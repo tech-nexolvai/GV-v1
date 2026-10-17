@@ -123,7 +123,7 @@ describe('a full-check answer', () => {
     // 2. The three numbers, pages and accuracy: each once on the screen.
     const kpis = node.querySelector<HTMLElement>('[data-slot="chat-kpis"]')!;
     expect([...kpis.querySelectorAll<HTMLElement>('[data-kpi]')].map((tile) => `${tile.dataset.kpi}:${tile.textContent}`)).toEqual([
-      'different:Wrong2Send back to the vendor', 'check:Your decision1Agree or dismiss each', 'same:Right2Matches the drawings',
+      'different:Wrong2Send back to the vendor', 'check:Your decision1Listed with the reason', 'same:Right2Matches the drawings',
       'pages:Pages checked2/22 of 2 pages compared · 0 not comparable · 0 not opened', 'accuracy:Accuracy84%',
     ]);
     expect(node.querySelectorAll('[data-slot="chat-accuracy"]')).toHaveLength(1);
@@ -155,6 +155,25 @@ describe('a full-check answer', () => {
     Element.prototype.scrollIntoView = function (this: Element) { scrolled.push(this.textContent ?? ''); } as typeof Element.prototype.scrollIntoView;
     await user.click(within(kpis).getByRole('button', { name: 'Your decision: 1. Go to them' }));
     expect(scrolled[0]).toMatch(/^Your decision/);
+  });
+
+  it('leads with a drawing ready to download, counted by what code proved, decisions optional (#1581)', () => {
+    const proved = [
+      finding('w1', { item: 'Sink base width', status: 'different', proof: { group: 'clouded', should_be: '37" (architect)', proof: 'Printed at both spots, read by code' } }),
+      finding('w2', { item: 'Filler', status: 'different', proof: { group: 'not_verified', should_be: '2" (GV rule)', reason: 'Only AI readings back it.' } }),
+      finding('k1', { item: 'Island overhang', status: 'check', proof: { group: 'could_not_compare', reason: 'the architect prints no size here' } }),
+      finding('r1', { item: 'Vanity top depth', status: 'same', proof: { group: 'right' } }),
+    ];
+    render(<AssistantMessage message={answer({ findings: proved, files: [CLOUD, REPORT] })} chatId="c-1" models={[OPUS]} fullCheck decide={vi.fn()} />);
+    const cloud = within(screen.getByRole('article', { name: 'Answer' })).getByRole('region', { name: 'Cloud drawing' });
+    expect(cloud.textContent).not.toMatch(/draft|signed review/i);
+    expect(cloud.querySelector('[data-slot="chat-cloud-counts"]')?.textContent).toBe('1 clouded, proved by code1 not verified by code1 could not compare');
+    // Download is the first and main action, before any decision.
+    const actions = [...cloud.querySelectorAll<HTMLElement>('a, button')].map((el) => el.getAttribute('aria-label') ?? el.textContent);
+    expect(actions[1]).toBe('Download vendor-clouded.pdf');
+    expect(cloud.querySelector('[data-slot="chat-cloud-download"]')?.className).toContain('bg-primary');
+    expect(cloud.querySelector('[data-slot="chat-cloud-update"]')).toBeNull();
+    expect(cloud.querySelector('[data-slot="chat-cloud-review"]')?.textContent).toContain('0 of 3 decided · optional');
   });
 
   it('is still a full check after a reload, when the saved question has no mode (#1508)', () => {
@@ -215,7 +234,7 @@ describe('a full-check answer', () => {
     // Optimistic: the count moves at once.
     await user.click(within(node.querySelector<HTMLElement>('[data-id="w2"]')!).getByRole('button', { name: 'Agree' }));
     await user.click(within(node.querySelector<HTMLElement>('[data-id="k1"]')!).getByRole('button', { name: 'Not a problem' }));
-    await waitFor(() => expect(node.querySelector('[data-slot="chat-cloud-review"]')?.textContent).toContain('3 of 3 decided· Reviewed by anant'));
+    await waitFor(() => expect(node.querySelector('[data-slot="chat-cloud-review"]')?.textContent).toContain('3 of 3 decided · reviewed by anant'));
     expect(decide).toHaveBeenCalledWith('msg-1', 'k1', 'not_a_problem');
 
     await user.click(within(node).getByRole('button', { name: 'Update cloud drawing' }));

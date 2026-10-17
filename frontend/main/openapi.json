@@ -5034,6 +5034,17 @@
             ],
             "title": "Printed Total"
           },
+          "proof": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatFindingProofOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where the zero-click cloud drawing puts it, and why (#1581); worked out on read, so it follows the reviewer's latest decision."
+          },
           "question": {
             "anyOf": [
               {
@@ -5292,6 +5303,65 @@
           "created_by"
         ],
         "title": "ChatFindingOut",
+        "type": "object"
+      },
+      "ChatFindingProofOut": {
+        "description": "Where the zero-click cloud drawing puts a finding (#1581), worked out by code on read\n(`proof.proof_of`): only Wrong items code proved are clouded; the reviewer's Agree / Not a\nproblem override.",
+        "properties": {
+          "group": {
+            "description": "clouded: Wrong, proved by code (red cloud); not_verified: Wrong that only AI readings back (grey, check before sending); could_not_compare: Your decision (grey, with the reason); right; not_compared; dismissed: the reviewer marked it not a problem.",
+            "enum": [
+              "clouded",
+              "not_verified",
+              "could_not_compare",
+              "right",
+              "not_compared",
+              "dismissed"
+            ],
+            "title": "Group",
+            "type": "string"
+          },
+          "proof": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Clouded items: the check that proved it, in plain words.",
+            "title": "Proof"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The other groups: why it is not clouded, in one line.",
+            "title": "Reason"
+          },
+          "should_be": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Wrong items: what the value should be and what governs it, e.g. '37\" (architect 3'-1\", page 28)'.",
+            "title": "Should Be"
+          }
+        },
+        "required": [
+          "group"
+        ],
+        "title": "ChatFindingProofOut",
         "type": "object"
       },
       "ChatFindingReadOut": {
@@ -21158,7 +21228,7 @@
     },
     "/api/v1/chats/{chat_id}/messages/{message_id}/cloud-drawing": {
       "post": {
-        "description": "Red clouds only at the findings the reviewer agreed with (\"\u2717 Vendor: X \u2014 Needs: Y\n(architect Z)\"); not-yet-decided, not-a-problem and right items listed on the notes page and in\nthe report, never clouded; \"Reviewed by <name>\" once every item needing a decision was decided,\nelse the draft stamp. A new cloud drawing and check report each time (older files are kept);\nreturns the cloud drawing.",
+        "description": "The zero-click cloud drawing made again with the reviewer's decisions as overrides (#1581):\nred clouds at the Wrong items code proved and at every agreed item, none at an item marked not\na problem; the rest listed in grey; stamped \"Checked automatically by GV Review: <date>, and\nreviewed by <name>\". A new cloud drawing and check report each time (older files are kept);\nreturns the cloud drawing.",
         "operationId": "cloud_drawing_api_v1_chats__chat_id__messages__message_id__cloud_drawing_post",
         "parameters": [
           {

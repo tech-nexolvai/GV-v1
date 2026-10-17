@@ -567,16 +567,20 @@ def test_a_full_check_seeds_recorded_results_and_makes_the_cloud_drawing_and_rep
 
     workspace = harness.workspace
     drawing = PdfReader(str(workspace.files / harness.files[0]["id"]))
-    # The wrong item's note on its page, its entry on the notes pages.
-    assert "vendor 3'-10\"" in drawing.pages[1].extract_text()
-    assert "Vendor: 3'-10\"" in drawing.pages[-1].extract_text()
-    assert "Right: not clouded." in drawing.pages[-1].extract_text()
+    # The zero-click drawing (#1581): its cover, the code-proved wrong item clouded on its page
+    # (the cover is first, so the vendor's page 2 is the PDF's third), its proof, the Right list.
+    assert "1\nWrong, clouded" in drawing.pages[0].extract_text()
+    assert "Vendor: 3'-10\"" in " ".join(drawing.pages[2].extract_text().split())
+    assert "Proved by: GV's rule check c1 fails it" in drawing.pages[-2].extract_text()
+    assert "Right (1)" in drawing.pages[-1].extract_text()
+    assert "Backsplash height" in drawing.pages[-1].extract_text()
     report = "".join(
         page.extract_text()
         for page in PdfReader(str(workspace.files / harness.files[1]["id"])).pages
     )
     for words in (
-        "AI check report: draft, not GV's signed review",
+        "Check report: checked automatically by GV Review",
+        "Should be",
         "Countertop",
         "What's wrong (1)",
         "Your decision (0)",
