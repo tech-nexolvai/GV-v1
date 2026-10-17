@@ -1356,6 +1356,22 @@ class ChatResolverBlock(BaseModel):
     resolver: ChatResolverOut
 
 
+class ChatFallbackOut(BaseModel):
+    """#1577: Anthropic's refusal fallback answered instead of the model asked."""
+
+    model_config = ConfigDict(frozen=True)
+
+    from_model: str = Field(description='The model that declined ("claude-fable-5-1").')
+    to_model: str = Field(description='The model that answered instead ("claude-opus-4-8").')
+
+
+class ChatFallbackBlock(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["fallback"]
+    fallback: ChatFallbackOut
+
+
 ChatBlock = Annotated[
     ChatThinkingBlock
     | ChatTextBlock
@@ -1372,7 +1388,8 @@ ChatBlock = Annotated[
     | ChatProgressBlock
     | ChatResumeBlock
     | ChatResolverBlock
-    | ChatUnderstoodBlock,
+    | ChatUnderstoodBlock
+    | ChatFallbackBlock,
     Field(discriminator="type"),
 ]
 

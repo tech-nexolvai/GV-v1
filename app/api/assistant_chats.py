@@ -408,6 +408,8 @@ def assistant_models(
                 thinking_off_max_effort=model.thinking_off_max_effort,
             )
             for model in MODELS.values()
+            # Fable 5.1 only where the route offers it (#1577: Anthropic's own API).
+            if runtime.choice.name in model.providers
         ],
         message_cap_usd=cost_text(int(settings.assistant_message_cap_usd * _MICROS)),
         package_cap_usd=cost_text(int(settings.assistant_package_cap_usd * _MICROS)),
@@ -998,7 +1000,7 @@ def _message(
             detail="The server is restarting. Send your message again in a moment.",
         )
     try:
-        model = check_choice(body.model, body.effort, body.thinking)
+        model = check_choice(body.model, body.effort, body.thinking, runtime.choice.name)
     except ChoiceRefused as refused:
         raise CodedHTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT, "choice_refused", str(refused)

@@ -4472,6 +4472,31 @@ export interface components {
             /** Record Id */
             record_id: string;
         };
+        /** ChatFallbackBlock */
+        ChatFallbackBlock: {
+            fallback: components["schemas"]["ChatFallbackOut"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "fallback";
+        };
+        /**
+         * ChatFallbackOut
+         * @description #1577: Anthropic's refusal fallback answered instead of the model asked.
+         */
+        ChatFallbackOut: {
+            /**
+             * From Model
+             * @description The model that declined ("claude-fable-5-1").
+             */
+            from_model: string;
+            /**
+             * To Model
+             * @description The model that answered instead ("claude-opus-4-8").
+             */
+            to_model: string;
+        };
         /** ChatFileOut */
         ChatFileOut: {
             /**
@@ -5313,7 +5338,7 @@ export interface components {
             /** @description The answer's accuracy by code (its `accuracy` block, scored again with today's calibration: see `rescored`); null on older answers. */
             accuracy?: components["schemas"]["ChatAccuracyOut"] | null;
             /** Blocks */
-            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatFindingUpdateBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"] | components["schemas"]["ChatScopeBlock"] | components["schemas"]["ChatProgressBlock"] | components["schemas"]["ChatResumeBlock"] | components["schemas"]["ChatResolverBlock"] | components["schemas"]["ChatUnderstoodBlock"])[] | null;
+            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatFindingUpdateBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"] | components["schemas"]["ChatScopeBlock"] | components["schemas"]["ChatProgressBlock"] | components["schemas"]["ChatResumeBlock"] | components["schemas"]["ChatResolverBlock"] | components["schemas"]["ChatUnderstoodBlock"] | components["schemas"]["ChatFallbackBlock"])[] | null;
             /** @description With `stopped: cost_cap`: `message` (this answer's cap) or `package` (the drawing set's budget ran out). */
             cap_hit?: components["schemas"]["ChatCapHit"] | null;
             /** Cost Usd */
