@@ -154,6 +154,8 @@ class RunningMessage:
     """What the checkpoint keeps besides the blocks: model, effort, thinking, mode, products."""
     factory: sessionmaker[Session] | None = None
     checkpointed_at: float = 0.0
+    save_due: bool = False
+    """A save was put off by the rate limit: a timer makes it, so a pause loses nothing."""
     store_lock: threading.Lock = field(default_factory=threading.Lock)
     """Held while its answer is stored: the answer, or (at shutdown) its interrupted reply."""
     finished: bool = False
@@ -860,6 +862,7 @@ _CHECKPOINT_SOON: Final = 0.5
 _CHECKPOINT_EVENTS: Final = frozenset(
     {"step_end", "finding", "finding_dropped", "coverage", "agent_end", "thinking_end", "file"}
 )
+_SAVE_LOCK: Final = threading.Lock()
 #: How long a stopping server waits for running answers to end by themselves.
 SHUTDOWN_WAIT_SECONDS: Final = 10.0
 #: How much of the interrupted answer's words a Continue hands over.
@@ -889,13 +892,34 @@ def write_checkpoint(run: RunningMessage) -> None:
 
 
 def _maybe_checkpoint(run: RunningMessage, event: str, *, force: bool = False) -> None:
+    """Saved now, or (rate-limited) once the wait is over: what happened is never left unsaved
+    for longer than `_CHECKPOINT_EVERY`, even when the answer then pauses (a slow call)."""
     if run.checkpoint is None or run.abandoned:
         return
-    since = monotonic() - run.checkpointed_at
-    if not force and since < (
-        _CHECKPOINT_SOON if event in _CHECKPOINT_EVENTS else _CHECKPOINT_EVERY
-    ):
+    wait = (_CHECKPOINT_SOON if event in _CHECKPOINT_EVENTS else _CHECKPOINT_EVERY) - (
+        monotonic() - run.checkpointed_at
+    )
+    if not force and wait > 0:
+        with _SAVE_LOCK:
+            if run.save_due:
+                return
+            run.save_due = True
+        timer = threading.Timer(wait, _due_checkpoint, args=(run,))
+        timer.daemon = True
+        timer.start()
         return
+    _save(run)
+
+
+def _due_checkpoint(run: RunningMessage) -> None:
+    with _SAVE_LOCK:
+        run.save_due = False
+    if run.checkpoint is None or run.abandoned or run.finished:
+        return
+    _save(run)
+
+
+def _save(run: RunningMessage) -> None:
     try:
         write_checkpoint(run)
     except Exception:  # noqa: BLE001 - a save that fails never stops the answer

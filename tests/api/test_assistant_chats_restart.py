@@ -125,7 +125,9 @@ def test_a_question_a_restart_left_without_a_reply_is_stored_as_interrupted_with
         assert [m["role"] for m in chat["messages"]] == ["user", "assistant"]
         answer = chat["messages"][1]
         assert answer["stopped"] == "interrupted" and answer["id"] == str(run.message_id)
-        assert _texts(answer["blocks"]).startswith("Two items differ on page 4")
+        # The words saved before the pause (the save waits at most 2 s after them).
+        kept = _texts(answer["blocks"])
+        assert kept and "Two items differ on page 4, and".startswith(kept)
         assert answer["model"] == "claude-opus-5-5" and answer["effort"] == "high"
         assert answer["resume"]["mode"] == "chat"
         assert "only the step that was running" in answer["resume"]["redo"]
