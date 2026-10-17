@@ -12,7 +12,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
 from app.review.assistant.chat_findings import products_words
-from app.review.assistant.chat_trust import cloud_kind
+from app.review.assistant.chat_trust import cloud_kind, shown_counts
 from app.review.assistant.impact import by_impact
 
 #: The small note under a summary code wrote (the screen shows it as written).
@@ -117,9 +117,10 @@ def code_summary(
 ) -> str:
     """The 5-6 line summary: what was checked, the verdict, the biggest issues, what needs the
     reviewer's decision, why it stopped (if it did) and the next step; then the small note."""
-    wrong = sum(1 for f in findings if cloud_kind(f) == "wrong")
-    to_check = sum(1 for f in findings if cloud_kind(f) == "check")
-    right = sum(1 for f in findings if cloud_kind(f) is None)
+    # The same counts as the screen and the files (#1554): one final list, Right only when compared.
+    counts = shown_counts(findings)
+    wrong, to_check, right = counts["wrong"], counts["decision"], counts["right"]
+    unseen = f", {counts['not_compared']} not compared" if counts["not_compared"] else ""
     rounds = len({int(f.get("round") or 1) for f in findings}) or 1
     scope = f"{products_words(products).lower()}, {_plural(rounds, 'round', 'rounds')}"
     if coverage is not None:
@@ -134,7 +135,7 @@ def code_summary(
         first,
         (
             f"{_plural(wrong, 'thing looks', 'things look')} wrong, "
-            f"{_plural(to_check, 'needs', 'need')} your decision, {right} match."
+            f"{_plural(to_check, 'needs', 'need')} your decision, {right} match{unseen}."
         ),
     ]
     issues = _issue_words(findings)

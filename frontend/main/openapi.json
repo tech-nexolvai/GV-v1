@@ -4132,6 +4132,107 @@
         "title": "ChatFileOut",
         "type": "object"
       },
+      "ChatFindingAlsoOnOut": {
+        "description": "The same item on another page or round, folded into this finding (#1554).",
+        "properties": {
+          "arch_box": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatBoxOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "architect": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Architect"
+          },
+          "finding_id": {
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "item": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "round": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Round"
+          },
+          "vendor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vendor"
+          },
+          "vendor_box": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatBoxOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its spot on that page: the cloud drawing marks it there too."
+          },
+          "vs_page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vs Page"
+          }
+        },
+        "required": [
+          "finding_id"
+        ],
+        "title": "ChatFindingAlsoOnOut",
+        "type": "object"
+      },
       "ChatFindingBlock": {
         "properties": {
           "finding": {
@@ -4666,6 +4767,21 @@
       "ChatFindingOut": {
         "description": "One difference the assistant reported, with code-made evidence and checks.",
         "properties": {
+          "also_on": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ChatFindingAlsoOnOut"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The same item on other pages or rounds, folded in (#1554).",
+            "title": "Also On"
+          },
           "arch_box": {
             "anyOf": [
               {
@@ -4836,6 +4952,17 @@
             "title": "Item",
             "type": "string"
           },
+          "keep_reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatKeepReason"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Status check: why it needs a person (#1554)."
+          },
           "ledger_ids": {
             "anyOf": [
               {
@@ -4884,6 +5011,18 @@
             ],
             "title": "Parts"
           },
+          "parts_sum": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Source vendor_arithmetic: code's sum of the parts, in inches (#1554).",
+            "title": "Parts Sum"
+          },
           "printed_total": {
             "anyOf": [
               {
@@ -4894,6 +5033,18 @@
               }
             ],
             "title": "Printed Total"
+          },
+          "question": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Status check: the one question a person answers, written by code (#1554).",
+            "title": "Question"
           },
           "reads": {
             "anyOf": [
@@ -4987,6 +5138,17 @@
                 "type": "null"
               }
             ]
+          },
+          "settled": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatFindingSettledOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when code settled this item, which was Your decision, by itself (#1554)."
           },
           "source": {
             "description": "cross_view and completeness are made only by code, from the reading ledger.",
@@ -5220,6 +5382,37 @@
         "title": "ChatFindingReadOut",
         "type": "object"
       },
+      "ChatFindingSettledOut": {
+        "description": "How code settled a \"Your decision\" item by itself (#1554), shown as \"Settled by GV\nReview: \u2026\".",
+        "properties": {
+          "how": {
+            "description": "What code did and found, in one plain sentence.",
+            "title": "How",
+            "type": "string"
+          },
+          "method": {
+            "description": "The rule or tool: same_item, gv_limits, vendor_sum, printed_vs_printed, newest_round, prototype_prints_it, legend, sharper_read, other_trades_tags, out_of_scope.",
+            "title": "Method",
+            "type": "string"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/ChatSettledOutcome"
+          },
+          "was": {
+            "const": "check",
+            "default": "check",
+            "title": "Was",
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "method",
+          "how"
+        ],
+        "title": "ChatFindingSettledOut",
+        "type": "object"
+      },
       "ChatFindingUpdateBlock": {
         "properties": {
           "type": {
@@ -5395,6 +5588,19 @@
           "summary",
           "clarify",
           "refuse_action"
+        ],
+        "type": "string"
+      },
+      "ChatKeepReason": {
+        "enum": [
+          "architect_prints_nothing",
+          "measures_something_else",
+          "which_governs",
+          "unreadable",
+          "needs_job_value",
+          "layout",
+          "vendor_disagrees",
+          "other"
         ],
         "type": "string"
       },
@@ -5963,6 +6169,7 @@
                       "finding_dropped": "#/components/schemas/ChatFindingDroppedBlock",
                       "finding_update": "#/components/schemas/ChatFindingUpdateBlock",
                       "progress": "#/components/schemas/ChatProgressBlock",
+                      "resolver": "#/components/schemas/ChatResolverBlock",
                       "resume": "#/components/schemas/ChatResumeBlock",
                       "scope": "#/components/schemas/ChatScopeBlock",
                       "step": "#/components/schemas/ChatStepBlock",
@@ -6016,6 +6223,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ChatResumeBlock"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChatResolverBlock"
                     },
                     {
                       "$ref": "#/components/schemas/ChatUnderstoodBlock"
@@ -6708,6 +6918,185 @@
         "title": "ChatRecordedResultsOut",
         "type": "object"
       },
+      "ChatResolverBlock": {
+        "properties": {
+          "resolver": {
+            "$ref": "#/components/schemas/ChatResolverOut"
+          },
+          "type": {
+            "const": "resolver",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "resolver"
+        ],
+        "title": "ChatResolverBlock",
+        "type": "object"
+      },
+      "ChatResolverCountsOut": {
+        "properties": {
+          "decision": {
+            "title": "Decision",
+            "type": "integer"
+          },
+          "right": {
+            "title": "Right",
+            "type": "integer"
+          },
+          "wrong": {
+            "title": "Wrong",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "wrong",
+          "decision",
+          "right"
+        ],
+        "title": "ChatResolverCountsOut",
+        "type": "object"
+      },
+      "ChatResolverEntryOut": {
+        "description": "One \"Your decision\" item code settled by itself (#1554): the folded group's line.",
+        "properties": {
+          "architect": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Architect"
+          },
+          "finding_id": {
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "how": {
+            "title": "How",
+            "type": "string"
+          },
+          "into": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The finding it was folded into.",
+            "title": "Into"
+          },
+          "item": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item"
+          },
+          "method": {
+            "title": "Method",
+            "type": "string"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/ChatSettledOutcome"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "vendor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vendor"
+          },
+          "vs_page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vs Page"
+          }
+        },
+        "required": [
+          "finding_id",
+          "outcome",
+          "method",
+          "how"
+        ],
+        "title": "ChatResolverEntryOut",
+        "type": "object"
+      },
+      "ChatResolverOut": {
+        "description": "The resolver's pass on a whole-set answer (#1554): the counts before and after, every item\nit settled, why the rest still need a person, its sharper reads and their cost.",
+        "properties": {
+          "after": {
+            "$ref": "#/components/schemas/ChatResolverCountsOut"
+          },
+          "before": {
+            "$ref": "#/components/schemas/ChatResolverCountsOut"
+          },
+          "cost_usd": {
+            "title": "Cost Usd",
+            "type": "string"
+          },
+          "kept": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Kept",
+            "type": "object"
+          },
+          "reads": {
+            "title": "Reads",
+            "type": "integer"
+          },
+          "settled": {
+            "items": {
+              "$ref": "#/components/schemas/ChatResolverEntryOut"
+            },
+            "title": "Settled",
+            "type": "array"
+          }
+        },
+        "required": [
+          "before",
+          "after",
+          "settled",
+          "kept",
+          "reads",
+          "cost_usd"
+        ],
+        "title": "ChatResolverOut",
+        "type": "object"
+      },
       "ChatResumeBlock": {
         "properties": {
           "resume": {
@@ -7000,6 +7389,15 @@
         },
         "title": "ChatSecondReadValuesOut",
         "type": "object"
+      },
+      "ChatSettledOutcome": {
+        "enum": [
+          "wrong",
+          "right",
+          "merged",
+          "not_a_difference"
+        ],
+        "type": "string"
       },
       "ChatStepBlock": {
         "properties": {

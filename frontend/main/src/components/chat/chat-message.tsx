@@ -454,6 +454,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
       decisionFor={decisionFor}
       narrow={narrow}
       ids={sectionIds}
+      resolver={message.resolver ?? null}
     />
   ) : null;
   const decideError = decideFailed ? (

@@ -300,7 +300,9 @@ def test_the_ai_s_own_summary_is_kept_and_code_writes_none(
 
     outcome = harness.run()
 
-    assert outcome.text == own
+    # Its words are kept; the count it states is the final list's (#1554): GV Review recorded two.
+    assert outcome.text == own.replace("1 wrong", "2 wrong")
+    assert [b["text"] for b in outcome.blocks if b["type"] == "text"] == [outcome.text]
     assert not [b for b in outcome.blocks if b.get("by") == "code"]
     assert [f["name"] for f in harness.files] == FILES
 

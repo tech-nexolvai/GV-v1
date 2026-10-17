@@ -32,6 +32,7 @@ __all__ = [
     "ChatCoverageOut",
     "ChatCreatedOut",
     "ChatFileOut",
+    "ChatFindingAlsoOnOut",
     "ChatFindingBlock",
     "ChatFindingDecisionHelpOut",
     "ChatFindingDecisionIn",
@@ -41,6 +42,7 @@ __all__ = [
     "ChatFindingImpactOut",
     "ChatFindingLaterOut",
     "ChatFindingOut",
+    "ChatFindingSettledOut",
     "ChatFindingUpdateBlock",
     "ChatFindingUpdateOut",
     "ChatFullCheckPlanOut",
@@ -53,6 +55,10 @@ __all__ = [
     "ChatPlanOptionOut",
     "ChatProgressBlock",
     "ChatProgressOut",
+    "ChatResolverBlock",
+    "ChatResolverCountsOut",
+    "ChatResolverEntryOut",
+    "ChatResolverOut",
     "ChatResumeBlock",
     "ChatResumeOut",
     "ChatStepBlock",
@@ -449,6 +455,52 @@ class ChatFindingDecisionHelpOut(BaseModel):
     confirm: str = Field(description="What the reviewer should confirm, and with whom.")
 
 
+type ChatSettledOutcome = Literal["wrong", "right", "merged", "not_a_difference"]
+type ChatKeepReason = Literal[
+    "architect_prints_nothing",
+    "measures_something_else",
+    "which_governs",
+    "unreadable",
+    "needs_job_value",
+    "layout",
+    "vendor_disagrees",
+    "other",
+]
+
+
+class ChatFindingSettledOut(BaseModel):
+    """How code settled a "Your decision" item by itself (#1554), shown as "Settled by GV
+    Review: …"."""
+
+    model_config = ConfigDict(frozen=True)
+
+    outcome: ChatSettledOutcome
+    method: str = Field(
+        description="The rule or tool: same_item, gv_limits, vendor_sum, printed_vs_printed, "
+        "newest_round, prototype_prints_it, legend, sharper_read, other_trades_tags, out_of_scope."
+    )
+    how: str = Field(description="What code did and found, in one plain sentence.")
+    was: Literal["check"] = "check"
+
+
+class ChatFindingAlsoOnOut(BaseModel):
+    """The same item on another page or round, folded into this finding (#1554)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    finding_id: str
+    page: int | None = None
+    vs_page: int | None = None
+    round: int | None = None
+    item: str | None = None
+    vendor: str | None = None
+    architect: str | None = None
+    vendor_box: ChatBoxOut | None = Field(
+        default=None, description="Its spot on that page: the cloud drawing marks it there too."
+    )
+    arch_box: ChatBoxOut | None = None
+
+
 class ChatFindingDimOut(BaseModel):
     """A numbered dimension label a finding's side was built from (#1558)."""
 
@@ -614,6 +666,24 @@ class ChatFindingOut(BaseModel):
         default=None,
         description="Set when a later message of the chat corrected this finding (#1548): the "
         'finding shown is its newest version ("updated in a later message").',
+    )
+    settled: ChatFindingSettledOut | None = Field(
+        default=None,
+        description="Set when code settled this item, which was Your decision, by itself (#1554).",
+    )
+    question: str | None = Field(
+        default=None,
+        description="Status check: the one question a person answers, written by code (#1554).",
+    )
+    keep_reason: ChatKeepReason | None = Field(
+        default=None, description="Status check: why it needs a person (#1554)."
+    )
+    also_on: list[ChatFindingAlsoOnOut] | None = Field(
+        default=None, description="The same item on other pages or rounds, folded in (#1554)."
+    )
+    parts_sum: str | None = Field(
+        default=None,
+        description="Source vendor_arithmetic: code's sum of the parts, in inches (#1554).",
     )
 
 
@@ -1208,6 +1278,52 @@ class ChatResumeBlock(BaseModel):
     resume: ChatResumeOut
 
 
+class ChatResolverCountsOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    wrong: int
+    decision: int
+    right: int
+
+
+class ChatResolverEntryOut(BaseModel):
+    """One "Your decision" item code settled by itself (#1554): the folded group's line."""
+
+    model_config = ConfigDict(frozen=True)
+
+    finding_id: str
+    page: int | None = None
+    vs_page: int | None = None
+    item: str | None = None
+    vendor: str | None = None
+    architect: str | None = None
+    outcome: ChatSettledOutcome
+    method: str
+    how: str
+    into: str | None = Field(default=None, description="The finding it was folded into.")
+
+
+class ChatResolverOut(BaseModel):
+    """The resolver's pass on a whole-set answer (#1554): the counts before and after, every item
+    it settled, why the rest still need a person, its sharper reads and their cost."""
+
+    model_config = ConfigDict(frozen=True)
+
+    before: ChatResolverCountsOut
+    after: ChatResolverCountsOut
+    settled: list[ChatResolverEntryOut]
+    kept: dict[str, int]
+    reads: int
+    cost_usd: str
+
+
+class ChatResolverBlock(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["resolver"]
+    resolver: ChatResolverOut
+
+
 ChatBlock = Annotated[
     ChatThinkingBlock
     | ChatTextBlock
@@ -1223,6 +1339,7 @@ ChatBlock = Annotated[
     | ChatScopeBlock
     | ChatProgressBlock
     | ChatResumeBlock
+    | ChatResolverBlock
     | ChatUnderstoodBlock,
     Field(discriminator="type"),
 ]

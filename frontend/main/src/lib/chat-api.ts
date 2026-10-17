@@ -244,6 +244,7 @@ export type ChatBlock =
   | { type: 'accuracy'; accuracy: ChatAccuracy }
   | { type: 'unknowns'; unknowns: ChatUnknown[] }
   | { type: 'resume'; resume: ChatResume }
+  | { type: 'resolver'; resolver: ChatResolver }
   | { type: 'understood'; understood: ChatUnderstood };
 
 // ── Chat v2 (CONTRACT2-findings): findings with evidence, and page coverage ──
@@ -349,6 +350,16 @@ export interface ChatFinding {
   decision_help?: FindingDecisionHelp | null;
   /** #1545: why two printed values that differ still need a person (else code calls it Wrong). */
   check_reason?: CheckReason | null;
+  /** #1554: set when GV Review settled this item (which was Your decision) by itself, and how. */
+  settled?: FindingSettled | null;
+  /** #1554, status `check`: the one question a person answers, written by code. */
+  question?: string | null;
+  /** #1554, status `check`: why it needs a person. */
+  keep_reason?: KeepReason | null;
+  /** #1554: the same item on other pages or rounds, folded into this one. */
+  also_on?: FindingAlsoOn[] | null;
+  /** #1554, `source: vendor_arithmetic`: code's sum of the parts, in inches ("80.125"). */
+  parts_sum?: string | null;
   /**
    * #1569: how much a Wrong (or Your-decision) item matters, by code: ordering only, never a status
    * or a colour. `rank` 1 is the biggest of its status; the cloud drawing and the report use the
@@ -375,6 +386,67 @@ export interface FindingDecisionHelp {
   estimate?: { value_in: number; plus_minus_in: number; method: string } | null;
   likely: 'probably fine' | 'probably wrong' | 'can\'t tell';
   confirm: string;
+}
+
+/** #1554: how an item that was Your decision ended when code settled it. */
+export type SettledOutcome = 'wrong' | 'right' | 'merged' | 'not_a_difference';
+
+/** #1554: why an item still needs a person. */
+export type KeepReason =
+  | 'architect_prints_nothing'
+  | 'measures_something_else'
+  | 'which_governs'
+  | 'unreadable'
+  | 'needs_job_value'
+  | 'layout'
+  | 'vendor_disagrees'
+  | 'other';
+
+export interface FindingSettled {
+  outcome: SettledOutcome;
+  /** The rule or tool code used (same_item, gv_limits, vendor_sum, printed_vs_printed, …). */
+  method: string;
+  /** What code did and found, in one plain sentence. */
+  how: string;
+  was?: 'check';
+}
+
+export interface FindingAlsoOn {
+  finding_id: string;
+  page?: number | null;
+  vs_page?: number | null;
+  round?: number | null;
+  item?: string | null;
+  vendor?: string | null;
+  architect?: string | null;
+  /** Its spot on that page: the cloud drawing marks it there too. */
+  vendor_box?: FindingBox | null;
+  arch_box?: FindingBox | null;
+}
+
+/** #1554: one Your-decision item GV Review settled by itself (the folded group's line). */
+export interface ChatResolverEntry {
+  finding_id: string;
+  page?: number | null;
+  vs_page?: number | null;
+  item?: string | null;
+  vendor?: string | null;
+  architect?: string | null;
+  outcome: SettledOutcome;
+  method: string;
+  how: string;
+  /** The finding it was folded into. */
+  into?: string | null;
+}
+
+/** #1554: the resolver's pass on a whole-set answer: counts before and after, and what it settled. */
+export interface ChatResolver {
+  before: { wrong: number; decision: number; right: number };
+  after: { wrong: number; decision: number; right: number };
+  settled: ChatResolverEntry[];
+  kept: Record<string, number>;
+  reads: number;
+  cost_usd: string;
 }
 
 /** #1548: the later answer of the same chat that corrected a finding. */
@@ -841,7 +913,8 @@ export type ChatEvent =
   | { event: 'trust'; data: { trust: ChatTrust } }
   | { event: 'cite'; data: { cite: ChatCite } }
   | { event: 'accuracy'; data: { accuracy: ChatAccuracy } }
-  | { event: 'unknowns'; data: { unknowns: ChatUnknown[] } };
+  | { event: 'unknowns'; data: { unknowns: ChatUnknown[] } }
+  | { event: 'resolver'; data: { index?: number; resolver: ChatResolver } };
 
 export type ChatEventName = ChatEvent['event'];
 
@@ -849,6 +922,7 @@ const EVENT_NAMES: ReadonlySet<string> = new Set<ChatEventName>([
   'message_start', 'thinking_start', 'thinking_delta', 'thinking_end', 'text_delta', 'step_start', 'step_end',
   'tasks', 'agent_start', 'agent_step', 'agent_end', 'file', 'usage', 'message_end', 'error',
   'finding', 'finding_dropped', 'finding_update', 'coverage', 'progress', 'scope', 'trust', 'cite', 'accuracy', 'unknowns', 'understood',
+  'resolver',
 ]);
 
 /**

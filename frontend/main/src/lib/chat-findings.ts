@@ -426,6 +426,8 @@ export interface LinePart {
 }
 
 export interface FindingLine {
+  /** What the vendor did: "drew", or "prints" for the vendor's own string (#1554). */
+  vendorVerb?: string;
   vendor: LinePart;
   /** "needs" (wrong), "both" (right, same inches), or the reference ("architect shows"). */
   verb: string;
@@ -434,6 +436,23 @@ export interface FindingLine {
   printed: string | null;
   /** Code's difference ("+9 in"), or null. */
   difference: string | null;
+}
+
+/**
+ * The vendor's own string (#1554): "Vendor prints 80 in · parts add up to 80 1/8 in −1/8 in". It
+ * has no architect value, so the row never says what it "needs".
+ */
+function sumLine(finding: Pick<ChatFinding, 'vendor' | 'inches' | 'architect'> & Partial<Pick<ChatFinding, 'parts_sum' | 'printed_total'>>): FindingLine {
+  const printed = inchNumber(finding.inches?.vendor);
+  const vendor: LinePart = printed !== null
+    ? { text: `${inchWords(printed)} in`, inches: true }
+    : { text: shortValue(finding.printed_total ?? finding.vendor) ?? 'nothing', inches: false };
+  const summed = inchNumber(finding.parts_sum);
+  if (summed === null) return { vendorVerb: 'prints', vendor, verb: 'its parts do not add up to it', reference: null, printed: null, difference: null };
+  const reference: LinePart = { text: `${inchWords(summed)} in`, inches: true };
+  const off = printed !== null ? printed - summed : null;
+  if (off === 0) return { vendorVerb: 'prints', vendor, verb: 'parts add up to it', reference: null, printed: null, difference: null };
+  return { vendorVerb: 'prints', vendor, verb: 'parts add up to', reference, printed: null, difference: off !== null ? differenceWords(off) : null };
 }
 
 /**
@@ -463,8 +482,9 @@ function linePart(finding: Pick<ChatFinding, 'architect' | 'vendor' | 'inches'>,
  * The row's one line, PATH step 4.4: "Vendor drew 46 in · needs 37 in (architect 3' - 1")".
  * Values are the finding's own (code's inches or the printed words); nothing is re-typed.
  */
-export function findingLine(original: Pick<ChatFinding, 'source' | 'status' | 'architect' | 'vendor' | 'inches'>): FindingLine {
+export function findingLine(original: Pick<ChatFinding, 'source' | 'status' | 'architect' | 'vendor' | 'inches'> & Partial<Pick<ChatFinding, 'parts_sum' | 'printed_total'>>): FindingLine {
   const finding = once(original);
+  if (finding.source === 'vendor_arithmetic') return sumLine(finding);
   const vendor = linePart(finding, 'vendor');
   const reference = linePart(finding, 'architect');
   const difference = inchNumber(finding.inches?.difference);
@@ -475,7 +495,7 @@ export function findingLine(original: Pick<ChatFinding, 'source' | 'status' | 'a
   }
   // The brand prototype is not the design: a row never says the vendor "needs" it (#1530 review).
   const needs = finding.status === 'different' && finding.source !== 'brand_prototype';
-  const verb = needs ? 'needs' : `${referenceWord(finding)} ${finding.source === 'rules' ? 'says' : finding.source === 'vendor_arithmetic' ? 'add to' : 'shows'}`;
+  const verb = needs ? 'needs' : `${referenceWord(finding)} ${finding.source === 'rules' ? 'says' : 'shows'}`;
   return { vendor, verb, reference, printed: needs ? printed : null, difference: differenceText };
 }
 
@@ -705,4 +725,10 @@ export function isShortAnswer(message: Pick<ViewMessage, 'status' | 'stopped' | 
   // A table or a code block is never a short answer, even on two lines.
   if (lines.some((line) => /^\s*(\||```)/.test(line))) return false;
   return lines.length <= SHORT_LINES && text.length <= SHORT_CHARACTERS;
+}
+
+/** "Also on p.9, p.12": the other pages of the same item, folded into this one (#1554). */
+export function alsoOnWords(finding: Pick<ChatFinding, 'also_on'>): string {
+  const pages = [...new Set((finding.also_on ?? []).map((other) => other.page).filter((page): page is number => typeof page === 'number'))];
+  return pages.length ? `Also on ${pages.map((page) => `p.${page}`).join(', ')}` : '';
 }

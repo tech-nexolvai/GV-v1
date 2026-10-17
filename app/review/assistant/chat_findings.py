@@ -1696,16 +1696,25 @@ def make_markup_file(
     base: Any = None,
     *,
     cloud_decisions: bool = False,
+    settled: Sequence[Mapping[str, Any]] = (),
 ) -> MarkupFile:
     """The marked-up copy of the vendor's file, written to `out` (`chat_drawing.markup_pdf`): a
     tight red cloud, a numbered marker and a note at each Wrong finding's vendor box (else its
     architect box) when that box is on the vendor's file, a numbered amber marker at each one
     needing your decision (`cloud_decisions`: an amber cloud and note too), the draft stamp on page
     1, and every finding listed again on the notes pages. Raises `LookupError` when the chat has no
-    copy of the set's PDFs. `base`: a `markup_base` copy to draw on (used once)."""
+    copy of the set's PDFs. `base`: a `markup_base` copy to draw on (used once). `settled`: the
+    decision items code settled itself (#1554), listed on the notes pages."""
     name, placed = place_findings(workspace, by_impact(findings))
     drawing = import_module("app.review.assistant.chat_drawing")
-    drawing.markup_pdf(workspace.uploads / name, placed, out, base, cloud_decisions=cloud_decisions)
+    drawing.markup_pdf(
+        workspace.uploads / name,
+        placed,
+        out,
+        base,
+        cloud_decisions=cloud_decisions,
+        settled=settled,
+    )
     data = out.read_bytes()
     return MarkupFile(markup_name(name, kind), len(data), hashlib.sha256(data).hexdigest())
 
@@ -1747,12 +1756,15 @@ def make_report_file(
     findings: Sequence[Mapping[str, Any]],
     not_checked: Sequence[str],
     out: Path,
+    *,
+    settled: Sequence[Mapping[str, Any]] = (),
 ) -> MarkupFile:
-    """The full check's report PDF (`chat_drawing.check_report_pdf`), written to `out`."""
+    """The full check's report PDF (`chat_drawing.check_report_pdf`), written to `out`, with the
+    decision items code settled itself (`settled`, #1554)."""
     main = main_upload(read_listing(workspace))
     name = "drawing set" if main is None else str(main["name"])
     drawing = import_module("app.review.assistant.chat_drawing")
-    drawing.check_report_pdf(out, summary, by_impact(findings), not_checked)
+    drawing.check_report_pdf(out, summary, by_impact(findings), not_checked, settled=settled)
     data = out.read_bytes()
     return MarkupFile(
         markup_name(name, "AI check report"), len(data), hashlib.sha256(data).hexdigest()

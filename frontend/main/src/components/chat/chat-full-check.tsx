@@ -312,9 +312,11 @@ export function ResultNumbers({ counts, coverage, accuracy, onPick }: ResultNumb
             aria-label={`${number.words}: ${count}. Go to them`}
             className="grid min-w-0 gap-1 rounded-xl bg-muted/50 p-3 text-left transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:cursor-default disabled:hover:bg-muted/50 motion-reduce:transition-none sm:p-4"
           >
-            <span className="flex min-w-0 items-center gap-1.5 text-[13px] font-medium text-muted-foreground">
-              <span aria-hidden="true" className={cn('size-2 shrink-0 rounded-full', number.dot)} />
-              <span className="truncate">{number.words}</span>
+            {/* The label wraps instead of cutting "Your decision" short on a phone; two lines are kept
+                for every card there, so the three numbers stay on one level. */}
+            <span data-slot="chat-kpi-label" className="flex min-h-[2.5em] min-w-0 items-start gap-1.5 text-[13px] leading-[1.25] font-medium text-muted-foreground sm:min-h-0 sm:items-center">
+              <span aria-hidden="true" className={cn('mt-[0.3em] size-2 shrink-0 rounded-full sm:mt-0', number.dot)} />
+              <span className="min-w-0 break-words">{number.words}</span>
             </span>
             <span className={cn('text-2xl leading-8 font-semibold tracking-[-0.03em] tabular-nums sm:text-[30px] sm:leading-9', count === 0 && 'text-muted-foreground')}>{count}</span>
             <span className="hidden text-xs text-muted-foreground sm:block">{number.hint}</span>

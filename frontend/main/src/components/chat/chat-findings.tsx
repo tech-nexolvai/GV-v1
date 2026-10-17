@@ -3,8 +3,9 @@ import { Check, ChevronRight, ExternalLink, ImageOff, Maximize2, X } from 'lucid
 
 import { RoundChip } from '@/components/chat/chat-trust';
 import { useMediaQuery } from '@/hooks/use-media-query';
-import type { ChatFinding, FindingCategory, FindingDecisionValue, FindingStatus } from '@/lib/chat-api';
+import type { ChatFinding, ChatResolver, ChatResolverEntry, FindingCategory, FindingDecisionValue, FindingStatus, SettledOutcome } from '@/lib/chat-api';
 import {
+  alsoOnWords,
   architectPage,
   biggestFirst,
   categoryWords,
@@ -106,7 +107,7 @@ export function FindingLineText({ finding }: { finding: ChatFinding }) {
     <span data-slot="chat-finding-line" className="line-clamp-2 text-[13px] leading-[1.45] text-muted-foreground">
       {line.verb === 'both' ? <>Both {value(line.vendor)}</> : (
         <>
-          Vendor drew {value(line.vendor)}
+          Vendor {line.vendorVerb ?? 'drew'} {value(line.vendor)}
           <span aria-hidden="true"> · </span>
           <span className="sr-only">, </span>
           {line.verb} {line.reference && value(line.reference)}
@@ -293,6 +294,7 @@ export function FindingCard({ finding, pictureUrl, onOpen, fullPageHref }: {
           <div><dt className="text-xs font-medium text-muted-foreground">{words.vendorLabel}</dt><dd className="break-words">{words.vendor}</dd></div>
           {sum && <div><dt className="text-xs font-medium text-muted-foreground">Code’s sum</dt><dd data-slot="chat-finding-sum" className="break-words tabular-nums">{sum}</dd></div>}
           <div><dt className="text-xs font-medium text-muted-foreground">{words.whyLabel}</dt><dd data-slot="chat-finding-why" className="break-words">{words.why}</dd></div>
+          {finding.status === 'check' && finding.question && finding.question !== finding.decision_help?.confirm?.trim() && <div><dt className="text-xs font-medium text-muted-foreground">Your call</dt><dd data-slot="chat-finding-card-question" className="font-medium break-words">{finding.question}</dd></div>}
           {help.length > 0 && (
             <div data-slot="chat-finding-decision-help" className="grid gap-2 border-l-2 border-border pl-3">
               {help.map((row) => (
@@ -301,6 +303,19 @@ export function FindingCard({ finding, pictureUrl, onOpen, fullPageHref }: {
             </div>
           )}
           {words.tell && <div><dt className="text-xs font-medium text-muted-foreground">What to tell the vendor</dt><dd data-slot="chat-finding-tell" className="font-medium break-words">{words.tell}</dd></div>}
+          {finding.settled?.how && <div><dt className="text-xs font-medium text-muted-foreground">Settled by GV Review</dt><dd data-slot="chat-finding-card-settled" className="break-words">{finding.settled.how}</dd></div>}
+          {(finding.also_on?.length ?? 0) > 0 && (
+            <div>
+              <dt className="text-xs font-medium text-muted-foreground">Same item elsewhere</dt>
+              <dd data-slot="chat-finding-card-also" className="break-words">
+                {(finding.also_on ?? []).map((other) => (
+                  <span key={other.finding_id} className="block tabular-nums">
+                    p.{other.page}{other.round ? ` (round ${other.round})` : ''}: vendor {other.vendor ?? '–'}
+                  </span>
+                ))}
+              </dd>
+            </div>
+          )}
         </dl>
         <p data-slot="chat-finding-sure" className="flex items-baseline gap-2 text-[12.5px] leading-relaxed text-muted-foreground">
           <span><span className="font-medium text-foreground">How sure: {trustLevelOf(finding) ? TRUST_WORDS[trustLevelOf(finding)!] : 'not rated yet'}.</span> {words.sure}</span>
@@ -337,6 +352,56 @@ export function FindingCard({ finding, pictureUrl, onOpen, fullPageHref }: {
         </div>
       </div>
     </div>
+  );
+}
+
+const SETTLED_WORDS: Record<SettledOutcome, string> = {
+  wrong: 'Wrong',
+  right: 'Right',
+  merged: 'Same item',
+  not_a_difference: 'Not a difference',
+};
+
+/**
+ * The Your-decision items GV Review settled by itself (#1554), folded: one line each, with how. The
+ * Wrong and Right ones also sit in their own sections; nothing is dropped without a line here.
+ */
+export function SettledGroup({ resolver, decisions }: { resolver: ChatResolver; decisions: number }) {
+  const [open, setOpen] = useState(false);
+  const bodyId = useId();
+  const entries = resolver.settled;
+  if (!entries.length) return null;
+  const line = (entry: ChatResolverEntry) => (
+    <li key={entry.finding_id} data-slot="chat-settled-row" data-outcome={entry.outcome} className="grid gap-0.5 border-b border-border/60 px-4 py-3 last:border-b-0 lg:grid-cols-[2.5rem_minmax(0,1fr)] lg:gap-4">
+      <span className="text-[12.5px] font-medium text-muted-foreground tabular-nums">p.{entry.page}</span>
+      <span className="grid min-w-0 gap-0.5">
+        <span className="text-[13.5px] font-medium break-words">
+          {entry.item}
+          <span className="font-normal text-muted-foreground"> · {SETTLED_WORDS[entry.outcome]}</span>
+        </span>
+        <span className="text-[13px] leading-[1.45] text-muted-foreground break-words">{entry.how}</span>
+      </span>
+    </li>
+  );
+  return (
+    <section data-slot="chat-findings-settled" className="min-w-0">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={bodyId}
+        onClick={() => setOpen(!open)}
+        className="flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1 rounded-md py-1 text-left focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+      >
+        <ChevronRight aria-hidden="true" className={cn('size-4 shrink-0 text-muted-foreground transition-transform duration-150 motion-reduce:transition-none', open && 'rotate-90')} />
+        <Check aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="text-base font-semibold">Settled automatically</span>
+        <span className="font-medium text-muted-foreground tabular-nums">{entries.length}</span>
+        <span className="text-[13px] text-muted-foreground">
+          GV Review answered these from the drawings: {decisions + entries.length} to decide became {decisions}
+        </span>
+      </button>
+      {open && <ul id={bodyId} className="mt-3 overflow-hidden rounded-xl border">{entries.map(line)}</ul>}
+    </section>
   );
 }
 
@@ -416,10 +481,15 @@ function FindingRow({ finding, area, open, leaving, onToggle, onOpen, pictureUrl
             <span className="shrink-0 text-xs text-muted-foreground tabular-nums lg:hidden">p.{pageWords(finding)}</span>
           </span>
           <FindingLineText finding={finding} />
-          {finding.status === 'check' && finding.why?.trim() && (
+          {finding.status === 'check' && (finding.question?.trim() || finding.why?.trim()) && (
             <span data-slot="chat-finding-question" className="line-clamp-2 text-[13px] leading-[1.45]">
               <span className="font-medium text-outcome-review-fg">Your call: </span>
-              {finding.why}
+              {finding.question?.trim() || finding.why}
+            </span>
+          )}
+          {finding.settled?.how && (
+            <span data-slot="chat-finding-settled" className="line-clamp-2 text-[12.5px] leading-[1.45] text-muted-foreground">
+              Settled by GV Review: {finding.settled.how}
             </span>
           )}
           <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -433,6 +503,7 @@ function FindingRow({ finding, area, open, leaving, onToggle, onOpen, pictureUrl
             )}
             {tag && <span data-slot="chat-finding-source" className="text-xs text-muted-foreground">{tag.replace(/^vs /, 'Compared with the ')}</span>}
             {finding.vs_page != null && finding.vs_page !== finding.page && <span className="hidden text-xs text-muted-foreground tabular-nums lg:inline">vs page {finding.vs_page}</span>}
+            {(finding.also_on?.length ?? 0) > 0 && <span data-slot="chat-finding-also" className="text-xs text-muted-foreground tabular-nums">{alsoOnWords(finding)}</span>}
           </span>
         </span>
         <EvidencePair finding={finding} pictureUrl={pictureUrl} onOpen={onOpen} />
@@ -578,11 +649,13 @@ export interface FindingsSectionsProps {
   narrow?: boolean;
   /** Anchors for the summary's numbers. */
   ids?: Partial<Record<'different' | 'check' | 'same', string>>;
+  /** #1554: what GV Review settled by itself (a folded group after Your decision). */
+  resolver?: ChatResolver | null;
 }
 
 const SECTIONS = [
   { status: 'different', words: 'What’s wrong', hint: null },
-  { status: 'check', words: 'Your decision', hint: 'The AI could not settle these on its own.' },
+  { status: 'check', words: 'Your decision', hint: 'GV Review could not settle these from the drawings.' },
 ] as const;
 
 function SectionHead({ status, words, count, hint, children, id }: { status: RowStatus; words: string; count: number; hint?: string | null; children?: React.ReactNode; id?: string }) {
@@ -624,7 +697,7 @@ function Folded({ status, words, hint, count, children, id }: { status: RowStatu
 }
 
 /** What's wrong · Your decision · Right (folded) · Not compared (folded), each grouped by area. */
-export function FindingsSections({ findings, filter, onFilter, onOpen, pictureUrl, fullPageHref, decisionFor, narrow = false, ids }: FindingsSectionsProps) {
+export function FindingsSections({ findings, filter, onFilter, onOpen, pictureUrl, fullPageHref, decisionFor, narrow = false, ids, resolver = null }: FindingsSectionsProps) {
   const isNarrowScreen = useMediaQuery(FINDINGS_NARROW);
   const categories = categoriesPresent(findings);
   const shown = findings.filter((finding) => (filter.category === null || (finding.category ?? 'other') === filter.category) && (filter.page === null || finding.page === filter.page || finding.vs_page === filter.page));
@@ -710,6 +783,7 @@ export function FindingsSections({ findings, filter, onFilter, onOpen, pictureUr
           </section>
         );
       })}
+      {resolver && resolver.settled.length > 0 && <SettledGroup resolver={resolver} decisions={findings.filter((finding) => finding.status === 'check').length} />}
       {right.length > 0 && (
         <Folded status="same" words="Right" count={right.length} hint="Matches the architect, the prototype or GV’s rules" id={ids?.same}>
           <FindingsList findings={right} label="Right" onOpen={onOpen} pictureUrl={pictureUrl} fullPageHref={fullPageHref} />
