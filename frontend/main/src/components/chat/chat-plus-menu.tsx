@@ -24,8 +24,9 @@ import {
 } from 'lucide-react';
 import { Command as CommandPrimitive } from 'cmdk';
 
+import { PlanCheck } from '@/components/chat/chat-plan-check';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import type { ChatFile, ChatFinding, ChatModel, ChatProduct } from '@/lib/chat-api';
+import type { ChatFile, ChatFinding, ChatFullCheckPlan, ChatModel, ChatPlanAnswer, ChatProduct } from '@/lib/chat-api';
 import { downloadFile, downloadFindingsCsv, markupFailureWords } from '@/lib/chat-exports';
 import {
   AREA_PROMPT,
@@ -45,6 +46,7 @@ import {
   type PlusIcon,
 } from '@/lib/chat-plus-actions';
 import { browserStorage, chooseEffort, EFFORT_WORDS, type ChatChoice } from '@/lib/chat-settings';
+import { planAnswers, usePlanCheck } from '@/lib/chat-plan-check';
 import { useProductCatalog } from '@/lib/products';
 import { cn } from '@/lib/utils';
 
@@ -81,7 +83,13 @@ export interface PlusMenuProps {
   /** The composer's box: focused after a prompt, with its first blank selected. */
   textareaRef: React.RefObject<HTMLTextAreaElement | null>;
   /** The full check: its confirm line ("Full check · Countertops · Opus 5.5 · High · up to $5"), why it cannot run, and how to run it. */
-  fullCheck: { summary: string; blocked: string | null; onRun: () => void };
+  fullCheck: {
+    summary: string;
+    blocked: string | null;
+    onRun: (answers?: ChatPlanAnswer[]) => void;
+    /** #1569: code's plan and its 0-3 questions, read when the confirm view opens. */
+    loadPlan?: () => Promise<ChatFullCheckPlan>;
+  };
   /** The newest finished answer with findings, for the $0 files. */
   lastFindings: { messageId: string; findings: ChatFinding[] } | null;
   /** Code draws the answer's findings on a copy of the vendor's drawing (the existing markup-pdf route). */
@@ -120,6 +128,8 @@ export function PlusMenu(props: PlusMenuProps) {
   const [recent, setRecent] = useState<string[]>(() => readRecent(browserStorage()));
   const [busy, setBusy] = useState<string | null>(null);
   const [status, setStatus] = useState('');
+  const [planPicked, setPlanPicked] = useState<Record<string, string>>({});
+  const plan = usePlanCheck(fullCheck.loadPlan, open && view === 'confirm');
   // Set when the menu closes to put focus in the composer (not back on the "+").
   const focusBox = useRef<{ text: string } | null>(null);
 
@@ -317,6 +327,7 @@ export function PlusMenu(props: PlusMenuProps) {
               <p className="text-xs text-muted-foreground">
                 Checks every page against the architect and GV’s rules, then code draws the cloud drawing and the check report. About {FULL_CHECK_MINUTES} minutes.
               </p>
+              <PlanCheck state={plan} picked={planPicked} onPick={(id, value) => setPlanPicked((now) => ({ ...now, [id]: value }))} />
               <div className="flex justify-end gap-2">
                 <button
                   type="button"
@@ -330,8 +341,11 @@ export function PlusMenu(props: PlusMenuProps) {
                   autoFocus
                   onClick={() => {
                     remember('full_check');
+                    const answers = planAnswers(plan.status === 'ready' ? plan.plan.doubts : [], planPicked);
                     setOpen(false);
-                    fullCheck.onRun();
+                    setPlanPicked({});
+                    if (answers.length) fullCheck.onRun(answers);
+                    else fullCheck.onRun();
                   }}
                   className="h-8 rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none"
                 >
