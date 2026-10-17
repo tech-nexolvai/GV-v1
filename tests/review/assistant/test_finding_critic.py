@@ -171,7 +171,7 @@ def test_each_finding_is_shown_with_its_claims_and_both_crops() -> None:
     assert 'Claimed reference value: 72"' in content[0]["text"]
     assert 'Claimed vendor value: 73 1/2"' in content[0]["text"]
     assert "a brand prototype drawing" in content[3]["text"]
-    assert '"vendor_ink"' in content[-1]["text"] and "GV's reviewers" in content[-1]["text"]
+    assert "vendor_ink:" in content[-1]["text"] and "GV's reviewers" in content[-1]["text"]
 
 
 def test_nothing_to_show_makes_no_call() -> None:
