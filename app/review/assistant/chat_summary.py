@@ -1,0 +1,186 @@
+"""The full check's summary written by code, when the AI did not write its own (#1518).
+
+A full check always ends with a short plain-English summary for the reviewer. The lead is told to
+write it (`FULL_CHECK_INSTRUCTION`); when the message stops before it does (a cap, the turn limit,
+a cancel, an error) or it writes nothing, code writes one from the findings, the coverage and the
+trust report, with no AI call. Pure functions: no I/O, no money.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from decimal import Decimal, InvalidOperation
+from typing import Any, Final
+
+from app.review.assistant.chat_findings import products_words
+from app.review.assistant.chat_trust import cloud_kind
+
+#: The small note under a summary code wrote (the screen shows it as written).
+CODE_SUMMARY_NOTE: Final = "*Summary written by GV Review: the AI did not finish its own.*"
+
+#: How many issues the summary names.
+TOP_ISSUES: Final = 5
+
+_TRUST_ORDER: Final = {"confirmed": 0, "likely": 1, "to_check": 2}
+
+
+def needs_code_summary(text: str, stopped: str | None) -> bool:
+    """A full check that stopped early, or ended with no words, gets code's summary."""
+    return stopped is not None or not text.strip()
+
+
+def _size(finding: Mapping[str, Any]) -> Decimal:
+    """How far the vendor is off, in inches (code's numbers), else 0."""
+    difference = (finding.get("inches") or {}).get("difference")
+    try:
+        return abs(Decimal(str(difference))) if difference is not None else Decimal(0)
+    except (InvalidOperation, ValueError):
+        return Decimal(0)
+
+
+def top_issues(
+    findings: Sequence[Mapping[str, Any]], limit: int = TOP_ISSUES
+) -> list[Mapping[str, Any]]:
+    """The issues by impact: wrong before to-check, then the bigger difference, then the more
+    trusted; right items never."""
+    issues = [f for f in findings if cloud_kind(f) is not None]
+    issues.sort(
+        key=lambda f: (
+            0 if cloud_kind(f) == "wrong" else 1,
+            -_size(f),
+            _TRUST_ORDER.get(str(f.get("trust_level")), 3),
+            int(f.get("page") or 0),
+        )
+    )
+    return issues[:limit]
+
+
+def _pages(pages: Sequence[int]) -> str:
+    """[39, 40, 41, 51] as "p39-41, p51"."""
+    ordered = sorted(set(pages))
+    runs: list[list[int]] = []
+    for page in ordered:
+        if runs and page == runs[-1][-1] + 1:
+            runs[-1].append(page)
+        else:
+            runs.append([page])
+    return ", ".join(f"p{run[0]}" if len(run) == 1 else f"p{run[0]}-{run[-1]}" for run in runs)
+
+
+def _issue_words(findings: Sequence[Mapping[str, Any]]) -> list[str]:
+    """The top issues, the same item and values on several pages said once."""
+    groups: dict[tuple[str, str, str], list[int]] = {}
+    for finding in top_issues(findings, limit=len(findings)):
+        key = (
+            str(finding.get("item") or "Item").strip(),
+            str(finding.get("vendor") or "?").strip(),
+            str(finding.get("architect") or "?").strip(),
+        )
+        groups.setdefault(key, []).append(int(finding.get("page") or 0))
+        if len(groups) > TOP_ISSUES:
+            break
+    return [
+        f"{item}: vendor {vendor}, architect {architect} ({_pages(pages)})"
+        for (item, vendor, architect), pages in list(groups.items())[:TOP_ISSUES]
+    ]
+
+
+def _stop_words(
+    stopped: str | None, cap_hit: str | None, cap_usd: str, budget_usd: str, turns: int
+) -> str | None:
+    if stopped == "cost_cap" and cap_hit == "package":
+        return (
+            f"Stopped early: this drawing set used its ${budget_usd} AI budget, so the AI's final "
+            "pass was not done; your admin can raise the budget."
+        )
+    if stopped == "cost_cap":
+        return (
+            f"Stopped early at the ${cap_usd} limit, so the AI's final pass was not done: ask it "
+            "to go on, or run the full check again."
+        )
+    if stopped == "turn_limit":
+        return (
+            f"Stopped early after all {turns} tool turns, so the AI's final pass was not done: "
+            "ask it to go on."
+        )
+    if stopped == "cancelled":
+        return (
+            "Stopped before the AI finished, so its final pass and the trust checks were not "
+            "done: run the full check again to finish it."
+        )
+    if stopped == "error":
+        return (
+            "Stopped by an error before the AI finished, so its final pass and the trust checks "
+            "were not done: run the full check again."
+        )
+    return None
+
+
+def _plural(count: int, one: str, many: str) -> str:
+    return f"{count} {one if count == 1 else many}"
+
+
+def code_summary(
+    findings: Sequence[Mapping[str, Any]],
+    *,
+    coverage: Mapping[str, Any] | None,
+    page_count: int,
+    products: Sequence[str],
+    stopped: str | None,
+    cap_hit: str | None = None,
+    cap_usd: str = "",
+    budget_usd: str = "",
+    turns: int = 0,
+    files: Sequence[str] = (),
+) -> str:
+    """The 5-6 line summary: what was checked, the verdict, the biggest issues, what needs the
+    reviewer's decision, why it stopped (if it did) and the next step; then the small note."""
+    wrong = sum(1 for f in findings if cloud_kind(f) == "wrong")
+    to_check = sum(1 for f in findings if cloud_kind(f) == "check")
+    right = sum(1 for f in findings if cloud_kind(f) is None)
+    rounds = len({int(f.get("round") or 1) for f in findings}) or 1
+    scope = f"{products_words(products).lower()}, {_plural(rounds, 'round', 'rounds')}"
+    if coverage is not None:
+        total = int(coverage.get("total") or 0)
+        checked = total - int(coverage.get("not_opened") or 0)
+        first = f"Checked {checked} of {total} pages ({scope})."
+    else:
+        pages = len({f.get("page") for f in findings})
+        of = f" of {page_count}" if page_count else ""
+        first = f"Checked items on {pages}{of} pages ({scope}); pages were not all recorded."
+    lines = [
+        first,
+        (
+            f"{_plural(wrong, 'thing looks', 'things look')} wrong, "
+            f"{_plural(to_check, 'needs', 'need')} your decision, {right} match."
+        ),
+    ]
+    issues = _issue_words(findings)
+    lines.append(
+        f"Biggest issues: {'; '.join(issues)}." if issues else "No issues were found so far."
+    )
+    if to_check:
+        decide = [
+            f"p{f.get('page')} {str(f.get('item') or 'item').strip()}"
+            for f in findings
+            if cloud_kind(f) == "check"
+        ]
+        more = f" and {len(decide) - 5} more" if len(decide) > 5 else ""
+        lines.append(f"Your decision: {', '.join(decide[:5])}{more}.")
+    stop = _stop_words(stopped, cap_hit, cap_usd, budget_usd, turns)
+    if stop is not None:
+        lines.append(stop)
+    steps: list[str] = []
+    drawing = any("cloud" in name.lower() for name in files)
+    if wrong and drawing:
+        steps.append("send the cloud drawing to the vendor")
+    elif wrong:
+        steps.append("send the wrong items to the vendor")
+    if to_check:
+        steps.append(
+            f"confirm the {_plural(to_check, 'item that needs', 'items that need')} your decision"
+        )
+    if not steps:
+        steps.append("look over the report before signing off")
+    lines.append(f"Next: {'; '.join(steps)}.")
+    return "\n".join(lines) + "\n\n" + CODE_SUMMARY_NOTE
