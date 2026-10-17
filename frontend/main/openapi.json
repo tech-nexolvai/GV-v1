@@ -6566,7 +6566,9 @@
           "Agent",
           "review_results",
           "compare_rounds",
-          "verify_value"
+          "verify_value",
+          "zoom",
+          "read_under_markup"
         ],
         "type": "string"
       },

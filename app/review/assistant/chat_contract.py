@@ -71,6 +71,8 @@ type ChatStepTool = Literal[
     "review_results",
     "compare_rounds",
     "verify_value",
+    "zoom",
+    "read_under_markup",
 ]
 type ChatStopped = Literal["cost_cap", "cancelled", "error", "turn_limit", "interrupted"]
 type ChatCapHit = Literal["message", "package"]

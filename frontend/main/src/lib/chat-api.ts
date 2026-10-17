@@ -603,7 +603,9 @@ export type ChatTool =
   | 'Agent'
   | 'review_results'
   | 'compare_rounds'
-  | 'verify_value';
+  | 'verify_value'
+  | 'zoom'
+  | 'read_under_markup';
 
 /** One tool the assistant used. `step_start` sends it without its output; `step_end` sends it whole. */
 export interface ChatStep {

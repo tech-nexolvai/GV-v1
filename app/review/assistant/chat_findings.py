@@ -497,6 +497,11 @@ class FindingBook:
             "file": chosen,
         }
 
+    def _hires(self) -> Path | None:
+        """The set pack's hi-res page cache (#1548), when the chat has a pack."""
+        pack = self.workspace.set_pack
+        return None if pack is None else pack / "hires"
+
     def _picture(self, box: Mapping[str, Any] | None) -> tuple[str | None, str | None]:
         """A crop of the box's area as a chat picture: (picture id, why there is none)."""
         if box is None:
@@ -506,9 +511,12 @@ class FindingBook:
         pdf = self.workspace.uploads / str(box["file"])
         if not pdf.is_file():
             return None, f"{box['file']} is not in the uploads"
-        crop = self.crop or _default_crop
+        area = (box["x0"], box["y0"], box["x1"], box["y1"])
         try:
-            png = crop(pdf, int(box["page"]), (box["x0"], box["y0"], box["x1"], box["y1"]))
+            if self.crop is not None:
+                png = self.crop(pdf, int(box["page"]), area)
+            else:
+                png = _default_crop(pdf, int(box["page"]), area, cache=self._hires())
         except Exception as failed:  # noqa: BLE001 - no picture, never an error to the reviewer
             _log.warning("assistant chat evidence crop failed: %s", type(failed).__name__)
             return None, "the page could not be drawn"
@@ -1010,9 +1018,11 @@ class FindingBook:
         ]
 
 
-def _default_crop(pdf: Path, page: int, box: tuple[float, float, float, float]) -> bytes | None:
+def _default_crop(
+    pdf: Path, page: int, box: tuple[float, float, float, float], *, cache: Path | None = None
+) -> bytes | None:
     drawing = import_module("app.review.assistant.chat_drawing")
-    png: bytes | None = drawing.crop_png(pdf, page, box)
+    png: bytes | None = drawing.crop_png(pdf, page, box, cache=cache)
     return png
 
 

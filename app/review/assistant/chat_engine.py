@@ -209,9 +209,10 @@ _log = logging.getLogger(__name__)
 #: effort lines. chat-v8: "never cite internal ticket numbers", and a page or area question's
 #: scope note. chat-v9: zoom takes up to 8 crops; a full check's helpers are planned by code, with
 #: the recall brief, and the lead gets their reports with a verify-only instruction. chat-v10: the
-#: verify_value tool and its prompt lines, #1531.) Only the request's prefix changes; a chat's
-#: stored messages replay unchanged.
-HARNESS_ID: Final = "chat-v10"
+#: verify_value tool and its prompt lines, #1531. chat-v11: read_under_markup for the lead and the
+#: helpers, and its prompt lines, #1548.) Only the request's prefix changes; a chat's stored
+#: messages replay unchanged.
+HARNESS_ID: Final = "chat-v11"
 #: Helpers that may run at once, at most, whatever the setting says.
 MAX_PARALLEL_AGENTS_LIMIT: Final = 12
 #: The second reads, third reads and critic calls of one message that run at once.
@@ -232,7 +233,9 @@ PREWARM_MAX_TOKENS: Final = 16
 _READING_TOOLS: Final = frozenset({"bash_tool", "view", "zoom", "create_file", "str_replace"})
 #: The lead's tools that run at the same time within one reply (its finding and ledger tools stay
 #: in order, so the findings table and the ledger keep the order they were recorded in).
-LEAD_PARALLEL_TOOLS: Final = frozenset({"bash_tool", "view", "zoom", "review_results"})
+LEAD_PARALLEL_TOOLS: Final = frozenset(
+    {"bash_tool", "view", "zoom", "read_under_markup", "review_results"}
+)
 #: The output allowance of a forced last call (a wrap-up or a final answer at the cap).
 WRAP_UP_MAX_TOKENS: Final = 8000
 FINAL_MAX_TOKENS: Final = 16000
@@ -1069,6 +1072,8 @@ class ChatEngine:
             return tools.str_replace(raw, step)
         if name == "verify_value":
             return tools.verify_value(raw, step)
+        if name == "read_under_markup":
+            return tools.read_under_markup(raw, step, by)
         if not helper:
             if name == "present_files":
                 return tools.present_files(raw, step)
