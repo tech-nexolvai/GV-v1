@@ -110,6 +110,7 @@ def _world(  # type: ignore[no-untyped-def]
     settings: Mapping[str, Any] | None = None,
     pdf: bytes = PDF,
     pages: int = 62,
+    route: str = "anthropic",
 ) -> Iterator[World]:
     from fastapi.testclient import TestClient
     from sqlalchemy.orm import Session
@@ -220,7 +221,7 @@ def _world(  # type: ignore[no-untyped-def]
         )
         app.dependency_overrides[chat_runtime] = lambda: ChatRuntime(
             choice=(
-                ProviderChoice("anthropic", "fake-key-not-used")
+                ProviderChoice(route, "fake-key-not-used")  # type: ignore[arg-type]
                 if available
                 else ProviderChoice("openrouter", None, "No AI provider key is set on this server.")
             ),
@@ -582,8 +583,134 @@ def test_the_models_offered_and_the_caps(postgres_engine, tmp_path) -> None:  # 
         "claude-opus-5-5",
         "claude-sonnet-5-5",
         "claude-haiku-5-5",
+        "claude-fable-5-1",
     ]
     assert models["models"][1]["thinking_off_max_effort"] == "high"
+    # #1577: Fable 5.1 always thinks, takes every effort, and is not the default.
+    assert models["models"][3] == {
+        "id": "claude-fable-5-1",
+        "label": "Claude Fable 5.1",
+        "default": False,
+        "efforts": ["low", "medium", "high", "xhigh", "max"],
+        "default_effort": "high",
+        "thinking": "always",
+        "thinking_off_max_effort": None,
+    }
+
+
+def test_fable_is_not_offered_on_the_openrouter_route(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    with _world(postgres_engine, tmp_path, route="openrouter") as world:
+        models = world.client.get("/api/v1/assistant/models").json()
+        assert "claude-fable-5-1" not in [m["id"] for m in models["models"]]
+        chat_id = world.chat()
+        response = world.client.post(
+            f"/api/v1/chats/{chat_id}/messages",
+            json={"text": "hi", "model": "claude-fable-5-1", "effort": "high", "thinking": True},
+        )
+        assert response.status_code == 422 and response.json()["error"] == "choice_refused"
+        assert "Pick Claude Opus 5.5" in response.json()["message"]
+        assert world.provider.calls == []
+
+
+def _lead(raw: str) -> dict[str, Any]:
+    sent: dict[str, Any] = json.loads(raw)
+    return sent
+
+
+def test_a_chat_keeps_its_system_prompt_and_tools_after_a_newer_harness(postgres_engine, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """#1577 (preserved thinking): a server restarted on a newer harness id sends an existing
+    chat the system prompt and tools it began with, byte for byte, and brings the newer prompt as
+    one appended note, once."""
+    from app.review.assistant import chat_harness
+
+    provider = ScriptedProvider(
+        lead=[
+            reply(thinking("First."), text("Page 4 has a sink.")),
+            reply(thinking("Second."), text("Yes.")),
+            reply(text("Still yes.")),
+        ]
+    )
+    with _world(postgres_engine, tmp_path, provider=provider) as world:
+        chat_id = world.chat()
+        world.ask(chat_id, "What is on page 4?")
+        first = _lead(provider.lead_calls[0])
+        kept = json.loads((world.root / chat_id / chat_harness.HARNESS_FILE).read_text())
+        assert kept["system"] == first["system"][0]["text"]
+        # The server restarts on a newer harness: another lead prompt, one more tool.
+        newer_tools = [*chat_harness.LEAD_TOOLS, {"name": "new_tool", "input_schema": {}}]
+        monkeypatch.setattr(chat_harness, "HARNESS_ID", "chat-v99")
+        monkeypatch.setattr(chat_harness, "LEAD_SYSTEM_PROMPT", "A NEWER LEAD PROMPT")
+        monkeypatch.setattr(chat_harness, "LEAD_TOOLS", tuple(newer_tools))
+        world.ask(chat_id, "Is it the same sink?")
+        world.ask(chat_id, "And now?")
+
+        second, third = _lead(provider.lead_calls[1]), _lead(provider.lead_calls[2])
+        for later in (second, third):
+            assert json.dumps(later["system"]) == json.dumps(first["system"])
+            assert json.dumps(strip_cache_control(later["tools"])) == json.dumps(
+                strip_cache_control(first["tools"])
+            )
+        # Append-only: the earlier turns, thinking included, go out unchanged.
+        before = strip_cache_control(first["messages"])
+        assert json.dumps(strip_cache_control(second["messages"])[: len(before)]) == json.dumps(
+            before
+        )
+        # The newer prompt arrives once, in the next question's turn, before the question.
+        asked = strip_cache_control(second["messages"][-1])["content"]
+        assert asked[0]["text"].startswith("[GV Review update chat-v99]")
+        assert "A NEWER LEAD PROMPT" in asked[0]["text"]
+        assert asked[-1] == {"type": "text", "text": "Is it the same sink?"}
+        notes = [
+            block
+            for message in third["messages"]
+            for block in (message["content"] if isinstance(message["content"], list) else [])
+            if str(block.get("text", "")).startswith("[GV Review update")
+        ]
+        assert len(notes) == 1
+
+
+def test_a_chat_begun_before_its_harness_was_kept_goes_on_with_the_safety_net(postgres_engine, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """An older chat has no kept prompt: it goes on with today's (kept from then on), and its
+    replayed thinking rides the `drop_block` safety net instead of failing the call."""
+    from app.review.assistant import chat_harness
+
+    provider = ScriptedProvider(
+        lead=[reply(thinking("First."), text("One.")), reply(text("Two.")), reply(text("Three."))]
+    )
+    with _world(postgres_engine, tmp_path, provider=provider) as world:
+        chat_id = world.chat()
+        world.ask(chat_id, "First question")
+        (world.root / chat_id / chat_harness.HARNESS_FILE).unlink()
+        monkeypatch.setattr(chat_harness, "LEAD_SYSTEM_PROMPT", "TODAY'S LEAD PROMPT")
+        status, _events = world.ask(chat_id, "Second question")
+        world.ask(chat_id, "Third question")
+
+        assert status == 200
+        second, third = _lead(provider.lead_calls[1]), _lead(provider.lead_calls[2])
+        assert second["system"][0]["text"] == "TODAY'S LEAD PROMPT"
+        assert third["system"][0]["text"] == "TODAY'S LEAD PROMPT"
+        assert second["thinking"]["block_binding"] == {"prefix_mismatch_behavior": "drop_block"}
+        assert "thinking-binding-controls-2026-08-01" in second["betas"]
+        # Its earlier thinking is still sent unchanged (the API decides; nothing is stripped).
+        assert second["messages"][1]["content"][0]["type"] == "thinking"
+        assert (world.root / chat_id / chat_harness.HARNESS_FILE).exists()
+
+
+def test_a_fable_message_carries_fables_turn_note(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from app.review.assistant.chat_tools import FABLE_NOTE
+
+    provider = ScriptedProvider(lead=[reply(text("Done."), model="claude-fable-5-1")])
+    with _world(postgres_engine, tmp_path, provider=provider) as world:
+        chat_id = world.chat()
+        status, events = world.ask(chat_id, "Which items are wrong?", model="claude-fable-5-1")
+
+        assert status == 200
+        sent = _lead(provider.lead_calls[0])
+        assert sent["model"] == "claude-fable-5-1"
+        texts = [b["text"] for b in strip_cache_control(sent["messages"][-1])["content"]]
+        assert texts[-2:] == [FABLE_NOTE, "Which items are wrong?"]
+        stored = _named(events, "message_end")[0]["message"]
+        assert stored["model"] == "claude-fable-5-1" and stored["text"] == "Done."
 
 
 def test_the_real_runtime_never_shows_a_key(postgres_engine, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -616,7 +743,7 @@ def test_each_call_is_recorded_for_the_usage_page_labelled_by_chat(postgres_engi
         ).all()
         assert len(rows) == 2
         assert {row.template_id for row in rows} == {f"chat:{chat_id}"}
-        assert {row.prompt_id for row in rows} == {"review-assistant-chat-anthropic-chat-v15"}
+        assert {row.prompt_id for row in rows} == {"review-assistant-chat-anthropic-chat-v16"}
         assert all(row.package_revision_id == world.revision_id for row in rows)
         assert rows[0].outcome != "ok" and rows[1].outcome == "ok"
         models = world.client.get(f"/api/v1/assistant/models?package_id={world.package_id}").json()

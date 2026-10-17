@@ -116,7 +116,7 @@ describe('the composer', () => {
     await user.keyboard('{Enter}');
     const menu = await screen.findByRole('menu');
     expect(within(menu).getAllByRole('menuitemradio').map((row) => row.textContent)).toEqual([
-      'Opus 5.5Most capable for complex work',
+      'Opus 5.5Best for most review work',
       'Sonnet 5.5Smart, efficient model for everyday use',
       'Haiku 5.5Fastest model for daily tasks',
     ]);

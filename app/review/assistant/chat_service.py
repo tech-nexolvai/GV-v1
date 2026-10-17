@@ -67,6 +67,7 @@ from app.review.assistant.chat_findings import (
     products_words,
     read_listing,
 )
+from app.review.assistant.chat_harness import chat_harness, update_note
 from app.review.assistant.chat_memory import add_note, notes_block, set_notes
 from app.review.assistant.chat_provider import ChatProvider
 from app.review.assistant.chat_request import ChatModel
@@ -85,7 +86,13 @@ from app.review.assistant.chat_store import (
     stored_chat_spend,
     unanswered_questions,
 )
-from app.review.assistant.chat_tools import MAX_AGENTS, ChatTools, ResultsLoader, named_pages
+from app.review.assistant.chat_tools import (
+    FABLE_NOTE,
+    MAX_AGENTS,
+    ChatTools,
+    ResultsLoader,
+    named_pages,
+)
 from app.review.assistant.chat_unknowns import asks_for_the_rest, last_unknowns, work_list_note
 from app.review.assistant.full_check_plan import read_page_map
 from app.review.assistant.plan_check import (
@@ -859,6 +866,9 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             if job.continue_from is None
             else _interrupted(session, job.chat_id, job.continue_from)
         )
+    # The lead's system prompt and tools: the ones the chat began with (#1577), so the history's
+    # thinking stays valid after a restart on a newer harness; a newer prompt comes as a note.
+    harness = chat_harness(workspace.root, replayed=bool(replay))
     user_content: list[dict[str, Any]] = []
     # The files are listed in the first message the model sees (an earlier message that got no
     # answer is not in its history), and again when the set's PDFs changed.
@@ -866,6 +876,9 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
         user_content.append(
             {"type": "text", "text": uploaded_files_text(listing, changed=changed and bool(replay))}
         )
+    newer = update_note(harness, replay)
+    if newer is not None:
+        user_content.append({"type": "text", "text": newer})
     focus = None
     if job.products is not None:
         marker = workspace.root / "chat_products.json"
@@ -887,6 +900,8 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
         user_content.append({"type": "text", "text": work_list})
     if earlier is not None:
         user_content.append({"type": "text", "text": continue_note(*earlier, mode=job.mode)})
+    if job.model.short == "fable":
+        user_content.append({"type": "text", "text": FABLE_NOTE})
     question = FULL_CHECK_INSTRUCTION if job.mode == "full_check" else job.text
     user_content.append({"type": "text", "text": question})
 
@@ -962,6 +977,8 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
         package_spent=package_spent,
         read_picture=read_picture,
         cancel=run.cancel,
+        lead_system=harness.system,
+        lead_tools=harness.tools,
     )
     run.engine = engine
     engine.book.earlier = dict(earlier_found)

@@ -75,6 +75,7 @@ from app.review.assistant.tool_schema import box_schema, point_schema
 
 __all__ = [
     "COMPARE_ROUNDS",
+    "FABLE_NOTE",
     "HELPERS_PER_TURN",
     "HELPER_FOOTER_MARK",
     "HELPER_SYSTEM_PROMPT",
@@ -200,6 +201,16 @@ A list: a short list. A comparison: report_finding for each item, then at most t
 never repeat the findings as a table. No preamble, no disclaimer, no restating the question. Say in \
 one line what you did not check when it matters. An unclear question: ask one short question \
 back. Never cite internal ticket numbers. Write in markdown."""
+
+#: Claude Fable 5.1's own lines (#1577, Anthropic's Fable 5.1 guide: act once the facts are in, and
+#: ground every progress claim in a tool result). Sent in the question's turn, not the system prompt:
+#: a chat's system prompt is the same for every model it runs on (`chat_harness`).
+FABLE_NOTE: Final = (
+    "For Claude Fable 5.1: when you have enough information to act, act; do not re-derive facts "
+    "this chat already established or describe options you will not take. Before you state "
+    "progress or a result, check it against a tool result from this chat, and say plainly what is "
+    "not yet checked."
+)
 
 HELPER_SYSTEM_PROMPT: Final = f"""\
 You are a helper agent working for Claude inside GV Review, on part of one drawing set of \
