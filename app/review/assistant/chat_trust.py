@@ -360,6 +360,9 @@ def apply_checks(
     # The third read and the critic start again too (#1498): they come after the lead's answer.
     out["reads"] = None
     out["critic"] = None
+    # Nobody has decided on a finding being written (#1521): the reviewer's decision is added when
+    # the stored answer is read.
+    out["decision"] = None
     out["inches"] = {
         "architect": _number(architect),
         "vendor": _number(vendor),
