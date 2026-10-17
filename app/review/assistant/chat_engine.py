@@ -80,6 +80,7 @@ from app.review.assistant.chat_findings import (
     products_words,
     read_listing,
 )
+from app.review.assistant.chat_progress import FullCheckProgress
 from app.review.assistant.chat_provider import ChatProvider, ProviderFailure, failure_from
 from app.review.assistant.chat_read_review import review_reads
 from app.review.assistant.chat_request import (
@@ -105,6 +106,7 @@ from app.review.assistant.chat_scope import (
     scoped_recorded,
     widened,
 )
+from app.review.assistant.chat_summary import code_summary, needs_code_summary
 from app.review.assistant.chat_tools import (
     HELPER_SYSTEM_PROMPT,
     HELPER_TOOLS,
@@ -525,6 +527,8 @@ class ChatEngine:
         self.blocks: list[dict[str, Any]] = []
         self._discarded: set[int] = set()
         self._lock = threading.RLock()
+        self._progress: FullCheckProgress | None = None
+        self._progress_index: int | None = None
         self._spent = 0
         self._attempt_blocks: list[int] = []
         self._streams: set[Any] = set()
@@ -1094,6 +1098,8 @@ class ChatEngine:
             else:
                 self.blocks[index] = {"type": "finding", "finding": finding}
         self.emit("finding", {"index": index, "finding": json.loads(json.dumps(finding))})
+        if self._progress is not None:
+            self._progress.changed()
 
     def _show_coverage(self, coverage: dict[str, Any]) -> None:
         with self._lock:
@@ -1104,6 +1110,20 @@ class ChatEngine:
             else:
                 self.blocks[index] = {"type": "coverage", "coverage": coverage}
         self.emit("coverage", {"index": index, "coverage": json.loads(json.dumps(coverage))})
+        if self._progress is not None:
+            self._progress.changed()
+
+    def _show_progress(self, progress: dict[str, Any]) -> None:
+        """Full check: the progress numbers, one block replaced in place, and `progress`."""
+        with self._lock:
+            block = {"type": "progress", "progress": progress}
+            if self._progress_index is None:
+                self.blocks.append(block)
+                self._progress_index = len(self.blocks) - 1
+            else:
+                self.blocks[self._progress_index] = block
+            index = self._progress_index
+        self.emit("progress", {"index": index, "progress": dict(progress)})
 
     def _finding_tool(self, name: str, raw: object, by: str) -> ToolResult:
         """`report_finding`, `update_finding`, `drop_finding`, `set_coverage`: no step on the
@@ -1560,6 +1580,8 @@ class ChatEngine:
     def _trust_phase(self) -> None:
         """After the lead's answer: second reads, round links, then the trust report."""
         book = self.book
+        if self._progress is not None:
+            self._progress.phase("checking")
         try:
             self._ledger_findings()
         except Exception:  # noqa: BLE001 - the answer goes on without the ledger's findings
@@ -1713,13 +1735,14 @@ class ChatEngine:
                 },
             ]
 
-    def _full_check_files(self) -> None:
-        """Full check: the cloud drawing and the check report, made by code, as chat files."""
+    def _full_check_files(self) -> list[str]:
+        """Full check: the cloud drawing and the check report, made by code, as chat files (the
+        names of those made)."""
         register: Callable[[str, str, int, str, str], dict[str, Any]] | None = (
             self.tools.register_file
         )
         if register is None:
-            return
+            return []
         book, workspace = self.book, self.tools.workspace
         findings = book.live()
         report: dict[str, Any] = next(
@@ -1765,16 +1788,50 @@ class ChatEngine:
             ("cloud drawing", drawing),
             ("check report", checked),
         )
+        names: list[str] = []
         for what, make in makers:
             file_id = str(uuid4())
             out = workspace.files / file_id
             try:
                 made = make(out)
                 register(file_id, made.name, made.size, "application/pdf", made.sha256)
+                names.append(made.name)
             except Exception as failed:  # noqa: BLE001 - told plainly in the answer
                 _log.warning("assistant chat %s failed: %s", what, type(failed).__name__)
                 out.unlink(missing_ok=True)
                 self._add_text(f"*The {what} could not be made for this answer.*")
+        return names
+
+    def _close_full_check(self, text: str, stopped: str | None, cap_hit: str | None) -> str:
+        """Full check (#1518): the two files, also when it stopped early with findings; then
+        code's summary (no AI call) when the AI did not write its own. Returns the answer's text."""
+        names: list[str] = []
+        if self._progress is not None:
+            self._progress.phase("writing")
+            self._progress.stop()
+        if stopped not in ("cancelled", "error") or self.book.live():
+            try:
+                names = self._full_check_files()
+            except Exception:  # noqa: BLE001 - the answer still ends, with its summary
+                _log.exception("assistant chat full-check files failed")
+        if not needs_code_summary(text, stopped):
+            return text
+        book, settings = self.book, self.settings
+        summary = code_summary(
+            book.live(),
+            coverage=book.coverage_map()["counts"] if book.coverage_used else None,
+            page_count=self.tools.page_count,
+            products=settings.products,
+            stopped=stopped,
+            cap_hit=cap_hit,
+            cap_usd=cap_text(settings.message_cap_micros),
+            budget_usd=cap_text(settings.package_cap_micros),
+            turns=settings.lead_max_turns,
+            files=names,
+        )
+        index = self._add_block({"type": "text", "text": summary, "by": "code"})
+        self.emit("text_delta", {"index": index, "text": summary, "by": "code"})
+        return f"{text}\n\n{summary}" if text.strip() else summary
 
     # ---- helpers (`Agent`) -----------------------------------------------------------------------
 
@@ -2064,13 +2121,37 @@ class ChatEngine:
 
     def run(self) -> MessageOutcome:
         """The lead's loop. Never raises: every way it ends is a stored outcome."""
+        if self.settings.mode == "full_check":
+            book = self.book
+            self._progress = FullCheckProgress(
+                lambda: (
+                    book.live(),
+                    book.coverage_map()["counts"] if book.coverage_used else None,
+                    self.tools.page_count,
+                ),
+                self._show_progress,
+            )
+            self._progress.start()
+        try:
+            return self._ended()
+        finally:
+            if self._progress is not None:
+                self._progress.stop()
+
+    def _ended(self) -> MessageOutcome:
         try:
             return self._run()
         except Exception as failed:  # noqa: BLE001 - the message is still stored, plainly
             _log.exception("assistant chat message failed: %s", type(failed).__name__)
             self.tools.sandbox.kill_all()
+            text = ""
+            if self.settings.mode == "full_check":
+                try:
+                    text = self._close_full_check("", "error", None)
+                except Exception:  # noqa: BLE001 - stored without the summary
+                    _log.exception("assistant chat full-check summary failed")
             return MessageOutcome(
-                text="",
+                text=text,
                 blocks=self.stored_blocks(),
                 api_content=[],
                 cost_micros=self.spent,
@@ -2225,7 +2306,7 @@ class ChatEngine:
             # answer); a note is written only when there is no answer to show.
             stopped = forced
             break
-        if stopped in ("cost_cap", "turn_limit") and not text:
+        if stopped in ("cost_cap", "turn_limit") and not text and settings.mode != "full_check":
             text = _stop_note(stopped, self.settings, cap_hit)
             self._add_text(text)
         elif stopped in ("cancelled", "error"):
@@ -2245,8 +2326,8 @@ class ChatEngine:
                 self._trust_phase()
             except Exception:  # noqa: BLE001 - the answer is stored without its trust report
                 _log.exception("assistant chat trust report failed")
-            if settings.mode == "full_check" and not self.cancel.is_set():
-                self._full_check_files()
+        if settings.mode == "full_check":
+            text = self._close_full_check(text, stopped, cap_hit)
         try:
             self._accuracy()
         except Exception:  # noqa: BLE001 - the answer is stored without its score

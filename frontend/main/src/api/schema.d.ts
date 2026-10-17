@@ -94,6 +94,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/chats/{chat_id}/messages/{message_id}/cloud-drawing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * The cloud drawing (and check report) made again from the reviewer's decisions
+         * @description Red clouds only at the findings the reviewer agreed with ("✗ Vendor: X — Needs: Y
+         *     (architect Z)"); not-yet-decided, not-a-problem and right items listed on the notes page and in
+         *     the report, never clouded; "Reviewed by <name>" once every item needing a decision was decided,
+         *     else the draft stamp. A new cloud drawing and check report each time (older files are kept);
+         *     returns the cloud drawing.
+         */
+        post: operations["cloud_drawing_api_v1_chats__chat_id__messages__message_id__cloud_drawing_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/chats/{chat_id}/messages/{message_id}/events": {
         parameters: {
             query?: never;
@@ -127,6 +151,26 @@ export interface paths {
         get: operations["findings_spreadsheet_api_v1_chats__chat_id__messages__message_id__findings_csv_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/chats/{chat_id}/messages/{message_id}/findings/{finding_id}/decision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * The reviewer agrees with a finding, or marks it not a problem (kept append-only)
+         * @description One more decision row, by the signed-in person; the latest per finding is the one read.
+         */
+        post: operations["decide_finding_api_v1_chats__chat_id__messages__message_id__findings__finding_id__decision_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4356,6 +4400,8 @@ export interface components {
             /** Title */
             title: string | null;
         };
+        /** @enum {string} */
+        ChatDecision: "agree" | "not_a_problem";
         /** ChatDismissedOut */
         ChatDismissedOut: {
             /** Reason */
@@ -4465,6 +4511,31 @@ export interface components {
             result: "passed" | "objects" | "unsure";
         };
         /**
+         * ChatFindingDecisionIn
+         * @description The reviewer's ✓ Agree / ✗ Not a problem on one finding (#1521).
+         */
+        ChatFindingDecisionIn: {
+            decision: components["schemas"]["ChatDecision"];
+            /** Note */
+            note?: string | null;
+        };
+        /**
+         * ChatFindingDecisionOut
+         * @description A finding's latest decision: what, by whom (the signed-in principal), when.
+         */
+        ChatFindingDecisionOut: {
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
+            /** By */
+            by: string;
+            decision: components["schemas"]["ChatDecision"];
+            /** Note */
+            note?: string | null;
+        };
+        /**
          * ChatFindingDroppedBlock
          * @description A finding the assistant dropped (in the place its finding block was).
          */
@@ -4524,6 +4595,8 @@ export interface components {
              */
             created_by: string;
             critic?: components["schemas"]["ChatFindingCriticOut"] | null;
+            /** @description The reviewer's latest decision on this finding (#1521); null: not decided. */
+            decision?: components["schemas"]["ChatFindingDecisionOut"] | null;
             /**
              * Evidence Kind
              * @description observed: printed on the drawing at its spots (text layer); derived: worked out by code (rule, arithmetic, ledger, mm/inch); inferred: AI reading only.
@@ -4853,7 +4926,7 @@ export interface components {
             /** @description The answer's accuracy by code (its `accuracy` block, scored again with today's calibration: see `rescored`); null on older answers. */
             accuracy?: components["schemas"]["ChatAccuracyOut"] | null;
             /** Blocks */
-            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"] | components["schemas"]["ChatScopeBlock"])[] | null;
+            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"] | components["schemas"]["ChatScopeBlock"] | components["schemas"]["ChatProgressBlock"])[] | null;
             /** @description With `stopped: cost_cap`: `message` (this answer's cap) or `package` (the drawing set's budget ran out). */
             cap_hit?: components["schemas"]["ChatCapHit"] | null;
             /** Cost Usd */
@@ -4966,6 +5039,42 @@ export interface components {
             running_message_id?: string | null;
             /** Title */
             title: string | null;
+        };
+        /** ChatProgressBlock */
+        ChatProgressBlock: {
+            progress: components["schemas"]["ChatProgressOut"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "progress";
+        };
+        /**
+         * ChatProgressOut
+         * @description A full check's progress, by code: "Checking page 12 of 60 · 8 wrong so far · about 6 min
+         *     left". Sent as `progress` events while it runs; the last one is stored.
+         */
+        ChatProgressOut: {
+            /** Decision So Far */
+            decision_so_far: number;
+            /**
+             * Eta Seconds
+             * @description Time left at the pace so far; null before any page is done.
+             */
+            eta_seconds?: number | null;
+            /** Pages Done */
+            pages_done: number;
+            /** Pages Total */
+            pages_total: number;
+            /**
+             * Phase
+             * @enum {string}
+             */
+            phase: "reading" | "checking" | "writing";
+            /** Right So Far */
+            right_so_far: number;
+            /** Wrong So Far */
+            wrong_so_far: number;
         };
         /** ChatRecordedDifferenceOut */
         ChatRecordedDifferenceOut: {
@@ -5202,6 +5311,11 @@ export interface components {
         };
         /** ChatTextBlock */
         ChatTextBlock: {
+            /**
+             * By
+             * @description "code": written by GV Review, not the AI (the full check's summary when the AI did not finish its own).
+             */
+            by?: "code" | null;
             /** Text */
             text: string;
             /**
@@ -11310,6 +11424,50 @@ export interface operations {
             };
         };
     };
+    cloud_drawing_api_v1_chats__chat_id__messages__message_id__cloud_drawing_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                chat_id: string;
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatFileOut"];
+                };
+            };
+            /** @description No such stored answer in this chat (or no access). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `message_running`: the answer is still being written; `uploads_missing`: the chat has no copy of the set's PDFs. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `no_findings`: the answer has no findings. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     follow_message_api_v1_chats__chat_id__messages__message_id__events_get: {
         parameters: {
             query?: never;
@@ -11370,6 +11528,57 @@ export interface operations {
             };
             /** @description No such stored answer in this chat (or no access). */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decide_finding_api_v1_chats__chat_id__messages__message_id__findings__finding_id__decision_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                chat_id: string;
+                message_id: string;
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChatFindingDecisionIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatFindingDecisionOut"];
+                };
+            };
+            /** @description No such stored answer or finding in this chat (or no access). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `message_running`: the answer is still being written. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

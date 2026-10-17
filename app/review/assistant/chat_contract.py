@@ -30,12 +30,16 @@ __all__ = [
     "ChatCreatedOut",
     "ChatFileOut",
     "ChatFindingBlock",
+    "ChatFindingDecisionIn",
+    "ChatFindingDecisionOut",
     "ChatFindingDroppedBlock",
     "ChatFindingOut",
     "ChatListOut",
     "ChatMessageIn",
     "ChatMessageOut",
     "ChatOut",
+    "ChatProgressBlock",
+    "ChatProgressOut",
     "ChatStepBlock",
     "ChatStepOut",
     "ChatSummaryOut",
@@ -152,6 +156,11 @@ class ChatTextBlock(BaseModel):
 
     type: Literal["text"]
     text: str
+    by: Literal["code"] | None = Field(
+        default=None,
+        description='"code": written by GV Review, not the AI (the full check\'s summary when the '
+        "AI did not finish its own).",
+    )
 
 
 class ChatStepBlock(BaseModel):
@@ -260,6 +269,29 @@ class ChatFindingCriticOut(BaseModel):
     model: str | None = None
 
 
+type ChatDecision = Literal["agree", "not_a_problem"]
+
+
+class ChatFindingDecisionIn(BaseModel):
+    """The reviewer's ✓ Agree / ✗ Not a problem on one finding (#1521)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    decision: ChatDecision
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class ChatFindingDecisionOut(BaseModel):
+    """A finding's latest decision: what, by whom (the signed-in principal), when."""
+
+    model_config = ConfigDict(frozen=True)
+
+    decision: ChatDecision
+    note: str | None = None
+    by: str
+    at: datetime
+
+
 class ChatFindingOut(BaseModel):
     """One difference the assistant reported, with code-made evidence and checks."""
 
@@ -349,6 +381,10 @@ class ChatFindingOut(BaseModel):
         default=None, description="Every reading, when a third read settled the second (#1498)."
     )
     critic: ChatFindingCriticOut | None = None
+    decision: ChatFindingDecisionOut | None = Field(
+        default=None,
+        description="The reviewer's latest decision on this finding (#1521); null: not decided.",
+    )
 
 
 class ChatFindingBlock(BaseModel):
@@ -782,6 +818,30 @@ class ChatUnknownsBlock(BaseModel):
     unknowns: list[ChatUnknownOut]
 
 
+class ChatProgressOut(BaseModel):
+    """A full check's progress, by code: "Checking page 12 of 60 · 8 wrong so far · about 6 min
+    left". Sent as `progress` events while it runs; the last one is stored."""
+
+    model_config = ConfigDict(frozen=True)
+
+    phase: Literal["reading", "checking", "writing"]
+    pages_done: int
+    pages_total: int
+    wrong_so_far: int
+    decision_so_far: int
+    right_so_far: int
+    eta_seconds: int | None = Field(
+        default=None, description="Time left at the pace so far; null before any page is done."
+    )
+
+
+class ChatProgressBlock(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["progress"]
+    progress: ChatProgressOut
+
+
 ChatBlock = Annotated[
     ChatThinkingBlock
     | ChatTextBlock
@@ -793,7 +853,8 @@ ChatBlock = Annotated[
     | ChatCiteBlock
     | ChatAccuracyBlock
     | ChatUnknownsBlock
-    | ChatScopeBlock,
+    | ChatScopeBlock
+    | ChatProgressBlock,
     Field(discriminator="type"),
 ]
 

@@ -1,0 +1,121 @@
+"""The full check's live progress line, worked out by code (#1518).
+
+While a full check runs, the screen shows one line, not a log: "Checking page 12 of 60 · 8 wrong
+so far · about 6 min left". This module works those numbers out from the findings and the
+coverage and hands them on as a `progress` event: on each finding or coverage change, on each
+phase change, and every few seconds while nothing changes (so the time left keeps moving). The
+engine stores the last one as the message's `progress` block, so a reload shows it too.
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any, Final
+
+from app.review.assistant.chat_trust import cloud_kind
+
+#: Seconds between progress events while nothing changes.
+TICK_SECONDS: Final = 5.0
+
+PHASES: Final = ("reading", "checking", "writing")
+
+#: (live findings, coverage counts or None when coverage was never set, the set's page count).
+Snapshot = Callable[[], tuple[Sequence[Mapping[str, Any]], Mapping[str, Any] | None, int]]
+
+
+def progress_numbers(
+    findings: Sequence[Mapping[str, Any]],
+    coverage: Mapping[str, Any] | None,
+    page_count: int,
+    phase: str,
+    elapsed: float,
+) -> dict[str, Any]:
+    """The progress line's numbers. Pages done: pages accounted for in the coverage (else pages
+    with a finding); time left: the pages still to do at the pace so far (null before any page)."""
+    if coverage is not None:
+        total = int(coverage.get("total") or 0)
+        done = total - int(coverage.get("not_opened") or 0)
+    else:
+        total = page_count
+        done = len({int(f.get("page") or 0) for f in findings if f.get("page")})
+    total = max(total, done)
+    eta: int | None = None
+    if done > 0 and elapsed > 0:
+        eta = round((total - done) * elapsed / done)
+    return {
+        "phase": phase,
+        "pages_done": done,
+        "pages_total": total,
+        "wrong_so_far": sum(1 for f in findings if cloud_kind(f) == "wrong"),
+        "decision_so_far": sum(1 for f in findings if cloud_kind(f) == "check"),
+        "right_so_far": sum(1 for f in findings if cloud_kind(f) is None),
+        "eta_seconds": eta,
+    }
+
+
+class FullCheckProgress:
+    """Publishes the progress numbers when they change, and on a timer while they do not."""
+
+    def __init__(
+        self,
+        snapshot: Snapshot,
+        publish: Callable[[dict[str, Any]], None],
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        every: float = TICK_SECONDS,
+    ) -> None:
+        self._snapshot = snapshot
+        self._publish = publish
+        self._clock = clock
+        self._every = every
+        self._started = clock()
+        self._phase = "reading"
+        self._last: dict[str, Any] | None = None
+        self._last_at = self._started
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._ticker: threading.Thread | None = None
+
+    def current(self) -> dict[str, Any]:
+        findings, coverage, pages = self._snapshot()
+        return progress_numbers(
+            findings, coverage, pages, self._phase, self._clock() - self._started
+        )
+
+    def changed(self, *, force: bool = False) -> None:
+        """Publish when the numbers (other than the time left) changed, or when forced."""
+        try:
+            numbers = self.current()
+        except Exception:  # noqa: BLE001 - progress never stops the check
+            return
+        with self._lock:
+            last = self._last
+            same = last is not None and {**last, "eta_seconds": None} == {
+                **numbers,
+                "eta_seconds": None,
+            }
+            if same and not force:
+                return
+            self._last, self._last_at = numbers, self._clock()
+        self._publish(numbers)
+
+    def phase(self, name: str) -> None:
+        self._phase = name
+        self.changed(force=True)
+
+    def start(self) -> None:
+        self.changed(force=True)
+        self._ticker = threading.Thread(target=self._tick, name="chat-progress", daemon=True)
+        self._ticker.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._ticker is not None:
+            self._ticker.join(timeout=1)
+
+    def _tick(self) -> None:
+        while not self._stop.wait(min(1.0, self._every)):
+            if self._clock() - self._last_at >= self._every:
+                self.changed(force=True)

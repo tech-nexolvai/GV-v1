@@ -62,6 +62,7 @@ __all__ = [
     "make_report_file",
     "markup_name",
     "page_ranges",
+    "place_findings",
     "products_words",
     "read_listing",
 ]
@@ -1031,12 +1032,28 @@ def make_markup_file(
     finding's vendor box (else its architect box) when that box is on the vendor's file, the draft
     stamp on page 1, and every finding listed again on the notes page. Raises `LookupError` when
     the chat has no copy of the set's PDFs."""
+    name, placed = place_findings(workspace, findings)
+    drawing = import_module("app.review.assistant.chat_drawing")
+    drawing.markup_pdf(workspace.uploads / name, placed, out)
+    data = out.read_bytes()
+    return MarkupFile(markup_name(name, kind), len(data), hashlib.sha256(data).hexdigest())
+
+
+type Placed = tuple[int, Mapping[str, Any], int | None, tuple[float, ...] | None, str]
+
+
+def place_findings(
+    workspace: ChatWorkspace, findings: Sequence[Mapping[str, Any]]
+) -> tuple[str, list[Placed]]:
+    """The vendor's file name, and each finding numbered with the page and box to mark on it (its
+    vendor box, else its architect box, when that box is on the vendor's file), or `None` and why
+    not. Raises `LookupError` when the chat has no copy of the set's PDFs."""
     listing = read_listing(workspace)
     main = main_upload(listing)
     if main is None or not (workspace.uploads / str(main["name"])).is_file():
         raise LookupError("no uploads")
     name = str(main["name"])
-    placed: list[tuple[int, Mapping[str, Any], int | None, tuple[float, ...] | None, str]] = []
+    placed: list[Placed] = []
     for number, finding in enumerate(findings, start=1):
         box = finding.get("vendor_box") or finding.get("arch_box")
         if not isinstance(box, Mapping):
@@ -1050,10 +1067,7 @@ def make_markup_file(
         coords = tuple(float(box[key]) for key in ("x0", "y0", "x1", "y1"))
         where = f"Marked on page {box['page']}."
         placed.append((number, finding, int(box["page"]), coords, where))
-    drawing = import_module("app.review.assistant.chat_drawing")
-    drawing.markup_pdf(workspace.uploads / name, placed, out)
-    data = out.read_bytes()
-    return MarkupFile(markup_name(name, kind), len(data), hashlib.sha256(data).hexdigest())
+    return name, placed
 
 
 def make_report_file(
