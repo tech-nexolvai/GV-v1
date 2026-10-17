@@ -4894,7 +4894,7 @@
             "title": "Compared"
           },
           "created_by": {
-            "description": "\"lead\", \"helper:<n>\", \"gv_review\" (made by code from a recorded result), or \"ledger\" (made by code from the reading ledger).",
+            "description": "\"lead\", \"helper:<n>\", \"gv_review\" (made by code from a recorded result), \"ledger\" (made by code from the reading ledger), or \"consistency\" (made by code from the vendor's own drawings: a string that does not add up, a span printed twice).",
             "title": "Created By",
             "type": "string"
           },
@@ -8472,9 +8472,11 @@
           },
           "scope": {
             "default": "item",
+            "description": "page: a whole page; item: one value; set: the drawing set itself (an area on one side only, a round or a sheet the set lacks), not counted against the answer.",
             "enum": [
               "page",
-              "item"
+              "item",
+              "set"
             ],
             "title": "Scope",
             "type": "string"
@@ -8489,7 +8491,10 @@
               "not_opened",
               "missing_job_value",
               "pairing_uncertain",
-              "refused_alignment"
+              "refused_alignment",
+              "no_counterpart",
+              "missing_round",
+              "not_in_set"
             ],
             "title": "Why",
             "type": "string"
@@ -21930,6 +21935,56 @@
           }
         },
         "summary": "Stop the message",
+        "tags": [
+          "assistant chats"
+        ]
+      }
+    },
+    "/api/v1/chats/{chat_id}/consistency": {
+      "post": {
+        "description": "The \"+\" menu's Vendor consistency check (#1584), by code only (no AI call, $0): every\ndimension string the drawing proves is one string added up, two values printed for one span\ncompared, and the areas, rounds and indexed sheets the set lacks listed. Stored in the chat as\na question and its answer (findings with code's proof, the \"not checked\" list), so the cloud\ndrawing and the CSV work on it as on any answer. Returns the stored answer.",
+        "operationId": "consistency_check_api_v1_chats__chat_id__consistency_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chat_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Chat Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatMessageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No such chat (or no access)."
+          },
+          "409": {
+            "description": "`message_running`: a message is being answered in this chat; `uploads_missing`: the drawing set has no PDFs; `pack_building`: the set is still being read (ask again in a minute)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The vendor consistency check: the vendor's drawings against themselves (code, $0)",
         "tags": [
           "assistant chats"
         ]
