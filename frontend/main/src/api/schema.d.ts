@@ -4493,6 +4493,7 @@ export interface components {
          * @description The same item on another page or round, folded into this finding (#1554).
          */
         ChatFindingAlsoOnOut: {
+            arch_box?: components["schemas"]["ChatBoxOut"] | null;
             /** Architect */
             architect?: string | null;
             /** Finding Id */
@@ -4505,6 +4506,8 @@ export interface components {
             round?: number | null;
             /** Vendor */
             vendor?: string | null;
+            /** @description Its spot on that page: the cloud drawing marks it there too. */
+            vendor_box?: components["schemas"]["ChatBoxOut"] | null;
             /** Vs Page */
             vs_page?: number | null;
         };
@@ -4841,6 +4844,11 @@ export interface components {
             page: number;
             /** Parts */
             parts?: string[] | null;
+            /**
+             * Parts Sum
+             * @description Source vendor_arithmetic: code's sum of the parts, in inches (#1554).
+             */
+            parts_sum?: string | null;
             /** Printed Total */
             printed_total?: string | null;
             /**

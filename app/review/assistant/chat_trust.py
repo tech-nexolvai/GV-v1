@@ -77,6 +77,7 @@ __all__ = [
     "cloud_kind",
     "drawn_ink_checks",
     "findings_csv",
+    "inch_words",
     "judged",
     "ledger_witness",
     "load_module",
@@ -87,6 +88,7 @@ __all__ = [
     "recorded_missing",
     "rescored",
     "round_statuses",
+    "shown_counts",
     "states_drawing_values",
     "trust_level",
     "trust_report",
@@ -391,10 +393,23 @@ def apply_checks(
             None if architect is None or vendor is None else _number(vendor - architect)
         ),
     }
+    # The vendor's own string (#1554): code's sum of its parts, for the row and the notes.
+    out["parts_sum"] = _parts_sum(finding)
     # Set for a "same" item at the finish (`mark_compared`): not seen is not right.
     out.setdefault("compared", None)
     out.setdefault("not_compared_why", None)
     return judged(out)
+
+
+def _parts_sum(finding: Mapping[str, Any]) -> str | None:
+    """Code's sum of a vendor-arithmetic finding's parts, in inches, or `None`."""
+    parts = finding.get("parts")
+    if finding.get("source") != "vendor_arithmetic" or not isinstance(parts, list) or not parts:
+        return None
+    values = [_inches(str(part)) for part in parts]
+    if any(value is None for value in values):
+        return None
+    return _number(sum((v for v in values if v is not None), Decimal(0)))
 
 
 def _ledger_made(finding: Mapping[str, Any]) -> str | None:
@@ -881,9 +896,53 @@ def cloud_kind(finding: Mapping[str, Any]) -> str | None:
 
 
 def needs_text(finding: Mapping[str, Any]) -> str:
-    """What the vendor's value needs to be: code's inches when it read the architect's value."""
+    """What the vendor's value needs to be: code's inches when it read the architect's value. The
+    vendor's own string (#1554) needs no architect value: its parts add up to code's sum."""
+    if finding.get("source") == "vendor_arithmetic":
+        summed = _decimal(finding.get("parts_sum"))
+        if summed is not None:
+            return f"parts add up to {inch_words(summed)}"
     inches = (finding.get("inches") or {}).get("architect")
     return f'{inches}"' if inches else str(finding.get("architect"))
+
+
+def _decimal(value: object) -> Decimal | None:
+    try:
+        return Decimal(str(value)) if value is not None else None
+    except ArithmeticError:
+        return None
+
+
+def inch_words(value: Decimal) -> str:
+    """Inches as a reviewer writes them: `80 1/8"`, `3/4"`, `96"` (to the nearest 1/16)."""
+    sixteenths = int((abs(value) * 16).to_integral_value())
+    whole, rest = divmod(sixteenths, 16)
+    if not rest:
+        return f'{whole}"'
+    numerator, denominator = rest, 16
+    while numerator % 2 == 0:
+        numerator //= 2
+        denominator //= 2
+    return f'{whole} {numerator}/{denominator}"' if whole else f'{numerator}/{denominator}"'
+
+
+def shown_counts(findings: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+    """The counts every view shows (#1554): Wrong, Your decision, Right and Not compared, from one
+    final list. Right is a `same` item that was compared; a `same` item not seen on both sides is
+    Not compared (`mark_compared`), never Right. The screen counts the same way (`findingCounts`).
+    """
+    counts = {"wrong": 0, "decision": 0, "right": 0, "not_compared": 0}
+    for finding in findings:
+        kind = cloud_kind(finding)
+        if kind == "wrong":
+            counts["wrong"] += 1
+        elif kind == "check":
+            counts["decision"] += 1
+        elif finding.get("compared") is False:
+            counts["not_compared"] += 1
+        else:
+            counts["right"] += 1
+    return counts
 
 
 # ---- the accuracy score (CONTRACT5) -------------------------------------------------------------

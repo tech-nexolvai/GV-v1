@@ -51,7 +51,13 @@ from reportlab.platypus import (  # type: ignore[import-untyped]
 )
 
 from app.review.assistant.chat_findings import decision_help_lines
-from app.review.assistant.chat_trust import CLOUD_WORDS, TRUST_WORDS, cloud_kind, needs_text
+from app.review.assistant.chat_trust import (
+    CLOUD_WORDS,
+    TRUST_WORDS,
+    cloud_kind,
+    needs_text,
+    shown_counts,
+)
 from app.review.assistant.cloud_layout import (
     MAX_CLOUD_PT,
     NOTE_LINES,
@@ -80,6 +86,7 @@ __all__ = [
     "Entry",
     "Mark",
     "Section",
+    "also_marks",
     "check_report_pdf",
     "clone_pdf",
     "cloud_kind",
@@ -328,6 +335,8 @@ class Mark:
     """A cloud, a numbered marker and a note; else the numbered marker only."""
     value: str
     """The value printed at the box (the vendor's, or the architect's on an architect box)."""
+    extra: bool = False
+    """The same item on another page (#1554, `also_on`): marked there too, listed once."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -523,22 +532,22 @@ def _printed(source: Path, mark: Mark, box: Box) -> list[Box]:
     return spots
 
 
-def _spots(source: Path, marks: Sequence[Mark]) -> dict[int, tuple[Box, Box | None]]:
+def _spots(source: Path, marks: Sequence[Mark]) -> dict[tuple[int, int], tuple[Box, Box | None]]:
     """Where to cloud each mark (or put its marker), by number: the value's printed text when code
     finds it near a big box, else the box cut down to `MAX_CLOUD_PT` (with the whole box to
     outline). Clouds are snapped first; the search stops after `_SNAP_BUDGET_S` seconds."""
     budget = _Budget(_SNAP_BUDGET_S)
-    out: dict[int, tuple[Box, Box | None]] = {}
+    out: dict[tuple[int, int], tuple[Box, Box | None]] = {}
     for mark in sorted(marks, key=lambda m: (not m.cloud, m.page, m.number)):
         x0, y0, x1, y1 = mark.box
         box = (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
         if max(box[2] - box[0], box[3] - box[1]) > _SNAP_FROM_PT and budget.left():
             found = snapped(_printed(source, mark, box))
             if found is not None:
-                out[mark.number] = (found, None)
+                out[(mark.number, mark.page)] = (found, None)
                 continue
         cut, was_cut = capped(box)
-        out[mark.number] = (cut, box if was_cut else None)
+        out[(mark.number, mark.page)] = (cut, box if was_cut else None)
     return out
 
 
@@ -875,7 +884,7 @@ def draw_markup(
                 document = pdfium.PdfDocument(clean.getvalue())
             try:
                 for number in sorted(by_page):
-                    placed = [_Placed(m, *spots[m.number]) for m in by_page[number]]
+                    placed = [_Placed(m, *spots[(m.number, m.page)]) for m in by_page[number]]
                     page = pdf.pages[number - 1]
                     _layout(_shown_size(page), placed, _ink(document, number - 1), number == 1)
                     laid[number] = placed
@@ -896,8 +905,9 @@ def draw_markup(
             _overlay(pdf, page, draw)
         marked = io.BytesIO()
         pdf.save(marked, deterministic_id=True)
+        # One picture per item on the notes pages: its own page's spot, never an also-on copy.
         wanted = {
-            number: [(item.mark.number, item.spot) for item in placed]
+            number: [(item.mark.number, item.spot) for item in placed if not item.mark.extra]
             for number, placed in laid.items()
         }
         pictures = _thumbnails(marked.getvalue(), wanted) if wanted else {}
@@ -982,18 +992,50 @@ SETTLED_WORDS: Final[Mapping[str, str]] = {
 
 
 def counts_line(findings: Sequence[Mapping[str, Any]], *, clouded_decisions: bool) -> str:
-    kinds = [cloud_kind(finding) for finding in findings]
+    counts = shown_counts(findings)
     decision = "amber clouds" if clouded_decisions else "amber numbers, not clouded"
     tags = [trust_tag(finding) for finding in findings if cloud_kind(finding) == "wrong"]
     unconfirmed = ", ".join(
         f"{tags.count(words)} {words}" for words in dict.fromkeys(t for t in tags if t)
     )
+    unseen = f", {counts['not_compared']} not compared" if counts["not_compared"] else ""
     return (
-        f"{len(kinds)} items: {kinds.count('wrong')} wrong (red clouds"
+        f"{len(findings)} items: {counts['wrong']} wrong (red clouds"
         f"{'; ' + unconfirmed if unconfirmed else ''}), "
-        f"{kinds.count('check')} your decision ({decision}), "
-        f"{kinds.count(None)} right (listed, not marked)."
+        f"{counts['decision']} your decision ({decision}), "
+        f"{counts['right']} right{unseen} (listed, not marked)."
     )
+
+
+def also_marks(
+    number: int,
+    finding: Mapping[str, Any],
+    kind: str,
+    cloud: bool,
+    source: Path,
+    pages: int | None = None,
+) -> list[Mark]:
+    """The same item on its other pages (#1554, `also_on`): a mark at each listed spot on this
+    file, with that page's own vendor value, so a Wrong or agreed item is clouded on every page it
+    was found on. Listed once on the notes pages (the item's own entry)."""
+    out: list[Mark] = []
+    for other in finding.get("also_on") or []:
+        if not isinstance(other, Mapping):
+            continue
+        box = other.get("vendor_box") or other.get("arch_box")
+        if not isinstance(box, Mapping) or box.get("file") not in (None, source.name):
+            continue
+        try:
+            page = int(box["page"])
+            coords = (float(box["x0"]), float(box["y0"]), float(box["x1"]), float(box["y1"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if page < 1 or (pages is not None and page > pages) or page == finding.get("page"):
+            continue
+        value = str(other.get("vendor") or finding.get("vendor") or "")
+        shown = {**finding, "page": page, "vendor": other.get("vendor") or finding.get("vendor")}
+        out.append(Mark(number, shown, page, coords, kind, cloud, value, extra=True))
+    return out
 
 
 def markup_pdf(
@@ -1017,11 +1059,15 @@ def markup_pdf(
     drawn: list[Entry] = []
     elsewhere: list[Entry] = []
     right: list[Entry] = []
+    unseen: list[Entry] = []
     for number, finding, page_number, box, where in findings:
         kind = cloud_kind(finding)
         if kind is None:
-            right.append(
-                Entry(number, finding, None, [entry_lines(finding)[0], "Right: not clouded."])
+            # Not seen on both sides is not right (`mark_compared`): listed apart, as on screen.
+            compared = finding.get("compared") is not False
+            words = "Right: not clouded." if compared else "Not compared: not clouded."
+            (right if compared else unseen).append(
+                Entry(number, finding, None, [entry_lines(finding)[0], words])
             )
             continue
         if page_number is not None and box is not None and not 1 <= page_number <= pages:
@@ -1032,6 +1078,7 @@ def markup_pdf(
             continue
         cloud = kind == "wrong" or cloud_decisions
         marks.append(Mark(number, finding, page_number, box, kind, cloud, _box_value(finding)))
+        marks += also_marks(number, finding, kind, cloud, source, pages)
         drawn.append(Entry(number, finding, kind, lines, picture=True))
     drawn.sort(key=lambda e: (int(e.finding.get("page") or 0), e.number))
     right.sort(key=lambda e: (int(e.finding.get("page") or 0), e.number))
@@ -1054,6 +1101,7 @@ def markup_pdf(
         Section("On the drawing", drawn),
         Section("Not on the drawing", elsewhere, by_page=False),
         Section("Right (not marked)", right),
+        *((Section("Not compared (not marked)", unseen),) if unseen else ()),
         *((Section("Settled automatically by GV Review (not marked)", folded),) if folded else ()),
     )
     draw_markup(source, marks, out, title=MARKUP_TITLE, front=front, sections=sections, base=base)
@@ -1134,7 +1182,12 @@ def check_report_pdf(
     number = {id(f): n for n, f in enumerate(findings, start=1)}
     wrong = by_product([f for f in findings if cloud_kind(f) == "wrong"])
     check = by_product([f for f in findings if cloud_kind(f) == "check"])
-    right = by_product([f for f in findings if cloud_kind(f) is None])
+    right = by_product(
+        [f for f in findings if cloud_kind(f) is None and f.get("compared") is not False]
+    )
+    unseen = by_product(
+        [f for f in findings if cloud_kind(f) is None and f.get("compared") is False]
+    )
     per_product: dict[str, list[int]] = {}
     for kinds, chosen in enumerate((wrong, check, right)):
         for f in chosen:
@@ -1203,6 +1256,25 @@ def check_report_pdf(
             [26, 70, 34, 210, 110, 190],
         ),
     ]
+    if unseen:
+        sections.append(
+            (
+                f"Not compared ({len(unseen)})",
+                ["AI", "Product", "Page", "Item", "Value", "Why"],
+                [
+                    [
+                        number[id(f)],
+                        group(f),
+                        f.get("page"),
+                        f.get("item"),
+                        f.get("vendor"),
+                        "not seen on both sides, so not counted as right",
+                    ]
+                    for f in unseen
+                ],
+                [26, 70, 34, 210, 110, 190],
+            )
+        )
     if settled:
         sections.append(
             (

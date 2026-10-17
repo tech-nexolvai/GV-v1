@@ -12,7 +12,7 @@ import { ResultNumbers } from '@/components/chat/chat-full-check';
 import { AssistantMessage } from '@/components/chat/chat-message';
 import type { ChatFinding, ChatResolver } from '@/lib/chat-api';
 import { applyChatEvent, evidenceOf, type ViewMessage } from '@/lib/chat-messages';
-import { alsoOnWords, type FindingCounts } from '@/lib/chat-findings';
+import { alsoOnWords, findingLine, type FindingCounts } from '@/lib/chat-findings';
 import { finding, OPUS } from './fixtures/chat';
 
 const RESOLVER: ChatResolver = {
@@ -102,5 +102,38 @@ describe('fewer decisions (#1554)', () => {
       expect(label.querySelector('.truncate')).toBeNull();
       expect(label.className).toContain('min-h-[2.5em]');
     }
+  });
+
+  it('reads the vendor’s own string as a sum, never "needs nothing"', () => {
+    const string = finding('s1', {
+      page: 9, item: 'Front height string', source: 'vendor_arithmetic', architect: 'n/a', vendor: '80',
+      parts: ['4', '10 1/8', '66'], printed_total: '80', parts_sum: '80.125', inches: { architect: null, vendor: '80', difference: null },
+    });
+    expect(findingLine(string)).toMatchObject({ vendorVerb: 'prints', verb: 'parts add up to', reference: { text: '80 1/8 in' }, difference: '−1/8 in' });
+    render(<AssistantMessage message={answer({ findings: [string] })} chatId="c-1" models={[OPUS]} messageCapUsd="5.00" />);
+    const line = document.querySelector('[data-slot="chat-finding-line"]')?.textContent ?? '';
+    expect(line).toContain('Vendor prints 80 in');
+    expect(line).toContain('parts add up to 80 1/8 in');
+    expect(line).not.toContain('needs');
+  });
+
+  it('shows the same counts in the headline, the cards, the sections and the settled group', () => {
+    render(<AssistantMessage message={answer({ findings: FINDINGS, resolver: RESOLVER, mode: 'full_check', products: ['countertop'] })} chatId="c-1" models={[OPUS]} messageCapUsd="5.00" fullCheck />);
+    const node = screen.getByRole('article', { name: 'Answer' });
+    const wrong = FINDINGS.filter((f) => f.status === 'different').length;
+    const decide = FINDINGS.filter((f) => f.status === 'check').length;
+    const headline = node.querySelector('[data-slot="chat-summary-headline"]')?.textContent ?? '';
+    expect(headline).toContain(`${wrong} wrong`);
+    expect(headline).toContain(`${decide} needs your decision`);
+    const card = (kind: string) => node.querySelector(`[data-kpi="${kind}"]`)?.textContent ?? '';
+    expect(card('different')).toContain(String(wrong));
+    expect(card('check')).toContain(String(decide));
+    expect(within(node).getByRole('heading', { name: new RegExp(`^What’s wrong\\s*${wrong}$`) })).toBeTruthy();
+    expect(within(node).getByRole('heading', { name: new RegExp(`^Your decision\\s*${decide}$`) })).toBeTruthy();
+    // The settled group counts the final list too, whatever the block's own numbers say.
+    const stale = { ...RESOLVER, before: { wrong: 0, decision: 99, right: 0 }, after: { wrong: 0, decision: 42, right: 0 } };
+    render(<AssistantMessage message={answer({ key: 'b', id: 'msg-2', findings: FINDINGS, resolver: stale })} chatId="c-1" models={[OPUS]} messageCapUsd="5.00" />);
+    const groups = [...document.querySelectorAll('[data-slot="chat-findings-settled"] button')].map((b) => b.textContent ?? '');
+    for (const text of groups) expect(text).toContain(`${decide + RESOLVER.settled.length} to decide became ${decide}`);
   });
 });

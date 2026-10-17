@@ -209,7 +209,7 @@ def test_a_big_box_without_its_value_is_cut_down_to_two_and_a_half_inches(tmp_pa
 
     sheet = _sheet(tmp_path / "sheet.pdf", ink=False)
     mark = Mark(1, _finding(vendor='99"'), 1, (100.0, 100.0, 700.0, 300.0), "wrong", True, '99"')
-    spot, area = chat_drawing._spots(sheet, [mark])[1]
+    spot, area = chat_drawing._spots(sheet, [mark])[(1, 1)]
     assert spot == (310.0, 110.0, 490.0, 290.0) and area == (100.0, 100.0, 700.0, 300.0)
     out = tmp_path / "out.pdf"
     markup_pdf(sheet, _placed([_finding(vendor='99"', vendor_box=_box(100, 100, 700, 300))]), out)

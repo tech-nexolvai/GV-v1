@@ -73,6 +73,7 @@ __all__ = [
     "ResolverContext",
     "SharperRead",
     "page_areas",
+    "recount_words",
     "resolve",
     "resolve_answer",
     "settings_in_force",
@@ -284,8 +285,9 @@ class SharperRead:
     sure: bool
 
 
-type Verify = Callable[[Mapping[str, Any], str], str]
-"""(box, value) -> `match` / `mismatch` / `cannot_read`: code's $0 witness (`verify_value`)."""
+type Verify = Callable[[Mapping[str, Any], str], str | Mapping[str, Any]]
+"""(box, value) -> `match` / `mismatch` / `cannot_read`, or `verify_value`'s whole answer (its
+`result`, `route` text / drawn, ...): code's $0 witness."""
 type Read = Callable[[Mapping[str, Any]], SharperRead | None]
 """A finding -> its sharper read (a model call within the cap), `None` when none could be made."""
 type Legend = Callable[[Sequence[int], Sequence[str]], str | None]
@@ -380,6 +382,9 @@ class _Settle:
     outcome: Outcome
     method: str
     how: str
+    checks: Mapping[str, Any] = field(default_factory=dict)
+    """The witness code found, recorded on the finding's checks so its trust follows the rule in
+    `witness.py`: printed (both values read at their spots), arithmetic, or GV's rule."""
 
 
 def _other_trades_tags(finding: Mapping[str, Any]) -> _Settle | None:
@@ -448,12 +453,14 @@ def _filler_limits(finding: Mapping[str, Any], settings: Mapping[str, str]) -> _
             "wrong",
             "gv_limits",
             f"GV's filler limits are {limits} ({where}); the vendor draws {listed} fillers.",
+            {"rule": "agrees"},
         )
     listed = ", ".join(_inches_words(w) for w in sorted(set(widths)))
     return _Settle(
         "right",
         "gv_limits",
         f"GV's filler limits are {limits} ({where}); the vendor's fillers ({listed}) are within.",
+        {"rule": "agrees"},
     )
 
 
@@ -475,6 +482,7 @@ def _vendor_sum(finding: Mapping[str, Any]) -> _Settle | KeepReason | None:
             "right",
             "vendor_sum",
             f"code adds the vendor's parts to {_inches_words(summed)}, the printed total.",
+            {"arithmetic": "adds_up"},
         )
     if abs(off) <= SLIP_LIMIT:
         return _Settle(
@@ -482,30 +490,48 @@ def _vendor_sum(finding: Mapping[str, Any]) -> _Settle | KeepReason | None:
             "vendor_sum",
             f"code adds the vendor's parts to {_inches_words(summed)}; the vendor prints "
             f"{_inches_words(printed)} ({_inches_words(abs(off))} apart).",
+            {"arithmetic": "does_not_add_up"},
         )
     return "vendor_disagrees"
 
 
-def _printed(finding: Mapping[str, Any], side: str, value: str, ctx: ResolverContext) -> bool:
-    """Whether `value` is printed at the finding's spot on `side`: code's own checks first (the
-    text route, the drawn-ink route), else `verify_value` now."""
+def _witness(
+    finding: Mapping[str, Any], side: str, value: str, ctx: ResolverContext
+) -> dict[str, Any] | None:
+    """`value` is printed at the finding's spot on `side`: the check fields that record it (empty
+    when the finding's checks already do), else `None`. Code's own checks first (the text route,
+    the drawn-ink route), else `verify_value` now. A text read is `printed_<side>: match`; a read of
+    the vendor's drawn ink is kept as `verify_<side>` (`witness.py`: OCR confirms only with a
+    second independent read)."""
     checks = finding.get("checks") or {}
     key = "architect" if side == "architect" else "vendor"
+    wanted = to_inches(value)
     if checks.get(f"printed_{key}") == "match":
-        return True
+        return {}
     verified = checks.get(f"verify_{key}")
     if isinstance(verified, Mapping) and verified.get("result") == "match":
         claimed = to_inches(str(verified.get("value") or ""))
-        if claimed is not None and claimed == to_inches(value):
-            return True
+        if claimed is not None and claimed == wanted:
+            return {}
     box = finding.get("arch_box" if side == "architect" else "vendor_box")
     if ctx.verify is None or not isinstance(box, Mapping):
-        return False
+        return None
     try:
-        return ctx.verify(box, value) == "match"
+        found = ctx.verify(box, value)
     except Exception as failed:  # noqa: BLE001 - an unread spot is simply not printed for us
         _log.warning("resolver verify_value failed: %s", type(failed).__name__)
-        return False
+        return None
+    if isinstance(found, Mapping):
+        if found.get("result") != "match":
+            return None
+        if found.get("route") == "drawn":
+            return {f"verify_{key}": dict(found)}
+        return {f"printed_{key}": "match", f"verify_{key}": dict(found)}
+    return {f"printed_{key}": "match"} if found == "match" else None
+
+
+def _printed(finding: Mapping[str, Any], side: str, value: str, ctx: ResolverContext) -> bool:
+    return _witness(finding, side, value, ctx) is not None
 
 
 def _side_value(finding: Mapping[str, Any], side: str) -> str | None:
@@ -534,14 +560,18 @@ def _printed_vs_printed(finding: Mapping[str, Any], ctx: ResolverContext) -> _Se
     a, v = to_inches(architect), to_inches(vendor)
     if a is None or v is None:
         return None
-    if not _printed(finding, "architect", architect, ctx):
+    seen_architect = _witness(finding, "architect", architect, ctx)
+    if seen_architect is None:
         return None
-    if not _printed(finding, "vendor", vendor, ctx):
+    seen_vendor = _witness(finding, "vendor", vendor, ctx)
+    if seen_vendor is None:
         return None
     both = f"code reads both values at their spots: architect {architect}, vendor {vendor}"
+    seen = {**seen_architect, **seen_vendor}
     if abs(a - v) <= PRECISION:
-        return _Settle("right", "printed_vs_printed", f"{both}; the same size.")
-    return _Settle("wrong", "printed_vs_printed", f"{both} ({_inches_words(abs(a - v))} apart).")
+        return _Settle("right", "printed_vs_printed", f"{both}; the same size.", seen)
+    apart = f"{both} ({_inches_words(abs(a - v))} apart)."
+    return _Settle("wrong", "printed_vs_printed", apart, seen)
 
 
 def _newest_round(finding: Mapping[str, Any], ctx: ResolverContext) -> _Settle | None:
@@ -566,7 +596,9 @@ def _newest_round(finding: Mapping[str, Any], ctx: ResolverContext) -> _Settle |
     )
 
 
-def _prototype_prints_it(finding: Mapping[str, Any]) -> _Settle | None:
+def _prototype_prints_it(finding: Mapping[str, Any], ctx: ResolverContext) -> _Settle | None:
+    """The brand prototype prints the vendor's value and the lead says it matches: Right. When
+    code also reads both values at their spots, that is recorded as the printed witness."""
     if finding.get("source") != "brand_prototype":
         return None
     if not re.search(r"\bmatch(?:es|ed)?\b", str(finding.get("why") or ""), re.IGNORECASE):
@@ -576,10 +608,22 @@ def _prototype_prints_it(finding: Mapping[str, Any]) -> _Settle | None:
         return None
     for token in dimension_tokens(finding.get("architect")):
         if to_inches(token) == vendor:
+            seen_architect = _witness(finding, "architect", token, ctx)
+            vendor_value = claim_value(finding.get("vendor"))
+            seen_vendor = (
+                _witness(finding, "vendor", vendor_value, ctx) if vendor_value is not None else None
+            )
+            seen = (
+                {**seen_architect, **seen_vendor}
+                if seen_architect is not None and seen_vendor is not None
+                else {}
+            )
+            read = "; code reads both at their spots" if seen else ""
             return _Settle(
                 "right",
                 "prototype_prints_it",
-                f"the brand prototype prints {token}, the vendor's {_inches_words(vendor)}.",
+                f"the brand prototype prints {token}, the vendor's {_inches_words(vendor)}{read}.",
+                seen,
             )
     return None
 
@@ -632,7 +676,8 @@ def _sharper_read(finding: Mapping[str, Any], ctx: ResolverContext) -> _Settle |
     if architect is None or _SCALED.search(str(finding.get("architect") or "")):
         return None
     a = to_inches(architect)
-    if a is None or not _printed(finding, "architect", architect, ctx):
+    seen_architect = _witness(finding, "architect", architect, ctx) if a is not None else None
+    if a is None or seen_architect is None:
         return None
     ctx.reads += 1
     try:
@@ -645,15 +690,20 @@ def _sharper_read(finding: Mapping[str, Any], ctx: ResolverContext) -> _Settle |
     v = to_inches(read.vendor)
     if v is None:
         return None
-    if not _printed(finding, "vendor", read.vendor, ctx):
-        return f"a sharper read sees {read.vendor} on the vendor's drawing, but code could not confirm it"
+    seen_vendor = _witness(finding, "vendor", read.vendor, ctx)
+    if seen_vendor is None:
+        return (
+            f"a sharper read sees {read.vendor} on the vendor's drawing; code could not confirm it"
+        )
+    seen = {**seen_architect, **seen_vendor}
     both = (
         f"a sharper read (GV's markup removed) sees {read.vendor} on the vendor's drawing and code "
         f"confirms it is printed there; the architect prints {architect}"
     )
     if abs(a - v) <= PRECISION:
-        return _Settle("right", "sharper_read", f"{both}: the same size.")
-    return _Settle("wrong", "sharper_read", f"{both} ({_inches_words(abs(a - v))} apart).")
+        return _Settle("right", "sharper_read", f"{both}: the same size.", seen)
+    apart = f"{both} ({_inches_words(abs(a - v))} apart)."
+    return _Settle("wrong", "sharper_read", apart, seen)
 
 
 # ---- what stays, and its one question ----------------------------------------------------------
@@ -829,6 +879,8 @@ def _also(finding: Mapping[str, Any]) -> dict[str, Any]:
         "item": finding.get("item"),
         "vendor": finding.get("vendor"),
         "architect": finding.get("architect"),
+        "vendor_box": finding.get("vendor_box"),
+        "arch_box": finding.get("arch_box"),
     }
 
 
@@ -969,7 +1021,7 @@ def _settle_one(
     for later in (
         _printed_vs_printed(finding, ctx),
         _newest_round(finding, ctx),
-        _prototype_prints_it(finding),
+        _prototype_prints_it(finding, ctx),
     ):
         if later is not None:
             return later, reason, None
@@ -1037,6 +1089,8 @@ def resolve(findings: Sequence[Mapping[str, Any]], ctx: ResolverContext) -> Reso
             changed.pop(finding_id, None)
             continue
         current["status"] = "different" if settle.outcome == "wrong" else "same"
+        if settle.checks:
+            current["checks"] = {**(current.get("checks") or {}), **settle.checks}
         current["settled"] = {
             "outcome": settle.outcome,
             "method": settle.method,
@@ -1093,6 +1147,64 @@ def resolve(findings: Sequence[Mapping[str, Any]], ctx: ResolverContext) -> Reso
         "cost_usd": "0.00",
     }
     return Resolution(changed=list(changed.values()), absorbed=absorbed, block=block)
+
+
+# ---- the counts in the answer's words -----------------------------------------------------------
+
+_NUMBER_WORDS: Final = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty"]
+_COUNT_KIND: Final = (
+    r"wrong|different|incorrect|need(?:s)?\s+(?:your|a|the\s+reviewer'?s)\s+(?:decision|call)"
+    r"|your\s+decision|to\s+decide|to\s+check|right|correct|match(?:es)?"
+)
+_COUNT: Final = re.compile(
+    rf"\b(?P<n>\d{{1,4}}|{'|'.join(_NUMBER_WORDS)})"
+    r"(?P<mid>\s+(?:more\s+|other\s+)?(?:(?:items?|things?|findings?|differences?|values?)\s+)?"
+    r"(?:(?:are|is|look|looks|were|was|that|which)\s+)?(?:still\s+)?)"
+    rf"(?P<kind>{_COUNT_KIND})(?![-\w])",
+    re.IGNORECASE,
+)
+#: A count word followed by one of these is a place, not a count ("the 3 right-hand doors").
+_NOT_A_COUNT_AFTER: Final = re.compile(
+    r"\s+(?:side|hand|end|edge|wall|bay|panel|door|drawer|corner|angle)s?\b", re.IGNORECASE
+)
+_NOT_A_COUNT_BEFORE: Final = re.compile(r"(?:\bp\.|\bpages?|\bround|#)\s*$", re.IGNORECASE)
+
+
+def _kind_of(words: str) -> str:
+    low = words.lower()
+    if low.startswith(("wrong", "different", "incorrect")):
+        return "wrong"
+    if low.startswith(("right", "correct", "match")):
+        return "right"
+    return "decision"
+
+
+def recount_words(text: str, counts: Mapping[str, int]) -> str:
+    """`text` (the AI's own words, written before code settled anything) with every count of Wrong,
+    Your decision or Right it states set to the final list's (#1554): "Six items are wrong" becomes
+    "Four items are wrong" when four are. A number that names a page, a round or a place is left
+    alone. Code never shows a count that differs from the list the screen counts."""
+
+    def fix(match: re.Match[str]) -> str:
+        before = text[: match.start()]
+        after = text[match.end() :]
+        if _NOT_A_COUNT_BEFORE.search(before) or _NOT_A_COUNT_AFTER.match(after):
+            return match.group(0)
+        kind = _kind_of(match.group("kind"))
+        value = int(counts.get(kind, 0))
+        given = match.group("n")
+        if given.isdigit() or value >= len(_NUMBER_WORDS):
+            number = str(value)
+        else:
+            number = _NUMBER_WORDS[value]
+            if given[:1].isupper():
+                number = number.capitalize()
+        words = match.group("kind")
+        if re.match(r"needs?\b", words, re.IGNORECASE):
+            words = re.sub(r"^needs?", "needs" if value == 1 else "need", words, flags=re.IGNORECASE)
+        return f"{number}{match.group('mid')}{words}"
+
+    return _COUNT.sub(fix, text)
 
 
 # ---- the engine's hook ---------------------------------------------------------------------------
@@ -1235,7 +1347,8 @@ def resolve_answer(engine: Any) -> list[dict[str, Any]]:
                 engine._show_dropped(finding_id, reason)
         for finding in result.changed:
             if isinstance(finding.get("checks"), Mapping):
-                finding["trust_level"] = trust.trust_level(finding["checks"], finding.get("status"))
+                # Trust, evidence kind and witnesses again, from the checks the resolver added.
+                finding = trust.judged(finding)
             if book.replace(finding):
                 engine._show_finding(finding)
     block = dict(result.block)

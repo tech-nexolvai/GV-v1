@@ -543,7 +543,7 @@ def test_the_cloud_goes_round_the_label(workspace: ChatWorkspace) -> None:
 
     spots = chat_drawing._spots(workspace.uploads / "set.pdf", [mark])
 
-    assert spots[1] == (box, None)
+    assert spots[(1, 1)] == (box, None)
 
 
 # ---- the full check's to-do ----------------------------------------------------------------------

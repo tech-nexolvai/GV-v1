@@ -358,6 +358,8 @@ export interface ChatFinding {
   keep_reason?: KeepReason | null;
   /** #1554: the same item on other pages or rounds, folded into this one. */
   also_on?: FindingAlsoOn[] | null;
+  /** #1554, `source: vendor_arithmetic`: code's sum of the parts, in inches ("80.125"). */
+  parts_sum?: string | null;
   /**
    * #1569: how much a Wrong (or Your-decision) item matters, by code: ordering only, never a status
    * or a colour. `rank` 1 is the biggest of its status; the cloud drawing and the report use the
@@ -417,6 +419,9 @@ export interface FindingAlsoOn {
   item?: string | null;
   vendor?: string | null;
   architect?: string | null;
+  /** Its spot on that page: the cloud drawing marks it there too. */
+  vendor_box?: FindingBox | null;
+  arch_box?: FindingBox | null;
 }
 
 /** #1554: one Your-decision item GV Review settled by itself (the folded group's line). */

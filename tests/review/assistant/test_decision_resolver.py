@@ -708,3 +708,237 @@ def test_the_sharper_read_goes_through_the_engine_and_stops_at_its_cap(
     # $0.20 each: a third would pass the $0.50 cap, so it is not made.
     assert read({"id": "F3", "item": "Top width", "vendor_box": box}) is None
     assert len(calls) == 2
+
+
+# ---- the counts agree everywhere (#1554 review) -----------------------------------------------
+
+
+def test_the_ai_s_counts_are_set_to_the_final_list() -> None:
+    from app.review.assistant.decision_resolver import recount_words
+
+    counts = {"wrong": 4, "decision": 1, "right": 12, "not_compared": 0}
+    said = (
+        "Six items are wrong; three need your decision and 9 match. On page 3 right of the sink, "
+        "the 2 right-hand doors are fine. Round 2 wrong values: see p.2 wrong."
+    )
+    assert recount_words(said, counts) == (
+        "Four items are wrong; one needs your decision and 12 match. On page 3 right of the sink, "
+        "the 2 right-hand doors are fine. Round 2 wrong values: see p.2 wrong."
+    )
+    assert recount_words("43 wrong, 60 to check, 24 right.", counts) == (
+        "4 wrong, 1 to check, 12 right."
+    )
+
+
+def test_every_count_shown_comes_from_the_final_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The AI's words, the resolver block, the trust report, the cloud drawing and the report all
+    count the list left after the resolver: a count that differs anywhere fails."""
+    import re
+
+    from pypdf import PdfReader
+
+    from app.review.assistant.chat_trust import shown_counts
+    from tests.review.assistant.chat_fakes import ScriptedProvider, reply, text, tool
+    from tests.review.assistant.test_chat_engine import Harness
+    from tests.review.assistant.test_chat_engine_findings import _full_check, _modules
+    from tests.review.assistant.test_chat_findings import finding_input, workspace_with_pdf
+
+    _modules(monkeypatch)
+    workspace_with_pdf(tmp_path)
+    same_item = {
+        "item": "Counter overall width",
+        "status": "check",
+        "architect": "no width printed",
+        "why": "nothing to compare",
+    }
+    filler = {"item": "End filler width", "status": "check", "architect": "GV rule 1-2"}
+    provider = ScriptedProvider(
+        lead=[
+            reply(
+                tool("r1", "report_finding", finding_input(**same_item, vendor='80"', page=2)),
+                tool("r2", "report_finding", finding_input(**same_item, vendor='80"', page=3)),
+                tool("r3", "report_finding", finding_input(**filler, vendor='5" filler', page=3)),
+                stop="tool_use",
+            ),
+            reply(text("Two items are wrong and three need your decision; nothing is right.")),
+        ]
+    )
+    harness = Harness(tmp_path, provider)
+    harness.workspace.skills.mkdir(parents=True, exist_ok=True)
+    (harness.workspace.skills / "rules.md").write_text(RULES_MD, encoding="utf-8")
+    _full_check(harness)
+
+    outcome = harness.run()
+
+    live = [b["finding"] for b in outcome.blocks if b["type"] == "finding"]
+    final = shown_counts(live)
+    assert final["decision"] == 1 and final["wrong"] == 3  # 2 recorded + the filler
+    # The AI's words.
+    words = " ".join(b["text"] for b in outcome.blocks if b["type"] == "text")
+    assert "Three items are wrong and one needs your decision" in words
+    assert outcome.text.startswith("Three items are wrong and one needs your decision")
+    # The resolver block.
+    resolver = next(b["resolver"] for b in outcome.blocks if b["type"] == "resolver")
+    assert resolver["after"] == {k: final[k] for k in ("wrong", "decision", "right")}
+    assert resolver["before"]["decision"] == resolver["after"]["decision"] + len(
+        resolver["settled"]
+    )
+    # The report's cover and the cloud drawing's counts line.
+    report = "".join(
+        page.extract_text()
+        for page in PdfReader(str(harness.workspace.files / harness.files[1]["id"])).pages
+    )
+    assert (
+        f"{final['wrong']} wrong, {final['decision']} need your decision, {final['right']} right"
+        in report
+    )
+    assert f"What's wrong ({final['wrong']})" in report
+    assert f"Your decision ({final['decision']})" in report
+    drawing = PdfReader(str(harness.workspace.files / harness.files[0]["id"]))
+    notes = " ".join(page.extract_text() for page in drawing.pages[-2:])
+    found = re.search(r"(\d+) items: (\d+) wrong .*?(\d+) your decision .*?(\d+) right", notes)
+    assert found is not None
+    assert (int(found[2]), int(found[3]), int(found[4])) == (
+        final["wrong"],
+        final["decision"],
+        final["right"],
+    )
+
+
+# ---- trust follows how code settled it (#1554 review) ------------------------------------------
+
+
+def _judged(result: decision_resolver.Resolution, fid: str) -> dict[str, Any]:
+    from app.review.assistant.chat_trust import judged
+
+    return judged(by_id(result)[fid])
+
+
+def test_code_s_witness_is_recorded_so_trust_follows_the_trust_rule() -> None:
+    printed = finding(
+        "F1",
+        item="Outlet height",
+        architect="5'-0\"",
+        vendor='61 1/2"',
+        arch_box=dict(BOX_A, page=2),
+        vendor_box=dict(BOX_V, page=3),
+    )
+    checked = dict(printed, id="F2", page=7, checks={**printed["checks"], "lead_checked": True})
+    ctx = ResolverContext(verify=_witness({2: {"5'-0\""}, 3: {'61 1/2"'}}))
+    result = resolve([printed, checked], ctx)
+    one, two = _judged(result, "F1"), _judged(result, "F2")
+    assert one["checks"]["printed_architect"] == one["checks"]["printed_vendor"] == "match"
+    assert "printed" in one["witnesses"] and one["evidence_kind"] == "observed"
+    lone = dict(one["checks"], lead_checked=False)
+    from app.review.assistant.chat_trust import trust_level
+
+    assert trust_level(lone, "different") == "likely"  # code alone: Likely
+    assert two["trust_level"] == "confirmed"  # code's witness and the lead's own check
+
+    drawn = {"result": "match", "route": "drawn", "value": '61 1/2"', "read": '61 1/2"'}
+    ink = ResolverContext(
+        verify=lambda box, value: (
+            drawn if box["page"] == 3 else {"result": "match", "route": "text", "value": value}
+        )
+    )
+    result = resolve([printed], ink)
+    seen = _judged(result, "F1")
+    assert seen["checks"]["verify_vendor"]["route"] == "drawn"
+    assert "ocr_ink" in seen["witnesses"]
+
+
+def test_arithmetic_and_rule_settlements_record_their_witness() -> None:
+    slip = finding(
+        "F1",
+        source="vendor_arithmetic",
+        item="Front height string",
+        parts=["4", "10 1/8", "66"],
+        printed_total="80",
+        vendor="80",
+    )
+    wide = finding("F2", item="End filler width", vendor='5" filler', page=7)
+    result = resolve([slip, wide], ResolverContext(settings=SETTINGS))
+    sums, rule = _judged(result, "F1"), _judged(result, "F2")
+    assert sums["checks"]["arithmetic"] == "does_not_add_up" and "arithmetic" in sums["witnesses"]
+    assert rule["checks"]["rule"] == "agrees" and "rule" in rule["witnesses"]
+    assert sums["trust_level"] == rule["trust_level"] == "confirmed"  # with the lead's check
+
+
+def test_a_prototype_print_is_the_printed_witness_when_code_reads_both() -> None:
+    matches = finding(
+        "F1",
+        source="brand_prototype",
+        item="Cubby width",
+        architect='prototype front 2\'-6" (30")',
+        vendor='30"',
+        why="Prototype front 2'-6\" matches",
+        arch_box=BOX_A,
+        vendor_box=dict(BOX_V, page=3),
+    )
+    read = ResolverContext(verify=_witness({2: {"2'-6\""}, 3: {'30"'}}))
+    seen = _judged(resolve([matches], read), "F1")
+    assert seen["status"] == "same" and "printed" in seen["witnesses"]
+    assert "code reads both at their spots" in seen["settled"]["how"]
+    unread = _judged(resolve([matches], ResolverContext()), "F1")
+    assert unread["status"] == "same" and "printed" not in unread["witnesses"]
+
+
+# ---- the vendor's own string reads as a sum, never "needs nothing" -----------------------------
+
+
+def test_a_vendor_string_carries_code_s_sum_for_its_line(tmp_path: Path) -> None:
+    from app.review.assistant.chat_trust import apply_checks, needs_text
+
+    slip = finding(
+        "F1",
+        source="vendor_arithmetic",
+        item="Front height string",
+        parts=["4", "10 1/8", "66"],
+        printed_total="80",
+        vendor="80",
+        architect="n/a",
+        verified=True,
+    )
+    checked = apply_checks(slip, {}, None)
+    assert checked["parts_sum"] == "80.125"
+    assert needs_text(checked) == 'parts add up to 80 1/8"'
+
+
+# ---- the same item is clouded on every page it is on ------------------------------------------------
+
+
+def test_the_cloud_drawing_marks_every_page_an_item_is_also_on(tmp_path: Path) -> None:
+    from pypdf import PdfReader
+
+    from app.review.assistant import decided_drawing
+    from tests.review.assistant.test_chat_findings import workspace_with_pdf
+
+    workspace = workspace_with_pdf(tmp_path)
+    pdf = workspace.uploads / "Vendor set.pdf"
+    box = {"x0": 300.0, "y0": 400.0, "x1": 360.0, "y1": 416.0, "file": "Vendor set.pdf"}
+    wrong = finding(
+        "F1",
+        status="different",
+        page=2,
+        item="Counter width",
+        architect='37"',
+        vendor='46"',
+        vendor_box={**box, "page": 2},
+        also_on=[
+            {"finding_id": "F9", "page": 3, "vendor": '45"', "vendor_box": {**box, "page": 3}}
+        ],
+    )
+    placed = [(1, wrong, 2, (300.0, 400.0, 360.0, 416.0), "Marked on page 2.")]
+    out = tmp_path / "cloud.pdf"
+    chat_drawing.markup_pdf(pdf, placed, out)
+    pages = PdfReader(str(out)).pages
+    assert '45"' in pages[2].extract_text()  # the round-2 page carries its own cloud and note
+    notes = " ".join(page.extract_text() for page in pages[3:])
+    assert "On the drawing (1)" in notes  # listed once on the notes pages
+
+    agreed = dict(wrong, decision={"decision": "agree", "by": "R", "at": "2026-10-17T10:00:00Z"})
+    out = tmp_path / "decided.pdf"
+    decided_drawing.decided_markup_pdf(pdf, [(1, agreed, 2, placed[0][3], "")], out)
+    assert '45"' in PdfReader(str(out)).pages[2].extract_text()

@@ -107,7 +107,7 @@ export function FindingLineText({ finding }: { finding: ChatFinding }) {
     <span data-slot="chat-finding-line" className="line-clamp-2 text-[13px] leading-[1.45] text-muted-foreground">
       {line.verb === 'both' ? <>Both {value(line.vendor)}</> : (
         <>
-          Vendor drew {value(line.vendor)}
+          Vendor {line.vendorVerb ?? 'drew'} {value(line.vendor)}
           <span aria-hidden="true"> · </span>
           <span className="sr-only">, </span>
           {line.verb} {line.reference && value(line.reference)}
@@ -366,7 +366,7 @@ const SETTLED_WORDS: Record<SettledOutcome, string> = {
  * The Your-decision items GV Review settled by itself (#1554), folded: one line each, with how. The
  * Wrong and Right ones also sit in their own sections; nothing is dropped without a line here.
  */
-export function SettledGroup({ resolver }: { resolver: ChatResolver }) {
+export function SettledGroup({ resolver, decisions }: { resolver: ChatResolver; decisions: number }) {
   const [open, setOpen] = useState(false);
   const bodyId = useId();
   const entries = resolver.settled;
@@ -397,7 +397,7 @@ export function SettledGroup({ resolver }: { resolver: ChatResolver }) {
         <span className="text-base font-semibold">Settled automatically</span>
         <span className="font-medium text-muted-foreground tabular-nums">{entries.length}</span>
         <span className="text-[13px] text-muted-foreground">
-          GV Review answered these from the drawings: {resolver.before.decision} to decide became {resolver.after.decision}
+          GV Review answered these from the drawings: {decisions + entries.length} to decide became {decisions}
         </span>
       </button>
       {open && <ul id={bodyId} className="mt-3 overflow-hidden rounded-xl border">{entries.map(line)}</ul>}
@@ -783,7 +783,7 @@ export function FindingsSections({ findings, filter, onFilter, onOpen, pictureUr
           </section>
         );
       })}
-      {resolver && resolver.settled.length > 0 && <SettledGroup resolver={resolver} />}
+      {resolver && resolver.settled.length > 0 && <SettledGroup resolver={resolver} decisions={findings.filter((finding) => finding.status === 'check').length} />}
       {right.length > 0 && (
         <Folded status="same" words="Right" count={right.length} hint="Matches the architect, the prototype or GV’s rules" id={ids?.same}>
           <FindingsList findings={right} label="Right" onOpen={onOpen} pictureUrl={pictureUrl} fullPageHref={fullPageHref} />

@@ -495,6 +495,10 @@ class ChatFindingAlsoOnOut(BaseModel):
     item: str | None = None
     vendor: str | None = None
     architect: str | None = None
+    vendor_box: ChatBoxOut | None = Field(
+        default=None, description="Its spot on that page: the cloud drawing marks it there too."
+    )
+    arch_box: ChatBoxOut | None = None
 
 
 class ChatFindingDimOut(BaseModel):
@@ -676,6 +680,10 @@ class ChatFindingOut(BaseModel):
     )
     also_on: list[ChatFindingAlsoOnOut] | None = Field(
         default=None, description="The same item on other pages or rounds, folded in (#1554)."
+    )
+    parts_sum: str | None = Field(
+        default=None,
+        description="Source vendor_arithmetic: code's sum of the parts, in inches (#1554).",
     )
 
 

@@ -4135,6 +4135,16 @@
       "ChatFindingAlsoOnOut": {
         "description": "The same item on another page or round, folded into this finding (#1554).",
         "properties": {
+          "arch_box": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatBoxOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "architect": {
             "anyOf": [
               {
@@ -4193,6 +4203,17 @@
               }
             ],
             "title": "Vendor"
+          },
+          "vendor_box": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatBoxOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its spot on that page: the cloud drawing marks it there too."
           },
           "vs_page": {
             "anyOf": [
@@ -4989,6 +5010,18 @@
               }
             ],
             "title": "Parts"
+          },
+          "parts_sum": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Source vendor_arithmetic: code's sum of the parts, in inches (#1554).",
+            "title": "Parts Sum"
           },
           "printed_total": {
             "anyOf": [

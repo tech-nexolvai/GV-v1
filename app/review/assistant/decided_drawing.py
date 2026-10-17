@@ -31,6 +31,7 @@ from app.review.assistant.chat_drawing import (
     Entry,
     Mark,
     Section,
+    also_marks,
     draw_markup,
     entry_lines,
 )
@@ -142,6 +143,8 @@ def decided_markup_pdf(
                         else str(finding.get("architect") or "")
                     )
                     marks.append(Mark(number, shown, page_number, box, "wrong", True, value))
+                # The decision covers the same item on its other pages (#1554, `also_on`).
+                marks += also_marks(number, shown, "wrong", True, source)
                 entries[key].append(Entry(number, shown, "wrong", lines, picture=True))
                 continue
             lines = [f"Architect: {finding.get('architect')}   Vendor: {finding.get('vendor')}"]
