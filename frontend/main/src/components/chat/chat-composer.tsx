@@ -9,6 +9,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import type { ChatEffort, ChatModel } from '@/lib/chat-api';
+import { blankSegments, firstBlank, nextBlank } from '@/lib/chat-plus-actions';
 import {
   alwaysThinksWords,
   chooseEffort,
@@ -53,6 +54,8 @@ export interface ChatComposerProps {
   textareaRef?: React.RefObject<HTMLTextAreaElement | null>;
   /** Shown at the bottom left (chat v4: the Countertop / Cabinet chips). */
   leading?: React.ReactNode;
+  /** The "+" menu (#1517), first at the bottom left. */
+  plus?: React.ReactNode;
 }
 
 /**
@@ -77,12 +80,16 @@ export function ChatComposer({
   menuFootnote,
   textareaRef,
   leading,
+  plus,
 }: ChatComposerProps) {
   const fieldId = useId();
   const ownRef = useRef<HTMLTextAreaElement>(null);
   const ref = textareaRef ?? ownRef;
   const model = choice ? models.find((candidate) => candidate.id === choice.model) ?? null : null;
-  const canSend = !running && !blocked && value.trim().length > 0;
+  // A prompt from the "+" menu may hold a blank ("[page number]"): Send waits until it is filled.
+  const blank = firstBlank(value);
+  const canSend = !running && !blocked && !blank && value.trim().length > 0;
+  const highlight = useRef<HTMLDivElement>(null);
 
   // The box follows its words, also when they change from outside (sent, or given back after a refusal).
   useLayoutEffect(() => {
@@ -107,6 +114,24 @@ export function ChatComposer({
       <label htmlFor={fieldId} className="sr-only">
         Your message
       </label>
+      <div className="relative">
+      {blank && (
+        // The blanks, highlighted behind the (transparent) box: the same words, laid out the same way.
+        <div
+          ref={highlight}
+          aria-hidden="true"
+          data-slot="chat-composer-blanks"
+          className="pointer-events-none absolute inset-0 overflow-hidden px-4 pt-3.5 pb-1 text-[15px] leading-[1.55] break-words whitespace-pre-wrap text-transparent"
+        >
+          {blankSegments(value).map((segment, at) =>
+            segment.blank ? (
+              <mark key={at} className="rounded-[4px] bg-[color-mix(in_srgb,var(--outcome-review)_24%,transparent)] text-transparent">{segment.text}</mark>
+            ) : (
+              <span key={at}>{segment.text}</span>
+            ),
+          )}
+        </div>
+      )}
       <textarea
         id={fieldId}
         ref={ref}
@@ -114,16 +139,42 @@ export function ChatComposer({
         value={value}
         maxLength={MESSAGE_MAX}
         placeholder={placeholder}
+        aria-describedby={blank ? `${fieldId}-blank` : undefined}
         onChange={(event) => onChange(event.target.value)}
+        onScroll={(event) => {
+          if (highlight.current) highlight.current.scrollTop = event.currentTarget.scrollTop;
+        }}
         onKeyDown={(event) => {
+          const box = event.currentTarget;
+          // Tab (Shift+Tab) moves between the blanks while any are left; otherwise it leaves the box.
+          if (event.key === 'Tab' && !event.altKey && !event.metaKey && !event.ctrlKey && blank) {
+            const to = nextBlank(value, event.shiftKey ? box.selectionStart : box.selectionEnd, event.shiftKey);
+            if (to) {
+              event.preventDefault();
+              box.setSelectionRange(to[0], to[1]);
+            }
+            return;
+          }
           if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
             event.preventDefault();
             if (canSend) onSend();
+            else if (blank) {
+              // Enter on a prompt with a blank picks the blank, ready to type over.
+              const to = nextBlank(value, 0);
+              if (to) box.setSelectionRange(to[0], to[1]);
+            }
           }
         }}
-        className="block max-h-[40vh] min-h-[52px] w-full resize-none border-0 bg-transparent px-4 pt-3.5 pb-1 text-[15px] leading-[1.55] text-foreground outline-none placeholder:text-muted-foreground"
+        className="relative block max-h-[40vh] min-h-[52px] w-full resize-none border-0 bg-transparent px-4 pt-3.5 pb-1 text-[15px] leading-[1.55] text-foreground outline-none placeholder:text-muted-foreground"
       />
+      </div>
+      {blank && (
+        <p id={`${fieldId}-blank`} data-slot="chat-composer-blank-hint" className="px-4 pt-0.5 text-xs text-muted-foreground">
+          Fill in {blank} to send · <kbd className="num">Tab</kbd> moves to the next blank
+        </p>
+      )}
       <div className="flex min-w-0 items-center gap-1 px-2.5 pt-1 pb-2.5">
+        {plus}
         {leading}
         <span className="flex-1" />
         {value.length > MESSAGE_MAX - 500 && (
@@ -147,7 +198,7 @@ export function ChatComposer({
           <button
             type="submit"
             aria-label="Send message"
-            title={blocked ?? 'Send message'}
+            title={blocked ?? (blank ? `Fill in ${blank} first` : 'Send message')}
             disabled={!canSend}
             className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground transition-[opacity,transform,background-color] duration-150 hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none active:scale-95 disabled:cursor-default disabled:bg-muted-foreground/40 disabled:opacity-60 disabled:active:scale-100"
           >
