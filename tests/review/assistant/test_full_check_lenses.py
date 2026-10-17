@@ -26,11 +26,10 @@ from app.review.assistant import finding_critic, full_check_plan
 from app.review.assistant.chat_engine import FULL_CHECK_INSTRUCTION
 from app.review.assistant.chat_tools import HELPER_SYSTEM_PROMPT
 from app.review.assistant.full_check_brief import (
-    DRAWN_CHECKLIST,
     LENS_FIELDS,
-    NUMBERS_CHECKLIST,
+    LENS_SCOPE,
     NUMBERS_NOTE,
-    PAGE_CHECKLIST,
+    PRINCIPLE,
     checklist_gaps,
     checklist_send_back,
     helper_brief,
@@ -43,6 +42,7 @@ from app.review.assistant.full_check_plan import (
     plan_jobs,
     with_lenses,
 )
+from app.review.assistant.full_check_specialists import HELPER_CORE
 from tests.review.assistant.chat_fakes import SONNET, ScriptedProvider, reply, text, tool
 from tests.review.assistant.test_chat_engine import DOLLARS, Harness
 from tests.review.assistant.test_chat_findings import workspace_with_pdf
@@ -62,6 +62,11 @@ from tests.review.assistant.test_full_check_fanout import (
 @pytest.fixture(autouse=True)
 def _reader(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GV_READER_MISSING_SPACE_HEIGHTS", "0.1")
+
+
+def _helper_system(text: str) -> bool:
+    """A helper's system prompt: the shared one, or a helper kind's (`full_check_specialists`)."""
+    return text == HELPER_SYSTEM_PROMPT or text.startswith(HELPER_CORE)
 
 
 # ---- the plan and the briefs -------------------------------------------------------------------
@@ -100,27 +105,20 @@ def test_each_lens_has_its_own_short_brief_and_checklist_line() -> None:
     )
     single = helper_brief([2, 3], file_name="/mnt/user-data/uploads/x.pdf", page_map=page_map)
 
-    names = {name for name, _words in PAGE_CHECKLIST}
-    assert {name for name, _ in NUMBERS_CHECKLIST} == {
-        "architect",
-        "strings",
-        "scaled",
-        "span",
-        "decision",
-        "rounds",
-    }
-    assert {"notes", "counts", "hardware", "construction", "position", "extent", "brand"} <= {
-        name for name, _ in DRAWN_CHECKLIST
-    }
-    assert "- finishes: Material and finish tags" in drawn
-    assert numbers.endswith(NUMBERS_NOTE) and "- hardware: Hardware and accessories" not in numbers
+    # One principle for every lens; each lens says in one line what is its own.
+    for brief, lens in ((numbers, "numbers"), (drawn, "drawn"), (single, "both")):
+        assert PRINCIPLE in brief and LENS_SCOPE[lens] in brief
+    assert "finish tags" in drawn and "Never a size" in drawn
+    assert numbers.endswith(NUMBERS_NOTE) and "LENS: numbers." in numbers
     assert "CHECKLIST p<N>: architect a/b; strings a/b; not compared" in numbers
-    assert drawn.startswith("OBJECTIVE: the DRAWN THINGS on pages 2, 3 of ")
+    assert drawn.startswith("OBJECTIVE: the drawn things on pages 2, 3 of ")
     assert "CHECKLIST p<N>: notes a/b; counts a/b; hardware a/b; not compared" in drawn
     assert "do not call set_coverage" in drawn and "Never report a dimension" in drawn
     assert "LEADS from GV's own page review" not in drawn
-    # The single helper's brief is unchanged.
-    assert all(f"- {name}:" in single for name in names)
+    # The prompt audit's style (#1562): no shouting, the reviewer's round words, reasons given.
+    assert "EVERY" not in drawn and "DRAWN THINGS" not in drawn
+    assert "still different" not in drawn and "Fixed, or Still wrong" in drawn
+    assert "no pass/fail words (code records results, and a reviewer signs off)" in drawn
     assert "CHECKLIST p<N>: architect a/b; notes a/b; strings a/b; not compared" in single
     with pytest.raises(ValueError, match="unknown lens"):
         helper_brief([2], file_name="x", lens="colour")
@@ -200,9 +198,9 @@ class _LensScript:
     def __call__(self, params: Mapping[str, Any]) -> list[dict[str, Any]]:
         system = params["system"][0]["text"]
         asked = _first_text(params)
-        if system == HELPER_SYSTEM_PROMPT and asked == "Reply with OK.":
+        if _helper_system(system) and asked == "Reply with OK.":
             return reply(text("OK"), model=SONNET, stop="max_tokens")
-        if system != HELPER_SYSTEM_PROMPT:
+        if not _helper_system(system):
             if system == finding_critic.SYSTEM:
                 return reply(text(json.dumps({"findings": []})), model=SONNET)
             third = params["model"] == SONNET
@@ -211,7 +209,7 @@ class _LensScript:
         return self.helper(params, asked)
 
     def helper(self, params: Mapping[str, Any], brief: str) -> list[dict[str, Any]]:
-        drawn = brief.startswith("OBJECTIVE: the DRAWN THINGS")
+        drawn = brief.startswith("OBJECTIVE: the drawn things")
         pages = [int(n) for n in brief.split("on pages ", 1)[1].split(" of ", 1)[0].split(", ")]
         page = pages[0]
         step = _steps(params)
@@ -294,8 +292,8 @@ def test_a_full_check_runs_two_helpers_per_group_and_folds_their_duplicates(tmp_
 
     # Eight helpers for four jobs: four numbers briefs, four drawn-things briefs.
     assert len(script.briefs) == 8
-    drawn = [b for b in script.briefs if _first_text(b).startswith("OBJECTIVE: the DRAWN THINGS")]
-    numbers = [b for b in script.briefs if "LENS: NUMBERS" in _first_text(b)]
+    drawn = [b for b in script.briefs if _first_text(b).startswith("OBJECTIVE: the drawn things")]
+    numbers = [b for b in script.briefs if "LENS: numbers" in _first_text(b)]
     assert len(drawn) == 4 and len(numbers) == 4
     for brief in drawn:
         assert brief["model"] == SONNET and brief["output_config"] == {"effort": "low"}

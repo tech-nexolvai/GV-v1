@@ -401,17 +401,17 @@ def test_second_reads_run_after_the_lead_and_feed_the_trust_report(
     calls = [call for call in calls if call["model"] != SONNET]
     assert len(calls) == 2
     # F2's second read disagreed: one third read, and both reads outvote the finding's values.
-    assert len(thirds) == 1 and thirds[0]["output_config"] == {"effort": "low"}
+    assert len(thirds) == 1 and thirds[0]["output_config"]["effort"] == "low"
     assert findings["F2"]["checks"]["adjudication"] == "disagrees"
     assert [read["role"] for read in findings["F2"]["reads"]] == ["first", "second", "third"]
     assert findings["F1"]["checks"]["adjudication"] is None and findings["F1"]["reads"] is None
     for call in calls:
-        assert call["model"] == HAIKU and call["output_config"] == {"effort": "low"}
+        assert call["model"] == HAIKU and call["output_config"]["effort"] == "low"
         assert call["thinking"] == {"type": "disabled"} and call["max_tokens"] == 1024
         assert "tools" not in call and "tool_choice" not in call
     prompt_ids = [row["prompt_id"] for row in harness.ledger.rows]
-    assert prompt_ids.count("review-assistant-chat-check-anthropic-chat-v17") == 2
-    assert prompt_ids.count("review-assistant-chat-adjudicate-anthropic-chat-v17") == 1
+    assert prompt_ids.count("review-assistant-chat-check-anthropic-chat-v18") == 2
+    assert prompt_ids.count("review-assistant-chat-adjudicate-anthropic-chat-v18") == 1
     assert outcome.cost_micros > 0
 
 

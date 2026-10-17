@@ -16,8 +16,14 @@ and `build_skill_folder` writes it:
   default, GV's company standard, the project's value or sink card, or a value typed for this
   drawing set). The values are `settings_in_force`'s, the ones a check run reads. A setting nobody
   gave is written as missing, never as zero or a guess.
+- `knowledge/`, copied from `skills/gv-review/knowledge/` beside this module: generic trade
+  knowledge (a glossary, how to read drawings, what a dimension measures, the usual vendor
+  mistakes, field cuts, typical sizes), invented numbers only. A full check's helpers carry their
+  kind's part of it in their system prompt (`full_check_specialists`); the chat's lead reads it on
+  demand.
 - GV's own files kept on this machine (`GV_ASSISTANT_SKILLS_LOCAL`, by default
-  `~/gv-local/skills/gv-review`: GV's checklists), copied in when that folder exists. Client
+  `~/gv-local/skills/gv-review`: GV's checklists, `gv-formulas.md`, worked examples from GV's sets
+  in `examples/`, approved lessons in `lessons.md`), copied in when that folder exists. Client
   material stays on this machine; the repository holds none.
 
 **Read-only.** Plain reads through the same helpers the settings screens use; nothing is written to
@@ -71,6 +77,8 @@ from vocabulary.wall_layouts import WALL_LAYOUT_WORDS
 
 __all__ = [
     "DEFAULT_LOCAL_FOLDER",
+    "KNOWLEDGE_FOLDER",
+    "KNOWLEDGE_SOURCE",
     "LOCAL_FOLDER_VARIABLE",
     "SKILL_NAME",
     "SKILL_SOURCE",
@@ -88,10 +96,13 @@ SKILL_SOURCE: Final = Path(__file__).resolve().parent / "skills" / SKILL_NAME / 
 LOCAL_FOLDER_VARIABLE: Final = "GV_ASSISTANT_SKILLS_LOCAL"
 DEFAULT_LOCAL_FOLDER: Final = "~/gv-local/skills/gv-review"
 
-#: The files and folder this function writes; a local file of the same name never replaces them.
-_OWN_FILES: Final = frozenset({"SKILL.md", "rules.md", "products"})
+#: The files and folders this function writes; a local file of the same name never replaces them.
+_OWN_FILES: Final = frozenset({"SKILL.md", "rules.md", "products", "knowledge"})
 #: The folder of the products' skill files inside the skill folder.
 PRODUCTS_FOLDER: Final = "products"
+#: The knowledge pack: in the repository beside `SKILL.md`, and its folder in the skill folder.
+KNOWLEDGE_FOLDER: Final = "knowledge"
+KNOWLEDGE_SOURCE: Final = SKILL_SOURCE.parent / KNOWLEDGE_FOLDER
 
 _SOURCES: Final[Mapping[str, str]] = {
     "ARCH": "from the architect's drawing",
@@ -172,6 +183,10 @@ def build_skill_folder(
         folder.mkdir(exist_ok=True)
         for product in focus:
             (folder / f"{product.id}.md").write_bytes(product_markdown(product).encode("utf-8"))
+        knowledge = building / KNOWLEDGE_FOLDER
+        knowledge.mkdir(exist_ok=True)
+        for source in sorted(KNOWLEDGE_SOURCE.glob("*.md")):
+            (knowledge / source.name).write_bytes(source.read_bytes())
         _make_readable(building)
         if dest.exists():
             old = dest.with_name(f".{dest.name}.old-{uuid.uuid4().hex[:12]}")
@@ -210,7 +225,7 @@ def _copy_local(source: Path, target: Path) -> None:
                 continue
             if relative == Path(".") and name in _OWN_FILES:
                 continue
-            if relative.parts[:1] == (PRODUCTS_FOLDER,):
+            if relative.parts[:1] in ((PRODUCTS_FOLDER,), (KNOWLEDGE_FOLDER,)):
                 continue
             out = target / relative / name
             out.parent.mkdir(parents=True, exist_ok=True)

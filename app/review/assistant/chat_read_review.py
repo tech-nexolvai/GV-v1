@@ -96,6 +96,7 @@ def _model_call(
     max_tokens: int,
     prompt_tokens: int,
     prompt_id: str,
+    output_format: Mapping[str, Any] | None = None,
 ) -> Callable[[list[dict[str, Any]]], str]:
     model = BY_SHORT[short]
 
@@ -113,6 +114,7 @@ def _model_call(
                 max_tokens=max_tokens,
                 prompt_id=prompt_id,
                 display=None,
+                output_format=output_format,
             )
         finally:
             budget.release(held)
@@ -195,6 +197,7 @@ def third_read_job(
         max_tokens=module.ADJUDICATION_MAX_TOKENS,
         prompt_tokens=module.ADJUDICATION_PROMPT_TOKENS,
         prompt_id=_prompt_id(engine, "adjudicate"),
+        output_format=getattr(module, "READ_SCHEMA", None),
     )
     pdf_paths = engine.book.pdf_paths()
 
@@ -224,7 +227,8 @@ def critic_jobs(
         whole_set = (
             bool(book.coverage_used) or getattr(engine.settings, "mode", None) == "full_check"
         )
-    if not whole_set or critic_module is None:
+    if not whole_set or critic_module is None or getattr(engine, "critic_off", False):
+        # A roster full check judges its red candidates with the devil's advocate instead.
         return []
     candidates = critic_module.candidates(findings)
     critic_call = _model_call(
@@ -236,6 +240,7 @@ def critic_jobs(
         max_tokens=critic_module.CRITIC_MAX_TOKENS,
         prompt_tokens=critic_module.CRITIC_PROMPT_TOKENS,
         prompt_id=_prompt_id(engine, "critic"),
+        output_format=getattr(critic_module, "CRITIC_SCHEMA", None),
     )
     jobs: list[Callable[[], None]] = []
     judged: set[str] = set()
