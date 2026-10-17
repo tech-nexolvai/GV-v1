@@ -1514,11 +1514,14 @@ def _drawn(
         )
     # The box's own text is exact: when it prints a near-miss of the value (`63 1/2"` when `63"`
     # is claimed), no OCR read of the ink may confirm it (an engine loses a stacked fraction).
+    # Checked where a match would be made, so a mismatch is still told (#1573).
     in_text = sorted(v for v in text.values if near_miss(wanted, v))
-    if in_text:
-        near = ", ".join(_inches_text(v) for v in in_text[:3])
-        reason = f"the drawing's text here prints a near-miss of it ({near})"
-        return Verified("cannot_read", "text", None, text_reads, reason, value)
+    text_near = (
+        f"the drawing's text here prints a near-miss of it "
+        f"({', '.join(_inches_text(v) for v in in_text[:3])})"
+        if in_text
+        else ""
+    )
     reads = _drawn_reads(page, spot, engines)
     all_reads = text_reads + tuple(
         f"{read.name}: {' | '.join(line.strip() for line in read.lines)}"
@@ -1537,6 +1540,8 @@ def _drawn(
         too_big = (
             "the box is too big and holds several numbers: draw the box round the one dimension"
         )
+    if agreed and not too_big and text_near:
+        return Verified("cannot_read", "text", None, all_reads, text_near, value)
     if agreed and not too_big:
         ones = _ones_unsure(votes, wanted)
         if ones is not None:
@@ -1575,6 +1580,8 @@ def _drawn(
             if read.lines
         )
         confirmed, label_reason = _label_match(labelled, wanted)
+        if confirmed and text_near:
+            return Verified("cannot_read", "text", None, all_reads, text_near, value)
         if confirmed:
             engines_agreeing = " and ".join(sorted({read.engine for read in labelled}))
             return Verified(
