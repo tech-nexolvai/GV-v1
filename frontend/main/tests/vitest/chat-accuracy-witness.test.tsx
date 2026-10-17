@@ -37,7 +37,8 @@ const UNKNOWNS: ChatUnknown[] = [
 ];
 
 describe('evidence kinds', () => {
-  it('says what backs each finding, in words and in the Trust tooltip', () => {
+  it('says what backs each finding, in words (in a row’s detail) and in the Trust tooltip', async () => {
+    const user = userEvent.setup();
     expect(evidenceWords(FINDINGS[0])).toBe('Printed on the drawing: both values printed at their spots');
     expect(evidenceWords(FINDINGS[1])).toBe('AI reading only');
     expect(evidenceWords(FINDINGS[2])).toBe('Worked out by code: GV’s rule check agrees');
@@ -45,7 +46,8 @@ describe('evidence kinds', () => {
 
     render(<AssistantMessage message={answer({ findings: FINDINGS })} chatId="c-1" models={[OPUS]} />);
     const node = screen.getByRole('article', { name: 'Answer' });
-    const tags = [...node.querySelectorAll<HTMLElement>('[data-slot="chat-evidence-kind"]')];
+    for (const row of [...node.querySelectorAll<HTMLElement>('[data-slot="chat-finding-row"]')]) await user.click(row);
+    const tags = [...node.querySelectorAll<HTMLElement>('[data-slot="chat-finding-detail"] [data-slot="chat-evidence-kind"]')];
     expect(tags.map((tag) => [tag.dataset.kind, tag.textContent])).toEqual([
       ['observed', 'printed on the drawing'],
       ['inferred', 'AI reading only'],
@@ -80,6 +82,10 @@ describe('not seen is not right', () => {
     await user.click(tabs[3]);
     const rows = [...node.querySelectorAll<HTMLElement>('[data-slot="chat-finding-row"]')].map((row) => row.dataset.id);
     expect(rows).toEqual(['n1']);
+    // The row says Not compared (never Same), with why on hover; its detail says why in words.
+    const status = node.querySelector<HTMLElement>('[data-id="n1"] [data-slot="chat-finding-status"]')!;
+    expect([status.dataset.status, status.textContent, status.title]).toEqual(['not_compared', 'Not compared', 'Not compared: both sides were not looked at']);
+    await user.click(node.querySelector<HTMLElement>('[data-id="n1"]')!);
     expect(node.querySelector('[data-slot="chat-finding-not-compared"]')?.textContent).toBe('not compared: both sides were not looked at');
   });
 

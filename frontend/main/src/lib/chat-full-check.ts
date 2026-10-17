@@ -87,9 +87,14 @@ export function confirmWords(products: readonly ChatProduct[] | null, model: str
   return ['Full check', productsWords(products) ?? 'this set’s product', model, effortWords, cap ? `up to ${cap}` : null].filter(Boolean).join(' · ');
 }
 
-/** True for an answer to a full check: its own mode, or the question it answers. */
-export function isFullCheck(message: Pick<ViewMessage, 'mode'>, question?: Pick<ViewMessage, 'mode'> | null): boolean {
-  return message.mode === 'full_check' || question?.mode === 'full_check';
+/**
+ * True for an answer to a full check: its own mode, or the question it answers. A saved chat's
+ * messages come back without their mode, so a question saved in the full check's own words
+ * ("Full check", "Full check · Countertops · High effort") counts too (#1508).
+ */
+export function isFullCheck(message: Pick<ViewMessage, 'mode'>, question?: Pick<ViewMessage, 'mode'> & { text?: string | null } | null): boolean {
+  if (message.mode === 'full_check' || question?.mode === 'full_check') return true;
+  return question?.mode == null && /^Full check(?: · [^\n]*)?$/.test(question?.text?.trim() ?? '');
 }
 
 /** What a right finding matched, under its value: "matches architect". */
@@ -116,7 +121,10 @@ export function matchesWords(source: FindingSource): string {
  */
 export function fullCheckFiles(files: readonly ChatFile[]): { cloud: ChatFile | null; report: ChatFile | null; rest: ChatFile[] } {
   const pdf = (file: ChatFile) => file.mime === 'application/pdf' || /\.pdf$/i.test(file.name);
-  const cloud = files.find((file) => file.kind === 'cloud_drawing') ?? files.find((file) => !file.kind && pdf(file) && /cloud/i.test(file.name)) ?? null;
+  // A file sent before kinds: "cloud" in its name, else the full check's "… - AI markup.pdf".
+  const cloud = files.find((file) => file.kind === 'cloud_drawing')
+    ?? files.find((file) => !file.kind && pdf(file) && /cloud/i.test(file.name))
+    ?? files.find((file) => !file.kind && pdf(file) && /\bAI markup\b/i.test(file.name)) ?? null;
   const report = files.find((file) => file.kind === 'check_report' && file !== cloud)
     ?? files.find((file) => !file.kind && file !== cloud && pdf(file) && /report/i.test(file.name)) ?? null;
   return { cloud, report, rest: files.filter((file) => file !== cloud && file !== report) };

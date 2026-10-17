@@ -6,16 +6,21 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  areaOf,
   categoriesPresent,
   countWords,
   coverageCounts,
   coveragePageWords,
   coverageWords,
   findingCounts,
+  groupByArea,
+  groupCountWords,
   groupFindings,
   isShortAnswer,
   NO_FILTER,
+  pagesWords,
   pageWords,
+  rowValue,
   shownInOrder,
   shownValue,
   sourceTag,
@@ -255,5 +260,60 @@ describe('trust', () => {
     expect(lines[1]).toContain('To check');
     expect(lines[1]).toContain('disagrees');
     expect(lines[2]).toContain(',37,46,9,');
+  });
+});
+
+describe('areas and one-line rows (#1508)', () => {
+  it('reads the area an item names, or none', () => {
+    expect(areaOf('Pantry (left) refrigerator outlet CL to right wall')).toBe('Pantry (left)');
+    expect(areaOf('Nurse station overall width')).toBe('Nurse station');
+    expect(areaOf('Storage Area-1 enclosure overall height')).toBe('Storage Area-1');
+    expect(areaOf('Staff room cabinet overall width')).toBe('Staff room');
+    expect(areaOf('Filler at wall end')).toBeNull();
+    expect(areaOf('Material tags (counter / cabinets)')).toBeNull();
+    expect(areaOf('Room elevation overall height')).toBeNull();
+    expect(areaOf('Grab bar')).toBeNull();
+    expect(areaOf('One two three four five overall width')).toBeNull();
+  });
+
+  it('groups by area (else the page’s area, else the page), the most wrong first, wrong rows first', () => {
+    const items = [
+      finding('a1', { page: 3, item: 'Coffee bar counter overall width', status: 'check' }),
+      finding('a2', { page: 3, item: 'Filler at wall end', status: 'different' }),
+      finding('b1', { page: 8, item: 'Nurse station overall width', status: 'different' }),
+      finding('b2', { page: 9, vs_page: 8, item: 'Nurse station door count', status: 'different' }),
+      finding('h1', { page: 12, item: 'Coffee point counter top tag', status: 'check' }),
+      finding('h2', { page: 13, item: 'Coffee point station overall width', status: 'check' }),
+      finding('m1', { page: 39, item: 'Storage overall height', status: 'check' }),
+      finding('m2', { page: 40, item: 'Storage Area-1 enclosure overall height', status: 'check' }),
+      finding('p1', { page: 15, item: 'Upper cabinets door layout', status: 'check' }),
+      finding('s1', { page: 8, item: 'Nurse station drawer count', status: 'same' }),
+    ];
+    const groups = groupByArea(items, { status: 'all', category: null, page: null });
+    expect(groups.map((group) => `${group.name}|${pagesWords(group.pages)}|${groupCountWords(group.counts)}|${group.findings.map((each) => each.id).join(',')}`)).toEqual([
+      'Nurse station|p8–9|2 wrong|b1,b2',
+      'Coffee bar|p3|1 wrong · 1 to check|a2,a1',
+      'Coffee point|p12–13|2 to check|h1,h2',
+      'Page 15|p15|1 to check|p1',
+      'Storage|p39|1 to check|m1',
+      'Storage Area-1|p40|1 to check|m2',
+    ]);
+    expect(groups.find((group) => group.name === 'Page 15')?.byPage).toBe(true);
+    // A filter never renames a group: the right item still joins its area.
+    expect(groupByArea(items, { status: 'same', category: null, page: null }).map((group) => group.name)).toEqual(['Nurse station']);
+    expect(pagesWords([3, 4, 8, 10, 11, 12])).toBe('p3–4, 8, 10–12');
+    expect(pagesWords([])).toBe('');
+  });
+
+  it('shows a value in a row as inches, a short printed value, or a pill', () => {
+    const base = finding('v', { item: 'Lower doors count', architect: '3 lower doors with pulls; LA-002', vendor: '33"' });
+    expect(rowValue(base, 'architect')).toEqual({ kind: 'pill', pill: 'layout', text: '3 lower doors with pulls; LA-002' });
+    expect(rowValue(base, 'vendor')).toEqual({ kind: 'short', text: '33"' });
+    expect(rowValue({ ...base, inches: { architect: '37', vendor: null, difference: null } }, 'architect')).toEqual({ kind: 'inches', text: '37 in', printed: '3 lower doors with pulls; LA-002' });
+    expect(rowValue({ ...base, vendor: null }, 'vendor')).toEqual({ kind: 'none' });
+    expect(rowValue({ ...base, item: 'Counter material tag', architect: 'CT-001 quartz, eased edge, by GC' }, 'architect')).toMatchObject({ pill: 'tag' });
+    expect(rowValue({ ...base, source: 'rules', architect: 'rule CT-WIDTH-001: parts + 1" field cut' }, 'architect')).toMatchObject({ pill: 'rule' });
+    expect(rowValue({ ...base, source: 'vendor_arithmetic', architect: 'parts 3/4, 11 1/4 vs 48 3/4' }, 'architect')).toMatchObject({ pill: 'sum' });
+    expect(rowValue({ ...base, item: 'Sink centre line', architect: 'no sink dimension on the set' }, 'architect')).toMatchObject({ pill: 'note' });
   });
 });

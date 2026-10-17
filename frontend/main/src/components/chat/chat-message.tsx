@@ -6,12 +6,12 @@ import { ActivityRow, TaskChecklist } from '@/components/chat/chat-activity';
 import { CoverageStrip } from '@/components/chat/chat-coverage';
 import { EvidenceViewer } from '@/components/chat/chat-evidence';
 import { FindingsTable } from '@/components/chat/chat-findings';
-import { FullCheckFiles } from '@/components/chat/chat-full-check';
+import { FindingsKpis, FullCheckFiles } from '@/components/chat/chat-full-check';
 import { TrustSummary } from '@/components/chat/chat-trust';
 import { ChatMarkdown } from '@/components/chat/chat-markdown';
 import { Collapse, CopyButton, Shimmer, Spark, Spinner } from '@/components/chat/chat-motion';
 import { chatPaths, type ChatEffort, type ChatFile, type ChatModel } from '@/lib/chat-api';
-import { findingCounts, groupFindings, isShortAnswer, NO_FILTER, shownInOrder, type FindingFilter } from '@/lib/chat-findings';
+import { findingCounts, groupByArea, isShortAnswer, NO_FILTER, type FindingFilter } from '@/lib/chat-findings';
 import { fullCheckBubble, fullCheckFiles } from '@/lib/chat-full-check';
 import { EFFORT_WORDS } from '@/lib/chat-settings';
 import { downloadFile, downloadFindingsCsv, markupFailureWords } from '@/lib/chat-exports';
@@ -245,8 +245,10 @@ export interface AssistantMessageProps {
   /** Chat v2: where the evidence viewer's "Open in review screen" goes; left out when absent. */
   fullPageHref?: string | null;
   /**
-   * Chat v4: the answer to a full check. It renders as AI notes → trust summary → the cloud drawing
-   * (first and large) and the check report → What's wrong / To check / What's right → coverage.
+   * Chat v4: the answer to a full check. Since #1508 it renders as the work fold → the summary strip
+   * (Wrong · To check · Right · Not compared · Pages · Accuracy) → the cloud drawing (large) and the
+   * check report → What's wrong / To check / What's right, grouped by area → the AI notes → the
+   * trust summary → coverage.
    */
   fullCheck?: boolean;
 }
@@ -268,8 +270,8 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, l
   const counts = findingCounts(findings);
   const opening = counts.different ? 'different' : counts.check ? 'check' : 'same';
   const shownFilter: FindingFilter = fullCheck && filter.status === 'all' ? { ...filter, status: opening } : filter;
-  // The viewer's arrows step through the findings in the table's order, under its filter.
-  const ordered = shownInOrder(groupFindings(findings, shownFilter));
+  // The viewer's arrows step through the findings in the table's order (by area), under its filter.
+  const ordered = groupByArea(findings, shownFilter).flatMap((group) => group.findings);
   const allFiles = [...message.files, ...madeFiles.filter((made) => !message.files.some((file) => file.id === made.id))];
   const made = fullCheck ? fullCheckFiles(allFiles) : { cloud: null, report: null, rest: allFiles };
   const files = made.rest;
@@ -298,6 +300,40 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, l
   const tasks = message.tasks?.length ? message.tasks : lastTaskStep?.step.tasks ?? null;
   const looseTasks = tasks?.length && lastTaskAt < 0 ? <TaskChecklist tasks={tasks} running={running} /> : null;
 
+  const renderItem = (item: (typeof items)[number], at: number) => {
+    const last = at === items.length - 1;
+    return (
+      <div key={item.kind === 'activity' ? `activity-${item.indexes[0]}` : `text-${item.index}`} className="grid min-w-0 gap-3">
+        {item.kind === 'activity' && (
+          item.indexes.length === 1 && blocks[item.indexes[0]]?.type === 'thinking' ? (
+            <ThinkingBlock block={blocks[item.indexes[0]] as Extract<ViewBlock, { type: 'thinking' }>} />
+          ) : (
+            <ActivityRow
+              blocks={item.indexes.map((index) => blocks[index])}
+              active={running && last}
+              pictureUrl={pictureUrl}
+              tasks={tasks}
+              tasksAt={item.indexes.indexOf(lastTaskAt) >= 0 ? item.indexes.indexOf(lastTaskAt) : null}
+              running={running}
+            />
+          )
+        )}
+        {item.kind === 'text' && (
+          <ChatMarkdown
+            text={(blocks[item.index] as Extract<ViewBlock, { type: 'text' }>).text}
+            streaming={streaming && last && item.index === blocks.length - 1}
+            // A short answer's lines sit close together; a long answer keeps its reading rhythm.
+            className={short || isFewLines((blocks[item.index] as Extract<ViewBlock, { type: 'text' }>).text) ? 'gap-2' : undefined}
+          />
+        )}
+      </div>
+    );
+  };
+  const table = findings.length > 0 ? (
+    <FindingsTable findings={findings} filter={shownFilter} onFilter={setFilter} onOpen={(finding) => setViewing(finding.id)} pictureUrl={pictureUrl} tabs={fullCheck} />
+  ) : null;
+  const trustCard = showTrust ? <TrustSummary findings={findings} trust={message.trust} coverage={coverage} coverageStrip={fullCheck ? null : coverageStrip} unknowns={message.unknowns} /> : null;
+
   return (
     <article
       data-slot="chat-assistant-message"
@@ -306,46 +342,25 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, l
       aria-label="Answer"
       className={cn('group/message chat-rise flex min-w-0 flex-col', short ? 'gap-1' : 'gap-3')}
     >
-      {items.map((item, at) => {
-        const last = at === items.length - 1;
-        return (
-          <div key={item.kind === 'activity' ? `activity-${item.indexes[0]}` : `text-${item.index}`} className="grid min-w-0 gap-3">
-            {item.kind === 'activity' && (
-              item.indexes.length === 1 && blocks[item.indexes[0]]?.type === 'thinking' ? (
-                <ThinkingBlock block={blocks[item.indexes[0]] as Extract<ViewBlock, { type: 'thinking' }>} />
-              ) : (
-                <ActivityRow
-                  blocks={item.indexes.map((index) => blocks[index])}
-                  active={running && last}
-                  pictureUrl={pictureUrl}
-                  tasks={tasks}
-                  tasksAt={item.indexes.indexOf(lastTaskAt) >= 0 ? item.indexes.indexOf(lastTaskAt) : null}
-                  running={running}
-                />
-              )
-            )}
-            {item.kind === 'text' && (
-              <ChatMarkdown
-                text={(blocks[item.index] as Extract<ViewBlock, { type: 'text' }>).text}
-                streaming={streaming && last && item.index === blocks.length - 1}
-                // A short answer's lines sit close together; a long answer keeps its reading rhythm.
-                className={short || isFewLines((blocks[item.index] as Extract<ViewBlock, { type: 'text' }>).text) ? 'gap-2' : undefined}
-              />
-            )}
-          </div>
-        );
-      })}
+      {/* #1508: a full check leads with its summary, the cloud drawing and the findings; its notes follow. */}
+      {(fullCheck ? items.filter((item) => item.kind === 'activity') : items).map((item) => renderItem(item, items.indexOf(item)))}
+      {fullCheck && (findings.length > 0 || coverage || made.cloud || made.report) && (
+        <div data-slot="chat-full-check-lead" className="chat-wide grid min-w-0 gap-3">
+          {(findings.length > 0 || coverage) && (
+            <FindingsKpis counts={counts} coverage={coverage} accuracy={message.accuracy} status={shownFilter.status} onPick={(status) => setFilter({ ...filter, status })} />
+          )}
+          <FullCheckFiles cloud={made.cloud} report={made.report} chatId={chatId} />
+          {table}
+        </div>
+      )}
+      {fullCheck && items.filter((item) => item.kind === 'text').map((item) => renderItem(item, items.indexOf(item)))}
       {looseTasks}
 
       {(message.cites?.length ?? 0) > 0 && <CiteChips cites={message.cites ?? []} pictureUrl={pictureUrl} />}
 
-      {showTrust && <TrustSummary findings={findings} trust={message.trust} coverage={coverage} coverageStrip={fullCheck ? null : coverageStrip} unknowns={message.unknowns} />}
+      {trustCard}
 
-      {fullCheck && <FullCheckFiles cloud={made.cloud} report={made.report} chatId={chatId} />}
-
-      {findings.length > 0 && (
-        <FindingsTable findings={findings} filter={shownFilter} onFilter={setFilter} onOpen={(finding) => setViewing(finding.id)} pictureUrl={pictureUrl} tabs={fullCheck} />
-      )}
+      {!fullCheck && table && <div className="chat-wide grid min-w-0">{table}</div>}
       {findings.length > 0 && (
         <EvidenceViewer findings={ordered} openId={viewing} onOpen={setViewing} pictureUrl={pictureUrl} fullPageHref={fullPageHref} />
       )}

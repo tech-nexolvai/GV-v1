@@ -137,6 +137,35 @@ export function CheckIcons({ finding }: { finding: ChatFinding }) {
   );
 }
 
+/**
+ * What the check icons mean, said ONCE under the findings (#1508) instead of on every row; each
+ * row's icons still carry their own tooltip.
+ */
+export function CheckLegend() {
+  const items = [
+    { Icon: ScanText, words: 'printed at the spot' },
+    { Icon: Eye, words: 'second read' },
+    { Icon: BadgeCheck, words: 'checked on the drawing' },
+    { Icon: Scale, words: 'GV rule' },
+    { Icon: Calculator, words: 'arithmetic' },
+    { Icon: ShieldQuestion, words: 'critic' },
+  ];
+  return (
+    <p data-slot="chat-check-legend" className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+      <span className="font-medium text-foreground/80">Checks</span>
+      {items.map(({ Icon, words }) => (
+        <span key={words} className="inline-flex items-center gap-1"><Icon aria-hidden="true" className="size-3.5" />{words}</span>
+      ))}
+      <span className="inline-flex items-center gap-2" aria-label="✓ passed, ✗ disagreed, ? unsure, – not run">
+        <span aria-hidden="true"><b className="font-semibold text-foreground">✓</b> passed</span>
+        <span aria-hidden="true"><b className="font-semibold text-outcome-fail-fg">✗</b> disagreed</span>
+        <span aria-hidden="true"><b className="font-semibold text-outcome-review-fg">?</b> unsure</span>
+        <span aria-hidden="true"><b className="font-semibold">–</b> not run</span>
+      </span>
+    </p>
+  );
+}
+
 /** The checks as words, for the evidence viewer (under the crops). */
 export function CheckList({ finding, only }: { finding: ChatFinding; only?: readonly CheckResult['key'][] }) {
   const checks = allChecks(finding).filter((check) => !only || only.includes(check.key));

@@ -1,8 +1,11 @@
 import { useState } from 'react';
 import { Download, ExternalLink, FileText, ScanSearch } from 'lucide-react';
 
+import { AccuracyBadge } from '@/components/chat/chat-accuracy';
+import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { chatPaths, type ChatFile, type ChatProduct } from '@/lib/chat-api';
+import { chatPaths, type ChatAccuracy, type ChatCoverage, type ChatFile, type ChatProduct } from '@/lib/chat-api';
+import { coverageCounts, coverageWords, type FindingCounts, type StatusFilter } from '@/lib/chat-findings';
 import { PRODUCT_WORDS, PRODUCTS } from '@/lib/chat-full-check';
 import { fileKind, fileSize } from '@/lib/chat-messages';
 import { cn } from '@/lib/utils';
@@ -145,5 +148,82 @@ export function FullCheckFiles({ cloud, report, chatId }: { cloud: ChatFile | nu
         </div>
       )}
     </div>
+  );
+}
+
+// ── The summary strip (full check) ──────────────────────────
+
+const KPI_TONE = {
+  different: 'text-outcome-fail-fg',
+  check: 'text-outcome-review-fg',
+  same: 'text-outcome-pass-fg',
+  not_compared: 'text-muted-foreground',
+} as const;
+
+const KPI_OUTCOME = { different: 'FAIL', check: 'REVIEW_REQUIRED', same: 'PASS', not_compared: 'NOT_FOUND' } as const;
+
+const KPIS = [
+  { status: 'different', words: 'Wrong' },
+  { status: 'check', words: 'To check' },
+  { status: 'same', words: 'Right' },
+  { status: 'not_compared', words: 'Not compared' },
+] as const;
+
+const TILE = 'grid min-w-0 content-between gap-0.5 rounded-xl border bg-card px-3 py-2 text-left';
+
+export interface FindingsKpisProps {
+  counts: FindingCounts;
+  coverage: ChatCoverage | null;
+  accuracy: ChatAccuracy | null | undefined;
+  /** The status the findings show now (its tile is marked). */
+  status: StatusFilter;
+  onPick: (status: StatusFilter) => void;
+}
+
+/**
+ * A full check's summary, first (#1508): Wrong · To check · Right · Not compared · Pages checked ·
+ * Accuracy. A count tile picks that tab of the findings below.
+ */
+export function FindingsKpis({ counts, coverage, accuracy, status, onPick }: FindingsKpisProps) {
+  const pages = coverage ? coverageCounts(coverage) : null;
+  return (
+    <section data-slot="chat-kpis" aria-label="Summary" className="chat-rise grid grid-cols-3 gap-2 sm:grid-cols-6">
+      {KPIS.map((kpi) => {
+        const count = counts[kpi.status];
+        return (
+          <button
+            key={kpi.status}
+            type="button"
+            data-kpi={kpi.status}
+            aria-pressed={status === kpi.status}
+            disabled={count === 0}
+            onClick={() => onPick(kpi.status)}
+            aria-label={`${kpi.words}: ${count}. Show them`}
+            className={cn(
+              TILE,
+              'transition-colors hover:border-foreground/25 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:cursor-default disabled:hover:border-border motion-reduce:transition-none',
+              status === kpi.status && 'border-foreground/40 bg-muted/60',
+            )}
+          >
+            <span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+              <OutcomeIcon outcome={KPI_OUTCOME[kpi.status]} size={12} className={KPI_TONE[kpi.status]} />
+              <span className="min-w-0 leading-4">{kpi.words}</span>
+            </span>
+            <span className={cn('text-xl leading-7 font-semibold tabular-nums', count === 0 ? 'text-muted-foreground' : KPI_TONE[kpi.status])}>{count}</span>
+          </button>
+        );
+      })}
+      <div data-kpi="pages" className={TILE} title={pages ? coverageWords(pages) : 'No page coverage was recorded'}>
+        <span className="text-xs leading-4 text-muted-foreground"><span className="sm:hidden">Pages</span><span className="hidden sm:inline">Pages checked</span></span>
+        <span className="text-xl leading-7 font-semibold tabular-nums">
+          {pages ? <>{pages.total - pages.not_opened}<span className="text-sm font-normal text-muted-foreground">/{pages.total}</span></> : <span className="text-muted-foreground">—</span>}
+        </span>
+        {pages && <span className="sr-only">{coverageWords(pages)}</span>}
+      </div>
+      <div data-kpi="accuracy" className={TILE}>
+        <span className="text-xs leading-4 text-muted-foreground">Accuracy</span>
+        <span className="flex h-7 items-center">{accuracy ? <AccuracyBadge accuracy={accuracy} bare /> : <span className="text-xl font-semibold text-muted-foreground">—</span>}</span>
+      </div>
+    </section>
   );
 }

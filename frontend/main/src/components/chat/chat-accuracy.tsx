@@ -23,7 +23,8 @@ const TONE_CLASS: Record<AccuracyTone, string> = {
   none: 'border-border bg-muted text-muted-foreground',
 };
 
-export function AccuracyBadge({ accuracy }: { accuracy: ChatAccuracy }) {
+/** `bare`: the score alone ("78%"), for the summary strip's Accuracy tile (#1508). */
+export function AccuracyBadge({ accuracy, bare = false }: { accuracy: ChatAccuracy; bare?: boolean }) {
   const tone = accuracyTone(accuracy.score);
   const rows = accuracyRows(accuracy);
   const factor = coverageFactorWords(accuracy.coverage_factor);
@@ -39,7 +40,7 @@ export function AccuracyBadge({ accuracy }: { accuracy: ChatAccuracy }) {
         )}
       >
         <Gauge className="size-3.5" aria-hidden="true" />
-        {accuracyWords(accuracy)}
+        {bare ? (accuracy.score == null ? 'n/a' : `${Math.round(accuracy.score)}%`) : accuracyWords(accuracy)}
       </PopoverTrigger>
       <PopoverContent align="start" className="w-[min(30rem,calc(100vw-24px))] gap-3 rounded-xl p-3 font-sans">
         <p className="text-sm font-semibold tabular-nums">

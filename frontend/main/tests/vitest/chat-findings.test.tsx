@@ -34,6 +34,12 @@ const FINDINGS: ChatFinding[] = [
   finding('f4', { category: 'other', page: 2, item: 'Sink model', status: 'same' }),
 ];
 
+/** Opens a row's detail, then the evidence viewer from it (#1508: a row click opens the detail in place). */
+async function openViewer(user: ReturnType<typeof userEvent.setup>, node: HTMLElement, item: string) {
+  await user.click(within(node).getByRole('button', { name: item }));
+  await user.click(within(node).getByRole('button', { name: 'Open viewer' }));
+}
+
 const rows = (node: HTMLElement) => [...node.querySelectorAll<HTMLElement>('[data-slot="chat-finding-row"]:not([data-leaving])')].map((row) => row.dataset.id);
 
 let restoreMatchMedia: (() => void) | null = null;
@@ -58,17 +64,18 @@ beforeEach(() => {
 });
 
 describe('the findings table', () => {
-  it('is one table grouped Countertops / Cabinets / Other, with a count line, ticks, source tags and thumbnails', () => {
+  it('is one table grouped by area (else page), wrong first, with a count line, ticks, source tags and thumbnails', () => {
     const { node } = show(answer({ findings: FINDINGS }));
     const table = within(node).getByRole('table');
     expect(node.querySelectorAll('[data-slot="chat-findings-table"]')).toHaveLength(1);
     // Not inside the work fold: a direct part of the answer.
     expect(node.querySelector('[data-slot="chat-activity"] [data-slot="chat-findings"]')).toBeNull();
     expect(within(node).getByText('2 differences · 1 to check')).toBeTruthy();
-    expect(within(table).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual(['Page', 'Item', 'Architect', 'Vendor', 'Status', 'Trust', 'Evidence']);
-    expect(within(table).getAllByRole('rowheader').filter((cell) => cell.getAttribute('scope') === 'rowgroup').map((cell) => cell.textContent)).toEqual(['Countertops 2', 'Cabinets 1']);
+    expect(within(table).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual(['Page', 'Item', 'Architect → Vendor', 'Difference', 'Status', 'Trust', 'Evidence']);
+    // "Vanity top depth" names an area; the others name none, so they are grouped by page. Wrong first.
+    expect([...node.querySelectorAll('[data-slot="chat-findings-group-toggle"]')].map((toggle) => toggle.textContent)).toEqual(['Vanity· p3·1 wrong', 'Page 7·1 wrong', 'Page 9·1 to check']);
     // Same rows are hidden until the filter asks.
-    expect(rows(node)).toEqual(['f3', 'f2', 'f1']);
+    expect(rows(node)).toEqual(['f3', 'f1', 'f2']);
 
     const vanity = node.querySelector<HTMLElement>('[data-id="f3"]')!;
     expect(within(vanity).getByText('22"')).toBeTruthy();
@@ -115,7 +122,7 @@ describe('the findings table', () => {
     const { node } = show(answer({ findings: FINDINGS }));
     expect(within(node).queryByRole('table')).toBeNull();
     const cards = node.querySelector('[data-slot="chat-findings-cards"]')!;
-    expect(within(cards as HTMLElement).getAllByRole('button', { name: /open the evidence/ })).toHaveLength(3);
+    expect(within(cards as HTMLElement).getAllByRole('button', { name: /show the details/ })).toHaveLength(3);
     expect(within(cards as HTMLElement).getByText('Vanity top depth')).toBeTruthy();
   });
 });
@@ -124,7 +131,7 @@ describe('the evidence viewer', () => {
   it('opens on a row, steps with the arrows, shows a placeholder for a missing picture, and closes on Esc', async () => {
     const user = userEvent.setup();
     const { node } = show(answer({ findings: FINDINGS }), { fullPageHref: '#/review/pkg-1' });
-    await user.click(within(node).getByRole('button', { name: 'Vanity top depth' }));
+    await openViewer(user, node, 'Vanity top depth');
     const viewer = await screen.findByRole('dialog');
     expect(within(viewer).getByRole('heading', { name: 'Vanity top depth' })).toBeTruthy();
     expect(within(viewer).getByRole('img', { name: 'Architect, page 3' }).getAttribute('src')).toBe('/api/v1/chats/c-1/pictures/arch-f3');
@@ -132,17 +139,18 @@ describe('the evidence viewer', () => {
     expect(within(viewer).getByText('1 of 3')).toBeTruthy();
     expect(within(viewer).getByRole('link', { name: 'Open in review screen' }).getAttribute('href')).toBe('#/review/pkg-1');
 
-    await user.keyboard('{ArrowRight}');
-    expect(within(screen.getByRole('dialog')).getByRole('heading', { name: 'Island top depth' })).toBeTruthy();
+    // The arrows follow the table's order: by area, wrong first.
     await user.keyboard('{ArrowRight}');
     expect(within(screen.getByRole('dialog')).getByRole('heading', { name: 'Base cabinet B3 width' })).toBeTruthy();
+    await user.keyboard('{ArrowRight}');
+    expect(within(screen.getByRole('dialog')).getByRole('heading', { name: 'Island top depth' })).toBeTruthy();
     expect((within(screen.getByRole('dialog')).getByRole('button', { name: 'Next finding' }) as HTMLButtonElement).disabled).toBe(true);
     await user.keyboard('{ArrowLeft}');
-    expect(within(screen.getByRole('dialog')).getByRole('heading', { name: 'Island top depth' })).toBeTruthy();
+    expect(within(screen.getByRole('dialog')).getByRole('heading', { name: 'Base cabinet B3 width' })).toBeTruthy();
 
     // Zoom works on the large crop.
     const dialog = screen.getByRole('dialog');
-    await user.click(within(dialog).getByRole('button', { name: 'Zoom in: Architect, page 9' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Zoom in: Architect, page 7' }));
     expect(dialog.querySelector('[data-side="architect"] [data-slot="chat-evidence-frame"]')?.getAttribute('data-zoom')).toBe('1.50');
 
     await user.keyboard('{Escape}');
@@ -156,7 +164,7 @@ describe('the evidence viewer', () => {
       trust_level: 'confirmed', checks: { printed_architect: 'match', printed_vendor: 'match', second_read: 'agrees' },
     });
     const { node } = show(answer({ findings: [checked] }));
-    await user.click(within(node).getByRole('button', { name: 'Sink base width' }));
+    await openViewer(user, node, 'Sink base width');
     const viewer = await screen.findByRole('dialog');
     const printed = [...viewer.querySelectorAll('[data-slot="chat-evidence-printed"]')].map((line) => line.textContent);
     expect(printed).toEqual(['✓Printed at this spot: 3\'-1"', '✓Printed at this spot: 46"']);
@@ -190,7 +198,7 @@ describe('the coverage strip', () => {
     await user.click(within(strip).getByRole('button', { name: 'Page 7: Different. Show its findings' }));
     expect(rows(node)).toEqual(['f1']);
     await user.click(within(node).getByRole('button', { name: 'Showing page 7 only. Show all pages' }));
-    expect(rows(node)).toEqual(['f3', 'f2', 'f1']);
+    expect(rows(node)).toEqual(['f3', 'f1', 'f2']);
   });
 });
 
@@ -250,8 +258,25 @@ describe('trust', () => {
     const filler = node.querySelector<HTMLElement>('[data-id="c2"]')!;
     expect(filler.querySelector('[data-slot="chat-trust-level"]')?.getAttribute('title')).toBe('To check: Second read disagrees');
     expect(filler.querySelector('[data-check="second_read"]')?.getAttribute('title')).toBe('Second read disagrees');
-    expect(within(filler).getByText('not a number')).toBeTruthy();
+    // A row no longer says "not a number" under its value (#1508): the detail does, as a quiet pill.
+    expect(within(filler).queryByText('not a number')).toBeNull();
     expect(within(filler).getByText('TBD')).toBeTruthy();
+  });
+
+  it('opens a row’s detail in place: full values, why, checks, large crops and Open viewer', async () => {
+    const user = userEvent.setup();
+    const { node } = show(answer({ findings: trusted, trust: report }));
+    const filler = node.querySelector<HTMLElement>('[data-id="c2"]')!;
+    const toggle = within(filler).getByRole('button', { name: 'Filler' });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    await user.click(filler);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    const detail = node.querySelector<HTMLElement>('[data-slot="chat-finding-detail"][data-id="c2"]')!;
+    expect(within(detail).getByText('not a number')).toBeTruthy();
+    expect(within(detail).getByText('Second read disagrees')).toBeTruthy();
+    expect(within(detail).getByRole('img', { name: 'Architect evidence' }).getAttribute('src')).toBe('/api/v1/chats/c-1/pictures/arch-c2');
+    await user.click(within(detail).getByRole('button', { name: 'Open viewer' }));
+    expect(within(await screen.findByRole('dialog')).getByRole('heading', { name: 'Filler' })).toBeTruthy();
   });
 
   it('downloads the findings as a CSV with the trust columns', async () => {

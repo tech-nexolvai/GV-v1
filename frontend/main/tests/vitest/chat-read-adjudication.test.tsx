@@ -83,6 +83,7 @@ describe('the evidence viewer', () => {
     const node = screen.getByRole('article', { name: 'Answer' });
 
     await user.click(within(node).getByRole('button', { name: 'Sink base width' }));
+    await user.click(within(node).getByRole('button', { name: 'Open viewer' }));
     let viewer = await screen.findByRole('dialog');
     expect(within(viewer).getByText('Second read: 40" · Third read (Sonnet, 300 dpi): 46" → agrees')).toBeTruthy();
     expect(viewer.querySelector('[data-check="critic"]')).toBeNull();

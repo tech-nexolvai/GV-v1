@@ -97,4 +97,15 @@
   }
 }
 
+/*
+ * #1508: the findings (and a full check's summary and files) may use more width than the text
+ * column, centred on it, so the evidence column fits. The chat thread is its size container.
+ */
+.chat-wide {
+  --chat-wide: min(76rem, 100cqw - 2rem);
+  width: var(--chat-wide);
+  max-width: none;
+  margin-inline-start: calc((100% - var(--chat-wide)) / 2);
+}
+
 } /* @layer legacy */
