@@ -8,6 +8,7 @@
  */
 
 import type { ChatAccuracy, ChatAgent, ChatBlock, ChatCite, ChatCoverage, ChatEffort, ChatEvent, ChatFile, ChatFinding, ChatFindingUpdate, ChatMessage, ChatMode, ChatModel, ChatProduct, ChatProgress, ChatResolver, ChatResume, ChatScope, ChatStep, ChatStopped, ChatSummary, ChatTask, ChatTrust, ChatUnderstood, ChatUnknown } from '@/lib/chat-api';
+import { CHECK_MODEL } from '@/lib/chat-api';
 import { EFFORT_WORDS } from '@/lib/chat-settings';
 
 /** A helper agent while its Agent step runs: `running` until its `agent_end`. */
@@ -647,7 +648,8 @@ export function footerWords(message: Pick<ViewMessage, 'model' | 'effort' | 'cos
   return [
     modelLabel(message.model, models),
     message.effort ? `${EFFORT_WORDS[message.effort]} effort` : null,
-    messageCost(message.cost_usd),
+    // A code-only answer (#1584) costs nothing; the server's "0.00" would read "<$0.01".
+    message.model === CHECK_MODEL ? '$0' : messageCost(message.cost_usd),
   ].filter(Boolean).join(' · ');
 }
 
