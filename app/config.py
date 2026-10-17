@@ -160,6 +160,11 @@ class Settings(BaseSettings):
     # first; a set no chat uses any more loses its cache. Removed pages are drawn again when needed.
     assistant_page_cache_set_mb: int = Field(default=300, ge=10, le=100_000)
     assistant_page_cache_total_mb: int = Field(default=1000, ge=10, le=1_000_000)
+    # #1548: pages the cache draws at once, and its decoded tiles kept in memory (MB). Read by the
+    # cache when a message starts (they were read from the environment only, so a `.env` line
+    # stopped the API).
+    assistant_page_cache_workers: int = Field(default=3, ge=1, le=8)
+    assistant_page_cache_memory_mb: int = Field(default=256, ge=16, le=100_000)
     # The Usage page can show what OpenRouter reports this key has used (all projects using the
     # key), beside the recorded total (#1165): a free, read-only request with `OPENROUTER_API_KEY`.
     # Off by default, and off whenever no key is set.

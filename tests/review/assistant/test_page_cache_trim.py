@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from pydantic import ValidationError
 from reportlab.pdfgen import canvas  # type: ignore[import-untyped]
 
 from app.config import Settings
@@ -314,11 +315,19 @@ def test_every_message_ends_by_starting_the_clean_up(
         raise RuntimeError("boom")
 
     monkeypatch.setattr(chat_service, "_run_message", fails)
+    sized: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        chat_service,
+        "configure_page_cache",
+        lambda *, workers, memory_mb: sized.append((workers, memory_mb)),
+    )
     released: list[object] = []
     job = SimpleNamespace(
         chat_root=tmp_path,
         page_cache_set_mb=50,
         page_cache_total_mb=500,
+        page_cache_workers=2,
+        page_cache_memory_mb=64,
         registry=SimpleNamespace(release=released.append),
     )
     run = SimpleNamespace(
@@ -329,6 +338,7 @@ def test_every_message_ends_by_starting_the_clean_up(
     chat_service.run_message(cast(Any, job), cast(Any, run))
 
     assert released == [run]
+    assert sized == [(2, 64)]
     assert started == [(tmp_path, 50, 500)]
 
 
@@ -338,14 +348,55 @@ def test_the_cache_sizes_are_known_settings_even_in_the_env_file(tmp_path: Path)
         "GV_DATABASE_URL=postgresql+psycopg://gv:gv@localhost:5433/gv\n"
         "GV_ASSISTANT_PAGE_CACHE_SET_MB=200\n"
         "GV_ASSISTANT_PAGE_CACHE_TOTAL_MB=800\n"
+        "GV_ASSISTANT_PAGE_CACHE_WORKERS=2\n"
+        "GV_ASSISTANT_PAGE_CACHE_MEMORY_MB=64\n"
     )
     settings = Settings(_env_file=env)  # type: ignore[call-arg]
     assert (settings.assistant_page_cache_set_mb, settings.assistant_page_cache_total_mb) == (
         200,
         800,
     )
+    assert (settings.assistant_page_cache_workers, settings.assistant_page_cache_memory_mb) == (
+        2,
+        64,
+    )
     defaults = Settings(_env_file=None, database_url="postgresql+psycopg://gv:gv@h/gv")  # type: ignore[call-arg]
     assert (defaults.assistant_page_cache_set_mb, defaults.assistant_page_cache_total_mb) == (
         300,
         1000,
     )
+
+
+def test_a_size_out_of_range_is_refused_not_quietly_clamped(tmp_path: Path) -> None:
+    env = tmp_path / ".env"
+    env.write_text(
+        "GV_DATABASE_URL=postgresql+psycopg://gv:gv@localhost:5433/gv\n"
+        "GV_ASSISTANT_PAGE_CACHE_WORKERS=9\n"
+    )
+    with pytest.raises(ValidationError, match="assistant_page_cache_workers"):
+        Settings(_env_file=env)  # type: ignore[call-arg]
+
+
+def test_the_sizes_from_settings_beat_the_environment_and_resize_the_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in ("_set_workers", "_set_memory_mb", "_pool", "_pool_size"):
+        monkeypatch.setattr(page_cache, name, getattr(page_cache, name))
+    monkeypatch.setattr(page_cache, "_pool", None)
+    monkeypatch.setenv("GV_ASSISTANT_PAGE_CACHE_WORKERS", "5")
+    monkeypatch.setenv("GV_ASSISTANT_PAGE_CACHE_MEMORY_MB", "999")
+    assert page_cache._workers() == 5
+
+    page_cache.configure(workers=2, memory_mb=32)
+    assert (page_cache._workers(), page_cache._memory_bytes()) == (2, 32_000_000)
+    first = page_cache._executor()
+    assert page_cache._pool_size == 2
+
+    page_cache.configure(workers=2, memory_mb=64)
+    assert page_cache._executor() is first  # same size: the pool is kept
+
+    page_cache.configure(workers=4, memory_mb=64)
+    second = page_cache._executor()
+    assert second is not first and page_cache._pool_size == 4
+    assert second.submit(lambda: 7).result(5) == 7
+    second.shutdown(wait=True)

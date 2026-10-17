@@ -670,6 +670,9 @@ class MessageJob:
     page_cache_set_mb: int = 300
     page_cache_total_mb: int = 1000
     """#1575: the hi-res page caches' size per set and for all sets, kept after each message."""
+    page_cache_workers: int = 3
+    page_cache_memory_mb: int = 256
+    """#1575: pages the hi-res cache draws at once, and its decoded tiles kept in memory."""
 
 
 _NO_SANDBOX: Final = (
@@ -705,6 +708,7 @@ def run_message(job: MessageJob, run: RunningMessage, emit: Emit | None = None) 
         _maybe_checkpoint(run, event)
 
     try:
+        configure_page_cache(workers=job.page_cache_workers, memory_mb=job.page_cache_memory_mb)
         _run_message(job, run, publish)
     except Exception:  # noqa: BLE001 - the stream still ends cleanly
         _log.exception("assistant chat message failed before it could be stored")
@@ -721,6 +725,17 @@ def run_message(job: MessageJob, run: RunningMessage, emit: Emit | None = None) 
         start_page_cache_trim(
             job.chat_root, set_mb=job.page_cache_set_mb, total_mb=job.page_cache_total_mb
         )
+
+
+def configure_page_cache(*, workers: int, memory_mb: int) -> None:
+    """Hand the hi-res page cache its two sizes from `Settings` (#1575), before the message draws
+    anything. Loaded by name: `app/api/` never imports the drawing code. Never raises."""
+    try:
+        import_module("app.review.assistant.page_cache").configure(
+            workers=workers, memory_mb=memory_mb
+        )
+    except Exception as failed:  # noqa: BLE001 - the cache keeps its own sizes
+        _log.warning("assistant page cache sizes not set: %s", type(failed).__name__)
 
 
 #: The hi-res page caches' clean-up (#1575) starts after a message, at most this often (seconds).

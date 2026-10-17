@@ -56,6 +56,7 @@ __all__ = [
     "TILE_PX",
     "PageSize",
     "Trimmed",
+    "configure",
     "cut",
     "last_used",
     "page_sizes",
@@ -75,14 +76,14 @@ TILE_PX: Final = 1024
 #: A page whose 300-dpi picture would be bigger than this (pixels) is not cached (a 36 x 24 in
 #: sheet is 78 million): its crops render as before.
 MAX_PAGE_PIXELS: Final = 120_000_000
-#: Pages drawn at once (`GV_ASSISTANT_PAGE_CACHE_WORKERS`). pdfium draws one page at a time; the
-#: workers overlap one page's drawing with others' tile writing.
+#: Pages drawn at once (`GV_ASSISTANT_PAGE_CACHE_WORKERS`, 1 to 8). pdfium draws one page at a
+#: time; the workers overlap one page's drawing with others' tile writing.
 _DEFAULT_WORKERS: Final = 3
 _SLACK: Final = 0.01
 #: A page whose colours differ by no more than this between channels is stored grey.
 _GREY_SPREAD: Final = 12
-#: Decoded tiles kept in memory (`GV_ASSISTANT_PAGE_CACHE_MEMORY_MB`): a crop on a page looked at
-#: a moment ago is cut without decoding anything.
+#: Decoded tiles kept in memory (`GV_ASSISTANT_PAGE_CACHE_MEMORY_MB`, at least 16): a crop on a
+#: page looked at a moment ago is cut without decoding anything.
 _DEFAULT_MEMORY_MB: Final = 256
 #: A stored page is marked used (its `meta.json` touched) at most this often (seconds).
 _TOUCH_EVERY_S: Final = 60.0
@@ -91,11 +92,15 @@ _STALE_BUILD_S: Final = 3600.0
 
 _pool_lock: Final = threading.Lock()
 _pool: ThreadPoolExecutor | None = None
+_pool_size = 0
 _jobs: dict[tuple[Path, str, int], Future[Path | None]] = {}
 _keys: dict[tuple[str, int, int], str] = {}
 _sizes_lock: Final = threading.Lock()
 _memory: OrderedDict[tuple[str, int, int], Image.Image] = OrderedDict()
 _held = 0
+#: The two sizes from `Settings` (`configure`); `None`: the environment's, else the default.
+_set_workers: int | None = None
+_set_memory_mb: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,19 +128,37 @@ class _Stored:
     size: int
 
 
+def configure(*, workers: int, memory_mb: int) -> None:
+    """Use these sizes (from `Settings`, so a value in `.env` counts too) instead of reading the
+    environment. A pool already running with another size is replaced; the pages it is drawing
+    finish."""
+    global _pool, _set_workers, _set_memory_mb
+    old: ThreadPoolExecutor | None = None
+    with _pool_lock:
+        _set_workers, _set_memory_mb = workers, memory_mb
+        if _pool is not None and _pool_size != _workers():
+            old, _pool = _pool, None
+    if old is not None:
+        old.shutdown(wait=False)
+
+
 def _workers() -> int:
-    try:
-        value = int(os.environ.get("GV_ASSISTANT_PAGE_CACHE_WORKERS", _DEFAULT_WORKERS))
-    except ValueError:
-        value = _DEFAULT_WORKERS
+    if _set_workers is not None:
+        value = _set_workers
+    else:
+        try:
+            value = int(os.environ.get("GV_ASSISTANT_PAGE_CACHE_WORKERS", _DEFAULT_WORKERS))
+        except ValueError:
+            value = _DEFAULT_WORKERS
     return max(1, min(8, value))
 
 
 def _executor() -> ThreadPoolExecutor:
-    global _pool
+    global _pool, _pool_size
     with _pool_lock:
         if _pool is None:
-            _pool = ThreadPoolExecutor(max_workers=_workers(), thread_name_prefix="gv-page-cache")
+            _pool_size = _workers()
+            _pool = ThreadPoolExecutor(max_workers=_pool_size, thread_name_prefix="gv-page-cache")
         return _pool
 
 
@@ -272,10 +295,13 @@ def _tile(stored: Path, row: int, column: int) -> Image.Image:
 
 
 def _memory_bytes() -> int:
-    try:
-        megabytes = int(os.environ.get("GV_ASSISTANT_PAGE_CACHE_MEMORY_MB", _DEFAULT_MEMORY_MB))
-    except ValueError:
-        megabytes = _DEFAULT_MEMORY_MB
+    if _set_memory_mb is not None:
+        megabytes = _set_memory_mb
+    else:
+        try:
+            megabytes = int(os.environ.get("GV_ASSISTANT_PAGE_CACHE_MEMORY_MB", _DEFAULT_MEMORY_MB))
+        except ValueError:
+            megabytes = _DEFAULT_MEMORY_MB
     return max(16, megabytes) * 1_000_000
 
 
