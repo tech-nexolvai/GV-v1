@@ -40,6 +40,8 @@ __all__ = [
     "ChatOut",
     "ChatProgressBlock",
     "ChatProgressOut",
+    "ChatResumeBlock",
+    "ChatResumeOut",
     "ChatStepBlock",
     "ChatStepOut",
     "ChatSummaryOut",
@@ -69,7 +71,7 @@ type ChatStepTool = Literal[
     "review_results",
     "compare_rounds",
 ]
-type ChatStopped = Literal["cost_cap", "cancelled", "error", "turn_limit"]
+type ChatStopped = Literal["cost_cap", "cancelled", "error", "turn_limit", "interrupted"]
 type ChatCapHit = Literal["message", "package"]
 
 
@@ -89,6 +91,13 @@ class ChatMessageIn(BaseModel):
     mode: Literal["chat", "full_check"] = "chat"
     products: list[Literal["countertop", "cabinet"]] | None = Field(
         default=None, min_length=1, max_length=2
+    )
+    continue_from: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        description="Continue (#1514): the id of the answer a server restart interrupted. The "
+        "answer goes on from its saved work; a full check keeps its findings and checks only the "
+        "pages not yet done (`mode` and `products` are then the interrupted answer's).",
     )
 
     @model_validator(mode="after")
@@ -886,6 +895,27 @@ class ChatProgressBlock(BaseModel):
     progress: ChatProgressOut
 
 
+class ChatResumeOut(BaseModel):
+    """How an answer a server restart interrupted can be continued (#1514), in plain words."""
+
+    model_config = ConfigDict(frozen=True)
+
+    mode: Literal["chat", "full_check"] = Field(
+        description="How the interrupted answer was asked: Continue asks the same way."
+    )
+    products: list[Literal["countertop", "cabinet"]] | None = None
+    findings: int = Field(description="Findings already made: kept, not made again.")
+    pages_done: int = Field(description="Pages already accounted for: not opened again.")
+    redo: str = Field(description="What Continue will do again, in one or two plain sentences.")
+
+
+class ChatResumeBlock(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["resume"]
+    resume: ChatResumeOut
+
+
 ChatBlock = Annotated[
     ChatThinkingBlock
     | ChatTextBlock
@@ -898,7 +928,8 @@ ChatBlock = Annotated[
     | ChatAccuracyBlock
     | ChatUnknownsBlock
     | ChatScopeBlock
-    | ChatProgressBlock,
+    | ChatProgressBlock
+    | ChatResumeBlock,
     Field(discriminator="type"),
 ]
 
@@ -953,6 +984,10 @@ class ChatMessageOut(BaseModel):
     )
     products: list[Literal["countertop", "cabinet"]] | None = Field(
         default=None, description="The products the message was about; null on older messages."
+    )
+    resume: ChatResumeOut | None = Field(
+        default=None,
+        description="With `stopped: interrupted`: how Continue picks up (its `resume` block).",
     )
     scope: ChatScopeOut | None = Field(
         default=None,

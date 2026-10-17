@@ -40,7 +40,7 @@ from app.db.base import Base, Immutable, TimestampedUUID, UTCDateTime, utc_now
 
 CHAT_ROLES: tuple[str, ...] = ("user", "assistant")
 #: Why an answer stopped before it finished; NULL when it finished.
-CHAT_STOPS: tuple[str, ...] = ("cost_cap", "cancelled", "error", "turn_limit")
+CHAT_STOPS: tuple[str, ...] = ("cost_cap", "cancelled", "error", "turn_limit", "interrupted")
 #: With `stopped = 'cost_cap'`, which cap stopped it: the answer's own, or the drawing set's budget.
 CHAT_CAPS: tuple[str, ...] = ("message", "package")
 #: What a message was (#1513): a typed question, or the one-click full check.
