@@ -443,7 +443,41 @@ def test_helpers_run_together_and_their_reports_go_back_to_the_lead(tmp_path: Pa
         "verify_value",
         "measure_on_drawing",
         "read_under_markup",
+        "drawing_facts",
     ]
+
+
+def test_a_helper_started_with_a_kit_gets_only_that_kits_tools(tmp_path: Path) -> None:
+    started = reply(
+        tool(
+            "ag1",
+            "Agent",
+            {"description": "Notes p13", "prompt": "Find every note", "kit": "notes"},
+        ),
+        tool("ag2", "Agent", {"description": "Bad kit", "prompt": "Other", "kit": "strings"}),
+        stop="tool_use",
+    )
+    provider = ScriptedProvider(
+        lead=[started, reply(text("Done."))],
+        helpers={"Find every note": [reply(text("Two notes."), model=SONNET)]},
+    )
+    harness = Harness(tmp_path, provider)
+
+    harness.run()
+
+    helper_call = _sent(provider.helper_calls["Find every note"][0])
+    assert [t["name"] for t in helper_call["tools"]] == [
+        "view",
+        "zoom",
+        "report_finding",
+        "set_coverage",
+        "drawing_facts",
+    ]
+    # Its prompt names only the tools it has.
+    assert "record_string" not in json.dumps(helper_call["system"])
+    results = _sent(provider.lead_calls[1])["messages"][-1]["content"]
+    refused = next(r for r in results if r["tool_use_id"] == "ag2")
+    assert "kit must be one of compare, rounds, notes" in json.dumps(refused)
 
 
 def test_a_helper_at_its_turn_limit_is_told_to_wrap_up_and_reports(tmp_path: Path) -> None:
