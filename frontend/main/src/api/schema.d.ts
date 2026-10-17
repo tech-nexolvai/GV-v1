@@ -329,6 +329,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/packages/{package_id}/full-check-plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Code's plan for a full check and its 0-3 questions (no AI call)
+         * @description Copies the set's latest PDFs aside and starts its set pack when it is not made yet, then
+         *     reads the page map: `building` until it is made (ask again in a moment).
+         */
+        get: operations["get_full_check_plan_api_v1_packages__package_id__full_check_plan_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/packages/{package_id}/plan-pages/{page}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A page's picture for a plan-check question */
+        get: operations["plan_page_api_v1_packages__package_id__plan_pages__page__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/product-types": {
         parameters: {
             query?: never;
@@ -4589,6 +4627,27 @@ export interface components {
             value_in: number;
         };
         /**
+         * ChatFindingImpactOut
+         * @description How much a Wrong item matters (#1569), by code: ordering only, never a status or colour.
+         */
+        ChatFindingImpactOut: {
+            /**
+             * Rank
+             * @description Its place among the answer's items of the same status (1 = biggest).
+             */
+            rank?: number | null;
+            /**
+             * Score
+             * @description Bigger matters more.
+             */
+            score: number;
+            /**
+             * Why
+             * @description Plain words: "changes fabrication (overall size); 9 in off".
+             */
+            why: string;
+        };
+        /**
          * ChatFindingInchesOut
          * @description Code's numbers (decimal strings, inches): never the AI's arithmetic.
          */
@@ -4649,6 +4708,8 @@ export interface components {
             evidence_kind?: ("observed" | "derived" | "inferred") | null;
             /** Id */
             id: string;
+            /** @description Wrong and Your-decision items (#1569): how much it matters, by code; the screen, the cloud drawing's numbers and the check report follow this order. */
+            impact?: components["schemas"]["ChatFindingImpactOut"] | null;
             inches?: components["schemas"]["ChatFindingInchesOut"] | null;
             /** Item */
             item: string;
@@ -4750,6 +4811,31 @@ export interface components {
             value_arch?: string | null;
             /** Value Vendor */
             value_vendor?: string | null;
+        };
+        /**
+         * ChatFullCheckPlanOut
+         * @description `GET /chats/{chat_id}/full-check-plan` (#1569): code's plan and its 0-3 questions.
+         */
+        ChatFullCheckPlanOut: {
+            /** Doubts */
+            doubts?: components["schemas"]["ChatPlanDoubtOut"][];
+            /**
+             * More
+             * @description Further unsure places, compared as read.
+             * @default 0
+             */
+            more: number;
+            /**
+             * State
+             * @description ready: the page map is read; building: ask again in a moment; none: no page map can be made (no PDFs): run without questions.
+             * @enum {string}
+             */
+            state: "ready" | "building" | "none";
+            /**
+             * Summary
+             * @description "60 pages · 22 pairs · rounds 1-2 · 3 general pages".
+             */
+            summary?: string | null;
         };
         /**
          * ChatGvChecksOut
@@ -4958,6 +5044,11 @@ export interface components {
             mode: "chat" | "full_check";
             /** Model */
             model: string;
+            /**
+             * Plan Answers
+             * @description A full check only (#1569): the answers to the plan check's questions (`GET /chats/{chat_id}/full-check-plan`), kept with the drawing set's page map.
+             */
+            plan_answers?: components["schemas"]["ChatPlanAnswerIn"][] | null;
             /** Products */
             products?: ("countertop" | "cabinet")[] | null;
             /**
@@ -5091,6 +5182,58 @@ export interface components {
             running_message_id?: string | null;
             /** Title */
             title: string | null;
+        };
+        /**
+         * ChatPlanAnswerIn
+         * @description The reviewer's answer to one plan-check question (#1569).
+         */
+        ChatPlanAnswerIn: {
+            /**
+             * Answer
+             * @description One of its options' `value`.
+             */
+            answer: string;
+            /**
+             * Id
+             * @description The question's id (its `id`).
+             */
+            id: string;
+        };
+        /**
+         * ChatPlanDoubtOut
+         * @description One question code asks before a full check, where it is unsure of the page map (#1569).
+         */
+        ChatPlanDoubtOut: {
+            /**
+             * Box
+             * @description The drawing it is about, as fractions of the picture (x0, y0, x1, y1).
+             */
+            box?: number[] | null;
+            /** Id */
+            id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "prototype" | "role" | "pair" | "round" | "heading";
+            /** Options */
+            options: components["schemas"]["ChatPlanOptionOut"][];
+            /** Page */
+            page: number;
+            /**
+             * Picture Url
+             * @description The page's picture (drawings only, 100 dpi), when made.
+             */
+            picture_url?: string | null;
+            /** Question */
+            question: string;
+        };
+        /** ChatPlanOptionOut */
+        ChatPlanOptionOut: {
+            /** Label */
+            label: string;
+            /** Value */
+            value: string;
         };
         /** ChatProgressBlock */
         ChatProgressBlock: {
@@ -12038,6 +12181,74 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ChatCreatedOut"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_full_check_plan_api_v1_packages__package_id__full_check_plan_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatFullCheckPlanOut"];
+                };
+            };
+            /** @description No such drawing set (or no access). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    plan_page_api_v1_packages__package_id__plan_pages__page__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                package_id: string;
+                page: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
