@@ -8,10 +8,13 @@
 # /mnt/skills/gv-review.
 FROM python:3.12-slim
 
+# poppler-data: the character maps poppler needs for Chinese/Japanese/Korean fonts. Without it
+# pdftotext prints "Missing language pack for 'Adobe-GB1' mapping" and drops that text (seen on a
+# real set whose vendor drawings use a Chinese font, 2026-10-17).
 # tesseract-ocr: the second OCR engine of `verify_value`'s drawn-ink route (#1531); libgl1 and
 # libglib2.0-0: what RapidOCR's OpenCV needs to load.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends poppler-utils tesseract-ocr libgl1 libglib2.0-0 \
+    && apt-get install -y --no-install-recommends poppler-utils poppler-data tesseract-ocr libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir "pypdf>=6,<7" "pdfplumber==0.11.*" "pypdfium2>=4,<6" "pillow>=11"
