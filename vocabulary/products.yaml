@@ -1,0 +1,237 @@
+# The product registry: every product GV Review knows, in the order the screens show them (#1547).
+#
+# This file is the single source. The API (`GET /api/v1/products`), the chat's product chips and
+# "+" menu, the upload picker, the message `products` check, the package `product_type` check, the
+# assistant's skill folder, the full-check checklist and the findings' grouping all read it.
+#
+# ADDING A PRODUCT needs no code change:
+#   1. add an entry below (id, label, plural, description, active, check_kinds, checklist,
+#      global_rule_hints);
+#   2. add its skill file, `<skills_folder>/<id>.md` (generic: how to review this product; no client
+#      values);
+#   3. publish its rules in the rulebook (GV's standards that are not on the drawing).
+# Set `active: true` when it is ready: only active products can be picked for a chat or an upload.
+# Never rename or remove an id that has been used: stored drawing sets and answers keep it.
+#
+# Fields:
+#   id                 lowercase letters, digits and _ (at most 32): stored in the database.
+#   label / plural     the words the screens use ("Countertop" / "Countertops").
+#   description        one plain sentence for the picker.
+#   active             true: can be picked now. false: shown greyed, "coming later".
+#   draft              true: the checklist and skill are a generic starter, not yet checked with GV.
+#   check_kinds        dimension_match (the vendor against the architect) and/or global_rules
+#                      (GV's own standards that are not in the drawing; their values are in the
+#                      rulebook, never here).
+#   checklist          what a reviewer compares on every page for this product: name + what.
+#   global_rule_hints  the kinds of GV standard to look for (no numbers: those are in rules.md).
+#   category_label     how findings for this product are grouped on screen and in the report
+#                      (default: plural). A finding's category is the product id, or "other".
+
+version: 1
+# Where each product's skill file `<id>.md` lives, relative to this file.
+skills_folder: ../app/review/assistant/skills/gv-review/products
+
+products:
+  - id: countertop
+    label: Countertop
+    plural: Countertops
+    description: Stone, quartz and solid-surface tops, with their sinks, splashes and cut-outs.
+    active: true
+    draft: false
+    check_kinds: [dimension_match, global_rules]
+    checklist:
+      - name: sizes
+        text: >-
+          Overall length, each piece, depth (countertop depth = cabinet depth + overhang), top and
+          splash thickness, counter height above the floor.
+      - name: sink
+        text: >-
+          Sink centre line from the wall or end, sink model or tag, undermount or drop-in, cut-out
+          width and depth, faucet holes; rim collars must fit their holes.
+      - name: splashes
+        text: >-
+          Backsplash and side splash: present or not, height, thickness, material (stone or tile).
+          A side splash only where the top meets a wall; a free-standing end gets none.
+      - name: overhang
+        text: >-
+          Front and side overhang, knee space, brackets and corbels.
+      - name: cut_outs
+        text: >-
+          Sink, cooktop, grommet and outlet cut-outs: present, size and position.
+      - name: edges
+        text: >-
+          Edge profile, seams and their position, field cut (extra length cut on site, per wall end).
+      - name: material
+        text: >-
+          Material and finish tags on each piece match the architect's for the same piece.
+    global_rule_hints:
+      - Sink cut-out size from the sink's inside size less a clearance on each side.
+      - Sink front offset, and the minimum back offset left behind the cut-out.
+      - Field cut added at each wall end.
+      - Countertop depth from the cabinet depth plus the overhang.
+
+  - id: cabinet
+    label: Cabinet
+    plural: Cabinets
+    description: Base, upper and tall cabinets, with their fillers, doors, drawers and panels.
+    active: true
+    draft: false
+    check_kinds: [dimension_match, global_rules]
+    checklist:
+      - name: widths
+        text: >-
+          Each cabinet and filler width, left to right, and the run's overall (wall to wall).
+      - name: heights_depths
+        text: >-
+          Base and tall cabinet heights, uppers' bottom and top, toe kick height, depth (carcass
+          depth + door thickness).
+      - name: fronts
+        text: >-
+          Door or drawer, how many of each and how arranged, hinge side, open shelves, pull-outs and
+          bins.
+      - name: panels
+        text: >-
+          End panels, scribes and fillers at walls and appliances; uppers present and where they
+          start and stop.
+      - name: equipment
+        text: >-
+          Equipment cabinets (sink, microwave, under-counter fridge, other appliances): their size
+          must not change, and they sit where the architect puts them.
+      - name: hardware
+        text: >-
+          Pulls (type, size, finish), hinges, locks, shelves fixed or adjustable.
+      - name: material
+        text: >-
+          Finish and material tags of fronts, carcass and panels match the architect's.
+    global_rule_hints:
+      - Filler width limits (smallest and largest filler).
+      - Fit to the site by adjusting fillers first; equipment cabinets are never resized.
+      - Cabinet width limits per kind (single door, double door, drawer) for this job.
+
+  - id: lighting
+    label: Lighting
+    plural: Lighting
+    description: Light fixtures and lamps (draft starter checklist, not yet checked with GV).
+    active: false
+    draft: true
+    check_kinds: [dimension_match, global_rules]
+    checklist:
+      - name: dimensions
+        text: >-
+          Fixture size (width, depth, height or diameter), mounting height, centre lines.
+      - name: specs
+        text: >-
+          Lamp base, lamp type and wattage or lumens, colour temperature, cord and plug, mounting
+          and canopy.
+      - name: finish
+        text: Finish and material codes match the architect's or the specification.
+      - name: quantities
+        text: How many of each fixture, and where each one goes.
+      - name: notes
+        text: Every note and callout on the architect's drawing or specification is followed.
+    global_rule_hints:
+      - Lamp base type (for example E26).
+      - Cord type and colour (for example a clear cord).
+      - Plug type (for example a flat plug).
+
+  - id: seating
+    label: Seating
+    plural: Seating
+    description: Chairs, stools, banquettes and sofas (draft starter checklist).
+    active: false
+    draft: true
+    check_kinds: [dimension_match, global_rules]
+    checklist:
+      - name: dimensions
+        text: Overall width, depth and height; seat height and depth; arm height.
+      - name: finish
+        text: Fabric, leather and frame finish codes match the architect's or the specification.
+      - name: specs
+        text: Glides or feet, upholstery details, stacking or swivel, weight limits where stated.
+      - name: quantities
+        text: How many of each piece, and where each one goes.
+      - name: notes
+        text: Every note and callout on the architect's drawing or specification is followed.
+    global_rule_hints: []
+
+  - id: case_goods
+    label: Case good
+    plural: Case goods
+    description: Free-standing furniture such as dressers, desks, nightstands and wardrobes (draft).
+    active: false
+    draft: true
+    check_kinds: [dimension_match, global_rules]
+    checklist:
+      - name: dimensions
+        text: Overall width, depth and height; each drawer and door opening.
+      - name: fronts
+        text: Number of drawers and doors, how arranged, open shelves.
+      - name: hardware
+        text: Pulls, hinges, slides, locks and power units (type, size, finish).
+      - name: finish
+        text: Finish and material codes match the architect's or the specification.
+      - name: quantities
+        text: How many of each piece, and where each one goes.
+      - name: notes
+        text: Every note and callout on the architect's drawing or specification is followed.
+    global_rule_hints: []
+
+  - id: mirrors
+    label: Mirror
+    plural: Mirrors
+    description: Wall and vanity mirrors (draft starter checklist).
+    active: false
+    draft: true
+    check_kinds: [dimension_match, global_rules]
+    checklist:
+      - name: dimensions
+        text: Mirror and frame size, mounting height, centre line over the sink or vanity.
+      - name: specs
+        text: Edge (polished or bevelled), glass type, lighting or demister, hanging hardware.
+      - name: finish
+        text: Frame finish code matches the architect's or the specification.
+      - name: quantities
+        text: How many of each mirror, and where each one goes.
+      - name: notes
+        text: Every note and callout on the architect's drawing or specification is followed.
+    global_rule_hints: []
+
+  - id: accessories
+    label: Accessory
+    plural: Accessories
+    description: Small items such as hooks, bars, holders and bins (draft starter checklist).
+    active: false
+    draft: true
+    check_kinds: [dimension_match, global_rules]
+    checklist:
+      - name: dimensions
+        text: Size and mounting height or position of each accessory.
+      - name: specs
+        text: Model, mounting method and fixings.
+      - name: finish
+        text: Finish and material codes match the architect's or the specification.
+      - name: quantities
+        text: How many of each accessory, and where each one goes.
+      - name: notes
+        text: Every note and callout on the architect's drawing or specification is followed.
+    global_rule_hints: []
+
+  - id: artwork
+    label: Artwork
+    plural: Artwork
+    description: Framed art and wall pieces (draft starter checklist).
+    active: false
+    draft: true
+    check_kinds: [dimension_match, global_rules]
+    checklist:
+      - name: dimensions
+        text: Image and frame size, mounting height, centre line on its wall.
+      - name: specs
+        text: Framing, mat, glazing and hanging hardware.
+      - name: finish
+        text: Frame finish code matches the architect's or the specification.
+      - name: quantities
+        text: How many pieces, and the piece tag for each location.
+      - name: notes
+        text: Every note and callout on the architect's drawing or specification is followed.
+    global_rule_hints: []

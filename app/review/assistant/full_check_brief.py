@@ -22,6 +22,11 @@ notes the vendor contradicts, position (centred, aligned, colliding, fitting its
 and count, the ID set against the brand prototype, and sizes scaled where none is printed. The
 checklist names each of them; the report line code reads back is unchanged.
 
+Products are data (#1547): the shared checklist above holds for every product, and each product in
+focus adds its own items from the product registry (`vocabulary/products.yaml`): a countertop's
+sink and splashes, a cabinet's fronts and fillers, a light fixture's lamp base. A product added to
+the registry reaches the brief with no code change.
+
 Pure code, no AI call and no I/O: the engine calls `helper_brief` for each helper it plans and
 `checklist_gaps` on each helper's report.
 """
@@ -33,6 +38,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Final
 
 from app.review.assistant.chat_trust import recorded_from
+from vocabulary.product_registry import Product, registry
 
 __all__ = [
     "CHECKLIST_FIELDS",
@@ -44,6 +50,7 @@ __all__ = [
     "helper_brief",
     "leads_on_pages",
     "page_lines",
+    "product_checklist",
     "recorded_on_pages",
 ]
 
@@ -151,7 +158,7 @@ CHECKLIST_FIELDS: Final = ("architect", "notes", "strings")
 
 HELPER_BRIEF: Final = """OBJECTIVE: a full GV review of the vendor's drawings on pages {pages} of {file}, against the architect's drawing of the same area. Your pages:
 {page_lines}
-Read /mnt/skills/gv-review/SKILL.md sections 4, 5, 7, 9 and 10 and the settings table of rules.md before you judge a number (a setting nobody entered is missing: say so, never assume one).
+Read /mnt/skills/gv-review/SKILL.md sections 4, 5, 7, 9 and 10, products/<id>.md for each product in focus, and the settings table of rules.md before you judge a number (a setting nobody entered is missing: say so, never assume one).
 
 HOW: zoom the architect's and the vendor's drawing of each page at 300 dpi for small print (up to 8 crops per call). Numbers drawn as pen strokes are read from the picture; `pdftotext -f N -l N -bbox` of the drawings-only copy gives the boxes of text numbers. Anything coloured is GV's markup, never a value; a vendor number under it is still to be found (drawings-only text, 300 dpi, its mm against its inches) before you call it unreadable.
 
@@ -163,6 +170,8 @@ LEADS from GV's own page review on your pages (it could not settle them, or saw 
 
 CHECKLIST, for every page:
 {checklist}
+
+{product_checklist}
 
 OUTPUT: report_finding for EVERY item you compare, the same ones too (status different, check or same), with vendor_box and arch_box, values as printed in inches, round on vendor findings, vs_page when the architect is on another page. Name each item starting with its area from the list above ("<area>: counter height"), the same way on every page, view and round. record_string for every dimension string and record_reading for every value you read, both sides; never add up yourself. set_coverage for each page. verified: false (the lead verifies).
 
@@ -275,18 +284,48 @@ def leads_on_pages(document: Mapping[str, Any] | None, pages: Iterable[int]) -> 
     return lines
 
 
+def _focus(products: Sequence[str] | None) -> tuple[Product, ...]:
+    """The products in focus from the registry, in its order; none named: every active one."""
+    known = registry()
+    if not products:
+        return known.active()
+    return tuple(p for pid in known.ordered(products) if (p := known.get(pid)) is not None)
+
+
+def product_checklist(products: Sequence[str] | None = None) -> str:
+    """The products' own checklist items, after the shared ones: per product in focus, its
+    registry checklist and the kinds of GV standard it has (their values are in rules.md)."""
+    focus = _focus(products)
+    words = registry().words([p.id for p in focus]).lower()
+    lines = [f"FOR EACH PRODUCT IN FOCUS ({words}), also on every page:"]
+    for product in focus:
+        draft = ", draft" if product.draft else ""
+        lines.append(f"{product.plural} (category {product.id}{draft}; products/{product.id}.md):")
+        lines.extend(f"- {item.name.replace('_', ' ')}: {item.text}" for item in product.checklist)
+        if "global_rules" in product.check_kinds and product.global_rule_hints:
+            hints = "; ".join(hint.rstrip(".") for hint in product.global_rule_hints)
+            lines.append(f"- GV standards not on the drawing (values in rules.md): {hints}.")
+    lines.append(
+        "An item of no product in focus is category other. report_finding's category is the "
+        "product id."
+    )
+    return "\n".join(lines)
+
+
 def helper_brief(
     pages: Sequence[int],
     *,
     file_name: str,
     page_map: Mapping[str, Any] | Sequence[Any] | None = None,
     review_document: Mapping[str, Any] | None = None,
+    products: Sequence[str] | None = None,
 ) -> str:
     """The brief for one full-check helper: its pages (with areas and pairs from the page map),
     GV's recorded results and its page review's leads on them, and the per-page checklist.
 
     `review_document` is `review_results`' whole-set document (what the lead's `review_results`
-    call returns); `None` when it could not be read, and the brief says so."""
+    call returns); `None` when it could not be read, and the brief says so. `products`: the products
+    in focus (registry ids); none: every active product (`product_checklist`)."""
     if not pages:
         raise ValueError("a helper needs at least one page")
     recorded = recorded_on_pages(review_document, pages)
@@ -299,6 +338,7 @@ def helper_brief(
         recorded="\n".join(recorded) or (unread if review_document is None else _NONE),
         leads="\n".join(leads) or _NONE,
         checklist="\n".join(f"- {name}: {text}" for name, text in PAGE_CHECKLIST),
+        product_checklist=product_checklist(products),
     )
 
 

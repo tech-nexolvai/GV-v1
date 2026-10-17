@@ -37,6 +37,7 @@ from app.review.assistant.chat_trust import (
     trust_report,
 )
 from app.review.assistant.sandbox import ChatWorkspace, SandboxRefused
+from vocabulary.product_registry import registry
 
 WIDTH, HEIGHT = 612.0, 792.0
 #: Where the test PDF prints its numbers (points, origin top-left): page 1 architect, page 2 vendor.
@@ -112,7 +113,9 @@ def test_the_tool_schemas_are_strict() -> None:
         "source",
     }
     props = report["properties"]
-    assert props["category"]["enum"] == ["countertop", "cabinet", "other"]
+    # #1547: every product of the registry, then "other".
+    assert props["category"]["enum"][:2] == ["countertop", "cabinet"]
+    assert props["category"]["enum"] == [*registry().ids(), "other"]
     assert props["status"]["enum"] == ["different", "check", "same"]
     assert props["source"]["enum"] == [
         "architect",

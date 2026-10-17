@@ -1,12 +1,12 @@
 ---
 name: gv-review
-description: How GV reviews a millwork vendor's shop drawings (countertops, cabinets) against the architect's drawings and GV's own rules. Read this before you answer any question about the drawing set in /mnt/user-data/uploads, compare the vendor with the architect, or make a marked-up PDF.
+description: How GV reviews a vendor's shop drawings (millwork and furnishings; the products in focus are in products/) against the architect's drawings and GV's own rules. Read this before you answer any question about the drawing set in /mnt/user-data/uploads, compare the vendor with the architect, or make a marked-up PDF.
 ---
 
 # GV review: the vendor's shop drawing against the architect's drawing
 
-GV gets **shop drawings** from its vendors (the countertop and cabinet makers) before anything is
-built. A GV reviewer checks them against the **architect's drawings** (the design) and GV's own
+GV gets **shop drawings** from its vendors (the makers of countertops, cabinets, lighting, furniture
+and other products) before anything is built. A GV reviewer checks them against the **architect's drawings** (the design) and GV's own
 rules, and marks up what is wrong. You do that same review, as an AI helper: you find
 and explain differences; a GV reviewer decides. You cannot change the review or record a result.
 
@@ -14,7 +14,10 @@ Files in this folder (read-only):
 - `SKILL.md`: this file. How to work.
 - `rules.md`: GV's rules and the numbers in force **for this drawing set** (company standards,
   project values). Read it before you judge any number. Its numbers win over anything written here.
-- `checklists/` (when present): GV's own checklists for countertops and cabinets.
+- `products/<id>.md`: one file for **each product in focus** (the products the reviewer picked):
+  what that product's drawings show, what to compare, its checklist and the kinds of GV standard it
+  has. **Read each one** before you review. This file is the same for every product.
+- `checklists/` (when present): GV's own checklists.
 
 ## 1. The three layers on a sheet
 
@@ -113,8 +116,8 @@ vendor's number to find, not "unreadable" at first sight: look in the drawings-o
 ## 6. GV's rules first, then everything else against the architect
 
 1. Read `rules.md` (and `checklists/` when present). Apply each rule that fits the item: it says
-   what is compared, the formula, and the numbers in force (field cut per wall end, filler limits,
-   sink clearance, sink front and back offsets...). GV compares **exactly**: no tolerance unless
+   what is compared, the formula, and the numbers in force (each product's file in `products/`
+   says which kinds of GV standard it has). GV compares **exactly**: no tolerance unless
    `rules.md` gives one. A value the rule needs that nobody gave is missing: say so, never assume.
 2. `review_results` gives what GV's code already recorded for this set. Quote it as recorded; never
    contradict it or restate a result in your own words. Much of a set is not checked by code.
@@ -125,40 +128,28 @@ vendor's number to find, not "unreadable" at first sight: look in the drawings-o
 ## 7. What to compare (not only overall widths)
 
 **"The architect prints no size here" never means "nothing to compare".** Architects often draw
-millwork without dimensions; then compare what is drawn: how many bays, doors, drawers and
-shelves, door vs drawer, uppers present and where they start and stop, splashes, the sink and its
-position, appliances, collars and holes, tags and notes (scaled sizes: last bullet below). Do
-this on **every** paired page, including the second round (revision) pages.
+without dimensions; then compare what is drawn: how many pieces and their parts (doors, drawers,
+shelves, fixtures), where each starts and stops, fixtures and appliances and their positions, tags
+and notes (scaled sizes: last bullet below). Do this on **every** paired page, including the second
+round (revision) pages.
 
 **Every architect dimension is its own item.** Compare a chain segment by segment (wall to outlet,
 outlet to outlet, floor to a J-box), never only its total. A dimension that locates a thing (an
-outlet, a sink or faucet centre line) is that thing's position: when the vendor does not show the
-thing, that is its own finding ("not shown on the vendor", with the architect's values), never a
-remark in a width finding. Read the architect's **notes and callouts** as closely as its numbers
-("pull-out drawers", "by others"): a note the vendor does not follow is a difference.
+outlet, a sink or faucet centre line, a fixture) is that thing's position: when the vendor does not
+show the thing, that is its own finding ("not shown on the vendor", with the architect's values),
+never a remark in a width finding. Read the architect's **notes and callouts** as closely as its
+numbers ("pull-out drawers", "by others"): a note the vendor does not follow is a difference.
 
-- **Sizes**: overall length, each piece and cabinet width, **depth** (countertop depth = cabinet
-  depth + overhang), **heights** (counter height above floor, upper cabinets' bottom and top,
-  backsplash height), thicknesses (top, splash).
-- **Sink and appliances**: sink centre line from the wall or end, sink model or tag (SNK-...),
-  undermount vs drop-in, cut-out size, faucet holes; appliance models and openings, their centre
-  lines; rim collars and holes (a collar must fit its hole).
+**For every product, then each product's own list** (`products/<id>.md`):
+- **Sizes**: overall size, each piece, depth, heights (above the floor, top and bottom), thicknesses.
 - **Material and finish tags**: CT-, ST-, SS-, QZ-, PL-, LA-, WD-, MT- and the like. The vendor's
   tag on a piece must match the architect's for the same piece.
-- **Backsplash and side splash**: present or not, height, thickness, material (stone vs tile). A
-  side splash only where the top meets a wall; a free-standing end gets none.
-- **Cabinets**: door vs drawer, number of doors and drawers, hinge side, open shelves, end panels,
-  toe kick, equipment cabinets (sink, appliance) that must not change size.
 - **Hardware and accessories**: pulls (type, size, finish), locks (cam lock), grommets, power and
   data units, legs and supports (shape, size, finish), shelves (fixed vs pull-out).
 - **Position, not only size**: an item centred on or aligned with another (microwave over the range,
   sink on its centre line, cabinet over fridge); one that hits a neighbour or misses its opening.
 - **Extent and count**: a section the architect draws that the vendor omits, extra vendor pieces;
   how many doors, drawers, bins, fronts and how arranged; which way an island faces (front/rear).
-- **Fillers and site fit**: filler widths (see `rules.md` for limits), scribe, field cut (extra
-  length cut on site; per wall end).
-- **Overhangs and supports**: front and side overhang, knee space, brackets, corbels.
-- **Cut-outs**: sink, cooktop, grommets, outlets.
 - **Notes and scope**: "by others", "VIF", "NIC", edge profile, seams, anything the architect notes
   that the vendor dropped or changed.
 - **Construction notes** the vendor contradicts, on the architect's or brand sheet ("toe kick
@@ -166,6 +157,9 @@ remark in a width finding. Read the architect's **notes and callouts** as closel
 - **ID set vs brand prototype** conflicts: status `check`, "Your decision: which governs".
 - **Scaled values**: where the architect prints no size, a value measured against one of its own
   printed dimensions is only "about X (scaled, ±1/2")": status `check`, never `different` (Wrong).
+- **GV's standards that are not on the drawing**: each product's file names the kinds; the values
+  are in `rules.md`. A product with no published rule yet: report what the vendor shows, status
+  `check`.
 
 ## 8. How much work: scale it to the question
 
@@ -209,7 +203,8 @@ In a full check the app has done steps 1-3 (split, helpers, checklist): start at
 
 ## 9. How to answer
 
-- **Every difference is a finding**: `report_finding` for each, with the page, item, category,
+- **Every difference is a finding**: `report_finding` for each, with the page, item, category (the
+  product id of its `products/` file, or `other`),
   what the architect shows and what the vendor shows **as printed** (inches), status, source, and
   boxes where each value is printed (section 10). The app crops the evidence at the boxes, checks
   the printed values and draws the table: never write the findings again as a markdown table.

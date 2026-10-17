@@ -2395,6 +2395,7 @@ class ChatEngine:
             file_name=f"{UPLOADS}/{job.file}",
             page_map=page_map,
             review_document=document,
+            products=self.settings.products,
         )
         overview = (
             f"view your pages' overview pictures, all in one reply ({pictures})"

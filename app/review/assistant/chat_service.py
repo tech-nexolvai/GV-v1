@@ -463,7 +463,8 @@ def focus_line(products: Sequence[str]) -> str:
     words = products_words(products).lower()
     return (
         f"Focus for this chat: {words}. GV's rules for them come first in "
-        "/mnt/skills/gv-review/rules.md."
+        "/mnt/skills/gv-review/rules.md; read /mnt/skills/gv-review/products/<id>.md for each "
+        f"({', '.join(products)})."
     )
 
 
