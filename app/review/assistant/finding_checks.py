@@ -28,10 +28,7 @@ import (`tests/api/test_no_heavy_work.py`).
 from __future__ import annotations
 
 import re
-import threading
-import uuid
-from collections import OrderedDict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from fractions import Fraction
@@ -50,18 +47,24 @@ from units.normalise import (
 from units.notation import canonical_notation, is_compound
 
 __all__ = [
+    "VERIFY_MODULE",
     "Checks",
     "PrintedResult",
     "TrustLevel",
     "arithmetic_check",
     "arithmetic_off_by",
     "check_finding",
+    "claim_value",
     "critic_passed",
+    "dimension_tokens",
+    "drawn_checks",
     "printed_at_spot",
+    "printed_from",
     "read_result",
     "to_inches",
     "trust_level",
     "units_check",
+    "verify_at_spot",
 ]
 
 type PrintedResult = Literal["match", "not_found", "no_text", "no_box", "not_a_number"]
@@ -153,156 +156,69 @@ def _exact_decimal(value: Fraction) -> Decimal | None:
     return exact.normalize() if exact != exact.to_integral_value() else exact.quantize(Decimal(1))
 
 
+#: One dimension inside a sentence: `940 [37]`, `3'-1 1/2"`, `39 1/2"`, `3/4"`.
+_DIMENSION: Final = re.compile(
+    r"""\d{2,5}\s*\[\s*\d+(?:\s+\d+/\d+|-\d+/\d+|\.\d+)?\s*"?\s*\]
+     |\d+\s*'\s*-?\s*\d+(?:\s+\d+/\d+|-\d+/\d+)?\s*"?
+     |\d+(?:\s+\d+/\d+|-\d+/\d+|\.\d+)?\s*(?:"|\bin\b)
+     |\d+/\d+\s*"
+    """,
+    re.VERBOSE,
+)
+
+
+def dimension_tokens(text: object) -> list[str]:
+    """Every dimension written in `text`, in order, each one `to_inches` reads: the sentence
+    `39 1/2" printed overall; parts 30" + 9 1/2"` gives three."""
+    if not isinstance(text, str):
+        return []
+    found: list[str] = []
+    for match in _DIMENSION.finditer(plain_marks(text)):
+        token = match.group(0).strip()
+        if to_inches(token) is not None:
+            found.append(token)
+    return found
+
+
+def claim_value(text: object) -> str | None:
+    """The one value a finding's side claims: the whole text when it is one dimension, else the
+    first dimension in its sentence (the value the claim is about). `None` when there is none."""
+    if not isinstance(text, str):
+        return None
+    if to_inches(text) is not None:
+        return text
+    tokens = dimension_tokens(text)
+    return tokens[0] if tokens else None
+
+
 # ---- printed at this spot ------------------------------------------------------------------------
 
-#: How far outside a finding's box a word may start and still count as at the spot, in PDF points.
-#: A box drawn tight round a dimension often clips its inch mark or its last digit.
-_NEAR_PT: Final = Decimal(4)
-
-#: The most words read together as one value: `3'` `-` `1` `1/2"` is four.
-_LONGEST_RUN: Final = 5
-
-#: Points: the reader places words on a 72 dpi page, so a pixel is a PDF point of the page as shown.
-_POINTS: Final = 72
-
-_READ_LOCK: Final = threading.Lock()
-_PAGE_CACHE: OrderedDict[tuple[str, int, int, int], _PageWords] = OrderedDict()
-_PAGE_CACHE_SIZE: Final = 24
+#: The module that reads the drawing at a spot (`verify_value`): loaded by name, because it renders
+#: pages and runs OCR, which `app/api/` must not reach by import (`tests/api/test_no_heavy_work.py`).
+VERIFY_MODULE: Final = "app.review.assistant.verify_value"
 
 
-@dataclass(frozen=True, slots=True)
-class _Word:
-    """One run of text the reader found, in PDF points of the page as shown (origin top-left)."""
-
-    text: str
-    x0: float
-    y0: float
-    x1: float
-    y1: float
-    sideways: bool
-
-
-@dataclass(frozen=True, slots=True)
-class _PageWords:
-    words: tuple[_Word, ...]
-    unread: tuple[tuple[float, float, float, float], ...]
-    """Where the reader saw text it set aside unread: text is there, just not a value."""
-
-
-def _box_of(points: Iterable[Any]) -> tuple[float, float, float, float]:
-    xs = [float(point.x) for point in points]
-    ys = [float(point.y) for point in points]
-    return min(xs), min(ys), max(xs), max(ys)
-
-
-def _read_page(path: Path, page_index: int) -> _PageWords:
-    """Every black or grey word on one page: its own content and its pasted drawings (cached)."""
-    stat = path.stat()
-    key = (str(path.resolve()), stat.st_mtime_ns, stat.st_size, page_index)
-    with _READ_LOCK:
-        cached = _PAGE_CACHE.get(key)
-        if cached is not None:
-            _PAGE_CACHE.move_to_end(key)
-            return cached
-        reader = import_module("extraction.reader")
-        stamps = import_module("extraction.stamp_text")
-        stages = import_module("workflow.stages")
-        missing_space = stages.missing_space_from_environment()
-        data = path.read_bytes()
-        document = uuid.uuid4()
-        own = reader.read_page_contents(
-            data,
-            page_index,
-            document_version_id=document,
-            dpi=_POINTS,
-            missing_space=missing_space,
-            keep_char=stamps.drawing_ink,
-            keep_path=stamps.path_ink,
-        )
-        pasted = stamps.read_stamp_text(
-            data, page_index, document_version_id=document, dpi=_POINTS, missing_space=missing_space
-        ).contents
-        words: list[_Word] = []
-        unread: list[tuple[float, float, float, float]] = []
-        for contents in (own, pasted):
-            for item in contents.texts:
-                x0, y0, x1, y1 = _box_of(item.image_extent)
-                sideways = int(item.rotation_degrees) % 180 == 90
-                words.append(_Word(item.text, x0, y0, x1, y1, sideways))
-            unread.extend(_box_of(label.image_extent) for label in contents.set_aside)
-        page = _PageWords(tuple(words), tuple(unread))
-        _PAGE_CACHE[key] = page
-        while len(_PAGE_CACHE) > _PAGE_CACHE_SIZE:
-            _PAGE_CACHE.popitem(last=False)
-        return page
-
-
-def _overlaps(
-    box: tuple[float, float, float, float], spot: tuple[float, float, float, float]
-) -> bool:
-    near = float(_NEAR_PT)
-    return not (
-        box[2] < spot[0] - near
-        or box[0] > spot[2] + near
-        or box[3] < spot[1] - near
-        or box[1] > spot[3] + near
-    )
-
-
-def _across(word: _Word) -> float:
-    """Where a word sits across its line: its middle up the page, or across it when sideways."""
-    return (word.x0 + word.x1) / 2 if word.sideways else (word.y0 + word.y1) / 2
-
-
-def _along(word: _Word) -> float:
-    return word.y0 if word.sideways else word.x0
-
-
-def _height(word: _Word) -> float:
-    return (word.x1 - word.x0) if word.sideways else (word.y1 - word.y0)
-
-
-def _lines(words: Sequence[_Word]) -> list[list[_Word]]:
-    """The words grouped into lines of one reading direction, each in reading order."""
-    lines: list[list[_Word]] = []
-    for word in sorted(words, key=lambda word: (word.sideways, _across(word))):
-        for line in lines:
-            first = line[0]
-            tolerance = max(_height(first), _height(word), 1.0) * 0.6
-            if first.sideways is word.sideways and abs(_across(first) - _across(word)) <= tolerance:
-                line.append(word)
-                break
-        else:
-            lines.append([word])
-    return [sorted(line, key=_along) for line in lines]
-
-
-def _printed_values(words: Sequence[_Word]) -> set[Decimal]:
-    """Every value printed in these words, read the longest way first along each line (so `38`
-    `3/4"` is 38.75 and never 38), in both directions because sideways text may read either way."""
-    values: set[Decimal] = set()
-    for line in _lines(words):
-        for ordered in (line, line[::-1]):
-            start = 0
-            while start < len(ordered):
-                for size in range(min(_LONGEST_RUN, len(ordered) - start), 0, -1):
-                    value = to_inches(" ".join(word.text for word in ordered[start : start + size]))
-                    if value is not None:
-                        values.add(value)
-                        start += size
-                        break
-                else:
-                    start += 1
-    return values
+def verify_at_spot(
+    path: Path, page: int, box: Mapping[str, Any], value: str, *, drawn: bool = False
+) -> dict[str, Any]:
+    """Code's reading of one value at its spot (`verify_value.verify_value(...).as_dict()`):
+    `result` match / mismatch / cannot_read, `route` text / drawn / none, `read`, `reads`,
+    `reason`, `value`, `pending`, `words`. `drawn=False` reads the drawing's text only (ms); a box
+    that also holds drawn ink then comes back `pending` for the drawn-ink pass."""
+    module = import_module(VERIFY_MODULE)
+    found = module.verify_value(Path(path), page, box, value, drawn=drawn)
+    return dict(found.as_dict())
 
 
 def printed_at_spot(path: Path, page: int, box: Mapping[str, Any], value: str) -> PrintedResult:
-    """Whether `value` is printed inside `box` on `page` (1-based) of the PDF at `path`.
+    """Whether `value` is printed as text inside `box` on `page` (1-based) of the PDF at `path`.
 
     `box` is `{x0, y0, x1, y1}` in PDF points of the page as shown, origin top-left. `match`: the
-    same inches are printed there, in any form; `not_found`: words are there but not this value;
-    `no_text`: no words at all (pen strokes, which code cannot read); `no_box`: the box or page
-    cannot be placed; `not_a_number`: `value` is not one dimension.
+    same inches are printed there, in any form (read by `verify_value`'s text route: two-line
+    mm-over-inches, stacked fractions, the symbol font); `not_found`: text is there but not this
+    value; `no_text`: no text at all (drawn lines or a picture, which only the drawn-ink route
+    reads); `no_box`: the box or page cannot be placed; `not_a_number`: `value` is not one
+    dimension.
     """
     wanted = to_inches(value) if isinstance(value, str) else None
     if wanted is None:
@@ -310,17 +226,19 @@ def printed_at_spot(path: Path, page: int, box: Mapping[str, Any], value: str) -
     spot = _spot(box)
     if spot is None or isinstance(page, bool) or not isinstance(page, int) or page < 1:
         return "no_box"
-    reader = import_module("extraction.reader")
-    try:
-        words = _read_page(path, page - 1)
-    except (OSError, reader.UnreadablePdf, IndexError):
-        return "no_box"
-    inside = [word for word in words.words if _overlaps((word.x0, word.y0, word.x1, word.y1), spot)]
-    if wanted in _printed_values(inside):
+    return printed_from(verify_at_spot(path, page, box, value))
+
+
+def printed_from(verified: Mapping[str, Any]) -> PrintedResult:
+    """The printed-at-spot word for a `verify_at_spot` answer (its text route)."""
+    if verified.get("route") == "text" and verified.get("result") == "match":
         return "match"
-    if inside or any(_overlaps(label, spot) for label in words.unread):
-        return "not_found"
-    return "no_text"
+    if verified.get("reason") in ("the box cannot be placed", "the page cannot be read"):
+        return "no_box"
+    if verified.get("reason") == "not one number":
+        return "not_a_number"
+    has_text = any(str(read).startswith("text: ") for read in verified.get("reads") or [])
+    return "not_found" if has_text else "no_text"
 
 
 def _spot(box: Mapping[str, Any]) -> tuple[float, float, float, float] | None:
@@ -369,6 +287,10 @@ class Checks:
     units: UnitsResult | None = None
     """Millimetres and inches written together (`940 [37]`): do they agree? `None`: no side has
     both."""
+    verify_architect: Mapping[str, Any] | None = None
+    """Code's reading of the architect's value at its spot (`verify_at_spot`); `None` when the
+    side has no number or no box."""
+    verify_vendor: Mapping[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -376,27 +298,62 @@ class Checks:
             "printed_vendor": self.printed_vendor,
             "arithmetic": self.arithmetic,
             "units": self.units,
+            "verify_architect": (
+                None if self.verify_architect is None else dict(self.verify_architect)
+            ),
+            "verify_vendor": None if self.verify_vendor is None else dict(self.verify_vendor),
         }
+
+
+#: Each side of a finding: its value, its box and its checks' keys.
+_SIDES: Final = (
+    ("architect", "arch_box", "verify_architect"),
+    ("vendor", "vendor_box", "verify_vendor"),
+)
 
 
 def check_finding(finding: Mapping[str, Any], pdf_paths: Mapping[str, Path]) -> Checks:
     """Code's checks on a stored finding. `pdf_paths` maps an upload's file name to its PDF; a box's
     `file` names one (with one upload, a box without `file` means it). Thread-safe.
 
-    Raises `ValueError` only when the deployment does not state the reader's missing-space setting
-    (`GV_READER_MISSING_SPACE_HEIGHTS`), without which no page's text is read anywhere in GV.
+    Each side's value is read at its box by the text route (ms). A side whose box also holds drawn
+    ink comes back `pending`; `drawn_checks` reads it (seconds, OCR) after the lead's answer.
     """
     arithmetic: ArithmeticResult | None = None
     if finding.get("source") == "vendor_arithmetic":
         arithmetic = arithmetic_check(
             finding.get("parts") or [], finding.get("printed_total") or ""
         )
+    architect, verify_architect = _side(
+        finding.get("architect"), finding.get("arch_box"), pdf_paths
+    )
+    vendor, verify_vendor = _side(finding.get("vendor"), finding.get("vendor_box"), pdf_paths)
     return Checks(
-        printed_architect=_side(finding.get("architect"), finding.get("arch_box"), pdf_paths),
-        printed_vendor=_side(finding.get("vendor"), finding.get("vendor_box"), pdf_paths),
+        printed_architect=architect,
+        printed_vendor=vendor,
         arithmetic=arithmetic,
         units=_both_units(finding),
+        verify_architect=verify_architect,
+        verify_vendor=verify_vendor,
     )
+
+
+def drawn_checks(finding: Mapping[str, Any], pdf_paths: Mapping[str, Path]) -> dict[str, Any]:
+    """The drawn-ink route for each side its text route left `pending`: `{verify_<side>: answer}`
+    for the sides read now (none: `{}`). Seconds per side (two OCR engines); thread-safe."""
+    checks = finding.get("checks") or {}
+    out: dict[str, Any] = {}
+    for side, box_key, key in _SIDES:
+        verified = checks.get(key)
+        if not isinstance(verified, Mapping) or not verified.get("pending"):
+            continue
+        box = finding.get(box_key)
+        path = _path_of(box, pdf_paths)
+        claim = claim_value(finding.get(side))
+        if path is None or claim is None or not isinstance(box, Mapping):
+            continue
+        out[key] = verify_at_spot(path, box.get("page"), box, claim, drawn=True)  # type: ignore[arg-type]
+    return out
 
 
 def _both_units(finding: Mapping[str, Any]) -> UnitsResult | None:
@@ -432,19 +389,33 @@ def units_check(text: object) -> UnitsResult | None:
     return "agrees" if abs(millimetres / _MM_PER_INCH - inches) <= tolerance else "disagrees"
 
 
-def _side(value: object, box: object, pdf_paths: Mapping[str, Path]) -> PrintedResult:
-    if not isinstance(value, str) or to_inches(value) is None:
-        return "not_a_number"
+def _path_of(box: object, pdf_paths: Mapping[str, Path]) -> Path | None:
     if not isinstance(box, Mapping):
-        return "no_box"
+        return None
     name = box.get("file")
     if isinstance(name, str) and name in pdf_paths:
-        path = pdf_paths[name]
-    elif name is None and len(pdf_paths) == 1:
-        path = next(iter(pdf_paths.values()))
-    else:
-        return "no_box"
-    return printed_at_spot(Path(path), box.get("page"), box, value)  # type: ignore[arg-type]
+        return Path(pdf_paths[name])
+    if name is None and len(pdf_paths) == 1:
+        return Path(next(iter(pdf_paths.values())))
+    return None
+
+
+def _side(
+    value: object, box: object, pdf_paths: Mapping[str, Path]
+) -> tuple[PrintedResult, dict[str, Any] | None]:
+    """One side's printed-at-spot word and code's reading of its claimed value (a sentence's first
+    dimension: `39 1/2" printed overall; parts ...` is checked as `39 1/2"`)."""
+    claim = claim_value(value)
+    if claim is None:
+        return "not_a_number", None
+    path = _path_of(box, pdf_paths)
+    if path is None or not isinstance(box, Mapping):
+        return "no_box", None
+    page = box.get("page")
+    if _spot(box) is None or isinstance(page, bool) or not isinstance(page, int) or page < 1:
+        return "no_box", None
+    verified = verify_at_spot(path, page, box, claim)
+    return printed_from(verified), verified
 
 
 # ---- trust level ---------------------------------------------------------------------------------

@@ -300,6 +300,25 @@ export interface FindingChecks {
   adjudication?: 'agrees_after_adjudication' | 'disagrees' | 'unsure' | null;
   /** #1498, whole-set answers: an adversarial model looked for what is wrong (`objects` = To check). */
   critic?: 'passed' | 'objects' | 'unsure' | 'not_run' | null;
+  /** #1531: code's own reading of each side's value at its box (the drawing's text, or the vendor's drawn ink by two OCR engines). */
+  verify_architect?: VerifiedValue | null;
+  verify_vendor?: VerifiedValue | null;
+}
+
+/**
+ * #1531: what code read at one spot for one value, $0 and no AI. `match` (by the drawing's text, or by
+ * two OCR engines on the vendor's drawn ink), `mismatch` (the drawing prints another value there),
+ * `cannot_read` (with why). `words` is the evidence detail's line, written by code.
+ */
+export interface VerifiedValue {
+  result: 'match' | 'mismatch' | 'cannot_read';
+  route: 'text' | 'drawn' | 'none';
+  read: string | null;
+  reads?: string[] | null;
+  reason: string;
+  value: string | null;
+  pending?: boolean | null;
+  words: string;
 }
 
 /** One reading of a finding's values (#1498): the finding's own (`first`), the second and third reads. */
@@ -494,7 +513,8 @@ export type ChatTool =
   | 'TaskUpdate'
   | 'Agent'
   | 'review_results'
-  | 'compare_rounds';
+  | 'compare_rounds'
+  | 'verify_value';
 
 /** One tool the assistant used. `step_start` sends it without its output; `step_end` sends it whole. */
 export interface ChatStep {

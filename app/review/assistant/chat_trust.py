@@ -4,6 +4,10 @@ Every finding carries `checks`, run by code (and one cheap independent AI read t
 
 - `printed_architect`, `printed_vendor`: is the stated value printed inside its box on the PDF's
   text layer (`match` / `not_found` / `no_text` / `no_box` / `not_a_number`)?
+- `verify_architect`, `verify_vendor` (#1531): code's reading of each side's value at its box
+  (`verify_value`): `match` / `mismatch` / `cannot_read`, by the drawing's text or, after the lead's
+  answer (`drawn_ink_checks`), by two OCR engines on the vendor's drawn ink, with what it read and
+  why in plain words. A drawn-ink match is the `ocr_ink` witness; a mismatch disagrees.
 - `arithmetic`: for `source: vendor_arithmetic`, do the `parts` add up to `printed_total`?
 - `rule`: for `source: rules` naming a GV check code ran (`rule_check_id`), does the recorded result
   agree (`agrees` / `disagrees` / `not_run`)? Code's result wins.
@@ -42,11 +46,12 @@ import csv
 import io
 import logging
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import datetime
 from decimal import Decimal
 from importlib import import_module
 from pathlib import Path
+from time import monotonic
 from types import ModuleType
 from typing import Any, Final
 
@@ -69,6 +74,7 @@ __all__ = [
     "apply_checks",
     "cite_evidence_kind",
     "cloud_kind",
+    "drawn_ink_checks",
     "findings_csv",
     "judged",
     "ledger_witness",
@@ -83,6 +89,7 @@ __all__ = [
     "states_drawing_values",
     "trust_level",
     "trust_report",
+    "with_drawn_ink",
     "with_ledger",
 ]
 
@@ -345,12 +352,21 @@ def apply_checks(
         "units": None,
         "adjudication": None,
         "critic": None,
+        "verify_architect": None,
+        "verify_vendor": None,
     }
     module = load_module(CHECKS_MODULE)
     if module is not None:
         try:
             found = module.check_finding(finding, pdf_paths).as_dict()
-            for key in ("printed_architect", "printed_vendor", "arithmetic", "units"):
+            for key in (
+                "printed_architect",
+                "printed_vendor",
+                "arithmetic",
+                "units",
+                "verify_architect",
+                "verify_vendor",
+            ):
                 if key in found:
                     checks[key] = found[key]
         except Exception as failed:  # noqa: BLE001 - a check that fails is "not run", never a crash
@@ -381,6 +397,73 @@ def _ledger_made(finding: Mapping[str, Any]) -> str | None:
     if finding.get("created_by") == "ledger" and finding.get("source") == "cross_view":
         return "agrees"
     return None
+
+
+#: The most seconds the drawn-ink pass spends on one answer: a side not reached stays unread.
+DRAWN_INK_BUDGET_S: Final = 120.0
+
+
+def drawn_ink_checks(
+    findings: Sequence[Mapping[str, Any]],
+    pdf_paths: Mapping[str, Path],
+    *,
+    budget_s: float = DRAWN_INK_BUDGET_S,
+    stop: Callable[[], bool] = lambda: False,
+) -> dict[str, dict[str, Any]]:
+    """The drawn-ink route (#1531) for every finding side its text route left `pending`, in the
+    order a reviewer acts on them (differences first), within `budget_s` seconds. `{finding id:
+    {verify_<side>: answer, ...}}`, with the values and boxes they were read for (`with_drawn_ink`
+    applies an answer only to a finding that still claims them). $0, no network."""
+    module = load_module(CHECKS_MODULE)
+    run = getattr(module, "drawn_checks", None) if module is not None else None
+    if run is None:
+        return {}
+    waiting = [
+        f
+        for f in findings
+        if any(
+            isinstance((f.get("checks") or {}).get(key), Mapping)
+            and (f.get("checks") or {})[key].get("pending")
+            for key in ("verify_architect", "verify_vendor")
+        )
+    ]
+    waiting.sort(key=lambda f: {"different": 0, "check": 1}.get(str(f.get("status")), 2))
+    out: dict[str, dict[str, Any]] = {}
+    started = monotonic()
+    for finding in waiting:
+        if stop() or monotonic() - started > budget_s:
+            break
+        try:
+            found = dict(run(finding, pdf_paths))
+        except Exception as failed:  # noqa: BLE001 - an unread side stays as it was
+            _log.warning("assistant chat drawn-ink check failed: %s", type(failed).__name__)
+            continue
+        if found:
+            found["_claims"] = _claims(finding)
+            out[str(finding.get("id"))] = found
+    return out
+
+
+def _claims(finding: Mapping[str, Any]) -> list[Any]:
+    return [finding.get(k) for k in ("architect", "vendor", "arch_box", "vendor_box")]
+
+
+def with_drawn_ink(
+    findings: Sequence[Mapping[str, Any]], found: Mapping[str, Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    """The findings `drawn_ink_checks` read, with their sides' new readings and trust level (a
+    finding whose values or boxes changed since is left as it is)."""
+    out: list[dict[str, Any]] = []
+    for finding in findings:
+        answer = found.get(str(finding.get("id")))
+        if not answer or answer.get("_claims") != _claims(finding):
+            continue
+        checks = dict(finding.get("checks") or {})
+        for key in ("verify_architect", "verify_vendor"):
+            if isinstance(answer.get(key), Mapping):
+                checks[key] = dict(answer[key])
+        out.append(judged({**finding, "checks": checks}))
+    return out
 
 
 def with_second_read(finding: Mapping[str, Any], result: str) -> dict[str, Any]:
@@ -677,7 +760,11 @@ def trust_report(
         checks = finding.get("checks") or {}
         state = _printed(checks)
         printed[state] += 1
-        if "no_text" in (checks.get("printed_architect"), checks.get("printed_vendor")):
+        if any(
+            checks.get(f"printed_{side}") == "no_text"
+            and (checks.get(f"verify_{side}") or {}).get("result") != "match"
+            for side in ("architect", "vendor")
+        ):
             pen_pages.add(int(finding.get("page") or 0))
         second[str(checks.get("second_read") or "not_run")] = (
             second.get(str(checks.get("second_read") or "not_run"), 0) + 1

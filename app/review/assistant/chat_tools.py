@@ -148,7 +148,8 @@ review_results reads what GV Review's own checks recorded for this set; report_f
 each difference you find, with boxes so the app crops the evidence, checks it and draws the table \
 (update_finding, drop_finding as you check); set_coverage records the pages you compared (a \
 whole-set answer accounts for every page); dismiss_recorded sets aside a difference GV Review \
-recorded, with your reason; cite backs any other value you state with where it is printed. \
+recorded, with your reason; cite backs any other value you state with where it is printed; \
+verify_value checks a value ($0). \
 Record every dimension string with record_string and every value you read with record_reading.
 
 Three GV facts:
@@ -173,7 +174,8 @@ countertop and cabinet shop drawings. You share Claude's Linux computer (no inte
 PDFs read-only in {UPLOADS}, the set pack in {SET_PACK} (page_map.json, drawings-only PDFs, page \
 pictures), the working folder {SCRATCH}, {OUTPUTS}, and GV's review skill in {SKILLS} (read \
 SKILL.md there when your task is a review). Your tools: bash_tool, view, zoom, create_file, \
-str_replace, report_finding, set_coverage, record_string and record_reading. Tool calls of one \
+str_replace, report_finding, set_coverage, record_string, record_reading and verify_value (code \
+reads the number printed in a box, $0: check a value before you report it). Tool calls of one \
 reply run at the same time: ask for all the crops you need in one zoom call.
 
 Do the task you are given. Record each difference you find with report_finding: both values as \
@@ -449,6 +451,44 @@ COMPARE_ROUNDS: Final[Mapping[str, Any]] = {
         },
     },
 }
+#: `verify_value` (#1531): code reads the number printed at a spot, $0, no AI.
+VERIFY_VALUE: Final[Mapping[str, Any]] = {
+    "name": "verify_value",
+    "description": (
+        "Check one number before you report it: code reads what the drawing prints inside a box "
+        "($0, no AI): first the drawing's text, else the vendor's drawn ink by two OCR engines (a "
+        "few seconds). Answers match, mismatch (with what the drawing prints there) or "
+        "cannot_read (with why). One value per call; draw the box tight round that one dimension."
+    ),
+    "input_schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["page", "box", "expected"],
+        "properties": {
+            "page": {"type": "integer", "minimum": 1, "description": "Page (from 1)"},
+            "box": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["x0", "y0", "x1", "y1"],
+                "properties": {
+                    "x0": {"type": "number"},
+                    "y0": {"type": "number"},
+                    "x1": {"type": "number"},
+                    "y1": {"type": "number"},
+                },
+                "description": "PDF points of the page as shown, origin top-left",
+            },
+            "expected": {
+                "type": "string",
+                "description": 'The one value, as printed (46", 3\'-10", 1168 [46])',
+            },
+            "file": {
+                "type": "string",
+                "description": "The upload's file name, when the set has more than one",
+            },
+        },
+    },
+}
 #: The lead's tools, in a fixed order (the order is part of the cached, replayed prefix).
 LEAD_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     _BASH,
@@ -469,6 +509,7 @@ LEAD_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     CITE,
     *LEDGER_TOOLS,
     COMPARE_ROUNDS,
+    VERIFY_VALUE,
 )
 HELPER_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     _BASH,
@@ -479,6 +520,7 @@ HELPER_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     REPORT_FINDING,
     SET_COVERAGE,
     *LEDGER_TOOLS,
+    VERIFY_VALUE,
 )
 
 _DEFAULT_LABELS: Final[Mapping[str, str]] = {
@@ -493,6 +535,7 @@ _DEFAULT_LABELS: Final[Mapping[str, str]] = {
     "Agent": "Ran helper agents",
     "review_results": "Read the recorded results",
     "compare_rounds": "Compared two rounds",
+    "verify_value": "Checked a printed value",
 }
 
 
@@ -727,6 +770,54 @@ class ChatTools:
                 },
             ],
             step=_done(step, started, ok=True, path=path, picture_id=picture_id),
+        )
+
+    # ---- verify_value (#1531) ----------------------------------------------------------------------
+
+    def verify_value(self, raw: object, step: dict[str, Any]) -> ToolResult:
+        """Code reads the number printed in one box ($0, no AI): `verify_value.verify_value`."""
+        started = monotonic()
+        try:
+            given = arguments(
+                raw,
+                frozenset({"page", "box", "expected", "file", "description"}),
+                frozenset({"page", "box", "expected"}),
+            )
+            expected = given["expected"]
+            if not isinstance(expected, str) or not expected.strip():
+                raise SandboxRefused("expected must be the value as printed, as text")
+            name, page, box, _label = self._crop_request(
+                {k: given[k] for k in ("page", "box", "file") if k in given}, 0
+            )
+        except SandboxRefused as refused:
+            return _refused(step, started, str(refused).replace("crops[0].", ""))
+        try:
+            module = import_module("app.review.assistant.verify_value")
+            found = module.verify_value(
+                self.workspace.uploads / name,
+                page,
+                dict(zip(("x0", "y0", "x1", "y1"), box, strict=True)),
+                expected,
+            ).as_dict()
+        except Exception as failed:  # noqa: BLE001 - told plainly, never a crash
+            _log_failure(failed)
+            return _refused(step, started, "the spot could not be read just now")
+        how = {"text": "the drawing's text", "drawn": "the vendor's drawn ink (two OCR engines)"}
+        text = f"{found['result']}: {found['words']}."
+        if found["result"] == "match":
+            text = f"match: read from {how.get(found['route'], 'the drawing')}: {found['read']}."
+        reads = [str(r) for r in found.get("reads") or []][:8]
+        if reads:
+            text += "\nReads: " + "; ".join(reads)
+        return ToolResult(
+            content=[{"type": "text", "text": text}],
+            step=_done(
+                step,
+                started,
+                ok=True,
+                label=f"Checked {expected.strip()[:40]} on page {page}",
+                output=_shown(text),
+            ),
         )
 
     # ---- zoom ------------------------------------------------------------------------------------

@@ -65,6 +65,7 @@ type ChatStepTool = Literal[
     "Agent",
     "review_results",
     "compare_rounds",
+    "verify_value",
 ]
 type ChatStopped = Literal["cost_cap", "cancelled", "error", "turn_limit"]
 type ChatCapHit = Literal["message", "package"]
@@ -186,6 +187,30 @@ class ChatBoxOut(BaseModel):
     file: str | None = Field(default=None, description="The upload's file name the box is on.")
 
 
+class ChatVerifiedValueOut(BaseModel):
+    """What code read at one side's box for its value (#1531, `verify_value`): $0, no AI."""
+
+    model_config = ConfigDict(frozen=True)
+
+    result: str = Field(description="match | mismatch | cannot_read")
+    route: str = Field(
+        description="text (the drawing's text) | drawn (the vendor's drawn ink, two OCR engines) "
+        "| none"
+    )
+    read: str | None = Field(
+        default=None, description="What code read there (on a mismatch, what the drawing prints)."
+    )
+    reads: list[str] = Field(
+        default_factory=list, description="Every reading behind it, labelled by route and engine."
+    )
+    reason: str = Field(description="Why, in one plain line.")
+    value: str | None = Field(default=None, description="The one value checked.")
+    pending: bool = Field(
+        default=False, description="The box holds drawn ink still to be read (after the answer)."
+    )
+    words: str = Field(description="The evidence detail's line, written by code.")
+
+
 class ChatFindingChecksOut(BaseModel):
     """The checks run on a finding, by code (and one cheap independent AI read)."""
 
@@ -219,6 +244,12 @@ class ChatFindingChecksOut(BaseModel):
         default=None,
         description="The adversarial critic (whole-set answers): passed | objects | unsure | "
         "not_run (#1498).",
+    )
+    verify_architect: ChatVerifiedValueOut | None = Field(
+        default=None, description="Code's reading of the architect's value at its box (#1531)."
+    )
+    verify_vendor: ChatVerifiedValueOut | None = Field(
+        default=None, description="Code's reading of the vendor's value at its box (#1531)."
     )
 
 

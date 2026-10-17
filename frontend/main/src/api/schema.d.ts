@@ -4483,6 +4483,10 @@ export interface components {
              * @description agrees | disagrees: millimetres and inches printed together (940 [37]).
              */
             units?: string | null;
+            /** @description Code's reading of the architect's value at its box (#1531). */
+            verify_architect?: components["schemas"]["ChatVerifiedValueOut"] | null;
+            /** @description Code's reading of the vendor's value at its box (#1531). */
+            verify_vendor?: components["schemas"]["ChatVerifiedValueOut"] | null;
         };
         /**
          * ChatFindingCriticOut
@@ -5273,7 +5277,7 @@ export interface components {
             tool: components["schemas"]["ChatStepTool"];
         };
         /** @enum {string} */
-        ChatStepTool: "bash_tool" | "view" | "create_file" | "str_replace" | "present_files" | "TaskCreate" | "TaskUpdate" | "Agent" | "review_results" | "compare_rounds";
+        ChatStepTool: "bash_tool" | "view" | "create_file" | "str_replace" | "present_files" | "TaskCreate" | "TaskUpdate" | "Agent" | "review_results" | "compare_rounds" | "verify_value";
         /** @enum {string} */
         ChatStopped: "cost_cap" | "cancelled" | "error" | "turn_limit";
         /** ChatSummaryOut */
@@ -5476,6 +5480,53 @@ export interface components {
             type: "unknowns";
             /** Unknowns */
             unknowns: components["schemas"]["ChatUnknownOut"][];
+        };
+        /**
+         * ChatVerifiedValueOut
+         * @description What code read at one side's box for its value (#1531, `verify_value`): $0, no AI.
+         */
+        ChatVerifiedValueOut: {
+            /**
+             * Pending
+             * @description The box holds drawn ink still to be read (after the answer).
+             * @default false
+             */
+            pending: boolean;
+            /**
+             * Read
+             * @description What code read there (on a mismatch, what the drawing prints).
+             */
+            read?: string | null;
+            /**
+             * Reads
+             * @description Every reading behind it, labelled by route and engine.
+             */
+            reads?: string[];
+            /**
+             * Reason
+             * @description Why, in one plain line.
+             */
+            reason: string;
+            /**
+             * Result
+             * @description match | mismatch | cannot_read
+             */
+            result: string;
+            /**
+             * Route
+             * @description text (the drawing's text) | drawn (the vendor's drawn ink, two OCR engines) | none
+             */
+            route: string;
+            /**
+             * Value
+             * @description The one value checked.
+             */
+            value?: string | null;
+            /**
+             * Words
+             * @description The evidence detail's line, written by code.
+             */
+            words: string;
         };
         /** CheckOut */
         CheckOut: {

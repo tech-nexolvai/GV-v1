@@ -4242,6 +4242,28 @@
             ],
             "description": "agrees | disagrees: millimetres and inches printed together (940 [37]).",
             "title": "Units"
+          },
+          "verify_architect": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatVerifiedValueOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Code's reading of the architect's value at its box (#1531)."
+          },
+          "verify_vendor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatVerifiedValueOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Code's reading of the vendor's value at its box (#1531)."
           }
         },
         "required": [
@@ -6442,7 +6464,8 @@
           "TaskUpdate",
           "Agent",
           "review_results",
-          "compare_rounds"
+          "compare_rounds",
+          "verify_value"
         ],
         "type": "string"
       },
@@ -7000,6 +7023,77 @@
           "unknowns"
         ],
         "title": "ChatUnknownsBlock",
+        "type": "object"
+      },
+      "ChatVerifiedValueOut": {
+        "description": "What code read at one side's box for its value (#1531, `verify_value`): $0, no AI.",
+        "properties": {
+          "pending": {
+            "default": false,
+            "description": "The box holds drawn ink still to be read (after the answer).",
+            "title": "Pending",
+            "type": "boolean"
+          },
+          "read": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What code read there (on a mismatch, what the drawing prints).",
+            "title": "Read"
+          },
+          "reads": {
+            "description": "Every reading behind it, labelled by route and engine.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Reads",
+            "type": "array"
+          },
+          "reason": {
+            "description": "Why, in one plain line.",
+            "title": "Reason",
+            "type": "string"
+          },
+          "result": {
+            "description": "match | mismatch | cannot_read",
+            "title": "Result",
+            "type": "string"
+          },
+          "route": {
+            "description": "text (the drawing's text) | drawn (the vendor's drawn ink, two OCR engines) | none",
+            "title": "Route",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The one value checked.",
+            "title": "Value"
+          },
+          "words": {
+            "description": "The evidence detail's line, written by code.",
+            "title": "Words",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result",
+          "route",
+          "reason",
+          "words"
+        ],
+        "title": "ChatVerifiedValueOut",
         "type": "object"
       },
       "CheckOut": {

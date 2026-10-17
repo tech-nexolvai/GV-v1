@@ -12,7 +12,6 @@ from typing import Any
 import pytest
 
 from app.review.assistant.finding_checks import (
-    Checks,
     arithmetic_check,
     arithmetic_off_by,
     check_finding,
@@ -251,12 +250,15 @@ def test_a_missing_file_is_no_box(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert printed_at_spot(tmp_path / "gone.pdf", 1, OWN_TEXT, '37"') == "no_box"
 
 
-def test_the_reader_setting_must_be_stated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_check_reads_characters_without_the_readers_word_setting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #1531: the check composes the drawing's characters itself (`verify_value`), so the page
+    # reader's missing-space setting, which only splits words, does not change its answer.
     monkeypatch.delenv("GV_READER_MISSING_SPACE_HEIGHTS", raising=False)
     path = tmp_path / "unstated.pdf"
     path.write_bytes(_sheet())
-    with pytest.raises(ValueError, match="GV_READER_MISSING_SPACE_HEIGHTS"):
-        printed_at_spot(path, 1, OWN_TEXT, '37"')
+    assert printed_at_spot(path, 1, OWN_TEXT, '37"') == "match"
 
 
 # ---- one finding ---------------------------------------------------------------------------------
@@ -278,13 +280,19 @@ def _finding(**fields: Any) -> dict[str, Any]:
 
 def test_check_finding_checks_both_sides(sheet: Path) -> None:
     checks = check_finding(_finding(), {"set.pdf": sheet})
-    assert checks == Checks(printed_architect="match", printed_vendor="match", arithmetic=None)
-    assert checks.as_dict() == {
+    assert (checks.printed_architect, checks.printed_vendor) == ("match", "match")
+    found = checks.as_dict()
+    assert {
+        k: found[k] for k in ("printed_architect", "printed_vendor", "arithmetic", "units")
+    } == {
         "printed_architect": "match",
         "printed_vendor": "match",
         "arithmetic": None,
         "units": None,
     }
+    # #1531: code's reading of each side, in its words.
+    assert found["verify_architect"]["words"] == "Read from the drawing's text: 3'-1\""
+    assert found["verify_vendor"]["words"] == "Read from the drawing's text: 940 [46]"
 
 
 def test_check_finding_reports_each_side_on_its_own(sheet: Path) -> None:
@@ -309,6 +317,15 @@ def test_a_box_naming_an_unknown_file_is_no_box(sheet: Path) -> None:
 def test_a_finding_value_that_is_not_a_number(sheet: Path) -> None:
     checks = check_finding(_finding(architect="not shown", vendor=None), {"set.pdf": sheet})
     assert (checks.printed_architect, checks.printed_vendor) == ("not_a_number", "not_a_number")
+    assert (checks.verify_architect, checks.verify_vendor) == (None, None)
+
+
+def test_a_sentence_is_checked_by_the_value_it_claims(sheet: Path) -> None:
+    # #1531: "46" printed overall; parts ..." is checked as 46", once, at its box.
+    finding = _finding(vendor='46" printed overall; parts 30" + 16"')
+    checks = check_finding(finding, {"set.pdf": sheet})
+    assert checks.printed_vendor == "match"
+    assert checks.verify_vendor is not None and checks.verify_vendor["value"] == '46"'
 
 
 def test_vendor_arithmetic_is_added_up_by_code(sheet: Path) -> None:
