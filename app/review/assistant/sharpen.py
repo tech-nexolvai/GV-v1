@@ -21,8 +21,8 @@ How it is made, cheapest first:
 
 Code always checks the spec (`validate`): known intents, checks and answer shapes only; pages the
 reviewer named win over the model's; a model's pages must be in the set, an area must be one of
-the set's areas (the set pack's page map); products must be known (the product registry once it
-exists, else the composer's chips). Nothing in the spec is a verdict: it only guides the work.
+the set's areas (the set pack's page map); products must be known (the product registry's active
+products, #1547). Nothing in the spec is a verdict: it only guides the work.
 
 Where the spec goes:
 
@@ -49,12 +49,12 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
-from pathlib import Path
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Final
 
 from app.review.assistant.chat_findings import page_ranges, products_words
 from app.review.assistant.chat_scope import area_pages, load_page_map, question_scope
+from vocabulary.product_registry import registry
 
 if TYPE_CHECKING:
     from app.review.assistant.chat_engine import ChatEngine
@@ -156,10 +156,6 @@ _MAX_PAGES: Final = 60
 _PREVIOUS_CHARS: Final = 600
 _MICROS: Final = Decimal(1_000_000)
 
-#: The products the chat knows without a registry (the composer's chips).
-_CHIP_PRODUCTS: Final = ("countertop", "cabinet")
-#: The product registry (#1547), once merged: `app/review/products/registry.yaml`.
-_REGISTRY: Final = Path(__file__).resolve().parents[1] / "products" / "registry.yaml"
 
 SHARPEN_SYSTEM: Final = """You turn a reviewer's question about a millwork shop-drawing set (the vendor's drawings checked against the architect's) into a task spec for the AI that will answer it. You never answer the question.
 
@@ -188,8 +184,8 @@ class SharpenContext:
     main_file: str | None = None
     products: tuple[str, ...] = ()
     """The products picked (the composer's chips), or the set's own; empty when not stated."""
-    known: tuple[str, ...] = _CHIP_PRODUCTS
-    """Every product the app knows (the registry's active ids, else the chips)."""
+    known: tuple[str, ...] = ("countertop", "cabinet")
+    """Every product the app knows (the registry's active ids: `known_products`)."""
     previous_question: str | None = None
     previous_answer: str | None = None
 
@@ -223,29 +219,9 @@ class Sharpened:
 # ---- products ------------------------------------------------------------------------------------
 
 
-def known_products(registry: Path = _REGISTRY) -> tuple[str, ...]:
-    """The products the app knows: the registry's active ids (#1547) when it exists, else the
-    composer's two chips. Read with the standard library only: an `id:` line starts a product and
-    an `active: false` line under it leaves it out."""
-    try:
-        text = registry.read_text(encoding="utf-8")
-    except OSError:
-        return _CHIP_PRODUCTS
-    found: list[str] = []
-    current: str | None = None
-    active = True
-    for line in text.splitlines():
-        start = re.match(r"^\s*-?\s*id:\s*['\"]?([a-z][a-z0-9_]*)['\"]?\s*$", line)
-        if start:
-            if current is not None and active:
-                found.append(current)
-            current, active = start.group(1), True
-            continue
-        if current is not None and re.match(r"^\s*active:\s*(false|no)\s*$", line, re.IGNORECASE):
-            active = False
-    if current is not None and active:
-        found.append(current)
-    return tuple(found) or _CHIP_PRODUCTS
+def known_products() -> tuple[str, ...]:
+    """The products the app knows: the product registry's active ids (#1547)."""
+    return registry().active_ids()
 
 
 # ---- the code rules ------------------------------------------------------------------------------

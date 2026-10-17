@@ -66,6 +66,7 @@ from app.review.assistant.cloud_layout import (
 from app.review.assistant.finding_checks import to_inches
 from app.review.assistant.impact import BIGGEST_FIRST, biggest_line
 from extraction.stamp_text import carries_drawing, pasted_picture
+from vocabulary.product_registry import registry
 
 __all__ = [
     "CLEAN_WORDS",
@@ -1027,7 +1028,9 @@ def check_report_pdf(
     not_checked: Sequence[str],
 ) -> None:
     """The full check's report: a cover (set, products, date, model and effort, counts, coverage,
-    trust), then What's wrong, Your decision, What's right and Not checked."""
+    trust, and the counts by product), then What's wrong, Your decision, What's right and Not
+    checked. Each section is grouped by product, in the product registry's order and words (#1547):
+    a finding's category is a product id, or "other"."""
     from xml.sax.saxutils import escape
 
     from reportlab.lib import colors  # type: ignore[import-untyped]
@@ -1064,20 +1067,44 @@ def check_report_pdf(
         )
         return grid
 
+    known = registry()
+    rank = {category: n for n, category in enumerate(known.categories())}
+
+    def group(f: Mapping[str, Any]) -> str:
+        return known.category_label(str(f.get("category") or ""))
+
+    def by_product(chosen: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+        last = len(rank) - 1  # an unknown category sorts with "other"
+        return sorted(chosen, key=lambda f: rank.get(str(f.get("category") or ""), last))
+
     story: list[Any] = [Paragraph(escape(REPORT_TITLE), styles["Title"])]
     for label, value in summary.items():
         story.append(Paragraph(f"<b>{escape(str(label))}:</b> {escape(str(value))}", body))
     number = {id(f): n for n, f in enumerate(findings, start=1)}
-    wrong = [f for f in findings if cloud_kind(f) == "wrong"]
-    check = [f for f in findings if cloud_kind(f) == "check"]
-    right = [f for f in findings if cloud_kind(f) is None]
+    wrong = by_product([f for f in findings if cloud_kind(f) == "wrong"])
+    check = by_product([f for f in findings if cloud_kind(f) == "check"])
+    right = by_product([f for f in findings if cloud_kind(f) is None])
+    per_product: dict[str, list[int]] = {}
+    for kinds, chosen in enumerate((wrong, check, right)):
+        for f in chosen:
+            per_product.setdefault(group(f), [0, 0, 0])[kinds] += 1
+    if per_product:
+        words = "; ".join(
+            f"{name}: {w} wrong, {c} your decision, {r} right"
+            for name, (w, c, r) in per_product.items()
+        )
+        summary_count = len(summary) + 1
+        story.append(Paragraph(f"<b>By product:</b> {escape(words)}", body))
+    else:
+        summary_count = len(summary)
     sections = (
         (
             f"What's wrong ({len(wrong)})",
-            ["AI", "Page", "Item", "Vendor", "Needs", "Architect", "Source", "Trust"],
+            ["AI", "Product", "Page", "Item", "Vendor", "Needs", "Architect", "Source", "Trust"],
             [
                 [
                     number[id(f)],
+                    group(f),
                     f.get("page"),
                     f.get("item"),
                     f.get("vendor"),
@@ -1088,14 +1115,15 @@ def check_report_pdf(
                 ]
                 for f in wrong
             ],
-            [26, 34, 170, 90, 70, 90, 80, 60],
+            [26, 70, 34, 150, 80, 70, 80, 70, 60],
         ),
         (
             f"Your decision ({len(check)})",
-            ["AI", "Page", "Item", "Vendor", "Architect", "Why", "Trust"],
+            ["AI", "Product", "Page", "Item", "Vendor", "Architect", "Why", "Trust"],
             [
                 [
                     number[id(f)],
+                    group(f),
                     f.get("page"),
                     f.get("item"),
                     f.get("vendor"),
@@ -1105,14 +1133,15 @@ def check_report_pdf(
                 ]
                 for f in check
             ],
-            [26, 34, 170, 90, 90, 150, 60],
+            [26, 70, 34, 150, 80, 80, 140, 60],
         ),
         (
             f"What's right ({len(right)})",
-            ["AI", "Page", "Item", "Value", "Matches"],
+            ["AI", "Product", "Page", "Item", "Value", "Matches"],
             [
                 [
                     number[id(f)],
+                    group(f),
                     f.get("page"),
                     f.get("item"),
                     f.get("vendor"),
@@ -1120,7 +1149,7 @@ def check_report_pdf(
                 ]
                 for f in right
             ],
-            [26, 34, 230, 120, 210],
+            [26, 70, 34, 210, 110, 190],
         ),
     )
     for title, header, rows, widths in sections:
@@ -1130,7 +1159,7 @@ def check_report_pdf(
         story.append(table(header, rows, widths) if rows else p("None.", body))
     story += [Spacer(1, 10), Paragraph("Not checked", styles["Heading2"])]
     story += [p(line, body) for line in not_checked] or [p("Nothing left out.", body)]
-    story.insert(len(summary) + 1, PageBreak())
+    story.insert(summary_count + 1, PageBreak())
     out.parent.mkdir(parents=True, exist_ok=True)
     document = SimpleDocTemplate(
         str(out),

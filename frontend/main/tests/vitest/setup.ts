@@ -2,7 +2,13 @@
  * jsdom lacks a few browser APIs that Radix, Recharts and the app's theme script expect. These are
  * the smallest stand-ins that let components mount; they do not pretend to lay anything out.
  */
-import { afterEach } from 'vitest';
+import { afterEach, beforeEach } from 'vitest';
+
+import { setProductCatalog } from '@/lib/products';
+import { PRODUCTS } from './fixtures/products';
+
+// The products (#1547) come from `GET /products`; tests start with the registry's list loaded.
+beforeEach(() => setProductCatalog(PRODUCTS));
 
 if (typeof window !== 'undefined') {
   const { cleanup } = await import('@testing-library/react');

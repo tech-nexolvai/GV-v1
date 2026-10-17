@@ -2514,6 +2514,7 @@ class ChatEngine:
             page_map=page_map,
             review_document=document,
             lens=job.lens,
+            products=self.settings.products,
         )
         overview = (
             f"view your pages' overview pictures, all in one reply ({pictures})"

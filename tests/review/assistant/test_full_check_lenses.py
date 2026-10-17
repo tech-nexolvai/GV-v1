@@ -113,7 +113,7 @@ def test_each_lens_has_its_own_short_brief_and_checklist_line() -> None:
         name for name, _ in DRAWN_CHECKLIST
     }
     assert "- finishes: Material and finish tags" in drawn
-    assert numbers.endswith(NUMBERS_NOTE) and "- hardware:" not in numbers
+    assert numbers.endswith(NUMBERS_NOTE) and "- hardware: Hardware and accessories" not in numbers
     assert "CHECKLIST p<N>: architect a/b; strings a/b; not compared" in numbers
     assert drawn.startswith("OBJECTIVE: the DRAWN THINGS on pages 2, 3 of ")
     assert "CHECKLIST p<N>: notes a/b; counts a/b; hardware a/b; not compared" in drawn

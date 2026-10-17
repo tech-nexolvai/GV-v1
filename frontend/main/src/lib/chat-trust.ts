@@ -8,8 +8,8 @@
  * does arithmetic on the AI's numbers: the inches and the difference are code's (`finding.inches`).
  */
 
-import type { ChatCoverage, ChatFinding, ChatTimings, ChatTrust, ChatUnknown, EvidenceKind, FindingCategory, FindingRead, LedgerReport, PrintedResult, RoundStatus, TrustLeftOut, TrustLevel, UnknownWhy } from '@/lib/chat-api';
-import { categoryOf, CATEGORY_WORDS, pageWords, sourceTag, STATUS_WORDS, verifiedWords } from '@/lib/chat-findings';
+import type { ChatCoverage, ChatFinding, ChatTimings, ChatTrust, ChatUnknown, EvidenceKind, FindingRead, LedgerReport, PrintedResult, RoundStatus, TrustLeftOut, TrustLevel, UnknownWhy } from '@/lib/chat-api';
+import { categoryOf, categoryOrderFor, categoryWords, pageWords, sourceTag, STATUS_WORDS, verifiedWords } from '@/lib/chat-findings';
 
 // ── Levels ──────────────────────────────────────────────────
 
@@ -694,12 +694,13 @@ export const CSV_HEADER = [
 
 /** The findings as a CSV Excel opens (with its byte-order mark), one row per finding, trust columns included. */
 export function findingsCsv(findings: readonly ChatFinding[]): string {
-  const order: Record<FindingCategory, number> = { countertop: 0, cabinet: 1, other: 2 };
-  const rows = [...findings].sort((a, b) => order[categoryOf(a)] - order[categoryOf(b)] || a.page - b.page).map((finding) => {
+  const groups = categoryOrderFor(findings);
+  const order = (finding: ChatFinding) => groups.indexOf(categoryOf(finding));
+  const rows = [...findings].sort((a, b) => order(a) - order(b) || a.page - b.page).map((finding) => {
     const [printed, secondRead, verified, rule] = findingChecks(finding);
     const level = trustLevelOf(finding);
     return [
-      CATEGORY_WORDS[categoryOf(finding)],
+      categoryWords(categoryOf(finding)),
       pageWords(finding),
       finding.item,
       finding.architect ?? '',

@@ -8,7 +8,9 @@
  *   reviewer asks of a shop drawing against the architect's drawing.
  * - Outputs: the $0 files code makes from the last answer's findings (cloud drawing, Excel), and
  *   short documents the AI writes (comments letter to the vendor, questions for the architect).
- * - Focus: the products to check and how hard to think (they set the chips and the effort).
+ * - Focus: the products to check and how hard to think (they set the chips and the effort). The
+ *   products are the registry's (`GET /products`, #1547): one option per product, the ones not ready
+ *   greyed "coming later", never a list here.
  *
  * A question fills the composer with words the reviewer can edit before sending; a blank they must
  * fill in ("[page number]", "[area]") is highlighted and selected, and Send waits for it.
@@ -18,13 +20,14 @@ import type { ChatEffort, ChatFinding, ChatModel, ChatProduct } from '@/lib/chat
 import { areaOf } from '@/lib/chat-findings';
 import { chooseEffort, type ChatChoice } from '@/lib/chat-settings';
 import type { ViewMessage } from '@/lib/chat-messages';
+import { activeProducts, productCatalog, type ProductCatalog } from '@/lib/products';
 
 export type PlusGroup = 'checks' | 'outputs' | 'focus';
 
 export type PlusIcon =
   | 'full_check' | 'page' | 'area' | 'rules' | 'strings' | 'missing' | 'rounds'
   | 'cloud' | 'csv' | 'letter' | 'rfi' | 'summary'
-  | 'countertop' | 'cabinet' | 'both' | 'quick' | 'thorough';
+  | 'product' | 'both' | 'quick' | 'thorough';
 
 /** What choosing an option does. */
 export type PlusRun =
@@ -32,7 +35,7 @@ export type PlusRun =
   | { kind: 'full_check' }
   | { kind: 'cloud' }
   | { kind: 'csv' }
-  | { kind: 'products'; products: ChatProduct[] }
+  | { kind: 'products'; products: ChatProduct[]; comingLater?: boolean }
   | { kind: 'effort'; level: 'quick' | 'thorough' };
 
 export interface PlusAction {
@@ -103,9 +106,9 @@ const PROMPTS = {
   page:
     'Check vendor page [page number] against the architect’s drawing. List every value that is wrong with what it needs to be, anything I should check, and anything you could not compare.',
   area:
-    'Compare the [area] on the vendor’s shop drawing with the architect’s drawing: sizes, heights, depths, materials, sinks and splashes. Say what is wrong, what to check and what is right.',
+    'Compare the [area] on the vendor’s shop drawing with the architect’s drawing: sizes, heights, depths, materials, hardware and notes. Say what is wrong, what to check and what is right.',
   rules:
-    'Check the vendor’s drawings against GV’s rules for the selected products: fillers, sink cut-outs, field cuts and overhangs. For each rule, list the pages that break it with GV’s number and the vendor’s.',
+    'Check the vendor’s drawings against GV’s rules for the selected products. For each rule, list the pages that break it with GV’s number and the vendor’s.',
   strings:
     'Add up every dimension string on the vendor’s pages. List each string whose pieces do not add up to its printed overall, with the sum written out, and say how many strings you checked.',
   missing:
@@ -125,7 +128,7 @@ export const PLUS_ACTIONS: readonly PlusAction[] = [
   { id: 'full_check', group: 'checks', label: 'Full check', hint: 'Every page, with the cloud drawing', icon: 'full_check', keywords: ['whole set', 'everything', 'review', 'run'], run: { kind: 'full_check' } },
   { id: 'check_page', group: 'checks', label: 'Check one page…', hint: 'One vendor page against the architect', estimate: '~2 min · ~$0.50', icon: 'page', keywords: ['sheet', 'page number'], run: { kind: 'prompt', text: PROMPTS.page } },
   { id: 'compare_area', group: 'checks', label: 'Compare an area…', hint: 'One room or unit on both drawings', estimate: '~2 min · ~$0.50', icon: 'area', keywords: ['room', 'unit', 'elevation', 'vanity', 'kitchen'], run: { kind: 'prompt', text: PROMPTS.area } },
-  { id: 'gv_rules', group: 'checks', label: 'Check GV rules', hint: 'Fillers, sink cut-outs, field cut, overhang', estimate: '~5 min · ~$1.50', icon: 'rules', keywords: ['rulebook', 'standards', 'filler', 'sink', 'cut-out', 'overhang', 'field cut'], run: { kind: 'prompt', text: PROMPTS.rules } },
+  { id: 'gv_rules', group: 'checks', label: 'Check GV rules', hint: 'GV’s standards for the selected products', estimate: '~5 min · ~$1.50', icon: 'rules', keywords: ['rulebook', 'standards', 'filler', 'sink', 'cut-out', 'overhang', 'field cut'], run: { kind: 'prompt', text: PROMPTS.rules } },
   { id: 'strings', group: 'checks', label: 'Do the dimension strings add up?', hint: 'The vendor’s own sums', estimate: '~5 min · ~$1.50', icon: 'strings', keywords: ['sum', 'arithmetic', 'total', 'overall', 'math'], run: { kind: 'prompt', text: PROMPTS.strings } },
   { id: 'missing', group: 'checks', label: 'What’s missing on either side?', hint: 'Items on one drawing only', estimate: '~5 min · ~$1.50', icon: 'missing', keywords: ['completeness', 'left out', 'extra', 'added'], run: { kind: 'prompt', text: PROMPTS.missing } },
   { id: 'rounds', group: 'checks', label: 'What changed between rounds?', hint: 'Fixed, still wrong, or new changes', estimate: '~3 min · ~$1', icon: 'rounds', keywords: ['diff', 'revision', 'round 1', 'round 2', 'resubmittal', 'compare'], run: { kind: 'prompt', text: PROMPTS.rounds } },
@@ -136,17 +139,52 @@ export const PLUS_ACTIONS: readonly PlusAction[] = [
   { id: 'rfi', group: 'outputs', label: 'Questions for the architect', hint: 'An RFI list', estimate: '~1 min · ~$0.30', icon: 'rfi', keywords: ['rfi', 'questions', 'architect', 'clarify', 'confirm'], run: { kind: 'prompt', text: PROMPTS.rfi } },
   { id: 'summary', group: 'outputs', label: 'Two-line summary', hint: 'What the set covers and its main problems', estimate: '~30 s · ~$0.10', icon: 'summary', keywords: ['short', 'overview', 'tl;dr'], run: { kind: 'prompt', text: PROMPTS.summary } },
   // Focus
-  { id: 'countertops', group: 'focus', label: 'Countertops only', hint: 'Checks and rules for countertops', icon: 'countertop', keywords: ['product', 'tops', 'stone'], run: { kind: 'products', products: ['countertop'] } },
-  { id: 'cabinets', group: 'focus', label: 'Cabinets only', hint: 'Checks and rules for cabinets', icon: 'cabinet', keywords: ['product', 'casework', 'millwork'], run: { kind: 'products', products: ['cabinet'] } },
-  { id: 'both', group: 'focus', label: 'Countertops and cabinets', hint: 'Both products', icon: 'both', keywords: ['product', 'both', 'all'], run: { kind: 'products', products: ['countertop', 'cabinet'] } },
+  // Focus: the products come from the registry (`focusProducts`), then the efforts.
   { id: 'quick', group: 'focus', label: 'Quick', hint: 'Low effort: faster and cheaper', icon: 'quick', keywords: ['effort', 'fast', 'cheap', 'low'], run: { kind: 'effort', level: 'quick' } },
   { id: 'thorough', group: 'focus', label: 'Thorough', hint: 'Extra high effort: slower, more careful', icon: 'thorough', keywords: ['effort', 'careful', 'deep', 'high'], run: { kind: 'effort', level: 'thorough' } },
 ];
 
 export const GROUP_WORDS: Record<PlusGroup, string> = { checks: 'Checks', outputs: 'Outputs', focus: 'Focus' };
 
-export function plusAction(id: string): PlusAction | null {
-  return PLUS_ACTIONS.find((action) => action.id === id) ?? null;
+/**
+ * The Focus options for the products (#1547): "<Products> only" for each active product, "All
+ * products" when there are several, then each product not ready yet, greyed "Coming later".
+ */
+export function focusProducts(catalog: ProductCatalog = productCatalog()): PlusAction[] {
+  const active = activeProducts(catalog);
+  const one = (product: ProductCatalog[number]): PlusAction => ({
+    id: `product:${product.id}`,
+    group: 'focus',
+    label: product.active ? `${product.plural} only` : product.plural,
+    hint: product.active ? `Checks and rules for ${product.plural.toLowerCase()}` : 'Coming later',
+    icon: 'product',
+    keywords: ['product', product.label, product.id.replace(/_/g, ' ')],
+    run: { kind: 'products', products: [product.id], comingLater: !product.active },
+  });
+  const all: PlusAction[] =
+    active.length > 1
+      ? [{
+          id: 'all_products',
+          group: 'focus',
+          label: active.length === 2 ? `${active[0].plural} and ${active[1].plural.toLowerCase()}` : 'All products',
+          hint: active.length === 2 ? 'Both products' : `All ${active.length} products`,
+          icon: 'both',
+          keywords: ['product', 'both', 'all'],
+          run: { kind: 'products', products: active.map((product) => product.id) },
+        }]
+      : [];
+  return [...active.map(one), ...all, ...catalog.filter((product) => !product.active).map(one)];
+}
+
+/** Every option in the menu's order: the fixed ones, with the products' Focus options first in Focus. */
+export function plusActions(catalog: ProductCatalog = productCatalog()): PlusAction[] {
+  const focusAt = PLUS_ACTIONS.findIndex((action) => action.group === 'focus');
+  const at = focusAt < 0 ? PLUS_ACTIONS.length : focusAt;
+  return [...PLUS_ACTIONS.slice(0, at), ...focusProducts(catalog), ...PLUS_ACTIONS.slice(at)];
+}
+
+export function plusAction(id: string, catalog: ProductCatalog = productCatalog()): PlusAction | null {
+  return plusActions(catalog).find((action) => action.id === id) ?? null;
 }
 
 /**
@@ -228,7 +266,8 @@ export function readRecent(storage: Pick<Storage, 'getItem'> | null): string[] {
     if (!raw) return [];
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter((id): id is string => typeof id === 'string' && plusAction(id) !== null).slice(0, RECENT_MOST);
+    // A product option is kept while the products load (the menu then shows only the ones it knows).
+    return parsed.filter((id): id is string => typeof id === 'string' && (plusAction(id) !== null || id.startsWith('product:') || id === 'all_products')).slice(0, RECENT_MOST);
   } catch {
     return [];
   }

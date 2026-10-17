@@ -105,7 +105,7 @@ describe('an empty chat', () => {
     const starters = within(screen.getByRole('list', { name: 'Suggested questions' })).getAllByRole('button');
     expect(starters.map((button) => button.textContent)).toEqual([
       'Which items are wrong comparing the vendor and architect drawings?',
-      'Summarise every countertop and cabinet issue',
+      'Summarise every issue, product by product',
       'Make me a marked-up PDF of the problems',
     ]);
     await waitFor(() => expect(starters[2].hasAttribute('disabled')).toBe(false));

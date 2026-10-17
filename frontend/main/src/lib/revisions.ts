@@ -1,4 +1,5 @@
 import type { Revision, RevisionComparison } from '@/api/client';
+import { productLabel } from '@/lib/products';
 
 /**
  * Words and counts for a review's revisions (#1180). Pure, so every rule is unit-tested; the screen
@@ -92,11 +93,9 @@ export function changedCountertops(comparison: Pick<RevisionComparison, 'counter
   return comparison.countertops.filter((row) => row.change !== 'same');
 }
 
-/** The product a review is for, in the upload screen's words. */
+/** The product a review is for, in the product registry's words (#1547). */
 export function productWord(productType: string | null | undefined): string {
-  if (productType === 'countertop') return 'Countertop';
-  if (productType === 'cabinet') return 'Cabinets';
-  return productType ?? '—';
+  return productType ? productLabel(productType) : '—';
 }
 
 /** "From revision 1 · Ana": who gave an answer carried from an earlier revision (#1180). */

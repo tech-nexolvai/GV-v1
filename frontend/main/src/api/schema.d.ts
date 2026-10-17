@@ -376,13 +376,38 @@ export interface paths {
         };
         /**
          * The products a drawing set may be for
-         * @description Every product the published rulebook has at least one check for, in vocabulary order (#994).
+         * @description Every active product the published rulebook has at least one check for, in the product
+         *     registry's order (#994, #1547).
          *
-         *     The upload screen's dropdown is filled from this, so it never offers a product that would be
-         *     checked against nothing, and a product appears the day its first rule is published. Empty when
-         *     nothing is published — a real answer, and the upload screen says so.
+         *     Kept for older screens: the upload screen now reads `GET /products`, which lists every product
+         *     (inactive ones too, greyed). Empty when nothing is published — a real answer.
          */
         get: operations["list_product_types_api_v1_product_types_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/products": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every product GV Review knows (the product registry)
+         * @description Every product of the product registry (`vocabulary/products.yaml`, #1547), in its order,
+         *     with whether it can be picked now and how many published checks it has.
+         *
+         *     The single list the screens build their product choices from: the chat's chips and "+" menu,
+         *     the findings' groups, the upload picker. Adding a product to the registry adds it here with no
+         *     code change.
+         */
+        get: operations["list_products_api_v1_products_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -4697,9 +4722,9 @@ export interface components {
             architect: string;
             /**
              * Category
-             * @enum {string}
+             * @description The product the item belongs to (a product id from `GET /products`), or `other`.
              */
-            category: "countertop" | "cabinet" | "other";
+            category: string;
             /**
              * Check Reason
              * @description Why two printed values that differ still need a person (#1545); without one, code makes such a finding Wrong.
@@ -5094,7 +5119,8 @@ export interface components {
          *
          *     `mode: full_check` (CONTRACT4) runs the app's own fixed whole-set check instead of a typed
          *     question (`text` is then not needed: the question shown is "Full check · Countertops · High
-         *     effort"). `products`: the products picked in the composer (default: the set's own).
+         *     effort"). `products`: the products picked in the composer (default: the set's own), each an
+         *     ACTIVE product id of the product registry (`GET /products`, #1547).
          */
         ChatMessageIn: {
             /**
@@ -5120,8 +5146,11 @@ export interface components {
              * @description A full check only (#1569): the answers to the plan check's questions (`GET /packages/{package_id}/full-check-plan`), kept with the drawing set's page map.
              */
             plan_answers?: components["schemas"]["ChatPlanAnswerIn"][] | null;
-            /** Products */
-            products?: ("countertop" | "cabinet")[] | null;
+            /**
+             * Products
+             * @description Active product ids from `GET /products` (e.g. countertop, cabinet).
+             */
+            products?: string[] | null;
             /** @description #1551: the reviewer's correction of how the app understood the question (Edit on the 'Understood as' line); the question's words are sent unchanged in `text`. */
             task?: components["schemas"]["ChatTaskSpecIn"] | null;
             /**
@@ -5180,9 +5209,9 @@ export interface components {
             package_cap_usd?: string | null;
             /**
              * Products
-             * @description The products the message was about; null on older messages.
+             * @description The products the message was about (product ids); null on older messages.
              */
-            products?: ("countertop" | "cabinet")[] | null;
+            products?: string[] | null;
             /** @description With `stopped: interrupted`: how Continue picks up (its `resume` block). */
             resume?: components["schemas"]["ChatResumeOut"] | null;
             /**
@@ -5433,7 +5462,7 @@ export interface components {
              */
             pages_done: number;
             /** Products */
-            products?: ("countertop" | "cabinet")[] | null;
+            products?: string[] | null;
             /**
              * Redo
              * @description What Continue will do again, in one or two plain sentences.
@@ -8167,8 +8196,11 @@ export interface components {
          * @description A new reviewable drawing package.
          */
         PackageCreate: {
-            /** @description What product this drawing set is for, chosen by the reviewer (#994). Only the published checks for this product are run, and the readers are told it. Must be one of the values `GET /product-types` lists: a product with no published check is refused, because a set checked against nothing would look exactly like a clean one. */
-            product_type: components["schemas"]["ProductType"];
+            /**
+             * Product Type
+             * @description What product this drawing set is for, chosen by the reviewer (#994): an active product id from `GET /products` (the product registry, #1547). Only the published checks for this product are run, and the readers are told it. A product with no published check is refused, because a set checked against nothing would look exactly like a clean one.
+             */
+            product_type: string;
             /**
              * Vendor
              * @description Who supplied the drawings, if it is known. Left null rather than guessed — an invented vendor name is worse than an absent one, because it reads as a fact.
@@ -8209,7 +8241,8 @@ export interface components {
              * @default []
              */
             pages_waiting_for_budget: number[];
-            product_type: components["schemas"]["ProductType"] | null;
+            /** Product Type */
+            product_type: string | null;
             /**
              * Project Id
              * Format: uuid
@@ -8777,19 +8810,46 @@ export interface components {
             upload_url: string;
         };
         /**
-         * ProductType
-         * @description What kind of thing a rule checks — the client's checklist, in one word.
-         *
-         *     A controlled vocabulary rather than a free string (ADR-0007). The applicability resolver
-         *     matches this exactly and case-sensitively, so a free string would let ``"Countertop"`` or a
-         *     typo publish cleanly and then match nothing: a rule that exists, looks authored, and never
-         *     fires. Validation at publish turns that into a loud authoring error instead.
-         *
-         *     Adding a product type is a one-line change here, which is the point of keeping the
-         *     vocabulary in one module.
-         * @enum {string}
+         * ProductChecklistItemOut
+         * @description One thing to compare on every page for a product (#1547).
          */
-        ProductType: "countertop" | "cabinet";
+        ProductChecklistItemOut: {
+            /** Name */
+            name: string;
+            /** Text */
+            text: string;
+        };
+        /**
+         * ProductOut
+         * @description One product of the product registry (#1547), as the screens offer it.
+         *
+         *     The chat's product chips and "+" menu, the findings' grouping and the upload picker are built
+         *     from this list, never from a list in the frontend. An inactive product is shown greyed ("coming
+         *     later") and cannot be picked; an active one with no published check cannot start an upload
+         *     (nothing would check it) but can still be the focus of a chat.
+         */
+        ProductOut: {
+            /** Active */
+            active: boolean;
+            /** Category Label */
+            category_label: string;
+            /** Check Kinds */
+            check_kinds: ("dimension_match" | "global_rules")[];
+            /** Checklist */
+            checklist: components["schemas"]["ProductChecklistItemOut"][];
+            /** Description */
+            description: string;
+            /** Draft */
+            draft: boolean;
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /** Plural */
+            plural: string;
+            /** Published Checks */
+            published_checks: number;
+        };
         /**
          * ProductTypeChoice
          * @description One product a drawing set may be for, as the upload screen offers it (#994).
@@ -8802,7 +8862,8 @@ export interface components {
             label: string;
             /** Published Checks */
             published_checks: number;
-            value: components["schemas"]["ProductType"];
+            /** Value */
+            value: string;
         };
         /**
          * ProjectSettingOut
@@ -12452,6 +12513,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProductTypeChoice"][];
+                };
+            };
+        };
+    };
+    list_products_api_v1_products_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProductOut"][];
                 };
             };
         };

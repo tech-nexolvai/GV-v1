@@ -42,9 +42,12 @@ from app.review.assistant.full_check_plan import (
     rules_summary,
     wait_for_page_map,
 )
+from tests.dummy_products import DUMMY, use_dummy_registry
 from tests.review.assistant.chat_fakes import SONNET, ScriptedProvider, reply, text, tool
 from tests.review.assistant.test_chat_engine import DOLLARS, Harness
 from tests.review.assistant.test_chat_findings import workspace_with_pdf
+
+__all__ = ["use_dummy_registry"]  # the fixture, imported so pytest finds it
 
 HAIKU = "claude-haiku-5-5"
 FILE = "Vendor set.pdf"
@@ -276,7 +279,8 @@ class _Script:
     """The non-lead calls of a full check: the warm-up, the helpers, the second and third reads
     and the critic, answered from their parameters, with what each saw recorded."""
 
-    def __init__(self, jobs: int, helper_delay: float = 0.0) -> None:
+    def __init__(self, jobs: int, helper_delay: float = 0.0, category: str = "countertop") -> None:
+        self.category = category
         self.lock = threading.Lock()
         self.start_gate = _Gate(jobs, delay=helper_delay)
         self.calls: list[tuple[str, str, str]] = []
@@ -308,7 +312,7 @@ class _Script:
             found = {
                 "page": page,
                 "item": f"Top on page {page}",
-                "category": "countertop",
+                "category": self.category,
                 "architect": '37"',
                 "vendor": '46"',
                 "status": "different",
@@ -382,6 +386,7 @@ def _full_check(
     *,
     areas: int = 5,
     parallel: int = 8,
+    products: tuple[str, ...] = ("countertop",),
 ) -> Harness:
     pages = 2 + areas * 2
     workspace_with_pdf(tmp_path, pages=pages)
@@ -396,7 +401,7 @@ def _full_check(
     engine.settings = dataclasses.replace(
         engine.settings,
         mode="full_check",
-        products=("countertop",),
+        products=products,
         max_parallel_agents=parallel,
     )
     return harness
@@ -783,3 +788,35 @@ def test_timings_union_overlapping_work_and_charge_the_calling_thread() -> None:
     ]
     assert result["total_seconds"] == 5.5 and result["cost_usd"] == "0.25"
     assert "helpers 3.0 s $0.20 (1)" in Timings.log_line(result)
+
+
+def test_a_full_check_of_a_product_added_only_to_the_registry(
+    tmp_path: Path, use_dummy_registry: Path
+) -> None:
+    """#1547: a made-up product in a test registry is fully checked with no code change: every
+    helper's brief carries its checklist (after the shared items) and the instruction to read its
+    product file, its findings keep its category, and the cloud drawing and report are made."""
+    script = _Script(jobs=4, category=DUMMY)
+    lead = [reply(text("Four widgets differ."))]
+    harness = _full_check(tmp_path, script, lead, products=(DUMMY,))
+
+    outcome = harness.run()
+
+    assert len(script.briefs) == 4
+    for brief in script.briefs:
+        words = brief["messages"][0]["content"][0]["text"]
+        assert "products/<id>.md for each product in focus" in words
+        assert "FOR EACH PRODUCT IN FOCUS (dummy widgets), also on every page:" in words
+        assert "- widget size: Widget width and height against the architect's." in words
+        assert "PRODUCTS: dummy widgets;" in words
+        assert "Countertops (category" not in words
+    findings = _blocks(outcome, "finding")
+    assert len(findings) == 4
+    # Page 2's is GV Review's recorded countertop (its category stays); the helpers' are widgets.
+    helpers = [finding for finding in findings if finding["item"].startswith("Top on page")]
+    assert len(helpers) == 3 and {finding["category"] for finding in helpers} == {DUMMY}
+    assert [f["category"] for f in findings if f["item"] == "Vanity top"] == ["countertop"]
+    assert [f["name"] for f in harness.files] == [
+        "Vendor set - AI cloud drawing.pdf",
+        "Vendor set - AI check report.pdf",
+    ]

@@ -1,20 +1,25 @@
 import type { components } from './schema';
 
-/** A product a drawing set may be for (#994), as `GET /product-types` lists it. */
-export type ProductType = components['schemas']['ProductType'];
-export type ProductChoice = components['schemas']['ProductTypeChoice'];
-
-/** What the upload screen picks first when the API offers it: V1 reviews countertops. */
-export const DEFAULT_PRODUCT_TYPE: ProductType = 'countertop';
+/** A product id of the product registry (#994, #1547), as `GET /products` lists it. */
+export type ProductType = string;
+/** One product as `GET /products` lists it (inactive ones too). */
+export type ProductChoice = components['schemas']['ProductOut'];
 
 /**
- * The product to preselect: Countertop when the published rulebook offers it, otherwise the first
- * product it does offer, and `null` when nothing is published — the form then cannot start, because
- * a set checked against nothing would look exactly like a clean one.
+ * Whether a drawing set can be started for this product: it must be active (an inactive one is
+ * "coming later") and the published rulebook must check it (a set checked against nothing would
+ * look exactly like a clean one).
+ */
+export function canUploadFor(choice: ProductChoice): boolean {
+  return choice.active && choice.published_checks > 0;
+}
+
+/**
+ * The product to preselect: the first one in the registry's order that can be uploaded for, and
+ * `null` when there is none — the form then cannot start.
  */
 export function defaultProductType(choices: readonly ProductChoice[]): ProductType | null {
-  if (choices.some((choice) => choice.value === DEFAULT_PRODUCT_TYPE)) return DEFAULT_PRODUCT_TYPE;
-  return choices[0]?.value ?? null;
+  return choices.find(canUploadFor)?.id ?? null;
 }
 
 /** The body of `POST /projects/{id}/packages`: who sent the set and what it is for. */

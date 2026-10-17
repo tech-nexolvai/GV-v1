@@ -14,6 +14,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.review.assistant.plan_check import MAX_DOUBTS, valid_answer
+from vocabulary.product_registry import registry
 
 __all__ = [
     "MAX_MESSAGE_TEXT",
@@ -143,7 +144,8 @@ class ChatMessageIn(BaseModel):
 
     `mode: full_check` (CONTRACT4) runs the app's own fixed whole-set check instead of a typed
     question (`text` is then not needed: the question shown is "Full check · Countertops · High
-    effort"). `products`: the products picked in the composer (default: the set's own)."""
+    effort"). `products`: the products picked in the composer (default: the set's own), each an
+    ACTIVE product id of the product registry (`GET /products`, #1547)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -152,8 +154,11 @@ class ChatMessageIn(BaseModel):
     effort: Literal["low", "medium", "high", "xhigh", "max"]
     thinking: bool
     mode: Literal["chat", "full_check"] = "chat"
-    products: list[Literal["countertop", "cabinet"]] | None = Field(
-        default=None, min_length=1, max_length=2
+    products: list[Annotated[str, Field(min_length=1, max_length=32)]] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=32,
+        description="Active product ids from `GET /products` (e.g. countertop, cabinet).",
     )
     continue_from: str | None = Field(
         default=None,
@@ -185,8 +190,16 @@ class ChatMessageIn(BaseModel):
                 raise ValueError("each plan question at most once")
             if not all(valid_answer(answer.id, answer.answer) for answer in self.plan_answers):
                 raise ValueError("a plan answer is not one of its question's options")
-        if self.products is not None and len(set(self.products)) != len(self.products):
-            raise ValueError("each product at most once")
+        if self.products is not None:
+            if len(set(self.products)) != len(self.products):
+                raise ValueError("each product at most once")
+            known = registry()
+            for product in self.products:
+                entry = known.get(product)
+                if entry is None:
+                    raise ValueError(f"{product!r} is not a product (see GET /products)")
+                if not entry.active:
+                    raise ValueError(f"{entry.plural} is not available yet (coming later)")
         return self
 
 
@@ -469,7 +482,10 @@ class ChatFindingOut(BaseModel):
     page: int
     vs_page: int | None = None
     item: str
-    category: Literal["countertop", "cabinet", "other"]
+    category: str = Field(
+        description="The product the item belongs to (a product id from `GET /products`), or "
+        "`other`."
+    )
     architect: str
     vendor: str
     status: Literal["different", "check", "same"]
@@ -1108,7 +1124,7 @@ class ChatResumeOut(BaseModel):
     mode: Literal["chat", "full_check"] = Field(
         description="How the interrupted answer was asked: Continue asks the same way."
     )
-    products: list[Literal["countertop", "cabinet"]] | None = None
+    products: list[str] | None = None
     findings: int = Field(description="Findings already made: kept, not made again.")
     pages_done: int = Field(description="Pages already accounted for: not opened again.")
     redo: str = Field(description="What Continue will do again, in one or two plain sentences.")
@@ -1237,8 +1253,9 @@ class ChatMessageOut(BaseModel):
         description="A typed question (`chat`) or the one-click full check; null on messages "
         "stored before it was kept (#1513).",
     )
-    products: list[Literal["countertop", "cabinet"]] | None = Field(
-        default=None, description="The products the message was about; null on older messages."
+    products: list[str] | None = Field(
+        default=None,
+        description="The products the message was about (product ids); null on older messages.",
     )
     resume: ChatResumeOut | None = Field(
         default=None,

@@ -2,8 +2,10 @@
 
 What is asserted:
 
-- the folder holds the repository's `SKILL.md` byte for byte, `rules.md` for this drawing set, and
-  GV's local files (plain files only: no hidden file, no link, nothing over `SKILL.md`);
+- the folder holds the repository's `SKILL.md` byte for byte, `rules.md` for this drawing set,
+  `products/<id>.md` for each product in focus (#1547: the product's skill file plus its registry
+  checklist), and GV's local files (plain files only: no hidden file, no link, nothing over
+  `SKILL.md`);
 - `rules.md` says each setting's value in inches and where it comes from (the rulebook, GV's company
   standard, the project, the sink card, this drawing set), and a setting nobody gave as missing;
 - only the drawing set's own product's checks are listed; every check when no product was stated;
@@ -44,10 +46,13 @@ from app.review.assistant.skills_export import (
 from rules.parameters import ParameterLayer, ParameterSet, ParameterValue, Provenance
 from rules.schema import Quantity
 from tests.app.postgres_fixture import alembic_config
+from tests.dummy_products import DUMMY, use_dummy_registry
 from tests.workflow.test_stages import _publish_rulebook
 from units.measurement import Unit
+from vocabulary.product_registry import registry
 
 pytest_plugins = ("tests.app.postgres_fixture",)
+__all__ = ["use_dummy_registry"]  # the fixture, imported so pytest finds it
 
 WHEN = datetime(2026, 1, 5, 9, 30, tzinfo=UTC)
 
@@ -161,8 +166,17 @@ def test_the_folder_holds_the_skill_the_rules_and_gvs_local_files(
     build_skill_folder(session, revision, dest)
 
     files = _files(dest)
-    assert set(files) == {"SKILL.md", "rules.md", "checklists/countertop-checks.md"}
+    assert set(files) == {
+        "SKILL.md",
+        "rules.md",
+        "checklists/countertop-checks.md",
+        "products/countertop.md",
+    }
     assert files["SKILL.md"] == SKILL_SOURCE.read_bytes()
+    product = files["products/countertop.md"].decode("utf-8")
+    assert product.startswith("# Countertops")
+    assert "## Checklist for countertops (every page)" in product
+    assert "## GV standards that are not on the drawing" in product
     assert files["checklists/countertop-checks.md"] == b"# Made-up checklist\n"
     assert files["rules.md"].decode("utf-8") == rules_markdown(session, revision)
     # Nothing is left beside the folder from building it.
@@ -311,6 +325,28 @@ def test_picked_products_come_first_and_the_others_follow(
     rules = (tmp_path / "gv-review" / "rules.md").read_text(encoding="utf-8")
     assert "Products picked for this chat: countertop." in rules
     assert rules.index("### CT-WIDTH-001") < rules.index("## Other products")
+    assert sorted(_files(tmp_path / "gv-review")) == [
+        "SKILL.md",
+        "checklists/countertop-checks.md",
+        "products/countertop.md",
+        "rules.md",
+    ]
+
+
+def test_each_product_in_focus_gets_its_file_and_a_set_with_none_gets_every_active_one(
+    session: Session, local: Path, tmp_path: Path
+) -> None:
+    """#1547: the reviewer's pick, else the set's own product, else every active product."""
+    _project, revision = _revision(session, product=None)
+
+    build_skill_folder(session, revision, tmp_path / "all")
+    build_skill_folder(session, revision, tmp_path / "both", products=["cabinet", "countertop"])
+
+    every = sorted(name for name in _files(tmp_path / "all") if name.startswith("products/"))
+    assert every == ["products/cabinet.md", "products/countertop.md"]
+    both = _files(tmp_path / "both")
+    assert "Fit to the site by adjusting fillers first" in both["products/cabinet.md"].decode()
+    assert "Sink front offset" in both["products/countertop.md"].decode()
 
 
 def test_the_same_records_give_the_same_bytes_and_a_folder_is_rebuilt_in_place(
@@ -325,7 +361,7 @@ def test_the_same_records_give_the_same_bytes_and_a_folder_is_rebuilt_in_place(
 
     (local / "checklists" / "countertop-checks.md").unlink()
     build_skill_folder(session, revision, first)
-    assert set(_files(first)) == {"SKILL.md", "rules.md"}
+    assert set(_files(first)) == {"SKILL.md", "rules.md", "products/countertop.md"}
     assert [path.name for path in first.parent.iterdir()] == ["gv-review"]
 
 
@@ -338,7 +374,7 @@ def test_a_missing_local_folder_is_fine(
 
     build_skill_folder(session, revision, dest)
 
-    assert set(_files(dest)) == {"SKILL.md", "rules.md"}
+    assert set(_files(dest)) == {"SKILL.md", "rules.md", "products/countertop.md"}
 
 
 def test_a_folder_it_did_not_write_is_never_replaced(session: Session, tmp_path: Path) -> None:
@@ -422,3 +458,48 @@ CLIENT_VALUE_SHAPES = (
 @pytest.mark.parametrize("shape", CLIENT_VALUE_SHAPES, ids=lambda shape: shape.pattern)
 def test_skill_md_holds_no_client_value(shape: re.Pattern[str]) -> None:
     assert not shape.search(SKILL_TEXT), shape.search(SKILL_TEXT)
+
+
+@pytest.mark.parametrize("shape", CLIENT_VALUE_SHAPES, ids=lambda shape: shape.pattern)
+def test_the_product_files_hold_no_client_value(shape: re.Pattern[str]) -> None:
+    """#1547: the products' skill files and the registry are in the repository too."""
+    folder = SKILL_SOURCE.parent / "products"
+    files = [*sorted(folder.glob("*.md")), registry().source]
+    assert len(files) >= 3
+    for path in files:
+        text = path.read_text(encoding="utf-8")
+        assert not shape.search(text), (path.name, shape.search(text))
+
+
+def test_skill_md_names_no_product_of_its_own() -> None:
+    """#1547: SKILL.md is the same for every product; what is product-specific (a countertop's
+    sink and splashes, a cabinet's fillers) lives in `products/<id>.md`."""
+    assert "products/<id>.md" in SKILL_TEXT
+    for words in ("Backsplash and side splash", "Fillers and site fit", "- **Cabinets**:"):
+        assert words not in SKILL_TEXT, words
+
+
+def test_a_product_added_only_to_the_registry_gets_its_file_and_rules_note(
+    session: Session, local: Path, tmp_path: Path, use_dummy_registry: Path
+) -> None:
+    """#1547: a made-up product in a test registry reaches the skill folder with no code change:
+    its own file (skill text, checklist, GV standards) and a note in `rules.md` that no GV check is
+    published for it yet."""
+    _project, revision = _revision(session, product="countertop")
+    dest = tmp_path / "gv-review"
+
+    build_skill_folder(session, revision, dest, products=[DUMMY, "countertop"])
+
+    files = _files(dest)
+    assert sorted(name for name in files if name.startswith("products/")) == [
+        "products/countertop.md",
+        f"products/{DUMMY}.md",
+    ]
+    widget = files[f"products/{DUMMY}.md"].decode("utf-8")
+    assert widget.startswith("# Dummy widgets")
+    assert "**Draft:**" in widget
+    assert "- **widget knob**: Knob count and finish code." in widget
+    assert "- Knob finish matches GV's made-up standard." in widget
+    rules = files["rules.md"].decode("utf-8")
+    assert f"Products picked for this chat: countertop and {DUMMY}." in rules
+    assert f"No GV check is published yet for: {DUMMY}." in rules

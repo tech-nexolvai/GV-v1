@@ -14,11 +14,11 @@ import {
   LoaderCircle,
   Mail,
   MessageCircleQuestion,
+  Package,
   Plus,
   ScanSearch,
   Sheet,
   Sigma,
-  SquareDashed,
   Zap,
   type LucideIcon,
 } from 'lucide-react';
@@ -36,8 +36,8 @@ import {
   fullCheckEstimate,
   GROUP_WORDS,
   nextBlank,
-  PLUS_ACTIONS,
   plusAction,
+  plusActions,
   readRecent,
   rememberRecent,
   sameProducts,
@@ -47,6 +47,7 @@ import {
 } from '@/lib/chat-plus-actions';
 import { browserStorage, chooseEffort, EFFORT_WORDS, type ChatChoice } from '@/lib/chat-settings';
 import { planAnswers, usePlanCheck } from '@/lib/chat-plan-check';
+import { useProductCatalog } from '@/lib/products';
 import { cn } from '@/lib/utils';
 
 const ICONS: Record<PlusIcon, LucideIcon> = {
@@ -62,8 +63,7 @@ const ICONS: Record<PlusIcon, LucideIcon> = {
   letter: Mail,
   rfi: MessageCircleQuestion,
   summary: AlignLeft,
-  countertop: SquareDashed,
-  cabinet: LayoutPanelLeft,
+  product: Package,
   both: Layers,
   quick: Zap,
   thorough: Gauge,
@@ -121,6 +121,7 @@ type View = 'list' | 'areas' | 'confirm';
  */
 export function PlusMenu(props: PlusMenuProps) {
   const { textareaRef, fullCheck, lastFindings, makeMarkupPdf, products, models, choice, running } = props;
+  const catalog = useProductCatalog();
   const [open, setOpen] = useState(false);
   const [view, setView] = useState<View>('list');
   const [search, setSearch] = useState('');
@@ -162,6 +163,7 @@ export function PlusMenu(props: PlusMenuProps) {
       case 'csv':
         return lastFindings ? null : 'After an answer with findings';
       case 'products':
+        if (action.run.comingLater) return 'Coming later';
         return running ? 'After this answer' : null;
       case 'effort':
         if (!choice) return 'Loading the models…';
@@ -236,7 +238,8 @@ export function PlusMenu(props: PlusMenuProps) {
     }
   }
 
-  const recentActions = recent.map(plusAction).filter((action): action is PlusAction => action !== null);
+  const menuActions = plusActions(catalog);
+  const recentActions = recent.map((id) => plusAction(id, catalog)).filter((action): action is PlusAction => action !== null);
 
   const row = (action: PlusAction, value: string) => {
     const Icon = ICONS[action.icon];
@@ -421,7 +424,7 @@ export function PlusMenu(props: PlusMenuProps) {
                     )}
                     {GROUPS.map((group) => (
                       <CommandPrimitive.Group key={group} heading={GROUP_WORDS[group]}>
-                        {PLUS_ACTIONS.filter((action) => action.group === group).map((action) => row(action, action.id))}
+                        {menuActions.filter((action) => action.group === group).map((action) => row(action, action.id))}
                       </CommandPrimitive.Group>
                     ))}
                   </>

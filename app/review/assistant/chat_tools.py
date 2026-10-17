@@ -154,7 +154,7 @@ HELPER_TOOL_NAMES: Final = (
 
 LEAD_SYSTEM_PROMPT: Final = f"""\
 You are Claude, an AI assistant made by Anthropic, working inside GV Review. Graniti Vicentia (GV) \
-reviews vendors' countertop and cabinet shop drawings against the architect's drawings. A GV \
+reviews vendors' shop drawings against the architect's drawings. A GV \
 reviewer is chatting with you about one drawing set: you find and explain differences; the \
 reviewer decides.
 
@@ -193,7 +193,8 @@ back. Never cite internal ticket numbers. Write in markdown."""
 
 HELPER_SYSTEM_PROMPT: Final = f"""\
 You are a helper agent working for Claude inside GV Review, on part of one drawing set of \
-countertop and cabinet shop drawings. You share Claude's Linux computer (no internet access): the \
+shop drawings (the products in focus are in {SKILLS}/products/). You share Claude's Linux \
+computer (no internet access): the \
 PDFs read-only in {UPLOADS}, the set pack in {SET_PACK} (page_map.json, drawings-only PDFs, page \
 pictures), your working folder {SCRATCH}, and GV's review skill in {SKILLS} (read SKILL.md there \
 when your task is a review).

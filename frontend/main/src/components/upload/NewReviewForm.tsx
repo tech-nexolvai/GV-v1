@@ -14,11 +14,12 @@
 
 import { useId, useRef, useState } from 'react';
 import { ArrowRight, FileText, Upload, X } from 'lucide-react';
-import { listProductTypes } from '@/api/client';
+import { listProducts } from '@/api/client';
 import { createPackage } from '@/api/upload';
 import type { UploadProgress } from '@/api/upload';
 import { useAsync } from '@/api/useAsync';
 import {
+  canUploadFor,
   defaultProductType,
   describeUploadFailure,
   looksLikeTheSameFile,
@@ -62,7 +63,7 @@ function formatSize(bytes: number): string {
 
 export function NewReviewForm({ onCreated, onOpenSaved = onCreated }: NewReviewFormProps) {
   const [vendor, setVendor] = useState('');
-  const products = useAsync(() => listProductTypes(), []);
+  const products = useAsync(() => listProducts(), []);
   const [chosenProduct, setChosenProduct] = useState<ProductType | null>(null);
   const [files, setFiles] = useState<Record<Slot, File | null>>({ architectural: null, shop: null });
   const [slotError, setSlotError] = useState<string | null>(null);
@@ -88,7 +89,7 @@ export function NewReviewForm({ onCreated, onOpenSaved = onCreated }: NewReviewF
   // The reviewer's choice, or Countertop until they make one (#994). Only a product the API offered.
   const productType =
     products.status === 'ready'
-      ? (products.data.some((choice) => choice.value === chosenProduct)
+      ? (products.data.some((choice) => choice.id === chosenProduct && canUploadFor(choice))
           ? chosenProduct
           : defaultProductType(products.data))
       : null;

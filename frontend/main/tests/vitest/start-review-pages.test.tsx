@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PackageSummary } from '@/api/client';
 import type { Page } from '@/app/route';
+import { PRODUCTS } from './fixtures/products';
 
 // Synthetic data only: nothing here comes from a client drawing.
 vi.mock('@/api/config', () => ({ projectId: () => 'p' }));
@@ -107,9 +108,9 @@ describe('Start a review (#1125)', () => {
   }
 
   it('keeps Start review disabled, saying what is missing, until the vendor and both drawings are set', async () => {
-    routes['GET /product-types'] = () => json([{ value: 'countertop', label: 'Countertop', published_checks: 3 }]);
+    routes['GET /products'] = () => json(PRODUCTS);
     const { user, architect, shop, start } = await setUp();
-    await screen.findByRole('option', { name: 'Countertop' });
+    await screen.findByRole('option', { name: 'Countertops' });
 
     expect(start.hasAttribute('disabled')).toBe(true);
     const reason = document.getElementById(start.getAttribute('aria-describedby') ?? '');
@@ -134,7 +135,8 @@ describe('Start a review (#1125)', () => {
   });
 
   it('stays disabled when no product can be chosen, even with everything else set', async () => {
-    routes['GET /product-types'] = () => json([]);
+    // #1547: every product listed, none that can be chosen (nothing published; the rest coming later).
+    routes['GET /products'] = () => json(PRODUCTS.map((product) => ({ ...product, published_checks: 0 })));
     const { user, architect, shop, start } = await setUp();
     await screen.findByRole('option', { name: 'No checks are published yet' });
     await user.type(screen.getByLabelText('Vendor'), 'Synthetic vendor');
@@ -145,7 +147,7 @@ describe('Start a review (#1125)', () => {
   });
 
   it('refuses a file that is not a PDF, naming it', async () => {
-    routes['GET /product-types'] = () => json([{ value: 'countertop', label: 'Countertop', published_checks: 3 }]);
+    routes['GET /products'] = () => json(PRODUCTS);
     const { architect } = await setUp();
     fireEvent.change(architect, { target: { files: [new window.File(['x'], 'notes.txt', { type: 'text/plain' })] } });
     expect(screen.getByRole('alert').textContent).toBe('notes.txt is not a PDF. Only PDF drawings can be reviewed.');
