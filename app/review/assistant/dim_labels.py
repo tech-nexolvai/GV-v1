@@ -872,7 +872,7 @@ def main(arguments: Sequence[str]) -> int:
         pages = document.get("pages") or []
     except (OSError, ValueError):
         pages = []
-    set_pack.write_dims(folder, uploads, names, pages)
+    set_pack.write_dims(folder, uploads, names, pages, parent=os.getppid())
     return 0
 
 

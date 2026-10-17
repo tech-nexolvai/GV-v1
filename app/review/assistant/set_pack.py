@@ -625,15 +625,27 @@ def _dims(
 
 
 def write_dims(
-    folder: Path, uploads: Path, names: Sequence[str], page_map: Sequence[Mapping[str, Any]]
+    folder: Path,
+    uploads: Path,
+    names: Sequence[str],
+    page_map: Sequence[Mapping[str, Any]],
+    *,
+    parent: int | None = None,
 ) -> None:
-    """`dim_labels.build_dims` into `folder / dims.json`, written after each page."""
+    """`dim_labels.build_dims` into `folder / dims.json`, written after each page. `parent`: the
+    server's process id; the labels' own process stops when the server is gone."""
     labels = import_module("app.review.assistant.dim_labels")
+
+    def written(document: dict[str, Any]) -> None:
+        if parent is not None and os.getppid() != parent:
+            raise SystemExit(0)
+        _write_json(folder / "dims.json", document)
+
     labels.build_dims(
         {name: uploads / name for name in names},
         {"pages": list(page_map)},
         drawn_budget_s=_drawn_budget(),
-        on_page=lambda document: _write_json(folder / "dims.json", document),
+        on_page=written,
     )
 
 

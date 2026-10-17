@@ -73,8 +73,8 @@ the pack is ready; until it is, use the uploads (and `zoom`, which works at once
   with the printed form beside it when it helps: 38 1/2" (printed 3'-2 1/2").
 - Two units, `610 [24]`: mm first, inches in brackets. **Inches count**; the mm are only a check.
 - Fractions are usually to 1/16"; a stacked one (1 over a bar over 2) is easy to misread: zoom.
-- On some sets the numbers are drawn as lines (pen strokes), not text: `pdftotext` returns few or no
-  numbers. Then read them from a picture: `zoom` on the area (300 dpi for a small one) and look.
+- Numbers drawn as lines (pen strokes; `pdftotext` finds few): read them from a 300 dpi `zoom`. Text ones are numbered by
+  code: `zoom` `marks: true` shows each id (`D17`, set/dims.json); name it (`vendor_dim`, `architect_dim`, cite `dim`) for its exact value and box; a crop's `guides: ["D17"]` draws its extension lines (what it spans).
 - EQ (equal), TYP (typical), U.N.O. (unless noted otherwise), VIF (verify in field), CL / ℄ (centre
   line), AFF (above finished floor), CLR (clear), O.C. (on centre), NIC (not in contract), BY OTHERS.
 - Check a dimension string adds up to its overall. A string that does not add up is a finding on
