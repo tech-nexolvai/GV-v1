@@ -517,6 +517,8 @@ annotations.json       every annotation: file, page, kind, author, text, box (GV
                        headings included; the drawings-only copies drop them).
 *_drawings_only.pdf    each PDF with only the pasted drawings kept: GV's markup hidden.
 pages/<file>/p-NNN.png every page at 100 dpi (drawings only). Zoom to read numbers.
+                       <file> is the PDF's name without ".pdf" (A.pdf: pages/A/p-003.png);
+                       NNN is the page with three digits.
 contact/*.png          nine pages per picture, page numbers stamped: the whole set at a glance.
 status.json            building / ready / failed.
 hires/                 code's 300-dpi tiles of the pages zoom has cut from (not for reading:

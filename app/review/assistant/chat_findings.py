@@ -697,6 +697,16 @@ def _whole(value: object, name: str) -> int:
     return value
 
 
+def _with_page(raw: object, fields: Mapping[str, Any], *, architect: bool) -> object:
+    """A box with no `page` takes the finding's own page: the vendor box the finding's `page`, the
+    architect box its `vs_page` (else `page`). The model left it out on a real run (2026-10-17)
+    and the whole finding was refused for it."""
+    if not isinstance(raw, Mapping) or "page" in raw:
+        return raw
+    page = (fields.get("vs_page") if architect else None) or fields.get("page")
+    return raw if page is None else {**raw, "page": page}
+
+
 def _choice(value: object, name: str, allowed: Sequence[str]) -> str:
     if value not in allowed:
         raise SandboxRefused(f"{name} must be one of {', '.join(allowed)}")
@@ -901,7 +911,9 @@ class FindingBook:
             out["source"] = _choice(given["source"], "source", sources)
         for name, architect in (("arch_box", True), ("vendor_box", False)):
             if name in present:
-                out[name] = self._box(given[name], name, architect=architect)
+                out[name] = self._box(
+                    _with_page(given[name], out, architect=architect), name, architect=architect
+                )
         if "parts" in present:
             parts = given["parts"]
             if parts is None:
