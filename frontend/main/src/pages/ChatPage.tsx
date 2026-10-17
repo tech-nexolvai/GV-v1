@@ -39,7 +39,7 @@ import { PlusMenu } from '@/components/chat/chat-plus-menu';
 import { AssistantMessage, UserMessage } from '@/components/chat/chat-message';
 import { UnderstoodLine } from '@/components/chat/chat-understood';
 import { ApiError } from '@/api/client';
-import { chatFailureWords, chatPaths, CONTINUE_TEXT, isAbort, LIVE_CHAT_API, type Chat, type ChatApi, type ChatEvent, type ChatMessage, type ChatMode, type ChatModels, type ChatPlanAnswer, type ChatProduct, type ChatTaskEdit } from '@/lib/chat-api';
+import { CHECK_MODEL, chatFailureWords, chatPaths, CONTINUE_TEXT, isAbort, LIVE_CHAT_API, type Chat, type ChatApi, type ChatEvent, type ChatMessage, type ChatMode, type ChatModels, type ChatPlanAnswer, type ChatProduct, type ChatTaskEdit } from '@/lib/chat-api';
 import { confirmWords, effectiveProducts, FULL_CHECK_TEXT, isFullCheck, pickable, readProducts, saveProducts, toggleProduct } from '@/lib/chat-full-check';
 import { useProductCatalog } from '@/lib/products';
 import { knownAreas, lastFindings, withPrompt } from '@/lib/chat-plus-actions';
@@ -464,6 +464,38 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
     }
   }
 
+  /**
+   * #1584: the vendor consistency check, by code ($0, no AI). The server stores it in the chat as a
+   * question and its answer; the chat is then read again to show them. A new chat is made first when
+   * there is none yet (as a first message does).
+   */
+  async function runConsistency(): Promise<void> {
+    const check = api.consistency;
+    if (!check || runRef.current) return;
+    setNotice(null);
+    setAnnounce('Checking the vendor’s numbers');
+    let target = chatId;
+    try {
+      if (!target) {
+        const made = await api.create(packageId);
+        target = made.id;
+        setLoaded({ chatId: target, chat: { id: target, package_id: packageId, package_name: name ?? '', title: null, created_at: made.created_at, messages: [] } });
+        onOpenChat(target, { replace: true });
+      }
+      await check(target);
+      follow.current = true;
+      setAtBottom(true);
+      if (messages.length === 0) setFreshTitles((now) => new Set(now).add(target as string));
+      setListAsk((n) => n + 1);
+      reload();
+      setAnnounce('Vendor consistency check finished');
+    } catch (error) {
+      const words = `The vendor consistency check could not run: ${chatFailureWords(error)}`;
+      setNotice(words);
+      setAnnounce(words);
+    }
+  }
+
   /** Stop: ask the server to stop (it saves the message as stopped), then stop reading shortly after. */
   function stop() {
     const run = runRef.current;
@@ -597,7 +629,8 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                     models={modelList}
                     messageCapUsd={cap}
                     onReload={reload}
-                    onRetry={canRetry ? () => void send(question) : undefined}
+                    // A code check's answer (#1584) is run again by code, never sent to the AI.
+                    onRetry={canRetry ? () => void (message.model === CHECK_MODEL ? runConsistency() : send(question)) : undefined}
                     onContinue={resumeId ? () => void send(CONTINUE_TEXT, 'chat', { id: resumeId, mode: message.resume?.mode ?? 'chat' }) : undefined}
                     latest={at === messages.length - 1}
                     makeMarkupPdf={(messageId) => api.markup(chatId, messageId)}
@@ -676,6 +709,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                     onPrompt={(text) => setDraft((now) => withPrompt(now, text))}
                     textareaRef={textareaRef}
                     fullCheck={{ summary: fullCheckSummary, blocked: fullCheckBlocked, onRun: runFullCheck, loadPlan }}
+                    consistency={api.consistency ? { onRun: runConsistency } : null}
                     lastFindings={lastFindings(messages)}
                     makeMarkupPdf={chatId ? (messageId) => api.markup(chatId, messageId) : null}
                     fileHref={(file) => file.url || (chatId ? chatPaths.file(chatId, file.id) : '')}

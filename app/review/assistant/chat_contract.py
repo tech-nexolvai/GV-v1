@@ -587,8 +587,9 @@ class ChatFindingOut(BaseModel):
     )
     vendor_picture_id: str | None = None
     created_by: str = Field(
-        description='"lead", "helper:<n>", "gv_review" (made by code from a recorded result), or '
-        '"ledger" (made by code from the reading ledger).'
+        description='"lead", "helper:<n>", "gv_review" (made by code from a recorded result), '
+        '"ledger" (made by code from the reading ledger), or "consistency" (made by code from the '
+        "vendor's own drawings: a string that does not add up, a span printed twice)."
     )
     ledger_ids: list[str] | None = Field(
         default=None, description="The reading ledger's entries (S<n>, R<n>) behind it."
@@ -1173,10 +1174,21 @@ class ChatUnknownOut(BaseModel):
     page: int | None = None
     what: str
     why: Literal[
-        "unreadable", "not_opened", "missing_job_value", "pairing_uncertain", "refused_alignment"
+        "unreadable",
+        "not_opened",
+        "missing_job_value",
+        "pairing_uncertain",
+        "refused_alignment",
+        "no_counterpart",
+        "missing_round",
+        "not_in_set",
     ]
     needs: str
-    scope: Literal["page", "item"] = "item"
+    scope: Literal["page", "item", "set"] = Field(
+        default="item",
+        description="page: a whole page; item: one value; set: the drawing set itself (an area "
+        "on one side only, a round or a sheet the set lacks), not counted against the answer.",
+    )
 
 
 class ChatUnknownsBlock(BaseModel):

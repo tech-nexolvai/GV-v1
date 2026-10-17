@@ -114,9 +114,11 @@ def code_summary(
     budget_usd: str = "",
     turns: int = 0,
     files: Sequence[str] = (),
+    also: Sequence[str] = (),
 ) -> str:
     """The 5-6 line summary: what was checked, the verdict, the biggest issues, what needs the
-    reviewer's decision, why it stopped (if it did) and the next step; then the small note."""
+    reviewer's decision, why it stopped (if it did) and the next step; then the small note.
+    `also`: code's own lines to add before the next step (the vendor consistency check's, #1584)."""
     # The same counts as the screen and the files (#1554): one final list, Right only when compared.
     counts = shown_counts(findings)
     wrong, to_check, right = counts["wrong"], counts["decision"], counts["right"]
@@ -153,6 +155,7 @@ def code_summary(
     stop = _stop_words(stopped, cap_hit, cap_usd, budget_usd, turns)
     if stop is not None:
         lines.append(stop)
+    lines += [line for line in also if line]
     steps: list[str] = []
     drawing = any("cloud" in name.lower() for name in files)
     if wrong and drawing:
