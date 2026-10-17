@@ -4421,6 +4421,79 @@
         "title": "ChatFindingDecisionOut",
         "type": "object"
       },
+      "ChatFindingDimOut": {
+        "description": "A numbered dimension label a finding's side was built from (#1558).",
+        "properties": {
+          "box": {
+            "description": "x0, y0, x1, y1: PDF points, origin top-left.",
+            "items": {
+              "type": "number"
+            },
+            "title": "Box",
+            "type": "array"
+          },
+          "file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File"
+          },
+          "id": {
+            "description": "The label's id on its page (D17).",
+            "title": "Id",
+            "type": "string"
+          },
+          "inches": {
+            "title": "Inches",
+            "type": "string"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "route": {
+            "description": "text: the drawing's characters; drawn: the vendor's drawn ink, by two OCR engines.",
+            "enum": [
+              "text",
+              "drawn"
+            ],
+            "title": "Route",
+            "type": "string"
+          },
+          "side": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "architect, vendor, brand or unknown.",
+            "title": "Side"
+          },
+          "text": {
+            "description": "The value as printed.",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "page",
+          "text",
+          "inches",
+          "route",
+          "box"
+        ],
+        "title": "ChatFindingDimOut",
+        "type": "object"
+      },
       "ChatFindingDroppedBlock": {
         "description": "A finding the assistant dropped (in the place its finding block was).",
         "properties": {
@@ -4626,6 +4699,21 @@
               }
             ],
             "description": "Status check (Your decision): what it measures, the best estimate, how likely it is fine, what to confirm (#1545)."
+          },
+          "dims": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/ChatFindingDimOut"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The numbered dimension label each side was built from (#1558), by side (architect, vendor); code filled that side's value and box from it.",
+            "title": "Dims"
           },
           "evidence_kind": {
             "anyOf": [
