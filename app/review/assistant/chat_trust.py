@@ -53,6 +53,7 @@ __all__ = [
     "ACCURACY_POINTS",
     "CHECKS_MODULE",
     "CITE_POINTS",
+    "MIN_SEEN_DPI",
     "SECOND_READ_MODULE",
     "Recorded",
     "accuracy",
@@ -419,31 +420,63 @@ def with_ledger(finding: Mapping[str, Any], ledger: Mapping[str, Any] | None) ->
 # ---- not seen is not right (P5) ------------------------------------------------------------------
 
 
-def _seen_pages(seen: Iterable[Any]) -> set[tuple[str | None, int]]:
-    out: set[tuple[str | None, int]] = set()
+#: The least sharpness at which a zoom crop counts as seeing a box: a picture coarser than this
+#: (a whole sheet, the set pack's 100 dpi page pictures) is too blurry to read a dimension by.
+MIN_SEEN_DPI: Final = 150
+
+_Seen = tuple[str | None, int, tuple[float, float, float, float] | None]
+"""One sharp enough look: (file or None, page, box in PDF points or None for the whole page)."""
+
+
+def _corners(raw: object) -> tuple[float, float, float, float] | None:
+    if not isinstance(raw, Mapping):
+        return None
+    values = [raw.get(key) for key in ("x0", "y0", "x1", "y1")]
+    numbers = [float(v) for v in values if isinstance(v, int | float) and not isinstance(v, bool)]
+    if len(numbers) != 4:
+        return None
+    x0, y0, x1, y1 = numbers
+    return min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)
+
+
+def _seen_entries(seen: Iterable[Any]) -> list[_Seen]:
+    """The seen log's sharp enough looks: a crop below `MIN_SEEN_DPI` is left out."""
+    out: list[_Seen] = []
     for entry in seen:
+        box = None
         if isinstance(entry, Mapping):
             file, page = entry.get("file"), entry.get("page")
+            dpi = entry.get("dpi")
+            if isinstance(dpi, int | float) and not isinstance(dpi, bool) and dpi < MIN_SEEN_DPI:
+                continue
+            box = _corners(entry.get("box"))
         elif isinstance(entry, tuple) and len(entry) == 2:
             file, page = entry
         else:
             file, page = None, entry
-        if isinstance(page, int):
-            out.add((file if isinstance(file, str) else None, page))
+        if isinstance(page, int) and not isinstance(page, bool):
+            out.append((file if isinstance(file, str) else None, page, box))
     return out
 
 
-def _viewed(box: object, page: object, seen: set[tuple[str | None, int]]) -> bool:
+def _viewed(box: object, page: object, seen: Sequence[_Seen]) -> bool:
+    """Whether a side was looked at: a sharp enough look at its page (and its file, when both
+    name one) whose crop holds the middle of the side's box (when both have a box)."""
     file = box.get("file") if isinstance(box, Mapping) else None
     if isinstance(box, Mapping) and isinstance(box.get("page"), int):
         page = box["page"]
     if not isinstance(page, int):
         return False
-    return (
-        (file, page) in seen
-        or (file is not None and (None, page) in seen)
-        or (file is None and any(p == page for _f, p in seen))
-    )
+    corners = _corners(box)
+    for seen_file, seen_page, crop in seen:
+        if seen_page != page or (file is not None and seen_file not in (None, file)):
+            continue
+        if corners is None or crop is None:
+            return True
+        middle_x, middle_y = (corners[0] + corners[2]) / 2, (corners[1] + corners[3]) / 2
+        if crop[0] <= middle_x <= crop[2] and crop[1] <= middle_y <= crop[3]:
+            return True
+    return False
 
 
 def not_compared_why(
@@ -452,13 +485,14 @@ def not_compared_why(
     seen: Iterable[Any] | None = None,
 ) -> str | None:
     """Why a "What's right" (`same`) finding cannot count as right: `not_viewed` (both sides were
-    not actually looked at: the zoom/view log when there is one, otherwise the lead's own check),
+    not actually looked at: the zoom log when there is one, each side's box inside a crop of at
+    least `MIN_SEEN_DPI`; otherwise the lead's own check),
     or `pair_not_covered` (its page pair is not compared in the coverage map, or it has no
     architect side). `None`: it counts (or it is not a `same` finding)."""
     if finding.get("status") != "same":
         return None
     if seen is not None:
-        pages = _seen_pages(seen)
+        pages = _seen_entries(seen)
         if not (
             _viewed(finding.get("vendor_box"), finding.get("page"), pages)
             and _viewed(finding.get("arch_box"), finding.get("vs_page"), pages)

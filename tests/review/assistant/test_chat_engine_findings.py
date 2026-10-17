@@ -32,6 +32,30 @@ from tests.review.assistant.test_chat_findings import (
 )
 
 HAIKU = "claude-haiku-5-5"
+LISTING = [{"name": "Vendor set.pdf", "pages": 3, "kind": "the vendor's shop drawings"}]
+
+
+def _looked_at(*boxes: dict[str, Any]) -> dict[str, Any]:
+    """A zoom call with one sharp crop around each box (20 pt to spare on each side)."""
+    crops = [
+        {
+            "page": box["page"],
+            "box": {
+                "x0": box["x0"] - 20,
+                "y0": box["y0"] - 20,
+                "x1": box["x1"] + 20,
+                "y1": box["y1"] + 20,
+            },
+        }
+        for box in boxes
+    ]
+    return {"crops": crops, "description": "Read both sides"}
+
+
+def _zooms(harness: Harness) -> Harness:
+    """The harness with its PDF listed, so zoom can draw crops of it."""
+    harness.engine.tools.uploads = LISTING
+    return harness
 
 
 def _modules(monkeypatch: pytest.MonkeyPatch, **modules: Any) -> None:
@@ -502,13 +526,14 @@ def test_a_full_check_seeds_recorded_results_and_makes_the_cloud_drawing_and_rep
                     {"finding_id": "F1", "vendor_box": VENDOR_BOX, "verified": True},
                 ),
                 tool("d1", "drop_finding", {"finding_id": "F2", "reason": "sink is centred"}),
+                tool("z1", "zoom", _looked_at(ARCH_BOX, VENDOR_BOX)),
                 tool("r1", "report_finding", right),
                 stop="tool_use",
             ),
             reply(text("One item wrong on page 2; the backsplash is right.")),
         ]
     )
-    harness = Harness(tmp_path, provider)
+    harness = _zooms(Harness(tmp_path, provider))
     _full_check(harness)
 
     outcome = harness.run()
@@ -707,3 +732,93 @@ def test_findings_with_values_and_no_box_send_the_lead_back_naming_them(
     finding = next(b["finding"] for b in outcome.blocks if b["type"] == "finding")
     assert finding["vendor_box"] and finding["vendor_picture_id"]
     assert len(provider.lead_calls) == 4
+
+
+# ---- not seen is not right: the zoom log -------------------------------------------------------
+
+
+def _same_item(tmp_path: Path, lead: list[Any], helpers: dict[str, Any] | None = None) -> Any:
+    workspace_with_pdf(tmp_path)
+    provider = ScriptedProvider(lead=lead, helpers=helpers or {})
+    outcome = _zooms(Harness(tmp_path, provider)).run()
+    return next(b["finding"] for b in outcome.blocks if b["type"] == "finding")
+
+
+def test_a_same_item_counts_when_the_lead_zoomed_both_sides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _modules(monkeypatch)
+    right = finding_input(status="same", vendor='37"')
+    finding = _same_item(
+        tmp_path,
+        [
+            reply(
+                tool("z1", "zoom", _looked_at(ARCH_BOX, VENDOR_BOX)),
+                tool("r1", "report_finding", right),
+                stop="tool_use",
+            ),
+            reply(text("The top is right.")),
+        ],
+    )
+    assert finding["compared"] is True and finding["not_compared_why"] is None
+
+
+def test_a_same_item_with_one_side_zoomed_is_not_compared(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _modules(monkeypatch)
+    right = finding_input(status="same", vendor='37"')
+    finding = _same_item(
+        tmp_path,
+        [
+            reply(
+                tool("z1", "zoom", _looked_at(VENDOR_BOX)),
+                tool("r1", "report_finding", right),
+                stop="tool_use",
+            ),
+            reply(text("The top is right.")),
+        ],
+    )
+    assert finding["compared"] is False and finding["not_compared_why"] == "not_viewed"
+
+
+def test_a_same_item_with_no_zoom_at_all_is_not_compared(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The lead says it checked (verified), but nothing was looked at: not seen is not right.
+    _modules(monkeypatch)
+    right = finding_input(status="same", vendor='37"', verified=True)
+    finding = _same_item(
+        tmp_path,
+        [
+            reply(tool("r1", "report_finding", right), stop="tool_use"),
+            reply(text("The top is right.")),
+        ],
+    )
+    assert finding["not_compared_why"] == "not_viewed"
+
+
+def test_a_helpers_zoom_counts_as_seen(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _modules(monkeypatch)
+    task = "Compare page 2 with page 1"
+    right = finding_input(status="same", vendor='37"')
+    finding = _same_item(
+        tmp_path,
+        [
+            reply(tool("ag1", "Agent", {"description": "Page 2", "prompt": task}), stop="tool_use"),
+            reply(text("Checked.")),
+        ],
+        {
+            task: [
+                reply(
+                    tool("h1", "zoom", _looked_at(ARCH_BOX, VENDOR_BOX)),
+                    stop="tool_use",
+                    model=SONNET,
+                ),
+                reply(tool("h2", "report_finding", right), stop="tool_use", model=SONNET),
+                reply(text("Page 2 top is right."), model=SONNET),
+            ]
+        },
+    )
+    assert finding["created_by"] == "helper:1"
+    assert finding["compared"] is True and finding["not_compared_why"] is None

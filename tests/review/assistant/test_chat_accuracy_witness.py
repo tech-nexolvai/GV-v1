@@ -11,6 +11,7 @@ import pytest
 from app.review.assistant import witness
 from app.review.assistant.chat_trust import (
     ACCURACY_POINTS,
+    MIN_SEEN_DPI,
     accuracy,
     apply_checks,
     judged,
@@ -223,6 +224,29 @@ def test_the_seen_log_wins_over_the_leads_own_check() -> None:
     only_vendor = [{"page": 2}]
     marked = mark_compared([_same()], COVERED, seen=only_vendor)[0]
     assert marked["compared"] is False and marked["not_compared_why"] == "not_viewed"
+
+
+def _crop(page: int, x0: float, y0: float, x1: float, y1: float, dpi: int = 300) -> dict[str, Any]:
+    box = {"x0": x0, "y0": y0, "x1": x1, "y1": y1}
+    return {"by": "lead", "file": "set.pdf", "page": page, "box": box, "dpi": dpi}
+
+
+def test_a_crop_counts_only_when_sharp_and_over_the_box() -> None:
+    sharp = [_crop(1, 0, 0, 20, 20), _crop(2, 0, 0, 20, 20)]
+    assert mark_compared([_same()], COVERED, seen=sharp)[0]["compared"] is True
+    # A whole sheet at overview sharpness (below MIN_SEEN_DPI) is too blurry to read a box by.
+    blurry = [_crop(1, 0, 0, 20, 20), _crop(2, 0, 0, 2000, 2000, dpi=100)]
+    assert mark_compared([_same()], COVERED, seen=blurry)[0]["not_compared_why"] == "not_viewed"
+    assert MIN_SEEN_DPI == 150
+    edge = [_crop(1, 0, 0, 20, 20), _crop(2, 0, 0, 20, 20, dpi=MIN_SEEN_DPI)]
+    assert mark_compared([_same()], COVERED, seen=edge)[0]["compared"] is True
+    # A sharp crop of the right page that misses the box does not count.
+    elsewhere = [_crop(1, 0, 0, 20, 20), _crop(2, 300, 300, 400, 400)]
+    marked = mark_compared([_same()], COVERED, seen=elsewhere)[0]
+    assert marked["not_compared_why"] == "not_viewed"
+    # A crop of another file does not count when the box names its file.
+    other = _same(vendor_box={"page": 2, "file": "other.pdf", "x0": 0, "y0": 0, "x1": 9, "y1": 9})
+    assert mark_compared([other], COVERED, seen=sharp)[0]["not_compared_why"] == "not_viewed"
 
 
 def test_not_compared_items_are_not_scored_or_counted() -> None:
