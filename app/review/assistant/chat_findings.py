@@ -60,6 +60,7 @@ __all__ = [
     "main_upload",
     "make_markup_file",
     "make_report_file",
+    "markup_base",
     "markup_name",
     "page_ranges",
     "products_words",
@@ -759,6 +760,12 @@ class FindingBook:
                 self.dismissed[str(dropped["record_id"])] = reason
         return finding_id, reason
 
+    def absorb(self, finding_id: str) -> bool:
+        """A finding code folded into another (a helper's reading of a recorded difference, merged
+        into the finding the app made for it): removed, never dismissed. False when it is gone."""
+        with self._lock:
+            return self.findings.pop(finding_id, None) is not None
+
     def dismiss(self, raw: object) -> tuple[str, str]:
         if not isinstance(raw, Mapping):
             raise SandboxRefused("the tool's input is not an object")
@@ -1013,16 +1020,27 @@ class MarkupFile:
     sha256: str
 
 
+def markup_base(workspace: ChatWorkspace) -> Any:
+    """A writable copy of the vendor's file for `make_markup_file(base=...)`, made ahead of time
+    (the slow part of the cloud drawing). Raises `LookupError` when the chat has no copy."""
+    main = main_upload(read_listing(workspace))
+    if main is None or not (workspace.uploads / str(main["name"])).is_file():
+        raise LookupError("no uploads")
+    drawing = import_module("app.review.assistant.chat_drawing")
+    return drawing.clone_pdf(workspace.uploads / str(main["name"]))
+
+
 def make_markup_file(
     workspace: ChatWorkspace,
     findings: Sequence[Mapping[str, Any]],
     out: Path,
     kind: str = "AI markup",
+    base: Any = None,
 ) -> MarkupFile:
     """The marked-up copy of the vendor's file, written to `out`: a cloud and a note at each
     finding's vendor box (else its architect box) when that box is on the vendor's file, the draft
     stamp on page 1, and every finding listed again on the notes page. Raises `LookupError` when
-    the chat has no copy of the set's PDFs."""
+    the chat has no copy of the set's PDFs. `base`: a `markup_base` copy to draw on (used once)."""
     listing = read_listing(workspace)
     main = main_upload(listing)
     if main is None or not (workspace.uploads / str(main["name"])).is_file():
@@ -1043,7 +1061,7 @@ def make_markup_file(
         where = f"Marked on page {box['page']}."
         placed.append((number, finding, int(box["page"]), coords, where))
     drawing = import_module("app.review.assistant.chat_drawing")
-    drawing.markup_pdf(workspace.uploads / name, placed, out)
+    drawing.markup_pdf(workspace.uploads / name, placed, out, base)
     data = out.read_bytes()
     return MarkupFile(markup_name(name, kind), len(data), hashlib.sha256(data).hexdigest())
 

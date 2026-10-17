@@ -42,6 +42,9 @@ __all__ = [
     "ChatTaskOut",
     "ChatTextBlock",
     "ChatThinkingBlock",
+    "ChatTimingHelperOut",
+    "ChatTimingPhaseOut",
+    "ChatTimingsOut",
     "ChatTrustBlock",
     "ChatTrustOut",
     "ChatUnknownOut",
@@ -634,6 +637,46 @@ class ChatTrustUnknownsOut(BaseModel):
     by_why: dict[str, int]
 
 
+class ChatTimingPhaseOut(BaseModel):
+    """One phase of an answer: its wall-clock seconds and what its model calls cost (#1512)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    phase: str = Field(
+        description="seeding, set_pack, planning, prewarm, lead, helpers, lead_verification, "
+        "second_reads, third_reads, critic, finish_checks, cloud_drawing, report"
+    )
+    label: str
+    seconds: float
+    cost_usd: str
+    calls: int
+
+
+class ChatTimingHelperOut(BaseModel):
+    """One helper of an answer: its pages (a full check's, planned by code), calls, time, cost."""
+
+    model_config = ConfigDict(frozen=True)
+
+    number: int
+    description: str
+    pages: list[int]
+    calls: int
+    seconds: float
+    cost_usd: str
+    stopped: str | None = None
+
+
+class ChatTimingsOut(BaseModel):
+    """Where an answer's time and money went, phase by phase (#1512)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    total_seconds: float
+    cost_usd: str
+    phases: list[ChatTimingPhaseOut]
+    helpers: list[ChatTimingHelperOut]
+
+
 class ChatTrustOut(BaseModel):
     """Why the answer can be believed, built by code from its findings and coverage."""
 
@@ -656,6 +699,7 @@ class ChatTrustOut(BaseModel):
     ledger: ChatLedgerReportOut | None = None
     ledger_entries: ChatLedgerEntriesOut | None = None
     recorded_results: ChatRecordedResultsOut | None = None
+    timings: ChatTimingsOut | None = None
 
 
 class ChatTrustBlock(BaseModel):

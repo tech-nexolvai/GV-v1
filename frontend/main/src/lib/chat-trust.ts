@@ -8,7 +8,7 @@
  * does arithmetic on the AI's numbers: the inches and the difference are code's (`finding.inches`).
  */
 
-import type { ChatCoverage, ChatFinding, ChatTrust, ChatUnknown, EvidenceKind, FindingCategory, FindingRead, LedgerReport, PrintedResult, RoundStatus, TrustLeftOut, TrustLevel, UnknownWhy } from '@/lib/chat-api';
+import type { ChatCoverage, ChatFinding, ChatTimings, ChatTrust, ChatUnknown, EvidenceKind, FindingCategory, FindingRead, LedgerReport, PrintedResult, RoundStatus, TrustLeftOut, TrustLevel, UnknownWhy } from '@/lib/chat-api';
 import { categoryOf, CATEGORY_WORDS, pageWords, sourceTag, STATUS_WORDS, verifiedWords } from '@/lib/chat-findings';
 
 // ── Levels ──────────────────────────────────────────────────
@@ -434,6 +434,53 @@ export function checkLines(counts: CheckCounts): string[] {
   lines.push(counts.rules.length ? `GV rules applied by code: ${counts.rules.join(', ')}` : 'GV rules applied by code: none for these findings');
   if (counts.arithmetic) lines.push(`Vendor’s arithmetic added up by code: ${counts.arithmetic.agrees} of ${counts.arithmetic.checked} match`);
   return lines;
+}
+
+// ── Timings (#1512) ─────────────────────────────────────────
+
+/** Wall-clock seconds in words: "0.4 s", "38 s", "4 min 12 s". */
+export function secondsWords(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return '—';
+  if (seconds < 10) return `${Math.round(seconds * 10) / 10} s`;
+  const whole = Math.round(seconds);
+  if (whole < 60) return `${whole} s`;
+  const minutes = Math.floor(whole / 60);
+  const rest = whole % 60;
+  return rest ? `${minutes} min ${rest} s` : `${minutes} min`;
+}
+
+export interface TimingRow {
+  key: string;
+  label: string;
+  time: string;
+  cost: string;
+  calls: number | null;
+}
+
+/** The "How this was checked" timings table: each phase that ran, in order, then the total; null
+ *  on an answer from before timings were recorded. */
+export function timingRows(timings: ChatTimings | null | undefined): TimingRow[] | null {
+  if (!timings || !Array.isArray(timings.phases)) return null;
+  const rows: TimingRow[] = timings.phases.map((phase) => ({
+    key: phase.phase,
+    label: phase.label,
+    time: secondsWords(phase.seconds),
+    cost: `$${phase.cost_usd}`,
+    calls: phase.calls,
+  }));
+  rows.push({ key: 'total', label: 'Whole answer', time: secondsWords(timings.total_seconds), cost: `$${timings.cost_usd}`, calls: null });
+  return rows;
+}
+
+/** One helper's row: "p.3-7 · 1. Connection Centre", its time, cost, calls and why it stopped. */
+export function helperTimingRows(timings: ChatTimings | null | undefined): TimingRow[] {
+  return (timings?.helpers ?? []).map((helper) => ({
+    key: `helper-${helper.number}`,
+    label: `Helper ${helper.number}: ${helper.description}${helper.stopped ? ` (stopped: ${helper.stopped.replace(/_/g, ' ')})` : ''}`,
+    time: secondsWords(helper.seconds),
+    cost: `$${helper.cost_usd}`,
+    calls: helper.calls,
+  }));
 }
 
 // ── Rounds ──────────────────────────────────────────────────

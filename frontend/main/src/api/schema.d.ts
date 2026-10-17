@@ -5162,6 +5162,59 @@ export interface components {
              */
             type: "thinking";
         };
+        /**
+         * ChatTimingHelperOut
+         * @description One helper of an answer: its pages (a full check's, planned by code), calls, time, cost.
+         */
+        ChatTimingHelperOut: {
+            /** Calls */
+            calls: number;
+            /** Cost Usd */
+            cost_usd: string;
+            /** Description */
+            description: string;
+            /** Number */
+            number: number;
+            /** Pages */
+            pages: number[];
+            /** Seconds */
+            seconds: number;
+            /** Stopped */
+            stopped?: string | null;
+        };
+        /**
+         * ChatTimingPhaseOut
+         * @description One phase of an answer: its wall-clock seconds and what its model calls cost (#1512).
+         */
+        ChatTimingPhaseOut: {
+            /** Calls */
+            calls: number;
+            /** Cost Usd */
+            cost_usd: string;
+            /** Label */
+            label: string;
+            /**
+             * Phase
+             * @description seeding, set_pack, planning, prewarm, lead, helpers, lead_verification, second_reads, third_reads, critic, finish_checks, cloud_drawing, report
+             */
+            phase: string;
+            /** Seconds */
+            seconds: number;
+        };
+        /**
+         * ChatTimingsOut
+         * @description Where an answer's time and money went, phase by phase (#1512).
+         */
+        ChatTimingsOut: {
+            /** Cost Usd */
+            cost_usd: string;
+            /** Helpers */
+            helpers: components["schemas"]["ChatTimingHelperOut"][];
+            /** Phases */
+            phases: components["schemas"]["ChatTimingPhaseOut"][];
+            /** Total Seconds */
+            total_seconds: number;
+        };
         /** ChatTrustBlock */
         ChatTrustBlock: {
             trust: components["schemas"]["ChatTrustOut"];
@@ -5246,6 +5299,7 @@ export interface components {
             not_compared?: number | null;
             recorded_results?: components["schemas"]["ChatRecordedResultsOut"] | null;
             rounds?: components["schemas"]["ChatRoundsOut"] | null;
+            timings?: components["schemas"]["ChatTimingsOut"] | null;
             unknowns?: components["schemas"]["ChatTrustUnknownsOut"] | null;
         };
         /** ChatTrustRuleOut */

@@ -314,7 +314,7 @@ def test_zoom_limits_and_plain_reasons(workspace: ChatWorkspace) -> None:
     tools = _zoom_tools(workspace)
     box = {"x0": 0, "y0": 0, "x1": 50, "y1": 50}
     too_many = {"crops": [{"page": 1, "box": box}] * (MAX_ZOOM_CROPS + 1)}
-    assert "1 to 4" in _zoom(tools, too_many).content[0]["text"]
+    assert "1 to 8" in _zoom(tools, too_many).content[0]["text"]
 
     wrong_file = {"crops": [{"page": 1, "box": box, "file": "other.pdf"}]}
     refused = _zoom(tools, wrong_file)
@@ -529,7 +529,7 @@ def test_a_helpers_read_only_tools_run_together_and_reply_in_order(tmp_path: Pat
 
 def test_parallel_helpers_are_capped_by_the_setting(tmp_path: Path) -> None:
     harness = _Engine(tmp_path, ScriptedProvider(lead=[]), None, max_parallel_agents=20)
-    assert harness.engine._max_agents == 8
-    assert Settings.model_fields["assistant_max_parallel_agents"].default == 6
+    assert harness.engine._max_agents == 12
+    assert Settings.model_fields["assistant_max_parallel_agents"].default == 8
     with pytest.raises(ValueError):
-        Settings(database_url="postgresql+psycopg://x@h/db", assistant_max_parallel_agents=9)
+        Settings(database_url="postgresql+psycopg://x@h/db", assistant_max_parallel_agents=13)

@@ -395,6 +395,35 @@ export interface ChatTrust {
     /** The line code wrote for it. */
     line?: string | null;
   } | null;
+  /** Where the answer's time and money went, phase by phase (#1512); older answers have none. */
+  timings?: ChatTimings | null;
+}
+
+/** One phase of an answer: wall-clock seconds and what its model calls cost. */
+export interface ChatTimingPhase {
+  phase: string;
+  label: string;
+  seconds: number;
+  cost_usd: string;
+  calls: number;
+}
+
+/** One helper of an answer: its pages (a full check's, planned by code), calls, time and cost. */
+export interface ChatTimingHelper {
+  number: number;
+  description: string;
+  pages: number[];
+  calls: number;
+  seconds: number;
+  cost_usd: string;
+  stopped?: string | null;
+}
+
+export interface ChatTimings {
+  total_seconds: number;
+  cost_usd: string;
+  phases: ChatTimingPhase[];
+  helpers: ChatTimingHelper[];
 }
 
 /** A result GV Review recorded (a code FAIL, or an evaluator-checked AI page review difference). */
