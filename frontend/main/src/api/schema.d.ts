@@ -4189,6 +4189,11 @@ export interface components {
              * @description "What's right" items not compared: not scored.
              */
             not_compared?: number | null;
+            /**
+             * Rescored
+             * @description True when this score was worked out again from the stored findings with today's calibration and differs from the score stored with the answer (#1513).
+             */
+            rescored?: boolean | null;
             /** Score */
             score: number | null;
             /**
@@ -4845,10 +4850,10 @@ export interface components {
          * @description A message as stored: the reviewer's question, or the assistant's answer.
          */
         ChatMessageOut: {
-            /** @description The answer's accuracy by code (its `accuracy` block); null on older answers. */
+            /** @description The answer's accuracy by code (its `accuracy` block, scored again with today's calibration: see `rescored`); null on older answers. */
             accuracy?: components["schemas"]["ChatAccuracyOut"] | null;
             /** Blocks */
-            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"])[] | null;
+            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"] | components["schemas"]["ChatProgressBlock"])[] | null;
             /** @description With `stopped: cost_cap`: `message` (this answer's cap) or `package` (the drawing set's budget ran out). */
             cap_hit?: components["schemas"]["ChatCapHit"] | null;
             /** Cost Usd */
@@ -4874,6 +4879,11 @@ export interface components {
              * @description The per-answer cap this answer ran under ("5.00").
              */
             message_cap_usd?: string | null;
+            /**
+             * Mode
+             * @description A typed question (`chat`) or the one-click full check; null on messages stored before it was kept (#1513).
+             */
+            mode?: ("chat" | "full_check") | null;
             /** Model */
             model?: string | null;
             /**
@@ -4881,6 +4891,11 @@ export interface components {
              * @description The drawing set's AI budget this answer ran under ("40.00").
              */
             package_cap_usd?: string | null;
+            /**
+             * Products
+             * @description The products the message was about; null on older messages.
+             */
+            products?: ("countertop" | "cabinet")[] | null;
             /**
              * Role
              * @enum {string}
@@ -4949,6 +4964,42 @@ export interface components {
             running_message_id?: string | null;
             /** Title */
             title: string | null;
+        };
+        /** ChatProgressBlock */
+        ChatProgressBlock: {
+            progress: components["schemas"]["ChatProgressOut"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "progress";
+        };
+        /**
+         * ChatProgressOut
+         * @description A full check's progress, by code: "Checking page 12 of 60 · 8 wrong so far · about 6 min
+         *     left". Sent as `progress` events while it runs; the last one is stored.
+         */
+        ChatProgressOut: {
+            /** Decision So Far */
+            decision_so_far: number;
+            /**
+             * Eta Seconds
+             * @description Time left at the pace so far; null before any page is done.
+             */
+            eta_seconds?: number | null;
+            /** Pages Done */
+            pages_done: number;
+            /** Pages Total */
+            pages_total: number;
+            /**
+             * Phase
+             * @enum {string}
+             */
+            phase: "reading" | "checking" | "writing";
+            /** Right So Far */
+            right_so_far: number;
+            /** Wrong So Far */
+            wrong_so_far: number;
         };
         /** ChatRecordedDifferenceOut */
         ChatRecordedDifferenceOut: {
@@ -5142,6 +5193,11 @@ export interface components {
         };
         /** ChatTextBlock */
         ChatTextBlock: {
+            /**
+             * By
+             * @description "code": written by GV Review, not the AI (the full check's summary when the AI did not finish its own).
+             */
+            by?: "code" | null;
             /** Text */
             text: string;
             /**
