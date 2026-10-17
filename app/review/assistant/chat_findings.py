@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any, Final
 from uuid import uuid4
 
+from app.review.assistant.chat_corrections import parse_ref
 from app.review.assistant.impact import by_impact
 from app.review.assistant.sandbox import UPLOADS, ChatWorkspace, SandboxRefused
 from app.review.assistant.tool_schema import box_schema
@@ -291,7 +292,7 @@ UPDATE_FINDING: Final[Mapping[str, Any]] = {
     "description": (
         "Change fields of a finding already recorded in this answer. Use it after you check a "
         "lead (verified true, or the values as printed), to add a missing box or decision_help, "
-        "or when the app sends you back about a finding. Give finding_id and only the fields "
+        "or when the app sends you back about a finding. In a follow-up, also correct an earlier answer's finding (A1-F5). Give finding_id and only the fields "
         'that change; the field meanings are report_finding\'s. Returns "Finding F3 updated." '
         'with any notes from code\'s checks, or "Refused: <why>". '
         'Example: {"finding_id": "F3", "verified": true, "vendor": "45 1/2\\""}'
@@ -316,7 +317,7 @@ UPDATE_FINDING: Final[Mapping[str, Any]] = {
 DROP_FINDING: Final[Mapping[str, Any]] = {
     "name": "drop_finding",
     "description": (
-        "Remove a finding of this answer. Use it when you checked the finding on the drawing and "
+        "Remove a finding of this answer (F4), or of an earlier answer in this chat (A1-F5). Use it when you checked the finding on the drawing and "
         "found it wrong (a misread, the wrong pairing, GV's markup taken for a value); use "
         'update_finding instead when only a value or a box needs correcting. Returns "Finding F4 dropped." or '
         '"Refused: <why>". '
@@ -897,6 +898,11 @@ class FindingBook:
     """This message's extent checks (`measure_on_drawing` with a `dimension`, `ChatTools.extents`):
     each `{file, page, printed_in, covers_more, unit_in, plus_minus_in, measures, words}`."""
     cites: list[dict[str, Any]] = field(default_factory=list)
+    earlier: dict[str, dict[str, Any]] = field(default_factory=dict)
+    """Earlier answers' findings in this chat at their newest version, by ref (`A1-F5`), that a
+    follow-up may correct (#1548, `chat_corrections.earlier_findings`)."""
+    corrections: dict[str, dict[str, Any]] = field(default_factory=dict)
+    """This answer's corrections of earlier findings, by ref (the update stored)."""
     _cites: int = 0
     """The recorded differences this answer must account for (set by the engine)."""
     _count: int = 0
@@ -1192,6 +1198,85 @@ class FindingBook:
                     f"there is no finding {finding_id} in this answer (report it again)"
                 )
         return finding_id
+
+    def earlier_ref(self, raw: object) -> str | None:
+        """The ref when `raw` names an earlier answer's finding (`A1-F5`), else `None`; a ref that
+        is not one of this chat's findings is refused."""
+        if not isinstance(raw, Mapping):
+            return None
+        given = raw.get("finding_id")
+        if not isinstance(given, str) or parse_ref(given) is None:
+            return None
+        ref = given.strip()
+        if ref not in self.earlier:
+            raise SandboxRefused(
+                f"there is no finding {ref} in this chat's earlier answers (A1-F5 = the first "
+                "answer's F5)"
+            )
+        return ref
+
+    def _corrected(self, ref: str) -> dict[str, Any]:
+        """The newest version of an earlier finding: this answer's correction, else as stored."""
+        with self._lock:
+            made = self.corrections.get(ref)
+            if made is not None and made.get("dropped"):
+                raise SandboxRefused(f"finding {ref} was dropped in this answer")
+            if made is not None:
+                return dict(made["finding"])
+            return dict(self.earlier[ref]["finding"])
+
+    def correct(self, raw: object) -> tuple[str, dict[str, Any], list[str]]:
+        """`update_finding` on an earlier answer's finding: (ref, the new version before code's
+        checks, notes). Stored with `store_correction` once checked."""
+        assert isinstance(raw, Mapping)
+        unknown = set(raw) - set(_FINDING_FIELDS) - {"finding_id"}
+        if unknown:
+            raise SandboxRefused(f"unknown argument {min(unknown)!r}")
+        ref = str(raw["finding_id"]).strip()
+        changes = self._fields({k: v for k, v in raw.items() if k != "finding_id"}, partial=True)
+        if not changes:
+            raise SandboxRefused("give at least one field to change")
+        notes: list[str] = []
+        for box, picture, side in (
+            ("arch_box", "arch_picture_id", "architect"),
+            ("vendor_box", "vendor_picture_id", "vendor"),
+        ):
+            if box in changes:
+                changes[picture], why = self._picture(changes[box])
+                if changes[box] is not None and why is not None:
+                    notes.append(f"{side} box: no picture ({why})")
+        return ref, {**self._corrected(ref), **changes}, notes
+
+    def store_correction(
+        self, ref: str, finding: Mapping[str, Any] | None, dropped: str | None, by_answer: int
+    ) -> dict[str, Any]:
+        """This answer's correction of `ref` (a new version, or dropped with a reason), replacing
+        an earlier correction of it in the same answer."""
+        earlier = self.earlier[ref]
+        last = dict(finding) if finding is not None else self._corrected(ref)
+        update = {
+            "ref": ref,
+            "message_id": earlier["message_id"],
+            "finding_id": str(earlier["finding"].get("id")),
+            "answer": earlier["answer"],
+            "by_answer": by_answer,
+            "version": int(earlier.get("version") or 1) + 1,
+            "finding": last,
+            "dropped": dropped,
+        }
+        with self._lock:
+            self.corrections[ref] = update
+        return dict(update)
+
+    def drop_earlier(self, raw: object) -> tuple[str, str]:
+        """`drop_finding` on an earlier answer's finding: (ref, reason)."""
+        assert isinstance(raw, Mapping)
+        unknown = set(raw) - {"finding_id", "reason"}
+        if unknown:
+            raise SandboxRefused(f"unknown argument {min(unknown)!r}")
+        ref = str(raw["finding_id"]).strip()
+        self._corrected(ref)
+        return ref, _text(raw, "reason", _MAX_NOTE)
 
     def update(self, raw: object) -> tuple[dict[str, Any], list[str]]:
         if not isinstance(raw, Mapping):

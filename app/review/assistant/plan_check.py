@@ -38,6 +38,7 @@ __all__ = [
     "ANSWERS_FILE",
     "MAX_DOUBTS",
     "Doubt",
+    "answer_note",
     "apply_answers",
     "doubts",
     "plan_summary",
@@ -385,6 +386,28 @@ def record_answers(folder: Path, answers: Mapping[str, str], by: str) -> int:
         with (folder / ANSWERS_FILE).open("a", encoding="utf-8") as out:
             out.write("".join(f"{row}\n" for row in rows))
     return len(rows)
+
+
+def answer_note(doubt_id: str, value: str) -> tuple[str, int] | None:
+    """An answer in plain words for the set notes, with its page: "Plan check: on page 28,
+    drawing 2 is the architect's drawing." `None` when it does not fit its question."""
+    found = _ID.match(doubt_id)
+    if found is None or not valid_answer(doubt_id, value):
+        return None
+    kind = found.group(1) or found.group(5)
+    page = int(found.group(3) or found.group(7))
+    drawing = f"drawing {int(found.group(4)) + 1}" if found.group(4) is not None else "the page"
+    if kind in ("prototype", "role"):
+        words = f"{drawing} is: {ROLE_WORDS[value].lower()}"
+    elif kind == "round":
+        words = f"{drawing} is round {value}"
+    elif value == "skip":
+        words = "skip it in a full check"
+    elif kind == "pair":
+        words = f"compare it with page {value.split(':', 1)[1]}"
+    else:
+        words = "the vendor's drawing, to check"
+    return f"Plan check: on page {page}, {words}.", page
 
 
 def _entry_role(halves: Sequence[Mapping[str, Any]]) -> str:

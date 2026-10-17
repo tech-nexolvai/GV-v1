@@ -4604,6 +4604,8 @@ export interface components {
          * @description A finding the assistant dropped (in the place its finding block was).
          */
         ChatFindingDroppedBlock: {
+            /** @description Set when a later message of the chat dropped it (#1548). */
+            dropped_in?: components["schemas"]["ChatFindingLaterOut"] | null;
             /** Finding Id */
             finding_id: string;
             /** Reason */
@@ -4661,6 +4663,24 @@ export interface components {
             difference?: string | null;
             /** Vendor */
             vendor?: string | null;
+        };
+        /**
+         * ChatFindingLaterOut
+         * @description The later answer of the same chat that corrected a finding (#1548).
+         */
+        ChatFindingLaterOut: {
+            /**
+             * Answer
+             * @description That answer's number in the chat.
+             */
+            answer?: number | null;
+            /** Message Id */
+            message_id: string;
+            /**
+             * Version
+             * @description The finding's version: 1 is the original, 2 the first fix.
+             */
+            version: number;
         };
         /**
          * ChatFindingOut
@@ -4766,6 +4786,8 @@ export interface components {
             sum_text?: string | null;
             /** Trust Level */
             trust_level?: ("confirmed" | "likely" | "to_check") | null;
+            /** @description Set when a later message of the chat corrected this finding (#1548): the finding shown is its newest version ("updated in a later message"). */
+            updated_in?: components["schemas"]["ChatFindingLaterOut"] | null;
             /** Vendor */
             vendor: string;
             vendor_box?: components["schemas"]["ChatBoxOut"] | null;
@@ -4811,6 +4833,53 @@ export interface components {
             value_arch?: string | null;
             /** Value Vendor */
             value_vendor?: string | null;
+        };
+        /** ChatFindingUpdateBlock */
+        ChatFindingUpdateBlock: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "finding_update";
+            update: components["schemas"]["ChatFindingUpdateOut"];
+        };
+        /**
+         * ChatFindingUpdateOut
+         * @description A later message's correction of an earlier answer's finding (#1548), stored in the later
+         *     answer; the earlier answer is read with its newest version.
+         */
+        ChatFindingUpdateOut: {
+            /**
+             * Answer
+             * @description The earlier answer's number in the chat.
+             */
+            answer: number;
+            /**
+             * By Answer
+             * @description This answer's number in the chat.
+             */
+            by_answer?: number | null;
+            /**
+             * Dropped
+             * @description Why it was dropped; null: updated.
+             */
+            dropped?: string | null;
+            /** @description The new version (the last one, when dropped). */
+            finding: components["schemas"]["ChatFindingOut"];
+            /** Finding Id */
+            finding_id: string;
+            /**
+             * Message Id
+             * @description The earlier answer the finding belongs to.
+             */
+            message_id: string;
+            /**
+             * Ref
+             * @description "A1-F5": the chat's first answer, finding F5.
+             */
+            ref: string;
+            /** Version */
+            version: number;
         };
         /**
          * ChatFullCheckPlanOut
@@ -5071,7 +5140,7 @@ export interface components {
             /** @description The answer's accuracy by code (its `accuracy` block, scored again with today's calibration: see `rescored`); null on older answers. */
             accuracy?: components["schemas"]["ChatAccuracyOut"] | null;
             /** Blocks */
-            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"] | components["schemas"]["ChatScopeBlock"] | components["schemas"]["ChatProgressBlock"] | components["schemas"]["ChatResumeBlock"] | components["schemas"]["ChatUnderstoodBlock"])[] | null;
+            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatFindingUpdateBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"] | components["schemas"]["ChatScopeBlock"] | components["schemas"]["ChatProgressBlock"] | components["schemas"]["ChatResumeBlock"] | components["schemas"]["ChatUnderstoodBlock"])[] | null;
             /** @description With `stopped: cost_cap`: `message` (this answer's cap) or `package` (the drawing set's budget ran out). */
             cap_hit?: components["schemas"]["ChatCapHit"] | null;
             /** Cost Usd */
@@ -5514,7 +5583,7 @@ export interface components {
             tool: components["schemas"]["ChatStepTool"];
         };
         /** @enum {string} */
-        ChatStepTool: "bash_tool" | "view" | "create_file" | "str_replace" | "present_files" | "TaskCreate" | "TaskUpdate" | "Agent" | "review_results" | "compare_rounds" | "verify_value" | "measure_on_drawing" | "zoom" | "read_under_markup";
+        ChatStepTool: "bash_tool" | "view" | "create_file" | "str_replace" | "present_files" | "TaskCreate" | "TaskUpdate" | "Agent" | "review_results" | "compare_rounds" | "verify_value" | "measure_on_drawing" | "zoom" | "read_under_markup" | "remember";
         /** @enum {string} */
         ChatStopped: "cost_cap" | "cancelled" | "error" | "turn_limit" | "interrupted";
         /** ChatSummaryOut */

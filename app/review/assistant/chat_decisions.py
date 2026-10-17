@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import AssistantChatMessage, AssistantFindingDecision
+from app.review.assistant.chat_corrections import with_corrections
 from app.review.assistant.chat_findings import (
     MarkupFile,
     live_findings,
@@ -122,10 +123,13 @@ def with_decisions(
 
 
 def decided_findings(
-    message: AssistantChatMessage, decided: Mapping[str, Mapping[str, Any]] | None
+    message: AssistantChatMessage,
+    decided: Mapping[str, Mapping[str, Any]] | None,
+    corrections: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """The answer's findings, in order, each with its latest decision."""
-    return live_findings(with_decisions(message.blocks, decided))
+    """The answer's findings, in order, each at its newest version (a later message's correction,
+    #1548) and with its latest decision."""
+    return live_findings(with_decisions(with_corrections(message.blocks, corrections), decided))
 
 
 def _trust(blocks: Sequence[Mapping[str, Any]] | None) -> Mapping[str, Any]:

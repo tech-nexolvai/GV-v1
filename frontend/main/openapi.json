@@ -4424,6 +4424,17 @@
       "ChatFindingDroppedBlock": {
         "description": "A finding the assistant dropped (in the place its finding block was).",
         "properties": {
+          "dropped_in": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatFindingLaterOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when a later message of the chat dropped it (#1548)."
+          },
           "finding_id": {
             "title": "Finding Id",
             "type": "string"
@@ -4545,6 +4556,38 @@
           }
         },
         "title": "ChatFindingInchesOut",
+        "type": "object"
+      },
+      "ChatFindingLaterOut": {
+        "description": "The later answer of the same chat that corrected a finding (#1548).",
+        "properties": {
+          "answer": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "That answer's number in the chat.",
+            "title": "Answer"
+          },
+          "message_id": {
+            "title": "Message Id",
+            "type": "string"
+          },
+          "version": {
+            "description": "The finding's version: 1 is the original, 2 the first fix.",
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "message_id",
+          "version"
+        ],
+        "title": "ChatFindingLaterOut",
         "type": "object"
       },
       "ChatFindingOut": {
@@ -4912,6 +4955,17 @@
             ],
             "title": "Trust Level"
           },
+          "updated_in": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatFindingLaterOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when a later message of the chat corrected this finding (#1548): the finding shown is its newest version (\"updated in a later message\")."
+          },
           "vendor": {
             "title": "Vendor",
             "type": "string"
@@ -5080,6 +5134,90 @@
           "model"
         ],
         "title": "ChatFindingReadOut",
+        "type": "object"
+      },
+      "ChatFindingUpdateBlock": {
+        "properties": {
+          "type": {
+            "const": "finding_update",
+            "title": "Type",
+            "type": "string"
+          },
+          "update": {
+            "$ref": "#/components/schemas/ChatFindingUpdateOut"
+          }
+        },
+        "required": [
+          "type",
+          "update"
+        ],
+        "title": "ChatFindingUpdateBlock",
+        "type": "object"
+      },
+      "ChatFindingUpdateOut": {
+        "description": "A later message's correction of an earlier answer's finding (#1548), stored in the later\nanswer; the earlier answer is read with its newest version.",
+        "properties": {
+          "answer": {
+            "description": "The earlier answer's number in the chat.",
+            "title": "Answer",
+            "type": "integer"
+          },
+          "by_answer": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "This answer's number in the chat.",
+            "title": "By Answer"
+          },
+          "dropped": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why it was dropped; null: updated.",
+            "title": "Dropped"
+          },
+          "finding": {
+            "$ref": "#/components/schemas/ChatFindingOut",
+            "description": "The new version (the last one, when dropped)."
+          },
+          "finding_id": {
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "message_id": {
+            "description": "The earlier answer the finding belongs to.",
+            "title": "Message Id",
+            "type": "string"
+          },
+          "ref": {
+            "description": "\"A1-F5\": the chat's first answer, finding F5.",
+            "title": "Ref",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ref",
+          "message_id",
+          "finding_id",
+          "answer",
+          "version",
+          "finding"
+        ],
+        "title": "ChatFindingUpdateOut",
         "type": "object"
       },
       "ChatFullCheckPlanOut": {
@@ -5740,6 +5878,7 @@
                       "coverage": "#/components/schemas/ChatCoverageBlock",
                       "finding": "#/components/schemas/ChatFindingBlock",
                       "finding_dropped": "#/components/schemas/ChatFindingDroppedBlock",
+                      "finding_update": "#/components/schemas/ChatFindingUpdateBlock",
                       "progress": "#/components/schemas/ChatProgressBlock",
                       "resume": "#/components/schemas/ChatResumeBlock",
                       "scope": "#/components/schemas/ChatScopeBlock",
@@ -5767,6 +5906,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ChatFindingDroppedBlock"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChatFindingUpdateBlock"
                     },
                     {
                       "$ref": "#/components/schemas/ChatCoverageBlock"
@@ -6937,7 +7079,8 @@
           "verify_value",
           "measure_on_drawing",
           "zoom",
-          "read_under_markup"
+          "read_under_markup",
+          "remember"
         ],
         "type": "string"
       },

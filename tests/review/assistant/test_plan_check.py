@@ -16,6 +16,7 @@ from app.review.assistant.plan_check import (
     ANSWERS_FILE,
     MAX_DOUBTS,
     SKIP_NOTE,
+    answer_note,
     apply_answers,
     doubts,
     plan_summary,
@@ -194,3 +195,20 @@ def test_answers_must_fit_their_question() -> None:
     assert not valid_answer("pair:f0:p9", "vendor")
     assert not valid_answer("../../etc", "skip")
     assert apply_answers(_sure_map(), {"role:f0:p99:h0": "vendor"}) == _sure_map()
+
+
+def test_an_answer_reads_as_a_set_note() -> None:
+    assert answer_note("prototype:f0:p28:h1", "architect") == (
+        "Plan check: on page 28, drawing 2 is: architect's drawing.",
+        28,
+    )
+    assert answer_note("pair:f0:p41", "pair:40") == (
+        "Plan check: on page 41, compare it with page 40.",
+        41,
+    )
+    assert answer_note("pair:f0:p41", "skip") == (
+        "Plan check: on page 41, skip it in a full check.",
+        41,
+    )
+    assert answer_note("round:f0:p7:h1", "2") == ("Plan check: on page 7, drawing 2 is round 2.", 7)
+    assert answer_note("role:f0:p2:h0", "pair:3") is None

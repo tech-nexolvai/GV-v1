@@ -122,6 +122,13 @@ def test_the_plan_check_asks_where_unsure_and_keeps_the_answers(postgres_engine,
             (doubt["id"], "architect", "reviewer-one")
         ]
         assert _plan(world)["doubts"] == []
+        # ... and as the set's notes, for later chats (#1548).
+        from app.models import AssistantSetNote
+
+        notes = world.session.query(AssistantSetNote).filter_by(package_id=world.package_id).all()
+        assert [(n.note, n.page, n.source) for n in notes] == [
+            ("Plan check: on page 2, drawing 2 is: architect's drawing.", 2, "decision")
+        ]
         # The page map on disk is not changed: the answers are laid over it when it is read.
         assert json.loads((pack / "page_map.json").read_text(encoding="utf-8")) == page_map
 

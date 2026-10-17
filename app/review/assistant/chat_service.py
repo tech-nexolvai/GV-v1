@@ -50,6 +50,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.models import AssistantChatMessage
 from app.review.assistant.chat_contract import ChatMessageOut
+from app.review.assistant.chat_corrections import earlier_findings, earlier_findings_note
 from app.review.assistant.chat_engine import (
     FULL_CHECK_INSTRUCTION,
     ChatEngine,
@@ -66,6 +67,7 @@ from app.review.assistant.chat_findings import (
     products_words,
     read_listing,
 )
+from app.review.assistant.chat_memory import add_note, notes_block, set_notes
 from app.review.assistant.chat_provider import ChatProvider
 from app.review.assistant.chat_request import ChatModel
 from app.review.assistant.chat_store import (
@@ -83,11 +85,12 @@ from app.review.assistant.chat_store import (
     stored_chat_spend,
     unanswered_questions,
 )
-from app.review.assistant.chat_tools import MAX_AGENTS, ChatTools, ResultsLoader
+from app.review.assistant.chat_tools import MAX_AGENTS, ChatTools, ResultsLoader, named_pages
 from app.review.assistant.chat_unknowns import asks_for_the_rest, last_unknowns, work_list_note
 from app.review.assistant.full_check_plan import read_page_map
 from app.review.assistant.plan_check import (
     MAX_DOUBTS,
+    answer_note,
     doubts,
     plan_summary,
     read_answers,
@@ -512,6 +515,31 @@ def read_status_state(folder: Path | None) -> str | None:
     return status.get("state") if isinstance(status, dict) else None
 
 
+def _set_notes_text(
+    session: Session,
+    job: MessageJob,
+    stored: Sequence[AssistantChatMessage],
+    *,
+    first: bool,
+) -> str | None:
+    """The set notes for this message (#1548): the newest at a chat's start (notes on the pages
+    the question names first), then the ones added since the chat's last message. Never stops a
+    message: a failure gives no notes."""
+    try:
+        if first:
+            rows = set_notes(session, job.package_id)
+        else:
+            since = max(
+                (message.created_at for message in stored if message.role == "assistant"),
+                default=None,
+            )
+            rows = set_notes(session, job.package_id, since=since, leave_out_chat=job.chat_id)
+        return notes_block(rows, pages=named_pages(job.text or ""), new=not first)
+    except Exception:  # noqa: BLE001 - the chat goes on without its notes
+        _log.exception("assistant chat set notes could not be read")
+        return None
+
+
 def uploaded_files_text(listing: Sequence[dict[str, Any]], *, changed: bool) -> str:
     """The `<uploaded_files>` block of a chat's first message (and of a message after the set's
     PDFs changed)."""
@@ -786,6 +814,24 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             record_answers(workspace.set_pack, job.plan_answers, job.created_by)
         except OSError as failed:
             _log.warning("assistant chat plan answers not kept: %s", type(failed).__name__)
+        # And as the set's notes (#1548), so later chats on the set read the reviewer's word too.
+        try:
+            with job.factory() as session:
+                for doubt_id, value in job.plan_answers.items():
+                    said = answer_note(doubt_id, value)
+                    if said is not None:
+                        add_note(
+                            session,
+                            package_id=job.package_id,
+                            note=said[0],
+                            page=said[1],
+                            source="decision",
+                            chat_id=job.chat_id,
+                            created_by=job.created_by,
+                        )
+                session.commit()
+        except Exception:  # noqa: BLE001 - the answers are kept beside the page map anyway
+            _log.exception("assistant chat plan answers not added to the set notes")
     prepare_skill(workspace, job.factory, job.revision_id, job.skill_builder, job.products)
     sandbox = job.open_sandbox(workspace)
     if sandbox is None:
@@ -794,16 +840,18 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
     run.sandbox = sandbox
     with job.factory() as session:
         replay = history(session, job.chat_id)
+        stored = messages_of(session, job.chat_id)
         # "Check the rest": the last answer's unknowns become this answer's work list.
         work_list = None
         if job.mode != "full_check" and asks_for_the_rest(job.text):
             work_list = work_list_note(
-                last_unknowns(
-                    message.blocks
-                    for message in messages_of(session, job.chat_id)
-                    if message.role == "assistant"
-                )
+                last_unknowns(message.blocks for message in stored if message.role == "assistant")
             )
+        # The set's memory (#1548): its notes at a chat's start, then the ones added since.
+        notes = _set_notes_text(session, job, stored, first=not replay)
+        # Follow-up corrections (#1548): the earlier answers' findings, newest versions.
+        earlier_found = earlier_findings(stored)
+        answer_number = sum(1 for message in stored if message.role == "assistant") + 1
         # Continue (#1514): the work of the answer a server restart cut off.
         earlier = (
             None
@@ -827,6 +875,13 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
         marker.write_text(wanted, encoding="utf-8")
     if focus is not None:
         user_content.append({"type": "text", "text": focus})
+    if notes is not None:
+        user_content.append({"type": "text", "text": notes})
+    earlier_note = (
+        earlier_findings_note(earlier_found) if replay and job.mode != "full_check" else None
+    )
+    if earlier_note is not None:
+        user_content.append({"type": "text", "text": earlier_note})
     if work_list is not None:
         user_content.append({"type": "text", "text": work_list})
     if earlier is not None:
@@ -857,6 +912,20 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
         _safe(emit, "file", {"file": shown})
         return shown
 
+    def remember_note(note: str, page: int | None) -> None:
+        with job.factory() as session:
+            add_note(
+                session,
+                package_id=job.package_id,
+                note=note,
+                page=page,
+                source="ai",
+                chat_id=job.chat_id,
+                message_id=run.message_id,
+                created_by=job.created_by,
+            )
+            session.commit()
+
     def read_picture(picture_id: str) -> bytes:
         return (workspace.pictures / f"{UUID(picture_id)}.png").read_bytes()
 
@@ -883,6 +952,7 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             results=job.results,
             register_file=register_file,
             uploads=listing,
+            remember_note=remember_note,
         ),
         ledger=SessionChatLedger(job.factory, job.revision_id, job.chat_id),
         emit=lambda event, data: _safe(emit, event, data),
@@ -893,6 +963,8 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
         cancel=run.cancel,
     )
     run.engine = engine
+    engine.book.earlier = dict(earlier_found)
+    engine.answer_number = answer_number
     if earlier is not None and job.mode == "full_check":
         _blocks, _question = earlier
         coverage = _last_coverage(_blocks)

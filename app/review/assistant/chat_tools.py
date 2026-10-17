@@ -51,6 +51,7 @@ from app.review.assistant.chat_findings import (
     main_upload,
     page_ranges,
 )
+from app.review.assistant.chat_memory import MAX_NOTE_CHARS, REMEMBER
 from app.review.assistant.internal_refs import without_ticket_refs
 from app.review.assistant.ledger import LEDGER_TOOLS
 from app.review.assistant.plan_check import apply_answers, read_answers
@@ -699,6 +700,7 @@ LEAD_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     VERIFY_VALUE,
     MEASURE_ON_DRAWING,
     READ_UNDER_MARKUP,
+    REMEMBER,
 )
 HELPER_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     _BASH,
@@ -729,6 +731,7 @@ _DEFAULT_LABELS: Final[Mapping[str, str]] = {
     "verify_value": "Checked a printed value",
     "measure_on_drawing": "Measured on the drawing",
     "read_under_markup": "Read under GV's markup",
+    "remember": "Remembered for this drawing set",
 }
 
 
@@ -895,6 +898,8 @@ class ChatTools:
     uploads: Sequence[Mapping[str, Any]] = ()
     """The set's PDFs as copied into the chat (`uploads.json`): name, pages, kind."""
     register_file: FileRegistrar | None = None
+    remember_note: Callable[[str, int | None], None] | None = None
+    """Keeps a set note (#1548): (note, page). `None`: this chat keeps none."""
     seen: list[dict[str, Any]] = field(default_factory=list)
     """Every zoom crop of this message: `{by, file, page, box, dpi, picture_id}` (the "seen" log
     the trust checks read; also kept in each zoom step)."""
@@ -1147,6 +1152,44 @@ class ChatTools:
                 output=_shown("\n".join(lines)),
                 picture_id=ids[1],
                 seen=[seen],
+            ),
+        )
+
+    def remember(self, raw: object, step: dict[str, Any]) -> ToolResult:
+        """`remember {note, page?}`: one fact kept for every later chat on the set (#1548)."""
+        started = monotonic()
+        try:
+            given = arguments(raw, frozenset({"note", "page"}), frozenset({"note"}))
+            note = given.get("note")
+            if not isinstance(note, str) or not note.strip():
+                raise SandboxRefused("note must be the fact, as text")
+            if len(note) > MAX_NOTE_CHARS:
+                raise SandboxRefused(f"note must be at most {MAX_NOTE_CHARS} characters")
+            page = given.get("page")
+            if page is not None and (
+                isinstance(page, bool) or not isinstance(page, int) or page < 1
+            ):
+                raise SandboxRefused("page must be a whole number from 1")
+        except SandboxRefused as refused:
+            return _refused(step, started, str(refused))
+        if self.remember_note is None:
+            return _refused(step, started, "this chat cannot keep notes")
+        clean = " ".join(note.split())
+        try:
+            self.remember_note(clean, page)
+        except Exception as failed:  # noqa: BLE001 - told plainly; the answer goes on
+            _log.warning("assistant chat note not kept: %s", type(failed).__name__)
+            return _refused(step, started, "the note could not be kept just now")
+        where = f" (page {page})" if page else ""
+        text = f"Kept for every chat on this drawing set{where}: {clean}"
+        return ToolResult(
+            content=[{"type": "text", "text": text}],
+            step=_done(
+                step,
+                started,
+                ok=True,
+                label=f"Remembered: {clean[:80]}" + ("\u2026" if len(clean) > 80 else ""),
+                output=_shown(text),
             ),
         )
 
