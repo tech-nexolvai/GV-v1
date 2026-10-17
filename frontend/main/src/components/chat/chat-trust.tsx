@@ -13,6 +13,7 @@ import {
   evidenceWords,
   findingChecks,
   gvChecksOf,
+  helperTimingRows,
   ledgerItems,
   ledgerWords,
   levelCounts,
@@ -23,12 +24,14 @@ import {
   TRUST_MEANING,
   TRUST_ORDER,
   TRUST_WORDS,
+  timingRows,
   trustLevelOf,
   trustReason,
   UNKNOWN_WHY_WORDS,
   unknownsWords,
   type CheckResult,
   type CheckState,
+  type TimingRow,
 } from '@/lib/chat-trust';
 import { cn } from '@/lib/utils';
 
@@ -223,6 +226,48 @@ function Disclosure({ label, children, slot }: { label: React.ReactNode; childre
   );
 }
 
+function TimingTable({ rows, caption, slot, head }: { rows: TimingRow[]; caption: string; slot: string; head: string }) {
+  return (
+    <div className="max-w-full overflow-x-auto rounded-lg border">
+      <table data-slot={slot} className="w-full border-collapse text-xs tabular-nums">
+        <caption className="sr-only">{caption}</caption>
+        <thead className="bg-muted/50 text-muted-foreground">
+          <tr>
+            <th scope="col" className="px-2.5 py-1.5 text-left font-medium">{head}</th>
+            <th scope="col" className="px-2.5 py-1.5 text-right font-medium">Time</th>
+            <th scope="col" className="px-2.5 py-1.5 text-right font-medium">Cost</th>
+            <th scope="col" className="px-2.5 py-1.5 text-right font-medium">Calls</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.key} data-phase={row.key} className={cn('border-t align-top', row.key === 'total' && 'font-medium')}>
+              <th scope="row" className="px-2.5 py-1 text-left font-[inherit] break-words">{row.label}</th>
+              <td className="num px-2.5 py-1 text-right whitespace-nowrap">{row.time}</td>
+              <td className="num px-2.5 py-1 text-right whitespace-nowrap">{row.cost}</td>
+              <td className="num px-2.5 py-1 text-right">{row.calls ?? ''}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** Where the answer's time and money went (#1512): one row per phase, then one per helper. */
+function TimingsTable({ trust }: { trust: ChatTrust | null | undefined }) {
+  const rows = timingRows(trust?.timings);
+  if (!rows) return null;
+  const helpers = helperTimingRows(trust?.timings);
+  return (
+    <div data-slot="chat-trust-timings" className="mt-2 grid min-w-0 gap-2">
+      <p className="text-xs font-medium text-muted-foreground">Time and cost by phase (phases that ran together overlap)</p>
+      <TimingTable rows={rows} caption="Time and cost by phase" slot="chat-trust-timings-phases" head="Phase" />
+      {helpers.length > 0 && <TimingTable rows={helpers} caption="Time and cost by helper" slot="chat-trust-timings-helpers" head="Helper" />}
+    </div>
+  );
+}
+
 export interface TrustSummaryProps {
   findings: readonly ChatFinding[];
   trust: ChatTrust | null | undefined;
@@ -349,6 +394,7 @@ export function TrustSummary({ findings, trust, coverage, coverageStrip, unknown
           {checkLines(counts).map((line) => <li key={line} className="tabular-nums">{line}</li>)}
           {notChecked.map((line) => <li key={line} className="text-muted-foreground">Not checked: {line}</li>)}
         </ul>
+        <TimingsTable trust={trust} />
       </Disclosure>
     </section>
   );

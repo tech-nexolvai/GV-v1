@@ -110,7 +110,7 @@ def test_findings_stream_are_stored_and_reload_the_same_with_their_pictures(post
         live = {data["index"]: data["finding"] for data in _named(events, "finding")}
         assert live[0] == finding
         assert _named(events, "coverage")[-1]["coverage"] == coverage
-        assert _named(events, "trust")[0]["trust"] == message["blocks"][5]["trust"]
+        assert _named(events, "trust")[-1]["trust"] == message["blocks"][5]["trust"]
         reloaded = world.client.get(f"/api/v1/chats/{chat_id}").json()["messages"][-1]
         assert reloaded == message
         for key in ("arch_picture_id", "vendor_picture_id"):

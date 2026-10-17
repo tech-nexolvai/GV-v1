@@ -6600,6 +6600,129 @@
         "title": "ChatThinkingBlock",
         "type": "object"
       },
+      "ChatTimingHelperOut": {
+        "description": "One helper of an answer: its pages (a full check's, planned by code), calls, time, cost.",
+        "properties": {
+          "calls": {
+            "title": "Calls",
+            "type": "integer"
+          },
+          "cost_usd": {
+            "title": "Cost Usd",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "number": {
+            "title": "Number",
+            "type": "integer"
+          },
+          "pages": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Pages",
+            "type": "array"
+          },
+          "seconds": {
+            "title": "Seconds",
+            "type": "number"
+          },
+          "stopped": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stopped"
+          }
+        },
+        "required": [
+          "number",
+          "description",
+          "pages",
+          "calls",
+          "seconds",
+          "cost_usd"
+        ],
+        "title": "ChatTimingHelperOut",
+        "type": "object"
+      },
+      "ChatTimingPhaseOut": {
+        "description": "One phase of an answer: its wall-clock seconds and what its model calls cost (#1512).",
+        "properties": {
+          "calls": {
+            "title": "Calls",
+            "type": "integer"
+          },
+          "cost_usd": {
+            "title": "Cost Usd",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "phase": {
+            "description": "seeding, set_pack, planning, prewarm, lead, helpers, lead_verification, second_reads, third_reads, critic, finish_checks, cloud_drawing, report",
+            "title": "Phase",
+            "type": "string"
+          },
+          "seconds": {
+            "title": "Seconds",
+            "type": "number"
+          }
+        },
+        "required": [
+          "phase",
+          "label",
+          "seconds",
+          "cost_usd",
+          "calls"
+        ],
+        "title": "ChatTimingPhaseOut",
+        "type": "object"
+      },
+      "ChatTimingsOut": {
+        "description": "Where an answer's time and money went, phase by phase (#1512).",
+        "properties": {
+          "cost_usd": {
+            "title": "Cost Usd",
+            "type": "string"
+          },
+          "helpers": {
+            "items": {
+              "$ref": "#/components/schemas/ChatTimingHelperOut"
+            },
+            "title": "Helpers",
+            "type": "array"
+          },
+          "phases": {
+            "items": {
+              "$ref": "#/components/schemas/ChatTimingPhaseOut"
+            },
+            "title": "Phases",
+            "type": "array"
+          },
+          "total_seconds": {
+            "title": "Total Seconds",
+            "type": "number"
+          }
+        },
+        "required": [
+          "total_seconds",
+          "cost_usd",
+          "phases",
+          "helpers"
+        ],
+        "title": "ChatTimingsOut",
+        "type": "object"
+      },
       "ChatTrustBlock": {
         "properties": {
           "trust": {
@@ -6843,6 +6966,16 @@
               }
             ],
             "description": "What the counts above cover (null on older answers)."
+          },
+          "timings": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatTimingsOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "unknowns": {
             "anyOf": [

@@ -1,19 +1,20 @@
-"""After the second reads: the third reads and the critic, run for the chat engine (#1498).
+"""The third reads and the critic, for the chat engine (#1498, run in parallel since #1512).
 
-`review_reads(engine)` is the engine's one hook, called right after its second reads. It:
-
-1. **Escalates** each finding whose second read disagrees or is unsure (at most
-   `read_adjudication.ADJUDICATION_LIMIT`, differences first) to a third read by a stronger model
-   on sharper crops, and records `reads`, `checks.adjudication` and the new trust level
-   (`read_adjudication.py`).
-2. **Criticises** a whole-set or full-check answer's findings (`finding_critic.py`): up to 4 calls
-   of up to 8 findings, and records `critic` and `checks.critic` (`passed` / `objects` / `unsure`,
-   or `not_run` for a finding the limit or the cap left out).
+1. **Third reads.** A finding whose second read disagrees or is unsure (at most
+   `read_adjudication.ADJUDICATION_LIMIT` per answer) is read a third time by a stronger model on
+   sharper crops; `reads`, `checks.adjudication` and the new trust level are recorded
+   (`read_adjudication.py`). `third_read_job` makes one such job: the engine starts it as soon as
+   that finding's second read comes back, so third reads run alongside the other second reads.
+2. **The critic** (`finding_critic.py`), for a whole-set or full-check answer: up to 4 calls of up
+   to 8 findings, recording `critic` and `checks.critic` (`passed` / `objects` / `unsure`, or
+   `not_run` for a finding the limit or the cap left out). `critic_jobs` makes them; the engine
+   runs them in the same pool as the second and third reads, from the start.
 
 Every call goes through the engine's own call path, so it is streamed, logged on the Usage page
 (its own prompt id) and counted in the message's cost within its caps; a call that would pass a
-cap is not made (the check is `not_run`). The calls run in parallel; the crops are drawn first,
-one at a time (pdfium is not thread-safe). Code, never a model, decides every outcome.
+cap is not made (the check is `not_run`). The crops are drawn inside each job, one at a time
+(pdfium is not thread-safe). Code, never a model, decides every outcome. `review_reads(engine)`
+runs both kinds of job at once for an engine that does not pipeline.
 
 Both modules are loaded by name, as the other checks are (`chat_trust.load_module`): a server
 without them, or a test that leaves the checks out, simply runs neither.
@@ -36,7 +37,16 @@ from app.review.assistant.chat_trust import trust_level
 if TYPE_CHECKING:
     from app.review.assistant import finding_critic, read_adjudication
 
-__all__ = ["READ_SYSTEM", "review_reads"]
+__all__ = [
+    "READ_SYSTEM",
+    "Budget",
+    "NoRoom",
+    "critic_jobs",
+    "needs_third_read",
+    "review_reads",
+    "third_read_job",
+    "third_read_limit",
+]
 
 _log = logging.getLogger(__name__)
 
@@ -51,11 +61,11 @@ CRITIC_MODULE: Final = "app.review.assistant.finding_critic"
 _SECOND_READ_MODEL: Final = "haiku"
 
 
-class _NoRoom(Exception):
+class NoRoom(Exception):
     """The call would pass the message's caps: it is not made."""
 
 
-class _Budget:
+class Budget:
     """The estimates of the calls running now, held so parallel calls do not overshoot a cap."""
 
     def __init__(self, engine: Any) -> None:
@@ -67,7 +77,7 @@ class _Budget:
         amount = estimate or 0
         with self.lock:
             if not self.engine._fits(self.held + amount):
-                raise _NoRoom
+                raise NoRoom
             self.held += amount
         return amount
 
@@ -78,7 +88,7 @@ class _Budget:
 
 def _model_call(
     engine: Any,
-    budget: _Budget,
+    budget: Budget,
     *,
     short: str,
     effort: str,
@@ -153,14 +163,94 @@ def _adjudication_crops(
     return crops
 
 
-def review_reads(engine: Any) -> None:
-    """The third reads and the critic for this message's findings (see the module's words)."""
+type Update = Callable[[str, Callable[[dict[str, Any]], dict[str, Any]]], None]
+
+
+def third_read_limit() -> int:
+    """Third reads one answer may make (`read_adjudication.ADJUDICATION_LIMIT`); 0 without it."""
+    module = chat_trust.load_module(ADJUDICATION_MODULE)
+    return int(module.ADJUDICATION_LIMIT) if module is not None else 0
+
+
+def needs_third_read(finding: Mapping[str, Any]) -> bool:
+    module = chat_trust.load_module(ADJUDICATION_MODULE)
+    return module is not None and bool(module.needs_adjudication(finding))
+
+
+def third_read_job(
+    engine: Any, finding: Mapping[str, Any], budget: Budget, update: Update
+) -> Callable[[], None] | None:
+    """One finding's third read as work to run (its crops drawn inside it), or `None` when the
+    module is missing or the finding does not need one."""
+    module = chat_trust.load_module(ADJUDICATION_MODULE)
+    if module is None or not module.needs_adjudication(finding):
+        return None
+    model = module.adjudication_model()
+    read_call = _model_call(
+        engine,
+        budget,
+        short=model,
+        effort=module.ADJUDICATION_EFFORT,
+        system=READ_SYSTEM,
+        max_tokens=module.ADJUDICATION_MAX_TOKENS,
+        prompt_tokens=module.ADJUDICATION_PROMPT_TOKENS,
+        prompt_id=_prompt_id(engine, "adjudicate"),
+    )
+    pdf_paths = engine.book.pdf_paths()
+
+    def job() -> None:
+        if engine.cancel.is_set():
+            return
+        drawing = import_module("app.review.assistant.chat_drawing")
+        with drawing._PDFIUM_LOCK:
+            crops = _adjudication_crops(module, finding, pdf_paths)
+        if crops:
+            _third_read_job(engine, module, finding, crops, read_call, model, update)()
+
+    return job
+
+
+def critic_jobs(
+    engine: Any, findings: list[dict[str, Any]], budget: Budget, update: Update
+) -> list[Callable[[], None]]:
+    """The critic's calls for a whole-set or full-check answer (none otherwise); the candidates
+    the limit leaves out are recorded `not_run` at once."""
     book = engine.book
-    findings = book.live()
-    if not findings:
-        return
-    budget = _Budget(engine)
-    lock = threading.Lock()
+    critic_module = chat_trust.load_module(CRITIC_MODULE)
+    judge = getattr(engine, "_whole_set_work", None)
+    if callable(judge):
+        whole_set = bool(judge())  # the answer's scope decides (#1520)
+    else:
+        whole_set = (
+            bool(book.coverage_used) or getattr(engine.settings, "mode", None) == "full_check"
+        )
+    if not whole_set or critic_module is None:
+        return []
+    candidates = critic_module.candidates(findings)
+    critic_call = _model_call(
+        engine,
+        budget,
+        short=critic_module.CRITIC_MODEL,
+        effort=critic_module.CRITIC_EFFORT,
+        system=critic_module.SYSTEM,
+        max_tokens=critic_module.CRITIC_MAX_TOKENS,
+        prompt_tokens=critic_module.CRITIC_PROMPT_TOKENS,
+        prompt_id=_prompt_id(engine, "critic"),
+    )
+    jobs: list[Callable[[], None]] = []
+    judged: set[str] = set()
+    for batch in critic_module.batches(candidates):
+        jobs.append(_critic_job(engine, critic_module, batch, critic_call, update))
+        judged.update(str(f["id"]) for f in batch)
+    for finding in candidates:
+        if str(finding["id"]) not in judged:
+            update(str(finding["id"]), _critic_not_run)
+    return jobs
+
+
+def _updater(engine: Any) -> Update:
+    book = engine.book
+    lock = getattr(engine, "finding_lock", None) or threading.Lock()
 
     def update(finding_id: str, change: Callable[[dict[str, Any]], dict[str, Any]]) -> None:
         with lock:
@@ -172,63 +262,23 @@ def review_reads(engine: Any) -> None:
             if book.replace(updated):
                 engine._show_finding(updated)
 
-    jobs: list[Callable[[], None]] = []
-    adjudication_module = chat_trust.load_module(ADJUDICATION_MODULE)
-    critic_module = chat_trust.load_module(CRITIC_MODULE)
+    return update
 
-    # 1. Third reads.
-    escalate: list[dict[str, Any]] = []
-    if adjudication_module is not None:
-        escalate = sorted(
-            (f for f in findings if adjudication_module.needs_adjudication(f)),
-            key=_differences_first,
-        )[: adjudication_module.ADJUDICATION_LIMIT]
-    if adjudication_module is not None and escalate:
-        pdf_paths = book.pdf_paths()
-        model = adjudication_module.adjudication_model()
-        read_call = _model_call(
-            engine,
-            budget,
-            short=model,
-            effort=adjudication_module.ADJUDICATION_EFFORT,
-            system=READ_SYSTEM,
-            max_tokens=adjudication_module.ADJUDICATION_MAX_TOKENS,
-            prompt_tokens=adjudication_module.ADJUDICATION_PROMPT_TOKENS,
-            prompt_id=_prompt_id(engine, "adjudicate"),
-        )
-        drawing = import_module("app.review.assistant.chat_drawing")
-        for finding in escalate:
-            with drawing._PDFIUM_LOCK:
-                crops = _adjudication_crops(adjudication_module, finding, pdf_paths)
-            if crops:
-                jobs.append(
-                    _third_read_job(
-                        engine, adjudication_module, finding, crops, read_call, model, update
-                    )
-                )
 
-    # 2. The critic, for whole-set and full-check answers only.
-    whole_set = bool(book.coverage_used) or getattr(engine.settings, "mode", None) == "full_check"
-    judged: list[str] = []
-    if whole_set and critic_module is not None:
-        candidates = critic_module.candidates(findings)
-        critic_call = _model_call(
-            engine,
-            budget,
-            short=critic_module.CRITIC_MODEL,
-            effort=critic_module.CRITIC_EFFORT,
-            system=critic_module.SYSTEM,
-            max_tokens=critic_module.CRITIC_MAX_TOKENS,
-            prompt_tokens=critic_module.CRITIC_PROMPT_TOKENS,
-            prompt_id=_prompt_id(engine, "critic"),
-        )
-        for batch in critic_module.batches(candidates):
-            jobs.append(_critic_job(engine, critic_module, batch, critic_call, update))
-            judged.extend(str(f["id"]) for f in batch)
-        for finding in candidates:
-            if str(finding["id"]) not in judged:
-                update(str(finding["id"]), _critic_not_run)
-
+def review_reads(engine: Any) -> None:
+    """The third reads and the critic for this message's findings, all at once (see above)."""
+    findings = engine.book.live()
+    if not findings:
+        return
+    budget = Budget(engine)
+    update = _updater(engine)
+    escalate = sorted((f for f in findings if needs_third_read(f)), key=_differences_first)
+    jobs = [
+        job
+        for finding in escalate[: third_read_limit()]
+        if (job := third_read_job(engine, finding, budget, update)) is not None
+    ]
+    jobs += critic_jobs(engine, findings, budget, update)
     if not jobs:
         return
     with ThreadPoolExecutor(max_workers=_WORKERS) as pool:
@@ -258,7 +308,7 @@ def _third_read_job(
                 finding, crops, call, model=model, second_model=_SECOND_READ_MODEL
             )
         except Exception as failed:  # noqa: BLE001 - not run: no room, cancelled or a failure
-            if not isinstance(failed, _NoRoom):
+            if not isinstance(failed, NoRoom):
                 _log.warning("assistant chat third read not made: %s", type(failed).__name__)
             return
 
@@ -295,7 +345,7 @@ def _critic_job(
             try:
                 verdicts = critic_module.criticise(batch, crops, call)
             except Exception as failed:  # noqa: BLE001 - not run: no room, cancelled or a failure
-                if not isinstance(failed, _NoRoom):
+                if not isinstance(failed, NoRoom):
                     _log.warning("assistant chat critic not run: %s", type(failed).__name__)
         for finding in batch:
             finding_id = str(finding["id"])
