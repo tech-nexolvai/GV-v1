@@ -91,6 +91,7 @@ from app.review.assistant.chat_contract import (
     ChatFullCheckPlanOut,
     ChatListOut,
     ChatMessageIn,
+    ChatMessageOut,
     ChatOut,
 )
 from app.review.assistant.chat_corrections import corrections_by_answer, with_corrections
@@ -132,9 +133,13 @@ from app.review.assistant.chat_service import (
     recover_interrupted,
     run_message,
     shutdown_chats,
+    start_set_pack,
+    sync_uploads,
 )
 from app.review.assistant.chat_store import (
+    add_assistant_message,
     add_file,
+    add_user_message,
     chat_summaries,
     chat_title,
     create_chat,
@@ -147,6 +152,13 @@ from app.review.assistant.chat_store import (
 )
 from app.review.assistant.chat_tools import ResultsLoader
 from app.review.assistant.chat_trust import findings_csv
+from app.review.assistant.consistency_answer import (
+    CHECK_MODEL,
+    NO_MODEL_CALL_MICROS,
+    QUESTION,
+    PackNotReady,
+    run_check,
+)
 from app.review.assistant.sandbox import ChatWorkspace, Sandbox, open_sandbox
 from app.runs.rates import ModelRates, rates_from_environment
 
@@ -728,6 +740,90 @@ def findings_spreadsheet(
 
 
 # ---- the reviewer's decisions (#1521) -------------------------------------------------------------
+
+
+@router.post(
+    "/chats/{chat_id}/consistency",
+    response_model=ChatMessageOut,
+    summary="The vendor consistency check: the vendor's drawings against themselves (code, $0)",
+    responses={
+        404: {"description": "No such chat (or no access)."},
+        409: {
+            "description": "`message_running`: a message is being answered in this chat; "
+            "`uploads_missing`: the drawing set has no PDFs; `pack_building`: the set is still "
+            "being read (ask again in a minute)."
+        },
+    },
+)
+def consistency_check(
+    request: Request,
+    chat_id: UUID,
+    principal: Authenticated,
+    session: Annotated[Session, Depends(get_session)],
+    registry: Annotated[ChatRegistry, Depends(chat_registry)],
+) -> ChatMessageOut:
+    """The "+" menu's Vendor consistency check (#1584), by code only (no AI call, $0): every
+    dimension string the drawing proves is one string added up, two values printed for one span
+    compared, and the areas, rounds and indexed sheets the set lacks listed. Stored in the chat as
+    a question and its answer (findings with code's proof, the "not checked" list), so the cloud
+    drawing and the CSV work on it as on any answer. Returns the stored answer."""
+    chat, package = _chat(session, chat_id, principal)
+    message_id = uuid4()
+    run = registry.claim(chat.id, package.id, message_id)
+    if run is None:
+        raise CodedHTTPException(
+            status.HTTP_409_CONFLICT,
+            "message_running",
+            "A message is being answered in this chat. Wait for it, or stop it.",
+        )
+    try:
+        uploads = _upload_sources(
+            _factory(session),
+            getattr(request.app.state, ARTIFACT_STORE_STATE, None),
+            package.id,
+            _latest_revision_id(session, package.id),
+        )
+        workspace = ChatWorkspace.open(_chat_folder(request, chat_id))
+        listing, _changed = sync_uploads(workspace, uploads())
+        if not listing:
+            raise CodedHTTPException(
+                status.HTTP_409_CONFLICT,
+                "uploads_missing",
+                "This drawing set has no PDFs to check.",
+            )
+        workspace = start_set_pack(workspace, _chat_root(request.app), listing)
+        try:
+            made = run_check(workspace, listing)
+        except PackNotReady:
+            raise CodedHTTPException(
+                status.HTTP_409_CONFLICT,
+                "pack_building",
+                "The drawing set is still being read (its numbers are being listed). Try again "
+                "in a minute.",
+            ) from None
+        add_user_message(
+            session, chat_id=chat.id, created_by=principal.id, text=QUESTION, mode="chat"
+        )
+        answer = add_assistant_message(
+            session,
+            message_id=message_id,
+            chat_id=chat.id,
+            created_by=principal.id,
+            model=CHECK_MODEL,
+            effort="",
+            thinking=False,
+            text=made.text,
+            blocks=made.blocks,
+            api_content=made.api_content,
+            cost_micros=NO_MODEL_CALL_MICROS,
+            stopped=None,
+            error=None,
+            mode="chat",
+        )
+        session.commit()
+        return message_out(answer, [])
+    finally:
+        registry.release(run)
 
 
 def _not_running(registry: ChatRegistry, chat_id: UUID, message_id: UUID) -> None:
