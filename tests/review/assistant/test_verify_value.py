@@ -13,6 +13,7 @@ when they are installed.
 from __future__ import annotations
 
 import zlib
+from decimal import Decimal
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from app.review.assistant import verify_value as vv
 from app.review.assistant.finding_checks import check_finding, drawn_checks, printed_at_spot
+from tests.review.assistant.stroke_text import StrokeReader, stroke_ops
 
 PAGE_W, PAGE_H = 600, 400
 #: The pasted drawing's place on the page (PDF space): its form's (0, 0) is the page's (300, 50).
@@ -461,6 +463,91 @@ def test_the_real_engines_read_drawn_digits(tmp_path: Path) -> None:
         return
     assert found.result == "match", found.reads
     assert vv.verify_value(pdf, 1, box, '47"', readers=readers).result != "match"
+
+
+# ---- route 2b: CAD stroke lettering, label by label (#1561) ---------------------------------------
+
+STROKES: Sequence[vv.InkReader] = (StrokeReader("Tesseract"), StrokeReader("RapidOCR"))
+
+
+def test_a_stacked_fraction_drawn_as_strokes_is_read_label_by_label(tmp_path: Path) -> None:
+    pdf = _write(tmp_path, _pdf(stamp=stroke_ops('63{1/2}"', 20, 100)))
+    box = _around(20, 100, 30)
+    found = vv.verify_value(pdf, 1, box, '63 1/2"', readers=STROKES)
+    assert (found.result, found.route) == ("match", "drawn")
+    assert "label by label" in found.reason
+    assert any(read.startswith("vendor ink label 1, ") for read in found.reads)
+    for wrong in ('63 1/4"', '63"', '62 1/2"', '1/2"'):
+        assert vv.verify_value(pdf, 1, box, wrong, readers=STROKES).result != "match", wrong
+
+
+def test_a_number_written_up_the_page_in_strokes_is_read(tmp_path: Path) -> None:
+    pdf = _write(tmp_path, _pdf(stamp=stroke_ops('27{1/4}"', 100, 20, turn=True)))
+    left, bottom = _shown(100, 20)
+    box = _box(left - 9, bottom - 30, left + 3, bottom + 2)
+    assert vv.verify_value(pdf, 1, box, '27 1/4"', readers=STROKES).result == "match"
+    assert vv.verify_value(pdf, 1, box, '72 1/4"', readers=STROKES).result != "match"
+
+
+def test_a_clear_label_beside_another_number_is_read_but_a_near_miss_beside_it_refuses(
+    tmp_path: Path,
+) -> None:
+    # A box round two numbers: each label is read alone, so 34" is confirmed beside 72"...
+    pdf = _write(tmp_path, _pdf(stamp=stroke_ops('34"', 20, 100) + stroke_ops('72"', 20, 80)))
+    box = _box(*_shown(15, 110), *_shown(60, 75))
+    assert vv.verify_value(pdf, 1, box, '34"', readers=STROKES).result == "match"
+    # ...but never beside 35": the AI may have misread one of the two.
+    pdf = _write(tmp_path, _pdf(stamp=stroke_ops('34"', 20, 100) + stroke_ops('35"', 20, 80)))
+    found = vv.verify_value(pdf, 1, box, '34"', readers=STROKES)
+    assert found.result == "cannot_read" and "near-miss" in found.reason
+
+
+class _LosesFractions(StrokeReader):
+    """An engine that reads only the whole number of a box with a stacked fraction in it (it
+    reads nothing it can use there, and says `63`): the label route reads `63 1/2"`."""
+
+    def __call__(self, picture: np.ndarray, *, single_line: bool) -> list[str]:
+        return super().__call__(picture, single_line=single_line) or ["63"]
+
+
+def test_a_lost_fraction_never_confirms_the_whole_number(tmp_path: Path) -> None:
+    pdf = _write(tmp_path, _pdf(stamp=stroke_ops('63{1/2}"', 20, 100)))
+    box = _around(20, 100, 30)
+    readers = [_LosesFractions("Tesseract"), _LosesFractions("RapidOCR")]
+    # Every whole-box read says 63, which alone was a match; the labels read 63 1/2", a
+    # near-miss of it, so it is refused.
+    found = vv.verify_value(pdf, 1, box, '63"', readers=readers)
+    assert found.result == "cannot_read" and "near-miss" in found.reason
+    assert vv.verify_value(pdf, 1, box, '63 1/2"', readers=readers).result == "match"
+
+
+def test_a_label_votes_only_when_its_whole_row_is_one_dimension() -> None:
+    assert vv._row_value('63 1/2"', inch_mark=True) == Decimal("63.5")
+    assert vv._row_value("63 1 1//'", inch_mark=True) is None  # a lost fraction: no 63"
+    assert vv._row_value("73 2", inch_mark=True) is None
+    assert vv._row_value("[34]", inch_mark=True) == Decimal(34)
+    assert vv._row_value("46", inch_mark=False) == Decimal(46)
+    assert vv._row_value("46 99", inch_mark=True) is None
+    assert vv._row_value("3'", inch_mark=False) is None  # a foot mark is never dropped
+
+
+def test_a_box_holding_a_whole_view_is_not_read_label_by_label(tmp_path: Path) -> None:
+    labels = b"".join(
+        stroke_ops(f'{n}"', 10 + 40 * (n % 6), 20 + 25 * (n // 6), height=5) for n in range(10, 46)
+    )
+    pdf = _write(tmp_path, _pdf(stamp=labels))
+    box = _box(*_shown(5, 200), *_shown(250, 10))
+    assert (
+        len(
+            vv.ink_labels.labels(
+                vv._ink_paths_near(vv._read_page(pdf, 0), tuple(box.values())), tuple(box.values())
+            )
+        )
+        > vv.ink_labels.MAX_LABELS
+    )
+    found = vv.verify_value(pdf, 1, box, '27"', readers=STROKES)
+    assert found.result == "cannot_read"
+    assert not any(read.startswith("vendor ink label") for read in found.reads)
 
 
 # ---- a finding's sides ---------------------------------------------------------------------------
