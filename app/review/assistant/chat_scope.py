@@ -119,7 +119,7 @@ def area_pages(
         key = _words(shown)
         if len(key) < _MIN_AREA_CHARS:
             continue
-        label, pages = out.setdefault(key, (shown, []))
+        _title, pages = out.setdefault(key, (shown, []))
         if entry["page"] not in pages:
             pages.append(entry["page"])
     return out
@@ -154,7 +154,9 @@ def _label(kind: str, pages: Sequence[int], area: str | None) -> str:
     return f"{where} ({area})" if area else where
 
 
-def _scope(kind: str, why: str, pages: Sequence[int] = (), area: str | None = None) -> dict[str, Any]:
+def _scope(
+    kind: str, why: str, pages: Sequence[int] = (), area: str | None = None
+) -> dict[str, Any]:
     shown = sorted(set(pages)) if kind != "whole_set" else []
     return {
         "kind": kind,

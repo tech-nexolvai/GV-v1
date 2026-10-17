@@ -30,7 +30,9 @@ _LEADING_REF: Final = re.compile(rf"\(\s*{_REF}\s*[,;]\s*", re.IGNORECASE)
 _NAMED_REF: Final = re.compile(r"\s*\b(?:PRs?|issues?|pull request)\s*#\d+", re.IGNORECASE)
 _BARE_REF: Final = re.compile(r"(?:(?<=[\s(])|^)#\d+\b[ \t]?|[ \t]+#\d+\b", re.MULTILINE)
 _EMPTY_BRACKETS: Final = re.compile(r"\s*\(\s*[,;]?\s*\)")
-_WAITING: Final = re.compile(r"\bawaiting (?:his|their|the client'?s?) confirmation\b", re.IGNORECASE)
+_WAITING: Final = re.compile(
+    r"\bawaiting (?:his|their|the client'?s?) confirmation\b", re.IGNORECASE
+)
 _PLAIN_WAITING: Final = "the client has not yet confirmed which is right"
 
 

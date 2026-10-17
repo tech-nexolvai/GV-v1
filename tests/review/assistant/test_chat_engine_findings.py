@@ -120,7 +120,15 @@ def test_findings_and_coverage_are_blocks_and_events_updated_in_place(
     outcome = harness.run()
 
     types_ = [block["type"] for block in outcome.blocks]
-    assert types_ == ["finding", "finding_dropped", "coverage", "text", "trust", "accuracy"]
+    assert types_ == [
+        "finding",
+        "finding_dropped",
+        "coverage",
+        "text",
+        "scope",
+        "trust",
+        "accuracy",
+    ]
     finding = outcome.blocks[0]["finding"]
     assert finding["id"] == "F1" and finding["why"] == "9 in too long"
     assert finding["arch_picture_id"] and finding["vendor_picture_id"]
@@ -158,7 +166,7 @@ def test_findings_and_coverage_are_blocks_and_events_updated_in_place(
     assert texts[2].startswith("Coverage: 1 same, 1 different, 1 not comparable, of 3 pages.")
     assert texts[3:5] == ["Finding F1 updated.", "Finding F2 dropped."]
     assert results[5]["is_error"] is True and "no finding F7" in texts[5]
-    trust = outcome.blocks[4]["trust"]
+    trust = outcome.blocks[5]["trust"]
     assert trust["counts"]["total"] == 1
     assert trust["coverage"]["pages_not_opened"] == []
 
@@ -298,9 +306,9 @@ def test_no_guard_when_coverage_was_not_used(
 
     assert len(provider.lead_calls) == 1
     # A short answer stays short: no trust block without findings or coverage.
-    assert [b["type"] for b in outcome.blocks] == ["text", "accuracy"]
-    assert outcome.blocks[1]["accuracy"]["score"] is None
-    assert outcome.blocks[1]["accuracy"]["level"] == "n/a"
+    assert [b["type"] for b in outcome.blocks] == ["text", "scope", "accuracy"]
+    assert outcome.blocks[-1]["accuracy"]["score"] is None
+    assert outcome.blocks[-1]["accuracy"]["level"] == "n/a"
 
 
 def _fake_checks() -> types.SimpleNamespace:

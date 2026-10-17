@@ -321,7 +321,16 @@ def test_a_message_streams_and_ends_with_the_stored_message(postgres_engine, tmp
         stored = events[-1][1]["message"]
         assert stored["id"] == start["message_id"]
         assert stored["text"] == "| Page | Item |\n|---|---|\n| 4 | sink |"
-        assert [b["type"] for b in stored["blocks"]] == ["thinking", "step", "text", "accuracy"]
+        assert [b["type"] for b in stored["blocks"]] == [
+            "thinking",
+            "step",
+            "text",
+            "scope",
+            "accuracy",
+        ]
+        # What the answer is about (#1520): sent at once, and on the stored message.
+        assert "scope" in names
+        assert stored["scope"]["kind"] == "whole_set" and stored["scope"]["pages"] == []
         assert stored["blocks"][1]["step"]["output"].startswith("/mnt/skills/gv-review/SKILL.md")
         assert stored["cost_usd"] is not None and stored["stopped"] is None
         # The caps it ran under are kept with it (#1479).

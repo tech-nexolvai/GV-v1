@@ -980,6 +980,9 @@ def rescored(
         unknowns = next(
             (list(b["unknowns"]) for b in reversed(blocks) if b.get("type") == "unknowns"), []
         )
+        scope = next((b.get("scope") for b in reversed(blocks) if b.get("type") == "scope"), None)
+        if isinstance(scope, Mapping) and scope.get("kind") != "whole_set":
+            coverage = None  # a page or area answer is scored without the page penalty (#1520)
         factor = stored.get("coverage_factor")
         if coverage is None and factor is not None:
             fresh = accuracy(findings, cites, None)

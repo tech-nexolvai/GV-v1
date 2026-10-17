@@ -420,7 +420,7 @@ class ChatScopeOut(BaseModel):
     why: Literal[
         "full_check", "whole_set_words", "nothing_named", "wide_work", "pages_named", "area_named"
     ]
-    label: str = Field(description='In plain words: "page 8 (Bussing station)", "the whole set".')
+    label: str = Field(description='In plain words: "page 4 (Pantry)", "the whole set".')
 
 
 class ChatScopeBlock(BaseModel):

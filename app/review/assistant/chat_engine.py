@@ -82,17 +82,6 @@ from app.review.assistant.chat_findings import (
 )
 from app.review.assistant.chat_provider import ChatProvider, ProviderFailure, failure_from
 from app.review.assistant.chat_read_review import review_reads
-from app.review.assistant.chat_scope import (
-    in_scope,
-    is_whole_set,
-    load_page_map,
-    question_of,
-    question_scope,
-    scope_note,
-    scoped_pages,
-    scoped_recorded,
-    widened,
-)
 from app.review.assistant.chat_request import (
     BY_SHORT,
     HELPER_MAX_TOKENS,
@@ -104,6 +93,17 @@ from app.review.assistant.chat_request import (
     inline_pictures,
     picture_sizes,
     thinking_config,
+)
+from app.review.assistant.chat_scope import (
+    in_scope,
+    is_whole_set,
+    load_page_map,
+    question_of,
+    question_scope,
+    scope_note,
+    scoped_pages,
+    scoped_recorded,
+    widened,
 )
 from app.review.assistant.chat_tools import (
     HELPER_SYSTEM_PROMPT,
@@ -548,7 +548,7 @@ class ChatEngine:
             main_file=self.book.main_file,
         )
         self.book.scope_pages = scoped_pages(self._asked_scope)
-        self._scope_index: int | None = None
+        self._started_scope: dict[str, Any] = dict(self._asked_scope)
         self._helpers_started = 0
         self._recorded: Recorded | None = None
         self._recorded_document: Mapping[str, Any] | None = None
@@ -1025,7 +1025,11 @@ class ChatEngine:
         book = self.book
         with self._lock:
             used = set(book.coverage)
-        used |= {f.get("page") for f in book.live() if not f.get("record_id")}
+        used |= {
+            int(f["page"])
+            for f in book.live()
+            if isinstance(f.get("page"), int) and not f.get("record_id")
+        }
         scope = widened(self._asked_scope, used)
         book.scope_pages = scoped_pages(scope)
         return scope
@@ -1037,15 +1041,15 @@ class ChatEngine:
             return False
         return self.settings.mode == "full_check" or self.book.coverage_used
 
-    def _show_scope(self, scope: dict[str, Any]) -> None:
-        with self._lock:
-            if self._scope_index is None:
-                self.blocks.append({"type": "scope", "scope": scope})
-                self._scope_index = len(self.blocks) - 1
-            else:
-                self.blocks[self._scope_index] = {"type": "scope", "scope": scope}
-            index = self._scope_index
-        self.emit("scope", {"index": index, "scope": json.loads(json.dumps(scope))})
+    def _store_scope(self) -> None:
+        """At finish: the answer's scope as a block (sent again only when the work changed it)."""
+        before = self.book.scope_pages
+        scope = self.scope()
+        index = self._add_block({"type": "scope", "scope": scope})
+        if scope != self._started_scope:
+            self.emit("scope", {"index": index, "scope": json.loads(json.dumps(scope))})
+        if self.book.coverage_used and self.book.scope_pages != before:
+            self._show_coverage(self.book.coverage_map())  # the coverage map, re-scoped
 
     # ---- findings, coverage and trust (chat v2 / v3) ---------------------------------------------
 
@@ -2094,7 +2098,9 @@ class ChatEngine:
                 self._seed_recorded()
             except Exception:  # noqa: BLE001 - the check goes on; the trust report says it
                 _log.exception("assistant chat could not seed the recorded differences")
-        self._show_scope(self.scope())
+        # The scope as asked, at once (the screen hides the whole-set panels for a narrow one).
+        self._started_scope = self.scope()
+        self.emit("scope", {"index": None, "scope": json.loads(json.dumps(self._started_scope))})
         note = scope_note(self._asked_scope)
         if note is not None:
             self.user_content = [*self.user_content, {"type": "text", "text": note}]
@@ -2231,12 +2237,8 @@ class ChatEngine:
             )
             _close_open_calls(turn)
         try:
-            # The answer's scope with its work done; a re-scoped coverage map is shown again.
-            before = self.book.scope_pages
-            self._show_scope(self.scope())
-            if self.book.coverage_used and self.book.scope_pages != before:
-                self._show_coverage(self.book.coverage_map())
-        except Exception:  # noqa: BLE001 - the answer is stored with its first scope
+            self._store_scope()
+        except Exception:  # noqa: BLE001 - the answer is stored without its scope block
             _log.exception("assistant chat scope failed")
         if stopped not in ("cancelled", "error"):
             try:
