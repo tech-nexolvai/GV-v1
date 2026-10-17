@@ -78,7 +78,7 @@ PAGE_CHECKLIST: Final[tuple[tuple[str, str], ...]] = (
     (
         "architect",
         (
-            "Every dimension the architect prints for this area, EACH SEGMENT of a chain on its own "
+            "Every dimension the architect prints for this area, each segment of a chain on its own "
             "(wall to outlet, outlet to outlet, floor to a J-box or counter): the vendor's value at "
             'the same spot, or "not shown on the vendor". A dimension that locates a thing (an '
             "outlet, a sink or faucet centre line) is that thing's position: a thing the vendor left "
@@ -145,8 +145,8 @@ PAGE_CHECKLIST: Final[tuple[tuple[str, str], ...]] = (
     (
         "brand",
         (
-            "ID set vs brand prototype: where the two conflict, report it as status check, "
-            '"Your decision: which governs".'
+            "ID set vs brand prototype: where the two conflict, status check (Your decision) "
+            "with check_reason which_governs."
         ),
     ),
     (
@@ -160,11 +160,12 @@ PAGE_CHECKLIST: Final[tuple[tuple[str, str], ...]] = (
     (
         "span",
         (
-            "Before a height or width is status different: what does the architect's dimension "
+            "Before a height or width is status different (Wrong): what does the architect's dimension "
             "span? measure_on_drawing with `dimension` (its extension-line ends) and from/to on "
             "the unit's own outline. If it spans more than the unit (a box, soffit, blocking or "
-            "wall beyond it): status check, check_reason different_extent. Otherwise two PRINTED "
-            "values that differ for the same span are different (Wrong), not check."
+            "wall beyond it): status check (Your decision), check_reason different_extent. Otherwise two printed "
+            "values that differ for the same span are different (Wrong), not check (Your "
+            "decision)."
         ),
     ),
     (
@@ -180,8 +181,8 @@ PAGE_CHECKLIST: Final[tuple[tuple[str, str], ...]] = (
     (
         "rounds",
         (
-            "A round-2 page: each item compared with the architect again and with round 1 (fixed, "
-            "still different, or changed)."
+            "A round-2 page: each item compared with the architect again and with round 1 (Fixed, "
+            "Still wrong, or changed)."
         ),
     ),
 )
@@ -252,7 +253,7 @@ HELPER_BRIEF: Final = """OBJECTIVE: a full GV review of the vendor's drawings on
 {page_lines}
 Read /mnt/skills/gv-review/SKILL.md sections 4, 5, 7, 9 and 10 and the settings table of rules.md before you judge a number (a setting nobody entered is missing: say so, never assume one).
 
-HOW: zoom the architect's and the vendor's drawing of each page at 300 dpi for small print (up to 8 crops per call). Numbers drawn as pen strokes are read from the picture; `pdftotext -f N -l N -bbox` of the drawings-only copy gives the boxes of text numbers. Anything coloured is GV's markup, never a value; a vendor number under it is still to be found (drawings-only text, 300 dpi, its mm against its inches) before you call it unreadable.
+HOW: zoom the architect's and the vendor's drawing of each page (the app picks the sharpest dpi that fits; up to 8 crops per call). Numbers drawn as pen strokes are read from the picture; `pdftotext -f N -l N -bbox` of the drawings-only copy gives the boxes of text numbers. Anything coloured is GV's markup, never a value; a vendor number under it is still to be found (read_under_markup on that spot, 300 dpi, its mm against its inches) before you call it unreadable.
 
 ALREADY RECORDED by GV Review on your pages (the lead checks these: do not report them again, but still compare everything around them, the strings that build them too; a recorded item never closes its area):
 {recorded}
@@ -263,13 +264,13 @@ LEADS from GV's own page review on your pages (it could not settle them, or saw 
 CHECKLIST, for every page:
 {checklist}
 
-OUTPUT: report_finding for EVERY item you compare, the same ones too (status different, check or same; every check with decision_help), with vendor_box and arch_box, values as printed in inches, round on vendor findings, vs_page when the architect is on another page. Name each item starting with its area from the list above ("<area>: counter height"), the same way on every page, view and round. record_string for every dimension string and record_reading for every value you read, both sides; never add up yourself. set_coverage for each page. verified: false (the lead verifies).
+OUTPUT: report_finding for every item you compare, the Right ones too (status different = Wrong, check = Your decision with decision_help, same = Right), with vendor_box and arch_box (each with its page), values as printed in inches, round on vendor findings, vs_page when the architect is on another page. Name each item starting with its area from the list above ("<area>: counter height"), the same way on every page, view and round. record_string for every dimension string and record_reading for every value you read, both sides; never add up yourself. set_coverage for each page. verified: false (the lead verifies).
 
 REPORT BACK (short): per page the differences (item, vendor vs architect, finding ids), anything unreadable and where, then one line per page exactly like
 CHECKLIST p<N>: architect a/b; notes a/b; strings a/b; not compared: <what and why, or none>
 (a/b = items done of items on the page).
 
-BOUNDARIES: only your pages; never guess a number; GV's markup is never a value; no pass/fail words."""
+BOUNDARIES: only your pages; never guess a number; GV's markup is never a value; no pass/fail words (GV's code records results, a reviewer decides)."""
 
 #: What the numbers lens adds to `HELPER_BRIEF` (#1569).
 NUMBERS_NOTE: Final = (
