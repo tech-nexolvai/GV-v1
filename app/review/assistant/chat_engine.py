@@ -1534,9 +1534,10 @@ class ChatEngine:
             if updated != finding and book.replace(updated):
                 self._show_finding(updated)
         coverage = book.coverage_map() if book.coverage_used else None
-        # Not seen is not right: a "same" item counts only when both sides were seen (the zoom
-        # log, `seen_log`, once the zoom tool records one; else the lead's own check).
-        for updated in mark_compared(book.live(), coverage, getattr(self, "seen_log", None)):
+        # Not seen is not right: a "same" item counts only when both sides were seen in a sharp
+        # enough zoom crop, the lead's or a helper's (they share `self.tools`, so its log holds
+        # every crop of this answer).
+        for updated in mark_compared(book.live(), coverage, list(self.tools.seen)):
             if book.replace(updated):
                 self._show_finding(updated)
         recorded = self._recorded_checks()
