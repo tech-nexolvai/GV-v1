@@ -1,6 +1,7 @@
-import { useEffect, useId, useState } from 'react';
+import { useId, useState } from 'react';
 import { ChevronRight, CircleAlert, Download, FileDown, Sheet, FileImage, FileSpreadsheet, FileText, File as FileIcon, Play, RotateCw, ScanSearch } from 'lucide-react';
 
+import { ApiError } from '@/api/client';
 import { AccuracyBadge, CiteChips } from '@/components/chat/chat-accuracy';
 import { ActivityRow, TaskChecklist } from '@/components/chat/chat-activity';
 import { CoverageStrip } from '@/components/chat/chat-coverage';
@@ -264,13 +265,11 @@ export interface AssistantMessageProps {
   fullCheck?: boolean;
   /** #1522 (PATH step 5): record the reviewer's Agree / Not a problem on a finding. */
   decide?: (messageId: string, findingId: string, decision: FindingDecisionValue) => Promise<unknown>;
-  /** #1522: whether the server has the decision route yet; the buttons stay hidden until it says yes. */
-  decisionReady?: (messageId: string, findingId: string) => Promise<boolean>;
   /** #1525: make the cloud drawing again from the reviewer's decisions; returns the new drawing. */
   remakeCloud?: (messageId: string) => Promise<ChatFile>;
 }
 
-export function AssistantMessage({ message, chatId, models, onReload, onRetry, onContinue, latest = false, makeMarkupPdf, fullPageHref, fullCheck = false, decide, decisionReady, remakeCloud }: AssistantMessageProps) {
+export function AssistantMessage({ message, chatId, models, onReload, onRetry, onContinue, latest = false, makeMarkupPdf, fullPageHref, fullCheck = false, decide, remakeCloud }: AssistantMessageProps) {
   const running = message.status === 'running';
   const reduced = useReducedMotion();
   const pictureUrl = (pictureId: string) => chatPaths.picture(chatId, pictureId);
@@ -313,30 +312,27 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
     || blocks.filter((block) => block.type === 'text').map((block) => block.text).join('\n\n');
   const retry = !running && onRetry ? onRetry : undefined;
 
-  // PATH step 5: Agree / Not a problem (optimistic; deciding again is the undo), shown once the
-  // server says it has the route.
+  // PATH step 5: Agree / Not a problem (optimistic; deciding again is the undo) on every finished
+  // answer. A server without the route (404 / 405) hides the buttons again and says so once.
   const actionable = findings.filter((finding) => finding.status !== 'same');
-  const [routeReady, setRouteReady] = useState(false);
   const [decisions, setDecisions] = useState<Record<string, FindingDecision>>({});
-  const [decideFailed, setDecideFailed] = useState(false);
-  const probeId = finished && messageId && actionable.length && decide && decisionReady ? actionable[0].id : null;
-  useEffect(() => {
-    if (!probeId || !messageId || !decisionReady) return;
-    let cancelled = false;
-    decisionReady(messageId, probeId).then((ready) => { if (!cancelled) setRouteReady(ready); }, () => undefined);
-    return () => { cancelled = true; };
-  }, [probeId, messageId, decisionReady]);
+  const [decideFailed, setDecideFailed] = useState<string | null>(null);
+  const [decisionsOff, setDecisionsOff] = useState(false);
   const decisionOf = (finding: ChatFinding): FindingDecision | null => decisions[finding.id] ?? finding.decision ?? null;
-  const decisionFor = routeReady && decide && messageId ? (finding: ChatFinding): DecisionProps => ({
+  const decisionFor = finished && !decisionsOff && decide && messageId ? (finding: ChatFinding): DecisionProps => ({
     decision: decisionOf(finding)?.decision ?? null,
     onDecide: (decision) => {
       const before = decisions[finding.id];
-      setDecideFailed(false);
+      setDecideFailed(null);
       setDecisions((now) => ({ ...now, [finding.id]: { ...(now[finding.id] ?? finding.decision ?? {}), decision } }));
       decide(messageId, finding.id, decision).then(
         (saved) => setDecisions((now) => ({ ...now, [finding.id]: isDecision(saved) ? saved : { decision } })),
-        () => {
-          setDecideFailed(true);
+        (error: unknown) => {
+          const status = error instanceof ApiError ? error.status : null;
+          if (status === 404 || status === 405) setDecisionsOff(true);
+          setDecideFailed(status === 404 || status === 405 ? 'Answers cannot be saved on this server yet.'
+            : status === 409 ? 'Wait until the answer has finished, then try again.'
+            : 'Your answer was not saved. Try again.');
           setDecisions((now) => {
             const next = { ...now };
             if (before) next[finding.id] = before;
@@ -427,7 +423,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
   const decideError = decideFailed ? (
     <p role="alert" data-slot="chat-decision-error" className="inline-flex items-center gap-1.5 text-sm text-muted-foreground">
       <CircleAlert className="size-4 shrink-0" aria-hidden="true" />
-      Your answer was not saved. Try again.
+      {decideFailed}
     </p>
   ) : null;
   const howChecked = showTrust && !narrow ? (

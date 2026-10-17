@@ -185,13 +185,15 @@ describe('the item card', () => {
     expect(within(await screen.findByRole('dialog')).getByRole('heading', { name: /^Filler\s*· page 3$/ })).toBeTruthy();
   });
 
-  it('offers Agree / Not a problem only once the server has the route, and records the answer', async () => {
+  it('offers Agree / Not a problem on every finished answer (no probe request), and records the answer', async () => {
     const user = userEvent.setup();
     const decide = vi.fn(async () => ({}));
-    const ready = vi.fn(async () => true);
-    const { node } = show(answer({ findings: FINDINGS }), { decide, decisionReady: ready });
-    await waitFor(() => expect(node.querySelectorAll('[data-slot="chat-finding-decision"]')).toHaveLength(3));
-    expect(ready).toHaveBeenCalledWith('msg-1', 'f1');
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const { node } = show(answer({ findings: FINDINGS }), { decide });
+    expect(node.querySelectorAll('[data-slot="chat-finding-decision"]')).toHaveLength(3);
+    // Nothing is asked of the server just to show the buttons.
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
     const vanity = node.querySelector<HTMLElement>('[data-id="f3"]')!;
     await user.click(within(vanity).getByRole('button', { name: 'Agree' }));
     expect(decide).toHaveBeenCalledWith('msg-1', 'f3', 'agree');
@@ -203,10 +205,17 @@ describe('the item card', () => {
     expect(decide).toHaveBeenLastCalledWith('msg-1', 'f3', 'not_a_problem');
   });
 
-  it('hides the buttons while the route is missing (404)', async () => {
-    const ready = vi.fn(async () => false);
-    const { node } = show(answer({ findings: FINDINGS }), { decide: vi.fn(), decisionReady: ready });
-    await waitFor(() => expect(ready).toHaveBeenCalled());
+  it('hides the buttons again, and says so once, when the server has no decision route (404 / 405)', async () => {
+    const user = userEvent.setup();
+    const decide = vi.fn(async () => { throw new ApiError(405, { error: 'method_not_allowed', message: 'Method Not Allowed', request_id: 'r' }); });
+    const { node } = show(answer({ findings: FINDINGS }), { decide });
+    await user.click(within(node.querySelector<HTMLElement>('[data-id="f3"]')!).getByRole('button', { name: 'Agree' }));
+    await waitFor(() => expect(within(node).getByRole('alert').textContent).toBe('Answers cannot be saved on this server yet.'));
+    expect(node.querySelector('[data-slot="chat-finding-decision"]')).toBeNull();
+  });
+
+  it('is not offered while the answer runs', () => {
+    const { node } = show(answer({ findings: FINDINGS, status: 'running' }), { decide: vi.fn() });
     expect(node.querySelector('[data-slot="chat-finding-decision"]')).toBeNull();
   });
 });
