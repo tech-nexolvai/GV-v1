@@ -21,6 +21,7 @@ import {
   pagesWords,
   pageWords,
   findingLine,
+  withoutSourceWords,
   isNarrowAnswer,
   itemTitle,
   reviewerWords,
@@ -340,6 +341,14 @@ describe('areas and one-line rows (#1508)', () => {
     const proto = finding('p', { source: 'brand_prototype', architect: "5'-6\"", vendor: '94"', inches: { architect: null, vendor: '94', difference: null } });
     expect(findingLine(proto)).toMatchObject({ verb: 'brand prototype shows', reference: { text: "5'-6\"" }, printed: null });
     expect(reviewerWords(proto)).toMatchObject({ referenceLabel: 'Brand prototype shows', tell: "Confirm which governs: the brand prototype shows 5'-6\", the vendor drew 94 in." });
+    // The value's own "prototype" lead-in is not said twice.
+    const said = finding('q', { source: 'brand_prototype', status: 'check', architect: "prototype 3'-2\" (38\")", vendor: '42"', inches: null });
+    expect(findingLine(said)).toMatchObject({ verb: 'brand prototype shows', reference: { text: "3'-2\"" } });
+    expect(reviewerWords(said).reference).toBe("3'-2\" (38\")");
+    expect(withoutSourceWords('Prototype plan shows 4\'-9" at the station', 'brand_prototype')).toBe('4\'-9" at the station');
+    expect(withoutSourceWords('Brand prototype: CT-001', 'brand_prototype')).toBe('CT-001');
+    expect(withoutSourceWords('prototype', 'brand_prototype')).toBe('prototype');
+    expect(withoutSourceWords('prototype 3\'', 'architect')).toBe('prototype 3\'');
     expect(itemTitle('Buffet lower outlet height', 'Buffet')).toBe('Lower outlet height');
     // The spot: the box padded by 24 points; none when the picture's shape shows a cut crop.
     expect(spotInsets({ x0: 0, y0: 0, x1: 52, y1: 52 })).toEqual({ left: '24.00%', top: '24.00%', right: '24.00%', bottom: '24.00%' });

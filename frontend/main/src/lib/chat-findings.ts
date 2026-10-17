@@ -407,6 +407,23 @@ export interface FindingLine {
   difference: string | null;
 }
 
+/**
+ * A brand-prototype finding's reference value often starts with its own source ("prototype 3'-2"",
+ * "Prototype shows CT-001"), and the screen already says "brand prototype shows": take that lead-in
+ * off so the words are not doubled. Anything left empty keeps the value as it was.
+ */
+export function withoutSourceWords(value: string | number | null | undefined, source: ChatFinding['source']): string | number | null | undefined {
+  if (source !== 'brand_prototype' || typeof value !== 'string') return value;
+  const trimmed = value.replace(/^\s*(?:the\s+)?(?:brand\s+)?prototype\b(?:\s+(?:plan|elevation|front|rear|section))?(?:\s+(?:shows|says|has|is))?\s*[:,-]?\s*/i, '');
+  return trimmed.trim() ? trimmed : value;
+}
+
+/** The finding with its reference value said once (see `withoutSourceWords`). */
+function once<T extends Pick<ChatFinding, 'architect' | 'source'>>(finding: T): T {
+  const architect = withoutSourceWords(finding.architect, finding.source);
+  return architect === finding.architect ? finding : { ...finding, architect: architect as T['architect'] };
+}
+
 function linePart(finding: Pick<ChatFinding, 'architect' | 'vendor' | 'inches'>, side: 'architect' | 'vendor'): LinePart {
   const inches = inchNumber(finding.inches?.[side]);
   if (inches !== null) return { text: `${inchWords(inches)} in`, inches: true };
@@ -417,7 +434,8 @@ function linePart(finding: Pick<ChatFinding, 'architect' | 'vendor' | 'inches'>,
  * The row's one line, PATH step 4.4: "Vendor drew 46 in · needs 37 in (architect 3' - 1")".
  * Values are the finding's own (code's inches or the printed words); nothing is re-typed.
  */
-export function findingLine(finding: Pick<ChatFinding, 'source' | 'status' | 'architect' | 'vendor' | 'inches'>): FindingLine {
+export function findingLine(original: Pick<ChatFinding, 'source' | 'status' | 'architect' | 'vendor' | 'inches'>): FindingLine {
+  const finding = once(original);
   const vendor = linePart(finding, 'vendor');
   const reference = linePart(finding, 'architect');
   const difference = inchNumber(finding.inches?.difference);
@@ -463,7 +481,8 @@ function sideWords(finding: Pick<ChatFinding, 'architect' | 'vendor' | 'inches'>
   return printed === 'Nothing printed' ? `${inchWords(inches)} in` : `${inchWords(inches)} in (printed ${printed})`;
 }
 
-export function reviewerWords(finding: ChatFinding): ReviewerWords {
+export function reviewerWords(original: ChatFinding): ReviewerWords {
+  const finding = once(original);
   const architect = inchNumber(finding.inches?.architect);
   const vendor = inchNumber(finding.inches?.vendor);
   const difference = inchNumber(finding.inches?.difference);

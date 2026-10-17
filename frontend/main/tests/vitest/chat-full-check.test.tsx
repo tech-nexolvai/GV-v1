@@ -207,7 +207,7 @@ describe('a full-check answer', () => {
     const decided = findings.map((item) => (item.id === 'w1' ? { ...item, decision: { decision: 'agree' as const, by: 'anant' } } : item));
     render(
       <AssistantMessage message={answer({ findings: decided, files: [CLOUD, REPORT] })} chatId="c-1" models={[OPUS]} fullCheck
-        decide={decide} decisionReady={async () => true} remakeCloud={remake} onReload={reload} />,
+        decide={decide} remakeCloud={remake} onReload={reload} />,
     );
     const node = screen.getByRole('article', { name: 'Answer' });
     const review = await waitFor(() => { const found = node.querySelector<HTMLElement>('[data-slot="chat-cloud-review"]'); expect(found).toBeTruthy(); return found!; });
@@ -227,7 +227,7 @@ describe('a full-check answer', () => {
   it('takes an answer back when the server refuses it', async () => {
     const user = userEvent.setup();
     const decide = vi.fn(async () => { throw new Error('409'); });
-    render(<AssistantMessage message={answer({ findings, files: [CLOUD] })} chatId="c-1" models={[OPUS]} fullCheck decide={decide} decisionReady={async () => true} remakeCloud={vi.fn()} />);
+    render(<AssistantMessage message={answer({ findings, files: [CLOUD] })} chatId="c-1" models={[OPUS]} fullCheck decide={decide} remakeCloud={vi.fn()} />);
     const node = screen.getByRole('article', { name: 'Answer' });
     const agree = await within(node.querySelector<HTMLElement>('[data-id="w1"]')!).findByRole('button', { name: 'Agree' });
     await user.click(agree);
