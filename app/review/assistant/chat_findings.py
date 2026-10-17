@@ -45,6 +45,7 @@ from app.review.assistant.dim_findings import LabelRefused, fill_from_labels, la
 from app.review.assistant.dim_index import DimLabels, labels_for
 from app.review.assistant.sandbox import UPLOADS, ChatWorkspace, SandboxRefused
 from app.review.assistant.tool_schema import box_schema
+from vocabulary.product_registry import registry
 
 __all__ = [
     "CHECK_REASONS",
@@ -66,6 +67,7 @@ __all__ = [
     "coverage_note",
     "decision_help_lines",
     "decision_help_note",
+    "finding_categories",
     "helpless_decisions",
     "live_findings",
     "main_upload",
@@ -82,7 +84,17 @@ __all__ = [
 
 _log = logging.getLogger(__name__)
 
-CATEGORIES: Final = ("countertop", "cabinet", "other")
+#: A finding's category: an active product id from the product registry (`vocabulary/products.yaml`,
+#: #1547), or "other". Read when this module loads, for the tool's schema; `finding_categories()`
+#: is the registry in force, which is what a finding is checked against.
+CATEGORIES: Final = registry().categories()
+
+
+def finding_categories() -> tuple[str, ...]:
+    """The categories a finding may have now: every active registry product id, then "other"."""
+    return registry().categories()
+
+
 STATUSES: Final = ("different", "check", "same")
 SOURCES: Final = ("architect", "brand_prototype", "rules", "vendor_arithmetic", "gv_review")
 #: Sources only code makes (the reading ledger): never in the tool's enum.
@@ -470,12 +482,9 @@ FINDING_TOOL_NAMES: Final = frozenset(
 HELPER_FINDING_TOOL_NAMES: Final = frozenset({"report_finding", "set_coverage"})
 
 
-_PRODUCT_WORDS: Final = {"countertop": "Countertops", "cabinet": "Cabinets"}
-
-
 def products_words(products: Sequence[str]) -> str:
-    """["countertop", "cabinet"] as "Countertops and Cabinets"."""
-    return " and ".join(_PRODUCT_WORDS.get(p, p) for p in products) or "All products"
+    """["countertop", "cabinet"] as "Countertops and Cabinets", in the product registry's words."""
+    return registry().words(products)
 
 
 # ---- uploads -------------------------------------------------------------------------------------
@@ -1054,7 +1063,7 @@ class FindingBook:
         if "item" in present:
             out["item"] = _text(given, "item", _MAX_ITEM)
         if "category" in present:
-            out["category"] = _choice(given["category"], "category", CATEGORIES)
+            out["category"] = _choice(given["category"], "category", finding_categories())
         for name in ("architect", "vendor"):
             if name in present:
                 out[name] = _text(given, name, _MAX_VALUE)
@@ -1498,7 +1507,11 @@ class FindingBook:
             "page": page,
             "vs_page": None,
             "item": " ".join(str(record.get("what") or "Recorded difference").split())[:_MAX_ITEM],
-            "category": record.get("category") if record.get("category") in CATEGORIES else "other",
+            "category": (
+                record.get("category")
+                if record.get("category") in finding_categories()
+                else "other"
+            ),
             "architect": str(record.get("architect") or "see GV Review's record")[:_MAX_VALUE],
             "vendor": str(record.get("vendor") or "see GV Review's record")[:_MAX_VALUE],
             "status": "different",

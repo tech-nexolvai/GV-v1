@@ -11,20 +11,27 @@
 import type { ChatCoverage, ChatFinding, CoverageStatus, FindingCategory, FindingSource, FindingStatus } from '@/lib/chat-api';
 import type { ViewMessage } from '@/lib/chat-messages';
 import { differenceWords, inchNumber, inchWords } from '@/lib/chat-trust';
+import { categoryOrder, categoryWord, OTHER_CATEGORY, productCatalog, type ProductCatalog } from '@/lib/products';
 
 // ── Words ───────────────────────────────────────────────────
 
 /** Phone width: the findings table becomes stacked cards. */
 export const FINDINGS_NARROW = '(max-width: 639px)';
 
-/** The groups, in the order the table shows them. */
-export const CATEGORY_ORDER: readonly FindingCategory[] = ['countertop', 'cabinet', 'other'];
+/**
+ * The groups, in the order the table shows them (#1547): every product of the registry, then any
+ * other category a finding has (a product retired since), then "Other".
+ */
+export function categoryOrderFor(findings: readonly Pick<ChatFinding, 'category'>[] = [], catalog: ProductCatalog = productCatalog()): FindingCategory[] {
+  const order = categoryOrder(catalog).filter((category) => category !== OTHER_CATEGORY);
+  const extra = findings.map(categoryOf).filter((category) => category !== OTHER_CATEGORY && !order.includes(category));
+  return [...order, ...new Set(extra), OTHER_CATEGORY];
+}
 
-export const CATEGORY_WORDS: Record<FindingCategory, string> = {
-  countertop: 'Countertops',
-  cabinet: 'Cabinets',
-  other: 'Other',
-};
+/** A group's heading: "Countertops", "Other" (the registry's words). */
+export function categoryWords(category: FindingCategory, catalog: ProductCatalog = productCatalog()): string {
+  return categoryWord(category, catalog);
+}
 
 /**
  * The owner's one vocabulary (2026-10-17): Wrong (red) · Needs your decision, short "Your decision"
@@ -69,9 +76,9 @@ export function verifiedWords(verified: boolean): string {
   return verified ? 'Checked on the drawing' : 'Helper lead, not checked';
 }
 
-/** A finding's category, read safely: anything unknown is "other". */
+/** A finding's category, read safely: a missing one is "other". */
 export function categoryOf(finding: Pick<ChatFinding, 'category'>): FindingCategory {
-  return CATEGORY_ORDER.includes(finding.category) ? finding.category : 'other';
+  return typeof finding.category === 'string' && finding.category.trim() ? finding.category : OTHER_CATEGORY;
 }
 
 /** A finding's source tag ("vs brand prototype"); null when it was compared with the architect. */
@@ -172,7 +179,7 @@ export interface FindingGroup {
  */
 export function groupFindings(findings: readonly ChatFinding[], filter: FindingFilter = NO_FILTER): FindingGroup[] {
   const shown = findings.filter((finding) => matchesFilter(finding, filter));
-  return CATEGORY_ORDER.map((category) => ({
+  return categoryOrderFor(shown).map((category) => ({
     category,
     // Array.prototype.sort is stable, so findings on one page keep the order they arrived in.
     findings: shown.filter((finding) => categoryOf(finding) === category).sort((a, b) => a.page - b.page),
@@ -186,7 +193,7 @@ export function shownInOrder(groups: readonly FindingGroup[]): ChatFinding[] {
 
 /** The categories that have at least one finding, for the category chips. */
 export function categoriesPresent(findings: readonly ChatFinding[]): FindingCategory[] {
-  return CATEGORY_ORDER.filter((category) => findings.some((finding) => categoryOf(finding) === category));
+  return categoryOrderFor(findings).filter((category) => findings.some((finding) => categoryOf(finding) === category));
 }
 
 /** The findings in the order the result's sections show them (Wrong, Your decision, Right, Not compared; by area), for the viewer's arrows. */

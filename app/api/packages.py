@@ -35,7 +35,7 @@ import binascii
 import json
 from collections import Counter
 from datetime import datetime
-from typing import Annotated, Any, Final
+from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -60,11 +60,14 @@ from app.schemas.packages import (
     PackageCreate,
     PackageOut,
     PackagePage,
+    ProductChecklistItemOut,
+    ProductOut,
     ProductTypeChoice,
     ReadingActivityOut,
     ReadingProgressOut,
 )
 from app.verdicts.rulebook import snapshot_store
+from vocabulary.product_registry import registry
 from vocabulary.semantic_types import ProductType
 from workflow.slot_row_scope import (
     READ_UNREAD_PAGES_WORKFLOW,
@@ -87,12 +90,13 @@ NOT_FOUND_DETAIL = "Not found"
 #: now, along with everything else that knows how a package's history is numbered.
 FIRST_REVISION = 1
 
-#: The words the upload screen shows for each product (#994). Display only — the value sent and
-#: stored is the `ProductType` member. Every member must have one; a test enumerates them.
-PRODUCT_LABELS: Final[dict[ProductType, str]] = {
-    ProductType.COUNTERTOP: "Countertop",
-    ProductType.CABINET: "Cabinets",
-}
+
+def product_label(product_id: str) -> str:
+    """The words a screen shows for a product (#994): its label from the product registry (#1547),
+    e.g. "Countertop". Display only — the value sent and stored is the product id."""
+    product = registry().get(product_id)
+    return product_id if product is None else product.label
+
 
 ORDERING_DESCRIPTION = (
     "Newest first, then by id descending. The id is what makes the order total: two packages created "
@@ -251,19 +255,18 @@ def create_package(
     if session.scalar(select(Project.id).where(Project.id == project_id)) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
 
-    if body.product_type not in published_products(session):
+    product = ProductType(body.product_type)
+    if product not in published_products(session):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
-                f"No checks are published for {PRODUCT_LABELS[body.product_type].lower()} drawing "
+                f"No checks are published for {product_label(product.value).lower()} drawing "
                 "sets yet, so a set for it could not be checked. Choose one of the products "
-                "`GET /product-types` lists."
+                "`GET /products` offers."
             ),
         )
 
-    package = Package(
-        project_id=project_id, vendor=body.vendor, product_type=body.product_type.value
-    )
+    package = Package(project_id=project_id, vendor=body.vendor, product_type=product.value)
     session.add(package)
     revision = PackageRevision(
         package_id=package.id, revision_number=FIRST_REVISION, state=PackageState.CREATED
@@ -296,6 +299,47 @@ def create_package(
 
 
 @router.get(
+    "/products",
+    response_model=list[ProductOut],
+    summary="Every product GV Review knows (the product registry)",
+)
+def list_products(
+    principal: Annotated[
+        Principal, Depends(require_role(Role.REVIEWER, Role.RULE_ADMIN, Role.ADMIN))
+    ],
+    session: Annotated[Session, Depends(get_session)],
+) -> list[ProductOut]:
+    """Every product of the product registry (`vocabulary/products.yaml`, #1547), in its order,
+    with whether it can be picked now and how many published checks it has.
+
+    The single list the screens build their product choices from: the chat's chips and "+" menu,
+    the findings' groups, the upload picker. Adding a product to the registry adds it here with no
+    code change.
+    """
+    del principal  # the dependency is the check; the endpoint needs nothing from the caller
+
+    counts = published_products(session)
+    return [
+        ProductOut(
+            id=product.id,
+            label=product.label,
+            plural=product.plural,
+            description=product.description,
+            active=product.active,
+            draft=product.draft,
+            check_kinds=list(product.check_kinds),  # type: ignore[arg-type]
+            category_label=product.category_label,
+            checklist=[
+                ProductChecklistItemOut(name=item.name, text=item.text)
+                for item in product.checklist
+            ],
+            published_checks=counts[ProductType(product.id)],
+        )
+        for product in registry().products
+    ]
+
+
+@router.get(
     "/product-types",
     response_model=list[ProductTypeChoice],
     summary="The products a drawing set may be for",
@@ -306,21 +350,23 @@ def list_product_types(
     ],
     session: Annotated[Session, Depends(get_session)],
 ) -> list[ProductTypeChoice]:
-    """Every product the published rulebook has at least one check for, in vocabulary order (#994).
+    """Every active product the published rulebook has at least one check for, in the product
+    registry's order (#994, #1547).
 
-    The upload screen's dropdown is filled from this, so it never offers a product that would be
-    checked against nothing, and a product appears the day its first rule is published. Empty when
-    nothing is published — a real answer, and the upload screen says so.
+    Kept for older screens: the upload screen now reads `GET /products`, which lists every product
+    (inactive ones too, greyed). Empty when nothing is published — a real answer.
     """
     del principal  # the dependency is the check; the endpoint needs nothing from the caller
 
     counts = published_products(session)
     return [
         ProductTypeChoice(
-            value=product, label=PRODUCT_LABELS[product], published_checks=counts[product]
+            value=product.id,
+            label=product.label,
+            published_checks=counts[ProductType(product.id)],
         )
-        for product in ProductType
-        if counts[product] > 0
+        for product in registry().active()
+        if counts[ProductType(product.id)] > 0
     ]
 
 

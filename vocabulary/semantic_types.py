@@ -340,12 +340,27 @@ class ProductType(str, Enum):
     typo publish cleanly and then match nothing: a rule that exists, looks authored, and never
     fires. Validation at publish turns that into a loud authoring error instead.
 
-    Adding a product type is a one-line change here, which is the point of keeping the
-    vocabulary in one module.
+    **The vocabulary is the product registry** (`vocabulary/products.yaml`, #1547): any product id
+    listed there is a `ProductType`, so adding a product is a registry entry, not a code change.
+    Countertop and cabinet are written out as members because code that reads those products'
+    drawings (the countertop readers, the cabinet fitting) names them; another registry product is
+    made on first use by `_missing_`, once, so `is` comparisons still hold. A value the registry
+    does not list is still refused, loudly, at publish.
     """
 
     COUNTERTOP = "countertop"
     CABINET = "cabinet"
+
+    @classmethod
+    def _missing_(cls, value: object) -> ProductType | None:
+        from vocabulary.product_registry import registry
+
+        if not isinstance(value, str) or value not in registry().ids():
+            return None
+        member = str.__new__(cls, value)
+        member._name_ = value.upper()
+        member._value_ = value
+        return cls._value2member_map_.setdefault(value, member)  # type: ignore[return-value]
 
 
 class OperandSource(str, Enum):

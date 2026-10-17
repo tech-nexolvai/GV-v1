@@ -6,7 +6,7 @@ import { useMediaQuery } from '@/hooks/use-media-query';
 import type { ChatFinding, FindingCategory, FindingDecisionValue, FindingStatus } from '@/lib/chat-api';
 import {
   architectPage,
-  CATEGORY_WORDS,
+  categoryWords,
   categoriesPresent,
   decisionHelpRows,
   findingLine,
@@ -623,7 +623,7 @@ export function FindingsSections({ findings, filter, onFilter, onOpen, pictureUr
                 filter.category === category ? 'bg-card text-foreground shadow-[0_1px_2px_rgb(0_0_0/0.08),0_0_0_1px_var(--border)]' : 'text-muted-foreground hover:text-foreground',
               )}
             >
-              {category ? CATEGORY_WORDS[category] : 'All'}
+              {category ? categoryWords(category) : 'All'}
             </button>
           ))}
         </div>

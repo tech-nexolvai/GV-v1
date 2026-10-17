@@ -5,7 +5,12 @@ of task. The chat agent gets one, mounted read-only at `/mnt/skills/gv-review` i
 and `build_skill_folder` writes it:
 
 - `SKILL.md`, copied byte for byte from `skills/gv-review/SKILL.md` beside this module: how GV
-  reviews a vendor's shop drawing against the architect's. Generic: no client value.
+  reviews a vendor's shop drawing against the architect's. Generic and the same for every product:
+  no client value.
+- `products/<id>.md` for each product in focus (#1547): the product's own skill file from the
+  product registry (`vocabulary/products.yaml`), followed by its checklist and the kinds of GV
+  standard it has, written from the registry. The products in focus are the reviewer's pick, else
+  the drawing set's own product, else every active product.
 - `rules.md`, exported for this drawing set: each published check that runs on it, in plain words,
   and every setting those checks read, in inches, with where its value comes from (the rulebook's
   default, GV's company standard, the project's value or sink card, or a value typed for this
@@ -59,6 +64,7 @@ from rules.schema import (
 )
 from units.imperial import format_inches
 from units.measurement import Unit
+from vocabulary.product_registry import Product, registry
 from vocabulary.semantic_types import ProductType, SemanticType
 from vocabulary.setting_names import setting_name
 from vocabulary.wall_layouts import WALL_LAYOUT_WORDS
@@ -69,7 +75,9 @@ __all__ = [
     "SKILL_NAME",
     "SKILL_SOURCE",
     "build_skill_folder",
+    "focus_products",
     "local_skills_folder",
+    "product_markdown",
     "rules_markdown",
 ]
 
@@ -80,8 +88,10 @@ SKILL_SOURCE: Final = Path(__file__).resolve().parent / "skills" / SKILL_NAME / 
 LOCAL_FOLDER_VARIABLE: Final = "GV_ASSISTANT_SKILLS_LOCAL"
 DEFAULT_LOCAL_FOLDER: Final = "~/gv-local/skills/gv-review"
 
-#: The two files this function writes; a local file of the same name never replaces them.
-_OWN_FILES: Final = frozenset({"SKILL.md", "rules.md"})
+#: The files and folder this function writes; a local file of the same name never replaces them.
+_OWN_FILES: Final = frozenset({"SKILL.md", "rules.md", "products"})
+#: The folder of the products' skill files inside the skill folder.
+PRODUCTS_FOLDER: Final = "products"
 
 _SOURCES: Final[Mapping[str, str]] = {
     "ARCH": "from the architect's drawing",
@@ -139,13 +149,15 @@ def build_skill_folder(
 ) -> None:
     """Write the skill folder for one drawing set at `dest` (mounted at `/mnt/skills/gv-review`).
 
-    `SKILL.md` and `rules.md`, plus GV's local files when their folder exists. Replaces an earlier
+    `SKILL.md`, `rules.md` and `products/<id>.md` for each product in focus (`focus_products`),
+    plus GV's local files when their folder exists. Replaces an earlier
     folder this function wrote at `dest`; refuses (`FileExistsError`) to replace anything else, so
     a wrong path can never wipe a chat's files. `LookupError` when the revision does not exist.
     `products`: the products the reviewer picked for the chat (`rules_markdown`).
     """
     dest = Path(dest)
     rules_text = rules_markdown(session, package_revision_id, products)
+    focus = focus_products(session, package_revision_id, products)
     if dest.exists() and not _replaceable(dest):
         raise FileExistsError(f"{dest} is not an empty folder or a skill folder; not replaced")
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -156,6 +168,10 @@ def build_skill_folder(
             _copy_local(local, building)
         (building / "SKILL.md").write_bytes(SKILL_SOURCE.read_bytes())
         (building / "rules.md").write_bytes(rules_text.encode("utf-8"))
+        folder = building / PRODUCTS_FOLDER
+        folder.mkdir(exist_ok=True)
+        for product in focus:
+            (folder / f"{product.id}.md").write_bytes(product_markdown(product).encode("utf-8"))
         _make_readable(building)
         if dest.exists():
             old = dest.with_name(f".{dest.name}.old-{uuid.uuid4().hex[:12]}")
@@ -194,6 +210,8 @@ def _copy_local(source: Path, target: Path) -> None:
                 continue
             if relative == Path(".") and name in _OWN_FILES:
                 continue
+            if relative.parts[:1] == (PRODUCTS_FOLDER,):
+                continue
             out = target / relative / name
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_bytes(path.read_bytes())
@@ -207,6 +225,55 @@ def _make_readable(root: Path) -> None:
             (Path(folder) / name).chmod(0o755)
         for name in files:
             (Path(folder) / name).chmod(0o644)
+
+
+# --------------------------------------------------------------------------------------------------
+# products/<id>.md
+# --------------------------------------------------------------------------------------------------
+
+
+def focus_products(
+    session: Session, package_revision_id: UUID, products: Sequence[str] | None = None
+) -> tuple[Product, ...]:
+    """The products in focus, in the registry's order: the reviewer's pick; else the drawing set's
+    own product; else (a set from before the product was asked) every active product. An id the
+    registry does not know is left out (an old answer's product that was since retired)."""
+    known = registry()
+    if products is None:
+        revision = session.get(PackageRevision, package_revision_id)
+        package = None if revision is None else session.get(Package, revision.package_id)
+        own = None if package is None else package_product(package)
+        if own is None:
+            return known.active()
+        products = [own.value]
+    return tuple(
+        product for pid in known.ordered(products) if (product := known.get(pid)) is not None
+    )
+
+
+def product_markdown(product: Product) -> str:
+    """One product's file in the skill folder: its own skill text, then its checklist and the kinds
+    of GV standard it has, both from the registry, so the brief and the skill never disagree."""
+    text = product.skill_file.read_text(encoding="utf-8").rstrip() if product.has_skill else ""
+    lines = [text or f"# {product.plural}\n\n{product.description}", ""]
+    if product.draft:
+        lines.append(
+            "**Draft:** this product's checklist is a generic starter, not yet checked with GV.\n"
+        )
+    lines.append(f"## Checklist for {product.plural.lower()} (every page)\n")
+    lines.extend(f"- **{item.name.replace('_', ' ')}**: {item.text}" for item in product.checklist)
+    lines.append("")
+    if "global_rules" in product.check_kinds:
+        lines.append("## GV standards that are not on the drawing\n")
+        if product.global_rule_hints:
+            lines.extend(f"- {hint}" for hint in product.global_rule_hints)
+        else:
+            lines.append("- None listed yet.")
+        lines.append(
+            "\nThe values in force are in `rules.md`; a standard with no published rule is "
+            "reported as a check for the reviewer, never assumed.\n"
+        )
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------------------------------
@@ -249,15 +316,24 @@ def rules_markdown(
 
     lines = [_HEADER]
     if picked is not None:
-        names = " and ".join(sorted(item.value for item in picked))
+        names = " and ".join(registry().ordered(item.value for item in picked))
         lines.append(
             f"Products picked for this chat: {names}. Their checks come first; the other "
             'products\' checks follow under "Other products".\n'
         )
+        covered = {rule.product_type for rule in rules}
+        bare = registry().ordered(item.value for item in picked if item not in covered)
+        if bare:
+            lines.append(
+                f"No GV check is published yet for: {', '.join(bare)}. Compare the vendor with the "
+                "architect, and report a GV standard the product file names as a check for the "
+                "reviewer (status check), never as a rule.\n"
+            )
     elif product is None:
+        covered_words = registry().words(sorted({rule.product_type.value for rule in rules}))
         lines.append(
             "Product: not stated for this drawing set, so every published check runs "
-            "(countertop and cabinet).\n"
+            f"({covered_words.lower()}).\n"
         )
     else:
         lines.append(
