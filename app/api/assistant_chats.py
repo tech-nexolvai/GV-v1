@@ -1058,6 +1058,9 @@ def _message(
             products=products,
             continue_from=continue_from,
             drawn_helpers=settings.assistant_drawn_helpers,
+            roster=settings.assistant_full_check_roster,
+            full_check_cap_micros=int(settings.assistant_full_check_cap_usd * _MICROS),
+            pairing_proof=settings.assistant_pairing_proof,
             plan_answers=(
                 None
                 if mode != "full_check" or not body.plan_answers
