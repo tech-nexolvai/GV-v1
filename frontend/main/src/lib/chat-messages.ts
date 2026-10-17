@@ -7,7 +7,7 @@
  * message, which then replaces what was built live: a reload and a live answer end up identical.
  */
 
-import type { ChatAccuracy, ChatAgent, ChatBlock, ChatCite, ChatCoverage, ChatEffort, ChatEvent, ChatFile, ChatFinding, ChatFindingUpdate, ChatMessage, ChatMode, ChatModel, ChatProduct, ChatProgress, ChatResolver, ChatResume, ChatScope, ChatStep, ChatStopped, ChatSummary, ChatTask, ChatTrust, ChatUnderstood, ChatUnknown } from '@/lib/chat-api';
+import type { ChatAccuracy, ChatAgent, ChatBlock, ChatCite, ChatCoverage, ChatEffort, ChatEvent, ChatFile, ChatFinding, ChatFindingUpdate, ChatMessage, ChatMode, ChatModel, ChatProduct, ChatProgress, ChatResolver, ChatResume, ChatScope, ChatStep, ChatStopped, ChatSummary, ChatTask, ChatTrust, ChatUnderstood, ChatUnknown, ChatFallback } from '@/lib/chat-api';
 import { EFFORT_WORDS } from '@/lib/chat-settings';
 
 /** A helper agent while its Agent step runs: `running` until its `agent_end`. */
@@ -70,6 +70,8 @@ export interface ViewMessage {
   corrections?: ChatFindingUpdate[];
   /** #1551: how the app understood the question before the work; shown under the question. */
   understood?: ChatUnderstood | null;
+  /** #1577: the refusal fallback that answered instead of the model asked (the last switch). */
+  fallback?: ChatFallback | null;
   cost_usd: string | null;
   stopped: ChatStopped | null;
   error: string | null;
@@ -177,6 +179,21 @@ export function understoodOf(blocks: readonly ChatBlock[]): ChatUnderstood | nul
   return null;
 }
 
+/** The last refusal-fallback switch of an answer (#1577), or null. */
+export function fallbackOf(blocks: readonly ChatBlock[]): ChatFallback | null {
+  let found: ChatFallback | null = null;
+  for (const block of blocks) if (block.type === 'fallback' && block.fallback) found = block.fallback;
+  return found;
+}
+
+/**
+ * The quiet line under an answer a refusal fallback wrote (#1577): "Claude Fable 5.1 declined this
+ * request, so Claude Opus 4.8 answered it instead."
+ */
+export function fallbackWords(fallback: ChatFallback, models: readonly Pick<ChatModel, 'id' | 'label'>[] | null): string {
+  return `${modelLabel(fallback.from_model, models)} declined this request, so ${modelLabel(fallback.to_model, models)} answered it instead.`;
+}
+
 /** The `resume` block of an interrupted answer (#1514), or null. */
 export function resumeOf(blocks: readonly ChatBlock[]): ChatResume | null {
   for (let at = blocks.length - 1; at >= 0; at -= 1) {
@@ -224,6 +241,7 @@ export function fromSaved(message: ChatMessage): ViewMessage {
     resume: message.resume ?? resumeOf(saved),
     corrections: correctionsOf(saved),
     understood: message.understood ?? understoodOf(saved),
+    fallback: fallbackOf(saved),
     cost_usd: message.cost_usd ?? null,
     stopped: message.stopped ?? null,
     error: message.error ?? null,
@@ -373,6 +391,8 @@ export function applyChatEvent(message: ViewMessage, event: ChatEvent): ViewMess
       return Array.isArray(event.data.unknowns) ? { ...message, unknowns: event.data.unknowns } : message;
     case 'resolver':
       return event.data.resolver ? { ...message, resolver: event.data.resolver } : message;
+    case 'fallback':
+      return event.data.fallback ? { ...message, fallback: event.data.fallback } : message;
     case 'message_end': {
       // The stored message wins; the live task list, files, findings and coverage stay if it somehow
       // left them out.
@@ -388,6 +408,7 @@ export function applyChatEvent(message: ViewMessage, event: ChatEvent): ViewMess
         mode: stored.mode ?? message.mode ?? null,
         scope: stored.scope ?? message.scope ?? null,
         understood: stored.understood ?? message.understood ?? null,
+        fallback: stored.fallback ?? message.fallback ?? null,
         cites: stored.cites?.length ? stored.cites : message.cites ?? [],
         corrections: stored.corrections?.length ? stored.corrections : message.corrections ?? [],
         accuracy: stored.accuracy ?? message.accuracy ?? null,
