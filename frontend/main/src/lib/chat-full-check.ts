@@ -122,12 +122,14 @@ export function matchesWords(source: FindingSource): string {
 export function fullCheckFiles(files: readonly ChatFile[]): { cloud: ChatFile | null; report: ChatFile | null; rest: ChatFile[] } {
   const pdf = (file: ChatFile) => file.mime === 'application/pdf' || /\.pdf$/i.test(file.name);
   // A file sent before kinds: "cloud" in its name, else the full check's "… - AI markup.pdf".
-  const cloud = files.find((file) => file.kind === 'cloud_drawing')
-    ?? files.find((file) => !file.kind && pdf(file) && /cloud/i.test(file.name))
-    ?? files.find((file) => !file.kind && pdf(file) && /\bAI markup\b/i.test(file.name)) ?? null;
-  const report = files.find((file) => file.kind === 'check_report' && file !== cloud)
-    ?? files.find((file) => !file.kind && file !== cloud && pdf(file) && /report/i.test(file.name)) ?? null;
-  return { cloud, report, rest: files.filter((file) => file !== cloud && file !== report) };
+  // The NEWEST of each (#1525: "Update cloud drawing" adds a new drawing and report; older ones are kept).
+  const last = (test: (file: ChatFile) => boolean) => [...files].reverse().find(test) ?? null;
+  const clouds = files.filter((file) => file.kind === 'cloud_drawing' || (!file.kind && pdf(file) && (/cloud/i.test(file.name) || /\bAI markup\b/i.test(file.name))));
+  const reports = files.filter((file) => !clouds.includes(file) && (file.kind === 'check_report' || (!file.kind && pdf(file) && /report/i.test(file.name))));
+  const cloud = last((file) => file.kind === 'cloud_drawing' && clouds.includes(file)) ?? last((file) => clouds.includes(file));
+  const report = last((file) => reports.includes(file));
+  // Older drawings and reports are kept on the server but not shown again as plain file cards.
+  return { cloud, report, rest: files.filter((file) => !clouds.includes(file) && !reports.includes(file)) };
 }
 
 // ── Live progress while a full check runs (PATH step 3, #1522) ─

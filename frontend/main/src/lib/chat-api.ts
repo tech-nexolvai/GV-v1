@@ -655,6 +655,8 @@ export const chatPaths = {
   picture: (chatId: string, pictureId: string) => `${BASE}/chats/${id(chatId)}/pictures/${id(pictureId)}`,
   /** Chat v2: code draws the message's findings on a copy of the upload and returns it as a file. */
   markupPdf: (chatId: string, messageId: string) => `${BASE}/chats/${id(chatId)}/messages/${id(messageId)}/markup-pdf`,
+  /** #1525: the cloud drawing and report made again from the reviewer's decisions (POST). */
+  cloudDrawing: (chatId: string, messageId: string) => `${BASE}/chats/${id(chatId)}/messages/${id(messageId)}/cloud-drawing`,
   /** #1522: the reviewer's Agree / Not a problem on one finding (POST). */
   decision: (chatId: string, messageId: string, findingId: string) =>
     `${BASE}/chats/${id(chatId)}/messages/${id(messageId)}/findings/${id(findingId)}/decision`,
@@ -674,9 +676,9 @@ export async function decisionRouteReady(chatId: string, messageId: string, find
   }
 }
 
-/** Record the reviewer's Agree / Not a problem on one finding. */
-export function decideFinding(chatId: string, messageId: string, findingId: string, decision: FindingDecisionValue, note?: string): Promise<unknown> {
-  return json<unknown>(chatPaths.decision(chatId, messageId, findingId), { method: 'POST', body: JSON.stringify(note ? { decision, note } : { decision }) });
+/** Record the reviewer's Agree / Not a problem on one finding; the server answers with who and when. */
+export function decideFinding(chatId: string, messageId: string, findingId: string, decision: FindingDecisionValue, note?: string): Promise<FindingDecision> {
+  return json<FindingDecision>(chatPaths.decision(chatId, messageId, findingId), { method: 'POST', body: JSON.stringify(note ? { decision, note } : { decision }) });
 }
 
 // ── Requests ────────────────────────────────────────────────
@@ -730,6 +732,11 @@ export function cancelChat(chatId: string): Promise<{ cancelled: boolean }> {
 /** Make the marked-up PDF of a finished message's findings (code only, no AI call); returns the file. */
 export function makeMarkupPdf(chatId: string, messageId: string): Promise<ChatFile> {
   return json<ChatFile>(chatPaths.markupPdf(chatId, messageId), { method: 'POST', body: '{}' });
+}
+
+/** #1525: make the cloud drawing (and report) again from the reviewer's decisions; returns the new drawing. */
+export function remakeCloudDrawing(chatId: string, messageId: string): Promise<ChatFile> {
+  return json<ChatFile>(chatPaths.cloudDrawing(chatId, messageId), { method: 'POST', body: '{}' });
 }
 
 /**
@@ -850,6 +857,7 @@ export interface ChatApi {
   /** #1522: Agree / Not a problem per finding; optional so a fake API can leave it out. */
   decide?: typeof decideFinding;
   decisionReady?: typeof decisionRouteReady;
+  remakeCloud?: typeof remakeCloudDrawing;
 }
 
 export const LIVE_CHAT_API: ChatApi = {
@@ -863,4 +871,5 @@ export const LIVE_CHAT_API: ChatApi = {
   markup: makeMarkupPdf,
   decide: decideFinding,
   decisionReady: decisionRouteReady,
+  remakeCloud: remakeCloudDrawing,
 };

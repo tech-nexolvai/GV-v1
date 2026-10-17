@@ -148,7 +148,7 @@ function ViewerWords({ finding }: { finding: ChatFinding }) {
     <>
       <dl className="grid gap-x-6 gap-y-1.5 text-sm sm:grid-cols-2">
         <div className="min-w-0"><dt className="text-xs font-medium text-muted-foreground">{words.referenceLabel}</dt><dd className="break-words">{words.reference}</dd></div>
-        <div className="min-w-0"><dt className="text-xs font-medium text-muted-foreground">Vendor drew</dt><dd className="break-words">{words.vendor}</dd></div>
+        <div className="min-w-0"><dt className="text-xs font-medium text-muted-foreground">{words.vendorLabel}</dt><dd className="break-words">{words.vendor}</dd></div>
       </dl>
       <DialogDescription className="break-words text-foreground">
         <span className="text-muted-foreground">{words.whyLabel}: </span>{words.why}

@@ -379,7 +379,7 @@ export function referenceLabel(finding: Pick<ChatFinding, 'source'>): string {
     case 'vendor_arithmetic':
       return 'Its parts add to';
     case 'cross_view':
-      return 'Another view shows';
+      return 'Reference view shows';
     default:
       return 'Architect shows';
   }
@@ -442,6 +442,8 @@ export interface ReviewerWords {
   /** "Architect shows" / "Prototype shows" / "GV’s rule says". */
   referenceLabel: string;
   reference: string;
+  /** "Vendor drew", or "This view shows" for two views of the same drawings. */
+  vendorLabel: string;
   vendor: string;
   /** "Why it’s wrong" / "What you need to decide" / "Why it’s right" / "Why it was not compared". */
   whyLabel: string;
@@ -470,7 +472,7 @@ export function reviewerWords(finding: ChatFinding): ReviewerWords {
     ? `The vendor’s ${inchWords(vendor)} in is ${inchWords(Math.abs(difference))} in ${difference > 0 ? 'more' : 'less'} than the ${whom}’s ${inchWords(architect)} in.`
     : status === 'different' ? `The vendor’s drawing does not match the ${whom}.`
     : status === 'check' ? 'The AI could not settle this on its own: look at the two pictures and decide.'
-    : status === 'not_compared' ? 'Both sides were not looked at, so this is not counted as right.'
+    : status === 'not_compared' ? `${finding.not_compared_why === 'pair_not_covered' ? 'Its page pair was not compared' : 'Both sides were not looked at'}, so this is not counted as right.`
     : `The vendor’s drawing matches the ${whom}.`;
   const tell = status !== 'different' ? null
     : architect !== null ? `Change it to ${inchWords(architect)} in to match the ${whom}${vendor !== null ? ` (now ${inchWords(vendor)} in)` : ''}.`
@@ -479,6 +481,7 @@ export function reviewerWords(finding: ChatFinding): ReviewerWords {
   return {
     referenceLabel: referenceLabel(finding),
     reference: sideWords(finding, 'architect'),
+    vendorLabel: finding.source === 'cross_view' ? 'This view shows' : 'Vendor drew',
     vendor: sideWords(finding, 'vendor'),
     whyLabel: { different: 'Why it’s wrong', check: 'What you need to decide', same: 'Why it’s right', not_compared: 'Why it was not compared' }[status],
     why: finding.why?.trim() || fallback,

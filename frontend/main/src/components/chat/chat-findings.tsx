@@ -23,7 +23,7 @@ import {
   vendorPage,
 } from '@/lib/chat-findings';
 import { useReducedMotion } from '@/lib/chat-motion';
-import { plainChecks, TRUST_WORDS, trustLevelOf } from '@/lib/chat-trust';
+import { plainChecks, sumWords, TRUST_WORDS, trustLevelOf } from '@/lib/chat-trust';
 import { cn } from '@/lib/utils';
 
 /**
@@ -277,6 +277,7 @@ export function FindingCard({ finding, pictureUrl, onOpen, fullPageHref }: {
   const status = statusOf(finding);
   const checks = plainChecks(finding);
   const tag = sourceTag(finding);
+  const sum = sumWords(finding);
   return (
     <div data-slot="chat-finding-card" className="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.3fr)]">
       <div className="grid min-w-0 content-start gap-3.5">
@@ -286,7 +287,8 @@ export function FindingCard({ finding, pictureUrl, onOpen, fullPageHref }: {
         </p>
         <dl className="grid gap-3 text-[13.5px] leading-relaxed">
           <div><dt className="text-xs font-medium text-muted-foreground">{words.referenceLabel}</dt><dd className="break-words">{words.reference}</dd></div>
-          <div><dt className="text-xs font-medium text-muted-foreground">Vendor drew</dt><dd className="break-words">{words.vendor}</dd></div>
+          <div><dt className="text-xs font-medium text-muted-foreground">{words.vendorLabel}</dt><dd className="break-words">{words.vendor}</dd></div>
+          {sum && <div><dt className="text-xs font-medium text-muted-foreground">Code’s sum</dt><dd data-slot="chat-finding-sum" className="break-words tabular-nums">{sum}</dd></div>}
           <div><dt className="text-xs font-medium text-muted-foreground">{words.whyLabel}</dt><dd data-slot="chat-finding-why" className="break-words">{words.why}</dd></div>
           {words.tell && <div><dt className="text-xs font-medium text-muted-foreground">What to tell the vendor</dt><dd data-slot="chat-finding-tell" className="font-medium break-words">{words.tell}</dd></div>}
         </dl>
@@ -641,7 +643,7 @@ export function FindingsSections({ findings, filter, onFilter, onOpen, pictureUr
               findings={list}
               label={section.words}
               openGroups={section.status === 'different' ? 'all' : 3}
-              openRowsAtFirst={narrow && shown.length <= 3}
+              openRowsAtFirst={narrow && of('different').length + of('check').length <= 3}
               onOpen={onOpen}
               pictureUrl={pictureUrl}
               fullPageHref={fullPageHref}

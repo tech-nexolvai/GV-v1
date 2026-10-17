@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Download, ExternalLink, FileText, ScanSearch } from 'lucide-react';
+import { Download, ExternalLink, FileText, RefreshCw, ScanSearch } from 'lucide-react';
 
 import { AccuracyBadge } from '@/components/chat/chat-accuracy';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -137,7 +137,19 @@ function CloudPreview({ href, page, total }: { href: string; page: number; total
  * A full check's main output (PATH step 4.3): the cloud drawing as one big card, its page preview
  * on the left, Open and Download on the right; the check report as a quiet line inside it.
  */
-export function FullCheckFiles({ cloud, report, chatId, page = 1, totalPages = null, counts = null }: {
+export interface CloudReview {
+  /** Items the reviewer has answered, of those needing an answer (Wrong + Your decision). */
+  decided: number;
+  total: number;
+  /** Who answered, once every item is answered: "Reviewed by <name>". */
+  reviewedBy: string | null;
+  /** Make the drawing again from the answers; null when that is not offered. */
+  onUpdate: (() => void) | null;
+  updating: boolean;
+  failed: boolean;
+}
+
+export function FullCheckFiles({ cloud, report, chatId, page = 1, totalPages = null, counts = null, review = null }: {
   cloud: ChatFile | null;
   report: ChatFile | null;
   chatId: string;
@@ -145,6 +157,8 @@ export function FullCheckFiles({ cloud, report, chatId, page = 1, totalPages = n
   page?: number;
   totalPages?: number | null;
   counts?: Pick<FindingCounts, 'different' | 'check'> | null;
+  /** #1525: the reviewer's answers so far, and "Update cloud drawing". */
+  review?: CloudReview | null;
 }) {
   if (!cloud && !report) return null;
   const href = (file: ChatFile) => file.url || chatPaths.file(chatId, file.id);
@@ -180,8 +194,41 @@ export function FullCheckFiles({ cloud, report, chatId, page = 1, totalPages = n
           )}
           <p className="text-xs text-muted-foreground"><span className="break-all">{cloud.name}</span> · {[fileKind(cloud), fileSize(cloud.size)].filter(Boolean).join(' · ')}</p>
         </div>
+        {review && review.total > 0 && (
+          <div data-slot="chat-cloud-review" className="grid gap-1.5">
+            <p className="flex flex-wrap items-baseline gap-x-2 text-[13px]">
+              <span className="font-medium tabular-nums">{review.decided} of {review.total} decided</span>
+              {review.reviewedBy && <span className="text-muted-foreground"><span aria-hidden="true">· </span>Reviewed by {review.reviewedBy}</span>}
+            </p>
+            <span aria-hidden="true" className="flex h-1 w-full max-w-xs overflow-hidden rounded-full bg-muted">
+              <span className="h-full rounded-full bg-foreground/70 transition-[width] duration-300 motion-reduce:transition-none" style={{ width: `${(review.decided / review.total) * 100}%` }} />
+            </span>
+            {review.decided === 0 && <p className="text-xs text-muted-foreground">Agree or dismiss each item below; the drawing then clouds only what you agreed with.</p>}
+          </div>
+        )}
         <div className="flex flex-wrap gap-2">
-          <a href={href(cloud)} target="_blank" rel="noopener noreferrer" className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-primary px-3.5 text-sm font-medium text-primary-foreground hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none">
+          {review?.onUpdate && review.decided > 0 && (
+            <button
+              type="button"
+              data-slot="chat-cloud-update"
+              onClick={review.onUpdate}
+              disabled={review.updating}
+              aria-busy={review.updating}
+              className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-primary px-3.5 text-sm font-medium text-primary-foreground hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none disabled:cursor-progress disabled:opacity-70"
+            >
+              <RefreshCw className={cn('size-4', review.updating && 'animate-spin motion-reduce:animate-none')} aria-hidden="true" />
+              {review.updating ? 'Updating the cloud drawing…' : 'Update cloud drawing'}
+            </button>
+          )}
+          <a
+            href={href(cloud)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={cn(
+              'inline-flex h-9 items-center gap-1.5 rounded-lg px-3.5 text-sm font-medium focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none',
+              review?.onUpdate && review.decided > 0 ? 'border bg-background hover:bg-accent' : 'bg-primary text-primary-foreground hover:opacity-90',
+            )}
+          >
             <ExternalLink className="size-4" aria-hidden="true" />
             Open cloud drawing
           </a>
@@ -190,6 +237,7 @@ export function FullCheckFiles({ cloud, report, chatId, page = 1, totalPages = n
             Download
           </a>
         </div>
+        {review?.failed && <p role="alert" className="text-sm text-muted-foreground">The cloud drawing could not be made again right now. Try again.</p>}
         {reportLine}
       </div>
     </section>
@@ -219,7 +267,7 @@ export interface ResultNumbersProps {
 export function ResultNumbers({ counts, coverage, accuracy, onPick }: ResultNumbersProps) {
   const pages = coverage ? coverageCounts(coverage) : null;
   return (
-    <section data-slot="chat-kpis" aria-label="Summary" className="chat-rise grid grid-cols-3 gap-2.5 md:grid-cols-[repeat(3,minmax(0,1fr))_minmax(0,1.1fr)]">
+    <section data-slot="chat-kpis" aria-label="The result in numbers" className="chat-rise grid grid-cols-3 gap-2.5 md:grid-cols-[repeat(3,minmax(0,1fr))_minmax(0,1.1fr)]">
       {NUMBERS.map((number) => {
         const count = counts[number.status];
         return (

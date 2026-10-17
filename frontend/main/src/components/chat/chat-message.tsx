@@ -6,11 +6,11 @@ import { ActivityRow, TaskChecklist } from '@/components/chat/chat-activity';
 import { CoverageStrip } from '@/components/chat/chat-coverage';
 import { EvidenceViewer } from '@/components/chat/chat-evidence';
 import { FindingsSections, type DecisionProps } from '@/components/chat/chat-findings';
-import { FullCheckFiles, FullCheckProgress, ResultNumbers } from '@/components/chat/chat-full-check';
+import { FullCheckFiles, FullCheckProgress, ResultNumbers, type CloudReview } from '@/components/chat/chat-full-check';
 import { ConfidenceLine, HowChecked } from '@/components/chat/chat-trust';
 import { ChatMarkdown } from '@/components/chat/chat-markdown';
 import { Collapse, CopyButton, Shimmer, Spark, Spinner } from '@/components/chat/chat-motion';
-import { chatPaths, type ChatEffort, type ChatFile, type ChatFinding, type ChatModel, type FindingDecisionValue } from '@/lib/chat-api';
+import { chatPaths, type ChatEffort, type ChatFile, type ChatFinding, type ChatModel, type FindingDecision, type FindingDecisionValue } from '@/lib/chat-api';
 import { coverageCounts, findingCounts, isNarrowAnswer, isShortAnswer, NO_FILTER, sectionOrder, type FindingFilter } from '@/lib/chat-findings';
 import { fullCheckBubble, fullCheckFiles, previewPage, productsWords, withoutCodeNote } from '@/lib/chat-full-check';
 import { useReducedMotion } from '@/lib/chat-motion';
@@ -223,6 +223,11 @@ function isFewLines(text: string): boolean {
   return lines.length <= 2 && !lines.some((line) => /^\s*(\||```)/.test(line));
 }
 
+/** The server's answer to a decision: `{decision, note, by, at}`. */
+function isDecision(value: unknown): value is FindingDecision {
+  return Boolean(value) && typeof value === 'object' && ((value as FindingDecision).decision === 'agree' || (value as FindingDecision).decision === 'not_a_problem');
+}
+
 export interface AssistantMessageProps {
   message: ViewMessage;
   chatId: string;
@@ -256,9 +261,11 @@ export interface AssistantMessageProps {
   decide?: (messageId: string, findingId: string, decision: FindingDecisionValue) => Promise<unknown>;
   /** #1522: whether the server has the decision route yet; the buttons stay hidden until it says yes. */
   decisionReady?: (messageId: string, findingId: string) => Promise<boolean>;
+  /** #1525: make the cloud drawing again from the reviewer's decisions; returns the new drawing. */
+  remakeCloud?: (messageId: string) => Promise<ChatFile>;
 }
 
-export function AssistantMessage({ message, chatId, models, onReload, onRetry, latest = false, makeMarkupPdf, fullPageHref, fullCheck = false, decide, decisionReady }: AssistantMessageProps) {
+export function AssistantMessage({ message, chatId, models, onReload, onRetry, latest = false, makeMarkupPdf, fullPageHref, fullCheck = false, decide, decisionReady, remakeCloud }: AssistantMessageProps) {
   const running = message.status === 'running';
   const reduced = useReducedMotion();
   const pictureUrl = (pictureId: string) => chatPaths.picture(chatId, pictureId);
@@ -301,31 +308,64 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, l
     || blocks.filter((block) => block.type === 'text').map((block) => block.text).join('\n\n');
   const retry = !running && onRetry ? onRetry : undefined;
 
-  // PATH step 5: Agree / Not a problem, shown only once the server says it has the route.
-  const actionable = findings.find((finding) => finding.status !== 'same') ?? null;
+  // PATH step 5: Agree / Not a problem (optimistic; deciding again is the undo), shown once the
+  // server says it has the route.
+  const actionable = findings.filter((finding) => finding.status !== 'same');
   const [routeReady, setRouteReady] = useState(false);
-  const [decisions, setDecisions] = useState<Record<string, FindingDecisionValue>>({});
-  const [deciding, setDeciding] = useState<string | null>(null);
+  const [decisions, setDecisions] = useState<Record<string, FindingDecision>>({});
   const [decideFailed, setDecideFailed] = useState(false);
-  const probeId = finished && messageId && actionable && decide && decisionReady ? actionable.id : null;
+  const probeId = finished && messageId && actionable.length && decide && decisionReady ? actionable[0].id : null;
   useEffect(() => {
     if (!probeId || !messageId || !decisionReady) return;
     let cancelled = false;
     decisionReady(messageId, probeId).then((ready) => { if (!cancelled) setRouteReady(ready); }, () => undefined);
     return () => { cancelled = true; };
   }, [probeId, messageId, decisionReady]);
+  const decisionOf = (finding: ChatFinding): FindingDecision | null => decisions[finding.id] ?? finding.decision ?? null;
   const decisionFor = routeReady && decide && messageId ? (finding: ChatFinding): DecisionProps => ({
-    decision: decisions[finding.id] ?? finding.decision?.decision ?? null,
-    busy: deciding === finding.id,
+    decision: decisionOf(finding)?.decision ?? null,
     onDecide: (decision) => {
-      setDeciding(finding.id);
+      const before = decisions[finding.id];
       setDecideFailed(false);
+      setDecisions((now) => ({ ...now, [finding.id]: { ...(now[finding.id] ?? finding.decision ?? {}), decision } }));
       decide(messageId, finding.id, decision).then(
-        () => setDecisions((now) => ({ ...now, [finding.id]: decision })),
-        () => setDecideFailed(true),
-      ).finally(() => setDeciding(null));
+        (saved) => setDecisions((now) => ({ ...now, [finding.id]: isDecision(saved) ? saved : { decision } })),
+        () => {
+          setDecideFailed(true);
+          setDecisions((now) => {
+            const next = { ...now };
+            if (before) next[finding.id] = before;
+            else delete next[finding.id];
+            return next;
+          });
+        },
+      );
     },
   }) : null;
+  // #1525: "12 of 43 decided", and the cloud drawing made again from the answers.
+  const decidedCount = actionable.filter((finding) => decisionOf(finding)).length;
+  const deciders = [...new Set(actionable.map((finding) => decisionOf(finding)?.by).filter((by): by is string => Boolean(by)))];
+  const [cloudState, setCloudState] = useState<'idle' | 'updating' | 'failed'>('idle');
+  const updateCloud = remakeCloud && messageId && decisionFor ? () => {
+    setCloudState('updating');
+    remakeCloud(messageId).then(
+      (file) => {
+        setCloudState('idle');
+        setMadeFiles((known) => (known.some((each) => each.id === file.id) ? known : [...known, file]));
+        // The new check report is added to the message's files on the server: read the chat again.
+        onReload?.();
+      },
+      () => setCloudState('failed'),
+    );
+  } : null;
+  const review: CloudReview | null = decisionFor ? {
+    decided: decidedCount,
+    total: actionable.length,
+    reviewedBy: decidedCount === actionable.length && deciders.length ? deciders.join(', ') : null,
+    onUpdate: updateCloud,
+    updating: cloudState === 'updating',
+    failed: cloudState === 'failed',
+  } : null;
 
   const jumpTo = (status: 'different' | 'check' | 'same') => {
     document.getElementById(sectionIds[status])?.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
@@ -429,7 +469,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, l
           {/* PATH 4.2: the three numbers, pages and accuracy (each once). */}
           {(findings.length > 0 || coverage) && <ResultNumbers counts={counts} coverage={coverage} accuracy={message.accuracy} onPick={jumpTo} />}
           {/* PATH 4.3: the cloud drawing, the main output. */}
-          <FullCheckFiles cloud={made.cloud} report={made.report} chatId={chatId} page={previewPage(findings)} totalPages={coverage ? coverageCounts(coverage).total : null} counts={counts} />
+          <FullCheckFiles cloud={made.cloud} report={made.report} chatId={chatId} page={previewPage(findings)} totalPages={coverage ? coverageCounts(coverage).total : null} counts={counts} review={review} />
           {/* PATH 4.4 to 4.6: What's wrong, Your decision, Right (folded). */}
           {decideError}
           {sections}

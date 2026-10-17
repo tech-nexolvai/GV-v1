@@ -369,7 +369,7 @@ export function plainChecks(finding: ChatFinding): string[] {
   if (checks?.arithmetic === 'adds_up') lines.push('Code added up the vendor’s parts: they match the printed total.');
   if (checks?.arithmetic === 'does_not_add_up') lines.push('Code added up the vendor’s parts: they do not match the printed total.');
   if (checks?.critic === 'passed') lines.push('A critic confirmed it is the same item, the right dimension and the vendor’s own ink.');
-  if (checks?.critic === 'objects') lines.push(`A critic objected${finding.critic?.note?.trim() ? `: ${finding.critic.note.trim()}` : ''}.`);
+  if (checks?.critic === 'objects') lines.push(`A critic objected${finding.critic?.note?.trim() ? `: ${finding.critic.note.trim().replace(/[.!?]$/, '')}` : ''}.`);
   if (checks?.critic === 'unsure') lines.push('A critic was unsure.');
   return lines;
 }

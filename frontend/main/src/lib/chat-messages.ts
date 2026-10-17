@@ -385,7 +385,7 @@ export function shownBlocks(message: Pick<ViewMessage, 'blocks' | 'stopped'>): V
     const block = blocks[at];
     if (block.type !== 'text') continue;
     if (!block.text.trim()) continue;
-    blocks[at] = { type: 'text', text: withoutStopNote(block.text) };
+    blocks[at] = { ...block, type: 'text', text: withoutStopNote(block.text) };
     break;
   }
   return blocks;

@@ -233,7 +233,7 @@ describe('the evidence viewer', () => {
     const { node } = show(answer({ findings: FINDINGS }), { fullPageHref: '#/review/pkg-1' });
     await openViewer(user, node, 'Vanity top depth');
     const viewer = await screen.findByRole('dialog');
-    expect(within(viewer).getByRole('heading', { name: /^Vanity\ top\ depth\s*· page 3$/ })).toBeTruthy();
+    expect(within(viewer).getByRole('heading', { name: /^Vanity top depth\s*· page 3$/ })).toBeTruthy();
     expect(within(viewer).getByRole('img', { name: 'Architect, page 3' }).getAttribute('src')).toBe('/api/v1/chats/c-1/pictures/arch-f3');
     expect(within(viewer).getByText('No evidence picture')).toBeTruthy();
     expect(within(viewer).getByText('1 of 4')).toBeTruthy();
@@ -241,14 +241,14 @@ describe('the evidence viewer', () => {
 
     // The arrows follow the screen's order: Wrong by area, then Your decision, then Right.
     await user.keyboard('{ArrowRight}');
-    expect(within(screen.getByRole('dialog')).getByRole('heading', { name: /^Base\ cabinet\ B3\ width\s*· page 7$/ })).toBeTruthy();
+    expect(within(screen.getByRole('dialog')).getByRole('heading', { name: /^Base cabinet B3 width\s*· page 7$/ })).toBeTruthy();
     await user.keyboard('{ArrowRight}');
-    expect(within(screen.getByRole('dialog')).getByRole('heading', { name: /^Island\ top\ depth\s*· page 9$/ })).toBeTruthy();
+    expect(within(screen.getByRole('dialog')).getByRole('heading', { name: /^Island top depth\s*· page 9$/ })).toBeTruthy();
     await user.keyboard('{ArrowRight}');
     expect((within(screen.getByRole('dialog')).getByRole('button', { name: 'Next finding' }) as HTMLButtonElement).disabled).toBe(true);
     await user.keyboard('{ArrowLeft}');
     await user.keyboard('{ArrowLeft}');
-    expect(within(screen.getByRole('dialog')).getByRole('heading', { name: /^Base\ cabinet\ B3\ width\s*· page 7$/ })).toBeTruthy();
+    expect(within(screen.getByRole('dialog')).getByRole('heading', { name: /^Base cabinet B3 width\s*· page 7$/ })).toBeTruthy();
 
     // Zoom works on the large crop.
     const dialog = screen.getByRole('dialog');
