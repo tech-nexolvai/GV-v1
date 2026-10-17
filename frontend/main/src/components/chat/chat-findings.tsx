@@ -1,6 +1,7 @@
 import { useEffect, useId, useState } from 'react';
 import { Check, ChevronRight, ExternalLink, ImageOff, Maximize2, X } from 'lucide-react';
 
+import { RoundChip } from '@/components/chat/chat-trust';
 import { useMediaQuery } from '@/hooks/use-media-query';
 import type { ChatFinding, FindingCategory, FindingDecisionValue, FindingStatus } from '@/lib/chat-api';
 import {
@@ -412,6 +413,7 @@ function FindingRow({ finding, area, open, leaving, onToggle, onOpen, pictureUrl
           <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
             {statusOf(finding) === 'not_compared' && <StatusMark finding={finding} />}
             <Confidence finding={finding} />
+            <RoundChip finding={finding} />
             {tag && <span data-slot="chat-finding-source" className="text-xs text-muted-foreground">{tag.replace(/^vs /, 'Compared with the ')}</span>}
             {finding.vs_page != null && finding.vs_page !== finding.page && <span className="hidden text-xs text-muted-foreground tabular-nums lg:inline">vs page {finding.vs_page}</span>}
           </span>

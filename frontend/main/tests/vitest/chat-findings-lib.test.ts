@@ -20,7 +20,13 @@ import {
   NO_FILTER,
   pagesWords,
   pageWords,
-  rowValue,
+  findingLine,
+  isNarrowAnswer,
+  itemTitle,
+  reviewerWords,
+  shortValue,
+  spotInsets,
+  sureWords,
   shownInOrder,
   shownValue,
   sourceTag,
@@ -41,6 +47,7 @@ import {
   sideValue,
   trustReason,
 } from '@/lib/chat-trust';
+import type { ChatFinding } from '@/lib/chat-api';
 import { finding } from './fixtures/chat';
 
 const SET = [
@@ -74,9 +81,9 @@ describe('grouping, filtering and counts', () => {
   it('counts in plain words', () => {
     const counts = findingCounts(SET);
     expect(counts).toEqual({ different: 2, check: 1, same: 2, not_compared: 0, total: 5 });
-    expect(countWords(counts)).toBe('2 differences · 1 to check');
-    expect(countWords({ different: 1, check: 0 })).toBe('1 difference');
-    expect(countWords({ different: 0, check: 3 })).toBe('No differences · 3 to check');
+    expect(countWords(counts)).toBe('2 wrong · 1 needs your decision');
+    expect(countWords({ different: 1, check: 0 })).toBe('1 wrong');
+    expect(countWords({ different: 0, check: 3 })).toBe('Nothing wrong · 3 need your decision');
   });
 
   it('shows values verbatim, a dash for a blank, and the page pair', () => {
@@ -239,7 +246,7 @@ describe('trust', () => {
     expect(roundWords({ fixed: 1, still_wrong: 0, new: 0, not_in_later: 1 })).toBe('Vendor fixed 1 of 2 round-1 items · 1 not in the later round');
   });
 
-  it('says why a finding is To check, from its checks', () => {
+  it('says why a finding is AI reading only, from its checks', () => {
     expect(trustReason(disagreed)).toBe('Second read disagrees');
     expect(trustReason(confirmed)).toBeNull();
     const weak = finding('w', { verified: false, trust_level: 'to_check', checks: { printed_architect: 'no_box', printed_vendor: 'no_box', second_read: 'not_run', lead_checked: false } });
@@ -257,7 +264,8 @@ describe('trust', () => {
     const lines = csv.slice(1).trim().split('\r\n');
     expect(lines[0]).toContain('Trust,Evidence,Printed at spot,Second read');
     expect(lines).toHaveLength(3);
-    expect(lines[1]).toContain('To check');
+    expect(lines[1]).toContain('AI reading only');
+    expect(lines[1]).toContain('Wrong');
     expect(lines[1]).toContain('disagrees');
     expect(lines[2]).toContain(',37,46,9,');
   });
@@ -292,11 +300,11 @@ describe('areas and one-line rows (#1508)', () => {
     const groups = groupByArea(items, { status: 'all', category: null, page: null });
     expect(groups.map((group) => `${group.name}|${pagesWords(group.pages)}|${groupCountWords(group.counts)}|${group.findings.map((each) => each.id).join(',')}`)).toEqual([
       'Nurse station|p8–9|2 wrong|b1,b2',
-      'Coffee bar|p3|1 wrong · 1 to check|a2,a1',
-      'Coffee point|p12–13|2 to check|h1,h2',
-      'Page 15|p15|1 to check|p1',
-      'Storage|p39|1 to check|m1',
-      'Storage Area-1|p40|1 to check|m2',
+      'Coffee bar|p3|1 wrong · 1 your decision|a2,a1',
+      'Coffee point|p12–13|2 your decision|h1,h2',
+      'Page 15|p15|1 your decision|p1',
+      'Storage|p39|1 your decision|m1',
+      'Storage Area-1|p40|1 your decision|m2',
     ]);
     expect(groups.find((group) => group.name === 'Page 15')?.byPage).toBe(true);
     // A filter never renames a group: the right item still joins its area.
@@ -305,15 +313,41 @@ describe('areas and one-line rows (#1508)', () => {
     expect(pagesWords([])).toBe('');
   });
 
-  it('shows a value in a row as inches, a short printed value, or a pill', () => {
-    const base = finding('v', { item: 'Lower doors count', architect: '3 lower doors with pulls; LA-002', vendor: '33"' });
-    expect(rowValue(base, 'architect')).toEqual({ kind: 'pill', pill: 'layout', text: '3 lower doors with pulls; LA-002' });
-    expect(rowValue(base, 'vendor')).toEqual({ kind: 'short', text: '33"' });
-    expect(rowValue({ ...base, inches: { architect: '37', vendor: null, difference: null } }, 'architect')).toEqual({ kind: 'inches', text: '37 in', printed: '3 lower doors with pulls; LA-002' });
-    expect(rowValue({ ...base, vendor: null }, 'vendor')).toEqual({ kind: 'none' });
-    expect(rowValue({ ...base, item: 'Counter material tag', architect: 'CT-001 quartz, eased edge, by GC' }, 'architect')).toMatchObject({ pill: 'tag' });
-    expect(rowValue({ ...base, source: 'rules', architect: 'rule CT-WIDTH-001: parts + 1" field cut' }, 'architect')).toMatchObject({ pill: 'rule' });
-    expect(rowValue({ ...base, source: 'vendor_arithmetic', architect: 'parts 3/4, 11 1/4 vs 48 3/4' }, 'architect')).toMatchObject({ pill: 'sum' });
-    expect(rowValue({ ...base, item: 'Sink centre line', architect: 'no sink dimension on the set' }, 'architect')).toMatchObject({ pill: 'note' });
+  it('says a row in one plain line, and a finding in the reviewer’s words (#1522)', () => {
+    const wrong = finding('w', { item: 'Buffet lower outlet height', architect: '3\' - 1"', vendor: '46"', inches: { architect: '37', vendor: '46', difference: '9' } });
+    expect(findingLine(wrong)).toEqual({ vendor: { text: '46 in', inches: true }, verb: 'needs', reference: { text: '37 in', inches: true }, printed: 'architect 3\' - 1"', difference: '+9 in' });
+    const decide = finding('d', { status: 'check', item: 'Lower doors', architect: '3 lower doors with pulls; LA-002 tags', vendor: '4 drawers (round 2)', inches: null });
+    expect(findingLine(decide)).toMatchObject({ vendor: { text: '4 drawers', inches: false }, verb: 'architect shows', reference: { text: '3 lower doors with pulls', inches: false }, difference: null });
+    expect(findingLine({ ...decide, source: 'rules', architect: 'n/a' })).toMatchObject({ verb: 'GV’s rule says', reference: { text: 'nothing' } });
+    const right = finding('r', { status: 'same', inches: { architect: '102', vendor: '102', difference: '0' } });
+    expect(findingLine(right)).toMatchObject({ verb: 'both', vendor: { text: '102 in' } });
+    expect(shortValue('n/a')).toBeNull();
+    expect(shortValue('A very long sentence about the counter that goes on and on past the limit')).toMatch(/…$/);
+
+    const words = reviewerWords({ ...wrong, why: '' });
+    expect(words).toMatchObject({ referenceLabel: 'Architect shows', reference: '37 in (printed 3\' - 1")', vendor: '46 in (printed 46")', whyLabel: 'Why it’s wrong' });
+    expect(words.why).toBe('The vendor’s 46 in is 9 in more than the architect’s 37 in.');
+    expect(words.tell).toBe('Change it to 37 in to match the architect (now 46 in).');
+    expect(reviewerWords(decide).whyLabel).toBe('What you need to decide');
+    expect(reviewerWords(decide).tell).toBeNull();
+    // Never internal names or "not a number", in any of the words.
+    const all = JSON.stringify([words, reviewerWords(decide), reviewerWords({ ...decide, checks: { printed_architect: 'not_a_number', printed_vendor: 'no_text' } as ChatFinding['checks'] })]);
+    expect(all).not.toMatch(/not a number|2nd read|Helper lead|To check/);
+    expect(sureWords({ trust_level: 'to_check', checks: { printed_vendor: 'no_text' } as ChatFinding['checks'] })).toContain('pen strokes');
+    expect(itemTitle('Buffet lower outlet height', 'Buffet')).toBe('Lower outlet height');
+    // The spot: the box padded by 24 points; none when the picture's shape shows a cut crop.
+    expect(spotInsets({ x0: 0, y0: 0, x1: 52, y1: 52 })).toEqual({ left: '24.00%', top: '24.00%', right: '24.00%', bottom: '24.00%' });
+    expect(spotInsets({ x0: 0, y0: 0, x1: 52, y1: 52 }, { width: 300, height: 100 })).toBeNull();
+    expect(spotInsets(null)).toBeNull();
+  });
+
+  it('tells a narrow answer from a whole-set one (#1522)', () => {
+    const few = [finding('n1', { page: 8 }), finding('n2', { page: 8, vs_page: 9 })];
+    expect(isNarrowAnswer({ findings: few, coverage: null }, false)).toBe(true);
+    expect(isNarrowAnswer({ findings: few, coverage: null }, true)).toBe(false);
+    expect(isNarrowAnswer({ findings: few, coverage: null, scope: 'whole_set' }, false)).toBe(false);
+    const many = [1, 2, 3, 4].map((page) => finding(`m${page}`, { page }));
+    expect(isNarrowAnswer({ findings: many, coverage: null }, false)).toBe(false);
+    expect(isNarrowAnswer({ findings: many, coverage: null, scope: { pages: [8] } }, false)).toBe(true);
   });
 });

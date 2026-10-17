@@ -61,7 +61,7 @@ export async function countPdfPages(file: File): Promise<number> {
  * its plain icon.
  */
 export async function renderPdfPage(url: string, pageNumber: number, width: number): Promise<string> {
-  const task = pdfjs.getDocument({ url, disableAutoFetch: true, disableStream: true });
+  const task = pdfjs.getDocument({ url, disableAutoFetch: true, disableStream: true, rangeChunkSize: 1 << 20 });
   const document = await task.promise;
   try {
     const page = await document.getPage(Math.min(Math.max(1, Math.round(pageNumber)), document.numPages));

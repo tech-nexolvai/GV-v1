@@ -139,9 +139,18 @@ export function fullCheckFiles(files: readonly ChatFile[]): { cloud: ChatFile | 
  * three pages are done and the total is known. Without coverage yet: "Starting the full check…".
  */
 export function progressWords(
-  message: Pick<ViewMessage, 'created_at' | 'findings' | 'coverage'>,
+  message: Pick<ViewMessage, 'created_at' | 'findings' | 'coverage' | 'progress'>,
   now: number = Date.now(),
 ): string {
+  // #1524: the server's own progress when it sends it.
+  const live = message.progress;
+  if (live) {
+    if (live.phase === 'reading' && !live.pages_done) return 'Reading the drawings…';
+    if (live.phase === 'writing') return `Writing the summary and the cloud drawing · ${live.wrong_so_far} wrong · ${live.decision_so_far} to decide`;
+    const at = live.pages_total ? `Checking page ${Math.min(live.pages_done + 1, live.pages_total)} of ${live.pages_total}` : `Checking · ${live.pages_done} pages done`;
+    const left = live.eta_seconds == null ? null : live.eta_seconds < 60 ? 'under a minute left' : `about ${Math.ceil(live.eta_seconds / 60)} min left`;
+    return [at, `${live.wrong_so_far} wrong so far`, left].filter(Boolean).join(' · ');
+  }
   const pages = message.coverage?.pages ?? [];
   const done = new Set(pages.filter((page) => page.status !== 'not_opened').map((page) => page.page)).size;
   const total = message.coverage?.counts?.total ?? null;
@@ -161,4 +170,16 @@ export function progressWords(
 export function previewPage(findings: readonly Pick<ChatFinding, 'status' | 'page' | 'vendor_box'>[]): number {
   const first = findings.find((finding) => finding.status === 'different') ?? findings.find((finding) => finding.status === 'check') ?? findings[0];
   return first ? first.vendor_box?.page ?? first.page : 1;
+}
+
+/**
+ * A summary GV Review wrote itself (`by: "code"`, #1524) ends with an italic line saying so. The
+ * screen shows that once, as a quiet note under the summary, so the line is taken off the words.
+ */
+export function withoutCodeNote(text: string): { text: string; note: string | null } {
+  const lines = text.trimEnd().split('\n');
+  const last = lines[lines.length - 1]?.trim() ?? '';
+  const match = /^[*_](Summary written by GV Review[^*_]*)[*_]$/.exec(last);
+  if (!match) return { text, note: null };
+  return { text: lines.slice(0, -1).join('\n').trimEnd(), note: match[1].trim() };
 }

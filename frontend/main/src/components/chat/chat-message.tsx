@@ -12,7 +12,7 @@ import { ChatMarkdown } from '@/components/chat/chat-markdown';
 import { Collapse, CopyButton, Shimmer, Spark, Spinner } from '@/components/chat/chat-motion';
 import { chatPaths, type ChatEffort, type ChatFile, type ChatFinding, type ChatModel, type FindingDecisionValue } from '@/lib/chat-api';
 import { coverageCounts, findingCounts, isNarrowAnswer, isShortAnswer, NO_FILTER, sectionOrder, type FindingFilter } from '@/lib/chat-findings';
-import { fullCheckBubble, fullCheckFiles, previewPage, productsWords } from '@/lib/chat-full-check';
+import { fullCheckBubble, fullCheckFiles, previewPage, productsWords, withoutCodeNote } from '@/lib/chat-full-check';
 import { useReducedMotion } from '@/lib/chat-motion';
 import { EFFORT_WORDS } from '@/lib/chat-settings';
 import { downloadFile, downloadFindingsCsv, markupFailureWords } from '@/lib/chat-exports';
@@ -413,7 +413,17 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, l
               {counts.different > 0 ? <span className="text-outcome-fail-fg">{counts.different} wrong</span> : 'Nothing wrong'} on the vendor’s drawings
               {counts.check > 0 ? `, ${counts.check} ${counts.check === 1 ? 'needs' : 'need'} your decision.` : '.'}
             </h2>
-            {textItems.map((item) => renderItem(item, items.indexOf(item)))}
+            {textItems.map((item) => {
+              const block = blocks[item.index] as Extract<ViewBlock, { type: 'text' }>;
+              if (block.by !== 'code') return renderItem(item, items.indexOf(item));
+              const words = withoutCodeNote(block.text);
+              return (
+                <div key={`text-${item.index}`} className="grid min-w-0 gap-1.5">
+                  <ChatMarkdown text={words.text} />
+                  <p data-slot="chat-summary-by-code" className="text-[12.5px] text-muted-foreground">{words.note ?? 'Summary written by GV Review: the AI did not finish its own.'}</p>
+                </div>
+              );
+            })}
             {stopNote && message.stopped !== 'error' && <p data-slot="chat-stopped" data-stopped={message.stopped ?? undefined} className="text-[12.5px] text-muted-foreground">{stopNote}</p>}
           </section>
           {/* PATH 4.2: the three numbers, pages and accuracy (each once). */}

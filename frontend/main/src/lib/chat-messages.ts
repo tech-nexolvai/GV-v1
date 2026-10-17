@@ -7,7 +7,7 @@
  * message, which then replaces what was built live: a reload and a live answer end up identical.
  */
 
-import type { ChatAccuracy, ChatAgent, ChatBlock, ChatCite, ChatCoverage, ChatEffort, ChatEvent, ChatFile, ChatFinding, ChatMessage, ChatMode, ChatModel, ChatProduct, ChatScope, ChatStep, ChatStopped, ChatSummary, ChatTask, ChatTrust, ChatUnknown } from '@/lib/chat-api';
+import type { ChatAccuracy, ChatAgent, ChatBlock, ChatCite, ChatCoverage, ChatEffort, ChatEvent, ChatFile, ChatFinding, ChatMessage, ChatMode, ChatModel, ChatProduct, ChatProgress, ChatScope, ChatStep, ChatStopped, ChatSummary, ChatTask, ChatTrust, ChatUnknown } from '@/lib/chat-api';
 import { EFFORT_WORDS } from '@/lib/chat-settings';
 
 /** A helper agent while its Agent step runs: `running` until its `agent_end`. */
@@ -22,7 +22,7 @@ export interface ViewStep extends ChatStep {
 /** A block, and whether it is still arriving (a thinking block before its end, a step before its end). */
 export type ViewBlock =
   | { type: 'thinking'; text: string; seconds: number | null; live: boolean }
-  | { type: 'text'; text: string }
+  | { type: 'text'; text: string; by?: 'code' | null }
   | { type: 'step'; step: ViewStep; live: boolean };
 
 export interface ViewMessage {
@@ -54,6 +54,8 @@ export interface ViewMessage {
   products?: ChatProduct[] | null;
   /** #1522: what the answer covers, when the server sends it (else worked out from its pages). */
   scope?: ChatScope | null;
+  /** #1524: a full check's latest progress (live while it runs; the stored one after). */
+  progress?: ChatProgress | null;
   /** Chat v5: the numbers the answer backed with a spot on a drawing (latest version by id). */
   cites?: ChatCite[];
   /** Chat v5: code's accuracy score; absent on older answers (they show no badge). */
@@ -99,13 +101,14 @@ export function withCite(cites: readonly ChatCite[], cite: ChatCite): ChatCite[]
  * later block with the same id replaces it), and the last coverage block. A dropped finding is
  * simply not in the stored blocks; a `finding_dropped` block, if a server ever stores one, removes it.
  */
-export function evidenceOf(blocks: readonly ChatBlock[]): { findings: ChatFinding[]; coverage: ChatCoverage | null; trust: ChatTrust | null; cites: ChatCite[]; accuracy: ChatAccuracy | null; unknowns: ChatUnknown[] } {
+export function evidenceOf(blocks: readonly ChatBlock[]): { findings: ChatFinding[]; coverage: ChatCoverage | null; trust: ChatTrust | null; cites: ChatCite[]; accuracy: ChatAccuracy | null; unknowns: ChatUnknown[]; progress: ChatProgress | null } {
   let findings: ChatFinding[] = [];
   let coverage: ChatCoverage | null = null;
   let trust: ChatTrust | null = null;
   let cites: ChatCite[] = [];
   let accuracy: ChatAccuracy | null = null;
   let unknowns: ChatUnknown[] = [];
+  let progress: ChatProgress | null = null;
   for (const block of blocks as readonly (ChatBlock | { type: 'finding_dropped'; finding_id: string })[]) {
     if (block.type === 'finding' && block.finding?.id) findings = withFinding(findings, block.finding);
     else if (block.type === 'finding_dropped') findings = findings.filter((finding) => finding.id !== block.finding_id);
@@ -114,8 +117,9 @@ export function evidenceOf(blocks: readonly ChatBlock[]): { findings: ChatFindin
     else if (block.type === 'cite' && block.cite?.id) cites = withCite(cites, block.cite);
     else if (block.type === 'accuracy' && block.accuracy) accuracy = block.accuracy;
     else if (block.type === 'unknowns' && Array.isArray(block.unknowns)) unknowns = block.unknowns;
+    else if (block.type === 'progress' && block.progress) progress = block.progress;
   }
-  return { findings, coverage, trust, cites, accuracy, unknowns };
+  return { findings, coverage, trust, cites, accuracy, unknowns, progress };
 }
 
 /** A saved message, as the screen shows it. A saved answer with words but no blocks shows its words. */
@@ -123,12 +127,12 @@ export function fromSaved(message: ChatMessage): ViewMessage {
   const saved = message.blocks ?? [];
   // Findings and coverage are drawn by the screen in their own places, not in the order of the work.
   const shown = saved.filter((block) => block.type === 'thinking' || block.type === 'text' || block.type === 'step');
-  const { findings, coverage, trust, cites, accuracy, unknowns } = evidenceOf(saved);
+  const { findings, coverage, trust, cites, accuracy, unknowns, progress } = evidenceOf(saved);
   const blocks: ViewBlock[] = shown.length
     ? shown.map((block): ViewBlock =>
         block.type === 'thinking' ? { type: 'thinking', text: block.text ?? '', seconds: block.seconds ?? null, live: false }
         : block.type === 'step' ? { type: 'step', step: block.step, live: false }
-        : { type: 'text', text: block.type === 'text' ? block.text ?? '' : '' })
+        : { type: 'text', text: block.type === 'text' ? block.text ?? '' : '', ...(block.type === 'text' && block.by ? { by: block.by } : {}) })
     : message.role === 'assistant' && message.text ? [{ type: 'text', text: message.text }] : [];
   return {
     key: message.id,
@@ -151,6 +155,7 @@ export function fromSaved(message: ChatMessage): ViewMessage {
     cites,
     accuracy: message.accuracy ?? accuracy,
     unknowns,
+    progress,
     cost_usd: message.cost_usd ?? null,
     stopped: message.stopped ?? null,
     error: message.error ?? null,
@@ -282,6 +287,8 @@ export function applyChatEvent(message: ViewMessage, event: ChatEvent): ViewMess
       return { ...message, findings: (message.findings ?? []).filter((finding) => finding.id !== event.data.finding_id) };
     case 'coverage':
       return { ...message, coverage: event.data.coverage ?? message.coverage ?? null };
+    case 'progress':
+      return { ...message, progress: event.data.progress ?? message.progress ?? null };
     case 'trust':
       return { ...message, trust: event.data.trust ?? message.trust ?? null };
     case 'cite':
@@ -307,6 +314,7 @@ export function applyChatEvent(message: ViewMessage, event: ChatEvent): ViewMess
         cites: stored.cites?.length ? stored.cites : message.cites ?? [],
         accuracy: stored.accuracy ?? message.accuracy ?? null,
         unknowns: stored.unknowns?.length ? stored.unknowns : message.unknowns ?? [],
+        progress: stored.progress ?? message.progress ?? null,
         products: stored.products ?? message.products ?? null,
         error: stored.error ?? message.error,
       };

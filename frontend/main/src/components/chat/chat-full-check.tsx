@@ -124,7 +124,7 @@ function CloudPreview({ href, page, total }: { href: string; page: number; total
           <path d="M10 26c-4 0-6-3-5-6-3-2-2-7 2-7 0-4 5-6 8-3 2-4 8-4 10 0 3-3 9-1 9 3 4 0 6 4 4 7 2 3 0 6-4 6z" />
         </svg>
       ) : (
-        <img src={state.src} alt={`Cloud drawing, page ${page}`} className="size-full object-cover object-[50%_75%]" />
+        <img src={state.src} alt={`Cloud drawing, page ${page}`} className="size-full object-cover object-[50%_88%]" />
       )}
       <span className="absolute bottom-2 left-2 rounded-[5px] bg-black/70 px-1.5 py-0.5 text-[11px] font-medium text-white tabular-nums">
         Page {page}{total ? ` of ${total}` : ''}
@@ -259,7 +259,7 @@ export function ResultNumbers({ counts, coverage, accuracy, onPick }: ResultNumb
 }
 
 /** PATH step 3: one calm line while a full check runs ("Checking page 12 of 60 · 8 wrong so far · about 6 min left"). */
-export function FullCheckProgress({ message }: { message: Pick<ViewMessage, 'created_at' | 'findings' | 'coverage'> }) {
+export function FullCheckProgress({ message }: { message: Pick<ViewMessage, 'created_at' | 'findings' | 'coverage' | 'progress'> }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 15000);

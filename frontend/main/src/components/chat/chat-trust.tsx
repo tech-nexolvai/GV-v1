@@ -59,7 +59,7 @@ export function RoundChip({ finding }: { finding: Pick<ChatFinding, 'round_statu
       data-slot="chat-round"
       data-round={finding.round_status ?? undefined}
       className={cn(
-        'mt-0.5 inline-flex w-fit rounded border px-1 text-xs leading-4',
+        'inline-flex w-fit rounded border px-1 text-xs leading-4',
         finding.round_status === 'still_wrong' ? 'border-outcome-fail-fg/50 text-outcome-fail-fg' : 'text-muted-foreground',
       )}
     >

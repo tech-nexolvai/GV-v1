@@ -134,6 +134,18 @@ export interface ChatMessage {
   scope?: ChatScope | null;
 }
 
+/** A full check's progress, by code (#1524): the last one is stored as a block. */
+export interface ChatProgress {
+  phase: 'reading' | 'checking' | 'writing';
+  pages_done: number;
+  pages_total: number;
+  wrong_so_far: number;
+  decision_so_far: number;
+  right_so_far: number;
+  /** Time left at the pace so far; null before any page is done. */
+  eta_seconds: number | null;
+}
+
 /** What an answer covers: the whole drawing set, or some pages or one area (a narrow question). */
 export type ChatScope = 'whole_set' | { pages?: number[] | null; area?: string | null };
 
@@ -149,10 +161,11 @@ export interface FindingDecision {
 
 export type ChatBlock =
   | { type: 'thinking'; text: string; seconds: number | null }
-  | { type: 'text'; text: string }
+  | { type: 'text'; text: string; by?: 'code' | null }
   | { type: 'step'; step: ChatStep }
   | { type: 'finding'; finding: ChatFinding }
   | { type: 'coverage'; coverage: ChatCoverage }
+  | { type: 'progress'; progress: ChatProgress }
   | { type: 'trust'; trust: ChatTrust }
   | { type: 'cite'; cite: ChatCite }
   | { type: 'accuracy'; accuracy: ChatAccuracy }
@@ -598,6 +611,7 @@ export type ChatEvent =
   | { event: 'finding'; data: { finding: ChatFinding } }
   | { event: 'finding_dropped'; data: { finding_id: string } }
   | { event: 'coverage'; data: { coverage: ChatCoverage } }
+  | { event: 'progress'; data: { index?: number; progress: ChatProgress } }
   | { event: 'trust'; data: { trust: ChatTrust } }
   | { event: 'cite'; data: { cite: ChatCite } }
   | { event: 'accuracy'; data: { accuracy: ChatAccuracy } }
@@ -608,7 +622,7 @@ export type ChatEventName = ChatEvent['event'];
 const EVENT_NAMES: ReadonlySet<string> = new Set<ChatEventName>([
   'message_start', 'thinking_start', 'thinking_delta', 'thinking_end', 'text_delta', 'step_start', 'step_end',
   'tasks', 'agent_start', 'agent_step', 'agent_end', 'file', 'usage', 'message_end', 'error',
-  'finding', 'finding_dropped', 'coverage', 'trust', 'cite', 'accuracy', 'unknowns',
+  'finding', 'finding_dropped', 'coverage', 'progress', 'trust', 'cite', 'accuracy', 'unknowns',
 ]);
 
 /**
