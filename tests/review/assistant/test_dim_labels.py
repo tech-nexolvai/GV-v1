@@ -221,9 +221,16 @@ def _glyphs(*xs: float, y: float = 52, inch_mark: bool = True) -> bytes:
     return body
 
 
+def _letter(x: float, y: float = 52) -> bytes:
+    """A character drawn as one stroked zigzag (no dimension's tick or arrowhead looks like it)."""
+    return (
+        f"0 0 0 RG 0.4 w {x} {y} m {x + 2.4} {y + 2} l {x} {y + 4} l {x + 2.4} {y + 6} l S "
+    ).encode()
+
+
 def _drawn_page(glyphs: bytes | None = None) -> bytes:
     """`_page_one`, plus a number drawn as lines over a dimension line of its own (vendor half)."""
-    return _page_one() + _dimension(280, 340, 50) + (glyphs or _glyphs(300.0, 303.5, 307.0))
+    return _page_one() + _dimension(280, 340, 50) + (glyphs or _glyphs(300.0, 303.5))
 
 
 def _drawn(path: Path, readers: Sequence[Any], halves: Sequence[Any] = HALVES) -> list[Any]:
@@ -281,14 +288,12 @@ def test_only_the_vendors_drawn_numbers_with_an_inch_mark_and_room_round_them(
     assert not _drawn(path, _agreeing(), halves=[{"box": [0, 0, 600, 400], "role": "architect"}])
     # A drawn number with no inch mark (a tag `B30`, a count, a symbol read as a digit).
     bare = tmp_path / "bare.pdf"
-    bare.write_bytes(_pdf([_drawn_page(_glyphs(300.0, 303.5, 307.0, inch_mark=False))]))
+    bare.write_bytes(_pdf([_drawn_page(_glyphs(300.0, 303.5, inch_mark=False))]))
     assert not _drawn(bare, _agreeing())
     # Ink in line with it, about a word space away: part of a word or a longer number (`WD-02`,
     # `SCALE : 1"`, `2'-10"`).
     crowded = tmp_path / "crowded.pdf"
-    crowded.write_bytes(
-        _pdf([_drawn_page(_glyphs(300.0, 303.5, 307.0) + _glyphs(290.7, inch_mark=False))])
-    )
+    crowded.write_bytes(_pdf([_drawn_page(_glyphs(300.0, 303.5) + _letter(291.5))]))
     assert not _drawn(crowded, _agreeing())
 
 
@@ -736,3 +741,23 @@ def test_the_printed_scale_notes_are_kept_per_page(pdf: Path) -> None:
     assert [note["text"] for note in found.scale_notes] == ['1/2" = 1\'-0"']
     document = dl.build_dims({"set.pdf": pdf}, {"pages": []})
     assert document["pages"][0]["scale_notes"][0]["text"] == '1/2" = 1\'-0"'
+
+
+@pytest.mark.parametrize(
+    ("line", "layout", "value"),
+    [
+        ("11/2", (1, 1, 1), Decimal("1.5")),  # a 1 and a stacked 1 over 2, the space lost
+        ("13 1/8", (2, 1, 1), Decimal("13.125")),
+        ('34"', (2, 0, 0), Decimal(34)),
+        ("3/4", (0, 1, 1), Decimal("0.75")),
+        ("349", (0, 1, 1), None),  # the inch mark read as a 9: more digits than drawn
+        ("13 78", (2, 1, 1), Decimal("13.875")),  # read as drawn; another engine must agree
+        ("5/3", (0, 1, 1), None),  # no drawing writes thirds
+        ("4/2", (0, 1, 1), None),  # a numerator not below its denominator
+        ("EQ", (2, 0, 0), None),
+    ],
+)
+def test_a_drawn_rows_digits_are_read_as_its_vectors_lay_them_out(
+    line: str, layout: tuple[int, int, int], value: Decimal | None
+) -> None:
+    assert dl._laid_out(line, layout) == value

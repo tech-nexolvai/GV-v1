@@ -144,7 +144,7 @@ def test_the_model_path_is_haiku_low_and_recorded(postgres_engine, tmp_path) -> 
         assert status == 200
         sharpen_call = json.loads(provider.calls[0])
         assert sharpen_call["model"] == "claude-haiku-5-5"
-        assert sharpen_call["output_config"] == {"effort": "low"}
+        assert sharpen_call["output_config"]["effort"] == "low"
         stored = events[-1][1]["message"]
         assert stored["understood"]["path"] == "model"
         assert stored["understood"]["scope"]["pages"] == [4]  # the reviewer's page wins

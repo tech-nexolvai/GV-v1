@@ -40,6 +40,7 @@ __all__ = [
     "CRITIC_MAX_TOKENS",
     "CRITIC_MODEL",
     "CRITIC_PROMPT_TOKENS",
+    "CRITIC_SCHEMA",
     "CRITIC_SOURCES",
     "QUESTIONS",
     "SYSTEM",
@@ -99,10 +100,50 @@ _INSTRUCTIONS: Final = (
     "- architect_side: is the reference crop what the source says (for source architect, the "
     "architect's drawing and not a brand prototype)?\n"
     'note: one short sentence saying what is wrong when any answer is no, else "".\n'
-    "Answer with JSON only, one entry per finding in the order shown: "
-    '{"findings": [{"id": "F1", "same_item": "yes", "right_dimension": "yes", '
-    '"vendor_ink": "yes", "architect_side": "yes", "note": ""}]}'
+    "Answer for every finding, in the order shown, under its id."
 )
+
+_ANSWER: Final[Mapping[str, Any]] = {"type": "string", "enum": ["yes", "no", "unsure"]}
+#: The reply's shape (structured outputs: the API returns exactly this JSON).
+CRITIC_SCHEMA: Final[Mapping[str, Any]] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["findings"],
+    "properties": {
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [
+                    "id",
+                    "same_item",
+                    "right_dimension",
+                    "vendor_ink",
+                    "architect_side",
+                    "note",
+                ],
+                "properties": {
+                    "id": {"type": "string", "description": "The finding's id (F1)"},
+                    "same_item": {**_ANSWER, "description": "The same item on both crops"},
+                    "right_dimension": {
+                        **_ANSWER,
+                        "description": "The reference value is that item's own dimension",
+                    },
+                    "vendor_ink": {
+                        **_ANSWER,
+                        "description": "The vendor value is the vendor's black or grey ink",
+                    },
+                    "architect_side": {
+                        **_ANSWER,
+                        "description": "The reference crop is what its source says",
+                    },
+                    "note": {"type": "string", "description": "What is wrong, or empty"},
+                },
+            },
+        }
+    },
+}
 
 _SOURCE_WORDS: Final = {
     "architect": "the architect's drawing",
