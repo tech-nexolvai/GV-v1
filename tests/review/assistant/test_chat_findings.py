@@ -592,9 +592,9 @@ def test_accuracy_points_levels_and_the_coverage_penalty() -> None:
         },
     ]
     score = accuracy(findings, [{"id": "C1", "value": "3", "printed": "no_text"}], None)
-    assert [item["points"] for item in score["breakdown"]] == [1.0, 0.9, 0.0, 1.0, 0.75]
-    assert score["score"] == 73 and score["level"] == "orange" and score["claims"] == 5
-    assert "test sets" in score["measured"] and "24 of 24" in score["calibration"]
+    assert [item["points"] for item in score["breakdown"]] == [1.0, 0.95, 0.0, 1.0, 0.9]
+    assert score["score"] == 77 and score["level"] == "orange" and score["claims"] == 5
+    assert "test sets" in score["measured"] and "43 of 45" in score["calibration"]
     coverage = {
         "counts": {"total": 4},
         "pages": [
