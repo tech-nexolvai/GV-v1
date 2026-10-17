@@ -48,8 +48,8 @@ export interface ChatModels {
   package_spent_usd: string;
 }
 
-/** Chat v4 (CONTRACT4): the products a message focuses on. */
-export type ChatProduct = 'countertop' | 'cabinet';
+/** Chat v4 (CONTRACT4): a product a message focuses on: a product id from `GET /products` (#1547). */
+export type ChatProduct = string;
 
 /** Chat v4: an ordinary question, or the one-click full check (the app's own fixed instruction). */
 export type ChatMode = 'chat' | 'full_check';
@@ -204,7 +204,8 @@ export type ChatBlock =
 // ── Chat v2 (CONTRACT2-findings): findings with evidence, and page coverage ──
 
 /** Which group a finding sits in. */
-export type FindingCategory = 'countertop' | 'cabinet' | 'other';
+/** A product id from `GET /products` (#1547), or "other". */
+export type FindingCategory = string;
 
 /** `different`: the drawings disagree. `check`: a person should look. `same`: they agree. */
 export type FindingStatus = 'different' | 'check' | 'same';

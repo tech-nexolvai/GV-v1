@@ -39,7 +39,8 @@ import { PlusMenu } from '@/components/chat/chat-plus-menu';
 import { AssistantMessage, UserMessage } from '@/components/chat/chat-message';
 import { ApiError } from '@/api/client';
 import { chatFailureWords, chatPaths, CONTINUE_TEXT, isAbort, LIVE_CHAT_API, type Chat, type ChatApi, type ChatEvent, type ChatMessage, type ChatMode, type ChatModels, type ChatProduct } from '@/lib/chat-api';
-import { confirmWords, effectiveProducts, FULL_CHECK_TEXT, isFullCheck, readProducts, saveProducts, toggleProduct } from '@/lib/chat-full-check';
+import { confirmWords, effectiveProducts, FULL_CHECK_TEXT, isFullCheck, pickable, readProducts, saveProducts, toggleProduct } from '@/lib/chat-full-check';
+import { useProductCatalog } from '@/lib/products';
 import { knownAreas, lastFindings, withPrompt } from '@/lib/chat-plus-actions';
 import { applyChatEvent, CHAT_STARTERS, chatTitle, dollars, followedAnswer, fromSaved, localAnswer, localQuestion, previousQuestion, settle, type ViewMessage } from '@/lib/chat-messages';
 import { browserStorage, EFFORT_WORDS, readChoice, resolveChoice, saveChoice, shortModelLabel, type ChatChoice } from '@/lib/chat-settings';
@@ -207,19 +208,23 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   const messages = chatId && thread?.chatId === chatId ? thread.messages : NO_MESSAGES;
   const name = chat?.package_name ?? listName;
 
-  // ── Products (chat v4): Countertop / Cabinet, remembered per drawing set ──
+  // ── Products (chat v4; #1547: the registry's active products), remembered per drawing set ──
+  const catalog = useProductCatalog();
   const [pickedProducts, setPickedProducts] = useState<{ packageId: string; products: ChatProduct[] } | null>(null);
   const [rememberedProducts] = useState(() => ({ packageId, products: readProducts(browserStorage(), packageId) }));
+  const rememberedHere = rememberedProducts.packageId === packageId ? rememberedProducts.products : readProducts(browserStorage(), packageId, catalog);
   const products = effectiveProducts(
     pickedProducts?.packageId === packageId ? pickedProducts.products : null,
-    rememberedProducts.packageId === packageId ? rememberedProducts.products : readProducts(browserStorage(), packageId),
+    // Remembered before the products loaded: one that cannot be picked now is left out.
+    catalog.length && rememberedHere ? rememberedHere.filter((product) => pickable(catalog).includes(product)) : rememberedHere,
     chat?.product_type ?? listProduct,
+    catalog,
   );
   function setProducts(next: ChatProduct[]) {
     setPickedProducts({ packageId, products: next });
     saveProducts(browserStorage(), packageId, next);
   }
-  const toggle = (product: ChatProduct) => setProducts(toggleProduct(products, product));
+  const toggle = (product: ChatProduct) => setProducts(toggleProduct(products, product, catalog));
 
   useEffect(() => {
     if (name) onNameChange?.(name);

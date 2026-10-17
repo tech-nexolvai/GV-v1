@@ -6,8 +6,9 @@ import { GVSpark } from '@/components/chat/chat-motion';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { chatPaths, type ChatAccuracy, type ChatCoverage, type ChatFile, type ChatProduct } from '@/lib/chat-api';
 import { coverageCounts, coverageWords, type FindingCounts } from '@/lib/chat-findings';
-import { PRODUCT_WORDS, PRODUCTS, progressWords } from '@/lib/chat-full-check';
+import { progressWords } from '@/lib/chat-full-check';
 import { fileKind, fileSize, type ViewMessage } from '@/lib/chat-messages';
+import { activeProducts, comingLater, useProductCatalog } from '@/lib/products';
 import { cn } from '@/lib/utils';
 
 /**
@@ -17,11 +18,17 @@ import { cn } from '@/lib/utils';
  * the cloud drawing is an AI markup draft made by code, not GV's signed review.
  */
 
-/** Countertop / Cabinet: multi-select, at least one stays picked. None shown picked = the set's own product. */
+/**
+ * The product chips (#1547: the registry's active products, from `GET /products`): multi-select, at
+ * least one stays picked. None shown picked = the set's own product. The products not ready yet are
+ * one greyed chip, "N coming later", naming them.
+ */
 export function ProductChips({ products, onToggle, disabled }: { products: readonly ChatProduct[] | null; onToggle: (product: ChatProduct) => void; disabled?: boolean }) {
+  const catalog = useProductCatalog();
+  const later = comingLater(catalog);
   return (
     <div role="group" aria-label="Products to check" data-slot="chat-products" className="flex min-w-0 items-center gap-1">
-      {PRODUCTS.map((product) => {
+      {activeProducts(catalog).map(({ id: product, label, description }) => {
         const on = Boolean(products?.includes(product));
         return (
           <button
@@ -30,16 +37,26 @@ export function ProductChips({ products, onToggle, disabled }: { products: reado
             aria-pressed={on}
             disabled={disabled}
             onClick={() => onToggle(product)}
-            title={products ? undefined : 'Not picked yet: the drawing set’s own product is used'}
+            title={products ? description : 'Not picked yet: the drawing set’s own product is used'}
             className={cn(
               'inline-flex h-7 items-center rounded-full border px-2.5 text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-50 motion-reduce:transition-none',
               on ? 'border-foreground bg-foreground text-background' : 'bg-background text-muted-foreground hover:bg-accent hover:text-foreground',
             )}
           >
-            {PRODUCT_WORDS[product]}
+            {label}
           </button>
         );
       })}
+      {later.length > 0 && (
+        <span
+          data-slot="chat-products-later"
+          aria-disabled="true"
+          title={`Coming later: ${later.map((product) => product.plural).join(', ')}`}
+          className="inline-flex h-7 shrink-0 cursor-default items-center rounded-full border border-dashed px-2.5 text-xs text-muted-foreground opacity-60"
+        >
+          {later.length} coming later
+        </span>
+      )}
     </div>
   );
 }

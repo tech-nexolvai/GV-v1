@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createPackage, type UploadProgress } from '@/api/upload';
 import { applyProgress, initialUploadView, percentOf } from '@/lib/upload-progress';
+import { PRODUCTS } from './fixtures/products';
 
 // Synthetic data only: nothing here comes from a client drawing.
 vi.mock('@/api/config', () => ({ projectId: () => 'p' }));
@@ -58,7 +59,7 @@ beforeEach(() => {
     if (url.includes('/confirm')) return json({}, 201);
     if (url.endsWith('/extract')) return json({ accepted_id: 'x', package_revision_id: 'rev' }, 202);
     if (url.endsWith('/review-sessions')) return json({ id: 's', package_revision_id: 'rev', reviewer: 'r', created_at: '2026-10-09T10:00:00Z', completed_at: null }, 201);
-    if (url.endsWith('/product-types')) return json([{ value: 'countertop', label: 'Countertop', published_checks: 3 }]);
+    if (url.endsWith('/products')) return json(PRODUCTS);
     return json({ error: 'unexpected', message: url, request_id: 'r' }, 500);
   }));
 });
