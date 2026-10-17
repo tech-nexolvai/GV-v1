@@ -101,8 +101,9 @@ def test_notes_and_decisions_carry_to_the_next_chat_on_the_set(postgres_engine, 
         assert world.ask(other, "What about page 2?")[0] == 200
         started = "\n".join(_first_user_texts(provider.lead_calls[3]))
         assert "<set_notes>" in started and "from earlier chats" in started
-        assert "- p.2: The ID drawing governs over the brand prototype (noted by the AI" in started
-        assert "(reviewer's decision" in started
+        assert "- p.2 [noted by the AI, " in started
+        assert '"The ID drawing governs over the brand prototype"' in started
+        assert "[reviewer's decision, " in started
 
 
 def test_a_follow_up_corrects_an_earlier_answer_everywhere_it_is_read(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
