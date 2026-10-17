@@ -5476,6 +5476,7 @@
                       "coverage": "#/components/schemas/ChatCoverageBlock",
                       "finding": "#/components/schemas/ChatFindingBlock",
                       "finding_dropped": "#/components/schemas/ChatFindingDroppedBlock",
+                      "progress": "#/components/schemas/ChatProgressBlock",
                       "step": "#/components/schemas/ChatStepBlock",
                       "text": "#/components/schemas/ChatTextBlock",
                       "thinking": "#/components/schemas/ChatThinkingBlock",
@@ -5514,6 +5515,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ChatUnknownsBlock"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChatProgressBlock"
                     }
                   ]
                 },
@@ -5827,6 +5831,80 @@
           "messages"
         ],
         "title": "ChatOut",
+        "type": "object"
+      },
+      "ChatProgressBlock": {
+        "properties": {
+          "progress": {
+            "$ref": "#/components/schemas/ChatProgressOut"
+          },
+          "type": {
+            "const": "progress",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "progress"
+        ],
+        "title": "ChatProgressBlock",
+        "type": "object"
+      },
+      "ChatProgressOut": {
+        "description": "A full check's progress, by code: \"Checking page 12 of 60 \u00b7 8 wrong so far \u00b7 about 6 min\nleft\". Sent as `progress` events while it runs; the last one is stored.",
+        "properties": {
+          "decision_so_far": {
+            "title": "Decision So Far",
+            "type": "integer"
+          },
+          "eta_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Time left at the pace so far; null before any page is done.",
+            "title": "Eta Seconds"
+          },
+          "pages_done": {
+            "title": "Pages Done",
+            "type": "integer"
+          },
+          "pages_total": {
+            "title": "Pages Total",
+            "type": "integer"
+          },
+          "phase": {
+            "enum": [
+              "reading",
+              "checking",
+              "writing"
+            ],
+            "title": "Phase",
+            "type": "string"
+          },
+          "right_so_far": {
+            "title": "Right So Far",
+            "type": "integer"
+          },
+          "wrong_so_far": {
+            "title": "Wrong So Far",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "phase",
+          "pages_done",
+          "pages_total",
+          "wrong_so_far",
+          "decision_so_far",
+          "right_so_far"
+        ],
+        "title": "ChatProgressOut",
         "type": "object"
       },
       "ChatRecordedDifferenceOut": {
@@ -6377,6 +6455,19 @@
       },
       "ChatTextBlock": {
         "properties": {
+          "by": {
+            "anyOf": [
+              {
+                "const": "code",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "\"code\": written by GV Review, not the AI (the full check's summary when the AI did not finish its own).",
+            "title": "By"
+          },
           "text": {
             "title": "Text",
             "type": "string"

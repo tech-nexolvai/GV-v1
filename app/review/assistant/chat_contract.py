@@ -38,6 +38,8 @@ __all__ = [
     "ChatMessageIn",
     "ChatMessageOut",
     "ChatOut",
+    "ChatProgressBlock",
+    "ChatProgressOut",
     "ChatStepBlock",
     "ChatStepOut",
     "ChatSummaryOut",
@@ -154,6 +156,11 @@ class ChatTextBlock(BaseModel):
 
     type: Literal["text"]
     text: str
+    by: Literal["code"] | None = Field(
+        default=None,
+        description='"code": written by GV Review, not the AI (the full check\'s summary when the '
+        "AI did not finish its own).",
+    )
 
 
 class ChatStepBlock(BaseModel):
@@ -782,6 +789,30 @@ class ChatUnknownsBlock(BaseModel):
     unknowns: list[ChatUnknownOut]
 
 
+class ChatProgressOut(BaseModel):
+    """A full check's progress, by code: "Checking page 12 of 60 · 8 wrong so far · about 6 min
+    left". Sent as `progress` events while it runs; the last one is stored."""
+
+    model_config = ConfigDict(frozen=True)
+
+    phase: Literal["reading", "checking", "writing"]
+    pages_done: int
+    pages_total: int
+    wrong_so_far: int
+    decision_so_far: int
+    right_so_far: int
+    eta_seconds: int | None = Field(
+        default=None, description="Time left at the pace so far; null before any page is done."
+    )
+
+
+class ChatProgressBlock(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["progress"]
+    progress: ChatProgressOut
+
+
 ChatBlock = Annotated[
     ChatThinkingBlock
     | ChatTextBlock
@@ -792,7 +823,8 @@ ChatBlock = Annotated[
     | ChatTrustBlock
     | ChatCiteBlock
     | ChatAccuracyBlock
-    | ChatUnknownsBlock,
+    | ChatUnknownsBlock
+    | ChatProgressBlock,
     Field(discriminator="type"),
 ]
 

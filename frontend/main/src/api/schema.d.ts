@@ -4926,7 +4926,7 @@ export interface components {
             /** @description The answer's accuracy by code (its `accuracy` block, scored again with today's calibration: see `rescored`); null on older answers. */
             accuracy?: components["schemas"]["ChatAccuracyOut"] | null;
             /** Blocks */
-            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"])[] | null;
+            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"] | components["schemas"]["ChatProgressBlock"])[] | null;
             /** @description With `stopped: cost_cap`: `message` (this answer's cap) or `package` (the drawing set's budget ran out). */
             cap_hit?: components["schemas"]["ChatCapHit"] | null;
             /** Cost Usd */
@@ -5037,6 +5037,42 @@ export interface components {
             running_message_id?: string | null;
             /** Title */
             title: string | null;
+        };
+        /** ChatProgressBlock */
+        ChatProgressBlock: {
+            progress: components["schemas"]["ChatProgressOut"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "progress";
+        };
+        /**
+         * ChatProgressOut
+         * @description A full check's progress, by code: "Checking page 12 of 60 · 8 wrong so far · about 6 min
+         *     left". Sent as `progress` events while it runs; the last one is stored.
+         */
+        ChatProgressOut: {
+            /** Decision So Far */
+            decision_so_far: number;
+            /**
+             * Eta Seconds
+             * @description Time left at the pace so far; null before any page is done.
+             */
+            eta_seconds?: number | null;
+            /** Pages Done */
+            pages_done: number;
+            /** Pages Total */
+            pages_total: number;
+            /**
+             * Phase
+             * @enum {string}
+             */
+            phase: "reading" | "checking" | "writing";
+            /** Right So Far */
+            right_so_far: number;
+            /** Wrong So Far */
+            wrong_so_far: number;
         };
         /** ChatRecordedDifferenceOut */
         ChatRecordedDifferenceOut: {
@@ -5230,6 +5266,11 @@ export interface components {
         };
         /** ChatTextBlock */
         ChatTextBlock: {
+            /**
+             * By
+             * @description "code": written by GV Review, not the AI (the full check's summary when the AI did not finish its own).
+             */
+            by?: "code" | null;
             /** Text */
             text: string;
             /**
