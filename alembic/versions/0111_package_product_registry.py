@@ -1,7 +1,7 @@
 """A package's product comes from the product registry, not a list fixed in the database (#1547).
 
-Revision ID: 0110_package_product_registry
-Revises: 0109_assistant_chat_interrupted
+Revision ID: 0111_package_product_registry
+Revises: 0110_assistant_set_notes
 
 **Why.** 0073 limited `packages.product_type` to a written-out list, `'countertop', 'cabinet'`. GV
 reviews more products than that (the client's category model has eight), and they are now data in
@@ -31,8 +31,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0110_package_product_registry"
-down_revision: str | None = "0109_assistant_chat_interrupted"
+revision: str = "0111_package_product_registry"
+down_revision: str | None = "0110_assistant_set_notes"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

@@ -43,7 +43,7 @@ class PackageState(StrEnum):
 
 PACKAGE_STATE_VALUES = ", ".join(f"'{state.value}'" for state in PackageState)
 
-#: The shape of a stored product id (#1547, migration 0110): which ids are allowed is the product
+#: The shape of a stored product id (#1547, migration 0111): which ids are allowed is the product
 #: registry's to say (`vocabulary/products.yaml`), checked in code; the database keeps out junk.
 PRODUCT_TYPE_SHAPE = "^[a-z][a-z0-9_]{1,31}$"
 

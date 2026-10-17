@@ -82,14 +82,14 @@ __all__ = [
 
 _log = logging.getLogger(__name__)
 
-#: A finding's category: a product id from the product registry (`vocabulary/products.yaml`,
-#: #1547), or "other". Read when this module loads, for the tool's schema; `finding_categories()` is
-#: the registry in force, which is what a finding is checked against.
+#: A finding's category: an active product id from the product registry (`vocabulary/products.yaml`,
+#: #1547), or "other". Read when this module loads, for the tool's schema; `finding_categories()`
+#: is the registry in force, which is what a finding is checked against.
 CATEGORIES: Final = registry().categories()
 
 
 def finding_categories() -> tuple[str, ...]:
-    """The categories a finding may have now: every registry product id, then "other"."""
+    """The categories a finding may have now: every active registry product id, then "other"."""
     return registry().categories()
 
 
@@ -189,7 +189,7 @@ _FINDING_FIELDS: Final[Mapping[str, Any]] = {
     "category": {
         "type": "string",
         "enum": list(CATEGORIES),
-        "description": "The product the item belongs to (its id in products/), or other",
+        "description": "The product the item belongs to",
     },
     "architect": {
         "type": "string",

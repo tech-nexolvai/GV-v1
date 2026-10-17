@@ -127,8 +127,9 @@ class ProductRegistry:
         return tuple(p.id for p in self.products if p.active)
 
     def categories(self) -> tuple[str, ...]:
-        """A finding's possible categories: every product id, then `other`."""
-        return (*self.ids(), OTHER_CATEGORY)
+        """A finding's possible categories: every ACTIVE product id (only those can be in focus),
+        then `other`."""
+        return (*self.active_ids(), OTHER_CATEGORY)
 
     def ordered(self, product_ids: Iterable[str]) -> list[str]:
         """These ids in the registry's order (unknown ones after, as given), without repeats."""

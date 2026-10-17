@@ -113,9 +113,9 @@ def test_the_tool_schemas_are_strict() -> None:
         "source",
     }
     props = report["properties"]
-    # #1547: every product of the registry, then "other".
+    # #1547: every active product of the registry, then "other".
     assert props["category"]["enum"][:2] == ["countertop", "cabinet"]
-    assert props["category"]["enum"] == [*registry().ids(), "other"]
+    assert props["category"]["enum"] == [*registry().active_ids(), "other"]
     assert props["status"]["enum"] == ["different", "check", "same"]
     assert props["source"]["enum"] == [
         "architect",
