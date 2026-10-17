@@ -659,3 +659,52 @@ def test_a_full_check_folds_the_same_decision_item_and_lists_it_in_the_report(
     assert "Settled automatically by GV Review (1)" in report
     drawing = PdfReader(str(harness.workspace.files / harness.files[0]["id"]))
     assert "Settled automatically by GV Review" in drawing.pages[-1].extract_text()
+
+
+def test_the_sharper_read_goes_through_the_engine_and_stops_at_its_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.review.assistant import read_adjudication
+    from tests.review.assistant.test_chat_findings import workspace_with_pdf
+
+    workspace = workspace_with_pdf(tmp_path)
+    pdf = workspace.uploads / "Vendor set.pdf"
+    monkeypatch.setattr(
+        read_adjudication,
+        "render_crops",
+        lambda path, box, **_: read_adjudication.SideCrops(upright=b"png"),
+    )
+
+    class Reply:
+        stop_reason = "end_turn"
+
+        def text(self) -> str:
+            return '{"architect": null, "vendor": "29\\"", "sure": true}'
+
+    calls: list[dict[str, Any]] = []
+
+    class Engine:
+        cancel = threading.Event()
+        check_prompt_id = "review-assistant-chat-check-v1"
+        book = type("B", (), {"pdf_paths": staticmethod(lambda: {"Vendor set.pdf": pdf})})()
+
+        def _price(self, model: Any, prompt: int, out: int) -> int:
+            return 200_000
+
+        def _fits(self, amount: int) -> bool:
+            return True
+
+        def _call(self, **kwargs: Any) -> Reply:
+            calls.append(kwargs)
+            return Reply()
+
+    read = decision_resolver._reader(Engine())
+    assert read is not None
+    box = {"page": 2, "x0": 10.0, "y0": 10.0, "x1": 40.0, "y1": 20.0, "file": "Vendor set.pdf"}
+    got = read({"id": "F1", "item": "Top width", "vendor_box": box, "arch_box": box})
+    assert got == SharperRead(architect=None, vendor='29"', sure=True)
+    assert calls[0]["effort"] == "low" and "resolve" in calls[0]["prompt_id"]
+    assert read({"id": "F2", "item": "Top width", "vendor_box": box}) is not None
+    # $0.20 each: a third would pass the $0.50 cap, so it is not made.
+    assert read({"id": "F3", "item": "Top width", "vendor_box": box}) is None
+    assert len(calls) == 2
