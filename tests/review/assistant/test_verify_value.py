@@ -502,6 +502,16 @@ def test_a_clear_label_beside_another_number_is_read_but_a_near_miss_beside_it_r
     assert found.result == "cannot_read" and "near-miss" in found.reason
 
 
+def test_a_big_box_with_two_numbers_is_read_label_by_label(tmp_path: Path) -> None:
+    pdf = _write(tmp_path, _pdf(stamp=stroke_ops('34"', 20, 100) + stroke_ops('72"', 120, 70)))
+    big = _box(*_shown(10, 120), *_shown(160, 60))  # 150 x 60 pt
+    found = vv.verify_value(pdf, 1, big, '34"', readers=STROKES)
+    assert (found.result, found.route) == ("match", "drawn") and "label by label" in found.reason
+    # Scripted whole-box engines that read both numbers on every picture vote for no label.
+    both = [_Scripted("Tesseract", ["34", "72"]), _Scripted("RapidOCR", ["34", "72"])]
+    assert "too big" in vv.verify_value(pdf, 1, big, '34"', readers=both).reason
+
+
 class _LosesFractions(StrokeReader):
     """An engine that reads only the whole number of a box with a stacked fraction in it (it
     reads nothing it can use there, and says `63`): the label route reads `63 1/2"`."""

@@ -25,8 +25,9 @@ read that redrawing upright and turned both ways, with a stacked fraction split 
 part read alone; both also read a picture of the vendor's layer with coloured pixels whitened. That
 is four reads. **`match` only when at least two of the four read exactly the expected value, both
 engines among them, and no read gives a near-miss of it** (one digit different, or the expected value
-as a fragment of a longer number). A box over `BIG_BOX_PT2` holding several numbers is refused: draw
-the box round the one dimension. And a `1` must look like a `1`: both engines read one architect's
+as a fragment of a longer number). In a box over `BIG_BOX_PT2` holding several numbers these reads
+cannot tell which number is where, so they confirm nothing (route 2b below still reads it label by
+label). And a `1` must look like a `1`: both engines read one architect's
 hand-lettered `7 5/8"` as `1 5/8"`, so every glyph Tesseract read as `1` in the value must be a
 narrow stroke (`_ONE_MAX_WIDTH`), and a value with a `1` that no engine could show the shape of is
 not a match.
@@ -1518,13 +1519,14 @@ def _drawn(
     others = {v for read in reads for v in read.values if v != wanted}
     area = (spot[2] - spot[0]) * (spot[3] - spot[1])
     engines_voting = {read.engine for read in votes}
-    if len(votes) >= _VOTES_NEEDED and len(engines_voting) >= 2 and not misses:
-        if area > BIG_BOX_PT2 and others:
-            reason = (
-                "the box is too big and holds several numbers: draw the box round the one "
-                "dimension"
-            )
-            return Verified("cannot_read", "drawn", None, all_reads, reason, value)
+    too_big = ""
+    agreed = len(votes) >= _VOTES_NEEDED and len(engines_voting) >= 2 and not misses
+    if agreed and area > BIG_BOX_PT2 and others:
+        # The whole-box reads cannot tell which number is where; the labels below can.
+        too_big = (
+            "the box is too big and holds several numbers: draw the box round the one dimension"
+        )
+    if agreed and not too_big:
         ones = _ones_unsure(votes, wanted)
         if ones is not None:
             return Verified("cannot_read", "drawn", None, all_reads, ones, value)
@@ -1576,7 +1578,9 @@ def _drawn(
         return Verified(
             "mismatch", "text", printed, all_reads, f"the drawing prints {printed} here", value
         )
-    if labelled and not votes and not misses:
+    if too_big:
+        reason = too_big
+    elif labelled and not votes and not misses:
         reason = label_reason
     elif misses:
         near = ", ".join(_inches_text(v) for v in misses[:3])
