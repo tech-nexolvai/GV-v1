@@ -50,6 +50,7 @@ from importlib import import_module
 from typing import Any, Final, Literal
 
 from app.review.assistant.finding_checks import to_inches
+from app.review.assistant.tool_schema import SIDE_WORDS, box_schema
 
 __all__ = [
     "KINDS",
@@ -91,35 +92,21 @@ class LedgerRefused(ValueError):
 
 # ---- tool schemas --------------------------------------------------------------------------------
 
-_BOX_SCHEMA: Final[Mapping[str, Any]] = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["x0", "y0", "x1", "y1"],
-    "properties": {
-        "page": {
-            "type": "integer",
-            "minimum": 1,
-            "description": "Page of that file (from 1); defaults to the reading's page",
-        },
-        "x0": {"type": "number"},
-        "y0": {"type": "number"},
-        "x1": {"type": "number"},
-        "y1": {"type": "number"},
-        "file": {
-            "type": "string",
-            "description": "The upload's file name, only when the set has more than one PDF",
-        },
-    },
-    "description": (
-        "Where it is printed: PDF points of the original upload page as shown, origin top-left "
-        "(points = pixels x 72 / dpi). The app crops the evidence here."
-    ),
-}
+_BOX_SCHEMA: Final[Mapping[str, Any]] = box_schema(
+    "Where it is printed, a little larger than the value. The app crops the evidence here.",
+    page="Page of that file (from 1); defaults to the reading's page",
+    file="The upload's file name, only when the set has more than one PDF",
+)
 _PAGE: Final[Mapping[str, Any]] = {"type": "integer", "minimum": 1, "description": "Page (from 1)"}
+_VIEW: Final[Mapping[str, Any]] = {
+    "type": "string",
+    "enum": list(VIEWS),
+    "description": "The kind of view the value is printed in",
+}
 _SIDE: Final[Mapping[str, Any]] = {
     "type": "string",
     "enum": list(SIDES),
-    "description": "Whose drawing: the vendor's shop drawing or the architect's",
+    "description": f"Whose drawing it is printed on: {SIDE_WORDS}",
 }
 _REPLACES: Final[Mapping[str, Any]] = {
     "type": "string",
@@ -129,9 +116,16 @@ _REPLACES: Final[Mapping[str, Any]] = {
 RECORD_STRING: Final[Mapping[str, Any]] = {
     "name": "record_string",
     "description": (
-        "Record one dimension string as printed: its parts in order and the printed overall they "
-        "should add up to. Code adds them up exactly and tells you if they don't. Record every "
-        "string you read, on both sides; never add them up yourself."
+        "Record one dimension string (a chain of dimensions with a printed overall) as printed: "
+        "its parts in order and the overall they should add up to. Use it for every string you "
+        "read, on either side, instead of adding it up yourself: code adds the parts exactly, "
+        "and a vendor string that does not add up becomes a finding. If the result says it does "
+        "not add up, re-read the string once and record it again with replaces. Returns the "
+        "entry id and code's sum (e.g. 'S3 recorded (vendor, p.7). Code's sum: 12 + 15 1/2 + 18 "
+        "= 45 1/2 = 45 1/2 printed'), what to do when it does not add up, or 'Not recorded: "
+        "<why>'. "
+        'Example: {"page": 7, "view": "elevation", "side": "vendor", "parts": ["12\\"", '
+        '"15 1/2\\"", "18\\""], "printed_total": "3\'-9 1/2\\""}'
     ),
     "input_schema": {
         "type": "object",
@@ -139,14 +133,19 @@ RECORD_STRING: Final[Mapping[str, Any]] = {
         "required": ["page", "side", "parts", "printed_total"],
         "properties": {
             "page": _PAGE,
-            "view": {"type": "string", "enum": list(VIEWS)},
+            "view": _VIEW,
             "side": _SIDE,
             "parts": {
                 "type": "array",
-                "items": {"type": "string", "maxLength": _MAX_VALUE},
+                "items": {
+                    "type": "string",
+                    "maxLength": _MAX_VALUE,
+                    "description": "One part, as printed",
+                },
                 "minItems": 2,
                 "maxItems": MAX_PARTS,
-                "description": 'The parts as printed, in order (e.g. ["12", "15 1/2\\""])',
+                "description": 'The parts as printed, in order (e.g. ["12", "15 1/2\\""]); notes '
+                "such as EQ or TYP left out of the numbers",
             },
             "printed_total": {
                 "type": "string",
@@ -161,10 +160,15 @@ RECORD_STRING: Final[Mapping[str, Any]] = {
 RECORD_READING: Final[Mapping[str, Any]] = {
     "name": "record_reading",
     "description": (
-        "Record one value you read on a drawing: the item, what the value is and the view it is "
-        "in. Name the same item the same way on every page and view ('B36 base', 'Vanity top'; "
-        "add '#2' for the second of a typical unit). Code compares every view and every typical "
-        "unit of the item, and the architect's items with the vendor's."
+        "Record one value you read on a drawing: the item, what kind of value it is, the view "
+        "and the side. Use it for every value you read, on both sides, so code can compare the "
+        "same item across views, typical units and the two sides (disagreements and items only "
+        "one side shows become findings). Name an item the same way on every page and view, "
+        "starting with its area ('Coffee station: B36 base'; add '#2' for the second of a "
+        "typical unit). Returns the entry id (R12) and anything code already sees disagree, or "
+        "'Not recorded: <why>'. "
+        'Example: {"page": 7, "view": "elevation", "side": "vendor", "item": "Coffee station: '
+        'counter height", "kind": "height", "value": "2\'-10\\""}'
     ),
     "input_schema": {
         "type": "object",
@@ -172,13 +176,17 @@ RECORD_READING: Final[Mapping[str, Any]] = {
         "required": ["page", "view", "side", "item", "kind", "value"],
         "properties": {
             "page": _PAGE,
-            "view": {"type": "string", "enum": list(VIEWS)},
+            "view": _VIEW,
             "side": _SIDE,
-            "item": {"type": "string", "maxLength": _MAX_ITEM, "description": "The item, short"},
+            "item": {
+                "type": "string",
+                "maxLength": _MAX_ITEM,
+                "description": "The item, short, starting with its area",
+            },
             "kind": {
                 "type": "string",
                 "enum": list(KINDS),
-                "description": "cl = a centre line or cut-out position",
+                "description": "What the value is; cl = a centre line or cut-out position",
             },
             "value": {
                 "type": "string",
