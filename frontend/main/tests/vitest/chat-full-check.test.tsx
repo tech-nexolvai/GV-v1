@@ -14,7 +14,7 @@ import { AssistantMessage, UserMessage } from '@/components/chat/chat-message';
 import { ShellSlotsContext } from '@/components/shell/shellSlots';
 import type { ChatApi, ChatFile } from '@/lib/chat-api';
 import { accuracyTone, accuracyWords } from '@/lib/chat-accuracy';
-import { confirmWords, effectiveProducts, fullCheckBubble, fullCheckFiles, matchesWords, productsWords, readProducts, saveProducts, toggleProduct } from '@/lib/chat-full-check';
+import { confirmWords, effectiveProducts, fullCheckBubble, fullCheckFiles, isFullCheck, matchesWords, productsWords, readProducts, saveProducts, toggleProduct } from '@/lib/chat-full-check';
 import { applyChatEvent, localAnswer, type ViewMessage } from '@/lib/chat-messages';
 import { ChatPage } from '@/pages/ChatPage';
 import { drivenStream, fakeChatApi, finding, OPUS } from './fixtures/chat';
@@ -94,7 +94,7 @@ describe('a full-check answer', () => {
     finding('r2', { item: 'Sink model', category: 'other', status: 'same', source: 'brand_prototype', architect: 'K-1', vendor: 'K-1' }),
   ];
 
-  it('leads with the notes, the trust summary and the cloud drawing, then the tabs, then coverage', async () => {
+  it('leads with the summary strip, the cloud drawing and the report, then the tabs, then the notes, trust and coverage', async () => {
     const user = userEvent.setup();
     render(
       <AssistantMessage
@@ -105,7 +105,7 @@ describe('a full-check answer', () => {
       />,
     );
     const node = screen.getByRole('article', { name: 'Answer' });
-    const order = ['chat-markdown', 'chat-trust', 'chat-cloud-drawing', 'chat-check-report', 'chat-findings', 'chat-coverage']
+    const order = ['chat-kpis', 'chat-cloud-drawing', 'chat-check-report', 'chat-findings', 'chat-markdown', 'chat-trust', 'chat-coverage']
       .map((slot) => node.querySelector(`[data-slot="${slot}"]`));
     order.forEach((part) => expect(part).toBeTruthy());
     for (let at = 1; at < order.length; at += 1) {
@@ -113,6 +113,14 @@ describe('a full-check answer', () => {
     }
     // The coverage strip sits at the end, not inside the summary.
     expect(node.querySelector('[data-slot="chat-trust"] [data-slot="chat-coverage"]')).toBeNull();
+
+    // The summary strip: code's counts, the pages and the accuracy, before anything else (#1508).
+    const kpis = within(node).getByRole('region', { name: 'Summary' });
+    expect([...kpis.querySelectorAll<HTMLElement>('[data-kpi]')].map((tile) => `${tile.dataset.kpi}:${tile.textContent}`)).toEqual([
+      'different:Wrong2', 'check:To check1', 'same:Right2', 'not_compared:Not compared0', 'pages:PagesPages checked2/22 of 2 pages compared · 0 not comparable · 0 not opened', 'accuracy:Accuracy—',
+    ]);
+    expect(within(kpis).getByRole('button', { name: 'Wrong: 2. Show them' }).getAttribute('aria-pressed')).toBe('true');
+    expect((within(kpis).getByRole('button', { name: 'Not compared: 0. Show them' }) as HTMLButtonElement).disabled).toBe(true);
 
     const cloud = within(node).getByRole('region', { name: 'Cloud drawing' });
     expect(within(cloud).getByRole('link', { name: 'Open cloud drawing' }).getAttribute('href')).toBe('/api/v1/chats/c-1/files/f-c');
@@ -129,12 +137,31 @@ describe('a full-check answer', () => {
 
     await user.click(tabs[2]);
     expect(ids()).toEqual(['r1', 'r2']);
+    // What each right item matched is in its detail.
+    for (const row of [...node.querySelectorAll<HTMLElement>('[data-slot="chat-finding-row"]')]) await user.click(row);
     expect([...node.querySelectorAll('[data-slot="chat-finding-matches"]')].map((line) => line.textContent)).toEqual(['matches architect', 'matches brand prototype']);
 
     // Arrow keys move between the tabs.
+    within(node).getAllByRole('tab')[2].focus();
     await user.keyboard('{ArrowLeft}');
     expect(within(node).getAllByRole('tab')[1].getAttribute('aria-selected')).toBe('true');
     expect(ids()).toEqual(['k1']);
+
+    // A summary tile picks its tab.
+    await user.click(within(kpis).getByRole('button', { name: 'Wrong: 2. Show them' }));
+    expect(within(node).getAllByRole('tab')[0].getAttribute('aria-selected')).toBe('true');
+    expect(ids()).toEqual(['w1', 'w2']);
+  });
+
+  it('is still a full check after a reload, when the saved question has no mode (#1508)', () => {
+    expect(isFullCheck({ mode: null }, { mode: null, text: 'Full check · Countertops and Cabinets · High effort' })).toBe(true);
+    expect(isFullCheck({ mode: null }, { mode: null, text: 'Full check' })).toBe(true);
+    expect(isFullCheck({ mode: null }, { mode: null, text: 'Full check the sink, please' })).toBe(false);
+    expect(isFullCheck({ mode: null }, { mode: 'chat', text: 'Full check' })).toBe(false);
+    expect(isFullCheck({ mode: null }, null)).toBe(false);
+    // Its "AI markup" PDF, saved before files had kinds, is its cloud drawing.
+    const markup: ChatFile = { id: 'f-m', name: 'Set - AI markup.pdf', size: 10, mime: 'application/pdf', url: '/f-m' };
+    expect(fullCheckFiles([markup]).cloud).toBe(markup);
   });
 
   it('opens on To check when nothing is wrong', () => {

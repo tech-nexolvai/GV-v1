@@ -10,6 +10,7 @@
 
 import type { ChatCoverage, ChatFinding, CoverageStatus, FindingCategory, FindingSource, FindingStatus } from '@/lib/chat-api';
 import type { ViewMessage } from '@/lib/chat-messages';
+import { inchNumber, inchWords } from '@/lib/chat-trust';
 
 // ── Words ───────────────────────────────────────────────────
 
@@ -176,6 +177,194 @@ export function shownInOrder(groups: readonly FindingGroup[]): ChatFinding[] {
 /** The categories that have at least one finding, for the category chips. */
 export function categoriesPresent(findings: readonly ChatFinding[]): FindingCategory[] {
   return CATEGORY_ORDER.filter((category) => findings.some((finding) => categoryOf(finding) === category));
+}
+
+// ── Areas (#1508) ───────────────────────────────────────────
+
+/**
+ * Words that name a PART of a unit, not the area it is in. An item's area is the words before the
+ * first of these: "Pantry (left) refrigerator outlet" → "Pantry (left)",
+ * "Nurse station overall width" → "Nurse station". An item that starts with one of them
+ * ("Filler at wall end", "Material tags") names no area.
+ */
+const PART_WORDS = new Set([
+  'backsplash', 'base', 'bays', 'blocking', 'cabinet', 'cabinets', 'chain', 'cooler', 'count', 'counter', 'countertop',
+  'countertops', 'cubby', 'depth', 'door', 'doors', 'drawer', 'drawers', 'edge', 'elevation', 'end', 'ends', 'enclosure',
+  'false', 'filler', 'fillers', 'finish', 'floor', 'fridge', 'front', 'height', 'heights', 'island', 'j-box', 'kick', 'layout',
+  'leg', 'legs', 'lower', 'lowers', 'material', 'materials', 'microwave', 'opening', 'outlet', 'outlets', 'overall', 'panel',
+  'panels', 'plan', 'pull', 'pulls', 'refrigerator', 'row', 'run', 'section', 'shelf', 'shelves', 'side', 'sides',
+  'sink', 'size', 'sizes', 'spacing', 'splash', 'string', 'tag', 'tags', 'toe', 'top', 'tops', 'total', 'upper', 'uppers',
+  'wall', 'wall-to-wall', 'width', 'widths',
+]);
+
+/** Lead-ins that are not areas ("Room elevation overall height"). */
+const NOT_AREAS = new Set(['room', 'page', 'sheet', 'the', 'vendor', 'architect', 'gv', 'all', 'each', 'typical']);
+
+/** At most this many words make an area name; a longer lead-in is a sentence, not an area. */
+const AREA_WORDS = 4;
+
+/** The area an item names ("Pantry (left)"), or null when it names none. */
+export function areaOf(item: string | null | undefined): string | null {
+  const words = String(item ?? '').trim().split(/\s+/).filter(Boolean);
+  const at = words.findIndex((word) => PART_WORDS.has(word.toLowerCase().replace(/[^a-z-]/g, '')));
+  if (at <= 0 || at > AREA_WORDS) return null;
+  const area = words.slice(0, at).join(' ').replace(/[\s:;,/–-]+$/, '').trim();
+  return area && !NOT_AREAS.has(area.toLowerCase()) ? area : null;
+}
+
+const areaKey = (area: string) => area.toLowerCase().replace(/[^a-z0-9()' ]+/g, ' ').replace(/\s+/g, ' ').trim();
+
+export interface AreaGroup {
+  /** Stable key: the area's key, or "page:<n>" when the findings name no area. */
+  key: string;
+  /** "Pantry", or "Page 15" when the findings name no area. */
+  name: string;
+  /** True when the group is a page, not a named area. */
+  byPage: boolean;
+  /** The vendor pages its findings are on, in order. */
+  pages: number[];
+  findings: ChatFinding[];
+  counts: FindingCounts;
+}
+
+const STATUS_RANK = { different: 0, check: 1, same: 2 } as const;
+
+/**
+ * The shown findings grouped by AREA (#1508): the area each item names; a finding that names none
+ * joins the area most named on its page, else a group for its page. Groups with the most wrong
+ * items come first (then the most to check, then the first page); inside a group, wrong first,
+ * then to check, then right, each by page and then in the order they were reported. Two areas
+ * where one name starts the other ("Coffee point" and "Coffee point station") are one group, unless the
+ * longer one is numbered ("Storage area-1").
+ */
+export function groupByArea(findings: readonly ChatFinding[], filter: FindingFilter = NO_FILTER): AreaGroup[] {
+  const shown = findings.filter((finding) => matchesFilter(finding, filter));
+  // Every named area across ALL findings (not just the shown ones), so a filter never renames a group.
+  const named = new Map<string, string>();
+  for (const finding of findings) {
+    const area = areaOf(finding.item);
+    if (area && !named.has(areaKey(area))) named.set(areaKey(area), area);
+  }
+  // "coffee point station" folds into "coffee point": the shorter name whose words start the longer one.
+  // A numbered area stays its own ("storage area-1" is not "storage").
+  const keys = [...named.keys()].sort((a, b) => a.length - b.length);
+  const root = new Map<string, string>();
+  for (const key of keys) {
+    root.set(key, keys.find((shorter) => key === shorter || (key.startsWith(`${shorter} `) && !/\d/.test(key.slice(shorter.length)))) ?? key);
+  }
+  const keyOf = (finding: ChatFinding): string | null => {
+    const area = areaOf(finding.item);
+    return area ? root.get(areaKey(area)) ?? areaKey(area) : null;
+  };
+  // The area most named on each page, for the findings that name none.
+  const perPage = new Map<number, Map<string, number>>();
+  for (const finding of findings) {
+    const key = keyOf(finding);
+    if (!key) continue;
+    for (const page of [finding.page, finding.vs_page]) {
+      if (page == null) continue;
+      const tally = perPage.get(page) ?? new Map<string, number>();
+      tally.set(key, (tally.get(key) ?? 0) + 1);
+      perPage.set(page, tally);
+    }
+  }
+  const pageArea = (page: number): string | null => {
+    const tally = perPage.get(page);
+    if (!tally) return null;
+    return [...tally.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  };
+
+  const groups = new Map<string, AreaGroup>();
+  for (const finding of shown) {
+    const key = keyOf(finding) ?? pageArea(finding.page) ?? (finding.vs_page != null ? pageArea(finding.vs_page) : null);
+    const groupKey = key ?? `page:${finding.page}`;
+    let group = groups.get(groupKey);
+    if (!group) {
+      group = {
+        key: groupKey,
+        name: key ? named.get(key) ?? key : `Page ${finding.page}`,
+        byPage: !key,
+        pages: [],
+        findings: [],
+        counts: { different: 0, check: 0, same: 0, not_compared: 0, total: 0 },
+      };
+      groups.set(groupKey, group);
+    }
+    group.findings.push(finding);
+  }
+  for (const group of groups.values()) {
+    group.findings.sort((a, b) => (STATUS_RANK[a.status] ?? 1) - (STATUS_RANK[b.status] ?? 1) || a.page - b.page);
+    group.pages = [...new Set(group.findings.map((finding) => finding.page))].sort((a, b) => a - b);
+    group.counts = findingCounts(group.findings);
+  }
+  return [...groups.values()].sort((a, b) => b.counts.different - a.counts.different || b.counts.check - a.counts.check || (a.pages[0] ?? 0) - (b.pages[0] ?? 0));
+}
+
+/** A group's pages: "p39–40", "p3–4, 8", "p12". */
+export function pagesWords(pages: readonly number[]): string {
+  const runs: string[] = [];
+  let start: number | null = null;
+  let last: number | null = null;
+  const close = () => { if (start !== null && last !== null) runs.push(start === last ? `${start}` : `${start}–${last}`); };
+  for (const page of pages) {
+    if (last !== null && page === last + 1) { last = page; continue; }
+    close();
+    start = page;
+    last = page;
+  }
+  close();
+  return runs.length ? `p${runs.join(', ')}` : '';
+}
+
+/** A group header's counts: "2 wrong · 1 to check" (right and not compared only when shown). */
+export function groupCountWords(counts: FindingCounts): string {
+  const parts: string[] = [];
+  if (counts.different) parts.push(`${counts.different} wrong`);
+  if (counts.check) parts.push(`${counts.check} to check`);
+  if (counts.same) parts.push(`${counts.same} right`);
+  if (counts.not_compared) parts.push(`${counts.not_compared} not compared`);
+  return parts.join(' · ');
+}
+
+/** The groups open at first: the first three, or all of them when there are few rows. */
+export const OPEN_GROUPS = 3;
+export const FEW_ROWS = 15;
+
+// ── One value in a row (#1508) ──────────────────────────────
+
+/** The short pill a value that is a sentence (not a number) shows in its row. */
+export type ValuePill = 'layout' | 'tag' | 'rule' | 'sum' | 'note';
+
+export type RowValue =
+  /** Code's inches, "42 in" (the printed form on hover). */
+  | { kind: 'inches'; text: string; printed: string | null }
+  /** A short printed value, shown as printed ("3' - 6"", "CT-001"). */
+  | { kind: 'short'; text: string }
+  /** A sentence: a pill in the row, the full text in the row's detail. */
+  | { kind: 'pill'; pill: ValuePill; text: string }
+  | { kind: 'none' };
+
+/** A printed value at most this long shows as printed in a row; longer ones become a pill. */
+const SHORT_VALUE = 14;
+
+function pillFor(finding: Pick<ChatFinding, 'item' | 'source'>, text: string): ValuePill {
+  if (finding.source === 'rules') return 'rule';
+  if (finding.source === 'vendor_arithmetic') return 'sum';
+  const words = `${finding.item} ${text}`.toLowerCase();
+  if (/\b(tags?|material|finish|laminate)\b/.test(words)) return 'tag';
+  if (/\b(layout|count|doors?|drawers?|arrangement|bays?|cubby|shelf|shelves|uppers?)\b/.test(words)) return 'layout';
+  return 'note';
+}
+
+/** One side's value as a row shows it: inches, a short printed value, or a pill. */
+export function rowValue(finding: Pick<ChatFinding, 'item' | 'source' | 'architect' | 'vendor' | 'inches'>, side: 'architect' | 'vendor'): RowValue {
+  const raw = finding[side];
+  const text = raw === null || raw === undefined ? '' : String(raw).trim();
+  const inches = inchNumber(finding.inches?.[side]);
+  if (inches !== null) return { kind: 'inches', text: `${inchWords(inches)} in`, printed: text || null };
+  if (!text) return { kind: 'none' };
+  if (text.length <= SHORT_VALUE) return { kind: 'short', text };
+  return { kind: 'pill', pill: pillFor(finding, text), text };
 }
 
 // ── Coverage ────────────────────────────────────────────────

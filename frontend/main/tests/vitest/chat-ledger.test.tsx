@@ -96,13 +96,17 @@ describe('the reading ledger on the screen', () => {
     expect(within(summary).getByText('Vendor fixed 1 of 3 round-1 items · 2 still wrong · 2 changes nobody asked for')).toBeTruthy();
   });
 
-  it('labels a cross-view row by view and puts code’s sum on a vendor string’s value', () => {
+  it('tags a cross-view row as another view and puts code’s sum on a vendor string’s value', async () => {
+    const user = userEvent.setup();
     const node = show(answer({ findings: [CROSS, SUM] }));
     const cross = node.querySelector<HTMLElement>('[data-slot="chat-finding-row"][data-id="x1"]')!;
-    expect([...cross.querySelectorAll('[data-slot="chat-side-label"]')].map((label) => label.textContent)).toEqual(['Reference view', 'This view']);
+    // One line per row (#1508): the short tag says it compares two views; its detail names them.
+    expect(cross.querySelector('[data-slot="chat-finding-source"]')?.getAttribute('title')).toBe('same item, another view');
+    await user.click(cross);
+    const detail = node.querySelector<HTMLElement>('[data-slot="chat-finding-detail"][data-id="x1"]')!;
+    expect([...detail.querySelectorAll('dt')].map((term) => term.textContent).slice(0, 2)).toEqual(['Reference view', 'This view']);
     const sum = node.querySelector<HTMLElement>('[data-slot="chat-finding-row"][data-id="s1"]')!;
-    expect(sum.querySelector('[data-slot="chat-side-label"]')).toBeNull();
-    const vendor = sum.querySelector<HTMLElement>('[data-slot="chat-finding-value"][data-side="vendor"] .num')!;
+    const vendor = sum.querySelector<HTMLElement>('[data-slot="chat-finding-value"][data-side="vendor"]')!;
     expect(vendor.getAttribute('title')).toContain('Code’s sum: 12" + 15 1/2" = 27 1/2" ≠ 27 1/4" printed (off 1/4")');
   });
 
@@ -110,9 +114,9 @@ describe('the reading ledger on the screen', () => {
     const user = userEvent.setup();
     const node = show(answer({ findings: [CROSS] }));
     const headings = [...node.querySelectorAll('[data-slot="chat-findings-table"] thead th')].map((th) => th.textContent);
-    expect(headings).toContain('Reference view');
-    expect(headings).toContain('This view');
+    expect(headings).toContain('Reference view → This view');
     await user.click(within(node).getByRole('button', { name: CROSS.item }));
+    await user.click(within(node).getByRole('button', { name: 'Open viewer' }));
     const dialog = screen.getByRole('dialog');
     expect([...dialog.querySelectorAll('[data-slot="chat-evidence-side"] figcaption span:first-child')].map((label) => label.textContent)).toEqual(['Reference view', 'This view']);
   });
@@ -121,6 +125,7 @@ describe('the reading ledger on the screen', () => {
     const user = userEvent.setup();
     const node = show(answer({ findings: [SUM] }));
     await user.click(within(node).getByRole('button', { name: SUM.item }));
+    await user.click(within(node).getByRole('button', { name: 'Open viewer' }));
     expect(screen.getByRole('dialog').querySelector('[data-slot="chat-evidence-sum"]')?.textContent).toBe('Code’s sum: 12" + 15 1/2" = 27 1/2" ≠ 27 1/4" printed (off 1/4")');
   });
 });

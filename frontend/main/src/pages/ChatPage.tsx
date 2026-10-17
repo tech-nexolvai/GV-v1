@@ -521,7 +521,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
             onScroll={onScroll}
             hidden={centred || undefined}
             data-slot="chat-thread"
-            className="relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain"
+            className="relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain [container-type:inline-size]"
           >
             {/* Keyed by the chat, so switching chats (or a chat finishing loading) fades the thread in. */}
             <div
