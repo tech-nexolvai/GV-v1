@@ -77,6 +77,7 @@ __all__ = [
     "default_readers",
     "dimension_tokens",
     "near_miss",
+    "printed_spots",
     "verify_value",
 ]
 
@@ -1205,6 +1206,80 @@ def verify_value(
             )
         return Verified("cannot_read", "none", None, text_reads, _PENDING, value, pending=True)
     return _drawn(read, spot, wanted, value, text, text_reads, readers)
+
+
+def _union(chars: Iterable[_Char]) -> tuple[float, float, float, float]:
+    boxes = [char.box for char in chars]
+    return (
+        min(b[0] for b in boxes),
+        min(b[1] for b in boxes),
+        max(b[2] for b in boxes),
+        max(b[3] for b in boxes),
+    )
+
+
+def printed_spots(
+    pdf: Path, page: int, box: Mapping[str, Any], expected: str, *, near: float = 18.0
+) -> list[tuple[float, float, float, float]]:
+    """Where the drawing's text prints `expected` inside `box` or within `near` points of it: each
+    label's box (shown points, origin top-left), nearest the box's centre first. The cloud drawing
+    snaps its cloud to it (#1537). Text only, no OCR: a value drawn as lines is not found here."""
+    value = claim_value(expected)
+    wanted = to_inches(value) if value is not None else None
+    spot = _spot(box)
+    if wanted is None or spot is None or isinstance(page, bool) or page < 1:
+        return []
+    try:
+        read = _read_page(Path(pdf), page - 1)
+    except (OSError, IndexError, pikepdf.PdfError, ValueError) as failed:
+        _log.warning("printed_spots could not read the page: %s", type(failed).__name__)
+        return []
+    grown = (spot[0] - near, spot[1] - near, spot[2] + near, spot[3] + near)
+    grouped = _labels([char for char in read.chars if _near(char.box, grown)])
+    found: list[tuple[float, float, float, float]] = []
+    stacked: set[int] = set()
+    for upper, lower in _stacked_pairs(grouped):
+        if upper in stacked or lower in stacked:
+            continue
+        stacked |= {upper, lower}
+        numerator = "".join(c.text for c in sorted(grouped[upper], key=lambda c: c.along))
+        denominator = "".join(c.text for c in sorted(grouped[lower], key=lambda c: c.along))
+        if not _fraction_ok(numerator, denominator):
+            continue
+        parts = [*grouped[upper], *grouped[lower]]
+        pair_values = {Decimal(int(numerator)) / Decimal(int(denominator))}
+        whole = _whole_before(grouped, grouped[upper], grouped[lower], stacked)
+        if whole is not None:
+            joined = to_inches(f'{whole} {numerator}/{denominator}"')
+            if joined is not None:
+                pair_values.add(joined)
+            size = max(c.size for c in parts)
+            start = min(c.along for c in parts)
+            parts += [
+                c
+                for index, label in enumerate(grouped)
+                if index not in stacked
+                for c in label
+                if c.direction == parts[0].direction and 0 <= start - c.along <= 6 * size
+            ]
+        if wanted in pair_values:
+            found.append(_union(parts))
+    for index, label in enumerate(grouped):
+        if index in stacked:
+            continue
+        composed, _unsure = _compose(label)
+        values: set[Decimal] = set()
+        for text, fraction in composed:
+            if fraction:
+                one = to_inches(text)
+                if one is not None:
+                    values.add(one)
+            else:
+                values |= _values_of_tokens(text.split())
+        if wanted in values:
+            found.append(_union(label))
+    cx, cy = (spot[0] + spot[2]) / 2, (spot[1] + spot[3]) / 2
+    return sorted(found, key=lambda b: math.hypot((b[0] + b[2]) / 2 - cx, (b[1] + b[3]) / 2 - cy))
 
 
 def _label_values(label: str) -> set[Decimal]:

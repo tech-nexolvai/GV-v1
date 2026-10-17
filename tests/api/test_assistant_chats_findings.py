@@ -160,8 +160,10 @@ def test_the_marked_up_pdf_is_drawn_by_code_once_per_answer(postgres_engine, tmp
         reader = PdfReader(io.BytesIO(pdf.content))
         assert len(reader.pages) == 4
         assert "AI markup: draft, not GV's signed review" in reader.pages[0].extract_text()
-        # The checks modules are off here, so the finding is "to check": an amber cloud.
-        assert "AI 1 ? Your decision: Vanity top length" in reader.pages[1].extract_text()
+        # The checks modules are off here, so the finding needs your decision: this route keeps an
+        # amber cloud, a numbered marker and a note for it (a full check's drawing does not cloud it).
+        page2 = reader.pages[1].extract_text()
+        assert "? 1" in page2 and "Your decision: Vanity top length" in page2
         assert _red_near(pdf.content, 2, VENDOR_BOX) > 5
         assert _red_near(pdf.content, 3, VENDOR_BOX) == 0
         # The same file again, and it is the answer's file on reload.

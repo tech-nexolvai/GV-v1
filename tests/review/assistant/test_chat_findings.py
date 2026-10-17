@@ -349,10 +349,18 @@ def test_the_marked_up_pdf_has_clouds_at_the_boxes_notes_and_the_stamp(tmp_path:
     assert _red_pixels(out, 1, (a0 - 14, b0 - 4, a0 - 4, b1 + 4)) > 5
     assert _red_pixels(out, 3, (200, 200, 500, 600)) == 0
     page2 = reader.pages[1].extract_text()
-    assert 'AI 1 Vanity top length: Vendor: 3\'-10" \u2014 Needs: 37"' in page2
+    assert "\u00d7 1" in page2 and 'Vanity top length: vendor 3\'-10", make it 37"' in page2
     assert "AI markup: draft, not GV's signed review" in reader.pages[0].extract_text()
     notes = reader.pages[3].extract_text()
-    for words in ("AI 1", "AI 2", "AI 3", "Backsplash height", "Not marked on the drawing: no box"):
+    for words in (
+        "\u00d7 1",
+        "\u00d7 2",
+        "\u00d7 3",
+        "Backsplash height",
+        "Not marked on the drawing: no box",
+        "On the drawing (2)",
+        "Not on the drawing (1)",
+    ):
         assert words in notes
     # The upload itself is untouched.
     assert (findings.workspace.uploads / "Vendor set.pdf").read_bytes() == make_pdf(3)

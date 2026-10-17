@@ -1056,14 +1056,18 @@ def make_markup_file(
     out: Path,
     kind: str = "AI markup",
     base: Any = None,
+    *,
+    cloud_decisions: bool = False,
 ) -> MarkupFile:
-    """The marked-up copy of the vendor's file, written to `out`: a cloud and a note at each
-    finding's vendor box (else its architect box) when that box is on the vendor's file, the draft
-    stamp on page 1, and every finding listed again on the notes page. Raises `LookupError` when
-    the chat has no copy of the set's PDFs. `base`: a `markup_base` copy to draw on (used once)."""
+    """The marked-up copy of the vendor's file, written to `out` (`chat_drawing.markup_pdf`): a
+    tight red cloud, a numbered marker and a note at each Wrong finding's vendor box (else its
+    architect box) when that box is on the vendor's file, a numbered amber marker at each one
+    needing your decision (`cloud_decisions`: an amber cloud and note too), the draft stamp on page
+    1, and every finding listed again on the notes pages. Raises `LookupError` when the chat has no
+    copy of the set's PDFs. `base`: a `markup_base` copy to draw on (used once)."""
     name, placed = place_findings(workspace, findings)
     drawing = import_module("app.review.assistant.chat_drawing")
-    drawing.markup_pdf(workspace.uploads / name, placed, out, base)
+    drawing.markup_pdf(workspace.uploads / name, placed, out, base, cloud_decisions=cloud_decisions)
     data = out.read_bytes()
     return MarkupFile(markup_name(name, kind), len(data), hashlib.sha256(data).hexdigest())
 
