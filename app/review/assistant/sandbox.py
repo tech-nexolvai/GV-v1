@@ -71,6 +71,7 @@ __all__ = [
     "check_command",
     "cut_output",
     "open_sandbox",
+    "quiet_pdf_warnings",
     "safe_file_name",
     "view_path",
 ]
@@ -120,6 +121,45 @@ def cut_output(text: str, limit: int = MAX_OUTPUT_CHARS) -> tuple[str, bool]:
     if len(text) <= limit:
         return text, False
     return text[:limit] + _TRUNCATED.format(left=len(text) - limit), True
+
+
+#: A PDF reader's (poppler's) warning line: `Syntax Error (8309949): No font in show/space`.
+_PDF_WARNING: Final = re.compile(
+    r"^(?:Syntax Error|Syntax Warning|Internal Error)(?: \(\d+\))?: (?P<message>.*)$"
+)
+#: How many lines of one warning stay in the output; the repeats are counted on one line.
+_WARNING_REPEATS_KEPT: Final = 1
+
+
+def quiet_pdf_warnings(text: str) -> str:
+    """The output with poppler's repeated warnings folded: each distinct warning once, then one
+    line saying how many repeats were left out.
+
+    A drawing set with fonts the reader has no data for prints the same few warnings for every
+    text run (`Unknown font tag ...`, `No font in show/space`): on real runs (2026-10-17) they
+    crowded the output the model reads and the step the reviewer sees."""
+    if "Error" not in text and "Warning" not in text:
+        return text
+    seen: dict[str, int] = {}
+    kept: list[str] = []
+    hidden = 0
+    for line in text.split("\n"):
+        warning = _PDF_WARNING.match(line)
+        if warning is None:
+            kept.append(line)
+            continue
+        message = warning.group("message").strip()
+        seen[message] = seen.get(message, 0) + 1
+        if seen[message] <= _WARNING_REPEATS_KEPT:
+            kept.append(line)
+        else:
+            hidden += 1
+    if not hidden:
+        return text
+    note = f"[{hidden} repeated PDF reader warnings left out; they do not stop the command]"
+    while kept and not kept[-1]:
+        kept.pop()
+    return "\n".join(kept) + "\n" + note + ("\n" if text.endswith("\n") else "")
 
 
 _SAFE_NAME: Final = re.compile(r"[^A-Za-z0-9._ ()+-]")
@@ -575,7 +615,9 @@ class DockerSandbox:
             )
         except subprocess.TimeoutExpired as expired:
             self._kill(name)
-            text, cut = cut_output(_decode(expired.stdout) + _decode(expired.stderr))
+            text, cut = cut_output(
+                quiet_pdf_warnings(_decode(expired.stdout) + _decode(expired.stderr))
+            )
             return SandboxResult(
                 output=text + f"\n[Stopped: the command ran over {self.timeout_seconds} s]",
                 exit_code=None,
@@ -585,7 +627,7 @@ class DockerSandbox:
         finally:
             with self._lock:
                 self._running.discard(name)
-        text, cut = cut_output(_decode(done.stdout) + _decode(done.stderr))
+        text, cut = cut_output(quiet_pdf_warnings(_decode(done.stdout) + _decode(done.stderr)))
         return SandboxResult(output=text, exit_code=done.returncode, truncated=cut)
 
 
@@ -726,7 +768,7 @@ class MacSandbox:
             except ProcessLookupError:
                 pass
             raw, _ = process.communicate()
-            text, cut = cut_output(self._to_shown(_decode(raw)))
+            text, cut = cut_output(quiet_pdf_warnings(self._to_shown(_decode(raw))))
             return SandboxResult(
                 output=text + f"\n[Stopped: the command ran over {self.timeout_seconds} s]",
                 exit_code=None,
@@ -737,7 +779,7 @@ class MacSandbox:
             with self._lock:
                 self._running.discard(process.pid)
             profile.unlink(missing_ok=True)
-        text, cut = cut_output(self._to_shown(_decode(raw)))
+        text, cut = cut_output(quiet_pdf_warnings(self._to_shown(_decode(raw))))
         return SandboxResult(output=text, exit_code=process.returncode, truncated=cut)
 
 
