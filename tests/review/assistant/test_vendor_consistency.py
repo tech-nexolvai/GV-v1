@@ -450,3 +450,46 @@ def test_check_pack_reads_the_pack_files(tmp_path: Path) -> None:
     assert result is not None
     assert [f["source"] for f in result.findings] == ["vendor_arithmetic"]
     assert vc.check_pack(tmp_path / "missing", uploads) is None
+
+
+# ---- code's witnesses through the real checks ------------------------------------------------------
+
+
+def test_the_findings_carry_their_code_witnesses_through_the_real_checks(tmp_path: Path) -> None:
+    """The stand-alone answer: each Wrong item goes through the finding book and code's checks like
+    any finding. The string is backed by code's sum (`arithmetic`), the span printed twice by both
+    printed values (`printed`); with no AI reading yet, both are Likely (red on the cloud drawing,
+    never made Right by the settler)."""
+    from app.review.assistant.consistency_answer import run_check
+    from app.review.assistant.sandbox import ChatWorkspace
+
+    workspace = ChatWorkspace.open(tmp_path / "chat")
+    sheets = _pdf([_sheet_wrong(), _sheet_twice()])
+    (workspace.uploads / FILE).write_bytes(sheets)
+    listing = [{"name": FILE, "pages": 2, "kind": "the vendor's shop drawings"}]
+    (workspace.root / "uploads.json").write_text(json.dumps(listing), encoding="utf-8")
+    page_map = {
+        "files": [FILE],
+        "pages": [
+            {"file": FILE, "page": n, "role": "vendor", "halves": VENDOR, "area": "1. Buffet"}
+            for n in (1, 2)
+        ],
+    }
+    dims = dl.build_dims({FILE: workspace.uploads / FILE}, page_map)
+
+    def check(folder: Path | None, uploads: Path) -> vc.ConsistencyResult:
+        return vc.check_set(dims, page_map, segments=vc.line_work(uploads))
+
+    made = run_check(workspace, listing, check=check)
+    findings = [b["finding"] for b in made.blocks if b["type"] == "finding"]
+    by_source = {f["source"]: f for f in findings}
+    string, twice = by_source["vendor_arithmetic"], by_source["cross_view"]
+    assert string["checks"]["arithmetic"] == "does_not_add_up"
+    assert "arithmetic" in string["witnesses"]
+    assert string["trust_level"] == "likely"
+    assert string["parts_sum"] == "61"
+    assert twice["checks"]["printed_architect"] == twice["checks"]["printed_vendor"] == "match"
+    assert "printed" in twice["witnesses"] and twice["evidence_kind"] == "observed"
+    assert twice["trust_level"] == "likely"
+    assert all(f["created_by"] == "consistency" and f["status"] == "different" for f in findings)
+    assert made.blocks[0]["by"] == "code"
