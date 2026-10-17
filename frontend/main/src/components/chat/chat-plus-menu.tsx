@@ -283,10 +283,13 @@ export function PlusMenu(props: PlusMenuProps) {
           )}
         </PopoverTrigger>
         <PopoverContent
+          // Always above the composer (#1538): never down over the suggestions and the disclaimer.
+          // It takes the room above (Radix's available height) and scrolls its list inside.
           side="top"
           align="start"
           sideOffset={10}
           collisionPadding={12}
+          avoidCollisions={false}
           aria-label="Checks, outputs and focus"
           data-slot="chat-plus-menu"
           onCloseAutoFocus={(event) => {
@@ -303,7 +306,7 @@ export function PlusMenu(props: PlusMenuProps) {
             if (blank && blank[0] >= at) box.setSelectionRange(blank[0], blank[1]);
             else box.setSelectionRange(box.value.length, box.value.length);
           }}
-          className="w-[24rem] max-w-[calc(100vw-24px)] overflow-hidden rounded-xl p-0 font-sans shadow-lg duration-120 motion-reduce:animate-none"
+          className="flex max-h-(--radix-popover-content-available-height) w-[24rem] max-w-[calc(100vw-2.5rem)] flex-col overflow-hidden rounded-xl p-0 font-sans shadow-lg duration-120 motion-reduce:animate-none"
         >
           {view === 'confirm' ? (
             <div data-slot="chat-plus-confirm" className="grid gap-3 p-3">
@@ -338,7 +341,7 @@ export function PlusMenu(props: PlusMenuProps) {
               label={view === 'areas' ? 'Pick an area' : 'Checks, outputs and focus'}
               loop
               filter={matches}
-              className="flex flex-col"
+              className="flex max-h-[32rem] min-h-0 flex-1 flex-col"
               onKeyDown={(event) => {
                 // Back out of the area list with Esc, or Backspace in an empty search.
                 if (view === 'areas' && (event.key === 'Escape' || (event.key === 'Backspace' && !search))) {
@@ -349,7 +352,7 @@ export function PlusMenu(props: PlusMenuProps) {
                 }
               }}
             >
-              <div className="flex items-center gap-2 border-b px-3">
+              <div className="flex shrink-0 items-center gap-2 border-b px-3">
                 {view === 'areas' ? (
                   <button
                     type="button"
@@ -374,7 +377,9 @@ export function PlusMenu(props: PlusMenuProps) {
                   className="h-11 w-full min-w-0 bg-transparent text-sm outline-hidden placeholder:text-muted-foreground"
                 />
               </div>
-              <CommandPrimitive.List className={cn('max-h-[min(26rem,calc(100dvh-14rem))] scroll-py-1.5 overflow-x-hidden overflow-y-auto overscroll-contain p-1.5', HEADING)}>
+              {/* The list scrolls on its own, under the search box (never beneath it); scroll padding keeps a
+                  picked row clear of the group heading above it. */}
+              <CommandPrimitive.List className={cn('min-h-0 flex-1 scroll-pt-9 scroll-pb-2 overflow-x-hidden overflow-y-auto overscroll-contain p-1.5', HEADING)}>
                 <CommandPrimitive.Empty className="px-3 py-6 text-center text-sm text-muted-foreground">Nothing matches “{search}”.</CommandPrimitive.Empty>
                 {view === 'areas' ? (
                   <CommandPrimitive.Group heading="Areas in this chat’s answers">

@@ -518,7 +518,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
           <ChatList packageId={packageId} activeChatId={chatId} state={list} creating={false} onNewChat={newChat} freshTitles={freshTitles} />
         </SidebarChats>
 
-        <section aria-label={activeSummary ? chatTitle(activeSummary) : 'Conversation'} data-slot="chat-page" className="chat-brand relative flex min-h-0 min-w-0 flex-1 flex-col">
+        <section aria-label={activeSummary ? chatTitle(activeSummary) : 'Conversation'} data-slot="chat-page" className="chat-brand relative flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-x-clip">
           {/* Positioned, so screen-reader-only text deep in the thread is placed (and clipped) inside it,
               not against the shell, where it would make the whole page scrollable. */}
           <div
@@ -531,7 +531,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
             {/* Keyed by the chat, so switching chats (or a chat finishing loading) fades the thread in. */}
             <div
               key={`${chatId ?? 'new'}:${chat ? 'ready' : 'waiting'}`}
-              className="mx-auto flex min-h-full w-full max-w-[62rem] flex-col gap-8 px-4 pt-8 pb-16 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-150"
+              className="mx-auto flex min-h-full w-full max-w-[63rem] min-w-0 flex-col gap-8 px-4 pt-8 pb-16 sm:px-6 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-150"
             >
               {failedToLoad && (
                 failedToLoad.missing ? (
@@ -584,7 +584,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
             data-slot="chat-dock"
             data-centred={centred ? 'true' : undefined}
             className={cn(
-              'relative mx-auto flex w-full max-w-[62rem] flex-col px-4',
+              'relative mx-auto flex w-full max-w-[63rem] min-w-0 flex-col px-4 sm:px-6',
               centred ? 'flex-1 justify-center gap-0 pb-[14vh]' : 'shrink-0 pt-1 pb-[calc(8px+env(safe-area-inset-bottom,0px))]',
             )}
           >
@@ -693,11 +693,16 @@ function Problem({ words, action, onAction, href }: { words: string; action: str
 /** An empty chat's greeting above the composer: a small spark and the question. */
 function Greeting({ name }: { name: string | null }) {
   return (
-    <div data-slot="chat-empty" className="mb-6 flex items-center justify-center gap-3 px-2 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-300">
+    <div data-slot="chat-empty" className="mb-6 flex min-w-0 justify-center motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-300">
       {name ? (
-        <h2 className="flex items-start gap-2.5 text-center text-[1.6rem] leading-tight font-normal tracking-tight text-balance sm:text-[1.9rem]">
-          <GVSpark state="done" size={28} className="mt-1" />
-          <span>What do you want to know about {name}?</span>
+        // #1538: centred in the column, at most two balanced lines; a very long set name is cut
+        // with "…" (the whole question is on hover), never run off the edge.
+        <h2
+          title={`What do you want to know about ${name}?`}
+          className="line-clamp-2 max-w-[42rem] min-w-0 text-center text-[1.6rem] leading-tight font-normal tracking-tight text-balance [overflow-wrap:anywhere] sm:text-[1.9rem]"
+        >
+          <GVSpark state="done" size={28} className="mr-2.5 inline-grid align-[-0.2em]" />
+          What do you want to know about {name}?
         </h2>
       ) : (
         <Skeleton aria-label="Loading the chat" className="h-9 w-2/3" />

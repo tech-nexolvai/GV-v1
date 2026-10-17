@@ -45,7 +45,12 @@ describe('opening a drawing set’s chats', () => {
   it('#/chat/<set> shows the empty composer and makes no chat (like claude.ai)', async () => {
     const api = fakeChatApi({ list: vi.fn(async () => ({ chats: [summary('c-old', { title: 'Older', turns: 1 })], package_name: SET_NAME })) });
     const { onOpenChat } = renderChat(api, null);
-    expect(await screen.findByRole('heading', { name: `What do you want to know about ${SET_NAME}?` })).toBeTruthy();
+    const greeting = await screen.findByRole('heading', { name: `What do you want to know about ${SET_NAME}?` });
+    // #1538: at most two balanced lines, centred; a long name is cut with "…", the whole question on hover.
+    expect(greeting.className).toContain('line-clamp-2');
+    expect(greeting.className).toContain('text-balance');
+    expect(greeting.getAttribute('title')).toBe(`What do you want to know about ${SET_NAME}?`);
+    expect(greeting.querySelector('[data-slot="gv-spark"]')).toBeTruthy();
     await waitFor(() => expect(screen.queryByRole('button', { name: /^Model:/ })).not.toBeNull());
     expect(composer()).toBeTruthy();
     expect(api.create).not.toHaveBeenCalled();
