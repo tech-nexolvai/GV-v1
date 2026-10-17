@@ -9,6 +9,7 @@ import { WelcomePage } from './pages/WelcomePage';
 import { CompanySettingsPage } from './pages/CompanySettingsPage';
 import { RulebookPage } from './pages/RulebookPage';
 import { UsagePage } from './pages/UsagePage';
+import { TrackerPage } from './pages/TrackerPage';
 import { ChatPage } from './pages/ChatPage';
 import { useRoute } from './app/route';
 import type { Page } from './app/route';
@@ -24,6 +25,7 @@ const PAGE_TITLES: Record<Page, string> = {
   review: 'Start a review',
   chat: 'Chat',
   documents: 'Documents',
+  tracker: 'Tracker',
   rulebook: 'Rulebook',
   settings: 'Company settings',
   usage: 'Usage',
@@ -204,6 +206,7 @@ export default function App() {
           chatId={route.chatId ?? null}
           onOpenChat={openChat}
           onNameChange={nameChat}
+          focusFinding={route.finding ?? null}
         />
       )}
 
@@ -211,6 +214,13 @@ export default function App() {
         <PackagesPage onOpenReview={openReview} onNewPackage={newReview}
           initialCursors={documentPosition.cursors} positionNotice={documentPosition.notice}
           onPositionChange={rememberDocumentPosition} />
+      )}
+
+      {route.page === 'tracker' && (
+        <TrackerPage
+          onOpenItem={(link) => navigate({ page: 'chat', packageId: link.package_id, chatId: link.chat_id, finding: { messageId: link.message_id, findingId: link.finding_id } })}
+          onOpenSet={openChats}
+        />
       )}
 
       {route.page === 'rulebook' && <RulebookPage />}

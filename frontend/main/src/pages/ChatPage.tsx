@@ -80,9 +80,11 @@ export interface ChatPageProps {
   api?: ChatApi;
   /** How long Stop waits for the server's stored (stopped) message before it stops reading. Tests pass 0. */
   stopGraceMs?: number;
+  /** #1578: an answer's finding to open at once (from the job tracker). */
+  focusFinding?: { messageId: string; findingId: string } | null;
 }
 
-export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LIVE_CHAT_API, stopGraceMs = 3000 }: ChatPageProps) {
+export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LIVE_CHAT_API, stopGraceMs = 3000, focusFinding = null }: ChatPageProps) {
   // ── The models and the reviewer's choice ──
   const [models, setModels] = useState<ModelsState>({ status: 'loading' });
   const [modelsAsk, setModelsAsk] = useState(0);
@@ -636,6 +638,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                     remakeCloud={api.remakeCloud ? (messageId) => api.remakeCloud!(chatId, messageId) : undefined}
                     fullPageHref={formatRoute({ page: 'review', packageId })}
                     fullCheck={isFullCheck(message, asked?.role === 'user' ? asked : null)}
+                    focusFindingId={focusFinding && message.id === focusFinding.messageId ? focusFinding.findingId : null}
                   />
                 );
               })}
