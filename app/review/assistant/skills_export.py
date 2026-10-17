@@ -43,6 +43,7 @@ from sqlalchemy.orm import Session
 
 from app.models.package import Package, PackageRevision, package_product
 from app.models.project_sinks import ProjectSink
+from app.review.assistant.internal_refs import without_internal_refs
 from app.review.settings_in_force import SINK_SETTINGS, InForce, settings_in_force
 from app.verdicts.rulebook import snapshot_store
 from rules.derivations import Derivation
@@ -267,7 +268,7 @@ def rules_markdown(
             "No check is published for this drawing set yet, so GV's code checks nothing here. "
             "Compare the vendor's drawing with the architect's (SKILL.md).\n"
         )
-        return "\n".join(lines)
+        return without_internal_refs("\n".join(lines))
     lines.extend(_settings_section(rules, in_force, sink))
     lines.append("## The checks\n")
     other = False
@@ -276,7 +277,8 @@ def rules_markdown(
             other = True
             lines.append("## Other products (not picked for this chat)\n")
         lines.extend(_rule_section(rule, in_force))
-    return "\n".join(lines)
+    # The rulebook's notes carry the team's ticket numbers; the agent must never quote one (#1520).
+    return without_internal_refs("\n".join(lines))
 
 
 def _settings_section(

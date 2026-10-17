@@ -374,8 +374,23 @@ def message_out(
             ),
             "mode": message.mode,
             "products": message.products,
+            "scope": _scope_of(message.blocks or []),
         }
     )
+
+
+def _scope_of(blocks: Sequence[Any]) -> dict[str, Any] | None:
+    """An answer's scope (#1520): its `scope` block, else its trust report's."""
+    found: object = None
+    for block in reversed(blocks):
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "scope":
+            found = block.get("scope")
+            break
+        if block.get("type") == "trust" and found is None:
+            found = (block.get("trust") or {}).get("scope")
+    return found if isinstance(found, dict) else None
 
 
 def chat_summaries(session: Session, package_id: UUID) -> list[ChatSummaryOut]:

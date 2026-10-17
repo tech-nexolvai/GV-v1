@@ -5491,6 +5491,7 @@
                       "finding_dropped": "#/components/schemas/ChatFindingDroppedBlock",
                       "progress": "#/components/schemas/ChatProgressBlock",
                       "resume": "#/components/schemas/ChatResumeBlock",
+                      "scope": "#/components/schemas/ChatScopeBlock",
                       "step": "#/components/schemas/ChatStepBlock",
                       "text": "#/components/schemas/ChatTextBlock",
                       "thinking": "#/components/schemas/ChatThinkingBlock",
@@ -5529,6 +5530,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ChatUnknownsBlock"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChatScopeBlock"
                     },
                     {
                       "$ref": "#/components/schemas/ChatProgressBlock"
@@ -5702,6 +5706,17 @@
             ],
             "title": "Role",
             "type": "string"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatScopeOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the answer is about (its `scope` block): the whole set, or pages or an area; null on older answers."
           },
           "stopped": {
             "anyOf": [
@@ -6275,6 +6290,82 @@
         "title": "ChatRoundsOut",
         "type": "object"
       },
+      "ChatScopeBlock": {
+        "properties": {
+          "scope": {
+            "$ref": "#/components/schemas/ChatScopeOut"
+          },
+          "type": {
+            "const": "scope",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "scope"
+        ],
+        "title": "ChatScopeBlock",
+        "type": "object"
+      },
+      "ChatScopeOut": {
+        "description": "What the answer is about, worked out by code (#1520): the whole set, or some pages or an\narea. Only a whole-set answer gets the whole-set panels (all pages' coverage, every recorded\ndifference); a page or area answer's coverage, recorded results and trust counts cover its\npages only.",
+        "properties": {
+          "area": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The area named, as typed on the set.",
+            "title": "Area"
+          },
+          "kind": {
+            "enum": [
+              "whole_set",
+              "pages",
+              "area"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "description": "In plain words: \"page 4 (Pantry)\", \"the whole set\".",
+            "title": "Label",
+            "type": "string"
+          },
+          "pages": {
+            "description": "The scope's pages; empty for the whole set.",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Pages",
+            "type": "array"
+          },
+          "why": {
+            "enum": [
+              "full_check",
+              "whole_set_words",
+              "nothing_named",
+              "wide_work",
+              "pages_named",
+              "area_named"
+            ],
+            "title": "Why",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "why",
+          "label"
+        ],
+        "title": "ChatScopeOut",
+        "type": "object"
+      },
       "ChatSecondReadValuesOut": {
         "properties": {
           "architect": {
@@ -6843,6 +6934,17 @@
                 "type": "null"
               }
             ]
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatScopeOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the counts above cover (null on older answers)."
           },
           "unknowns": {
             "anyOf": [

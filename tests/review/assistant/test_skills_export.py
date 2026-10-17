@@ -285,6 +285,17 @@ def test_a_set_with_no_product_stated_lists_every_check(session: Session, local:
     assert "- Note on Filler width, maximum:" in text
 
 
+def test_rules_md_names_no_internal_ticket_number(session: Session, local: Path) -> None:
+    """The rulebook's notes carry the team's ticket numbers; the agent quoted one to a reviewer
+    (#1520). `rules.md` has none, and says the open question in plain words."""
+    _project, revision = _revision(session, product=None)
+
+    text = rules_markdown(session, revision)
+
+    assert not re.search(r"#\d", text)
+    assert "the client has not yet confirmed which is right" in text
+
+
 def test_picked_products_come_first_and_the_others_follow(
     session: Session, local: Path, tmp_path: Path
 ) -> None:
