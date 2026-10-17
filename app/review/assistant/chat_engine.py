@@ -212,9 +212,9 @@ _log = logging.getLogger(__name__)
 #: scope note. chat-v9: zoom takes up to 8 crops; a full check's helpers are planned by code, with
 #: the recall brief, and the lead gets their reports with a verify-only instruction. chat-v10: the
 #: verify_value tool and its prompt lines, #1531. chat-v11: measure_on_drawing, decision_help and
-#: check_reason, #1545.) Only the request's prefix changes; a chat's
-#: stored messages replay unchanged.
-HARNESS_ID: Final = "chat-v11"
+#: check_reason, #1545. chat-v12: read_under_markup for the lead and the helpers, and its prompt
+#: lines, #1548.) Only the request's prefix changes; a chat's stored messages replay unchanged.
+HARNESS_ID: Final = "chat-v12"
 #: Helpers that may run at once, at most, whatever the setting says.
 MAX_PARALLEL_AGENTS_LIMIT: Final = 12
 #: Helpers one lead turn may start. More than run at once wait for a free place in the same turn:
@@ -238,7 +238,9 @@ PREWARM_MAX_TOKENS: Final = 16
 _READING_TOOLS: Final = frozenset({"bash_tool", "view", "zoom", "create_file", "str_replace"})
 #: The lead's tools that run at the same time within one reply (its finding and ledger tools stay
 #: in order, so the findings table and the ledger keep the order they were recorded in).
-LEAD_PARALLEL_TOOLS: Final = frozenset({"bash_tool", "view", "zoom", "review_results"})
+LEAD_PARALLEL_TOOLS: Final = frozenset(
+    {"bash_tool", "view", "zoom", "read_under_markup", "review_results"}
+)
 #: The output allowance of a forced last call (a wrap-up or a final answer at the cap).
 WRAP_UP_MAX_TOKENS: Final = 8000
 FINAL_MAX_TOKENS: Final = 16000
@@ -1078,6 +1080,8 @@ class ChatEngine:
             return tools.verify_value(raw, step)
         if name == "measure_on_drawing":
             return tools.measure_on_drawing(raw, step)
+        if name == "read_under_markup":
+            return tools.read_under_markup(raw, step, by)
         if not helper:
             if name == "present_files":
                 return tools.present_files(raw, step)

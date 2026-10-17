@@ -245,7 +245,7 @@ def test_a_tool_turn_runs_the_tool_and_sends_the_reply_back_unchanged(tmp_path: 
     ]
     assert len(harness.ledger.rows) == 2
     assert {row["prompt_id"] for row in harness.ledger.rows} == {
-        "review-assistant-chat-anthropic-chat-v11"
+        "review-assistant-chat-anthropic-chat-v12"
     }
 
 
@@ -441,6 +441,7 @@ def test_helpers_run_together_and_their_reports_go_back_to_the_lead(tmp_path: Pa
         "record_reading",
         "verify_value",
         "measure_on_drawing",
+        "read_under_markup",
     ]
 
 

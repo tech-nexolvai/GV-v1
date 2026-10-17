@@ -77,6 +77,7 @@ __all__ = [
     "MAX_AGENTS",
     "MAX_ZOOM_CROPS",
     "PARALLEL_TOOLS",
+    "READ_UNDER_MARKUP",
     "ChatTools",
     "TaskList",
     "ToolResult",
@@ -102,6 +103,7 @@ PARALLEL_TOOLS: Final = frozenset(
         "bash_tool",
         "view",
         "zoom",
+        "read_under_markup",
         "review_results",
         "report_finding",
         "set_coverage",
@@ -142,6 +144,7 @@ drawings-only PDFs, page pictures. Use it; never rebuild it.
 Your tools: bash_tool runs a command (poppler, and Python with pypdf, pdfplumber, pypdfium2, \
 Pillow, reportlab, matplotlib and openpyxl); view shows you a picture, a text file or a folder; \
 zoom crops up to {MAX_ZOOM_CROPS} areas of pages at once, sharp, GV's markup hidden; \
+read_under_markup shows what GV's markup covers in one area (and the drawing's text there); \
 create_file and str_replace write files in {SCRATCH} or {OUTPUTS}; present_files hands files to \
 the reviewer; TaskCreate and TaskUpdate keep a task list the reviewer sees; Agent starts a helper \
 with the same reading tools (several run at once: give each its pages, and check what a helper \
@@ -176,7 +179,8 @@ countertop and cabinet shop drawings. You share Claude's Linux computer (no inte
 PDFs read-only in {UPLOADS}, the set pack in {SET_PACK} (page_map.json, drawings-only PDFs, page \
 pictures), the working folder {SCRATCH}, {OUTPUTS}, and GV's review skill in {SKILLS} (read \
 SKILL.md there when your task is a review). Your tools: bash_tool, view, zoom, create_file, \
-str_replace, report_finding, set_coverage, record_string, record_reading, verify_value (code \
+str_replace, report_finding, set_coverage, record_string, record_reading, read_under_markup \
+(what GV's markup covers in one area), verify_value (code \
 reads the number printed in a box, $0: check a value before you report it) and measure_on_drawing \
 (code scales a length against printed dimensions, $0). Tool calls of one \
 reply run at the same time: ask for all the crops you need in one zoom call.
@@ -317,8 +321,9 @@ _TASK_UPDATE: Final[Mapping[str, Any]] = {
 _AGENT: Final[Mapping[str, Any]] = {
     "name": "Agent",
     "description": (
-        "Start a helper agent with bash_tool, view, zoom, create_file, str_replace, report_finding, "
-        "set_coverage, record_string and record_reading on this computer. Agent calls in one turn run at the same time; each "
+        "Start a helper agent with bash_tool, view, zoom, read_under_markup, create_file, "
+        "str_replace, report_finding, set_coverage, record_string and record_reading on this "
+        "computer. Agent calls in one turn run at the same time; each "
         "returns a short report to you. Use helpers only for whole-set work: split it by page "
         "pair, 3-5 pages per helper, all helpers in one turn. A question about one item or one "
         "page pair needs no helper."
@@ -547,6 +552,43 @@ MEASURE_ON_DRAWING: Final[Mapping[str, Any]] = {
         },
     },
 }
+#: `read_under_markup` (#1548): an area drawn without GV's markup, as claude.ai read the vendor's
+#: values under GV's boxes.
+READ_UNDER_MARKUP: Final[Mapping[str, Any]] = {
+    "name": "read_under_markup",
+    "description": (
+        "Read what GV's markup covers in one area of a page ($0, code): the reviewers' notes and "
+        "boxes removed (the pasted drawings kept), small coloured boxes baked inside a pasted "
+        "drawing hidden where code can tell them apart, and the drawing's own text in the area "
+        "(its text layer, which still holds what an opaque box covers). Returns the area as shown "
+        "and under the markup, and says what it removed. Use it where GV's markup hides a value."
+    ),
+    "input_schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["page", "box"],
+        "properties": {
+            "page": {"type": "integer", "minimum": 1, "description": "Page (from 1)"},
+            "box": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["x0", "y0", "x1", "y1"],
+                "properties": {
+                    "x0": {"type": "number"},
+                    "y0": {"type": "number"},
+                    "x1": {"type": "number"},
+                    "y1": {"type": "number"},
+                },
+                "description": "PDF points of the page as shown, origin top-left",
+            },
+            "file": {
+                "type": "string",
+                "description": "The upload's file name, when the set has more than one",
+            },
+            "description": {"type": "string", "description": "Why I'm reading under the markup"},
+        },
+    },
+}
 #: The lead's tools, in a fixed order (the order is part of the cached, replayed prefix).
 LEAD_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     _BASH,
@@ -569,6 +611,7 @@ LEAD_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     COMPARE_ROUNDS,
     VERIFY_VALUE,
     MEASURE_ON_DRAWING,
+    READ_UNDER_MARKUP,
 )
 HELPER_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     _BASH,
@@ -581,6 +624,7 @@ HELPER_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     *LEDGER_TOOLS,
     VERIFY_VALUE,
     MEASURE_ON_DRAWING,
+    READ_UNDER_MARKUP,
 )
 
 _DEFAULT_LABELS: Final[Mapping[str, str]] = {
@@ -597,6 +641,7 @@ _DEFAULT_LABELS: Final[Mapping[str, str]] = {
     "compare_rounds": "Compared two rounds",
     "verify_value": "Checked a printed value",
     "measure_on_drawing": "Measured on the drawing",
+    "read_under_markup": "Read under GV's markup",
 }
 
 
@@ -862,6 +907,7 @@ class ChatTools:
                 page,
                 dict(zip(("x0", "y0", "x1", "y1"), box, strict=True)),
                 expected,
+                page_cache=self._hires(),
             ).as_dict()
         except Exception as failed:  # noqa: BLE001 - told plainly, never a crash
             _log_failure(failed)
@@ -949,6 +995,79 @@ class ChatTools:
             ),
         )
 
+    def read_under_markup(self, raw: object, step: dict[str, Any], by: str = "lead") -> ToolResult:
+        """One area drawn as shown and under GV's markup (`under_markup`), logged as seen."""
+        started = monotonic()
+        try:
+            given = arguments(
+                raw, frozenset({"page", "box", "file", "description"}), frozenset({"page", "box"})
+            )
+            name, page, box, _label = self._crop_request(
+                {k: given[k] for k in ("page", "box", "file") if k in given}, 0
+            )
+        except SandboxRefused as refused:
+            return _refused(step, started, str(refused).replace("crops[0].", ""))
+        try:
+            module = import_module("app.review.assistant.under_markup")
+            found = module.read_under_markup(
+                self.workspace.uploads / name, page, (box[0], box[1], box[2], box[3])
+            )
+        except ValueError as wrong:
+            return _refused(step, started, str(wrong))
+        except Exception as failed:  # noqa: BLE001 - told plainly, never a crash
+            _log_failure(failed)
+            return _refused(step, started, "the page could not be read just now")
+        self.workspace.pictures.mkdir(parents=True, exist_ok=True)
+        ids: list[str] = []
+        for png in (found.as_shown, found.under):
+            picture_id = str(uuid4())
+            (self.workspace.pictures / f"{picture_id}.png").write_bytes(png)
+            ids.append(picture_id)
+        lines = found.lines()
+        content: list[dict[str, Any]] = [{"type": "text", "text": lines[0]}]
+        for picture_id in ids:
+            content.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "gv_picture",
+                        "picture_id": picture_id,
+                        "width": found.width,
+                        "height": found.height,
+                    },
+                }
+            )
+        content.append({"type": "text", "text": "\n".join(lines[1:])})
+        x0, y0, x1, y1 = found.box
+        seen = {
+            "by": by,
+            "file": name,
+            "page": page,
+            "box": {"x0": x0, "y0": y0, "x1": x1, "y1": y1},
+            "dpi": found.dpi,
+            "picture_id": ids[1],
+            "how": "under_markup",
+        }
+        with self._lock:
+            self.seen.append(seen)
+        return ToolResult(
+            content=content,
+            step=_done(
+                step,
+                started,
+                ok=True,
+                label=f"Read under GV's markup on page {page}",
+                output=_shown("\n".join(lines)),
+                picture_id=ids[1],
+                seen=[seen],
+            ),
+        )
+
+    def _hires(self) -> Path | None:
+        """The set pack's hi-res page cache (#1548), when the chat has a pack."""
+        pack = self.workspace.set_pack
+        return None if pack is None else pack / "hires"
+
     # ---- zoom ------------------------------------------------------------------------------------
 
     def _crop_request(self, raw: object, number: int) -> tuple[str, int, tuple[float, ...], str]:
@@ -1009,11 +1128,15 @@ class ChatTools:
         content: list[dict[str, Any]] = []
         seen: list[dict[str, Any]] = []
         lines: list[str] = []
+        # The hi-res page cache (#1548): every page asked for starts drawing at once, and each
+        # crop is cut from its page's 300-dpi picture.
+        cache = folder / pack.HIRES
+        _prefetch_pages(pack, folder, self.workspace.uploads, cache, wanted)
         for number, (name, page, box, label) in enumerate(wanted, start=1):
             title = f"Crop {number}" + (f" ({label})" if label else "")
             try:
                 pdf = pack.drawings_only(folder, self.workspace.uploads, name)
-                crop = pack.crop_picture(pdf, page, box, dpi)
+                crop = pack.crop_picture(pdf, page, box, dpi, cache=cache)
             except ValueError as wrong:
                 lines.append(f"{title}: not drawn: {wrong}.")
                 content.append({"type": "text", "text": lines[-1]})
@@ -1284,6 +1407,23 @@ def _done_presented(
         step=_done(step, started, ok=problem is None, output=text),
         is_error=problem is not None,
     )
+
+
+def _prefetch_pages(
+    pack: Any,
+    folder: Path,
+    uploads: Path,
+    cache: Path,
+    wanted: Sequence[tuple[str, int, tuple[float, ...], str]],
+) -> None:
+    """Start drawing each page a zoom asks for (#1548), so pages render while others are cut."""
+    try:
+        cache_module = import_module("app.review.assistant.page_cache")
+        for name in sorted({item[0] for item in wanted}):
+            pages = sorted({item[1] for item in wanted if item[0] == name})
+            cache_module.prefetch(cache, pack.drawings_only(folder, uploads, name), pages)
+    except Exception as failed:  # noqa: BLE001 - each crop is drawn (and told) on its own
+        _log_failure(failed)
 
 
 def _log_failure(failed: BaseException) -> None:
