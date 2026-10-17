@@ -50,7 +50,7 @@ export function UnderstoodLine({
             setProblem(null);
           }
         }}
-        className="flex w-full max-w-[min(85%,36rem)] flex-col gap-2 self-end rounded-xl border bg-background p-3 text-sm"
+        className="-mt-4 flex w-full max-w-[min(85%,36rem)] flex-col gap-2 self-end rounded-xl border bg-background p-3 text-sm"
       >
         <label className="flex flex-col gap-1">
           <span className="text-xs text-muted-foreground">What to check</span>
@@ -67,7 +67,7 @@ export function UnderstoodLine({
           <span className="text-xs text-muted-foreground">Compare (comma between items, optional)</span>
           <input className={field} value={form.compare} onChange={(event) => setForm({ ...form, compare: event.target.value })} />
         </label>
-        <div className="flex gap-2">
+        <div className="flex flex-col gap-2 sm:flex-row">
           <label className="flex flex-1 flex-col gap-1">
             <span className="text-xs text-muted-foreground">Pages</span>
             <input
@@ -122,7 +122,7 @@ export function UnderstoodLine({
   }
 
   return (
-    <p data-slot="chat-understood" className="-mt-2 max-w-[min(85%,36rem)] self-end text-right text-xs leading-relaxed text-muted-foreground">
+    <p data-slot="chat-understood" className="-mt-6 max-w-[min(85%,36rem)] self-end text-right text-xs leading-relaxed text-muted-foreground">
       <span>Understood as: </span>
       <span>{understoodWords(understood)}</span>
       {canEdit && (
