@@ -22,6 +22,12 @@ notes the vendor contradicts, position (centred, aligned, colliding, fitting its
 and count, the ID set against the brand prototype, and sizes scaled where none is printed. The
 checklist names each of them; the report line code reads back is unchanged.
 
+Then (#1545), on items that need a person, claude.ai did the reviewer's reasoning (what a dimension
+measures, an estimate with its method, a likely answer, what to confirm) where ours said only
+"confirm the bay sizes"; and four heights were called Wrong although the architect's dimension ran
+to the top of a box above the unit. So every Your-decision item carries `decision_help`, and the
+extent of a dimension is measured (`measure_on_drawing`) before a height or width is called Wrong.
+
 Pure code, no AI call and no I/O: the engine calls `helper_brief` for each helper it plans and
 `checklist_gaps` on each helper's report.
 """
@@ -132,9 +138,29 @@ PAGE_CHECKLIST: Final[tuple[tuple[str, str], ...]] = (
     (
         "scaled",
         (
-            "Scaled values: where the architect prints no size, a value measured off the drawing "
-            'against one of its own printed dimensions is only "about X (scaled, ±1/2")", and '
-            "only ever status check (Your decision), never different (Wrong)."
+            "Scaled values: where the architect prints no size, measure it with measure_on_drawing "
+            '(two printed dimensions of the same view to calibrate): "about X (±T)", only ever '
+            "status check (Your decision), never different (Wrong)."
+        ),
+    ),
+    (
+        "span",
+        (
+            "Before a height or width is status different: what does the architect's dimension "
+            "span? measure_on_drawing with `dimension` (its extension-line ends) and from/to on "
+            "the unit's own outline. If it spans more than the unit (a box, soffit, blocking or "
+            "wall beyond it): status check, check_reason different_extent. Otherwise two PRINTED "
+            "values that differ for the same span are different (Wrong), not check."
+        ),
+    ),
+    (
+        "decision",
+        (
+            "Every Your-decision item (status check) carries decision_help, in short plain words: "
+            "what it measures (where its extension lines end), your best estimate with its method "
+            "(a string added up, an overall less its fillers, measure_on_drawing) or null, likely "
+            "(probably fine / probably wrong / can't tell), what to confirm. A brand prototype "
+            "sheet that sums exactly to the vendor's value goes in the method."
         ),
     ),
     (
@@ -164,7 +190,7 @@ LEADS from GV's own page review on your pages (it could not settle them, or saw 
 CHECKLIST, for every page:
 {checklist}
 
-OUTPUT: report_finding for EVERY item you compare, the same ones too (status different, check or same), with vendor_box and arch_box, values as printed in inches, round on vendor findings, vs_page when the architect is on another page. Name each item starting with its area from the list above ("<area>: counter height"), the same way on every page, view and round. record_string for every dimension string and record_reading for every value you read, both sides; never add up yourself. set_coverage for each page. verified: false (the lead verifies).
+OUTPUT: report_finding for EVERY item you compare, the same ones too (status different, check or same; every check with decision_help), with vendor_box and arch_box, values as printed in inches, round on vendor findings, vs_page when the architect is on another page. Name each item starting with its area from the list above ("<area>: counter height"), the same way on every page, view and round. record_string for every dimension string and record_reading for every value you read, both sides; never add up yourself. set_coverage for each page. verified: false (the lead verifies).
 
 REPORT BACK (short): per page the differences (item, vendor vs architect, finding ids), anything unreadable and where, then one line per page exactly like
 CHECKLIST p<N>: architect a/b; notes a/b; strings a/b; not compared: <what and why, or none>
