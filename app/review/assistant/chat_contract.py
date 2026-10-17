@@ -78,6 +78,8 @@ type ChatStepTool = Literal[
     "compare_rounds",
     "verify_value",
     "measure_on_drawing",
+    "zoom",
+    "read_under_markup",
 ]
 type ChatIntent = Literal[
     "fact",
