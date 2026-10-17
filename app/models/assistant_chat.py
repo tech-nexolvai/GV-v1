@@ -172,9 +172,9 @@ class AssistantFindingDecision(Base, TimestampedUUID, Immutable):
 __all__ = [
     "CHAT_ROLES",
     "CHAT_STOPS",
+    "FINDING_DECISIONS",
     "AssistantChat",
     "AssistantChatFile",
     "AssistantChatMessage",
     "AssistantFindingDecision",
-    "FINDING_DECISIONS",
 ]

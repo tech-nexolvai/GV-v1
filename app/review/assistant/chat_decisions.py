@@ -38,6 +38,7 @@ from app.review.assistant.sandbox import ChatWorkspace
 __all__ = [
     "DRAWING_MODULE",
     "DecidedFiles",
+    "decided_findings",
     "decided_summary",
     "decision_out",
     "latest_decisions",

@@ -170,6 +170,7 @@ __all__ = [
     "AssistantChat",
     "AssistantChatFile",
     "AssistantChatMessage",
+    "AssistantFindingDecision",
     "AuditEvent",
     "CanonicalObservation",
     "CaseResult",

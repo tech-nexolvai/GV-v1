@@ -164,7 +164,8 @@ def decided_markup_pdf(
 ) -> None:
     """A copy of `source` with a red cloud and note at each agreed finding that can be placed, the
     stamp on page 1, and notes pages: agreed, not yet decided, not a problem, right.
-    `findings`: (number, finding, page, box, where), as `chat_findings.place_findings` makes them."""
+    `findings`: (number, finding, page, box, where), as `chat_findings.place_findings` makes them.
+    """
     writer = PdfWriter(clone_from=PdfReader(str(source)))
     plain = [finding for _n, finding, _p, _b, _w in findings]
     title = _title(plain, MARKUP_TITLE)
@@ -187,7 +188,9 @@ def decided_markup_pdf(
             continue
         media = page.mediabox
 
-        def draw(c: canvas.Canvas, page: Any = page, marks: Any = marks, n: int = page_number) -> None:
+        def draw(
+            c: canvas.Canvas, page: Any = page, marks: Any = marks, n: int = page_number
+        ) -> None:
             if marks:
                 _draw_agreed(c, page, marks)
             if n == 1:

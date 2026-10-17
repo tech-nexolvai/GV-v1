@@ -43,6 +43,7 @@ import io
 import logging
 import re
 from collections.abc import Iterable, Mapping, Sequence
+from datetime import datetime
 from decimal import Decimal
 from importlib import import_module
 from pathlib import Path
@@ -1038,7 +1039,13 @@ CSV_COLUMNS: Final = (
     "Round status",
     "Why",
     "Reported by",
+    "Decision",
+    "Decision note",
+    "Decided by",
+    "Decided at",
 )
+#: How the reviewer's decision (#1521) reads in the CSV.
+_DECISION_WORDS: Final = {"agree": "Agreed", "not_a_problem": "Not a problem"}
 _FORMULA_START: Final = ("=", "+", "-", "@", "\t", "\r")
 
 
@@ -1046,6 +1053,21 @@ def _cell(value: object) -> str:
     """A text cell that a spreadsheet never runs as a formula."""
     text = "" if value is None else str(value)
     return "'" + text if text.startswith(_FORMULA_START) else text
+
+
+def _decision_cells(finding: Mapping[str, Any]) -> list[str]:
+    """Decision, its note, who and when; "Not yet decided" for an undecided wrong or
+    your-decision item (a right item needs no decision)."""
+    decision = finding.get("decision")
+    if not isinstance(decision, Mapping):
+        return ["" if cloud_kind(finding) is None else "Not yet decided", "", "", ""]
+    at = decision.get("at")
+    return [
+        _DECISION_WORDS.get(str(decision.get("decision")), str(decision.get("decision"))),
+        _cell(decision.get("note")),
+        _cell(decision.get("by")),
+        at.isoformat() if isinstance(at, datetime) else str(at or ""),
+    ]
 
 
 def findings_csv(findings: Sequence[Mapping[str, Any]]) -> str:
@@ -1083,6 +1105,7 @@ def findings_csv(findings: Sequence[Mapping[str, Any]]) -> str:
                 finding.get("round_status") or "",
                 _cell(finding.get("why")),
                 finding.get("created_by"),
+                *_decision_cells(finding),
             ]
         )
     return "﻿" + out.getvalue()
