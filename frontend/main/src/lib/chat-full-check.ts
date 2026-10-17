@@ -14,6 +14,7 @@
 
 import type { ChatFile, ChatFinding, ChatProduct, FindingSource } from '@/lib/chat-api';
 import type { ViewMessage } from '@/lib/chat-messages';
+import { proofGroup } from '@/lib/chat-proof';
 import { activeProducts, inRegistryOrder, productCatalog, productPlural, type ProductCatalog } from '@/lib/products';
 
 /** The products a chip can pick now: the registry's active ones, in its order. */
@@ -178,9 +179,16 @@ export function progressWords(
   return parts.join(' · ');
 }
 
-/** The page the cloud drawing's preview shows: the first wrong item's vendor page, else the first item's, else 1. */
-export function previewPage(findings: readonly Pick<ChatFinding, 'status' | 'page' | 'vendor_box'>[]): number {
-  const first = findings.find((finding) => finding.status === 'different') ?? findings.find((finding) => finding.status === 'check') ?? findings[0];
+/**
+ * The page the cloud drawing's preview shows: the vendor page of the biggest clouded item (#1581:
+ * only code-proved Wrong items are clouded), else the first wrong item's, else the first item's,
+ * else 1. It is the vendor file's own page number (the drawing labels its pages so).
+ */
+export function previewPage(findings: readonly ChatFinding[]): number {
+  const clouded = findings
+    .filter((finding) => proofGroup(finding) === 'clouded')
+    .sort((a, b) => (b.impact?.score ?? 0) - (a.impact?.score ?? 0));
+  const first = clouded[0] ?? findings.find((finding) => finding.status === 'different') ?? findings.find((finding) => finding.status === 'check') ?? findings[0];
   return first ? first.vendor_box?.page ?? first.page : 1;
 }
 

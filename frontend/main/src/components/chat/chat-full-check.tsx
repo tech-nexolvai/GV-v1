@@ -11,13 +11,15 @@ import { progressWords } from '@/lib/chat-full-check';
 import { planAnswers, usePlanCheck } from '@/lib/chat-plan-check';
 import { fileKind, fileSize, type ViewMessage } from '@/lib/chat-messages';
 import { activeProducts, comingLater, useProductCatalog } from '@/lib/products';
+import type { ProofCounts } from '@/lib/chat-proof';
 import { cn } from '@/lib/utils';
 
 /**
  * Chat v4 (CONTRACT4-full-check, #1483): the one-click full check's parts. The Countertop / Cabinet
  * chips (in the composer), the "Run full check" button with its small confirm popover, and the
  * large cloud-drawing card a full-check answer leads with. Read-only: nothing changes the review;
- * the cloud drawing is an AI markup draft made by code, not GV's signed review.
+ * the cloud drawing is made by code with no clicks (#1581): only Wrong values code proved are
+ * clouded, so it is ready to download at once; the reviewer's decisions are optional overrides.
  */
 
 /**
@@ -142,7 +144,7 @@ function CloudPreview({ href, page, total }: { href: string; page: number; total
       if (!entries.some((entry) => entry.isIntersecting)) return;
       observer.disconnect();
       import('@/api/pdf')
-        .then(({ renderPdfPage }) => renderPdfPage(href, page, 900))
+        .then(({ renderPdfPage }) => renderPdfPage(href, page, 900, { byLabel: true }))
         .then((src) => { if (!cancelled) setState({ src }); })
         .catch(() => { /* The plain icon stays: a preview is a nicety, the file is the output. */ });
     }, { rootMargin: '200px' });
@@ -181,15 +183,17 @@ export interface CloudReview {
   failed: boolean;
 }
 
-export function FullCheckFiles({ cloud, report, chatId, page = 1, totalPages = null, counts = null, review = null }: {
+export function FullCheckFiles({ cloud, report, chatId, page = 1, totalPages = null, counts = null, proof = null, review = null }: {
   cloud: ChatFile | null;
   report: ChatFile | null;
   chatId: string;
-  /** The page the preview shows (the first wrong item's). */
+  /** The page the preview shows (the biggest clouded item's, the vendor's own page number). */
   page?: number;
   totalPages?: number | null;
   counts?: Pick<FindingCounts, 'different' | 'check'> | null;
-  /** #1525: the reviewer's answers so far, and "Update cloud drawing". */
+  /** #1581: the drawing's own groups (clouded / not verified / could not compare), as its cover counts them. */
+  proof?: ProofCounts | null;
+  /** #1525: the reviewer's answers so far, and "Update cloud drawing" (optional overrides since #1581). */
   review?: CloudReview | null;
 }) {
   if (!cloud && !report) return null;
@@ -216,9 +220,15 @@ export function FullCheckFiles({ cloud, report, chatId, page = 1, totalPages = n
           <p className="text-xs font-medium text-muted-foreground">Main output</p>
           <p className="text-[17px] font-semibold tracking-[-0.01em]">Cloud drawing</p>
           <p className="text-[13.5px] text-muted-foreground">
-            The vendor’s drawing with a cloud at every item: what is wrong and what it should be. Draft AI markup, not GV’s signed review.
+            Ready to send: a red cloud at each wrong value code proved, with what it should be in green and the proof for each. The rest is listed in grey to check.
           </p>
-          {counts && (counts.different > 0 || counts.check > 0) && (
+          {proof ? (
+            <p data-slot="chat-cloud-counts" className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground tabular-nums">
+              <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="size-2 rounded-full bg-outcome-fail" /><span className="font-medium text-foreground">{proof.clouded}</span> clouded, proved by code</span>
+              {proof.not_verified > 0 && <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="size-2 rounded-full bg-muted-foreground/50" />{proof.not_verified} not verified by code</span>}
+              {proof.could_not_compare > 0 && <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="size-2 rounded-full bg-muted-foreground/50" />{proof.could_not_compare} could not compare</span>}
+            </p>
+          ) : counts && (counts.different > 0 || counts.check > 0) && (
             <p className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground tabular-nums">
               {counts.different > 0 && <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="size-2 rounded-full bg-outcome-fail" />{counts.different} wrong</span>}
               {counts.check > 0 && <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="size-2 rounded-full bg-outcome-review" />{counts.check} to decide</span>}
@@ -226,19 +236,21 @@ export function FullCheckFiles({ cloud, report, chatId, page = 1, totalPages = n
           )}
           <p className="text-xs text-muted-foreground"><span className="break-all">{cloud.name}</span> · {[fileKind(cloud), fileSize(cloud.size)].filter(Boolean).join(' · ')}</p>
         </div>
-        {review && review.total > 0 && (
-          <div data-slot="chat-cloud-review" className="grid gap-1.5">
-            <p className="flex flex-wrap items-baseline gap-x-2 text-[13px]">
-              <span className="font-medium tabular-nums">{review.decided} of {review.total} decided</span>
-              {review.reviewedBy && <span className="text-muted-foreground"><span aria-hidden="true">· </span>Reviewed by {review.reviewedBy}</span>}
-            </p>
-            <span aria-hidden="true" className="flex h-1 w-full max-w-xs overflow-hidden rounded-full bg-muted">
-              <span className="h-full rounded-full bg-foreground/70 transition-[width] duration-300 motion-reduce:transition-none" style={{ width: `${(review.decided / review.total) * 100}%` }} />
-            </span>
-            {review.decided === 0 && <p className="text-xs text-muted-foreground">Agree or dismiss each item below; the drawing then clouds only what you agreed with.</p>}
-          </div>
-        )}
         <div className="flex flex-wrap gap-2">
+          <a
+            href={href(cloud)}
+            download={cloud.name}
+            aria-label={`Download ${cloud.name}`}
+            data-slot="chat-cloud-download"
+            className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-primary px-3.5 text-sm font-medium text-primary-foreground hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none"
+          >
+            <Download className="size-4" aria-hidden="true" />
+            Download
+          </a>
+          <a href={href(cloud)} target="_blank" rel="noopener noreferrer" aria-label="Open cloud drawing" className="inline-flex h-9 items-center gap-1.5 rounded-lg border bg-background px-3 text-sm font-medium hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
+            <ExternalLink className="size-4" aria-hidden="true" />
+            Open
+          </a>
           {review?.onUpdate && review.decided > 0 && (
             <button
               type="button"
@@ -246,29 +258,18 @@ export function FullCheckFiles({ cloud, report, chatId, page = 1, totalPages = n
               onClick={review.onUpdate}
               disabled={review.updating}
               aria-busy={review.updating}
-              className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-primary px-3.5 text-sm font-medium text-primary-foreground hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none disabled:cursor-progress disabled:opacity-70"
+              className="inline-flex h-9 items-center gap-1.5 rounded-lg border bg-background px-3 text-sm font-medium hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:cursor-progress disabled:opacity-70"
             >
               <RefreshCw className={cn('size-4', review.updating && 'animate-spin motion-reduce:animate-none')} aria-hidden="true" />
               {review.updating ? 'Updating the cloud drawing…' : 'Update cloud drawing'}
             </button>
           )}
-          <a
-            href={href(cloud)}
-            target="_blank"
-            rel="noopener noreferrer"
-            className={cn(
-              'inline-flex h-9 items-center gap-1.5 rounded-lg px-3.5 text-sm font-medium focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none',
-              review?.onUpdate && review.decided > 0 ? 'border bg-background hover:bg-accent' : 'bg-primary text-primary-foreground hover:opacity-90',
-            )}
-          >
-            <ExternalLink className="size-4" aria-hidden="true" />
-            Open cloud drawing
-          </a>
-          <a href={href(cloud)} download={cloud.name} aria-label={`Download ${cloud.name}`} className="inline-flex h-9 items-center gap-1.5 rounded-lg border bg-background px-3 text-sm font-medium hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
-            <Download className="size-4" aria-hidden="true" />
-            Download
-          </a>
         </div>
+        {review && review.total > 0 && (
+          <p data-slot="chat-cloud-review" className="text-xs text-muted-foreground tabular-nums">
+            {review.decided} of {review.total} decided{review.reviewedBy ? ` · reviewed by ${review.reviewedBy}` : ''} · optional: Agree or Not a problem below overrides the drawing
+          </p>
+        )}
         {review?.failed && <p role="alert" className="text-sm text-muted-foreground">The cloud drawing could not be made again right now. Try again.</p>}
         {reportLine}
       </div>
@@ -280,7 +281,7 @@ export function FullCheckFiles({ cloud, report, chatId, page = 1, totalPages = n
 
 const NUMBERS = [
   { status: 'different', words: 'Wrong', hint: 'Send back to the vendor', dot: 'bg-outcome-fail' },
-  { status: 'check', words: 'Your decision', hint: 'Agree or dismiss each', dot: 'bg-outcome-review' },
+  { status: 'check', words: 'Your decision', hint: 'Listed with the reason', dot: 'bg-outcome-review' },
   { status: 'same', words: 'Right', hint: 'Matches the drawings', dot: 'bg-outcome-pass' },
 ] as const;
 

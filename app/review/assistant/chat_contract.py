@@ -533,6 +533,48 @@ class ChatFindingImpactOut(BaseModel):
     why: str = Field(description='Plain words: "changes fabrication (overall size); 9 in off".')
 
 
+class ChatFindingPairingOut(BaseModel):
+    """Proof that the vendor's and the architect's numbers measure the same thing (#1581): needed
+    before an architect comparison is clouded with no human step."""
+
+    model_config = ConfigDict(frozen=True)
+
+    proved: bool
+    method: Literal["code_geometry", "blind_picks"] = Field(
+        description="code_geometry: both values printed at their spots and their dimension "
+        "lines' end points on the same drawn extent; blind_picks: two blind AI picks of the same "
+        "labels plus code's checks (setting assistant_pairing_proof)."
+    )
+    how: str | None = Field(default=None, description="In plain words, for the proof page.")
+
+
+class ChatFindingProofOut(BaseModel):
+    """Where the zero-click cloud drawing puts a finding (#1581), worked out by code on read
+    (`proof.proof_of`): only Wrong items code proved are clouded; the reviewer's Agree / Not a
+    problem override."""
+
+    model_config = ConfigDict(frozen=True)
+
+    group: Literal[
+        "clouded", "not_verified", "could_not_compare", "right", "not_compared", "dismissed"
+    ] = Field(
+        description="clouded: Wrong, proved by code (red cloud); not_verified: Wrong that only AI "
+        "readings back (grey, check before sending); could_not_compare: Your decision (grey, with "
+        "the reason); right; not_compared; dismissed: the reviewer marked it not a problem."
+    )
+    should_be: str | None = Field(
+        default=None,
+        description="Wrong items: what the value should be and what governs it, e.g. '37\" "
+        "(architect 3'-1\", page 28)'.",
+    )
+    proof: str | None = Field(
+        default=None, description="Clouded items: the check that proved it, in plain words."
+    )
+    reason: str | None = Field(
+        default=None, description="The other groups: why it is not clouded, in one line."
+    )
+
+
 class ChatFindingLaterOut(BaseModel):
     """The later answer of the same chat that corrected a finding (#1548)."""
 
@@ -649,6 +691,16 @@ class ChatFindingOut(BaseModel):
         default=None,
         description="Wrong and Your-decision items (#1569): how much it matters, by code; the "
         "screen, the cloud drawing's numbers and the check report follow this order.",
+    )
+    pairing: ChatFindingPairingOut | None = Field(
+        default=None,
+        description="Proof that both numbers measure the same thing (#1581); without it an "
+        "architect comparison is never clouded automatically.",
+    )
+    proof: ChatFindingProofOut | None = Field(
+        default=None,
+        description="Where the zero-click cloud drawing puts it, and why (#1581); worked out on "
+        "read, so it follows the reviewer's latest decision.",
     )
     check_reason: (
         Literal["different_extent", "which_governs", "pairing_not_certain", "scaled", "site_verify"]

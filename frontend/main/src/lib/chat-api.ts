@@ -378,6 +378,26 @@ export interface ChatFinding {
   impact?: FindingImpact | null;
   /** #1548: set when a later message of the chat corrected it; this is its newest version. */
   updated_in?: FindingLater | null;
+  /**
+   * #1581: where the zero-click cloud drawing puts it, by code (`proof.py`): only Wrong items code
+   * proved are clouded. Added on a stored answer (not while it streams); follows the decision.
+   */
+  proof?: FindingProof | null;
+  /** #1581: proof that both numbers measure the same thing; an architect comparison needs it to be clouded. */
+  pairing?: { proved: boolean; method: 'code_geometry' | 'blind_picks'; how?: string | null } | null;
+}
+
+/** #1581: the zero-click cloud drawing's group for a finding, and its words. */
+export type ProofGroup = 'clouded' | 'not_verified' | 'could_not_compare' | 'right' | 'not_compared' | 'dismissed';
+
+export interface FindingProof {
+  group: ProofGroup;
+  /** Wrong items: what it should be and what governs it: '37" (architect 3'-1", page 28)'. */
+  should_be?: string | null;
+  /** Clouded items: the check that proved it, in plain words. */
+  proof?: string | null;
+  /** The other groups: why it is not clouded, in one line. */
+  reason?: string | null;
 }
 
 /** #1569: code's impact score (0-100), its place among the items of its status, and why. */

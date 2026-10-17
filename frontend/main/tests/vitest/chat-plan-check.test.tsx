@@ -71,7 +71,7 @@ describe('the plan check before a full check', () => {
     const box = document.querySelector<HTMLElement>('[data-slot="chat-plan-box"]')!;
     expect(box.style.left).toBe('10%');
     expect(box.style.top).toBe('50%');
-    expect(screen.getByText(/1 more place the page map is unsure of/)).toBeTruthy();
+    expect(screen.getByText(/Optional: skip these and GV Review takes the first answer itself, here and in 1 more place/)).toBeTruthy();
 
     const architect = screen.getByRole('button', { name: 'Architect’s drawing' });
     await user.click(architect);

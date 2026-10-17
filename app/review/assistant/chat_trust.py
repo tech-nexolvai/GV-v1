@@ -396,6 +396,8 @@ def apply_checks(
     }
     # The vendor's own string (#1554): code's sum of its parts, for the row and the notes.
     out["parts_sum"] = _parts_sum(finding)
+    # Proof that both numbers measure the same thing (#1581): set by the pairing check, if any.
+    out.setdefault("pairing", None)
     # Set for a "same" item at the finish (`mark_compared`): not seen is not right.
     out.setdefault("compared", None)
     out.setdefault("not_compared_why", None)
@@ -1209,6 +1211,8 @@ CSV_COLUMNS: Final = (
     "Decision note",
     "Decided by",
     "Decided at",
+    "Should be",
+    "Proof",
 )
 #: How the reviewer's decision (#1521) reads in the CSV.
 _DECISION_WORDS: Final = {"agree": "Agreed", "not_a_problem": "Not a problem"}
@@ -1234,6 +1238,16 @@ def _decision_cells(finding: Mapping[str, Any]) -> list[str]:
         _cell(decision.get("by")),
         at.isoformat() if isinstance(at, datetime) else str(at or ""),
     ]
+
+
+def _proof_cells(finding: Mapping[str, Any]) -> list[str]:
+    """Should be (Wrong items) and Proof: where the zero-click cloud drawing puts the item and the
+    check that proved it, or why it is not clouded (#1581, `proof.py`)."""
+    proof = import_module("app.review.assistant.proof")
+    found = proof.proof_of(finding)
+    words = proof.GROUP_WORDS[found["group"]]
+    detail = found["proof"] or found["reason"]
+    return [_cell(found["should_be"] or ""), _cell(f"{words}: {detail}" if detail else words)]
 
 
 def findings_csv(findings: Sequence[Mapping[str, Any]]) -> str:
@@ -1272,6 +1286,7 @@ def findings_csv(findings: Sequence[Mapping[str, Any]]) -> str:
                 _cell(finding.get("why")),
                 finding.get("created_by"),
                 *_decision_cells(finding),
+                *_proof_cells(finding),
             ]
         )
     return "﻿" + out.getvalue()
