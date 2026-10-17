@@ -31,6 +31,7 @@ import {
   AREA_PROMPT,
   areaPrompt,
   effortFor,
+  FULL_CHECK_MINUTES,
   fullCheckEstimate,
   GROUP_WORDS,
   nextBlank,
@@ -308,7 +309,7 @@ export function PlusMenu(props: PlusMenuProps) {
             <div data-slot="chat-plus-confirm" className="grid gap-3 p-3">
               <p data-slot="chat-full-check-summary" className="text-sm font-medium tabular-nums">{fullCheck.summary}</p>
               <p className="text-xs text-muted-foreground">
-                Checks every page against the architect and GV’s rules, then code draws the cloud drawing and the check report. About 15 minutes.
+                Checks every page against the architect and GV’s rules, then code draws the cloud drawing and the check report. About {FULL_CHECK_MINUTES} minutes.
               </p>
               <div className="flex justify-end gap-2">
                 <button
@@ -428,17 +429,7 @@ function matches(value: string, search: string, keywords?: string[]): number {
   return (keywords?.[0] ?? value).toLowerCase().startsWith(words[0]) ? 1 : 0.5;
 }
 
-/** "~2 min · ~$0.50": the numbers in the numbers' face, the dot between them in the words' face. */
+/** "~2 min · ~$0.50", in the words' own face with even-width digits (no typewriter text). */
 function Estimate({ words }: { words: string }) {
-  const parts = words.split(' · ');
-  return (
-    <>
-      {parts.map((part, at) => (
-        <span key={part}>
-          {at > 0 && ' · '}
-          <span className="num">{part}</span>
-        </span>
-      ))}
-    </>
-  );
+  return <span className="font-sans tabular-nums">{words}</span>;
 }
