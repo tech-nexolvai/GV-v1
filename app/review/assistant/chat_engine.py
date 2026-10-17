@@ -169,6 +169,7 @@ from app.review.assistant.chat_trust import (
     with_second_read,
 )
 from app.review.assistant.chat_unknowns import refused_from_diff, unknown_records
+from app.review.assistant.decision_resolver import resolve_answer
 from app.review.assistant.full_check_brief import (
     checklist_gaps,
     checklist_send_back,
@@ -650,6 +651,8 @@ class ChatEngine:
         self._recorded_document: Mapping[str, Any] | None = None
         self._recorded_read = False
         self._unknowns: list[dict[str, Any]] = []
+        # The decision items code settled itself (#1554), for the cloud drawing and the report.
+        self._settled: list[dict[str, Any]] = []
         """What this answer did not check (`chat_unknowns`), set by the trust phase."""
         self.refused_diffs: list[dict[str, Any]] = []
         """Round pairs `compare_rounds` would not line up (an unknown each)."""
@@ -1892,6 +1895,7 @@ class ChatEngine:
             self._finish_trust(skipped)
 
     def _finish_trust(self, skipped: int) -> None:
+        self._resolve_decisions()
         book = self.book
         statuses = round_statuses(book.live())
         with self._lock:
@@ -1941,6 +1945,16 @@ class ChatEngine:
         index = self._add_block({"type": "trust", "trust": report})
         self._trust_index = index
         self.emit("trust", {"index": index, "trust": json.loads(json.dumps(report))})
+
+    def _resolve_decisions(self) -> None:
+        """Whole-set work (#1554): code settles the "Your decision" items the drawings answer
+        (`decision_resolver`) before the trust report, the files and the summary."""
+        if not self._whole_set_work():
+            return
+        try:
+            self._settled = resolve_answer(self)
+        except Exception:  # noqa: BLE001 - the answer keeps its decision items as they were
+            _log.exception("assistant chat decision resolver failed")
 
     def _recorded_missing(self) -> list[dict[str, Any]]:
         """GV Review's recorded differences this answer neither reports nor dismissed (whole-set
@@ -2080,6 +2094,7 @@ class ChatEngine:
                 f"{item.get('what')}) is not in this answer."
             )
         made_base = self._markup_base
+        settled = list(self._settled)
 
         def drawing(out: Path) -> MarkupFile:
             base = None
@@ -2088,10 +2103,12 @@ class ChatEngine:
                     base = made_base.result()
                 except Exception as failed:  # noqa: BLE001 - the copy is made again below
                     _log.warning("assistant chat markup copy failed: %s", type(failed).__name__)
-            return make_markup_file(workspace, findings, out, "AI cloud drawing", base)
+            return make_markup_file(
+                workspace, findings, out, "AI cloud drawing", base, settled=settled
+            )
 
         def checked(out: Path) -> MarkupFile:
-            return make_report_file(workspace, summary, findings, not_checked, out)
+            return make_report_file(workspace, summary, findings, not_checked, out, settled=settled)
 
         makers: tuple[tuple[str, str, Callable[[Path], MarkupFile]], ...] = (
             ("cloud drawing", "cloud_drawing", drawing),

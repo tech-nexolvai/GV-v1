@@ -4425,6 +4425,26 @@ export interface components {
             /** Url */
             url: string;
         };
+        /**
+         * ChatFindingAlsoOnOut
+         * @description The same item on another page or round, folded into this finding (#1554).
+         */
+        ChatFindingAlsoOnOut: {
+            /** Architect */
+            architect?: string | null;
+            /** Finding Id */
+            finding_id: string;
+            /** Item */
+            item?: string | null;
+            /** Page */
+            page?: number | null;
+            /** Round */
+            round?: number | null;
+            /** Vendor */
+            vendor?: string | null;
+            /** Vs Page */
+            vs_page?: number | null;
+        };
         /** ChatFindingBlock */
         ChatFindingBlock: {
             finding: components["schemas"]["ChatFindingOut"];
@@ -4574,6 +4594,11 @@ export interface components {
          * @description One difference the assistant reported, with code-made evidence and checks.
          */
         ChatFindingOut: {
+            /**
+             * Also On
+             * @description The same item on other pages or rounds, folded in (#1554).
+             */
+            also_on?: components["schemas"]["ChatFindingAlsoOnOut"][] | null;
             arch_box?: components["schemas"]["ChatBoxOut"] | null;
             /**
              * Arch Picture Id
@@ -4611,6 +4636,8 @@ export interface components {
             inches?: components["schemas"]["ChatFindingInchesOut"] | null;
             /** Item */
             item: string;
+            /** @description Status check: why it needs a person (#1554). */
+            keep_reason?: components["schemas"]["ChatKeepReason"] | null;
             /**
              * Ledger Ids
              * @description The reading ledger's entries (S<n>, R<n>) behind it.
@@ -4624,6 +4651,11 @@ export interface components {
             parts?: string[] | null;
             /** Printed Total */
             printed_total?: string | null;
+            /**
+             * Question
+             * @description Status check: the one question a person answers, written by code (#1554).
+             */
+            question?: string | null;
             /**
              * Reads
              * @description Every reading, when a third read settled the second (#1498).
@@ -4646,6 +4678,8 @@ export interface components {
             /** Rule Check Id */
             rule_check_id?: string | null;
             second_read_values?: components["schemas"]["ChatSecondReadValuesOut"] | null;
+            /** @description Set when code settled this item, which was Your decision, by itself (#1554). */
+            settled?: components["schemas"]["ChatFindingSettledOut"] | null;
             /**
              * Source
              * @description cross_view and completeness are made only by code, from the reading ledger.
@@ -4711,6 +4745,30 @@ export interface components {
             value_vendor?: string | null;
         };
         /**
+         * ChatFindingSettledOut
+         * @description How code settled a "Your decision" item by itself (#1554), shown as "Settled by GV
+         *     Review: …".
+         */
+        ChatFindingSettledOut: {
+            /**
+             * How
+             * @description What code did and found, in one plain sentence.
+             */
+            how: string;
+            /**
+             * Method
+             * @description The rule or tool: same_item, gv_limits, vendor_sum, printed_vs_printed, newest_round, prototype_prints_it, legend, sharper_read, other_trades_tags, out_of_scope.
+             */
+            method: string;
+            outcome: components["schemas"]["ChatSettledOutcome"];
+            /**
+             * Was
+             * @default check
+             * @constant
+             */
+            was: "check";
+        };
+        /**
          * ChatGvChecksOut
          * @description Of the differences GV Review's own checks recorded, how many this answer includes.
          */
@@ -4724,6 +4782,8 @@ export interface components {
             /** Recorded */
             recorded: number;
         };
+        /** @enum {string} */
+        ChatKeepReason: "architect_prints_nothing" | "measures_something_else" | "which_governs" | "unreadable" | "needs_job_value" | "layout" | "vendor_disagrees" | "other";
         /** ChatLedgerBoxOut */
         ChatLedgerBoxOut: {
             /** File */
@@ -4935,7 +4995,7 @@ export interface components {
             /** @description The answer's accuracy by code (its `accuracy` block, scored again with today's calibration: see `rescored`); null on older answers. */
             accuracy?: components["schemas"]["ChatAccuracyOut"] | null;
             /** Blocks */
-            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"] | components["schemas"]["ChatScopeBlock"] | components["schemas"]["ChatProgressBlock"] | components["schemas"]["ChatResumeBlock"])[] | null;
+            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"] | components["schemas"]["ChatScopeBlock"] | components["schemas"]["ChatProgressBlock"] | components["schemas"]["ChatResumeBlock"] | components["schemas"]["ChatResolverBlock"])[] | null;
             /** @description With `stopped: cost_cap`: `message` (this answer's cap) or `package` (the drawing set's budget ran out). */
             cap_hit?: components["schemas"]["ChatCapHit"] | null;
             /** Cost Usd */
@@ -5141,6 +5201,71 @@ export interface components {
             /** Recorded */
             recorded: number;
         };
+        /** ChatResolverBlock */
+        ChatResolverBlock: {
+            resolver: components["schemas"]["ChatResolverOut"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "resolver";
+        };
+        /** ChatResolverCountsOut */
+        ChatResolverCountsOut: {
+            /** Decision */
+            decision: number;
+            /** Right */
+            right: number;
+            /** Wrong */
+            wrong: number;
+        };
+        /**
+         * ChatResolverEntryOut
+         * @description One "Your decision" item code settled by itself (#1554): the folded group's line.
+         */
+        ChatResolverEntryOut: {
+            /** Architect */
+            architect?: string | null;
+            /** Finding Id */
+            finding_id: string;
+            /** How */
+            how: string;
+            /**
+             * Into
+             * @description The finding it was folded into.
+             */
+            into?: string | null;
+            /** Item */
+            item?: string | null;
+            /** Method */
+            method: string;
+            outcome: components["schemas"]["ChatSettledOutcome"];
+            /** Page */
+            page?: number | null;
+            /** Vendor */
+            vendor?: string | null;
+            /** Vs Page */
+            vs_page?: number | null;
+        };
+        /**
+         * ChatResolverOut
+         * @description The resolver's pass on a whole-set answer (#1554): the counts before and after, every item
+         *     it settled, why the rest still need a person, its sharper reads and their cost.
+         */
+        ChatResolverOut: {
+            after: components["schemas"]["ChatResolverCountsOut"];
+            before: components["schemas"]["ChatResolverCountsOut"];
+            /** Cost Usd */
+            cost_usd: string;
+            /** Kept */
+            kept: {
+                [key: string]: number;
+            };
+            /** Reads */
+            reads: number;
+            /** Settled */
+            settled: components["schemas"]["ChatResolverEntryOut"][];
+        };
         /** ChatResumeBlock */
         ChatResumeBlock: {
             resume: components["schemas"]["ChatResumeOut"];
@@ -5275,6 +5400,8 @@ export interface components {
             /** Vendor */
             vendor?: string | null;
         };
+        /** @enum {string} */
+        ChatSettledOutcome: "wrong" | "right" | "merged" | "not_a_difference";
         /** ChatStepBlock */
         ChatStepBlock: {
             step: components["schemas"]["ChatStepOut"];

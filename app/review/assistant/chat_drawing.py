@@ -890,7 +890,45 @@ def entry_lines(finding: Mapping[str, Any]) -> list[str]:
     lines = [line]
     if finding.get("why"):
         lines.append(f"Why: {finding['why']}")
+    lines += settled_lines(finding)
     return lines
+
+
+def settled_lines(finding: Mapping[str, Any]) -> list[str]:
+    """What code's resolver (#1554) added: how it settled the item, the question left for a
+    person, and the other pages of the same item."""
+    lines: list[str] = []
+    settled = finding.get("settled")
+    if isinstance(settled, Mapping) and settled.get("how"):
+        lines.append(f"Settled by GV Review: {settled['how']}")
+    if finding.get("status") == "check" and finding.get("question"):
+        lines.append(f"Question: {finding['question']}")
+    for other in finding.get("also_on") or []:
+        if not isinstance(other, Mapping):
+            continue
+        where = f"p.{other.get('page')}"
+        if other.get("round"):
+            where += f" (round {other.get('round')})"
+        lines.append(f"Also on {where}: vendor {other.get('vendor')}")
+    return lines
+
+
+def settled_entry_lines(entry: Mapping[str, Any]) -> list[str]:
+    """One settled-automatically item's lines on the notes pages and in the report."""
+    words = SETTLED_WORDS.get(str(entry.get("outcome")), str(entry.get("outcome")))
+    return [
+        f"Vendor: {entry.get('vendor')}   Architect: {entry.get('architect')}",
+        f"{words}. Settled by GV Review: {entry.get('how')}",
+    ]
+
+
+#: How a settled-automatically item ended (#1554), in the reviewer's words.
+SETTLED_WORDS: Final[Mapping[str, str]] = {
+    "wrong": "Wrong",
+    "right": "Right",
+    "merged": "Same item as another",
+    "not_a_difference": "Not a difference",
+}
 
 
 def counts_line(findings: Sequence[Mapping[str, Any]], *, clouded_decisions: bool) -> str:
@@ -915,6 +953,7 @@ def markup_pdf(
     writer: Base | None = None,
     *,
     cloud_decisions: bool = False,
+    settled: Sequence[Mapping[str, Any]] = (),
 ) -> None:
     """The cloud drawing of a chat answer's findings: a tight red cloud, a numbered marker and a
     note at each Wrong item; a numbered amber marker at each item needing your decision (with
@@ -950,10 +989,19 @@ def markup_pdf(
         counts_line([f for _n, f, *_rest in findings], clouded_decisions=cloud_decisions),
         LEGEND_CLOUDED if cloud_decisions else LEGEND,
     ]
+    # The decision items code settled itself (#1554): the Wrong and Right ones are above with their
+    # findings; the ones folded into another item or found not a difference are listed here.
+    folded = [
+        Entry(len(findings) + n, entry, None, settled_entry_lines(entry))
+        for n, entry in enumerate(
+            (e for e in settled if e.get("outcome") in ("merged", "not_a_difference")), start=1
+        )
+    ]
     sections = (
         Section("On the drawing", drawn),
         Section("Not on the drawing", elsewhere, by_page=False),
         Section("Right (not marked)", right),
+        *((Section("Settled automatically by GV Review (not marked)", folded),) if folded else ()),
     )
     draw_markup(source, marks, out, title=MARKUP_TITLE, front=front, sections=sections, base=base)
 
@@ -968,9 +1016,12 @@ def check_report_pdf(
     summary: Mapping[str, Any],
     findings: Sequence[Mapping[str, Any]],
     not_checked: Sequence[str],
+    *,
+    settled: Sequence[Mapping[str, Any]] = (),
 ) -> None:
     """The full check's report: a cover (set, products, date, model and effort, counts, coverage,
-    trust), then What's wrong, Your decision, What's right and Not checked."""
+    trust), then What's wrong, Your decision, What's right, Settled automatically (#1554: the
+    decision items code settled itself, and how) and Not checked."""
     from xml.sax.saxutils import escape
 
     from reportlab.lib import colors  # type: ignore[import-untyped]
@@ -1014,7 +1065,7 @@ def check_report_pdf(
     wrong = [f for f in findings if cloud_kind(f) == "wrong"]
     check = [f for f in findings if cloud_kind(f) == "check"]
     right = [f for f in findings if cloud_kind(f) is None]
-    sections = (
+    sections: list[tuple[str, list[str], list[list[Any]], list[int]]] = [
         (
             f"What's wrong ({len(wrong)})",
             ["AI", "Page", "Item", "Vendor", "Needs", "Architect", "Source", "Trust"],
@@ -1035,7 +1086,7 @@ def check_report_pdf(
         ),
         (
             f"Your decision ({len(check)})",
-            ["AI", "Page", "Item", "Vendor", "Architect", "Why", "Trust"],
+            ["AI", "Page", "Item", "Vendor", "Architect", "Question", "Trust"],
             [
                 [
                     number[id(f)],
@@ -1043,7 +1094,7 @@ def check_report_pdf(
                     f.get("item"),
                     f.get("vendor"),
                     f.get("architect"),
-                    f.get("why"),
+                    f.get("question") or f.get("why"),
                     TRUST_WORDS.get(str(f.get("trust_level")), ""),
                 ]
                 for f in check
@@ -1065,7 +1116,24 @@ def check_report_pdf(
             ],
             [26, 34, 230, 120, 210],
         ),
-    )
+    ]
+    if settled:
+        sections.append(
+            (
+                f"Settled automatically by GV Review ({len(settled)})",
+                ["Page", "Item", "Now", "How"],
+                [
+                    [
+                        e.get("page"),
+                        e.get("item"),
+                        SETTLED_WORDS.get(str(e.get("outcome")), str(e.get("outcome"))),
+                        e.get("how"),
+                    ]
+                    for e in settled
+                ],
+                [34, 200, 90, 396],
+            )
+        )
     for title, header, rows, widths in sections:
         story += [Spacer(1, 10), Paragraph(escape(title), styles["Heading2"])]
         story.append(table(header, rows, widths) if rows else p("None.", body))

@@ -647,3 +647,9 @@ export function isShortAnswer(message: Pick<ViewMessage, 'status' | 'stopped' | 
   if (lines.some((line) => /^\s*(\||```)/.test(line))) return false;
   return lines.length <= SHORT_LINES && text.length <= SHORT_CHARACTERS;
 }
+
+/** "Also on p.9, p.12": the other pages of the same item, folded into this one (#1554). */
+export function alsoOnWords(finding: Pick<ChatFinding, 'also_on'>): string {
+  const pages = [...new Set((finding.also_on ?? []).map((other) => other.page).filter((page): page is number => typeof page === 'number'))];
+  return pages.length ? `Also on ${pages.map((page) => `p.${page}`).join(', ')}` : '';
+}

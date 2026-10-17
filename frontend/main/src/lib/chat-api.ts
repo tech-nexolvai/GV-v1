@@ -199,7 +199,8 @@ export type ChatBlock =
   | { type: 'cite'; cite: ChatCite }
   | { type: 'accuracy'; accuracy: ChatAccuracy }
   | { type: 'unknowns'; unknowns: ChatUnknown[] }
-  | { type: 'resume'; resume: ChatResume };
+  | { type: 'resume'; resume: ChatResume }
+  | { type: 'resolver'; resolver: ChatResolver };
 
 // ── Chat v2 (CONTRACT2-findings): findings with evidence, and page coverage ──
 
@@ -299,6 +300,72 @@ export interface ChatFinding {
   critic?: FindingCritic | null;
   /** #1522: the reviewer's latest Agree / Not a problem on it, when the server sends it. */
   decision?: FindingDecision | null;
+  /** #1554: set when GV Review settled this item (which was Your decision) by itself, and how. */
+  settled?: FindingSettled | null;
+  /** #1554, status `check`: the one question a person answers, written by code. */
+  question?: string | null;
+  /** #1554, status `check`: why it needs a person. */
+  keep_reason?: KeepReason | null;
+  /** #1554: the same item on other pages or rounds, folded into this one. */
+  also_on?: FindingAlsoOn[] | null;
+}
+
+/** #1554: how an item that was Your decision ended when code settled it. */
+export type SettledOutcome = 'wrong' | 'right' | 'merged' | 'not_a_difference';
+
+/** #1554: why an item still needs a person. */
+export type KeepReason =
+  | 'architect_prints_nothing'
+  | 'measures_something_else'
+  | 'which_governs'
+  | 'unreadable'
+  | 'needs_job_value'
+  | 'layout'
+  | 'vendor_disagrees'
+  | 'other';
+
+export interface FindingSettled {
+  outcome: SettledOutcome;
+  /** The rule or tool code used (same_item, gv_limits, vendor_sum, printed_vs_printed, …). */
+  method: string;
+  /** What code did and found, in one plain sentence. */
+  how: string;
+  was?: 'check';
+}
+
+export interface FindingAlsoOn {
+  finding_id: string;
+  page?: number | null;
+  vs_page?: number | null;
+  round?: number | null;
+  item?: string | null;
+  vendor?: string | null;
+  architect?: string | null;
+}
+
+/** #1554: one Your-decision item GV Review settled by itself (the folded group's line). */
+export interface ChatResolverEntry {
+  finding_id: string;
+  page?: number | null;
+  vs_page?: number | null;
+  item?: string | null;
+  vendor?: string | null;
+  architect?: string | null;
+  outcome: SettledOutcome;
+  method: string;
+  how: string;
+  /** The finding it was folded into. */
+  into?: string | null;
+}
+
+/** #1554: the resolver's pass on a whole-set answer: counts before and after, and what it settled. */
+export interface ChatResolver {
+  before: { wrong: number; decision: number; right: number };
+  after: { wrong: number; decision: number; right: number };
+  settled: ChatResolverEntry[];
+  kept: Record<string, number>;
+  reads: number;
+  cost_usd: string;
 }
 
 export type EvidenceKind = 'observed' | 'derived' | 'inferred';
@@ -697,7 +764,8 @@ export type ChatEvent =
   | { event: 'trust'; data: { trust: ChatTrust } }
   | { event: 'cite'; data: { cite: ChatCite } }
   | { event: 'accuracy'; data: { accuracy: ChatAccuracy } }
-  | { event: 'unknowns'; data: { unknowns: ChatUnknown[] } };
+  | { event: 'unknowns'; data: { unknowns: ChatUnknown[] } }
+  | { event: 'resolver'; data: { index?: number; resolver: ChatResolver } };
 
 export type ChatEventName = ChatEvent['event'];
 
@@ -705,6 +773,7 @@ const EVENT_NAMES: ReadonlySet<string> = new Set<ChatEventName>([
   'message_start', 'thinking_start', 'thinking_delta', 'thinking_end', 'text_delta', 'step_start', 'step_end',
   'tasks', 'agent_start', 'agent_step', 'agent_end', 'file', 'usage', 'message_end', 'error',
   'finding', 'finding_dropped', 'coverage', 'progress', 'scope', 'trust', 'cite', 'accuracy', 'unknowns',
+  'resolver',
 ]);
 
 /**
