@@ -57,6 +57,7 @@ from app.review.assistant.internal_refs import without_ticket_refs
 from app.review.assistant.ledger import LEDGER_TOOLS
 from app.review.assistant.plan_check import apply_answers, read_answers
 from app.review.assistant.sandbox import (
+    MAX_FOLDER_BYTES,
     OUTPUTS,
     SCRATCH,
     SET_PACK,
@@ -67,6 +68,7 @@ from app.review.assistant.sandbox import (
     SandboxRefused,
     check_command,
     cut_output,
+    folder_bytes,
     view_path,
 )
 from app.review.assistant.tool_schema import box_schema, point_schema
@@ -135,6 +137,9 @@ SHOWN_OUTPUT_CHARS: Final = 4000
 _RESULTS_CHARS: Final = 40_000
 _MAX_FILE_CHARS: Final = 5_000_000
 _MAX_PRESENTED_BYTES: Final = 200_000_000
+#: What one present_files call may hand over together, and what a chat's handed-over files may hold
+#: (they are copies on the host's disk; security audit 2026-10-18).
+_MAX_PRESENTED_TOTAL_BYTES: Final = 200_000_000
 _MAX_PRESENTED: Final = 20
 _MAX_TASKS: Final = 50
 _MAX_SUBJECT: Final = 120
@@ -1549,10 +1554,26 @@ class ChatTools:
                 raise SandboxRefused("files cannot be handed over here")
             outputs = self.workspace.outputs.resolve()
             home = self.workspace.home.resolve()
+            handed = folder_bytes([self.workspace.files])
+            together = 0
             for path in paths:
                 real = self.workspace.resolve(path)
                 if not real.is_file():
                     raise SandboxRefused(f"{path} is not a file")
+                size = real.stat().st_size
+                if size > _MAX_PRESENTED_BYTES:
+                    raise SandboxRefused(f"{path} is too large to hand over")
+                together += size
+                if together > _MAX_PRESENTED_TOTAL_BYTES:
+                    raise SandboxRefused(
+                        f"the files are larger than {_MAX_PRESENTED_TOTAL_BYTES // 1_000_000} MB "
+                        "together; hand over fewer or smaller files"
+                    )
+                if handed + together > MAX_FOLDER_BYTES:
+                    raise SandboxRefused(
+                        f"this chat has handed over {MAX_FOLDER_BYTES // 1_000_000} MB of files "
+                        "already"
+                    )
                 if home == real.parent or home in real.parents:
                     # A file in the home folder is copied to the outputs folder first.
                     with self._lock:
