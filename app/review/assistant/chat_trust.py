@@ -765,7 +765,9 @@ def needs_text(finding: Mapping[str, Any]) -> str:
 # ---- the accuracy score (CONTRACT5) -------------------------------------------------------------
 
 #: What the eval kit measured on GV's test sets (the orchestrator updates this line; never invented).
-ACCURACY_MEASURED_LINE: Final = "Measured on GV's test sets: 23 of 24 claims right."
+ACCURACY_MEASURED_LINE: Final = (
+    "Measured on GV's test sets: 53 of 55 checkable findings right in a full check."
+)
 
 #: Points per finding, by trust level and evidence kind: the share of such findings expected to be
 #: right. CALIBRATED from the strict eval on GV's test sets (the orchestrator updates this table
@@ -773,21 +775,21 @@ ACCURACY_MEASURED_LINE: Final = "Measured on GV's test sets: 23 of 24 claims rig
 #: scores `ACCURACY_DISAGREES` (0), and a "What's right" item nobody compared is not scored.
 ACCURACY_POINTS: Final[Mapping[str, Mapping[str, float]]] = {
     "confirmed": {"observed": 1.0, "derived": 1.0, "inferred": 1.0},
-    "likely": {"observed": 0.9, "derived": 0.9, "inferred": 0.9},
-    "to_check": {"observed": 0.75, "derived": 0.75, "inferred": 0.75},
+    "likely": {"observed": 0.95, "derived": 0.95, "inferred": 0.95},
+    "to_check": {"observed": 0.9, "derived": 0.9, "inferred": 0.9},
 }
 ACCURACY_DISAGREES: Final = 0.0
 #: Points per cited value, by the printed-at-spot check (pen strokes: like a finding to check).
 CITE_POINTS: Final[Mapping[str, float]] = {
     "match": 1.0,
-    "no_text": 0.75,
+    "no_text": 0.9,
     "not_found": 0.3,
 }
 _CITE_OTHER: Final = 0.3
 #: How the points were calibrated (the click-through says it).
 ACCURACY_CALIBRATION_LINE: Final = (
-    "Points are the share of such claims expected to be right: on GV's test sets, 24 of 24 "
-    "checkable findings were right, Likely and To check ones included."
+    "Points are the share of such claims expected to be right: in a full check on GV's test sets, "
+    "Confirmed 6 of 6, Likely 4 of 4 and To check 43 of 45 checkable findings were right."
 )
 
 _KIND_WORDS: Final = {

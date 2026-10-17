@@ -385,7 +385,7 @@ def test_points_come_from_the_calibrated_table() -> None:
     ]
     assert "AI reading only" in score["breakdown"][1]["how"]
     assert "printed on the drawing" in score["breakdown"][0]["how"]
-    assert "24 of 24" in score["calibration"]
+    assert "43 of 45" in score["calibration"]
 
 
 def test_item_unknowns_lower_the_coverage_factor() -> None:
