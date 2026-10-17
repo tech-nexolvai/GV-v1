@@ -489,10 +489,13 @@ def test_cite_by_label(workspace: ChatWorkspace) -> None:
 
         return printed_at_spot(pdf, page, box, value)
 
-    cite = book.cite({"dim": ids['36"'], "page": 1}, printed)
-    assert cite["value"] == '36"' and cite["printed"] == "match" and cite["dim"] == ids['36"']
+    cite = book.cite({"value": "3'-0\"", "dim": ids['36"'], "page": 1}, printed)
+    assert cite["value"] == "3'-0\"" and cite["printed"] == "match" and cite["dim"] == ids['36"']
+    assert cite["box"]["page"] == 1
     with pytest.raises(SandboxRefused, match="give the page too"):
-        book.cite({"dim": "D1"}, printed)
+        book.cite({"value": '36"', "dim": "D1"}, printed)
+    with pytest.raises(SandboxRefused, match="is not what"):
+        book.cite({"value": '35"', "dim": ids['36"'], "page": 1}, printed)
 
 
 def test_a_drawn_label_is_the_drawn_ink_witness_never_more() -> None:

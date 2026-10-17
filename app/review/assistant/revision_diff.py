@@ -965,19 +965,31 @@ def gv_markup_near(pdf: Path, page: int, *, dpi: int = 100, region: Box | None =
 COMPARE_ROUNDS_TOOL: Final[Mapping[str, Any]] = {
     "name": "compare_rounds",
     "description": (
-        "Compare two rounds of the vendor's drawing (e.g. 'First set of comments' and 'Second set "
-        "of comments') by code, pixel by pixel with GV's markup removed: where the drawing changed, "
-        "and for this answer's findings on the round-1 page whether their spot changed. Give "
-        "round1_page; round2_page is found from the headings when omitted. Give neither to list "
-        "the round pairs in the set. Zones say WHERE ink changed, not the new value: read the "
-        "number in a zone before saying what the vendor changed."
+        "Compare two rounds of the vendor's drawing (a first submittal and a later one) by code, "
+        "pixel by pixel with GV's markup removed ($0, no AI). Use it when the set holds rounds "
+        "and the question is what the vendor changed or fixed. Give neither page to list the "
+        "round pairs in the set; give round1_page (round2_page is found from the headings when "
+        "omitted) to compare a pair. Returns the change zones (where ink changed, as boxes on "
+        "both rounds, plus a picture of the overlay), and for this answer's findings on the "
+        "round-1 page whether their spot changed. A zone says WHERE ink changed, not the new "
+        "value: read the number in a zone before saying what the vendor changed. "
+        'Example: {"round1_page": 31, "round2_page": 32}'
     ),
     "input_schema": {
         "type": "object",
         "additionalProperties": False,
+        "required": [],
         "properties": {
-            "round1_page": {"type": "integer", "description": "Page of the earlier round (from 1)"},
-            "round2_page": {"type": "integer", "description": "Page of the later round (from 1)"},
+            "round1_page": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Page of the earlier round (from 1)",
+            },
+            "round2_page": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Page of the later round (from 1)",
+            },
             "round1_file": {
                 "type": "string",
                 "description": "Upload holding round 1, when the set has 2+ PDFs",

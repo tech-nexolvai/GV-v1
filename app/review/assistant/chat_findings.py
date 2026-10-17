@@ -43,6 +43,7 @@ from uuid import uuid4
 from app.review.assistant.dim_findings import LabelRefused, fill_from_labels, label_for_cite
 from app.review.assistant.dim_index import DimLabels, labels_for
 from app.review.assistant.sandbox import UPLOADS, ChatWorkspace, SandboxRefused
+from app.review.assistant.tool_schema import box_schema
 
 __all__ = [
     "CHECK_REASONS",
@@ -110,26 +111,16 @@ CHECK_REASONS: Final = (
 #: from a reviewer's question).
 COVERAGE_CHECK_PREFIX: Final = "Coverage check:"
 
-_BOX_SCHEMA: Final[Mapping[str, Any]] = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["page", "x0", "y0", "x1", "y1"],
-    "properties": {
-        "page": {"type": "integer", "minimum": 1, "description": "Page of that file (from 1)"},
-        "x0": {"type": "number"},
-        "y0": {"type": "number"},
-        "x1": {"type": "number"},
-        "y1": {"type": "number"},
-        "file": {
-            "type": "string",
-            "description": "The upload's file name, only when the set has more than one PDF",
-        },
-    },
-    "description": (
-        "Where the item is: PDF points of the original upload page as shown, origin top-left "
-        "(as pdftotext -bbox prints; points = pixels x 72 / dpi). The app crops the evidence here."
-    ),
-}
+_BOX_FILE: Final = (
+    "Only when the set has 2+ PDFs and the box is not on its default file (an architect box: the "
+    "architect's file; a vendor box: the vendor's)"
+)
+_BOX_SCHEMA: Final[Mapping[str, Any]] = box_schema(
+    "Where the value is printed, a little larger than it; the app crops the evidence here.",
+    page="Page of that file (from 1); required",
+    page_required=True,
+    file=_BOX_FILE,
+)
 _DECISION_HELP_SCHEMA: Final[Mapping[str, Any]] = {
     "type": "object",
     "additionalProperties": False,
@@ -145,8 +136,11 @@ _DECISION_HELP_SCHEMA: Final[Mapping[str, Any]] = {
             "additionalProperties": False,
             "required": ["value_in", "plus_minus_in", "method"],
             "properties": {
-                "value_in": {"type": "number", "description": "Your best estimate, inches"},
-                "plus_minus_in": {"type": "number", "description": "How far off it may be"},
+                "value_in": {"type": "number", "description": "Your best estimate, in inches"},
+                "plus_minus_in": {
+                    "type": "number",
+                    "description": "How far off the estimate may be, in inches (0 when exact)",
+                },
                 "method": {
                     "type": "string",
                     "description": "How you got it (a string added up, measure_on_drawing's "
@@ -155,48 +149,92 @@ _DECISION_HELP_SCHEMA: Final[Mapping[str, Any]] = {
             },
             "description": "Your best estimate with its method, or null when there is none",
         },
-        "likely": {"type": "string", "enum": list(DECISION_LIKELY)},
+        "likely": {
+            "type": "string",
+            "enum": list(DECISION_LIKELY),
+            "description": "Your honest guess at the answer, in the reviewer's words",
+        },
         "confirm": {
             "type": "string",
             "description": "What the reviewer should confirm, and with whom (e.g. 'confirm on "
             "site', 'ask the architect which governs')",
         },
     },
-    "description": "For a 'check' (Your decision) item, required: the reviewer's reasoning in "
-    "short plain words.",
+    "description": "Required on every status 'check' (Your decision) finding: the reviewer's "
+    "reasoning in short plain words. Not needed on 'different' or 'same'.",
 }
 _FINDING_FIELDS: Final[Mapping[str, Any]] = {
-    "page": {"type": "integer", "minimum": 1, "description": "The vendor's page"},
-    "vs_page": {"type": "integer", "minimum": 1, "description": "The architect's page, if another"},
-    "item": {"type": "string", "description": "What it is, short (e.g. 'Vanity top depth')"},
-    "category": {"type": "string", "enum": list(CATEGORIES)},
+    "page": {"type": "integer", "minimum": 1, "description": "The vendor's page (from 1)"},
+    "vs_page": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "The architect's page, only when it is not the same page",
+    },
+    "item": {
+        "type": "string",
+        "description": "What it is, short, starting with its area (e.g. 'Coffee station: top "
+        "depth'); the same name on every page, view and round",
+    },
+    "category": {
+        "type": "string",
+        "enum": list(CATEGORIES),
+        "description": "The product the item belongs to",
+    },
     "architect": {
         "type": "string",
-        "description": "What the architect (or the source) shows, as printed, inches",
+        "description": "What the source shows (the architect's drawing, the brand prototype, GV's "
+        "rule, or the printed overall for vendor_arithmetic), as printed, e.g. '3\\'-2 1/2\"'",
     },
-    "vendor": {"type": "string", "description": "What the vendor shows, as printed, inches"},
-    "status": {"type": "string", "enum": list(STATUSES)},
+    "vendor": {
+        "type": "string",
+        "description": "What the vendor's shop drawing shows, as printed (or 'not shown on the "
+        "vendor')",
+    },
+    "status": {
+        "type": "string",
+        "enum": list(STATUSES),
+        "description": "different = Wrong (the vendor does not match the source); check = Your "
+        "decision (a person must decide: give decision_help, and check_reason when both values "
+        "are printed and differ); same = Right (they match)",
+    },
     "why": {"type": "string", "description": "Why it matters, one short line"},
     "verified": {
         "type": "boolean",
-        "description": "True only when you read both values on the drawings yourself",
+        "description": "True only when you read both values on the drawing yourself (a helper "
+        "always sends false; the lead sets true after checking)",
     },
-    "arch_box": _BOX_SCHEMA,
-    "vendor_box": _BOX_SCHEMA,
-    "source": {"type": "string", "enum": list(SOURCES)},
+    "arch_box": box_schema(
+        "Where the source's value is printed.",
+        page="Page of that file (from 1); without it, the finding's vs_page (else its page)",
+        file=_BOX_FILE,
+    ),
+    "vendor_box": box_schema(
+        "Where the vendor's value is printed.",
+        page="Page of that file (from 1); without it, the finding's page",
+        file=_BOX_FILE,
+    ),
+    "source": {
+        "type": "string",
+        "enum": list(SOURCES),
+        "description": "What the vendor is compared with: architect (the design drawing); "
+        "brand_prototype (a brand's typical sheet, its own group); rules (a GV rule: give "
+        "rule_check_id); vendor_arithmetic (a vendor dimension string that does not add up: give "
+        "parts and printed_total); gv_review (a difference GV Review already recorded: give "
+        "record_id)",
+    },
     "parts": {
         "type": "array",
-        "items": {"type": "string"},
+        "items": {"type": "string", "description": "One part, as printed"},
         "maxItems": 40,
-        "description": "vendor_arithmetic: the printed parts of a dimension string, as printed",
+        "description": "vendor_arithmetic only: the printed parts of the string, in order",
     },
     "printed_total": {
         "type": "string",
-        "description": "vendor_arithmetic: the printed overall the parts should add up to",
+        "description": "vendor_arithmetic only: the printed overall the parts should add up to",
     },
     "rule_check_id": {
         "type": "string",
-        "description": "rules: the id of the GV check in review_results this finding is about",
+        "description": "rules only: the id of the GV check in review_results this finding is about",
     },
     "record_id": {
         "type": "string",
@@ -206,28 +244,28 @@ _FINDING_FIELDS: Final[Mapping[str, Any]] = {
     "round": {
         "type": "integer",
         "minimum": 1,
-        "description": "Which round of the set (1 = first submittal) when the set has rounds; "
-        "name the same item the same way in every round",
+        "description": "Which round of the set (1 = first submittal) when the set has rounds",
     },
     "decision_help": _DECISION_HELP_SCHEMA,
     "architect_dim": {
         "type": "string",
-        "description": "Instead of typing the architect's value and box: the id of its numbered "
-        "label (zoom marks: true), e.g. D17 (on vs_page, else page) or p22.D17. Code fills the "
-        "value as printed and the box",
+        "description": "Instead of architect and arch_box: its label id from zoom marks (D17 on "
+        "vs_page, else page; p22.D17 names the page); code fills both",
     },
     "vendor_dim": {
         "type": "string",
-        "description": "Instead of typing the vendor's value and box: the id of its numbered label "
-        "on page, e.g. D42. Code fills the value as printed and the box",
+        "description": "Instead of vendor and vendor_box: its label id from zoom marks (D42, on "
+        "page); code fills both",
     },
     "check_reason": {
         "type": "string",
         "enum": list(CHECK_REASONS),
-        "description": "status check with two PRINTED values that differ: why a person must "
-        "decide (else code makes it different: printed against printed is Wrong). "
-        "different_extent: measure_on_drawing showed the architect's dimension spans more than "
-        "the unit",
+        "description": "Status check only, when both values are printed and differ: why a person "
+        "must decide (without one, code makes it different: printed against printed is Wrong). "
+        "different_extent = measure_on_drawing showed the architect's dimension spans more than "
+        "the unit; which_governs = the ID set and the brand prototype conflict; "
+        "pairing_not_certain = not sure the two drawings show the same item; scaled = one value "
+        "is measured, not printed; site_verify = the drawing says verify in field",
     },
 }
 _REQUIRED: Final = frozenset(
@@ -237,10 +275,20 @@ _REQUIRED: Final = frozenset(
 REPORT_FINDING: Final[Mapping[str, Any]] = {
     "name": "report_finding",
     "description": (
-        "Record one difference (or a 'check' or a 'same') between the vendor's drawing and the "
-        "architect's (or the brand prototype, GV's rules, or the vendor's own arithmetic). The "
-        "reviewer sees it in a table with evidence pictures the app crops at your boxes. Returns "
-        "its finding_id."
+        "Record one compared item: the vendor's value against the source's (the architect's "
+        "drawing, a brand prototype, a GV rule, or the vendor's own arithmetic), with its status "
+        "Wrong (different), Your decision (check) or Right (same). Use it for every item you "
+        "compare that the question is about, instead of writing a table: the app crops the "
+        "evidence at your boxes, checks the printed values, scores how far to trust it "
+        "(Confirmed / Likely / AI reading only) and shows it to the reviewer. Values as printed, "
+        "inches. Give each value its box, with its page when that is not the finding's. Returns "
+        '"Finding F3 recorded." with '
+        'any notes from code\'s checks of the values, or "Refused: <why>" (fix and call again). '
+        'Example: {"page": 7, "item": "Vanity: top depth", "category": "countertop", '
+        '"architect": "22\\"", "vendor": "24\\"", "status": "different", "verified": true, '
+        '"source": "architect", "arch_box": {"page": 6, "x0": 410, "y0": 300, "x1": 440, '
+        '"y1": 312}, "vendor_box": {"page": 7, "x0": 515, "y0": 288, "x1": 545, "y1": 300}, '
+        '"vs_page": 6}'
     ),
     "input_schema": {
         "type": "object",
@@ -253,25 +301,46 @@ REPORT_FINDING: Final[Mapping[str, Any]] = {
 UPDATE_FINDING: Final[Mapping[str, Any]] = {
     "name": "update_finding",
     "description": (
-        "Change fields of a finding of this answer (e.g. verified true after you checked a "
-        "helper's finding, or a corrected value or box). Give only the fields that change."
+        "Change fields of a finding already recorded in this answer. Use it after you check a "
+        "lead (verified true, or the values as printed), to add a missing box or decision_help, "
+        "or when the app sends you back about a finding. Give finding_id and only the fields "
+        'that change; the field meanings are report_finding\'s. Returns "Finding F3 updated." '
+        'with any notes from code\'s checks, or "Refused: <why>". '
+        'Example: {"finding_id": "F3", "verified": true, "vendor": "45 1/2\\""}'
     ),
     "input_schema": {
         "type": "object",
         "additionalProperties": False,
         "required": ["finding_id"],
-        "properties": {"finding_id": {"type": "string"}, **_FINDING_FIELDS},
+        "properties": {
+            "finding_id": {"type": "string", "description": "The finding's id (F1, F2...)"},
+            **{
+                name: (
+                    field
+                    if field.get("type") == "object"
+                    else {**field, "description": "As in report_finding"}
+                )
+                for name, field in _FINDING_FIELDS.items()
+            },
+        },
     },
 }
 DROP_FINDING: Final[Mapping[str, Any]] = {
     "name": "drop_finding",
-    "description": "Remove a finding of this answer that you checked and found wrong.",
+    "description": (
+        "Remove a finding of this answer. Use it when you checked the finding on the drawing and "
+        "found it wrong (a misread, the wrong pairing, GV's markup taken for a value); use "
+        'update_finding instead when only a value or a box needs correcting. Returns "Finding F4 dropped." or '
+        '"Refused: <why>". '
+        'Example: {"finding_id": "F4", "reason": "The 46\\" is GV\'s red note; the vendor prints '
+        '37\\""}'
+    ),
     "input_schema": {
         "type": "object",
         "additionalProperties": False,
         "required": ["finding_id", "reason"],
         "properties": {
-            "finding_id": {"type": "string"},
+            "finding_id": {"type": "string", "description": "The finding's id (F1, F2...)"},
             "reason": {"type": "string", "description": "Why, one short line"},
         },
     },
@@ -279,8 +348,15 @@ DROP_FINDING: Final[Mapping[str, Any]] = {
 SET_COVERAGE: Final[Mapping[str, Any]] = {
     "name": "set_coverage",
     "description": (
-        "Record which pages of the vendor's file you compared (merged into the coverage map the "
-        "reviewer sees). Whole-set answers must account for every page."
+        "Record which pages of the vendor's file you compared and how they came out, for the "
+        "page grid the reviewer sees. Use it for every page you were asked about; a whole-set "
+        "answer or a full check accounts for every page (a page never recorded shows as Not "
+        "compared, and the app sends you back once). Status per page: same (all Right), "
+        "different (at least one Wrong), not_comparable (nothing to compare, e.g. a divider or a "
+        "cover: note why), not_opened (note why). Calls add up. Returns the counts so far and the "
+        "pages not accounted for yet. "
+        'Example: {"pages": [{"page": 7, "pair_page": 6, "status": "different"}, {"page": 1, '
+        '"status": "not_comparable", "note": "Cover sheet"}]}'
     ),
     "input_schema": {
         "type": "object",
@@ -290,21 +366,31 @@ SET_COVERAGE: Final[Mapping[str, Any]] = {
             "pages": {
                 "type": "array",
                 "minItems": 1,
+                "description": "One entry per page",
                 "items": {
                     "type": "object",
                     "additionalProperties": False,
                     "required": ["page", "status"],
                     "properties": {
-                        "page": {"type": "integer", "minimum": 1},
+                        "page": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "A page of the vendor's file (from 1)",
+                        },
                         "pair_page": {
                             "type": "integer",
                             "minimum": 1,
-                            "description": "The architect's page it was compared with",
+                            "description": "The architect's page it was compared with, when "
+                            "another page",
                         },
-                        "status": {"type": "string", "enum": list(COVERAGE_STATUSES)},
+                        "status": {
+                            "type": "string",
+                            "enum": list(COVERAGE_STATUSES),
+                            "description": "How the page came out (see the tool description)",
+                        },
                         "note": {
                             "type": "string",
-                            "description": "Why (needed for not_comparable and not_opened)",
+                            "description": "Why; required for not_comparable and not_opened",
                         },
                     },
                 },
@@ -315,16 +401,23 @@ SET_COVERAGE: Final[Mapping[str, Any]] = {
 DISMISS_RECORDED: Final[Mapping[str, Any]] = {
     "name": "dismiss_recorded",
     "description": (
-        "Set aside a difference GV Review already recorded (review_results) that you checked and "
-        "found not to be a difference, with your reason. Every recorded difference must come "
-        "back as a finding or be dismissed."
+        "Set aside a difference GV Review already recorded (listed by review_results, or in the "
+        "app's list of recorded differences). Use it when you checked it on the drawing and "
+        "found it is not a difference. Every recorded difference in scope comes back either as a finding (with "
+        "its record_id) or through this tool; the app sends you back once for any left out. "
+        'Returns "Recorded difference <id> dismissed" or "Refused: <why>". '
+        'Example: {"record_id": "ai-review:p8:filler_left", "reason": "The 3\\" is the field '
+        'cut, not a filler"}'
     ),
     "input_schema": {
         "type": "object",
         "additionalProperties": False,
         "required": ["record_id", "reason"],
         "properties": {
-            "record_id": {"type": "string"},
+            "record_id": {
+                "type": "string",
+                "description": "The recorded difference's id, as review_results gives it",
+            },
             "reason": {"type": "string", "description": "Why, one short line"},
         },
     },
@@ -332,28 +425,41 @@ DISMISS_RECORDED: Final[Mapping[str, Any]] = {
 CITE: Final[Mapping[str, Any]] = {
     "name": "cite",
     "description": (
-        "Back a value you state outside a finding (a size, a count read off a drawing, a page "
-        "count): where it is printed (page and box), so the app checks it and shows the evidence. "
-        "For a fact about a file itself give `fact` instead of a box."
+        "Back a value you state in your answer with where it is printed, so the app checks it "
+        "and shows the evidence. Use it for each value you state that is not in a finding (a "
+        "size, a count read off a drawing, a page count). Give page and box for a value on a drawing, or fact for a fact about a "
+        'file itself (its page count or name). Returns "Cited C2: match" (found printed there), '
+        '"not found" or "not run". '
+        'Example: {"value": "36\\"", "page": 12, "box": {"page": 12, "x0": 220, "y0": 410, '
+        '"x1": 246, "y1": 422}}'
     ),
     "input_schema": {
         "type": "object",
         "additionalProperties": False,
+        "required": ["value"],
         "properties": {
             "value": {"type": "string", "description": "The value as you state it"},
             "dim": {
                 "type": "string",
-                "description": "Instead of a box: the value's numbered label (zoom marks: true), "
-                "D17 with page, or p23.D17; code fills the value and the box",
+                "description": "Instead of page and box: the value's label id from zoom marks "
+                "(D17 with page, or p23.D17)",
             },
-            "page": {"type": "integer", "minimum": 1},
+            "page": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The page it is printed on (from 1), with box",
+            },
             "box": _BOX_SCHEMA,
             "fact": {
                 "type": "string",
                 "enum": ["page_count", "file_name"],
-                "description": "A fact about the file: its page count, or its name",
+                "description": "Instead of page and box: a fact about the file (its page count, "
+                "or its name)",
             },
-            "file": {"type": "string", "description": "The upload, when the set has 2+ PDFs"},
+            "file": {
+                "type": "string",
+                "description": "The upload's file name, when the set has more than one PDF",
+            },
         },
     },
 }
@@ -888,6 +994,11 @@ class FindingBook:
             "file": chosen,
         }
 
+    def _hires(self) -> Path | None:
+        """The set pack's hi-res page cache (#1548), when the chat has a pack."""
+        pack = self.workspace.set_pack
+        return None if pack is None else pack / "hires"
+
     def _picture(self, box: Mapping[str, Any] | None) -> tuple[str | None, str | None]:
         """A crop of the box's area as a chat picture: (picture id, why there is none)."""
         if box is None:
@@ -897,9 +1008,12 @@ class FindingBook:
         pdf = self.workspace.uploads / str(box["file"])
         if not pdf.is_file():
             return None, f"{box['file']} is not in the uploads"
-        crop = self.crop or _default_crop
+        area = (box["x0"], box["y0"], box["x1"], box["y1"])
         try:
-            png = crop(pdf, int(box["page"]), (box["x0"], box["y0"], box["x1"], box["y1"]))
+            if self.crop is not None:
+                png = self.crop(pdf, int(box["page"]), area)
+            else:
+                png = _default_crop(pdf, int(box["page"]), area, cache=self._hires())
         except Exception as failed:  # noqa: BLE001 - no picture, never an error to the reviewer
             _log.warning("assistant chat evidence crop failed: %s", type(failed).__name__)
             return None, "the page could not be drawn"
@@ -1433,9 +1547,11 @@ class FindingBook:
         ]
 
 
-def _default_crop(pdf: Path, page: int, box: tuple[float, float, float, float]) -> bytes | None:
+def _default_crop(
+    pdf: Path, page: int, box: tuple[float, float, float, float], *, cache: Path | None = None
+) -> bytes | None:
     drawing = import_module("app.review.assistant.chat_drawing")
-    png: bytes | None = drawing.crop_png(pdf, page, box)
+    png: bytes | None = drawing.crop_png(pdf, page, box, cache=cache)
     return png
 
 
