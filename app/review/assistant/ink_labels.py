@@ -216,9 +216,9 @@ def _cross(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def _dashes(glyphs: Sequence[Glyph]) -> set[int]:
-    """Indexes of the pieces of a dashed line (an extension line drawn dashed), never text: at
-    least three straight strokes of a similar length, parallel and in one line, each near the
-    next. Two in a row are not enough (a `3`'s middle bar beside a fraction bar)."""
+    """Indexes of the pieces of a dashed or dash-dot line (an extension or centre line), never
+    text: at least three straight strokes, parallel and in one line, each near the next. Two in a
+    row are not enough (a `3`'s middle bar beside a fraction bar)."""
     strokes = [(i, ends) for i, g in enumerate(glyphs) if (ends := _ends(g)) is not None]
     partners: dict[int, set[int]] = {}
     for i, (a0, a1) in strokes:
@@ -226,7 +226,7 @@ def _dashes(glyphs: Sequence[Glyph]) -> set[int]:
             if i >= j:
                 continue
             la, lb = float(np.linalg.norm(a1 - a0)), float(np.linalg.norm(b1 - b0))
-            if not 0.67 <= la / lb <= 1.5:
+            if not 0.15 <= la / lb <= 6.7:  # a dash-dot line mixes long and short pieces
                 continue
             ua, ub = (a1 - a0) / la, (b1 - b0) / lb
             gap = float(np.linalg.norm((b0 + b1) / 2 - (a0 + a1) / 2))
@@ -425,22 +425,43 @@ def _layout_score(label: Label, turn: Turn) -> int:
     return score
 
 
+def _between(bar: Glyph, a: Glyph, b: Glyph) -> bool:
+    """Whether `bar`'s centre lies between `a` and `b` (a fraction bar between its parts)."""
+    cx, cy = (bar.box[0] + bar.box[2]) / 2, (bar.box[1] + bar.box[3]) / 2
+    low_x, high_x = min(a.box[2], b.box[2]), max(a.box[0], b.box[0])
+    low_y, high_y = min(a.box[3], b.box[3]), max(a.box[1], b.box[1])
+    return (low_y - 0.3 <= cy <= high_y + 0.3 and high_y > low_y) or (
+        low_x - 0.3 <= cx <= high_x + 0.3 and high_x > low_x
+    )
+
+
 def turns(label: Label) -> tuple[Turn, ...]:
     """The ways the label may read: upright, or up / down the page (the better fitting one, both
     when nothing tells)."""
     tallest = max(g.size for g in label.glyphs)
-    big = [g for g in label.glyphs if g.size >= 0.55 * tallest]
+    # Thin strokes (a fraction bar, a tick) say nothing about the direction.
+    thin = [g for g in label.glyphs if min(g.wide, g.tall) < 0.12 * g.size]
+    big = [g for g in label.glyphs if g.size >= 0.55 * tallest and g not in thin]
     # Neighbours side by side read upright; neighbours stacked read up or down the page. A
     # nearly square glyph (a 9 turned) says little by its own shape, so its neighbours decide.
+    # A numerator and its denominator are stacked whichever way the label reads: a pair with a
+    # bar between them does not count.
     upright = sideways = 0
     for i, a in enumerate(big):
         for b in big[i + 1 :]:
+            if any(_between(bar, a, b) for bar in thin):
+                continue
             size = max(a.size, b.size)
             gap_x = max(a.box[0], b.box[0]) - min(a.box[2], b.box[2])
             gap_y = max(a.box[1], b.box[1]) - min(a.box[3], b.box[3])
-            if -gap_y >= 0.5 * min(a.tall, b.tall) and gap_x <= 0.6 * size:
+            # the same neighbours as `_rows_of`: close, or a word space apart and well aligned
+            if -gap_y >= 0.5 * min(a.tall, b.tall) and (
+                gap_x <= 0.6 * size or (-gap_y >= 0.6 * min(a.tall, b.tall) and gap_x <= 1.1 * size)
+            ):
                 upright += 1
-            elif -gap_x >= 0.5 * min(a.wide, b.wide) and gap_y <= 0.6 * size:
+            elif -gap_x >= 0.5 * min(a.wide, b.wide) and (
+                gap_y <= 0.6 * size or (-gap_x >= 0.6 * min(a.wide, b.wide) and gap_y <= 1.1 * size)
+            ):
                 sideways += 1
     if upright == sideways:
         upright = sum(g.tall > g.wide * 1.05 for g in big)
