@@ -476,7 +476,7 @@ def test_a_full_check_starts_every_job_at_once_and_the_lead_only_verifies(
     assert any("assistant chat timings (full_check)" in r.getMessage() for r in caplog.records)
     # The two files are still made.
     assert [f["name"] for f in harness.files] == [
-        "Vendor set - AI cloud drawing.pdf",
+        "Vendor set - GV cloud drawing.pdf",
         "Vendor set - AI check report.pdf",
     ]
 
@@ -722,7 +722,7 @@ def test_a_stopped_full_check_still_gets_codes_finish_and_its_files(tmp_path: Pa
     trust = _blocks(outcome, "trust")[-1]
     assert trust["recorded_results"] is not None and trust["timings"]["phases"]
     assert [f["name"] for f in harness.files] == [
-        "Vendor set - AI cloud drawing.pdf",
+        "Vendor set - GV cloud drawing.pdf",
         "Vendor set - AI check report.pdf",
     ]
 
@@ -817,6 +817,6 @@ def test_a_full_check_of_a_product_added_only_to_the_registry(
     assert len(helpers) == 3 and {finding["category"] for finding in helpers} == {DUMMY}
     assert [f["category"] for f in findings if f["item"] == "Vanity top"] == ["countertop"]
     assert [f["name"] for f in harness.files] == [
-        "Vendor set - AI cloud drawing.pdf",
+        "Vendor set - GV cloud drawing.pdf",
         "Vendor set - AI check report.pdf",
     ]

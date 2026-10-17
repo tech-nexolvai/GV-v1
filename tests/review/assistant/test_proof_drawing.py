@@ -24,14 +24,18 @@ from reportlab.lib.colors import Color  # type: ignore[import-untyped]
 from reportlab.pdfgen import canvas  # type: ignore[import-untyped]
 
 from app.review.assistant.proof import (
+    AI_ONLY_REASON,
+    PAIRING_REASON,
     RULE_LINE,
     code_proved,
     governs,
+    needs_pairing,
     proof_counts,
     proof_group,
     proof_line,
     proof_of,
     should_be,
+    unproved_reason,
     vendor_value,
 )
 from app.review.assistant.proof_drawing import (
@@ -108,6 +112,8 @@ def _proved(**changes: Any) -> dict[str, Any]:
         "inches": {"architect": "37", "vendor": "46", "difference": "9"},
         "vendor_box": _box(VENDOR_46),
         "arch_box": _box(ARCHITECT_37),
+        # Both numbers measure the same thing, proved by code (an architect comparison needs it).
+        "pairing": {"proved": True, "method": "code_geometry", "how": "same drawn extent"},
     }
     finding.update(changes)
     return finding
@@ -210,6 +216,47 @@ def test_a_scaled_value_or_a_vendor_side_only_witness_is_never_clouded() -> None
     assert code_proved({**chain, "inches": {"architect": "106", "vendor": "107.75"}})
 
 
+def test_an_architect_comparison_needs_a_pairing_proof_a_rule_or_sum_does_not() -> None:
+    """Reading the vendor's number right (its mm and inches agreeing, or printed at its spot)
+    does not prove the architect's number measures the same thing (a counter's underside against
+    its top): with no pairing proof the item is grey, with the reason."""
+    unpaired = _proved(witnesses=["units"], pairing=None)
+    assert proof_group(unpaired) == "not_verified"
+    assert proof_of(unpaired)["reason"] == PAIRING_REASON
+    assert unproved_reason(unpaired) == PAIRING_REASON
+    assert proof_of(_ai_only())["reason"] == AI_ONLY_REASON
+    for pairing in (
+        {"proved": False, "method": "code_geometry"},
+        {"proved": True, "method": "a guess"},
+        "yes",
+    ):
+        assert proof_group(_proved(pairing=pairing)) == "not_verified"
+    assert proof_group(_proved(pairing={"proved": True, "method": "blind_picks"})) == "clouded"
+    assert proof_group(_proved(source="brand_prototype", pairing=None)) == "not_verified"
+    assert proof_group(_proved(source="gv_review", pairing=None)) == "not_verified"
+    # GV's rule, GV's limits and the vendor's own sum compare nothing drawn by someone else.
+    rule = _proved(source="rules", witnesses=["rule"], rule_check_id="C1", pairing=None)
+    assert not needs_pairing(rule) and proof_group(rule) == "clouded"
+    summed = _proved(
+        source="vendor_arithmetic",
+        witnesses=["arithmetic"],
+        parts_sum="80.125",
+        inches={"architect": None},
+        pairing=None,
+    )
+    assert proof_group(summed) == "clouded"
+    limits = _proved(
+        source="architect",
+        witnesses=["rule"],
+        inches={"architect": None},
+        pairing=None,
+        settled={"method": "gv_limits", "how": 'GV\'s filler limits are 1" to 2" (x); y.'},
+    )
+    assert not needs_pairing(limits) and proof_group(limits) == "clouded"
+    # The reviewer's Agree is still an override.
+    assert proof_group({**unpaired, "decision": {"decision": "agree", "by": "R"}}) == "clouded"
+
+
 def test_counts_split_the_screen_counts_and_follow_decisions() -> None:
     findings = [_proved(), _ai_only(), _decision(), _right(), _right(compared=False)]
     assert proof_counts(findings) == {
@@ -241,7 +288,8 @@ def test_the_words_say_what_is_wrong_and_what_it_should_be() -> None:
     assert vendor_value(finding) == '46"'
     assert should_be(finding) == '37" (architect 3\'-1", page 2)'
     assert proof_line(finding) == (
-        "Printed at both spots, read by code; a second reading agrees; checked on the drawing"
+        "Code paired the two dimensions by their drawn extent; printed at both spots, read by "
+        "code; a second reading agrees; checked on the drawing"
     )
     summed = _proved(
         source="vendor_arithmetic",
@@ -358,7 +406,8 @@ def test_the_drawing_clouds_only_what_code_proved_in_red_and_green(tmp_path: Pat
     assert _count(picture, RED, (x - 20, y - 25, x + 40, y + 15)) == 0  # AI reading only
     assert _count(picture, GREEN) > 20  # the "Should be" words
     proof = reader.pages[2].extract_text()
-    assert "Proved by: Printed at both spots, read by code" in proof
+    assert "Proved by: Code paired the two dimensions by their drawn extent" in proof
+    assert "printed at both spots, read by code" in proof
     assert "Vendor page 1 (architect's drawing on the same sheet)" in proof
     proof_picture = _render(out, 2)
     assert _count(proof_picture, GREEN) > 50 and _count(proof_picture, RED) > 50  # the boxes

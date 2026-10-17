@@ -9,10 +9,13 @@ a false red cloud goes straight to the vendor, so **only what code proved is clo
   sum, the reading ledger, millimetres and inches agreeing), a trust level of Confirmed or Likely,
   and a governing value code knows (GV's rule or limits, code's sum, or the architect's value
   read as one size). Never a value measured off the drawing or taken from a scale note (the
-  printed scales are wrong wherever GV resized a pasted drawing). Red cloud at the vendor's value,
-  green "Should be", and a proof entry.
+  printed scales are wrong wherever GV resized a pasted drawing). A comparison of two drawn
+  dimensions (vendor against architect or prototype) also needs a **pairing proof** that both
+  numbers measure the same thing (`pairing_proved`); GV's rule, GV's limits and the vendor's own
+  sum need none. Red cloud at the vendor's value, green "Should be", and a proof entry.
 - **not_verified**: a Wrong item only AI readings back ("AI reading only", or Likely from two AI
-  readings with no code witness): listed in grey, "Not verified by code: check before sending".
+  readings with no code witness), or one code read right whose pairing is not proved: listed in
+  grey, "Not verified by code: check before sending", with the reason (`unproved_reason`).
 - **could_not_compare**: a "Your decision" item: listed in grey with its one-line reason.
 - **right**: a Right item that was compared: a short green list.
 - **not_compared**: a Right item not seen on both sides (`mark_compared`): listed apart.
@@ -37,15 +40,20 @@ from app.review.assistant import witness
 from app.review.assistant.chat_trust import inch_words
 
 __all__ = [
+    "AI_ONLY_REASON",
     "GROUPS",
     "GROUP_WORDS",
     "KEEP_WORDS",
+    "PAIRING_METHODS",
+    "PAIRING_REASON",
     "RULE_LINE",
     "ProofGroup",
     "blocks_with_proof",
     "code_proved",
     "could_not_compare_reason",
     "governs",
+    "needs_pairing",
+    "pairing_proved",
     "proof_counts",
     "proof_group",
     "proof_line",
@@ -53,6 +61,7 @@ __all__ = [
     "scaled",
     "should_be",
     "should_be_value",
+    "unproved_reason",
     "vendor_value",
 ]
 
@@ -78,14 +87,23 @@ GROUP_WORDS: Final[Mapping[str, str]] = {
 }
 #: The rule, in one line, on the drawing's cover and the report.
 RULE_LINE: Final = (
-    "Only items code proved are clouded (printed at both spots, GV's rule, or the vendor's own "
-    "sum), so no unchecked AI reading reaches the vendor; the rest are listed in grey."
+    "Only items code proved are clouded (GV's rule, the vendor's own sum, or two dimensions code "
+    "proved measure the same thing), so no unchecked AI reading reaches the vendor; the rest are "
+    "listed in grey."
 )
 #: Words saying a value was measured off the drawing or taken from a scale note, not printed.
 _SCALED: Final = re.compile(
     r"\bscal(?:e|es|ed|ing)\b|\bmeasured (?:off|on) the drawing\b",
     re.IGNORECASE,
 )
+#: Why a Wrong item code read right is still grey: nothing proves both numbers measure the same.
+PAIRING_REASON: Final = "What each number measures is not proved by code; check it before sending."
+#: Why a Wrong item only AI readings back is grey.
+AI_ONLY_REASON: Final = "Only AI readings back it; check it before sending."
+#: How a pairing proof may be made (see `pairing_proved`).
+PAIRING_METHODS: Final = ("code_geometry", "blind_picks")
+#: Sources that compare nothing drawn by someone else: no pairing proof needed.
+_NO_PAIRING_SOURCES: Final = frozenset({"rules", "vendor_arithmetic"})
 #: Trust levels a clouded item may have (with a code witness).
 _PROVED_LEVELS: Final = frozenset({"confirmed", "likely"})
 #: Why a person must decide (`decision_resolver.keep_reason`), in one plain line.
@@ -126,6 +144,11 @@ _PROOF_WORDS: Final[Mapping[str, str]] = {
 }
 #: The limits in the resolver's words for GV's limits (`decision_resolver._filler_limits`).
 _LIMITS: Final = re.compile(r"limits are (.+?) \(")
+#: A pairing proof in the proof line.
+_PAIRING_WORDS: Final[Mapping[str, str]] = {
+    "code_geometry": "code paired the two dimensions by their drawn extent",
+    "blind_picks": "two blind picks of the same labels agree, checked by code",
+}
 #: The resolver's words (#1554): the vendor's value code read at its spot, the filler widths
 #: GV's limits caught, and code's sum of the vendor's parts.
 _HOW_VENDOR: Final = re.compile(r"\bvendor ((?:\d[\d/\s'-]*)?\d[\d/]*\")")
@@ -166,16 +189,57 @@ def scaled(finding: Mapping[str, Any]) -> bool:
     return any(_SCALED.search(str(finding.get(key) or "")) for key in ("architect", "vendor"))
 
 
-def code_proved(finding: Mapping[str, Any]) -> bool:
-    """A Wrong item code proved: an independent code witness AND trust Confirmed or Likely (a check
-    that disagrees makes it "AI reading only", so it never passes), with neither value measured
-    off the drawing or read from a scale note (`scaled`)."""
+def needs_pairing(finding: Mapping[str, Any]) -> bool:
+    """Whether the item compares two drawn dimensions (the vendor's against the architect's, a
+    brand prototype's, or a difference GV Review's page review recorded), so a red cloud needs
+    proof that both numbers measure the same thing. GV's rule, GV's limits and the vendor's own
+    sum compare nothing drawn by someone else: they need none."""
+    if _gv_limits(finding) is not None:
+        return False
+    return finding.get("source") not in _NO_PAIRING_SOURCES
+
+
+def pairing_proved(finding: Mapping[str, Any]) -> bool:
+    """The finding carries a pairing proof (`pairing: {proved: true, method, how}`):
+    `code_geometry` (both values printed at their spots and their dimension lines' end points on
+    the same drawn extent) or `blind_picks` (two blind AI picks of the same labels plus code's
+    checks, behind the setting `assistant_pairing_proof`)."""
+    pairing = finding.get("pairing")
+    return (
+        isinstance(pairing, Mapping)
+        and pairing.get("proved") is True
+        and pairing.get("method") in PAIRING_METHODS
+    )
+
+
+def _read_by_code(finding: Mapping[str, Any]) -> bool:
+    """An independent code witness, trust Confirmed or Likely, no scale note, and a governing
+    value code knows: code read the numbers (whether they measure the same thing aside)."""
     if finding.get("status") != "different" or scaled(finding):
         return False
     if str(finding.get("trust_level") or "") not in _PROVED_LEVELS:
         return False
     found = _witnesses(finding)
     return bool(found) and _governing_known(finding, found)
+
+
+def code_proved(finding: Mapping[str, Any]) -> bool:
+    """A Wrong item code proved: an independent code witness AND trust Confirmed or Likely (a check
+    that disagrees makes it "AI reading only", so it never passes), with neither value measured
+    off the drawing or read from a scale note (`scaled`), and, for a comparison of two drawn
+    dimensions, a pairing proof (`needs_pairing`, `pairing_proved`): reading the vendor's number
+    right (its millimetres and inches agreeing) does not prove the architect's number measures the
+    same thing."""
+    if not _read_by_code(finding):
+        return False
+    return not needs_pairing(finding) or pairing_proved(finding)
+
+
+def unproved_reason(finding: Mapping[str, Any]) -> str:
+    """Why a Wrong item is in the grey "Not verified by code" list, in one plain line."""
+    if _read_by_code(finding) and needs_pairing(finding) and not pairing_proved(finding):
+        return PAIRING_REASON
+    return AI_ONLY_REASON
 
 
 def _governing_known(finding: Mapping[str, Any], found: Sequence[str]) -> bool:
@@ -334,6 +398,9 @@ def proof_line(finding: Mapping[str, Any]) -> str:
         parts.append(f"agreed by {decision.get('by') or 'the reviewer'}")
     how = _settled_how(finding)
     witnesses = _witnesses(finding)
+    pairing = finding.get("pairing")
+    if needs_pairing(finding) and pairing_proved(finding) and isinstance(pairing, Mapping):
+        parts.append(_PAIRING_WORDS[str(pairing["method"])])
     if how:
         parts.append(f"settled by GV Review: {_short(how, 200)}")
     else:
@@ -378,7 +445,7 @@ def proof_of(finding: Mapping[str, Any]) -> dict[str, Any]:
     wrong = finding.get("status") == "different" or group == "clouded"
     reason: str | None = None
     if group == "not_verified":
-        reason = "Only AI readings back it; check it before sending."
+        reason = unproved_reason(finding)
     elif group == "could_not_compare":
         reason = could_not_compare_reason(finding)
     elif group == "dismissed":

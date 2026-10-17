@@ -562,7 +562,7 @@ def test_a_full_check_seeds_recorded_results_and_makes_the_cloud_drawing_and_rep
     ]
     # The two files, made by code, handed over (the service announces each with `file`).
     names = [f["name"] for f in harness.files]
-    assert names == ["Vendor set - AI cloud drawing.pdf", "Vendor set - AI check report.pdf"]
+    assert names == ["Vendor set - GV cloud drawing.pdf", "Vendor set - AI check report.pdf"]
     from pypdf import PdfReader
 
     workspace = harness.workspace

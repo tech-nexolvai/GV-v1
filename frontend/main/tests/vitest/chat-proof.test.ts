@@ -20,8 +20,11 @@ describe('the zero-click drawing groups (#1581)', () => {
   });
 
   it('mirrors the rule while an answer streams (no proof yet)', () => {
-    const printed = { status: 'different' as const, trust_level: 'confirmed' as const, witnesses: ['printed'], inches: { architect: '37', vendor: '46', difference: '9' } };
+    const printed = { status: 'different' as const, trust_level: 'confirmed' as const, witnesses: ['printed'], inches: { architect: '37', vendor: '46', difference: '9' }, pairing: { proved: true, method: 'code_geometry' as const } };
     expect(proofGroup(finding('a', printed))).toBe('clouded');
+    // No proof that both numbers measure the same thing: grey.
+    expect(proofGroup(finding('p', { ...printed, pairing: null }))).toBe('not_verified');
+    expect(proofGroup(finding('q', { ...printed, pairing: null, source: 'rules', witnesses: ['rule'] }))).toBe('clouded');
     expect(proofGroup(finding('b', { ...printed, witnesses: [] }))).toBe('not_verified');
     expect(proofGroup(finding('c', { ...printed, trust_level: 'to_check' }))).toBe('not_verified');
     expect(proofGroup(finding('d', { ...printed, architect: 'scales about 74"' }))).toBe('not_verified');

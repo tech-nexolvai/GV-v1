@@ -4901,6 +4901,8 @@ export interface components {
             not_compared_why?: ("not_viewed" | "pair_not_covered") | null;
             /** Page */
             page: number;
+            /** @description Proof that both numbers measure the same thing (#1581); without it an architect comparison is never clouded automatically. */
+            pairing?: components["schemas"]["ChatFindingPairingOut"] | null;
             /** Parts */
             parts?: string[] | null;
             /**
@@ -4977,6 +4979,26 @@ export interface components {
              * @description The non-AI witnesses behind it: printed, rule, arithmetic, ledger, units.
              */
             witnesses?: string[] | null;
+        };
+        /**
+         * ChatFindingPairingOut
+         * @description Proof that the vendor's and the architect's numbers measure the same thing (#1581): needed
+         *     before an architect comparison is clouded with no human step.
+         */
+        ChatFindingPairingOut: {
+            /**
+             * How
+             * @description In plain words, for the proof page.
+             */
+            how?: string | null;
+            /**
+             * Method
+             * @description code_geometry: both values printed at their spots and their dimension lines' end points on the same drawn extent; blind_picks: two blind AI picks of the same labels plus code's checks (setting assistant_pairing_proof).
+             * @enum {string}
+             */
+            method: "code_geometry" | "blind_picks";
+            /** Proved */
+            proved: boolean;
         };
         /**
          * ChatFindingProofOut

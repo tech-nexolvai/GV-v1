@@ -533,6 +533,21 @@ class ChatFindingImpactOut(BaseModel):
     why: str = Field(description='Plain words: "changes fabrication (overall size); 9 in off".')
 
 
+class ChatFindingPairingOut(BaseModel):
+    """Proof that the vendor's and the architect's numbers measure the same thing (#1581): needed
+    before an architect comparison is clouded with no human step."""
+
+    model_config = ConfigDict(frozen=True)
+
+    proved: bool
+    method: Literal["code_geometry", "blind_picks"] = Field(
+        description="code_geometry: both values printed at their spots and their dimension "
+        "lines' end points on the same drawn extent; blind_picks: two blind AI picks of the same "
+        "labels plus code's checks (setting assistant_pairing_proof)."
+    )
+    how: str | None = Field(default=None, description="In plain words, for the proof page.")
+
+
 class ChatFindingProofOut(BaseModel):
     """Where the zero-click cloud drawing puts a finding (#1581), worked out by code on read
     (`proof.proof_of`): only Wrong items code proved are clouded; the reviewer's Agree / Not a
@@ -675,6 +690,11 @@ class ChatFindingOut(BaseModel):
         default=None,
         description="Wrong and Your-decision items (#1569): how much it matters, by code; the "
         "screen, the cloud drawing's numbers and the check report follow this order.",
+    )
+    pairing: ChatFindingPairingOut | None = Field(
+        default=None,
+        description="Proof that both numbers measure the same thing (#1581); without it an "
+        "architect comparison is never clouded automatically.",
     )
     proof: ChatFindingProofOut | None = Field(
         default=None,

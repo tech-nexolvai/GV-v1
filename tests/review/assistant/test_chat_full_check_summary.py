@@ -26,7 +26,7 @@ from tests.review.assistant.test_chat_engine import DOLLARS, Harness
 from tests.review.assistant.test_chat_engine_findings import _full_check, _modules
 from tests.review.assistant.test_chat_findings import finding_input, workspace_with_pdf
 
-FILES = ["Vendor set - AI cloud drawing.pdf", "Vendor set - AI check report.pdf"]
+FILES = ["Vendor set - GV cloud drawing.pdf", "Vendor set - AI check report.pdf"]
 
 
 def _finding(
