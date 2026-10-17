@@ -149,6 +149,18 @@ class Settings(BaseSettings):
     # A full check's second, drawn-things helper per page group (#1569): notes, doors and drawers,
     # hardware, extent, brand prototype, finish tags; Sonnet at low effort, capped per helper.
     assistant_drawn_helpers: bool = True
+    # A full check as a fixed-price roster of specialists (prompts and specialists design,
+    # Balanced): code first, then Sonnet specialists with their own money caps, a fresh-context
+    # verifier and a devil's advocate, and no lead. The fixed price is the full check's whole cap;
+    # what does not fit in it is listed as not done, never dropped. Off: the lead verifies (#1512).
+    assistant_full_check_roster: bool = True
+    assistant_full_check_cap_usd: Decimal = Field(default=Decimal(5), gt=0, allow_inf_nan=False)
+    # What proves that a vendor number and an architect number measure the same thing, for a red
+    # cloud (orchestrator's decision D1, provisional): `ai_pair_plus_code` = two blind AI picks of
+    # the same label plus code's checks (printed at both spots, the drawn extents agree, every
+    # advocate check passes); `code_only` = only items code paired by itself (the vendor's own
+    # sums, GV's rules) can be red.
+    assistant_pairing_proof: Literal["ai_pair_plus_code", "code_only"] = "ai_pair_plus_code"
     # One sandbox command's time limit, and which sandbox runs it (`auto` and `docker`: the Docker
     # image `gv-assistant-sandbox` when built and Docker answers, else no shell: the chat says the
     # secure sandbox is not running; `macos`: `sandbox-exec`, only for tests on a Mac, never a

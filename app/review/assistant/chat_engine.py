@@ -81,6 +81,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
+from importlib import import_module
 from pathlib import Path
 from time import monotonic, monotonic_ns
 from typing import Any, Final, Protocol
@@ -203,6 +204,7 @@ from app.review.assistant.chat_unknowns import refused_from_diff, unknown_record
 from app.review.assistant.decision_resolver import recount_words, resolve_answer
 from app.review.assistant.dim_index import labels_for
 from app.review.assistant.full_check_brief import (
+    LENSES,
     checklist_gaps,
     checklist_send_back,
     helper_brief,
@@ -423,6 +425,12 @@ class EngineSettings:
     """The prompt size at which old tool results are cleared (`chat_context`, #1548)."""
     context_keep_turns: int = field(default_factory=context_keep_turns)
     """The turns kept whole when clearing (this question and the ones before it)."""
+    roster: bool = False
+    """A full check as a fixed-price roster of specialists, no lead (`full_check_roster`,
+    `GV_ASSISTANT_FULL_CHECK_ROSTER`); the message cap is then the full check's fixed price."""
+    pairing_proof: str = "ai_pair_plus_code"
+    """What proves that two numbers measure the same thing (`GV_ASSISTANT_PAIRING_PROOF`):
+    `ai_pair_plus_code` or `code_only` (`full_check_roster`)."""
 
 
 @dataclass(slots=True)
@@ -675,6 +683,14 @@ class _Agent:
     system: str | None = None
     """A code-planned helper's own system prompt (its kind's, `full_check_specialists`), else the
     helpers' shared one."""
+    tools: tuple[Mapping[str, Any], ...] | None = None
+    """A roster specialist's own tools (`full_check_roster`), else the helpers' tools."""
+    output_format: Mapping[str, Any] | None = None
+    """A roster specialist's reply shape (structured outputs): its report is that JSON."""
+    soft_cap: bool = False
+    """A roster specialist's cap is checked on what it has spent (wrap-up at 80%), not on the
+    next call's upper-bound estimate; the message's fixed price still holds every estimate, so
+    the run never passes it and a specialist passes its own cap by one call at most."""
 
 
 @dataclass(slots=True)
@@ -811,6 +827,11 @@ class ChatEngine:
         self.task_spec: dict[str, Any] | None = None
         #: Each helper kind's system prompt, made once (`_kind_system`).
         self._kind_systems: dict[str, str] = {}
+        #: The share of what is left that one delegation's helpers may spend (a roster full check
+        #: has no lead to keep money for: each specialist has its own cap instead).
+        self.helper_share_percent = HELPER_SHARE_PERCENT
+        #: A roster full check judges its red candidates with the devil's advocate instead.
+        self.critic_off = False
         #: Refusal-fallback switches already shown (#1577), and the thinking blocks the API dropped
         #: from this answer's calls because their conversation no longer matched (a bug signal).
         self._fallbacks_shown: set[tuple[str, str]] = set()
@@ -2598,7 +2619,7 @@ class ChatEngine:
         thread as soon as it has reported (a full check starts its second reads there)."""
         with self._lock:
             left = max(0, self.settings.message_cap_micros - self._spent)
-            share = _Share(limit=self._spent + left * HELPER_SHARE_PERCENT // 100)
+            share = _Share(limit=self._spent + left * self.helper_share_percent // 100)
             for agent in agents:
                 self._helpers_started += 1
                 agent.number = self._helpers_started
@@ -3120,13 +3141,20 @@ class ChatEngine:
         )
         thinking = helper_thinking(model, effort, self.settings.thinking)
         system = agent.system or HELPER_SYSTEM_PROMPT
+        tools = agent.tools or HELPER_TOOLS
         allowance = FULL_CHECK_HELPER_MAX_TOKENS if full_check else HELPER_MAX_TOKENS
         try:
-            footer = helper_footer(
-                agent.prompt,
-                self.tools.workspace,
-                pages=agent.pages,
-                report_words=FULL_CHECK_REPORT_WORDS if full_check else 300,
+            # A specialist with a reply shape (the roster's verifier, tag reader) has its pages in
+            # its brief, and the footer's "report_finding" is not one of its tools.
+            footer = (
+                ""
+                if agent.output_format is not None
+                else helper_footer(
+                    agent.prompt,
+                    self.tools.workspace,
+                    pages=agent.pages,
+                    report_words=FULL_CHECK_REPORT_WORDS if full_check else 300,
+                )
             )
         except Exception:  # noqa: BLE001 - the helper still gets its brief
             _log.warning("assistant chat helper footer could not be made")
@@ -3157,12 +3185,24 @@ class ChatEngine:
                 model=model,
                 thinking=thinking,
                 system=system,
-                tools=HELPER_TOOLS,
+                tools=tools,
                 messages=messages,
                 final=final,
                 max_tokens=max_tokens,
             )
             held = 0
+            if (
+                final
+                and agent.soft_cap
+                and not self._fits(self._estimate(model, body, cached, previous))
+            ):
+                # A roster specialist never passes the fixed price, not even to write its report:
+                # code keeps what it recorded, and its report says where it stopped.
+                return (
+                    _report_from_steps(entry["steps"], "the fixed price was reached"),
+                    False,
+                    "cost_cap",
+                )
             if not final:
                 why = None
                 estimate = self._estimate(model, body, cached, previous)
@@ -3172,8 +3212,10 @@ class ChatEngine:
                     wrap, why = "turn_limit", "you have used your tool calls"
                 elif not self._fits(estimate):
                     wrap, why = "cost_cap", "this message is near its money cap"
-                elif agent.cap_micros is not None and agent.spent + (estimate or 0) > (
-                    agent.cap_micros
+                elif agent.cap_micros is not None and (
+                    agent.spent >= agent.cap_micros * 4 // 5
+                    if agent.soft_cap
+                    else agent.spent + (estimate or 0) > agent.cap_micros
                 ):
                     wrap, why = "cost_cap", "you have used your part of the money"
                 elif not self._hold(share, estimate):
@@ -3189,12 +3231,13 @@ class ChatEngine:
                     effort=effort,
                     thinking=thinking,
                     system=system,
-                    tools=HELPER_TOOLS,
+                    tools=tools,
                     messages=messages,
                     final=final,
                     max_tokens=max_tokens,
                     prompt_id=self.helper_prompt_id,
                     display=None,
+                    output_format=agent.output_format,
                 )
             except _Cancelled:
                 return (
@@ -3246,7 +3289,7 @@ class ChatEngine:
             if not report:
                 report = _report_from_steps(entry["steps"], "it gave no written report")
                 return report, False, wrap or "error"
-            if agent.pages:
+            if agent.pages and agent.lens in LENSES:
                 # A code-planned helper's checklist (#1515): sent back once to finish it while it
                 # has turns left; what is still open goes to the lead.
                 gaps = checklist_gaps(report, agent.pages, agent.lens)
@@ -3442,6 +3485,12 @@ class ChatEngine:
         text = ""
         guard_sent = False
         self._room_for_history()
+        if settings.mode == "full_check" and settings.roster:
+            # A fixed-price roster of specialists, no lead (`full_check_roster`); `None` when
+            # there is no page map to plan from, and the lead plans as before.
+            ended = import_module("app.review.assistant.full_check_roster").run(self)
+            if ended is not None:
+                return ended  # type: ignore[no-any-return]
         if settings.mode == "full_check":
             self._start_full_check()
         # The scope as asked, at once (the screen hides the whole-set panels for a narrow one).

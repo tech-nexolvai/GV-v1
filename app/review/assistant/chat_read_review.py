@@ -227,7 +227,8 @@ def critic_jobs(
         whole_set = (
             bool(book.coverage_used) or getattr(engine.settings, "mode", None) == "full_check"
         )
-    if not whole_set or critic_module is None:
+    if not whole_set or critic_module is None or getattr(engine, "critic_off", False):
+        # A roster full check judges its red candidates with the devil's advocate instead.
         return []
     candidates = critic_module.candidates(findings)
     critic_call = _model_call(

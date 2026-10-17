@@ -262,6 +262,8 @@ def test_a_two_lens_full_check_end_to_end_against_a_fake_anthropic_server(postgr
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     monkeypatch.setenv("ANTHROPIC_BASE_URL", f"http://127.0.0.1:{server.server_address[1]}")
+    # The lead-verifies full check (#1569); the roster has its own tests (test_full_check_roster).
+    monkeypatch.setenv("GV_ASSISTANT_FULL_CHECK_ROSTER", "0")
     _FakeLenses.requests, _FakeLenses.problems = [], []
     try:
         with _world(postgres_engine, tmp_path, pdf=PDF3, pages=3) as world:
