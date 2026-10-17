@@ -674,6 +674,12 @@ class MessageJob:
     sharpen_deadline_seconds: float = 1.5
     task_edit: Mapping[str, Any] | None = None
     """#1551: the task spec the reviewer corrected on the screen ("Understood as … Edit")."""
+    page_cache_set_mb: int = 300
+    page_cache_total_mb: int = 1000
+    """#1575: the hi-res page caches' size per set and for all sets, kept after each message."""
+    page_cache_workers: int = 3
+    page_cache_memory_mb: int = 256
+    """#1575: pages the hi-res cache draws at once, and its decoded tiles kept in memory."""
 
 
 _NO_SANDBOX: Final = (
@@ -709,6 +715,7 @@ def run_message(job: MessageJob, run: RunningMessage, emit: Emit | None = None) 
         _maybe_checkpoint(run, event)
 
     try:
+        configure_page_cache(workers=job.page_cache_workers, memory_mb=job.page_cache_memory_mb)
         _run_message(job, run, publish)
     except Exception:  # noqa: BLE001 - the stream still ends cleanly
         _log.exception("assistant chat message failed before it could be stored")
@@ -722,6 +729,100 @@ def run_message(job: MessageJob, run: RunningMessage, emit: Emit | None = None) 
         # stored one.
         feed.close()
         job.registry.release(run)
+        start_page_cache_trim(
+            job.chat_root, set_mb=job.page_cache_set_mb, total_mb=job.page_cache_total_mb
+        )
+
+
+def configure_page_cache(*, workers: int, memory_mb: int) -> None:
+    """Hand the hi-res page cache its two sizes from `Settings` (#1575), before the message draws
+    anything. Loaded by name: `app/api/` never imports the drawing code. Never raises."""
+    try:
+        import_module("app.review.assistant.page_cache").configure(
+            workers=workers, memory_mb=memory_mb
+        )
+    except Exception as failed:  # noqa: BLE001 - the cache keeps its own sizes
+        _log.warning("assistant page cache sizes not set: %s", type(failed).__name__)
+
+
+#: The hi-res page caches' clean-up (#1575) starts after a message, at most this often (seconds).
+_TRIM_EVERY_S: Final = 60.0
+_trim_guard: Final = threading.Lock()
+_trim_started: float | None = None
+
+
+def start_page_cache_trim(
+    chat_root: Path, *, set_mb: int, total_mb: int
+) -> threading.Thread | None:
+    """Start the hi-res page caches' clean-up in the background, unless one started in the last
+    minute. Never raises: the caches are only a speed-up."""
+    global _trim_started
+    with _trim_guard:
+        now = monotonic()
+        if _trim_started is not None and now - _trim_started < _TRIM_EVERY_S:
+            return None
+        _trim_started = now
+    thread = threading.Thread(
+        target=trim_page_caches,
+        args=(chat_root,),
+        kwargs={"set_mb": set_mb, "total_mb": total_mb},
+        name="gv-page-cache-trim",
+        daemon=True,
+    )
+    try:
+        thread.start()
+    except RuntimeError:
+        return None
+    return thread
+
+
+def trim_page_caches(chat_root: Path, *, set_mb: int, total_mb: int) -> None:
+    """Keep the set packs' hi-res page caches within `set_mb` per set and `total_mb` for all, and
+    drop the cache of a set no chat or plan check uses any more (`set_pack.trim_hires`)."""
+    try:
+        pack = import_module("app.review.assistant.set_pack")
+        done = pack.trim_hires(
+            chat_root,
+            live_pack_keys(chat_root, pack.pack_key),
+            set_bytes=set_mb * 1_000_000,
+            total_bytes=total_mb * 1_000_000,
+        )
+    except Exception as failed:  # noqa: BLE001 - only a cache: the chat works without it
+        _log.warning("assistant page cache clean-up failed: %s", type(failed).__name__)
+        return
+    if done.pages:
+        _log.info(
+            "assistant page cache clean-up: removed %d pages (%.0f MB); %.0f MB kept",
+            done.pages,
+            done.freed / 1e6,
+            done.held / 1e6,
+        )
+
+
+def live_pack_keys(
+    chat_root: Path, key_of: Callable[[Sequence[Mapping[str, Any]]], str]
+) -> frozenset[str] | None:
+    """The set packs a chat or a plan check still points at (from each one's `uploads.json`), or
+    `None` when one of those files could not be read (half-written, say): then no set counts as
+    gone."""
+    keys: set[str] = set()
+    manifests = [
+        *chat_root.glob("*/uploads.json"),
+        *chat_root.glob(f"{PLAN_CHECK_FOLDER}/*/uploads.json"),
+    ]
+    for manifest in manifests:
+        try:
+            listing = json.loads(manifest.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            return None
+        if not isinstance(listing, list):
+            return None
+        items = [item for item in listing if isinstance(item, dict)]
+        if items:
+            keys.add(key_of(items))
+    return frozenset(keys)
 
 
 def _safe(emit: Emit, event: str, data: dict[str, Any]) -> None:

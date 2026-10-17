@@ -1154,6 +1154,10 @@ def _message(
             products=products,
             continue_from=continue_from,
             drawn_helpers=settings.assistant_drawn_helpers,
+            page_cache_set_mb=settings.assistant_page_cache_set_mb,
+            page_cache_total_mb=settings.assistant_page_cache_total_mb,
+            page_cache_workers=settings.assistant_page_cache_workers,
+            page_cache_memory_mb=settings.assistant_page_cache_memory_mb,
             plan_answers=(
                 None
                 if mode != "full_check" or not body.plan_answers
