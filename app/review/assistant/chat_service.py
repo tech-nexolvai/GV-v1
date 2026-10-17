@@ -400,7 +400,15 @@ def prepare_skill(
 #: The full check's own instruction (CONTRACT4): the reviewer presses a button, never types it.
 FULL_CHECK_INSTRUCTION: Final = """Full check of this drawing set (the reviewer pressed Run full check). Read /mnt/skills/gv-review/SKILL.md and rules.md first, and call review_results for the whole set.
 
-Review the WHOLE set: GV's rules for the picked products first, then compare everything on the vendor's drawings with the architect's (brand prototype differences as their own group). Report EVERY item you compare with report_finding, the right ones too (status same), with boxes. Check each finding the app made from GV Review's recorded results. Brief helpers to report findings and set_coverage, and on every page to record every dimension string with record_string and every value they read with record_reading (both sides; name an item the same way on every page and view), so code adds them up and compares the views. Record every page with set_coverage. Verify leads. End with 2-4 short lines of notes, no tables: the app draws the cloud drawing, the report and the lists."""
+Review the WHOLE set: GV's rules for the picked products first, then compare everything on the vendor's drawings with the architect's (brand prototype differences as their own group). Report EVERY item you compare with report_finding, the right ones too (status same), with boxes. Check each finding the app made from GV Review's recorded results. Brief helpers to report findings and set_coverage, and on every page to record every dimension string with record_string and every value they read with record_reading (both sides; name an item the same way on every page and view), so code adds them up and compares the views. Record every page with set_coverage. Verify leads.
+
+End with a 5-6 line plain-English summary for the reviewer (no tables, no disclaimers: the app draws the cloud drawing, the report and the lists):
+1. What was checked: pages, products, rounds.
+2. The overall verdict in one line (how many items look wrong, need the reviewer's decision, match).
+3. The top 3-5 issues by impact, each with its page, item, and architect vs vendor value.
+4. What needs the reviewer's decision.
+5. The next step (e.g. "send the cloud drawing to the vendor; confirm the 3 items that need your decision").
+If you are told to stop early, still write this summary from what you have."""
 
 
 def full_check_label(products: Sequence[str], effort: str) -> str:

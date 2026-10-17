@@ -428,3 +428,36 @@ def test_a_full_check_through_the_route_shows_its_label_and_ends_with_its_two_fi
             json={**ASK, "text": "hi", "products": ["cabinet", "cabinet"]},
         )
         assert empty.status_code == 422 and twice.status_code == 422
+
+
+def test_a_full_check_with_no_words_is_stored_with_codes_summary_and_its_progress(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    provider = ScriptedProvider(
+        lead=[
+            reply(tool("r1", "report_finding", finding_input()), stop="tool_use"),
+            reply(text("")),
+        ]
+    )
+    with _world(postgres_engine, tmp_path, provider=provider, pdf=PDF3, pages=3) as world:
+        chat_id = world.chat()
+        response = world.client.post(
+            f"/api/v1/chats/{chat_id}/messages",
+            json={**ASK, "mode": "full_check", "products": ["countertop"]},
+        )
+        assert response.status_code == 200, response.text
+        events = _events(response.text)
+        assert _named(events, "progress")[-1]["progress"]["phase"] == "writing"
+        ended = _named(events, "message_end")[0]["message"]
+        assert ended["text"].startswith("Checked ")
+        assert "Summary written by GV Review" in ended["text"]
+        # A reload shows the same: the summary block marked as code's, and the last progress.
+        stored = world.client.get(f"/api/v1/chats/{chat_id}").json()["messages"][1]
+        assert stored["text"] == ended["text"]
+        assert stored["blocks"] == ended["blocks"]
+        written = [b for b in stored["blocks"] if b["type"] == "text" and b.get("by") == "code"]
+        assert len(written) == 1 and written[0]["text"] == ended["text"]
+        progress = [b for b in stored["blocks"] if b["type"] == "progress"]
+        assert len(progress) == 1 and progress[0]["progress"]["phase"] == "writing"
+        assert [f["name"] for f in stored["files"]] == [
+            "Vendor set - AI cloud drawing.pdf",
+            "Vendor set - AI check report.pdf",
+        ]
