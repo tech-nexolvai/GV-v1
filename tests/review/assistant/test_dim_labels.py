@@ -736,3 +736,9 @@ def test_the_printed_scale_notes_are_kept_per_page(pdf: Path) -> None:
     assert [note["text"] for note in found.scale_notes] == ['1/2" = 1\'-0"']
     document = dl.build_dims({"set.pdf": pdf}, {"pages": []})
     assert document["pages"][0]["scale_notes"][0]["text"] == '1/2" = 1\'-0"'
+
+
+def test_every_printed_phrase_is_kept_with_its_box_and_side(pdf: Path) -> None:
+    phrases = {p["text"]: p for p in dl.page_labels(pdf, 1, HALVES).phrases}
+    assert {"2 DRAWERS", '36"'} <= set(phrases)
+    assert phrases["2 DRAWERS"]["side"] == "vendor"

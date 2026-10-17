@@ -178,6 +178,11 @@ def test_the_pack_holds_the_page_map_annotations_pictures_and_contact_sheets(pac
         assert abs(width - WIDTH * 100 / 72) <= 1 and abs(height - HEIGHT * 100 / 72) <= 1
     assert [p.name for p in (pack / "contact").iterdir()] == ["combined-p001-003.png"]
     assert (pack / "README.txt").read_text().startswith("The set pack")
+    # Code facts written with the labels: each drawing's scale, and its notes and tags.
+    scales = json.loads((pack / "scales.json").read_text())
+    notes = json.loads((pack / "notes.json").read_text())
+    assert [entry["page"] for entry in scales["pages"]] == [1, 2, 3]
+    assert [entry["page"] for entry in notes["pages"]] == [1, 2, 3]
 
     annotations = json.loads((pack / "annotations.json").read_text())
     heading = next(a for a in annotations if a["text"] == "ID SET ELEVATION")

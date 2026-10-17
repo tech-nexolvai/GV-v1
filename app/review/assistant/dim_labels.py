@@ -88,6 +88,8 @@ _log = logging.getLogger(__name__)
 LABELS_VERSION: Final = 1
 #: The most labels one page lists (a schedule page can print hundreds of numbers).
 MAX_LABELS: Final = 400
+#: The most phrases one page lists.
+MAX_PHRASES: Final = 1500
 #: A bare number larger than this is not read as inches (it is a count, a note number, or mm).
 _BARE_MAX_IN: Final = Decimal(600)
 #: A dimension line may be at most this many times longer than its text.
@@ -141,6 +143,8 @@ class PageLabels:
     scale_notes: list[dict[str, Any]] = field(default_factory=list)
     """The printed scale notes (`1/2" = 1'-0"`): `{text, box}` (`view_scales` sets them beside
     the scale measured from the dimensions)."""
+    phrases: list[dict[str, Any]] = field(default_factory=list)
+    """Every printed phrase: `{text, box, side}` (`drawing_notes` finds the notes and tags)."""
 
 
 # ---- reading the page once -----------------------------------------------------------------------
@@ -832,7 +836,15 @@ def page_labels(
     installed ones)."""
     started = clock()
     parsed = _parse(Path(pdf), page - 1)
-    result = PageLabels(labels=_text_labels(parsed, halves), scale_notes=_scale_notes(parsed))
+    phrases = _phrases(parsed)
+    result = PageLabels(
+        labels=_text_labels(parsed, halves),
+        scale_notes=_scale_notes(phrases),
+        phrases=[
+            {"text": text, "box": [round(v, 2) for v in box], "side": _side(box, halves)}
+            for text, box in phrases[:MAX_PHRASES]
+        ],
+    )
     if drawn_budget_s > 0:
         _add_drawn(
             result,
@@ -878,11 +890,14 @@ _SCALE_NOTE: Final = re.compile(
 )
 
 
-def _scale_notes(parsed: _Parsed) -> list[dict[str, Any]]:
-    """The scale notes the page's text prints (`1/2" = 1'-0"`), each with its box."""
-    out: list[dict[str, Any]] = []
+def _phrases(parsed: _Parsed) -> list[tuple[str, Box]]:
+    """Every phrase the page's text prints (the vendor layer: its own content and its pasted
+    drawings, black or grey; GV's markup is never read), with its box: characters grouped into
+    labels (`verify_value._labels`), each split into rows by baseline and letter size (a title
+    printed over a note is not one text) and each row into phrases where a gap is wider than a
+    letter (`ID5.1` is not part of `1/4" = 1'-0"`)."""
+    out: list[tuple[str, Box]] = []
     for group in vv._labels(list(parsed.page.chars)):
-        # One row per baseline and letter size: a title printed over a note is not one text.
         rows: list[list[Any]] = []
         for char in sorted(group, key=lambda c: (c.size, c.across)):
             row = next(
@@ -899,7 +914,6 @@ def _scale_notes(parsed: _Parsed) -> list[dict[str, Any]]:
             else:
                 row.append(char)
         for row in rows:
-            # Phrases: a gap wider than a letter ends one (`ID5.1` is not part of `1/4" = ...`).
             phrases: list[list[Any]] = []
             for char in sorted(row, key=lambda c: c.along):
                 last = phrases[-1][-1] if phrases else None
@@ -908,12 +922,23 @@ def _scale_notes(parsed: _Parsed) -> list[dict[str, Any]]:
                 else:
                     phrases.append([char])
             for phrase in phrases:
-                text = vv._plain(vv._row_text(phrase, max(c.size for c in phrase)))
-                found = _SCALE_NOTE.search(text)
-                if found is not None:
-                    note = f'{found.group(1)}" = {found.group(2).rstrip(chr(34)).strip()}"'
-                    box = _union([c.box for c in phrase])
-                    out.append({"text": note, "box": [round(v, 2) for v in box]})
+                text = " ".join(
+                    vv._plain(vv._row_text(phrase, max(c.size for c in phrase))).split()
+                )
+                if text:
+                    out.append((text, _union([c.box for c in phrase])))
+    out.sort(key=lambda item: (round(item[1][1] / 4), item[1][0]))
+    return out
+
+
+def _scale_notes(phrases: Sequence[tuple[str, Box]]) -> list[dict[str, Any]]:
+    """The scale notes among the page's phrases (`1/2" = 1'-0"`), each with its box."""
+    out: list[dict[str, Any]] = []
+    for text, box in phrases:
+        found = _SCALE_NOTE.search(text)
+        if found is not None:
+            note = f'{found.group(1)}" = {found.group(2).rstrip(chr(34)).strip()}"'
+            out.append({"text": note, "box": [round(v, 2) for v in box]})
     return out
 
 
@@ -1049,6 +1074,7 @@ def build_dims(
                     "drawn": found.drawn,
                     "labels": found.labels,
                     "scale_notes": found.scale_notes,
+                    "phrases": found.phrases,
                 }
             )
             if on_page is not None:
