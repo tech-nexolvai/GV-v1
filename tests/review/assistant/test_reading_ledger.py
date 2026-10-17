@@ -480,8 +480,15 @@ def test_good_inputs_pass_the_schema_and_bad_ones_fail_both_schema_and_code() ->
         {**good_string, "parts": ["12"]},
         {**good_string, "page": 0},
         {**good_string, "extra": 1},
-        {key: value for key, value in good_string.items() if key != "printed_total"},
     ]
+    # The schema cannot say "parts or part_dims"; code refuses a string with neither.
+    for raw in (
+        {key: value for key, value in good_string.items() if key != "printed_total"},
+        {key: value for key, value in good_string.items() if key != "parts"},
+        {**good_string, "part_dims": ["D1", "D2"]},
+    ):
+        text, error = ledger.run_tool("record_string", raw)
+        assert error and text.startswith("Not recorded:"), text
     bad_readings = [
         {**good_reading, "kind": "length"},
         {**good_reading, "view": "isometric"},
@@ -586,3 +593,77 @@ def test_summary_and_storage() -> None:
     stored = ledger.as_dict()
     assert stored["strings"][0]["sum_text"] == '12 + 12 = 24" = 24" printed'
     assert stored["readings"][0]["item_key"] == "b36" and stored["readings"][0]["inches"] == "36"
+
+
+# ---- strings by label (prompts design W1: label ids as the output) -------------------------------
+
+_LABELS = {
+    (7, "D12"): {
+        "id": "D12",
+        "page": 7,
+        "text": '10 1/4"',
+        "inches": "10.25",
+        "box": [10, 50, 30, 58],
+    },
+    (7, "D13"): {
+        "id": "D13",
+        "page": 7,
+        "text": "610 [24]",
+        "inches": "24",
+        "box": [40, 50, 70, 58],
+    },
+    (7, "D14"): {"id": "D14", "page": 7, "text": '34"', "inches": "34", "box": [10, 70, 80, 78]},
+    (8, "D2"): {"id": "D2", "page": 8, "text": "TYP", "inches": "x", "box": [1, 1, 2, 2]},
+}
+
+
+def _lookup(ref: object, page: int, side: str) -> dict[str, Any]:
+    assert side == "vendor"
+    named = str(ref)
+    if named.startswith("p8."):
+        page, named = 8, named[3:]
+    label = _LABELS.get((page, named))
+    if label is None:
+        raise LookupError(f"page {page} has no label {named}")
+    return {**label, "file": "set.pdf"}
+
+
+def test_a_string_recorded_by_labels_is_read_and_added_by_code() -> None:
+    ledger = ReadingLedger(page_count=10, labels=_lookup)
+    text, error = ledger.run_tool(
+        "record_string",
+        {"page": 7, "side": "vendor", "part_dims": ["D12", "D13"], "total_dim": "D14"},
+    )
+    assert error is False, text
+    entry = ledger.strings[0]
+    # Each label's text as printed (code reads "610 [24]" as its 24 inches).
+    assert entry.parts == ('10 1/4"', "610 [24]") and entry.printed_total == '34"'
+    assert entry.result == "does_not_add_up" and entry.off_by == Decimal("-0.25")
+    assert entry.dims == ("p7.D12", "p7.D13", "p7.D14")
+    assert entry.box is not None and (entry.box.x0, entry.box.y1) == (10, 78)
+
+
+def test_a_string_partly_typed_is_not_a_label_string_and_bad_labels_are_refused() -> None:
+    ledger = ReadingLedger(page_count=10, labels=_lookup)
+    text, error = ledger.run_tool(
+        "record_string",
+        {"page": 7, "side": "vendor", "part_dims": ["D12", "D13"], "printed_total": '34 1/4"'},
+    )
+    assert error is False and ledger.strings[0].dims == ()
+    assert ledger.strings[0].result == "adds_up"
+    for raw, says in (
+        ({"page": 7, "side": "vendor", "part_dims": ["D12", "D99"], "total_dim": "D14"}, "D99"),
+        ({"page": 7, "side": "vendor", "part_dims": ["D12", "p8.D2"], "total_dim": "D14"}, "D2"),
+        (
+            {"page": 7, "side": "vendor", "parts": ["1", "2"], "part_dims": ["D12", "D13"]},
+            "not both",
+        ),
+    ):
+        text, error = ledger.run_tool("record_string", raw)
+        assert error and says in text, text
+    no_lookup = ReadingLedger(page_count=10)
+    text, error = no_lookup.run_tool(
+        "record_string",
+        {"page": 7, "side": "vendor", "part_dims": ["D12", "D13"], "total_dim": "D14"},
+    )
+    assert error and "as printed" in text

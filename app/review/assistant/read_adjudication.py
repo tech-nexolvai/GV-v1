@@ -46,12 +46,13 @@ from pathlib import Path
 from typing import Any, Final, Literal
 
 from app.review.assistant.finding_checks import to_inches
-from app.review.assistant.second_read import SIDES, SecondRead, parse_reply
+from app.review.assistant.second_read import READ_SCHEMA, SIDES, SecondRead, parse_reply
 
 __all__ = [
     "ADJUDICATION_DPI",
     "ADJUDICATION_LIMIT",
     "ADJUDICATION_MAX_PX",
+    "READ_SCHEMA",
     "Adjudication",
     "Outcome",
     "Reading",
@@ -256,8 +257,7 @@ def question(item: str, shown: Sequence[tuple[str, bool]]) -> str:
         f'What value is printed for "{label}" on each drawing? Copy it exactly as printed, with its '
         'marks (for example 7\'-2" or 12 3/4"); a stacked fraction is written 3/4. Read only the '
         "drawing's own black or grey ink. Use null for a drawing you were not shown or where no "
-        "value for it is printed. Answer with JSON only: "
-        '{"architect": string or null, "vendor": string or null, "sure": true or false}'
+        "value for it is printed, and say whether you are sure of what you read."
     )
 
 

@@ -22,7 +22,15 @@ from typing import Any, Final, Literal
 
 from app.review.assistant.finding_checks import to_inches
 
-__all__ = ["SIDES", "SecondRead", "compare_read", "parse_reply", "question", "second_read"]
+__all__ = [
+    "READ_SCHEMA",
+    "SIDES",
+    "SecondRead",
+    "compare_read",
+    "parse_reply",
+    "question",
+    "second_read",
+]
 
 type ReadResult = Literal["agrees", "disagrees", "unsure"]
 
@@ -50,6 +58,26 @@ class SecondRead:
     """The sides it was shown a crop of."""
 
 
+#: The reply's shape (structured outputs: the API returns exactly this JSON). A drawing not shown,
+#: or printing no value for the item, is null.
+READ_SCHEMA: Final[Mapping[str, Any]] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["architect", "vendor", "sure"],
+    "properties": {
+        "architect": {
+            "anyOf": [{"type": "string"}, {"type": "null"}],
+            "description": "The value printed on the architect's drawing, as printed, or null",
+        },
+        "vendor": {
+            "anyOf": [{"type": "string"}, {"type": "null"}],
+            "description": "The value printed on the vendor's drawing, as printed, or null",
+        },
+        "sure": {"type": "boolean", "description": "Whether you are sure of what you read"},
+    },
+}
+
+
 def question(item: str, sides: tuple[str, ...]) -> str:
     """The neutral question: the item and the drawings, never the first answer's values."""
     label = " ".join(str(item).split())[:_LONGEST_ITEM] or "this item"
@@ -58,8 +86,7 @@ def question(item: str, sides: tuple[str, ...]) -> str:
         f"These are crops of construction drawings: {shown}. "
         f'What value is printed for "{label}" on each drawing? Copy it exactly as printed, with its '
         'marks (for example 7\'-2" or 12 3/4"). Use null for a drawing you were not shown or where '
-        "no value for it is printed. Answer with JSON only: "
-        '{"architect": string or null, "vendor": string or null, "sure": true or false}'
+        "no value for it is printed, and say whether you are sure of what you read."
     )
 
 

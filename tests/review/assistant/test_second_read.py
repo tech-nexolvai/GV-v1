@@ -52,7 +52,7 @@ def test_the_request_holds_both_crops_and_a_neutral_question() -> None:
     assert '"Sink base width"' in text
     assert "image 1 is the architect's drawing" in text
     assert "image 2 is the vendor's shop drawing" in text
-    assert '"sure"' in text
+    assert "whether you are sure" in text
     assert read == SecondRead(
         architect='37"', vendor='46"', result="unsure", sure=True, asked=("architect", "vendor")
     )
