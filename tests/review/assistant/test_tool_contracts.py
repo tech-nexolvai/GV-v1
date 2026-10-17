@@ -209,7 +209,7 @@ def test_the_prompts_stay_within_their_budgets() -> None:
     """Characters, measured at chat-v13 (the audit), with a little room. The tools grew on purpose
     (what each field means, when to use the tool, one example); the prompts shrank."""
     budgets = {
-        "lead system prompt": 2600,
+        "lead system prompt": 2700,  # +1 line on deferred tools (#1606)
         "helper system prompt": 1400,
         "full check": 1600,
         "full check, code-planned": 1900,

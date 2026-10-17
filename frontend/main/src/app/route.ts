@@ -17,7 +17,7 @@ import { useCallback, useEffect, useState } from 'react';
  * `ui-kit` is the component reference (#1029): reachable by URL only, not in the sidebar. `chat` is
  * a drawing set's chats (#1464): where an upload lands, and what a drawing set in the sidebar opens.
  */
-export type Page = 'review' | 'chat' | 'documents' | 'rulebook' | 'settings' | 'usage' | 'ui-kit';
+export type Page = 'review' | 'chat' | 'documents' | 'tracker' | 'rulebook' | 'settings' | 'usage' | 'ui-kit';
 
 export interface Route {
   page: Page;
@@ -32,6 +32,11 @@ export interface Route {
    */
   chatId?: string;
   /**
+   * Chat only (#1578): `#/chat/<set>/<chat>?message=<answer>&finding=<F3>` opens that answer's
+   * finding in the evidence viewer, as the job tracker's rows do. Absent on plain chat routes.
+   */
+  finding?: { messageId: string; findingId: string };
+  /**
    * The old tabs and wizard (#1343): `#/review/<id>/advanced`, reached from "More". Without it a
    * review opens on the simple review page. Absent rather than false, so plain routes stay plain.
    */
@@ -45,10 +50,10 @@ export interface Route {
   project?: string;
 }
 
-const PAGES: readonly Page[] = ['review', 'chat', 'documents', 'rulebook', 'settings', 'usage', 'ui-kit'];
+const PAGES: readonly Page[] = ['review', 'chat', 'documents', 'tracker', 'rulebook', 'settings', 'usage', 'ui-kit'];
 
 /**
- * Recognised routes are review, chat, documents, rulebook, settings, usage and ui-kit; unknown or
+ * Recognised routes are review, chat, documents, tracker, rulebook, settings, usage and ui-kit; unknown or
  * malformed routes open the review start. A chat with no drawing set is the review start too.
  */
 export function parseRoute(hash: string): Route {
@@ -71,7 +76,10 @@ export function parseRoute(hash: string): Route {
   if (page === 'chat') {
     const packageId = parts[1];
     if (!packageId) return { page: 'review', packageId: null };
-    return parts[2] ? { page, packageId, chatId: parts[2] } : { page, packageId };
+    if (!parts[2]) return { page, packageId };
+    const messageId = query.get('message')?.trim();
+    const findingId = query.get('finding')?.trim();
+    return messageId && findingId ? { page, packageId, chatId: parts[2], finding: { messageId, findingId } } : { page, packageId, chatId: parts[2] };
   }
   if (page === 'settings') {
     const focus = query.get('focus')?.trim();
@@ -90,7 +98,8 @@ export function formatRoute(route: Route): string {
   if (route.page === 'chat') {
     if (!route.packageId) return '#/';
     const chat = route.chatId ? `/${encodeURIComponent(route.chatId)}` : '';
-    return `#/chat/${encodeURIComponent(route.packageId)}${chat}`;
+    const focus = route.chatId && route.finding ? `?${new URLSearchParams({ message: route.finding.messageId, finding: route.finding.findingId }).toString()}` : '';
+    return `#/chat/${encodeURIComponent(route.packageId)}${chat}${focus}`;
   }
   if (route.page === 'settings' && route.focus) {
     const query = new URLSearchParams({ focus: route.focus, ...(route.project ? { project: route.project } : {}) });

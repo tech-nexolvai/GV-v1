@@ -619,6 +619,30 @@ def _drawn_budget() -> float:
 DIMS_TIMEOUT_S: Final = 2400
 
 
+#: What the labels' own process gets of the server's environment: enough to run Python, find this
+#: code and tune the labels, never a key, a token or the database's address. That process parses the
+#: set's PDFs, so a crafted PDF that broke a parser there would find nothing to steal (security
+#: audit 2026-10-18).
+_CHILD_VARIABLES: Final = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TZ")
+_CHILD_PREFIXES: Final = ("GV_DIM_LABELS_", "GV_ASSISTANT_PAGE_CACHE_")
+_SECRET_WORDS: Final = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|_URL$", re.IGNORECASE)
+
+
+def child_environment(root: Path, environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """The environment of the labels' own process: an allow-list of the server's (`root` is put
+    first on `PYTHONPATH`)."""
+    source = os.environ if environ is None else environ
+    kept = {
+        name: value
+        for name, value in source.items()
+        if (name in _CHILD_VARIABLES or name.startswith(_CHILD_PREFIXES))
+        and not _SECRET_WORDS.search(name)
+    }
+    kept["PYTHONPATH"] = os.pathsep.join(filter(None, (str(root), source.get("PYTHONPATH"))))
+    kept.setdefault("PATH", "/usr/bin:/bin")
+    return kept
+
+
 def _dims(
     folder: Path, uploads: Path, names: Sequence[str], page_map: Sequence[dict[str, Any]]
 ) -> None:
@@ -631,10 +655,6 @@ def _dims(
         write_dims(folder, uploads, names, page_map)
         return
     root = Path(__file__).resolve().parents[3]
-    environment = {
-        **os.environ,
-        "PYTHONPATH": os.pathsep.join(filter(None, (str(root), os.environ.get("PYTHONPATH")))),
-    }
     subprocess.run(
         [
             sys.executable,
@@ -645,10 +665,11 @@ def _dims(
             *names,
         ],
         cwd=root,
-        env=environment,
+        env=child_environment(root),
         check=True,
         timeout=DIMS_TIMEOUT_S,
         capture_output=True,
+        stdin=subprocess.DEVNULL,
     )
     if not (folder / "dims.json").is_file():
         raise RuntimeError("the labels' process wrote no dims.json")

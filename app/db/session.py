@@ -46,10 +46,15 @@ def settings_from_environment() -> EnvironmentDatabaseSettings:
 
 
 def engine_from_settings(settings: DatabaseSettings, **kwargs: object) -> Engine:
-    """Build an engine from an explicit database URL."""
+    """Build an engine from an explicit database URL.
+
+    `hide_parameters` by default: a failed statement's error (and its log line) never carries the
+    values it was sent, which can be a reviewer's question, an AI answer or a drawing's numbers
+    (security audit 2026-10-18)."""
 
     if not settings.database_url.strip():
         raise ValueError("database_url must not be empty")
+    kwargs.setdefault("hide_parameters", True)
     return create_engine(settings.database_url, **kwargs)
 
 

@@ -531,7 +531,8 @@ def test_usage_rows_name_the_route_and_the_purpose() -> None:
 def test_the_system_prompt_is_short_and_names_the_skill_and_the_three_facts() -> None:
     # Short like claude.ai's. chat-v13 (the prompt audit) took out the tool catalogue: each tool's
     # own description says what it does and when to use it.
-    assert len(LEAD_SYSTEM_PROMPT) < 2600
+    # Tool search (#1606) added one line about deferred tools.
+    assert len(LEAD_SYSTEM_PROMPT) < 2700
     for words in (
         "/mnt/skills/gv-review/SKILL.md",
         "inches",
