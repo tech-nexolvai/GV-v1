@@ -70,6 +70,7 @@ from app.review.assistant.tool_schema import box_schema, point_schema
 
 __all__ = [
     "COMPARE_ROUNDS",
+    "HELPERS_PER_TURN",
     "HELPER_FOOTER_MARK",
     "HELPER_SYSTEM_PROMPT",
     "HELPER_TOOLS",
@@ -93,6 +94,10 @@ _log = logging.getLogger(__name__)
 
 #: Helpers run at once by default (`GV_ASSISTANT_MAX_PARALLEL_AGENTS`, at most 12).
 MAX_AGENTS: Final = 8
+#: Helpers one lead reply may start (#1555): those over the parallel limit wait for a free place in
+#: the same turn; only calls past this many come back "Not run". The engine uses it; the Agent
+#: tool's description says it.
+HELPERS_PER_TURN: Final = 20
 #: Crops one `zoom` call draws (both sides of four findings).
 MAX_ZOOM_CROPS: Final = 8
 #: Sandbox commands one message runs at the same time (helpers' parallel tools included).
@@ -383,9 +388,10 @@ _AGENT: Final[Mapping[str, Any]] = {
     "description": (
         "Start a helper agent: another model with its own context and the tools "
         f"{', '.join(HELPER_TOOL_NAMES)}, on this computer. Use helpers only for whole-set work: "
-        "split the set by page pair, 3-5 pages per helper, and start them all in one reply (up "
-        f"to {MAX_AGENTS} run at once, fewer if the deployment says so; a call over the limit "
-        "comes back 'Not run': start it in your next reply). A question about one item or one "
+        "split the set by page pair, 3-5 pages per helper, and start them all in one reply. Up "
+        f"to {MAX_AGENTS} run at once (fewer if the deployment says so); the others wait for a free "
+        f"place in the same turn, up to {HELPERS_PER_TURN} in one reply (a call past that comes back "
+        "'Not run': start it in your next reply). A question about one item or one "
         "page pair needs no helper. The app adds to each brief its pages from the page map, "
         "where the pictures are, the zoom tool, a budget and the report's length. Returns the "
         "helper's report and the findings it recorded (leads: verify them before you state "

@@ -97,8 +97,9 @@ def test_every_box_says_its_units_the_same_way() -> None:
             if {"x0", "y0", "x1", "y1"} <= set(obj.get("properties") or {}):
                 boxes += 1
                 assert BOX_UNITS in str(obj.get("description")), where
-                if "page" in obj["properties"] and where.endswith(("arch_box", "vendor_box")):
-                    assert "page" in obj["required"], f"{where}: a finding's box needs its page"
+                if where.endswith(("arch_box", "vendor_box")):
+                    # #1550: a finding's box without a page takes the finding's page; say so.
+                    assert "finding's" in obj["properties"]["page"]["description"], where
     assert boxes >= 6
 
 

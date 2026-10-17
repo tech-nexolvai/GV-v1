@@ -202,15 +202,13 @@ _FINDING_FIELDS: Final[Mapping[str, Any]] = {
         "always sends false; the lead sets true after checking)",
     },
     "arch_box": box_schema(
-        "Where the source's value is printed (page required).",
-        page="Page of that file (from 1)",
-        page_required=True,
+        "Where the source's value is printed.",
+        page="Page of that file (from 1); without it, the finding's vs_page (else its page)",
         file=_BOX_FILE,
     ),
     "vendor_box": box_schema(
-        "Where the vendor's value is printed (page required).",
-        page="Page of that file (from 1)",
-        page_required=True,
+        "Where the vendor's value is printed.",
+        page="Page of that file (from 1); without it, the finding's page",
         file=_BOX_FILE,
     ),
     "source": {
@@ -271,7 +269,8 @@ REPORT_FINDING: Final[Mapping[str, Any]] = {
         "compare that the question is about, instead of writing a table: the app crops the "
         "evidence at your boxes, checks the printed values, scores how far to trust it "
         "(Confirmed / Likely / AI reading only) and shows it to the reviewer. Values as printed, "
-        'inches. Give each value its box (page included). Returns "Finding F3 recorded." with '
+        "inches. Give each value its box, with its page when that is not the finding's. Returns "
+        '"Finding F3 recorded." with '
         'any notes from code\'s checks of the values, or "Refused: <why>" (fix and call again). '
         'Example: {"page": 7, "item": "Vanity: top depth", "category": "countertop", '
         '"architect": "22\\"", "vendor": "24\\"", "status": "different", "verified": true, '
@@ -804,6 +803,16 @@ def _whole(value: object, name: str) -> int:
     return value
 
 
+def _with_page(raw: object, fields: Mapping[str, Any], *, architect: bool) -> object:
+    """A box with no `page` takes the finding's own page: the vendor box the finding's `page`, the
+    architect box its `vs_page` (else `page`). The model left it out on a real run (2026-10-17)
+    and the whole finding was refused for it."""
+    if not isinstance(raw, Mapping) or "page" in raw:
+        return raw
+    page = (fields.get("vs_page") if architect else None) or fields.get("page")
+    return raw if page is None else {**raw, "page": page}
+
+
 def _choice(value: object, name: str, allowed: Sequence[str]) -> str:
     if value not in allowed:
         raise SandboxRefused(f"{name} must be one of {', '.join(allowed)}")
@@ -1000,7 +1009,9 @@ class FindingBook:
             out["source"] = _choice(given["source"], "source", sources)
         for name, architect in (("arch_box", True), ("vendor_box", False)):
             if name in present:
-                out[name] = self._box(given[name], name, architect=architect)
+                out[name] = self._box(
+                    _with_page(given[name], out, architect=architect), name, architect=architect
+                )
         if "parts" in present:
             parts = given["parts"]
             if parts is None:

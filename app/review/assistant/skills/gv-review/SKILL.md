@@ -245,9 +245,9 @@ The reviewer's words: each item is **Wrong** (`status: different`), **Your decis
 ## 10. Boxes, and the cloud drawing
 
 A box is where the value is printed, a little larger than the number: `{page, x0, y0, x1, y1}` in
-PDF points (1/72 inch) of the page as displayed (rotation applied), origin top-left, y down. `page`
-is required in every box. Give `file` only when the set has more than one PDF and the box is not on
-the default (architect box: the architect's file; vendor box: the vendor's).
+PDF points (1/72 inch) of the page as displayed (rotation applied), origin top-left, y down (a
+finding's box without `page` is on its page). Give `file` only with 2+ PDFs when the box is not on
+its default (architect box: the architect's file; vendor box: the vendor's).
 `pdftotext -f N -l N -bbox F.pdf /home/claude/words.html` lists each word's box in exactly these
 units (it also reads text inside stamps). For a number drawn as lines, measure it on a picture:
 points = pixels x 72 / dpi (add the crop's offset when you rendered part of a page).
