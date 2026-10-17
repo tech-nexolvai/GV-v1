@@ -33,6 +33,7 @@ from app.review.assistant.chat_contract import (
 )
 from app.review.assistant.chat_decisions import with_decisions
 from app.review.assistant.chat_trust import rescored
+from app.review.assistant.impact import blocks_with_impacts
 
 __all__ = [
     "TITLE_CHARS",
@@ -345,7 +346,7 @@ def message_out(
             "model": message.model,
             "effort": message.effort,
             "thinking": message.thinking,
-            "blocks": with_decisions(message.blocks, decisions) or [],
+            "blocks": blocks_with_impacts(with_decisions(message.blocks, decisions) or []),
             "files": [file_out(row) for row in files if row.message_id == message.id],
             "cost_usd": _usd(message.cost_micros),
             "stopped": message.stopped,

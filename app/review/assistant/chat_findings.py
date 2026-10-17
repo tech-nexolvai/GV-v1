@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any, Final
 from uuid import uuid4
 
+from app.review.assistant.impact import by_impact
 from app.review.assistant.sandbox import UPLOADS, ChatWorkspace, SandboxRefused
 
 __all__ = [
@@ -1412,7 +1413,7 @@ def make_markup_file(
     needing your decision (`cloud_decisions`: an amber cloud and note too), the draft stamp on page
     1, and every finding listed again on the notes pages. Raises `LookupError` when the chat has no
     copy of the set's PDFs. `base`: a `markup_base` copy to draw on (used once)."""
-    name, placed = place_findings(workspace, findings)
+    name, placed = place_findings(workspace, by_impact(findings))
     drawing = import_module("app.review.assistant.chat_drawing")
     drawing.markup_pdf(workspace.uploads / name, placed, out, base, cloud_decisions=cloud_decisions)
     data = out.read_bytes()
@@ -1461,7 +1462,7 @@ def make_report_file(
     main = main_upload(read_listing(workspace))
     name = "drawing set" if main is None else str(main["name"])
     drawing = import_module("app.review.assistant.chat_drawing")
-    drawing.check_report_pdf(out, summary, findings, not_checked)
+    drawing.check_report_pdf(out, summary, by_impact(findings), not_checked)
     data = out.read_bytes()
     return MarkupFile(
         markup_name(name, "AI check report"), len(data), hashlib.sha256(data).hexdigest()

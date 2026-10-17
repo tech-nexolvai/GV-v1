@@ -311,11 +311,33 @@ export function groupByArea(findings: readonly ChatFinding[], filter: FindingFil
     group.findings.push(finding);
   }
   for (const group of groups.values()) {
-    group.findings.sort((a, b) => (STATUS_RANK[a.status] ?? 1) - (STATUS_RANK[b.status] ?? 1) || a.page - b.page);
+    group.findings.sort((a, b) => (STATUS_RANK[a.status] ?? 1) - (STATUS_RANK[b.status] ?? 1) || impactRank(a) - impactRank(b) || a.page - b.page);
     group.pages = [...new Set(group.findings.map((finding) => finding.page))].sort((a, b) => a - b);
     group.counts = findingCounts(group.findings);
   }
-  return [...groups.values()].sort((a, b) => b.counts.different - a.counts.different || b.counts.check - a.counts.check || (a.pages[0] ?? 0) - (b.pages[0] ?? 0));
+  // #1569: when code ranked the items by impact, the group holding the biggest item comes first.
+  const ranked = shown.some((finding) => finding.impact?.rank != null);
+  const best = (group: AreaGroup) => Math.min(...group.findings.map((finding) => (STATUS_RANK[finding.status] ?? 1) * 100000 + impactRank(finding)));
+  return [...groups.values()].sort((a, b) => (ranked ? best(a) - best(b) : 0) || b.counts.different - a.counts.different || b.counts.check - a.counts.check || (a.pages[0] ?? 0) - (b.pages[0] ?? 0));
+}
+
+/** An item's place by impact among its status (#1569); unranked items after the ranked ones. */
+export function impactRank(finding: ChatFinding): number {
+  return finding.impact?.rank ?? 99999;
+}
+
+/** How many of the biggest Wrong items show first, above the list by area. */
+export const BIGGEST_FIRST_COUNT = 5;
+
+/**
+ * The biggest Wrong items by code's impact (#1569): ordering only, never a new status or colour.
+ * Empty when the answer carries no impact (an older answer, or one still streaming).
+ */
+export function biggestFirst(findings: readonly ChatFinding[], count: number = BIGGEST_FIRST_COUNT): ChatFinding[] {
+  return findings
+    .filter((finding) => finding.status === 'different' && finding.impact?.rank != null)
+    .sort((a, b) => impactRank(a) - impactRank(b))
+    .slice(0, count);
 }
 
 /** A group's pages: "p39–40", "p3–4, 8", "p12". */

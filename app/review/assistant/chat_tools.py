@@ -53,6 +53,7 @@ from app.review.assistant.chat_findings import (
 )
 from app.review.assistant.internal_refs import without_ticket_refs
 from app.review.assistant.ledger import LEDGER_TOOLS
+from app.review.assistant.plan_check import apply_answers, read_answers
 from app.review.assistant.sandbox import (
     OUTPUTS,
     SCRATCH,
@@ -1360,6 +1361,8 @@ def helper_footer(
     if pages:
         try:
             page_map = json.loads((folder / "page_map.json").read_text(encoding="utf-8"))
+            # The reviewer's plan-check answers laid over it, as the plan and brief see it (#1569).
+            page_map = apply_answers(page_map, read_answers(folder))
             wanted = set(pages)
             entries = [
                 e

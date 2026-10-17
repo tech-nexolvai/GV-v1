@@ -50,6 +50,14 @@ second reads still to make, the third reads (each started as its second read com
 critic run in one bounded pool; the cloud drawing's slow copy of the PDF is made in a thread from
 the start, and the drawing and the report are written together at the end.
 
+**Two helpers per page group (#1569).** With `drawn_helpers` on, each code-planned job gets a second
+helper on Sonnet at low effort whose brief covers only what is drawn and written (notes against the
+drawing, doors and drawers, hardware, extent, the brand prototype, finish tags); the first keeps the
+numbers. The drawn-things helpers queue after the numbers ones (at most `max_parallel_agents` run at
+once) and each stays within its own money cap. When both helpers of a group have reported, code
+folds their duplicates by page and item (`full_check_lenses`) before their second reads start; a
+disagreement goes to the lead to verify first.
+
 **Timings.** Every phase's seconds and cost (`chat_timings.py`) go in the trust block's `timings`
 and the log.
 
@@ -176,6 +184,7 @@ from app.review.assistant.full_check_brief import (
     checklist_send_back,
     helper_brief,
 )
+from app.review.assistant.full_check_lenses import Fold, lens_folds
 from app.review.assistant.full_check_plan import (
     FanOutPlan,
     HelperJob,
@@ -183,6 +192,7 @@ from app.review.assistant.full_check_plan import (
     plan_jobs,
     rules_summary,
     wait_for_page_map,
+    with_lenses,
 )
 from app.review.assistant.ledger import LEDGER_TOOL_NAMES, ReadingLedger, recorded_results_check
 from app.review.assistant.sandbox import SET_PACK, SKILLS, UPLOADS, SandboxRefused
@@ -367,6 +377,9 @@ class EngineSettings:
     """`chat`, or `full_check` (CONTRACT4): GV's recorded differences are made findings at the
     start, and code makes the cloud drawing and the check report at the end."""
     products: tuple[str, ...] = ()
+    drawn_helpers: bool = False
+    """A full check's second, drawn-things helper per page group (#1569,
+    `GV_ASSISTANT_DRAWN_HELPERS`)."""
 
 
 @dataclass(slots=True)
@@ -576,6 +589,15 @@ class _Agent:
     number: int = 0
     pages: tuple[int, ...] | None = None
     """A code-planned helper's pages (#1512): its footer lists them from the page map."""
+    lens: str = "both"
+    """A code-planned helper's lens (#1569): `both`, `numbers` or `drawn`."""
+    effort: str | None = None
+    """Its own effort (a drawn-things helper: low), else the full check's helper effort."""
+    cap_micros: int | None = None
+    """Its own money cap (a drawn-things helper), besides the helpers' share."""
+    spent: int = 0
+    partner: _Agent | None = None
+    """The other lens's helper on the same pages."""
 
 
 @dataclass(slots=True)
@@ -683,6 +705,11 @@ class ChatEngine:
         self._trust_index: int | None = None
         #: A code-planned helper's checklist pages still open after its report (#1515).
         self._checklist_gaps: dict[int, dict[int, str]] = {}
+        #: Two-lens helpers (#1569): those reported whose partner has not yet (their findings'
+        #: second reads wait for the fold), and the folds where the two disagreed.
+        self._lens_reported: set[int] = set()
+        self._lens_waiting: set[str] = set()
+        self._lens_disagree: list[Fold] = []
 
     # ---- the screen ------------------------------------------------------------------------------
 
@@ -2405,6 +2432,7 @@ class ChatEngine:
             file_name=f"{UPLOADS}/{job.file}",
             page_map=page_map,
             review_document=document,
+            lens=job.lens,
         )
         overview = (
             f"view your pages' overview pictures, all in one reply ({pictures})"
@@ -2412,11 +2440,18 @@ class ChatEngine:
             else "zoom on each of your whole pages at 72 dpi, all in one call (the page pictures "
             "are still being made)"
         )
+        others = (
+            "one other has the same pages for the "
+            + ("drawn things" if job.lens == "numbers" else "numbers")
+            + ", the rest have the other pages"
+            if job.partner is not None
+            else "the others have the other pages"
+        )
         lines = [
             brief,
             (
-                f"START: you are one of {helpers} helpers; the others have the other pages. "
-                f"First {overview}; then zoom only to read values, every crop you need in one call."
+                f"START: you are one of {helpers} helpers; {others}. First {overview}; then zoom "
+                "only to read what you compare, every crop you need in one call."
             ),
             f"PRODUCTS: {products}; a brand prototype's differences are their own group.",
         ]
@@ -2461,12 +2496,47 @@ class ChatEngine:
 
     def _helper_done(self, agent: _Agent, entry: Mapping[str, Any]) -> None:
         """As each code-planned helper reports: its readings of recorded differences folded in,
-        and the second reads of the differences found so far started."""
+        and the second reads of the differences found so far started. A two-lens helper's
+        findings wait for its partner: then their duplicates are folded first (#1569)."""
         del entry
         self._merge_seeds(f"helper:{agent.number}")
+        if agent.partner is not None:
+            with self._lock:
+                self._lens_reported.add(agent.number)
+                both = agent.partner.number in self._lens_reported
+                if not both:
+                    self._lens_waiting.add(f"helper:{agent.number}")
+            if both:
+                self._fold_lenses(agent)
+        with self._lock:
+            waiting = set(self._lens_waiting)
         self._queue_second_reads(
-            [f for f in self.book.live() if f.get("status") in ("different", "check")]
+            [
+                f
+                for f in self.book.live()
+                if f.get("status") in ("different", "check") and f.get("created_by") not in waiting
+            ]
         )
+
+    def _fold_lenses(self, agent: _Agent) -> None:
+        """One page group's two helpers, both reported: each item and page kept once
+        (`full_check_lenses.lens_folds`); a disagreement is kept for the lead."""
+        partner = agent.partner
+        assert partner is not None
+        numbers, drawn = (agent, partner) if agent.lens == "numbers" else (partner, agent)
+        with self._lock:
+            self._lens_waiting.discard(f"helper:{partner.number}")
+        folds = lens_folds(
+            self.book.by(f"helper:{numbers.number}"), self.book.by(f"helper:{drawn.number}")
+        )
+        for fold in folds:
+            with self.finding_lock:
+                if not self.book.absorb(fold.drop):
+                    continue
+            self._show_dropped(fold.drop, fold.reason)
+            if fold.disagree:
+                with self._lock:
+                    self._lens_disagree.append(fold)
 
     def _fan_out(self) -> bool:
         """A full check's helpers, planned by code from the set pack's page map and run at once;
@@ -2488,6 +2558,8 @@ class ChatEngine:
             warm_pool.shutdown(wait=True)
         if plan is None or self.cancel.is_set():
             return False
+        if self.settings.drawn_helpers:
+            plan = with_lenses(plan)
         self._plan = plan
         if plan.skipped:
             try:
@@ -2509,11 +2581,17 @@ class ChatEngine:
                 f"plan-{job.number}",
                 job.description,
                 self._job_brief(job, rules, len(plan.jobs), pictures, page_map),
-                model,
+                BY_SHORT["sonnet"] if job.lens == "drawn" else model,
                 pages=job.pages,
+                lens=job.lens,
+                effort="low" if job.lens == "drawn" else None,
+                cap_micros=job.cap_micros,
             )
             for job in plan.jobs
         ]
+        by_job = {job.number: agent for job, agent in zip(plan.jobs, agents, strict=True)}
+        for job, agent in zip(plan.jobs, agents, strict=True):
+            agent.partner = None if job.partner is None else by_job.get(job.partner)
         entries = self._launch(agents, on_done=self._helper_done)
         # The rest of the helpers' findings (the right items too), now every helper is done.
         self._queue_second_reads(self.book.live())
@@ -2549,6 +2627,17 @@ class ChatEngine:
         if gap_lines:
             parts.append(
                 f"Checklist gaps, verify these first ({len(gap_lines)}):\n" + "\n".join(gap_lines)
+            )
+        with self._lock:
+            disagree = list(self._lens_disagree)
+        if disagree:
+            parts.append(
+                f"The two helpers of a page disagree, verify these first ({len(disagree)}):\n"
+                + "\n".join(
+                    f"- {fold.keep} page {fold.page}: {fold.item}: numbers helper "
+                    f"{fold.statuses[0]}, drawn-things helper {fold.statuses[1]}"
+                    for fold in disagree
+                )
             )
         main = self.book.main_file
         backed: list[str] = []
@@ -2618,6 +2707,9 @@ class ChatEngine:
             return lambda: cut
         name = str(call.get("name"))
         by = f"helper:{agent.number}"
+        if name == "set_coverage" and agent.lens == "drawn":
+            skipped = self._not_run(call, "the numbers helper records these pages' coverage")
+            return lambda: skipped
         if name in HELPER_FINDING_TOOL_NAMES:
             return lambda: self._result(call, self._finding_tool(name, call.get("input"), by))
         if name in LEDGER_TOOL_NAMES:
@@ -2644,7 +2736,7 @@ class ChatEngine:
         `FULL_CHECK_HELPER_CALLS` reading tool calls."""
         model = agent.model
         full_check = self.settings.mode == "full_check"
-        effort = (
+        effort = agent.effort or (
             full_check_helper_effort(self.settings.effort)
             if full_check
             else helper_effort(self.settings.effort)
@@ -2697,6 +2789,10 @@ class ChatEngine:
                     wrap, why = "turn_limit", "you have used your tool calls"
                 elif not self._fits(estimate):
                     wrap, why = "cost_cap", "this message is near its money cap"
+                elif agent.cap_micros is not None and agent.spent + (estimate or 0) > (
+                    agent.cap_micros
+                ):
+                    wrap, why = "cost_cap", "you have used your part of the money"
                 elif not self._hold(share, estimate):
                     wrap, why = "cost_cap", "the helpers have used their share of the money"
                 if why is not None:
@@ -2727,6 +2823,7 @@ class ChatEngine:
                 return _report_from_steps(entry["steps"], str(failure)), False, "error"
             finally:
                 self._release(share, held)
+            agent.spent += self._price(model, *self._weighted(model, reply.usage)) or 0
             cached = sum(
                 int(reply.usage.get(key) or 0)
                 for key in (
@@ -2769,8 +2866,8 @@ class ChatEngine:
             if agent.pages:
                 # A code-planned helper's checklist (#1515): sent back once to finish it while it
                 # has turns left; what is still open goes to the lead.
-                gaps = checklist_gaps(report, agent.pages)
-                note = checklist_send_back(gaps)
+                gaps = checklist_gaps(report, agent.pages, agent.lens)
+                note = checklist_send_back(gaps, agent.lens)
                 if (
                     note is not None
                     and not sent_back

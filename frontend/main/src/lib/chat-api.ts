@@ -303,6 +303,19 @@ export interface ChatFinding {
   decision_help?: FindingDecisionHelp | null;
   /** #1545: why two printed values that differ still need a person (else code calls it Wrong). */
   check_reason?: CheckReason | null;
+  /**
+   * #1569: how much a Wrong (or Your-decision) item matters, by code: ordering only, never a status
+   * or a colour. `rank` 1 is the biggest of its status; the cloud drawing and the report use the
+   * same order. Added on a stored answer (not while it streams).
+   */
+  impact?: FindingImpact | null;
+}
+
+/** #1569: code's impact score (0-100), its place among the items of its status, and why. */
+export interface FindingImpact {
+  score: number;
+  rank?: number | null;
+  why: string;
 }
 
 export type CheckReason = 'different_extent' | 'which_governs' | 'pairing_not_certain' | 'scaled' | 'site_verify';
@@ -673,6 +686,42 @@ export interface ChatFile {
   url: string;
 }
 
+/** #1569: one answer to a plan-check question, sent with the full check. */
+export interface ChatPlanAnswer {
+  id: string;
+  answer: string;
+}
+
+export interface ChatPlanOption {
+  value: string;
+  label: string;
+}
+
+/** #1569: a question code asks before a paid full check, where it is unsure of the page map. */
+export interface ChatPlanDoubt {
+  id: string;
+  kind: 'prototype' | 'role' | 'pair' | 'round' | 'heading';
+  page: number;
+  question: string;
+  /** The likely answer first. */
+  options: ChatPlanOption[];
+  /** The page's picture (drawings only), when the set pack made it. */
+  picture_url?: string | null;
+  /** The drawing it is about, as fractions of the picture: x0, y0, x1, y1. */
+  box?: [number, number, number, number] | null;
+}
+
+/** `GET /packages/{id}/full-check-plan` (#1569): code's plan in one line and its 0-3 questions. */
+export interface ChatFullCheckPlan {
+  /** `building`: ask again in a moment; `none`: no page map can be made, run without questions. */
+  state: 'ready' | 'building' | 'none';
+  /** "60 pages · 22 pairs · rounds 1-2 · 3 general pages". */
+  summary: string | null;
+  doubts: ChatPlanDoubt[];
+  /** Further unsure places, compared as read. */
+  more: number;
+}
+
 /** `POST /chats/{id}/messages`. */
 export interface SendMessageBody {
   /** 1 to 8000 characters. */
@@ -686,6 +735,8 @@ export interface SendMessageBody {
   products?: ChatProduct[];
   /** Continue (#1514): the interrupted answer to go on from; the server then asks the same way. */
   continue_from?: string;
+  /** #1569, a full check only: the answers to the plan check's questions. */
+  plan_answers?: ChatPlanAnswer[];
 }
 
 /** The stream's events, in the contract's words. `index` is the block's place in `blocks`. */
@@ -755,6 +806,8 @@ export const chatPaths = {
   markupPdf: (chatId: string, messageId: string) => `${BASE}/chats/${id(chatId)}/messages/${id(messageId)}/markup-pdf`,
   /** #1525: the cloud drawing and report made again from the reviewer's decisions (POST). */
   cloudDrawing: (chatId: string, messageId: string) => `${BASE}/chats/${id(chatId)}/messages/${id(messageId)}/cloud-drawing`,
+  /** #1569: code's plan for a full check of the set, and where it is unsure (no AI call). */
+  fullCheckPlan: (packageId: string) => `${BASE}/packages/${id(packageId)}/full-check-plan`,
   /** #1522: the reviewer's Agree / Not a problem on one finding (POST). */
   decision: (chatId: string, messageId: string, findingId: string) =>
     `${BASE}/chats/${id(chatId)}/messages/${id(messageId)}/findings/${id(findingId)}/decision`,
@@ -802,6 +855,11 @@ export function listChats(packageId: string): Promise<ChatList> {
 
 export function createChat(packageId: string): Promise<CreatedChat> {
   return json<CreatedChat>(chatPaths.chats(packageId), { method: 'POST', body: '{}' });
+}
+
+/** #1569: the plan check before a full check ($0); `building` means ask again shortly. */
+export function getFullCheckPlan(packageId: string): Promise<ChatFullCheckPlan> {
+  return json<ChatFullCheckPlan>(chatPaths.fullCheckPlan(packageId));
 }
 
 export function getChat(chatId: string): Promise<Chat> {
@@ -941,6 +999,8 @@ export interface ChatApi {
   /** #1522: Agree / Not a problem per finding; optional so a fake API can leave it out. */
   decide?: typeof decideFinding;
   remakeCloud?: typeof remakeCloudDrawing;
+  /** #1569: the plan check; optional so a fake API can leave it out (then no questions). */
+  plan?: typeof getFullCheckPlan;
 }
 
 export const LIVE_CHAT_API: ChatApi = {
@@ -954,4 +1014,5 @@ export const LIVE_CHAT_API: ChatApi = {
   markup: makeMarkupPdf,
   decide: decideFinding,
   remakeCloud: remakeCloudDrawing,
+  plan: getFullCheckPlan,
 };

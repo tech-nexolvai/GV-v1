@@ -141,6 +141,9 @@ class Settings(BaseSettings):
     # Helpers run at the same time (#1497): one lead turn's, or a full check's jobs planned by
     # code (#1512).
     assistant_max_parallel_agents: int = Field(default=8, ge=1, le=12)
+    # A full check's second, drawn-things helper per page group (#1569): notes, doors and drawers,
+    # hardware, extent, brand prototype, finish tags; Sonnet at low effort, capped per helper.
+    assistant_drawn_helpers: bool = True
     # One sandbox command's time limit, and which sandbox runs it (`auto`: the Docker image
     # `gv-assistant-sandbox` when built and Docker answers, else macOS `sandbox-exec`).
     assistant_command_timeout_seconds: int = Field(default=120, ge=5, le=900)

@@ -349,7 +349,8 @@ def test_the_marked_up_pdf_has_clouds_at_the_boxes_notes_and_the_stamp(tmp_path:
     assert _red_pixels(out, 1, (a0 - 14, b0 - 4, a0 - 4, b1 + 4)) > 5
     assert _red_pixels(out, 3, (200, 200, 500, 600)) == 0
     page2 = reader.pages[1].extract_text()
-    assert "\u00d7 1" in page2 and 'Vanity top length: vendor 3\'-10", make it 37"' in page2
+    # Numbered biggest first (#1569): the sink (a cut-out) and the height come before a length.
+    assert "\u00d7 3" in page2 and 'Vanity top length: vendor 3\'-10", make it 37"' in page2
     assert "AI markup: draft, not GV's signed review" in reader.pages[0].extract_text()
     notes = reader.pages[3].extract_text()
     for words in (

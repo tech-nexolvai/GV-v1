@@ -33,6 +33,7 @@ from app.review.assistant.chat_findings import (
     read_listing,
 )
 from app.review.assistant.chat_trust import cloud_kind
+from app.review.assistant.impact import by_impact
 from app.review.assistant.sandbox import ChatWorkspace
 
 __all__ = [
@@ -212,7 +213,9 @@ def make_decided_files(
     report_out: Path,
 ) -> DecidedFiles:
     """The cloud drawing and the check report from the findings' decisions, written to the two
-    paths. Raises `LookupError` when the chat has no copy of the set's PDFs."""
+    paths. Raises `LookupError` when the chat has no copy of the set's PDFs. The biggest items
+    first (#1569), so the drawing's and the report's numbers agree."""
+    findings = by_impact(findings)
     name, placed = place_findings(workspace, findings)
     module = import_module(DRAWING_MODULE)
     module.decided_markup_pdf(workspace.uploads / name, placed, drawing_out)

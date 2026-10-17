@@ -24,6 +24,10 @@ anything else is a 404 that says nothing. The routes, under `/api/v1`:
 - `POST /chats/{chat_id}/messages/{message_id}/cloud-drawing` (#1521): the cloud drawing and the
   check report made again by code from the current decisions (only agreed items clouded); a new
   pair of files each time, the older ones kept.
+- `GET  /packages/{package_id}/full-check-plan` (#1569): before a paid full check, code's plan in
+  one line and 0-3 questions where it is unsure of the page map (whose drawing, which round, which
+  architect page); the answers go with the full check (`plan_answers`). `$0`: no AI call. `GET
+  /packages/{package_id}/plan-pages/{page}`: the page's picture for a question.
 
 The message runs in its own thread (`chat_service.run_message`) until it ends or Stop is pressed,
 like claude.ai: the browser going away (a closed tab, a reload) does not stop it, and it is stored
@@ -55,6 +59,7 @@ from typing import Annotated, Any, Final
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi import Path as Path_
 from fastapi.responses import FileResponse, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from sqlalchemy import select
@@ -83,6 +88,7 @@ from app.review.assistant.chat_contract import (
     ChatFileOut,
     ChatFindingDecisionIn,
     ChatFindingDecisionOut,
+    ChatFullCheckPlanOut,
     ChatListOut,
     ChatMessageIn,
     ChatOut,
@@ -118,7 +124,9 @@ from app.review.assistant.chat_service import (
     SkillBuilder,
     UploadSource,
     default_skill_builder,
+    full_check_plan,
     package_spent_micros,
+    plan_page_picture,
     recover_interrupted,
     run_message,
     shutdown_chats,
@@ -529,6 +537,62 @@ def read_picture(
     _chat(session, chat_id, principal)
     path = ChatWorkspace(_chat_folder(request, chat_id)).pictures / f"{picture_id}.png"
     if not path.is_file():
+        raise _not_found()
+    return FileResponse(path, media_type="image/png")
+
+
+# ---- the plan check before a full check (#1569) --------------------------------------------------
+
+
+@router.get(
+    "/packages/{package_id}/full-check-plan",
+    response_model=ChatFullCheckPlanOut,
+    summary="Code's plan for a full check and its 0-3 questions (no AI call)",
+    responses={404: {"description": "No such drawing set (or no access)."}},
+)
+def get_full_check_plan(
+    request: Request,
+    package_id: UUID,
+    principal: Authenticated,
+    session: Annotated[Session, Depends(get_session)],
+) -> ChatFullCheckPlanOut:
+    """Copies the set's latest PDFs aside and starts its set pack when it is not made yet, then
+    reads the page map: `building` until it is made (ask again in a moment)."""
+    package = _package(session, package_id, principal)
+    uploads = _upload_sources(
+        _factory(session),
+        getattr(request.app.state, ARTIFACT_STORE_STATE, None),
+        package.id,
+        _latest_revision_id(session, package.id),
+    )
+    try:
+        plan = full_check_plan(
+            _chat_root(request.app),
+            package.id,
+            uploads,
+            lambda page: f"/api/v1/packages/{package.id}/plan-pages/{page}",
+        )
+    except Exception as failed:  # noqa: BLE001 - the full check still runs, without questions
+        _log.warning("assistant chat plan check failed: %s", type(failed).__name__)
+        plan = {"state": "none", "summary": None, "doubts": [], "more": 0}
+    return ChatFullCheckPlanOut.model_validate(plan)
+
+
+@router.get(
+    "/packages/{package_id}/plan-pages/{page}",
+    response_class=FileResponse,
+    summary="A page's picture for a plan-check question",
+)
+def plan_page(
+    request: Request,
+    package_id: UUID,
+    page: Annotated[int, Path_(ge=1, le=9999)],
+    principal: Authenticated,
+    session: Annotated[Session, Depends(get_session)],
+) -> FileResponse:
+    _package(session, package_id, principal)
+    path = plan_page_picture(_chat_root(request.app), package_id, page)
+    if path is None:
         raise _not_found()
     return FileResponse(path, media_type="image/png")
 
@@ -952,6 +1016,12 @@ def _message(
             mode=mode,
             products=products,
             continue_from=continue_from,
+            drawn_helpers=settings.assistant_drawn_helpers,
+            plan_answers=(
+                None
+                if mode != "full_check" or not body.plan_answers
+                else {answer.id: answer.answer for answer in body.plan_answers}
+            ),
         )
     except BaseException:
         registry.release(run)

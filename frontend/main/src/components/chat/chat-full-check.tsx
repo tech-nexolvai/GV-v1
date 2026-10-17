@@ -3,10 +3,12 @@ import { Download, ExternalLink, FileText, RefreshCw, ScanSearch } from 'lucide-
 
 import { AccuracyBadge } from '@/components/chat/chat-accuracy';
 import { GVSpark } from '@/components/chat/chat-motion';
+import { PlanCheck } from '@/components/chat/chat-plan-check';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { chatPaths, type ChatAccuracy, type ChatCoverage, type ChatFile, type ChatProduct } from '@/lib/chat-api';
+import { chatPaths, type ChatAccuracy, type ChatCoverage, type ChatFile, type ChatFullCheckPlan, type ChatPlanAnswer, type ChatProduct } from '@/lib/chat-api';
 import { coverageCounts, coverageWords, type FindingCounts } from '@/lib/chat-findings';
 import { PRODUCT_WORDS, PRODUCTS, progressWords } from '@/lib/chat-full-check';
+import { planAnswers, usePlanCheck } from '@/lib/chat-plan-check';
 import { fileKind, fileSize, type ViewMessage } from '@/lib/chat-messages';
 import { cn } from '@/lib/utils';
 
@@ -47,18 +49,24 @@ export function ProductChips({ products, onToggle, disabled }: { products: reado
 export interface FullCheckButtonProps {
   /** "Full check · Countertops · Opus 5.5 · High · up to $15". */
   summary: string;
-  onRun: () => void;
+  /** Runs it, with the reviewer's answers to the plan check (#1569), if any. */
+  onRun: (answers?: ChatPlanAnswer[]) => void;
   /** Why it cannot run now, in plain words; null when it can. */
   blocked: string | null;
   /** `primary`: the empty chat's main action. `bar`: the smaller one in the top bar. */
   variant?: 'primary' | 'bar';
+  /** #1569: code's plan and its 0-3 questions, read when the popover opens; absent: none asked. */
+  loadPlan?: () => Promise<ChatFullCheckPlan>;
 }
 
 /** "Run full check", confirmed in a small popover that names the products, model, effort and cap. */
-export function FullCheckButton({ summary, onRun, blocked, variant = 'primary' }: FullCheckButtonProps) {
+export function FullCheckButton({ summary, onRun, blocked, variant = 'primary', loadPlan }: FullCheckButtonProps) {
   const [open, setOpen] = useState(false);
+  const [picked, setPicked] = useState<Record<string, string>>({});
+  const plan = usePlanCheck(loadPlan, open);
+  const doubts = plan.status === 'ready' ? plan.plan.doubts : [];
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={(next) => { setOpen(next); if (next) setPicked({}); }}>
       <PopoverTrigger
         disabled={Boolean(blocked)}
         title={blocked ?? 'Check the whole drawing set: what is wrong, what to check, what is right'}
@@ -74,18 +82,24 @@ export function FullCheckButton({ summary, onRun, blocked, variant = 'primary' }
         <ScanSearch className="size-4" aria-hidden="true" />
         Run full check
       </PopoverTrigger>
-      <PopoverContent align={variant === 'primary' ? 'center' : 'end'} className="w-[min(22rem,calc(100vw-24px))] gap-3 rounded-xl p-3 font-sans">
+      <PopoverContent align={variant === 'primary' ? 'center' : 'end'} className="w-[min(24rem,calc(100vw-24px))] gap-3 rounded-xl p-3 font-sans">
         <p data-slot="chat-full-check-summary" className="text-sm font-medium tabular-nums">{summary}</p>
         <p className="text-xs text-muted-foreground">
           Checks every page against the architect and GV’s rules, then code draws the cloud drawing and the check report.
         </p>
+        <PlanCheck state={plan} picked={picked} onPick={(id, value) => setPicked((now) => ({ ...now, [id]: value }))} />
         <div className="flex justify-end gap-2">
           <button type="button" onClick={() => setOpen(false)} className="h-8 rounded-lg border bg-background px-3 text-sm hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
             Cancel
           </button>
           <button
             type="button"
-            onClick={() => { setOpen(false); onRun(); }}
+            onClick={() => {
+              const answers = planAnswers(doubts, picked);
+              setOpen(false);
+              if (answers.length) onRun(answers);
+              else onRun();
+            }}
             className="h-8 rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none"
           >
             Run

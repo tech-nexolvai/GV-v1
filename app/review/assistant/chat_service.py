@@ -59,7 +59,13 @@ from app.review.assistant.chat_engine import (
     cost_text,
 )
 from app.review.assistant.chat_feed import MessageFeed
-from app.review.assistant.chat_findings import live_findings, page_ranges, products_words
+from app.review.assistant.chat_findings import (
+    live_findings,
+    main_upload,
+    page_ranges,
+    products_words,
+    read_listing,
+)
 from app.review.assistant.chat_provider import ChatProvider
 from app.review.assistant.chat_request import ChatModel
 from app.review.assistant.chat_store import (
@@ -79,6 +85,14 @@ from app.review.assistant.chat_store import (
 )
 from app.review.assistant.chat_tools import MAX_AGENTS, ChatTools, ResultsLoader
 from app.review.assistant.chat_unknowns import asks_for_the_rest, last_unknowns, work_list_note
+from app.review.assistant.full_check_plan import read_page_map
+from app.review.assistant.plan_check import (
+    MAX_DOUBTS,
+    doubts,
+    plan_summary,
+    read_answers,
+    record_answers,
+)
 from app.review.assistant.sandbox import UPLOADS, ChatWorkspace, Sandbox, safe_file_name
 from app.runs.rates import ModelRates
 
@@ -392,6 +406,111 @@ def start_set_pack(
     return replace(workspace, set_pack=folder.resolve())
 
 
+def _png_size(path: Path) -> tuple[int, int] | None:
+    """A PNG's width and height from its header (no picture library)."""
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(24)
+    except OSError:
+        return None
+    if len(head) < 24 or head[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    return int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
+
+
+#: The set pack's page pictures' dpi (`set_pack.RENDER_DPI`; that module is not imported here).
+_PACK_DPI: Final = 100
+
+
+#: Where the plan check copies a drawing set's PDFs (per set) to read its set pack before any chat
+#: exists; the pack itself is the one the chats share (`set-packs/<key>`).
+PLAN_CHECK_FOLDER: Final = "plan-check"
+
+
+def _plan_root(chat_root: Path, package_id: UUID) -> Path:
+    return chat_root / PLAN_CHECK_FOLDER / str(package_id)
+
+
+def plan_page_picture(chat_root: Path, package_id: UUID, page: int) -> Path | None:
+    """The vendor's page picture in the set's pack (drawings only, 100 dpi), if made."""
+    workspace = ChatWorkspace(_plan_root(chat_root, package_id))
+    listing = read_listing(workspace)
+    main = main_upload(listing)
+    if main is None:
+        return None
+    try:
+        pack = import_module("app.review.assistant.set_pack")
+        folder: Path = pack.pack_folder(chat_root, listing)
+        picture: Path = folder / "pages" / pack.stem(str(main["name"])) / f"p-{page:03d}.png"
+    except Exception:  # noqa: BLE001 - no picture, the question still shows
+        return None
+    return picture if picture.is_file() else None
+
+
+def full_check_plan(
+    chat_root: Path,
+    package_id: UUID,
+    uploads: Callable[[], Sequence[UploadSource]],
+    picture_url: Callable[[int], str],
+) -> dict[str, Any]:
+    """The plan check before a full check (#1569): code's plan in one line and the 0-3 questions
+    where it is unsure of the page map (`plan_check.doubts`), each with its page's picture and the
+    drawing marked. The set's latest PDFs are copied to the set's plan-check folder (only when
+    they changed) and the set pack is started when it is not made yet, so it works before the
+    set's first chat; `building` until the page map is made. Never an AI call."""
+    workspace = ChatWorkspace.open(_plan_root(chat_root, package_id))
+    listing, _changed = sync_uploads(workspace, uploads())
+    if not listing:
+        return {"state": "none", "summary": None, "doubts": [], "more": 0}
+    workspace = start_set_pack(workspace, chat_root, listing)
+    folder = workspace.set_pack
+    page_map = read_page_map(folder)
+    if folder is None or page_map is None:
+        state = read_status_state(folder)
+        return {
+            "state": "none" if state == "failed" or folder is None else "building",
+            "summary": None,
+            "doubts": [],
+            "more": 0,
+        }
+    main = main_upload(listing)
+    main_file = None if main is None else str(main["name"])
+    found = doubts(page_map, main_file, read_answers(folder), limit=None)
+    shown = []
+    for doubt in found[:MAX_DOUBTS]:
+        out = doubt.out()
+        picture = plan_page_picture(chat_root, package_id, doubt.page)
+        size = None if picture is None else _png_size(picture)
+        out["picture_url"] = None if picture is None else picture_url(doubt.page)
+        out["box"] = None
+        if size is not None and doubt.box is not None:
+            scale = _PACK_DPI / 72
+            x0, y0, x1, y1 = doubt.box
+            out["box"] = [
+                round(max(0.0, min(1.0, value * scale / extent)), 4)
+                for value, extent in ((x0, size[0]), (y0, size[1]), (x1, size[0]), (y1, size[1]))
+            ]
+        del out["file"]
+        shown.append(out)
+    return {
+        "state": "ready",
+        "summary": plan_summary(page_map, main_file),
+        "doubts": shown,
+        "more": max(0, len(found) - MAX_DOUBTS),
+    }
+
+
+def read_status_state(folder: Path | None) -> str | None:
+    """The set pack's state (`building`, `ready`, `failed`), from its `status.json`."""
+    if folder is None:
+        return None
+    try:
+        status = json.loads((folder / "status.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return status.get("state") if isinstance(status, dict) else None
+
+
 def uploaded_files_text(listing: Sequence[dict[str, Any]], *, changed: bool) -> str:
     """The `<uploaded_files>` block of a chat's first message (and of a message after the set's
     PDFs changed)."""
@@ -508,6 +627,10 @@ class MessageJob:
     """The products picked in the composer, else the set's own (`None`: not stated)."""
     continue_from: UUID | None = None
     """Continue (#1514): the interrupted answer whose work this message goes on from."""
+    drawn_helpers: bool = False
+    """A full check's drawn-things helper per page group (#1569)."""
+    plan_answers: Mapping[str, str] | None = None
+    """The reviewer's answers to the plan check (#1569), kept with the set pack before the run."""
 
 
 _NO_SANDBOX: Final = (
@@ -650,6 +773,12 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
         stop_with("", "error", _NO_UPLOADS)
         return
     workspace = start_set_pack(workspace, job.chat_root, listing)
+    if job.plan_answers and workspace.set_pack is not None:
+        # The plan check's answers (#1569), kept with the set's page map before the plan is made.
+        try:
+            record_answers(workspace.set_pack, job.plan_answers, job.created_by)
+        except OSError as failed:
+            _log.warning("assistant chat plan answers not kept: %s", type(failed).__name__)
     prepare_skill(workspace, job.factory, job.revision_id, job.skill_builder, job.products)
     sandbox = job.open_sandbox(workspace)
     if sandbox is None:
@@ -737,6 +866,7 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             rates=job.rates,
             mode=job.mode,
             products=job.products or (),
+            drawn_helpers=job.drawn_helpers,
         ),
         provider=job.provider,
         tools=ChatTools(

@@ -28,6 +28,15 @@ measures, an estimate with its method, a likely answer, what to confirm) where o
 to the top of a box above the unit. So every Your-decision item carries `decision_help`, and the
 extent of a dimension is measured (`measure_on_drawing`) before a height or width is called Wrong.
 
+Then (#1569), claude.ai and our full check TOGETHER found 18 of 22 known differences on that set,
+against 14 and 6 alone: claude.ai compares what is drawn, ours compares printed numbers, and one
+long checklist made a helper do mostly one of the two. So each page group can get two helpers with
+short briefs: the NUMBERS lens (dimensions, strings, scaled and spanned sizes) and the DRAWN lens
+(notes against the drawing, doors / drawers / bins / shelves and their arrangement, hardware,
+construction notes, position, extent, the ID set against the brand prototype, material and finish
+tags). Each lens has its own checklist line; code merges their duplicates (`full_check_lenses`).
+`lens="both"` is the single helper's brief, unchanged.
+
 Pure code, no AI call and no I/O: the engine calls `helper_brief` for each helper it plans and
 `checklist_gaps` on each helper's report.
 """
@@ -42,8 +51,13 @@ from app.review.assistant.chat_trust import recorded_from
 
 __all__ = [
     "CHECKLIST_FIELDS",
+    "DRAWN_BRIEF",
+    "DRAWN_CHECKLIST",
     "HELPER_BRIEF",
     "LEAD_RESULTS",
+    "LENSES",
+    "LENS_FIELDS",
+    "NUMBERS_CHECKLIST",
     "PAGE_CHECKLIST",
     "checklist_gaps",
     "checklist_send_back",
@@ -172,8 +186,67 @@ PAGE_CHECKLIST: Final[tuple[tuple[str, str], ...]] = (
     ),
 )
 
-#: The counted fields of a report line; `not compared` follows them.
-CHECKLIST_FIELDS: Final = ("architect", "notes", "strings")
+_BY_NAME: Final = dict(PAGE_CHECKLIST)
+
+#: The numbers lens (#1569): sizes and strings only; the drawn things are the other helper's.
+NUMBERS_CHECKLIST: Final[tuple[tuple[str, str], ...]] = tuple(
+    (name, _BY_NAME[name])
+    for name in ("architect", "strings", "scaled", "span", "decision", "rounds")
+)
+
+#: The drawn-things lens (#1569): what is drawn and written, never a dimension or a string.
+DRAWN_CHECKLIST: Final[tuple[tuple[str, str], ...]] = (
+    ("notes", _BY_NAME["notes"]),
+    (
+        "counts",
+        (
+            "Doors, drawers, bins, shelves (fixed or pull-out), fronts, uppers, splashes and "
+            "sections: how many and how they are arranged on each side (left to right, top to "
+            'bottom). A note that asks for one thing while the drawing shows another ("pull-out '
+            'drawers" with doors drawn) is a difference, even when the count matches.'
+        ),
+    ),
+    ("hardware", _BY_NAME["hardware"]),
+    ("construction", _BY_NAME["construction"]),
+    ("position", _BY_NAME["position"]),
+    ("extent", _BY_NAME["extent"]),
+    ("brand", _BY_NAME["brand"]),
+    (
+        "finishes",
+        (
+            "Material and finish tags (laminate, solid surface, veneer, edge band, PL-1, WD-2, "
+            "SS-1, metal): the vendor's tag or callout against the architect's tag, finish "
+            "schedule or brand sheet. A missing or different tag is a difference."
+        ),
+    ),
+    ("decision", _BY_NAME["decision"]),
+    (
+        "rounds",
+        (
+            "A round-2 page: each drawn thing compared with the architect again and with round 1 "
+            "(fixed, still different, or changed)."
+        ),
+    ),
+)
+
+#: The lenses a helper can have: `both` is the single helper of a page group.
+LENSES: Final = ("both", "numbers", "drawn")
+
+#: The counted fields of each lens's report line; `not compared` follows them.
+LENS_FIELDS: Final[dict[str, tuple[str, ...]]] = {
+    "both": ("architect", "notes", "strings"),
+    "numbers": ("architect", "strings"),
+    "drawn": ("notes", "counts", "hardware"),
+}
+
+#: The counted fields of the single helper's report line.
+CHECKLIST_FIELDS: Final = LENS_FIELDS["both"]
+
+_CHECKLISTS: Final[dict[str, tuple[tuple[str, str], ...]]] = {
+    "both": PAGE_CHECKLIST,
+    "numbers": NUMBERS_CHECKLIST,
+    "drawn": DRAWN_CHECKLIST,
+}
 
 HELPER_BRIEF: Final = """OBJECTIVE: a full GV review of the vendor's drawings on pages {pages} of {file}, against the architect's drawing of the same area. Your pages:
 {page_lines}
@@ -197,6 +270,32 @@ CHECKLIST p<N>: architect a/b; notes a/b; strings a/b; not compared: <what and w
 (a/b = items done of items on the page).
 
 BOUNDARIES: only your pages; never guess a number; GV's markup is never a value; no pass/fail words."""
+
+#: What the numbers lens adds to `HELPER_BRIEF` (#1569).
+NUMBERS_NOTE: Final = (
+    """LENS: NUMBERS. Another helper has the same pages for what is DRAWN and WRITTEN (notes, doors and drawers, hardware, extent, the brand prototype, finish tags): leave those to it, unless a number depends on them."""
+)
+
+#: The drawn-things lens's brief (#1569): what is drawn and written, not sizes.
+DRAWN_BRIEF: Final = """OBJECTIVE: the DRAWN THINGS on pages {pages} of {file}: what the vendor drew and wrote, against the architect's drawing of the same area (a brand prototype is its own group). Another helper compares every number on these pages; you compare what is drawn and written, never a size. Your pages:
+{page_lines}
+Read /mnt/skills/gv-review/SKILL.md sections 4, 5 and 7 first.
+
+HOW: view your pages' overview pictures, then zoom (up to 8 crops per call) on each unit's notes, tags, fronts and hardware, the architect's and the vendor's side by side. Anything coloured is GV's markup, never the vendor's drawing.
+
+ALREADY RECORDED by GV Review on your pages (the lead checks these: do not report them again):
+{recorded}
+
+CHECKLIST, for every page:
+{checklist}
+
+OUTPUT: report_finding for EVERY drawn thing you compare, the same ones too (status different, check or same; every check with decision_help), with vendor_box and arch_box. `architect` and `vendor` say in a few words what each side shows ("pull-out drawers (note)", "2 doors drawn", "no grommet"); vs_page when the architect is on another page. Name each item starting with its area from the list above ("<area>: bin drawer fronts"), the same way on every page, view and round. Never report a dimension or a dimension string, and do not call set_coverage: the numbers helper records both. verified: false (the lead verifies).
+
+REPORT BACK (short): per page the differences (item, vendor vs architect, finding ids), then one line per page exactly like
+CHECKLIST p<N>: notes a/b; counts a/b; hardware a/b; not compared: <what and why, or none>
+(a/b = items done of items on the page; notes = the architect's notes, callouts and tags; counts = doors, drawers, bins, shelves and sections; hardware = pulls, locks, legs, grommets, power units).
+
+BOUNDARIES: only your pages; never guess; GV's markup is never the vendor's drawing; no pass/fail words."""
 
 _NONE: Final = "- none"
 _MAX_ROW: Final = 160
@@ -246,9 +345,14 @@ def page_lines(
             continue
         area = entry.get("area") or entry.get("section") or "area not named"
         line = f"- p{page}: {_short(area)}; {_drawings(entry)}"
-        pair = entry.get("area_from_page")
+        pair = entry.get("pair_page") or entry.get("area_from_page")
         if isinstance(pair, int) and pair != page:
             line += f"; the architect's drawing is on p{pair}"
+        if entry.get("pair_page") or any(
+            isinstance(h, Mapping) and h.get("heading_by") == "reviewer"
+            for h in entry.get("halves") or []
+        ):
+            line += " (the reviewer said so in the plan check)"
         lines.append(line)
     return lines
 
@@ -301,47 +405,69 @@ def leads_on_pages(document: Mapping[str, Any] | None, pages: Iterable[int]) -> 
     return lines
 
 
+def _lens(lens: str) -> str:
+    if lens not in LENSES:
+        raise ValueError(f"unknown lens {lens!r}")
+    return lens
+
+
 def helper_brief(
     pages: Sequence[int],
     *,
     file_name: str,
     page_map: Mapping[str, Any] | Sequence[Any] | None = None,
     review_document: Mapping[str, Any] | None = None,
+    lens: str = "both",
 ) -> str:
     """The brief for one full-check helper: its pages (with areas and pairs from the page map),
     GV's recorded results and its page review's leads on them, and the per-page checklist.
 
     `review_document` is `review_results`' whole-set document (what the lead's `review_results`
-    call returns); `None` when it could not be read, and the brief says so."""
+    call returns); `None` when it could not be read, and the brief says so. `lens` (#1569):
+    `both` (one helper per page group), `numbers` (sizes and strings) or `drawn` (what is drawn
+    and written; GV's page-review leads are the numbers helper's)."""
     if not pages:
         raise ValueError("a helper needs at least one page")
+    lens = _lens(lens)
     recorded = recorded_on_pages(review_document, pages)
-    leads = leads_on_pages(review_document, pages)
     unread = "- GV Review's results could not be read: compare everything"
-    return HELPER_BRIEF.format(
-        pages=", ".join(str(page) for page in sorted(set(pages))),
-        file=file_name,
-        page_lines="\n".join(page_lines(pages, page_map)),
-        recorded="\n".join(recorded) or (unread if review_document is None else _NONE),
-        leads="\n".join(leads) or _NONE,
-        checklist="\n".join(f"- {name}: {text}" for name, text in PAGE_CHECKLIST),
-    )
+    words = {
+        "pages": ", ".join(str(page) for page in sorted(set(pages))),
+        "file": file_name,
+        "page_lines": "\n".join(page_lines(pages, page_map)),
+        "recorded": "\n".join(recorded) or (unread if review_document is None else _NONE),
+        "checklist": "\n".join(f"- {name}: {text}" for name, text in _CHECKLISTS[lens]),
+    }
+    if lens == "drawn":
+        return DRAWN_BRIEF.format(**words)
+    leads = leads_on_pages(review_document, pages)
+    brief = HELPER_BRIEF.format(**words, leads="\n".join(leads) or _NONE)
+    if lens == "numbers":
+        brief = brief.replace(
+            "CHECKLIST p<N>: architect a/b; notes a/b; strings a/b;",
+            "CHECKLIST p<N>: architect a/b; strings a/b;",
+        )
+        brief = f"{brief}\n\n{NUMBERS_NOTE}"
+    return brief
 
 
 # ---- reading the checklist back ------------------------------------------------------------------
 
 _LINE: Final = re.compile(r"CHECKLIST\s+p\.?\s*(\d+)\s*:(.*)", re.IGNORECASE)
-_COUNT: Final = re.compile(r"\b(architect|notes|strings)\b\s*:?\s*(\d+)\s*/\s*(\d+)", re.IGNORECASE)
+_COUNT: Final = re.compile(
+    r"\b(architect|notes|strings|counts|hardware)\b\s*:?\s*(\d+)\s*/\s*(\d+)", re.IGNORECASE
+)
 _NOT_COMPARED: Final = re.compile(r"not compared\s*:\s*(.*)", re.IGNORECASE)
 _NOTHING: Final = frozenset({"", "none", "nothing", "-", "n/a", "no"})
 
 
-def checklist_gaps(report: str, pages: Iterable[int]) -> dict[int, str]:
+def checklist_gaps(report: str, pages: Iterable[int], lens: str = "both") -> dict[int, str]:
     """The pages whose checklist line is missing or shows work left, with why in plain words.
 
-    A line is complete when it gives the three counts and either every count is full (a/a) or the
-    `not compared` part names what was left and why. A count short of full with `not compared:
-    none` is a gap: something was skipped without saying what."""
+    A line is complete when it gives the lens's counts (`LENS_FIELDS`) and either every count is
+    full (a/a) or the `not compared` part names what was left and why. A count short of full with
+    `not compared: none` is a gap: something was skipped without saying what."""
+    fields = LENS_FIELDS[_lens(lens)]
     found: dict[int, str] = {}
     for match in _LINE.finditer(report or ""):
         found[int(match.group(1))] = match.group(2)
@@ -351,8 +477,12 @@ def checklist_gaps(report: str, pages: Iterable[int]) -> dict[int, str]:
         if body is None:
             gaps[page] = "no CHECKLIST line"
             continue
-        counts = {name.lower(): (int(done), int(of)) for name, done, of in _COUNT.findall(body)}
-        missing = [name for name in CHECKLIST_FIELDS if name not in counts]
+        counts = {
+            name.lower(): (int(done), int(of))
+            for name, done, of in _COUNT.findall(body)
+            if name.lower() in fields
+        }
+        missing = [name for name in fields if name not in counts]
         if missing:
             gaps[page] = f"no count for {', '.join(missing)}"
             continue
@@ -366,7 +496,14 @@ def checklist_gaps(report: str, pages: Iterable[int]) -> dict[int, str]:
     return gaps
 
 
-def checklist_send_back(gaps: Mapping[int, str]) -> str | None:
+_LEFT: Final = {
+    "both": "each architect dimension segment by segment, each architect note, each vendor string",
+    "numbers": "each architect dimension segment by segment, each vendor string",
+    "drawn": "each architect note and tag, each door, drawer, bin and shelf, each piece of hardware",
+}
+
+
+def checklist_send_back(gaps: Mapping[int, str], lens: str = "both") -> str | None:
     """The one message that sends a helper back to finish its checklist (`None`: nothing to do)."""
     if not gaps:
         return None
@@ -374,7 +511,7 @@ def checklist_send_back(gaps: Mapping[int, str]) -> str | None:
     return (
         "Your checklist is not finished on these pages:\n"
         f"{lines}\n"
-        "Compare what is left (each architect dimension segment by segment, each architect note, "
-        "each vendor string), report the findings, then end with the CHECKLIST lines again. If "
-        "something truly cannot be compared, name it and why under 'not compared'."
+        f"Compare what is left ({_LEFT[_lens(lens)]}), report the findings, then end with the "
+        "CHECKLIST lines again. If something truly cannot be compared, name it and why under "
+        "'not compared'."
     )
