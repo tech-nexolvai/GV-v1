@@ -105,8 +105,8 @@ class Settings(BaseSettings):
     # The tool-using assistant (owner, 2026-10-16): it runs read-only commands on this package's
     # PDFs in a locked sandbox (`app/review/assistant/sandbox.py`) and looks at pictures it renders,
     # up to `review_assistant_max_tool_turns` turns per question, within the caps above. `auto` uses
-    # the Docker image `gv-assistant-sandbox` when it is built and Docker answers, else macOS
-    # `sandbox-exec`; `off` keeps the one-call assistant.
+    # the Docker image `gv-assistant-sandbox` when it is built and Docker answers, else no sandbox
+    # (`macos`, `sandbox-exec`, only when named); `off` keeps the one-call assistant.
     review_assistant_sandbox: Literal["auto", "docker", "macos", "off"] = "auto"
     # The tool-using loop is led by this model, which also checks the helpers' reports; the helper
     # agents run on `review_assistant_model`. Agent turns get their own, longer time limit.
@@ -144,8 +144,10 @@ class Settings(BaseSettings):
     # A full check's second, drawn-things helper per page group (#1569): notes, doors and drawers,
     # hardware, extent, brand prototype, finish tags; Sonnet at low effort, capped per helper.
     assistant_drawn_helpers: bool = True
-    # One sandbox command's time limit, and which sandbox runs it (`auto`: the Docker image
-    # `gv-assistant-sandbox` when built and Docker answers, else macOS `sandbox-exec`).
+    # One sandbox command's time limit, and which sandbox runs it (`auto` and `docker`: the Docker
+    # image `gv-assistant-sandbox` when built and Docker answers, else no shell: the chat says the
+    # secure sandbox is not running; `macos`: `sandbox-exec`, only for tests on a Mac, never a
+    # silent fallback, security audit 2026-10-18).
     assistant_command_timeout_seconds: int = Field(default=120, ge=5, le=900)
     assistant_sandbox: Literal["auto", "docker", "macos"] = "auto"
     # One model call's time limit (a streamed call with long thinking can take minutes).
