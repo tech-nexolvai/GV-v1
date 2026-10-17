@@ -547,6 +547,10 @@ def test_text_printing_a_near_miss_refuses_any_drawn_match(tmp_path: Path) -> No
     found = vv.verify_value(pdf, 1, box, '71"', readers=readers)
     assert found.result == "cannot_read" and "near-miss" in found.reason
     assert vv.verify_value(pdf, 1, box, '71 1/2"', readers=readers).result == "match"
+    # When no engine reads the claimed value, the text still tells what is printed there.
+    blind = [_Scripted("Tesseract", []), _Scripted("RapidOCR", [])]
+    found = vv.verify_value(pdf, 1, box, '71"', readers=blind)
+    assert (found.result, found.read) == ("mismatch", '71 1/2"')
 
 
 def test_a_label_votes_only_when_its_whole_row_is_one_dimension() -> None:
