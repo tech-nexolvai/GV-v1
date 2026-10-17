@@ -16,7 +16,14 @@ anything else is a 404 that says nothing. The routes, under `/api/v1`:
 - `GET  /chats/{chat_id}/files/{file_id}`, `GET /chats/{chat_id}/pictures/{picture_id}`.
 - `POST /chats/{chat_id}/messages/{message_id}/markup-pdf`: the answer's findings drawn by code on a
   copy of the vendor's PDF (clouds, notes, the draft stamp, a notes page), kept as a chat file; the
-  same file every time for the same answer. `GET .../findings.csv`: the findings with their checks.
+  same file every time for the same answer. `GET .../findings.csv`: the findings with their checks
+  and decisions.
+- `POST /chats/{chat_id}/messages/{message_id}/findings/{finding_id}/decision` (#1521): the
+  reviewer's ✓ Agree / ✗ Not a problem, kept append-only; the latest per finding counts and comes
+  back on the finding (`decision`) in `GET /chats/{chat_id}` and the follow feed.
+- `POST /chats/{chat_id}/messages/{message_id}/cloud-drawing` (#1521): the cloud drawing and the
+  check report made again by code from the current decisions (only agreed items clouded); a new
+  pair of files each time, the older ones kept.
 
 The message runs in its own thread (`chat_service.run_message`) until it ends or Stop is pressed,
 like claude.ai: the browser going away (a closed tab, a reload) does not stop it, and it is stored
@@ -65,9 +72,19 @@ from app.review.assistant.chat_contract import (
     ChatCancelOut,
     ChatCreatedOut,
     ChatFileOut,
+    ChatFindingDecisionIn,
+    ChatFindingDecisionOut,
     ChatListOut,
     ChatMessageIn,
     ChatOut,
+)
+from app.review.assistant.chat_decisions import (
+    decided_findings,
+    decided_summary,
+    decision_out,
+    latest_decisions,
+    make_decided_files,
+    record_decision,
 )
 from app.review.assistant.chat_engine import cost_text
 from app.review.assistant.chat_feed import MessageFeed
@@ -325,13 +342,14 @@ def read_chat(
     files = files_of(session, chat_id)
     first = first_question(messages)
     run = registry.get(chat_id)
+    decisions = latest_decisions(session, chat_id)
     return ChatOut(
         id=chat.id,
         package_id=package.id,
         package_name=package_name(package),
         title=chat.title or (chat_title(first) if first else None),
         created_at=chat.created_at,
-        messages=[message_out(message, files) for message in messages],
+        messages=[message_out(message, files, decisions.get(message.id)) for message in messages],
         running=run is not None,
         running_message_id=None if run is None else run.message_id,
     )
@@ -497,12 +515,150 @@ def findings_spreadsheet(
 ) -> Response:
     _chat(session, chat_id, principal)
     row = _answer(session, chat_id, message_id)
-    body = findings_csv(live_findings(row.blocks))
+    decided = latest_decisions(session, chat_id, message_id).get(message_id)
+    body = findings_csv(decided_findings(row, decided))
     return Response(
         content=body.encode("utf-8"),
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="findings.csv"'},
     )
+
+
+# ---- the reviewer's decisions (#1521) -------------------------------------------------------------
+
+
+def _not_running(registry: ChatRegistry, chat_id: UUID, message_id: UUID) -> None:
+    run = registry.get(chat_id)
+    if run is not None and run.message_id == message_id:
+        raise CodedHTTPException(
+            status.HTTP_409_CONFLICT,
+            "message_running",
+            "This answer is still being written. Decide when it has finished.",
+        )
+
+
+@router.post(
+    "/chats/{chat_id}/messages/{message_id}/findings/{finding_id}/decision",
+    response_model=ChatFindingDecisionOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="The reviewer agrees with a finding, or marks it not a problem (kept append-only)",
+    responses={
+        404: {"description": "No such stored answer or finding in this chat (or no access)."},
+        409: {"description": "`message_running`: the answer is still being written."},
+    },
+)
+def decide_finding(
+    chat_id: UUID,
+    message_id: UUID,
+    finding_id: str,
+    body: ChatFindingDecisionIn,
+    principal: Authenticated,
+    session: Annotated[Session, Depends(get_session)],
+    registry: Annotated[ChatRegistry, Depends(chat_registry)],
+) -> ChatFindingDecisionOut:
+    """One more decision row, by the signed-in person; the latest per finding is the one read."""
+    _chat(session, chat_id, principal)
+    _not_running(registry, chat_id, message_id)
+    row = _answer(session, chat_id, message_id)
+    if not any(str(finding.get("id")) == finding_id for finding in live_findings(row.blocks)):
+        raise _not_found()
+    decided = record_decision(
+        session,
+        chat_id=chat_id,
+        message_id=message_id,
+        finding_id=finding_id,
+        decision=body.decision,
+        note=body.note,
+        decided_by=principal.id,
+    )
+    session.commit()
+    return ChatFindingDecisionOut.model_validate(decision_out(decided))
+
+
+@router.post(
+    "/chats/{chat_id}/messages/{message_id}/cloud-drawing",
+    response_model=ChatFileOut,
+    summary="The cloud drawing (and check report) made again from the reviewer's decisions",
+    responses={
+        404: {"description": "No such stored answer in this chat (or no access)."},
+        409: {
+            "description": "`message_running`: the answer is still being written; "
+            "`uploads_missing`: the chat has no copy of the set's PDFs."
+        },
+        422: {"description": "`no_findings`: the answer has no findings."},
+    },
+)
+def cloud_drawing(
+    request: Request,
+    chat_id: UUID,
+    message_id: UUID,
+    principal: Authenticated,
+    session: Annotated[Session, Depends(get_session)],
+    registry: Annotated[ChatRegistry, Depends(chat_registry)],
+) -> ChatFileOut:
+    """Red clouds only at the findings the reviewer agreed with ("✗ Vendor: X — Needs: Y
+    (architect Z)"); not-yet-decided, not-a-problem and right items listed on the notes page and in
+    the report, never clouded; "Reviewed by <name>" once every item needing a decision was decided,
+    else the draft stamp. A new cloud drawing and check report each time (older files are kept);
+    returns the cloud drawing."""
+    chat, package = _chat(session, chat_id, principal)
+    _not_running(registry, chat_id, message_id)
+    row = _answer(session, chat_id, message_id)
+    findings = decided_findings(row, latest_decisions(session, chat_id, message_id).get(message_id))
+    if not findings:
+        raise CodedHTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "no_findings",
+            "This answer has no findings to mark up.",
+        )
+    question = session.scalar(
+        select(AssistantChatMessage.text)
+        .where(
+            AssistantChatMessage.chat_id == chat_id,
+            AssistantChatMessage.seq < row.seq,
+            AssistantChatMessage.role == "user",
+        )
+        .order_by(AssistantChatMessage.seq.desc())
+        .limit(1)
+    )
+    summary, not_checked = decided_summary(row, question, findings, package_name(package))
+    workspace = ChatWorkspace(_chat_folder(request, chat.id))
+    drawing_id, report_id = uuid4(), uuid4()
+    scratch = {
+        drawing_id: workspace.files / f"{drawing_id}.partial",
+        report_id: workspace.files / f"{report_id}.partial",
+    }
+    try:
+        made = make_decided_files(
+            workspace, findings, summary, not_checked, scratch[drawing_id], scratch[report_id]
+        )
+    except LookupError:
+        raise CodedHTTPException(
+            status.HTTP_409_CONFLICT,
+            "uploads_missing",
+            "This chat has no copy of the drawing set's PDFs. Ask a question first.",
+        ) from None
+    except BaseException:
+        for path in scratch.values():
+            path.unlink(missing_ok=True)
+        raise
+    rows = []
+    for file_id, file in ((drawing_id, made.drawing), (report_id, made.report)):
+        scratch[file_id].replace(workspace.files / str(file_id))
+        rows.append(
+            add_file(
+                session,
+                file_id=file_id,
+                chat_id=chat_id,
+                message_id=message_id,
+                name=file.name,
+                size=file.size,
+                mime="application/pdf",
+                sha256=file.sha256,
+            )
+        )
+    session.commit()
+    return file_out(rows[0])
 
 
 # ---- one message ---------------------------------------------------------------------------------
@@ -725,7 +881,8 @@ def _followed(
     row = session.get(AssistantChatMessage, message_id)
     if row is None or row.chat_id != chat_id or row.role != "assistant":
         raise _not_found()
-    stored = message_out(row, files_of(session, chat_id)).model_dump(mode="json")
+    decided = latest_decisions(session, chat_id, message_id).get(message_id)
+    stored = message_out(row, files_of(session, chat_id), decided).model_dump(mode="json")
     return _Followed(feed=None, stored=stored)
 
 
