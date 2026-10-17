@@ -460,7 +460,7 @@ class _Item:
     package_id: UUID
     sightings: list[_Sighting]
     per_round: dict[int, _Sighting] = field(default_factory=dict)
-    state: State = "open"
+    standing: State = "open"
     open_kind: Literal["wrong", "decision"] | None = None
     fixed_round: int | None = None
     tags: list[str] = field(default_factory=list)
@@ -492,20 +492,20 @@ def _judge(item: _Item, first_round_of_set: int) -> None:
         fixed_round = current.round + 1
 
     if decision is not None and decision.get("decision") == "not_a_problem":
-        item.state = "not_a_problem"
+        item.standing = "not_a_problem"
     elif fixed_round is not None:
-        item.state = "fixed"
+        item.standing = "fixed"
     elif current.status == "same":
-        item.state = "right_later"
+        item.standing = "right_later"
     else:
-        item.state = "open"
+        item.standing = "open"
         item.open_kind = "wrong" if current.status == "different" else "decision"
-    item.fixed_round = fixed_round if item.state == "fixed" else None
+    item.fixed_round = fixed_round if item.standing == "fixed" else None
 
     first_round = min(s.round for s in item.sightings)
     if first_round > first_round_of_set or any(s.round_status == "new" for s in item.sightings):
         item.tags.append(f"New in round {first_round}")
-    if item.state == "open" and (
+    if item.standing == "open" and (
         len([r for r in wrong_rounds if item.per_round[r].status == "different"]) >= 2
         or stored == "still_wrong"
     ):
@@ -520,7 +520,7 @@ def _item_out(item: _Item, sets: Mapping[UUID, TrackerSet]) -> dict[str, Any]:
     first = min(item.sightings, key=lambda s: (s.answer.at, s.round, s.index))
     decision = _decided(item.sightings)
     ever_wrong = any(s.status == "different" for s in item.sightings)
-    found_impact = impact_of(finding) if item.state == "open" else None
+    found_impact = impact_of(finding) if item.standing == "open" else None
     the_set = sets.get(item.package_id)
     category = str(face.finding.get("category") or "other")
     source = str(face.finding.get("source") or "")
@@ -540,7 +540,7 @@ def _item_out(item: _Item, sets: Mapping[UUID, TrackerSet]) -> dict[str, Any]:
         "kind": item_kind(face.finding),
         "check": source,
         "check_label": CHECK_WORDS.get(source, "Other check"),
-        "state": item.state,
+        "state": item.standing,
         "open_kind": item.open_kind,
         "status_now": current.status,
         "ever_wrong": ever_wrong,
@@ -589,7 +589,7 @@ def _average(values: Sequence[int]) -> str | None:
 
 
 def _open_in(sighting: _Sighting, item: _Item) -> bool:
-    return sighting.status in _OPEN_STATUSES and item.state != "not_a_problem"
+    return sighting.status in _OPEN_STATUSES and item.standing != "not_a_problem"
 
 
 def build_tracker(sets: Sequence[TrackerSet], answers: Sequence[TrackerAnswer]) -> dict[str, Any]:
@@ -631,8 +631,8 @@ def build_tracker(sets: Sequence[TrackerSet], answers: Sequence[TrackerAnswer]) 
         # Wrong before Your decision (the reviewer's path), then fixed, then the rest.
         rank = (
             (0 if item.open_kind == "wrong" else 1)
-            if item.state == "open"
-            else {"fixed": 2, "right_later": 3, "not_a_problem": 4}[item.state]
+            if item.standing == "open"
+            else {"fixed": 2, "right_later": 3, "not_a_problem": 4}[item.standing]
         )
         return (rank, -(item.out["impact"] or 0), item.out["set_name"], item.out["item"])
 
@@ -644,12 +644,12 @@ def build_tracker(sets: Sequence[TrackerSet], answers: Sequence[TrackerAnswer]) 
             "sets": len(sets_out),
             "checks": len(ordered),
             "items": len(items),
-            "open": sum(1 for i in items if i.state == "open"),
+            "open": sum(1 for i in items if i.standing == "open"),
             "open_wrong": sum(1 for i in items if i.open_kind == "wrong"),
             "open_decision": sum(1 for i in items if i.open_kind == "decision"),
-            "fixed": sum(1 for i in items if i.state == "fixed"),
-            "not_a_problem": sum(1 for i in items if i.state == "not_a_problem"),
-            "right_later": sum(1 for i in items if i.state == "right_later"),
+            "fixed": sum(1 for i in items if i.standing == "fixed"),
+            "not_a_problem": sum(1 for i in items if i.standing == "not_a_problem"),
+            "right_later": sum(1 for i in items if i.standing == "right_later"),
         },
         "sets": sets_out,
         "items": [item.out for item in items],
@@ -690,9 +690,9 @@ def _sets_out(
                 "vendor_key": vendor_key(the_set.vendor),
                 "product": the_set.product,
                 "items": len(mine),
-                "open": sum(1 for i in mine if i.state == "open"),
-                "fixed": sum(1 for i in mine if i.state == "fixed"),
-                "not_a_problem": sum(1 for i in mine if i.state == "not_a_problem"),
+                "open": sum(1 for i in mine if i.standing == "open"),
+                "fixed": sum(1 for i in mine if i.standing == "fixed"),
+                "not_a_problem": sum(1 for i in mine if i.standing == "not_a_problem"),
                 "rounds": rounds,
                 "last_checked_at": _when(max(a.at for a in checks)),
                 "checks": [_check_out(a) for a in sorted(checks, key=lambda a: a.at, reverse=True)],
@@ -743,7 +743,7 @@ def _vendors_out(
         mistakes = [
             i
             for i in mine
-            if i.out["ever_wrong"] and i.state not in ("not_a_problem", "right_later")
+            if i.out["ever_wrong"] and i.standing not in ("not_a_problem", "right_later")
         ]
         # Fixed on the next round: Wrong in round N and seen again in round N+1 (or the stored
         # round status says what round N+1 did). An item round N+1 never showed is not counted
@@ -779,7 +779,7 @@ def _vendors_out(
                 "rounds": sum(len(set_rounds[p]) for p in reviewed),
                 "items": len(mine),
                 "mistakes": len(mistakes),
-                "open": sum(1 for i in mine if i.state == "open"),
+                "open": sum(1 for i in mine if i.standing == "open"),
                 "fixed_next_round": fixed_next,
                 "fixed_next_of": of_next,
                 "fixed_next_share": _share(fixed_next, of_next),
