@@ -119,6 +119,17 @@ from app.review.assistant.chat_request import (
     picture_sizes,
     thinking_config,
 )
+from app.review.assistant.chat_scope import (
+    in_scope,
+    is_whole_set,
+    load_page_map,
+    question_of,
+    question_scope,
+    scope_note,
+    scoped_pages,
+    scoped_recorded,
+    widened,
+)
 from app.review.assistant.chat_summary import code_summary, needs_code_summary
 from app.review.assistant.chat_timings import Timings
 from app.review.assistant.chat_tools import (
@@ -193,10 +204,11 @@ _log = logging.getLogger(__name__)
 #: and cite. chat-v7: record_string and record_reading (the reading ledger) for the lead and the
 #: helpers, and their prompt lines; compare_rounds (the revision diff) for the lead. chat-v7: the
 #: zoom tool, the set pack, parallel tools, the helper footer, the four-part Agent brief and the
-#: effort lines. chat-v8: zoom takes up to 8 crops; a full check's helpers are planned by code, with
-#: a code-written brief, and the lead gets their reports with a verify-only instruction.) Only the
+#: effort lines. chat-v8: "never cite internal ticket numbers", and a page or area question's
+#: scope note. chat-v9: zoom takes up to 8 crops; a full check's helpers are planned by code, with
+#: the recall brief, and the lead gets their reports with a verify-only instruction.) Only the
 #: request's prefix changes; a chat's stored messages replay unchanged.
-HARNESS_ID: Final = "chat-v8"
+HARNESS_ID: Final = "chat-v9"
 #: Helpers that may run at once, at most, whatever the setting says.
 MAX_PARALLEL_AGENTS_LIMIT: Final = 12
 #: The second reads, third reads and critic calls of one message that run at once.
@@ -620,6 +632,16 @@ class ChatEngine:
         )
         self._positions: dict[str, int] = {}
         self._coverage_index: int | None = None
+        # What this answer is about (#1520): the whole set, or the pages / area the question names.
+        self._asked_scope = question_scope(
+            question_of(user_content),
+            mode=settings.mode,
+            page_map=load_page_map(tools.workspace.set_folder),
+            page_count=self.book.page_count,
+            main_file=self.book.main_file,
+        )
+        self.book.scope_pages = scoped_pages(self._asked_scope)
+        self._started_scope: dict[str, Any] = dict(self._asked_scope)
         self._helpers_started = 0
         self._recorded: Recorded | None = None
         self._recorded_document: Mapping[str, Any] | None = None
@@ -1109,6 +1131,40 @@ class ChatEngine:
             results.update(self._run_agents(agents))
         return [results[id(call)] for call in calls]
 
+    # ---- scope (#1520) ---------------------------------------------------------------------------
+
+    def scope(self) -> dict[str, Any]:
+        """This answer's scope now: the question's, with the pages it worked on (its coverage and
+        its own findings; a recorded difference it was handed is not its choice of page)."""
+        book = self.book
+        with self._lock:
+            used = set(book.coverage)
+        used |= {
+            int(f["page"])
+            for f in book.live()
+            if isinstance(f.get("page"), int) and not f.get("record_id")
+        }
+        scope = widened(self._asked_scope, used)
+        book.scope_pages = scoped_pages(scope)
+        return scope
+
+    def _whole_set_work(self) -> bool:
+        """Whole-set work (a full check, or a whole-set answer that used coverage): only it gets
+        the "every page, every recorded difference" checks."""
+        if not is_whole_set(self.scope()):
+            return False
+        return self.settings.mode == "full_check" or self.book.coverage_used
+
+    def _store_scope(self) -> None:
+        """At finish: the answer's scope as a block (sent again only when the work changed it)."""
+        before = self.book.scope_pages
+        scope = self.scope()
+        index = self._add_block({"type": "scope", "scope": scope})
+        if scope != self._started_scope:
+            self.emit("scope", {"index": index, "scope": json.loads(json.dumps(scope))})
+        if self.book.coverage_used and self.book.scope_pages != before:
+            self._show_coverage(self.book.coverage_map())  # the coverage map, re-scoped
+
     # ---- findings, coverage and trust (chat v2 / v3) ---------------------------------------------
 
     def _recorded_checks(self) -> Recorded:
@@ -1533,7 +1589,7 @@ class ChatEngine:
 
     def _recorded_results_check(self) -> dict[str, Any] | None:
         """The ledger's "never drop a recorded result" check (whole-set work only)."""
-        if self.settings.mode != "full_check" and not self.book.coverage_used:
+        if not self._whole_set_work():
             return None
         self._recorded_checks()
         with self._lock:
@@ -1731,7 +1787,7 @@ class ChatEngine:
     def _accuracy(self) -> None:
         """The answer's accuracy, by code (CONTRACT5): a block and the `accuracy` event."""
         book = self.book
-        whole_set = book.coverage_used or self.settings.mode == "full_check"
+        whole_set = self._whole_set_work()
         score = accuracy(
             book.live(),
             list(book.cites),
@@ -1815,7 +1871,8 @@ class ChatEngine:
         for updated in mark_compared(book.live(), coverage, list(self.tools.seen)):
             if book.replace(updated):
                 self._show_finding(updated)
-        recorded = self._recorded_checks()
+        scope = self.scope()
+        recorded = scoped_recorded(self._recorded_checks(), book.scope_pages)
         self._unknowns = unknown_records(
             book.live(),
             coverage,
@@ -1828,13 +1885,14 @@ class ChatEngine:
                 "unknowns", {"index": index, "unknowns": json.loads(json.dumps(self._unknowns))}
             )
         report = trust_report(
-            book.live(),
+            [f for f in book.live() if in_scope(scope, f.get("page"))],
             coverage,
             recorded,
             second_reads_skipped=skipped,
             dismissed=book.dismissed,
             unknowns=self._unknowns,
         )
+        report["scope"] = scope
         self._ledger_trust(report)
         self._diff_rounds(report)
         index = self._add_block({"type": "trust", "trust": report})
@@ -1843,8 +1901,8 @@ class ChatEngine:
 
     def _recorded_missing(self) -> list[dict[str, Any]]:
         """GV Review's recorded differences this answer neither reports nor dismissed (whole-set
-        work: a full check, or an answer that used coverage)."""
-        if self.settings.mode != "full_check" and not self.book.coverage_used:
+        work: a full check, or a whole-set answer that used coverage)."""
+        if not self._whole_set_work():
             return []
         recorded = self._recorded_checks()
         if not recorded.readable:
@@ -1871,7 +1929,7 @@ class ChatEngine:
                 "the drawings with no evidence. Back each with report_finding (a comparison) or "
                 "cite (a value), with boxes; then give your answer."
             )
-        if self.book.coverage_used:
+        if self.book.coverage_used and self._whole_set_work():
             gaps = self.book.coverage_gaps()
             if gaps:
                 parts.append(coverage_note(gaps, self.book.main_file))
@@ -2802,6 +2860,12 @@ class ChatEngine:
         guard_sent = False
         if settings.mode == "full_check":
             self._start_full_check()
+        # The scope as asked, at once (the screen hides the whole-set panels for a narrow one).
+        self._started_scope = self.scope()
+        self.emit("scope", {"index": None, "scope": json.loads(json.dumps(self._started_scope))})
+        note = scope_note(self._asked_scope)
+        if note is not None:
+            self.user_content = [*self.user_content, {"type": "text", "text": note}]
         turn[0] = {"role": "user", "content": self.user_content}
         while True:
             if self.cancel.is_set():
@@ -2935,6 +2999,10 @@ class ChatEngine:
                 if block.get("type") == "text" and block.get("text", "").strip()
             )
             _close_open_calls(turn)
+        try:
+            self._store_scope()
+        except Exception:  # noqa: BLE001 - the answer is stored without its scope block
+            _log.exception("assistant chat scope failed")
         if stopped not in ("cancelled", "error"):
             try:
                 self._trust_phase()

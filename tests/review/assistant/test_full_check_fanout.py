@@ -689,9 +689,11 @@ def test_a_stopped_full_check_still_gets_codes_finish_and_its_files(tmp_path: Pa
                 model=SONNET,
             )
         return reply(
-            text("CHECKLIST p1: architect 0/0; notes 0/0; strings 0/0; not compared: none\n"
-                 "CHECKLIST p2: architect 0/0; notes 0/0; strings 1/1; not compared: none\n"
-                 "CHECKLIST p3: architect 0/0; notes 0/0; strings 1/1; not compared: none"),
+            text(
+                "CHECKLIST p1: architect 0/0; notes 0/0; strings 0/0; not compared: none\n"
+                "CHECKLIST p2: architect 0/0; notes 0/0; strings 1/1; not compared: none\n"
+                "CHECKLIST p3: architect 0/0; notes 0/0; strings 1/1; not compared: none"
+            ),
             model=SONNET,
         )
 

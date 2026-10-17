@@ -97,7 +97,7 @@ def test_findings_stream_are_stored_and_reload_the_same_with_their_pictures(post
         assert status == 200
         message = _named(events, "message_end")[0]["message"]
         kinds = [block["type"] for block in message["blocks"]]
-        assert kinds == ["finding", "coverage", "text", "text", "trust", "accuracy"]
+        assert kinds == ["finding", "coverage", "text", "text", "scope", "trust", "accuracy"]
         finding = message["blocks"][0]["finding"]
         assert finding["id"] == "F1" and finding["arch_box"]["file"] == "Vendor set.pdf"
         assert finding["checks"]["printed_vendor"] == "not_run"
@@ -110,7 +110,7 @@ def test_findings_stream_are_stored_and_reload_the_same_with_their_pictures(post
         live = {data["index"]: data["finding"] for data in _named(events, "finding")}
         assert live[0] == finding
         assert _named(events, "coverage")[-1]["coverage"] == coverage
-        assert _named(events, "trust")[-1]["trust"] == message["blocks"][4]["trust"]
+        assert _named(events, "trust")[-1]["trust"] == message["blocks"][5]["trust"]
         reloaded = world.client.get(f"/api/v1/chats/{chat_id}").json()["messages"][-1]
         assert reloaded == message
         for key in ("arch_picture_id", "vendor_picture_id"):
@@ -326,9 +326,9 @@ def test_a_whole_set_answer_end_to_end_against_a_fake_anthropic_server(postgres_
             assert message["stopped"] is None, message
             assert message["text"] == "One difference, on page 2."
             kinds = [block["type"] for block in message["blocks"]]
-            assert kinds == ["finding", "coverage", "text", "text", "trust", "accuracy"]
+            assert kinds == ["finding", "coverage", "text", "text", "scope", "trust", "accuracy"]
             assert message["blocks"][1]["coverage"]["counts"]["not_opened"] == 0
-            trust = message["blocks"][4]["trust"]
+            trust = message["blocks"][5]["trust"]
             assert trust["counts"]["total"] == 1 and trust["coverage"]["pages_not_opened"] == []
             assert len(_FakeAnthropic.requests) == 4 and _FakeAnthropic.problems == []
             made = world.client.post(f"/api/v1/chats/{chat_id}/messages/{message['id']}/markup-pdf")

@@ -4926,7 +4926,7 @@ export interface components {
             /** @description The answer's accuracy by code (its `accuracy` block, scored again with today's calibration: see `rescored`); null on older answers. */
             accuracy?: components["schemas"]["ChatAccuracyOut"] | null;
             /** Blocks */
-            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"] | components["schemas"]["ChatProgressBlock"])[] | null;
+            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"] | components["schemas"]["ChatScopeBlock"] | components["schemas"]["ChatProgressBlock"])[] | null;
             /** @description With `stopped: cost_cap`: `message` (this answer's cap) or `package` (the drawing set's budget ran out). */
             cap_hit?: components["schemas"]["ChatCapHit"] | null;
             /** Cost Usd */
@@ -4974,6 +4974,8 @@ export interface components {
              * @enum {string}
              */
             role: "user" | "assistant";
+            /** @description What the answer is about (its `scope` block): the whole set, or pages or an area; null on older answers. */
+            scope?: components["schemas"]["ChatScopeOut"] | null;
             stopped?: components["schemas"]["ChatStopped"] | null;
             /**
              * Text
@@ -5173,6 +5175,49 @@ export interface components {
              * @default 0
              */
             unrequested: number;
+        };
+        /** ChatScopeBlock */
+        ChatScopeBlock: {
+            scope: components["schemas"]["ChatScopeOut"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "scope";
+        };
+        /**
+         * ChatScopeOut
+         * @description What the answer is about, worked out by code (#1520): the whole set, or some pages or an
+         *     area. Only a whole-set answer gets the whole-set panels (all pages' coverage, every recorded
+         *     difference); a page or area answer's coverage, recorded results and trust counts cover its
+         *     pages only.
+         */
+        ChatScopeOut: {
+            /**
+             * Area
+             * @description The area named, as typed on the set.
+             */
+            area?: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "whole_set" | "pages" | "area";
+            /**
+             * Label
+             * @description In plain words: "page 4 (Pantry)", "the whole set".
+             */
+            label: string;
+            /**
+             * Pages
+             * @description The scope's pages; empty for the whole set.
+             */
+            pages?: number[];
+            /**
+             * Why
+             * @enum {string}
+             */
+            why: "full_check" | "whole_set_words" | "nothing_named" | "wide_work" | "pages_named" | "area_named";
         };
         /** ChatSecondReadValuesOut */
         ChatSecondReadValuesOut: {
@@ -5428,6 +5473,8 @@ export interface components {
             not_compared?: number | null;
             recorded_results?: components["schemas"]["ChatRecordedResultsOut"] | null;
             rounds?: components["schemas"]["ChatRoundsOut"] | null;
+            /** @description What the counts above cover (null on older answers). */
+            scope?: components["schemas"]["ChatScopeOut"] | null;
             timings?: components["schemas"]["ChatTimingsOut"] | null;
             unknowns?: components["schemas"]["ChatTrustUnknownsOut"] | null;
         };

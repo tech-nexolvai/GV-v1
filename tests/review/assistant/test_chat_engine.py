@@ -147,6 +147,7 @@ def test_thinking_and_text_stream_as_contract_events_in_block_order(tmp_path: Pa
 
     names = [n for n in harness.names() if n != "usage"]
     assert names == [
+        "scope",
         "thinking_start",
         "thinking_delta",
         "thinking_delta",
@@ -163,7 +164,7 @@ def test_thinking_and_text_stream_as_contract_events_in_block_order(tmp_path: Pa
     assert {d["index"] for d in events_named(harness.events, "text_delta")} == {1}
     assert outcome.text == "All **good**."
     assert outcome.stopped is None and outcome.error is None
-    assert [b["type"] for b in outcome.blocks] == ["thinking", "text", "accuracy"]
+    assert [b["type"] for b in outcome.blocks] == ["thinking", "text", "scope", "accuracy"]
     assert outcome.blocks[0]["text"] == "Looking at it." and outcome.blocks[0]["seconds"] >= 1
     # The turn as sent and received, the thinking block with its signature unchanged.
     assert outcome.api_content == [
@@ -233,10 +234,17 @@ def test_a_tool_turn_runs_the_tool_and_sends_the_reply_back_unchanged(tmp_path: 
     # The newest block carries the cache breakpoint.
     assert second["messages"][-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
     assert outcome.text == "It has 60 pages."
-    assert [b["type"] for b in outcome.blocks] == ["thinking", "text", "step", "text", "accuracy"]
+    assert [b["type"] for b in outcome.blocks] == [
+        "thinking",
+        "text",
+        "step",
+        "text",
+        "scope",
+        "accuracy",
+    ]
     assert len(harness.ledger.rows) == 2
     assert {row["prompt_id"] for row in harness.ledger.rows} == {
-        "review-assistant-chat-anthropic-chat-v8"
+        "review-assistant-chat-anthropic-chat-v9"
     }
 
 
@@ -747,10 +755,11 @@ def test_an_earlier_chats_history_still_replays_byte_identical(tmp_path: Path) -
     sent = _sent(provider.lead_calls[0])["messages"]
     replayed = strip_cache_control(sent[: len(_EARLIER_TURN)])
     assert json.dumps(replayed) == json.dumps(_EARLIER_TURN)
-    assert strip_cache_control(sent[-1]) == {
-        "role": "user",
-        "content": [{"type": "text", "text": "And pages 31-60?"}],
-    }
+    last = strip_cache_control(sent[-1])
+    assert last["role"] == "user"
+    assert last["content"][0] == {"type": "text", "text": "And pages 31-60?"}
+    # A question about some pages gets the app's scope note after it (#1520).
+    assert last["content"][1]["text"].startswith("The app scoped this question to pages 31-60.")
 
 
 # ---- limits ------------------------------------------------------------------------------------

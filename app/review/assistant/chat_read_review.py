@@ -217,7 +217,13 @@ def critic_jobs(
     the limit leaves out are recorded `not_run` at once."""
     book = engine.book
     critic_module = chat_trust.load_module(CRITIC_MODULE)
-    whole_set = bool(book.coverage_used) or getattr(engine.settings, "mode", None) == "full_check"
+    judge = getattr(engine, "_whole_set_work", None)
+    if callable(judge):
+        whole_set = bool(judge())  # the answer's scope decides (#1520)
+    else:
+        whole_set = (
+            bool(book.coverage_used) or getattr(engine.settings, "mode", None) == "full_check"
+        )
     if not whole_set or critic_module is None:
         return []
     candidates = critic_module.candidates(findings)
