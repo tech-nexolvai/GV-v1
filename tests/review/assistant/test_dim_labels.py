@@ -736,6 +736,13 @@ def test_the_helper_brief_lists_the_labels_and_the_rule() -> None:
     assert "CHECKLIST p<N>: architect a/b; notes a/b; strings a/b; not compared:" in brief
 
 
+def test_the_printed_scale_notes_are_kept_per_page(pdf: Path) -> None:
+    found = dl.page_labels(pdf, 1, HALVES)
+    assert [note["text"] for note in found.scale_notes] == ['1/2" = 1\'-0"']
+    document = dl.build_dims({"set.pdf": pdf}, {"pages": []})
+    assert document["pages"][0]["scale_notes"][0]["text"] == '1/2" = 1\'-0"'
+
+
 @pytest.mark.parametrize(
     ("line", "layout", "value"),
     [
