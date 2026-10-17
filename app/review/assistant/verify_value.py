@@ -45,14 +45,17 @@ Source: `RESEARCH-stroke-witness.md` (local study, 2026-10-17) · Verification:
 
 from __future__ import annotations
 
+import hashlib
 import io
 import logging
 import math
+import os
 import re
 import shlex
 import threading
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from decimal import Decimal
 from fractions import Fraction
@@ -952,6 +955,35 @@ def _fractions(
     return found
 
 
+#: The hi-res page cache folder of the running `verify_value` call (#1548), or `None`.
+_CACHE_FOLDER: ContextVar[Path | None] = ContextVar("verify_value_page_cache", default=None)
+
+
+def _cached_layer(
+    page: _Page, area: tuple[float, float, float, float], scale: float
+) -> np.ndarray | None:
+    """The vendor layer's area cut from its 300-dpi picture (`page_cache`), when a cache folder is
+    given and the picture wanted is 300 dpi or less; else `None` (rendered as before). The layer is
+    stored once as its own one-page PDF, named by its hash, so the cache keys it like any PDF."""
+    folder = _CACHE_FOLDER.get()
+    page_cache = import_module("app.review.assistant.page_cache")
+    if folder is None or scale * 72 > page_cache.CACHE_DPI:
+        return None
+    try:
+        layers = folder / "layers"
+        layers.mkdir(parents=True, exist_ok=True)
+        layer = layers / f"{hashlib.sha256(page.vendor_pdf).hexdigest()[:24]}.pdf"
+        if not layer.is_file():
+            temporary = layer.with_name(f".{layer.name}.{threading.get_ident()}.tmp")
+            temporary.write_bytes(page.vendor_pdf)
+            os.replace(temporary, layer)
+        picture = page_cache.cut(folder, layer, 1, area, scale)
+    except Exception as failed:  # noqa: BLE001 - rendered directly instead
+        _log.warning("verify_value page cache failed: %s", type(failed).__name__)
+        return None
+    return None if picture is None else np.array(picture.convert("RGB"))
+
+
 def _picture(page: _Page, spot: tuple[float, float, float, float]) -> np.ndarray | None:
     """The vendor's layer at the spot as a grey picture, coloured pixels whitened (GV's marks)."""
     pdfium = import_module("pypdfium2")
@@ -971,17 +1003,21 @@ def _picture(page: _Page, spot: tuple[float, float, float, float]) -> np.ndarray
     )
     if (right - left) * (bottom - top) * scale * scale > _MAX_PIXELS:
         scale = math.sqrt(_MAX_PIXELS / ((right - left) * (bottom - top)))
-    with lock:
-        document = pdfium.PdfDocument(page.vendor_pdf)
-        try:
-            rendered = document[0].render(
-                scale=scale,
-                crop=(left, height - bottom, width - right, top),
-                may_draw_forms=True,
-            )
-            rgb = np.array(rendered.to_pil().convert("RGB"))
-        finally:
-            document.close()
+    cached = _cached_layer(page, (left, top, right, bottom), scale)
+    if cached is not None:
+        rgb = cached
+    else:
+        with lock:
+            document = pdfium.PdfDocument(page.vendor_pdf)
+            try:
+                rendered = document[0].render(
+                    scale=scale,
+                    crop=(left, height - bottom, width - right, top),
+                    may_draw_forms=True,
+                )
+                rgb = np.array(rendered.to_pil().convert("RGB"))
+            finally:
+                document.close()
     hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
     rgb[(hsv[:, :, 1] > 60) & (hsv[:, :, 2] > 60)] = 255
     grey: np.ndarray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
@@ -1163,14 +1199,34 @@ def verify_value(
     *,
     drawn: bool = True,
     readers: Sequence[InkReader] | None = None,
+    page_cache: Path | None = None,
 ) -> Verified:
     """Whether `expected` is printed inside `box` on `page` (from 1) of `pdf`.
+
+    `page_cache` (the set pack's `hires/` folder, #1548): a vendor-layer picture of 300 dpi or
+    less is cut from the layer's 300-dpi picture, drawn once, instead of rendered again.
 
     `box` is `{x0, y0, x1, y1}` in PDF points of the page as shown, origin top-left. `expected` is
     one value (`46"`, `3'-10"`, `1168 [46]`) or a sentence whose first dimension is checked.
     `drawn=False` runs the text route only: a box that also holds drawn ink then answers
     `cannot_read` with `pending` set. `readers` are the OCR engines (default: those installed).
     """
+    token = _CACHE_FOLDER.set(page_cache)
+    try:
+        return _verify(pdf, page, box, expected, drawn=drawn, readers=readers)
+    finally:
+        _CACHE_FOLDER.reset(token)
+
+
+def _verify(
+    pdf: Path,
+    page: int,
+    box: Mapping[str, Any],
+    expected: str,
+    *,
+    drawn: bool,
+    readers: Sequence[InkReader] | None,
+) -> Verified:
     value = claim_value(expected)
     wanted = to_inches(value) if value is not None else None
     if value is None or wanted is None:
