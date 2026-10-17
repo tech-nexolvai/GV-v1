@@ -1248,7 +1248,16 @@ class ChatEngine:
         )
         checked.setdefault("round_status", None)
         checked["second_read_values"] = dict(kept[2]) if kept is not None else None
-        for key in ("ledger_ids", "reference_side", "sum_text"):
+        # The resolver's fields (#1554) are set only on the items it touches.
+        for key in (
+            "ledger_ids",
+            "reference_side",
+            "sum_text",
+            "settled",
+            "question",
+            "keep_reason",
+            "also_on",
+        ):
             checked.setdefault(key, None)
         return checked
 
