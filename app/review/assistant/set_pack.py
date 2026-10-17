@@ -77,6 +77,7 @@ __all__ = [
     "ensure_pack",
     "pack_folder",
     "pack_key",
+    "trim_hires",
 ]
 
 _log = logging.getLogger(__name__)
@@ -92,6 +93,9 @@ DIMS_DRAWN_BUDGET_S: Final = 0.0
 #: The hi-res page cache's folder inside the pack (`page_cache`, #1548): 300-dpi tiles of each page
 #: a crop was cut from, made on first need.
 HIRES: Final = "hires"
+#: A set no chat uses any more keeps its hi-res cache while a page of it was used this recently
+#: (seconds): a chat changing its PDFs right now is not raced (#1575).
+UNUSED_SET_GRACE_S: Final = 600.0
 #: Contact sheets: pages per picture (3 x 3) and each tile's size, so a sheet is at most 2576 px.
 CONTACT_COLUMNS: Final = 3
 CONTACT_ROWS: Final = 3
@@ -158,6 +162,49 @@ def pack_key(listing: Sequence[Mapping[str, Any]]) -> str:
 
 def pack_folder(chat_root: Path, listing: Sequence[Mapping[str, Any]]) -> Path:
     return chat_root / "set-packs" / pack_key(listing)
+
+
+def trim_hires(
+    chat_root: Path,
+    live_keys: frozenset[str] | None,
+    *,
+    set_bytes: int,
+    total_bytes: int,
+) -> page_cache.Trimmed:
+    """Keep the hi-res page caches under the chat root bounded (#1575).
+
+    1. A pack no chat or plan check points at any more (`live_keys`: its chats were removed, its
+       PDFs replaced, or the pack format changed) loses its whole `hires/` folder, unless a page of
+       it was used in the last `UNUSED_SET_GRACE_S`. `live_keys` is `None` when they could not all
+       be read: then no set's cache is dropped this time.
+    2. Each set's cache (a pack's, or a chat's own `set-local/` one) is trimmed to `set_bytes`,
+    3. then all of them together to `total_bytes`, the pages used longest ago first.
+
+    Only the cache is touched: anything removed is drawn again on its next crop."""
+    caches: list[Path] = []
+    pages, freed = 0, 0
+    now = datetime.now(UTC).timestamp()
+    try:
+        packs = sorted(path for path in (chat_root / "set-packs").iterdir() if path.is_dir())
+    except OSError:
+        packs = []
+    for pack in packs:
+        cache = pack / HIRES
+        if not cache.is_dir() or cache.is_symlink():
+            continue
+        if live_keys is not None and pack.name not in live_keys:
+            used = page_cache.last_used(cache)
+            if used is None or now - used > UNUSED_SET_GRACE_S:
+                gone = page_cache.remove(cache)
+                pages, freed = pages + gone.pages, freed + gone.freed
+                continue
+        caches.append(cache)
+    caches += sorted(path for path in chat_root.glob(f"*/set-local/{HIRES}") if path.is_dir())
+    for cache in caches:
+        done = page_cache.trim([cache], set_bytes)
+        pages, freed = pages + done.pages, freed + done.freed
+    done = page_cache.trim(caches, total_bytes)
+    return page_cache.Trimmed(pages + done.pages, freed + done.freed, done.held)
 
 
 def stem(name: str) -> str:
