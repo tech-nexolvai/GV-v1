@@ -24,13 +24,13 @@ import pytest
 
 from app.review.assistant.chat_request import BY_SHORT
 from app.review.assistant.sharpen import (
-    SPEC_SCHEMA,
     CHECKS,
     DEFAULT_QUESTION_BACK,
     HINT_ACTION,
     HINT_CLARIFY,
     SHARPEN_MAX_TOKENS,
     SHARPEN_SYSTEM,
+    SPEC_SCHEMA,
     SharpenContext,
     apply_sharpen,
     code_spec,
