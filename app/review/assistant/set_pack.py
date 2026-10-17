@@ -26,6 +26,8 @@ that set-up once per upload, in the background, and the agent sees it read-only 
 - `scales.json`: each drawing's scale measured from its own printed dimensions
   (`view_scales.py`; printed scale notes are wrong where GV resized a pasted drawing), written
   with `dims.json`. `measure_on_drawing` uses it when no calibration is given.
+- `notes.json`: each drawing's printed tags and notes (`drawing_notes.py`, from the phrases
+  `dims.json` keeps), and the architect's tags the vendor's drawing does not print.
 - `status.json`: `building`, `ready` or `failed`, and the steps done. The agent can work before
   the pack is ready (the first message never waits); the `zoom` tool makes the drawings-only copy
   it needs at once if the pack has not made it yet.
@@ -545,6 +547,8 @@ scales.json            each drawing's scale measured from its own printed dimens
                        that agree within 1%), its box, and the printed scale note beside it
                        (note_agrees false: GV resized the drawing; trust the measured scale).
                        Per label: drawn_in, off_by, drawn_to_value.
+notes.json             per drawing: the tags (WD-01, V-322-CUST) and notes it prints, and per
+                       page the architect's tags the vendor's drawing does not print.
 status.json            building / ready / failed.
 hires/                 code's 300-dpi tiles of the pages zoom has cut from (not for reading:
                        zoom gives you any area sharp).
@@ -679,6 +683,8 @@ def write_dims(
     labels = import_module("app.review.assistant.dim_labels")
 
     scales = import_module("app.review.assistant.view_scales")
+    notes = import_module("app.review.assistant.drawing_notes")
+    pages = {"pages": list(page_map)}
 
     def written(document: dict[str, Any]) -> None:
         if parent is not None and os.getppid() != parent:
@@ -686,10 +692,12 @@ def write_dims(
         _write_json(folder / "dims.json", document)
         # Each drawing's scale, measured from its printed dimensions (a few milliseconds).
         _write_json(folder / scales.SCALES_FILE, scales.set_scales(document))
+        # Each drawing's printed notes and tags (from the phrases dims.json keeps).
+        _write_json(folder / notes.NOTES_FILE, notes.set_notes(document, pages))
 
     labels.build_dims(
         {name: uploads / name for name in names},
-        {"pages": list(page_map)},
+        pages,
         drawn_budget_s=_drawn_budget(),
         on_page=written,
     )
