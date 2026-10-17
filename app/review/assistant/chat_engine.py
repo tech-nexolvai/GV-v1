@@ -155,6 +155,7 @@ from app.review.assistant.chat_trust import (
     accuracy,
     apply_checks,
     cloud_kind,
+    drawn_ink_checks,
     load_module,
     mark_compared,
     recorded_from,
@@ -163,6 +164,7 @@ from app.review.assistant.chat_trust import (
     states_drawing_values,
     trust_level,
     trust_report,
+    with_drawn_ink,
     with_ledger,
     with_second_read,
 )
@@ -206,9 +208,10 @@ _log = logging.getLogger(__name__)
 #: zoom tool, the set pack, parallel tools, the helper footer, the four-part Agent brief and the
 #: effort lines. chat-v8: "never cite internal ticket numbers", and a page or area question's
 #: scope note. chat-v9: zoom takes up to 8 crops; a full check's helpers are planned by code, with
-#: the recall brief, and the lead gets their reports with a verify-only instruction.) Only the
-#: request's prefix changes; a chat's stored messages replay unchanged.
-HARNESS_ID: Final = "chat-v9"
+#: the recall brief, and the lead gets their reports with a verify-only instruction. chat-v10: the
+#: verify_value tool and its prompt lines, #1531.) Only the request's prefix changes; a chat's
+#: stored messages replay unchanged.
+HARNESS_ID: Final = "chat-v10"
 #: Helpers that may run at once, at most, whatever the setting says.
 MAX_PARALLEL_AGENTS_LIMIT: Final = 12
 #: The second reads, third reads and critic calls of one message that run at once.
@@ -1064,6 +1067,8 @@ class ChatEngine:
             return tools.create_file(raw, step)
         if name == "str_replace":
             return tools.str_replace(raw, step)
+        if name == "verify_value":
+            return tools.verify_value(raw, step)
         if not helper:
             if name == "present_files":
                 return tools.present_files(raw, step)
@@ -1846,7 +1851,16 @@ class ChatEngine:
                 backed = with_ledger(finding, ledger)
                 if backed != finding and book.replace(backed):
                     self._show_finding(backed)
-        skipped = self._post_checks()
+        # The drawn-ink reads (#1531, $0 OCR) run while the model checks run.
+        with ThreadPoolExecutor(max_workers=1) as ink:
+            drawn = ink.submit(
+                drawn_ink_checks, book.live(), book.pdf_paths(), stop=self.cancel.is_set
+            )
+            skipped = self._post_checks()
+        with self.finding_lock:
+            for inked in with_drawn_ink(book.live(), drawn.result()):
+                if book.replace(inked):
+                    self._show_finding(inked)
         with self.timings.phase("finish_checks"):
             self._finish_trust(skipped)
 

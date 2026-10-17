@@ -8,8 +8,10 @@
 # /mnt/skills/gv-review.
 FROM python:3.12-slim
 
+# tesseract-ocr: the second OCR engine of `verify_value`'s drawn-ink route (#1531); libgl1 and
+# libglib2.0-0: what RapidOCR's OpenCV needs to load.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends poppler-utils \
+    && apt-get install -y --no-install-recommends poppler-utils tesseract-ocr libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir "pypdf>=6,<7" "pdfplumber==0.11.*" "pypdfium2>=4,<6" "pillow>=11"
@@ -18,6 +20,11 @@ RUN pip install --no-cache-dir "pypdf>=6,<7" "pdfplumber==0.11.*" "pypdfium2>=4,
 # (a marked-up PDF), matplotlib a chart, openpyxl a spreadsheet. Installed when the image is built;
 # every command still runs with no network.
 RUN pip install --no-cache-dir "reportlab>=5,<6" "matplotlib>=3.9,<4" "openpyxl>=3.1,<4"
+
+# The two OCR engines `verify_value` reads drawn numbers with (#1531), pinned as in the API's `ocr`
+# extra (pyproject.toml): Tesseract through pytesseract, and RapidOCR (its ONNX models ship inside
+# the package, so nothing is downloaded at run time).
+RUN pip install --no-cache-dir "pytesseract==0.3.13" "rapidocr-onnxruntime==1.4.4"
 
 # The mount points, so the read-only root needs nothing made at run time.
 RUN mkdir -p /mnt/user-data/uploads /mnt/user-data/outputs /mnt/skills/gv-review /home/claude \

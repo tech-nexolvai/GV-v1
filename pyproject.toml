@@ -56,7 +56,15 @@ extraction = [
 # Optional, because most of this project never renders a page: the engine ships ONNX models and
 # loading them costs seconds. `extraction/ocr.py` raises `OcrUnavailable` with the install command
 # rather than a bare ModuleNotFoundError.
-ocr = ["rapidocr-onnxruntime"]
+#
+# #1531 adds Tesseract (Apache-2.0) beside it, through pytesseract (Apache-2.0), as the second engine
+# of the chat's `verify_value` drawn-ink route: a drawn number counts only when two reads agree, and
+# two different engines are what make the reads independent. Tesseract is a system program (`brew
+# install tesseract`, `apt-get install tesseract-ocr`) on the machine that runs the API and in the
+# assistant's sandbox image; where it is missing, the route runs with RapidOCR alone (fewer reads,
+# never a looser match) and the tests that need it are skipped. Both pinned: an engine's new release
+# reads differently, so it arrives in a reviewed change.
+ocr = ["rapidocr-onnxruntime==1.4.4", "pytesseract==0.3.13"]
 
 # Phase 3 — rule authoring: YAML loading. Validation itself is a runtime dependency.
 rules = ["pyyaml"]

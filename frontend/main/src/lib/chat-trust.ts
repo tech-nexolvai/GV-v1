@@ -43,6 +43,7 @@ const WITNESS_WORDS: Record<string, string> = {
   arithmetic: 'code added up the dimension string',
   ledger: 'code’s reading ledger backs it',
   units: 'the mm and inches printed together agree',
+  ocr_ink: 'both values read from the vendor’s drawn ink by two OCR engines',
 };
 
 /** A finding's evidence kind, read safely; null on older answers. */
@@ -395,6 +396,12 @@ export function trustReason(finding: ChatFinding): string | null {
 
 /** The printed-at-spot result of one side, for under its crop in the evidence viewer. */
 export function printedSideWords(finding: ChatFinding, side: 'architect' | 'vendor'): { state: CheckState; words: string } | null {
+  // #1531: code's own reading at the spot, in its words ("Read from the drawing's text: 46"").
+  const verified = side === 'architect' ? finding.checks?.verify_architect : finding.checks?.verify_vendor;
+  if (verified?.words && !verified.pending) {
+    const state: CheckState = verified.result === 'match' ? 'pass' : verified.result === 'mismatch' ? 'fail' : 'unsure';
+    return { state, words: verified.words };
+  }
   const result = printedOf(finding, side);
   if (!result || result === 'not_run') return null;
   const value = finding[side]?.trim() || '—';
