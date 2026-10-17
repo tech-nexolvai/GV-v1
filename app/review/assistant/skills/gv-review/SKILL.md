@@ -18,7 +18,7 @@ Files in this folder (read-only):
   what that product's drawings show, what to compare, its checklist and the kinds of GV standard it
   has. **Read each one** before you review. This file is the same for every product.
 - `knowledge/`: trade knowledge (**what a dimension measures**, vendor mistakes, field cuts...);
-  `knowledge/README.md` lists it. Also, when present: `raj-checks.md`, `examples/`, `lessons.md`.
+  `knowledge/README.md` lists it. Also, when present: `gv-formulas.md`, `examples/`, `lessons.md`.
 
 ## 1. The three layers on a sheet
 
@@ -113,7 +113,7 @@ inches (`610 [24]`: 610 / 25.4 = 24). Only when all three fail: "unreadable", wi
 
 ## 6. GV's rules first, then everything else against the architect
 
-1. Read `rules.md` (and `raj-checks.md` when present). Apply each rule that fits the item: it says
+1. Read `rules.md` (and `gv-formulas.md` when present). Apply each rule that fits the item: it says
    what is compared, the formula, and the numbers in force (each product's file in `products/`
    says which kinds of GV standard it has). GV compares **exactly**: no tolerance unless
    `rules.md` gives one. A value the rule needs that nobody gave is missing: say so, never assume.

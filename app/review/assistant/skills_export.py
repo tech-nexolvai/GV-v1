@@ -22,7 +22,7 @@ and `build_skill_folder` writes it:
   kind's part of it in their system prompt (`full_check_specialists`); the chat's lead reads it on
   demand.
 - GV's own files kept on this machine (`GV_ASSISTANT_SKILLS_LOCAL`, by default
-  `~/gv-local/skills/gv-review`: GV's checklists, `raj-checks.md`, worked examples from GV's sets
+  `~/gv-local/skills/gv-review`: GV's checklists, `gv-formulas.md`, worked examples from GV's sets
   in `examples/`, approved lessons in `lessons.md`), copied in when that folder exists. Client
   material stays on this machine; the repository holds none.
 
