@@ -538,14 +538,19 @@ def _draw(places: Sequence[_Place], turn: Turn, height_px: int) -> np.ndarray | 
     return picture
 
 
-def inch_mark_at_end(row: Sequence[Token]) -> int:
-    """How many tokens at the row's end make an inch mark (two ticks after the last character),
-    or 0. A single tick (a foot mark) is never one."""
+def inch_mark_at_end(row: Sequence[Token], turn: Turn) -> int:
+    """How many tokens at the row's end make an inch mark (two ticks after the last character,
+    read as `turn`), or 0. A single tick (a foot mark) is never one."""
     end = len(row)
     while end > 0 and row[end - 1].kind == "mark":
         end -= 1
-    ticks = [t for t in row[end:] if t.glyphs[0].wide < 1.8 * t.glyphs[0].tall]
-    strokes = sum(len(t.glyphs[0].paths) for t in ticks)
+    ticks = []
+    for token in row[end:]:
+        f = _frame(token.glyphs[0].box, turn)
+        if f[2] - f[0] < 1.8 * (f[3] - f[1]):  # a tick, not a dash
+            ticks.append(token)
+    # a stroke is one polyline: two ticks may be two paths or one path of two
+    strokes = sum(len(path.polylines) for t in ticks for path in t.glyphs[0].paths)
     return len(row) - end if end and strokes == 2 and len(ticks) == len(row) - end else 0
 
 
@@ -555,7 +560,7 @@ def row_picture(
     """One row redrawn upright, dark ink on white: glyphs and marks at their own geometry, each
     stacked fraction moved onto the line (numerator, a drawn `/`, denominator, row-tall).
     `inch_mark=False` leaves out a trailing inch mark (an engine that reads `"` as `99`)."""
-    if not inch_mark and (drop := inch_mark_at_end(row)):
+    if not inch_mark and (drop := inch_mark_at_end(row, turn)):
         row = row[: len(row) - drop]
     mains = [t for t in row if t.kind != "fraction"]
     parts = [g for t in row for g in (*t.glyphs, *t.below)]

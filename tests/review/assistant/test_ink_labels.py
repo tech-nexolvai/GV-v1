@@ -108,12 +108,12 @@ def test_an_upright_label_reads_upright() -> None:
 def test_an_inch_mark_can_be_left_out_but_a_foot_mark_never() -> None:
     (inches,) = ink_labels.labels(_ink('34"', 100, 300), (95, 90, 120, 106))
     (row,) = ink_labels.rows(inches, 0)
-    assert ink_labels.inch_mark_at_end(row) == 2
+    assert ink_labels.inch_mark_at_end(row, 0) == 2
     bare = ink_labels.row_picture(row, 0, 48, inch_mark=False)
     assert bare is not None and READ(bare, single_line=True) == ["34"]
     (feet,) = ink_labels.labels(_ink("3'", 100, 300), (95, 90, 120, 106))
     (row,) = ink_labels.rows(feet, 0)
-    assert ink_labels.inch_mark_at_end(row) == 0
+    assert ink_labels.inch_mark_at_end(row, 0) == 0
 
 
 def test_a_label_the_box_clips_is_read_whole() -> None:

@@ -35,13 +35,14 @@ not a match.
 near the box is split into labels from its vector paths (`ink_labels`: one path is one stroke, so
 a stacked fraction's numerator, bar and denominator are known), and every label is redrawn upright
 on one line with its fraction moved onto the line, then read alone by each engine at two sizes. A
-row ending in an inch mark is drawn without it and read as inches (RapidOCR reads `"` as `99`); a
-foot mark is always kept. A label counts for the value only when a **whole row** reads as exactly
+row ending in an inch mark is drawn without it and read as inches by RapidOCR (which reads `"` as
+`99`); a foot mark is always kept. A label counts for the value only when a **whole row** reads as exactly
 that one dimension (`63 1 1//` never counts for `63"`). **`match` only when one label is read so
 by two engines, no label anywhere in the box reads as a near-miss of it, and a `1` is shaped as
 one.** A box holding more than `ink_labels.MAX_LABELS` labels (a whole view) is not read this way.
-The labels also watch the four reads above: a match there is refused when a label reads a
-near-miss of it (an engine on the whole box that lost a stacked fraction reads `63` for `63 1/2"`).
+The labels also watch the four reads above: a match there is refused when a label's whole row
+reads the same whole number with a fraction (an engine on the whole box that lost a stacked
+fraction reads `63` for `63 1/2"`).
 
 **What it never does.** It never calls a model, never reads GV's coloured markup as a value, and
 never says `mismatch` from OCR alone: only when the box's text was read, none of it is the value,
@@ -723,6 +724,8 @@ class TesseractReader:
     """Tesseract (Apache-2.0) through pytesseract, sparse text or one line."""
 
     name = "Tesseract"
+    reads_inch_marks = True
+    """Told the characters a dimension is written with (`_WHITELIST`), it reads `"` as `"`."""
 
     def __init__(self) -> None:
         self._tesseract = import_module("pytesseract")
@@ -760,6 +763,8 @@ class RapidReader:
     """RapidOCR (Apache-2.0, ONNX models inside the package), one instance, one call at a time."""
 
     name = "RapidOCR"
+    reads_inch_marks = False
+    """It reads any character it knows, and often reads an inch mark as `99`."""
 
     def __init__(self) -> None:
         ocr = import_module("extraction.ocr")
@@ -1211,9 +1216,12 @@ def _label_reads(
                 read = _InkRead(f"vendor ink label {number}, {reader.name}", reader.name, number)
                 for turn in ink_labels.turns(label):
                     for row in ink_labels.rows(label, turn):
-                        # An inch mark carries no digit, and RapidOCR reads it as `99` (`34 99`,
-                        # a near-miss of 34"): a row ending in one is read without it, as inches.
-                        mark = not ink_labels.inch_mark_at_end(row)
+                        # An inch mark carries no digit, and an engine with no list of the
+                        # characters to look for reads it as `99` (`34 99`, a near-miss of 34"):
+                        # such an engine reads a row ending in one without it, as inches.
+                        mark = getattr(reader, "reads_inch_marks", True) or not (
+                            ink_labels.inch_mark_at_end(row, turn)
+                        )
                         for height in ink_labels.HEIGHTS_PX:
                             picture = ink_labels.row_picture(row, turn, height, inch_mark=mark)
                             if picture is None:
@@ -1233,21 +1241,30 @@ def _label_reads(
 
 
 def _row_value(line: str, *, inch_mark: bool) -> Decimal | None:
-    """The one dimension a whole row reads as, or `None`: `63 1/2"` is one, `63 1 1//` is not
-    (an engine that lost the fraction must not vote for `63"`). A row drawn without its inch mark
-    reads as inches."""
-    text = _DASHED_FRACTION.sub(r"\1 \2", _plain(line)).strip().rstrip(".,;:").strip()
-    if not text:
+    """The one dimension a row reads as, or `None`: everything from its first digit to its last
+    (and a mark right after) must be exactly one dimension; words round it are allowed (`57"
+    (INCLUDING FIELD CUT)`). `63 1/2"` is one, `63 1 1//` and `34 99` are not (an engine that lost
+    a fraction or read an inch mark as 99 must not vote). A row drawn without its inch mark reads
+    as inches."""
+    text = _DASHED_FRACTION.sub(r"\1 \2", _plain(line))
+    digits = [i for i, ch in enumerate(text) if ch.isdigit()]
+    if not digits:
         return None
-    bracketed = re.fullmatch(r"\[\s*([^\[\]]+?)\s*\]", text)
+    first, last = digits[0], digits[-1] + 1
+    while last < len(text) and text[last] in "'\"]":
+        last += 1
+    if first > 0 and text[first - 1] == "[":
+        first -= 1
+    core = text[first:last].strip()
+    bracketed = re.fullmatch(r"\[\s*([^\[\]]+?)\s*\]", core)
     if bracketed:  # the inches under a millimetre value: `[34]`
-        text = bracketed.group(1).rstrip('"').strip()
+        core = bracketed.group(1).rstrip('"').strip()
         inch_mark = False
     if not inch_mark:
-        if not re.fullmatch(r"\d+(?:\s+\d+/\d+)?|\d+/\d+", text):
+        if not re.fullmatch(r"\d+(?:\s+\d+/\d+)?|\d+/\d+", core):
             return None
-        text += '"'
-    return to_inches(text)
+        core += '"'
+    return to_inches(core)
 
 
 def _ink_paths_near(page: _Page, spot: tuple[float, float, float, float]) -> list[_Path]:
@@ -1503,13 +1520,21 @@ def _drawn(
         ones = _ones_unsure(votes, wanted)
         if ones is not None:
             return Verified("cannot_read", "drawn", None, all_reads, ones, value)
-        # The labels must agree too: a label read as a near-miss (`63 1/2"` when `63"` is
-        # claimed, an engine on the whole box having lost the stacked fraction) refuses it.
+        # The labels must agree too: a label whose whole row reads the same whole number with a
+        # fraction (`63 1/2"` when `63"` is claimed: an engine on the whole box lost the stacked
+        # fraction) refuses it.
         checked = _label_reads(page, spot, engines) or []
-        label_misses = sorted({v for r in checked for v in r.values if near_miss(wanted, v)})
-        if label_misses:
-            near = ", ".join(_inches_text(v) for v in label_misses[:3])
-            reason = f"a label here reads as a near-miss of it ({near})"
+        lost = sorted(
+            {
+                v
+                for r in checked
+                for v in r.whole
+                if v != wanted and math.floor(v) == math.floor(wanted)
+            }
+        )
+        if lost:
+            near = ", ".join(_inches_text(v) for v in lost[:3])
+            reason = f"a label here reads it with another fraction ({near})"
             return Verified("cannot_read", "drawn", None, all_reads, reason, value)
         engines_agreeing = " and ".join(read.name for read in votes)
         return Verified(

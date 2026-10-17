@@ -514,10 +514,10 @@ def test_a_lost_fraction_never_confirms_the_whole_number(tmp_path: Path) -> None
     pdf = _write(tmp_path, _pdf(stamp=stroke_ops('63{1/2}"', 20, 100)))
     box = _around(20, 100, 30)
     readers = [_LosesFractions("Tesseract"), _LosesFractions("RapidOCR")]
-    # Every whole-box read says 63, which alone was a match; the labels read 63 1/2", a
-    # near-miss of it, so it is refused.
+    # Every whole-box read says 63, which alone was a match; the label reads 63 1/2", the same
+    # whole number with a fraction, so it is refused.
     found = vv.verify_value(pdf, 1, box, '63"', readers=readers)
-    assert found.result == "cannot_read" and "near-miss" in found.reason
+    assert found.result == "cannot_read" and "another fraction" in found.reason
     assert vv.verify_value(pdf, 1, box, '63 1/2"', readers=readers).result == "match"
 
 
@@ -529,6 +529,8 @@ def test_a_label_votes_only_when_its_whole_row_is_one_dimension() -> None:
     assert vv._row_value("46", inch_mark=False) == Decimal(46)
     assert vv._row_value("46 99", inch_mark=True) is None
     assert vv._row_value("3'", inch_mark=False) is None  # a foot mark is never dropped
+    assert vv._row_value('57" (INCLUDING FIELD CUT)', inch_mark=True) == Decimal(57)
+    assert vv._row_value('2"+3" FILLER', inch_mark=True) is None
 
 
 def test_a_box_holding_a_whole_view_is_not_read_label_by_label(tmp_path: Path) -> None:
