@@ -421,9 +421,9 @@ def test_usage_rows_name_the_route_and_the_purpose() -> None:
 
 
 def test_the_system_prompt_is_short_and_names_the_skill_and_the_three_facts() -> None:
-    # Short like claude.ai's (chat-v6 added the ledger line; chat-v7 the set pack, zoom, effort;
-    # chat-v11 measure_on_drawing; chat-v12 read_under_markup; chat-v13 remember).
-    assert len(LEAD_SYSTEM_PROMPT) < 3400
+    # Short like claude.ai's. chat-v13 (the prompt audit) took out the tool catalogue: each tool's
+    # own description says what it does and when to use it.
+    assert len(LEAD_SYSTEM_PROMPT) < 2600
     for words in (
         "/mnt/skills/gv-review/SKILL.md",
         "inches",
@@ -458,8 +458,9 @@ def test_the_system_prompt_is_short_and_names_the_skill_and_the_three_facts() ->
         "read_under_markup",
         "remember",
     ]
-    assert "record_string" in LEAD_SYSTEM_PROMPT and "record_reading" in LEAD_SYSTEM_PROMPT
-    assert "verify_value" in LEAD_SYSTEM_PROMPT and "measure_on_drawing" in LEAD_SYSTEM_PROMPT
+    # The reviewer's words, once, in the lead's prompt.
+    for words in ("Wrong, Your decision or Right", "Not compared", "AI reading only"):
+        assert words in LEAD_SYSTEM_PROMPT, words
 
 
 def test_the_system_prompt_carries_the_answer_style_rules() -> None:
@@ -476,8 +477,10 @@ def test_the_system_prompt_carries_the_answer_style_rules() -> None:
         "set_coverage",
     ):
         assert words in LEAD_SYSTEM_PROMPT, words
-    for words in ("report_finding", "set_coverage", "origin top-left"):
+    for words in ("report_finding", "set_coverage"):
         assert words in HELPER_SYSTEM_PROMPT, words
+    # Where a box is lives in the tools' schemas now (tool_schema.BOX_UNITS), said one way.
+    assert "origin top-left, y down" in json.dumps(LEAD_TOOLS)
 
 
 class _QuietHandler(BaseHTTPRequestHandler):

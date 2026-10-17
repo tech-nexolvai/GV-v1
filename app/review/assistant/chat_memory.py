@@ -46,9 +46,13 @@ MAX_NOTE_CHARS: Final = 300
 REMEMBER: Final[Mapping[str, Any]] = {
     "name": "remember",
     "description": (
-        "Keep one short fact about this drawing set for every later chat on it (the reviewer sees "
-        "it as a step): a correction, what a dimension measures, which drawing governs, what the "
-        "reviewer told you. Only facts you checked or the reviewer stated; one fact per call."
+        "Keep one short fact about this drawing set for every later chat on it (each chat starts "
+        "with the newest notes). Use it for a fact you checked on the drawings or the reviewer "
+        "told you: a correction, what a dimension measures, which drawing governs. One fact per "
+        'call; never a guess. Returns "Kept for every chat on this drawing set: <note>" or '
+        '"Refused: <why>". '
+        'Example: {"note": "The 3\'-6\\" on p.3 measures to the blocking, not the cabinet", '
+        '"page": 3}'
     ),
     "input_schema": {
         "type": "object",
@@ -62,7 +66,7 @@ REMEMBER: Final[Mapping[str, Any]] = {
             "page": {
                 "type": "integer",
                 "minimum": 1,
-                "description": "The vendor's page it is about, when it is about one",
+                "description": "The vendor's page it is about, when it is about one (from 1)",
             },
         },
     },

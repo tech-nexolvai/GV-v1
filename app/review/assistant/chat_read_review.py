@@ -50,7 +50,7 @@ __all__ = [
 
 _log = logging.getLogger(__name__)
 
-#: The third reader's instructions: those of the second read.
+#: The reader's instructions, for the second read (the engine) and the third read alike.
 READ_SYSTEM: Final = (
     "You read values printed on crops of construction drawings. Answer only from what you can "
     "see in the pictures; never guess a number you cannot read."

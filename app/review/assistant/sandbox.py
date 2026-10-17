@@ -425,9 +425,17 @@ class ChatWorkspace:
         except OSError:
             names = []
         listed = ", ".join(names[:10]) or "none"
+        # The pack's folder name for the first upload, as `set_pack.stem` makes it (that module
+        # loads a renderer, so it is not imported here).
+        first = (
+            re.sub(r"[^A-Za-z0-9._-]+", "_", Path(names[0]).stem).strip("._") or "file"
+            if names
+            else "<upload name without .pdf>"
+        )
         return (
             f"The uploads are at {UPLOADS}: {listed}; the set pack (page_map.json, "
-            f"drawings-only PDFs, page pictures) is at {SET_PACK}/; your folder is {SCRATCH}."
+            f"drawings-only PDFs, page pictures) is at {SET_PACK}/, a page's picture at "
+            f"{SET_PACK}/pages/{first}/p-003.png; your folder is {SCRATCH}."
         )
 
     @classmethod
