@@ -112,6 +112,8 @@ PARALLEL_TOOLS: Final = frozenset(
         # The reading ledger is thread-safe (`ledger.ReadingLedger` locks each record).
         "record_string",
         "record_reading",
+        # Code's ruler: reads the page and adds its extent check to a locked list.
+        "measure_on_drawing",
     }
 )
 #: What a helper is told to spend, in tool calls (its real limit is the helper turn limit).
@@ -153,7 +155,8 @@ each difference you find, with boxes so the app crops the evidence, checks it an
 (update_finding, drop_finding as you check); set_coverage records the pages you compared (a \
 whole-set answer accounts for every page); dismiss_recorded sets aside a difference GV Review \
 recorded, with your reason; cite backs any other value you state with where it is printed; \
-verify_value checks a value ($0); remember keeps a fact for every later chat on this set. \
+verify_value checks a value and measure_on_drawing scales a length, by code ($0); remember \
+keeps a fact for every later chat on this set. \
 Record every dimension string with record_string and every value you read with record_reading.
 
 Three GV facts:
@@ -179,8 +182,9 @@ PDFs read-only in {UPLOADS}, the set pack in {SET_PACK} (page_map.json, drawings
 pictures), the working folder {SCRATCH}, {OUTPUTS}, and GV's review skill in {SKILLS} (read \
 SKILL.md there when your task is a review). Your tools: bash_tool, view, zoom, create_file, \
 str_replace, report_finding, set_coverage, record_string, record_reading, read_under_markup \
-(what GV's markup covers in one area) and verify_value (code \
-reads the number printed in a box, $0: check a value before you report it). Tool calls of one \
+(what GV's markup covers in one area), verify_value (code \
+reads the number printed in a box, $0: check a value before you report it) and measure_on_drawing \
+(code scales a length against printed dimensions, $0). Tool calls of one \
 reply run at the same time: ask for all the crops you need in one zoom call.
 
 Do the task you are given. Record each difference you find with report_finding: both values as \
@@ -495,6 +499,61 @@ VERIFY_VALUE: Final[Mapping[str, Any]] = {
         },
     },
 }
+_POINT: Final[Mapping[str, Any]] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["x", "y"],
+    "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
+    "description": "PDF points of the page as shown, origin top-left",
+}
+_SPAN: Final[Mapping[str, Any]] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["from", "to", "printed"],
+    "properties": {
+        "from": _POINT,
+        "to": _POINT,
+        "printed": {"type": "string", "description": 'The dimension as printed (3\'-1", 36")'},
+    },
+}
+#: `measure_on_drawing` (#1545): code's ruler, $0, no AI.
+MEASURE_ON_DRAWING: Final[Mapping[str, Any]] = {
+    "name": "measure_on_drawing",
+    "description": (
+        "Measure a length the drawing does not print, by code ($0, no AI): give its two ends and "
+        "at least two PRINTED dimensions of the same view to calibrate (each the two ends of its "
+        "extension lines and the value as printed). Code snaps each end to the nearest drawn "
+        "line end or extension line, checks the printed dimensions agree on one scale (refuses "
+        "over 3%) and answers 'about X in (±T)'. Optional `dimension`: a printed dimension's two "
+        "ends, to check its extent: does it span the unit itself (from-to) or more (a box, soffit "
+        "or blocking beyond it)? Scaled is never Wrong by itself."
+    ),
+    "input_schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["page", "from", "to", "calibrate"],
+        "properties": {
+            "page": {"type": "integer", "minimum": 1, "description": "Page (from 1)"},
+            "from": _POINT,
+            "to": _POINT,
+            "axis": {
+                "type": "string",
+                "enum": ["h", "v", "along"],
+                "description": "h: left-right only; v: up-down only; along: straight (default)",
+            },
+            "calibrate": {"type": "array", "minItems": 2, "maxItems": 8, "items": _SPAN},
+            "dimension": {
+                **_SPAN,
+                "description": "Extent check: the printed dimension whose span you compare with "
+                "the unit's own outline (from-to), on the same axis (h or v)",
+            },
+            "file": {
+                "type": "string",
+                "description": "The upload's file name, when the set has more than one",
+            },
+        },
+    },
+}
 #: `read_under_markup` (#1548): an area drawn without GV's markup, as claude.ai read the vendor's
 #: values under GV's boxes.
 READ_UNDER_MARKUP: Final[Mapping[str, Any]] = {
@@ -553,6 +612,7 @@ LEAD_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     *LEDGER_TOOLS,
     COMPARE_ROUNDS,
     VERIFY_VALUE,
+    MEASURE_ON_DRAWING,
     READ_UNDER_MARKUP,
     REMEMBER,
 )
@@ -566,6 +626,7 @@ HELPER_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     SET_COVERAGE,
     *LEDGER_TOOLS,
     VERIFY_VALUE,
+    MEASURE_ON_DRAWING,
     READ_UNDER_MARKUP,
 )
 
@@ -582,6 +643,7 @@ _DEFAULT_LABELS: Final[Mapping[str, str]] = {
     "review_results": "Read the recorded results",
     "compare_rounds": "Compared two rounds",
     "verify_value": "Checked a printed value",
+    "measure_on_drawing": "Measured on the drawing",
     "read_under_markup": "Read under GV's markup",
     "remember": "Remembered for this drawing set",
 }
@@ -755,6 +817,9 @@ class ChatTools:
     seen: list[dict[str, Any]] = field(default_factory=list)
     """Every zoom crop of this message: `{by, file, page, box, dpi, picture_id}` (the "seen" log
     the trust checks read; also kept in each zoom step)."""
+    extents: list[dict[str, Any]] = field(default_factory=list)
+    """Every extent check of this message (`measure_on_drawing` with a `dimension`): the finding
+    book reads it (a dimension spanning more than the unit is Your decision, never Wrong)."""
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _commands: threading.Semaphore = field(
         default_factory=lambda: threading.Semaphore(MAX_PARALLEL_COMMANDS)
@@ -867,6 +932,71 @@ class ChatTools:
                 started,
                 ok=True,
                 label=f"Checked {expected.strip()[:40]} on page {page}",
+                output=_shown(text),
+            ),
+        )
+
+    # ---- measure_on_drawing (#1545) ----------------------------------------------------------------
+
+    def measure_on_drawing(self, raw: object, step: dict[str, Any]) -> ToolResult:
+        """Code's ruler: a length scaled against printed dimensions (`measure.measure_on_drawing`)."""
+        started = monotonic()
+        try:
+            given = arguments(
+                raw,
+                frozenset(
+                    {"page", "from", "to", "axis", "calibrate", "dimension", "file", "description"}
+                ),
+                frozenset({"page", "from", "to", "calibrate"}),
+            )
+            # The file and page are checked as a zoom crop's are (a dummy box).
+            name, page, _box, _label = self._crop_request(
+                {
+                    "page": given["page"],
+                    "box": {"x0": 0, "y0": 0, "x1": 1, "y1": 1},
+                    **({"file": given["file"]} if "file" in given else {}),
+                },
+                0,
+            )
+        except SandboxRefused as refused:
+            return _refused(step, started, str(refused).replace("crops[0].", ""))
+        module = import_module("app.review.assistant.measure")
+        try:
+            measured = module.measure_on_drawing(
+                self.workspace.uploads / name,
+                page,
+                given["from"],
+                given["to"],
+                given["calibrate"],
+                given.get("axis", "along"),
+                given.get("dimension"),
+            )
+        except module.MeasureRefused as refused:
+            return _refused(step, started, str(refused))
+        except Exception as failed:  # noqa: BLE001 - told plainly, never a crash
+            _log_failure(failed)
+            return _refused(step, started, "the page could not be measured just now")
+        found = measured.as_dict()
+        extent = found.get("extent")
+        if isinstance(extent, dict):
+            with self._lock:
+                self.extents.append(
+                    {
+                        **extent,
+                        "file": name,
+                        "page": page,
+                        "unit_in": found["value_in"],
+                        "plus_minus_in": found["plus_minus_in"],
+                    }
+                )
+        text = f"{found['words']}"
+        return ToolResult(
+            content=[{"type": "text", "text": text}],
+            step=_done(
+                step,
+                started,
+                ok=True,
+                label=f"Measured on page {page}",
                 output=_shown(text),
             ),
         )

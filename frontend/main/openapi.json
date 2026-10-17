@@ -4319,6 +4319,47 @@
         "title": "ChatFindingCriticOut",
         "type": "object"
       },
+      "ChatFindingDecisionHelpOut": {
+        "description": "A \"Your decision\" item's reasoning for the reviewer (#1545), in plain words.",
+        "properties": {
+          "confirm": {
+            "description": "What the reviewer should confirm, and with whom.",
+            "title": "Confirm",
+            "type": "string"
+          },
+          "estimate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatFindingEstimateOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "likely": {
+            "enum": [
+              "probably fine",
+              "probably wrong",
+              "can't tell"
+            ],
+            "title": "Likely",
+            "type": "string"
+          },
+          "measures": {
+            "description": "What the dimension measures, from where to where.",
+            "title": "Measures",
+            "type": "string"
+          }
+        },
+        "required": [
+          "measures",
+          "likely",
+          "confirm"
+        ],
+        "title": "ChatFindingDecisionHelpOut",
+        "type": "object"
+      },
       "ChatFindingDecisionIn": {
         "additionalProperties": false,
         "description": "The reviewer's \u2713 Agree / \u2717 Not a problem on one finding (#1521).",
@@ -4414,6 +4455,30 @@
           "reason"
         ],
         "title": "ChatFindingDroppedBlock",
+        "type": "object"
+      },
+      "ChatFindingEstimateOut": {
+        "description": "The AI's best estimate for a \"Your decision\" item, with how it got it (#1545).",
+        "properties": {
+          "method": {
+            "title": "Method",
+            "type": "string"
+          },
+          "plus_minus_in": {
+            "title": "Plus Minus In",
+            "type": "number"
+          },
+          "value_in": {
+            "title": "Value In",
+            "type": "number"
+          }
+        },
+        "required": [
+          "value_in",
+          "plus_minus_in",
+          "method"
+        ],
+        "title": "ChatFindingEstimateOut",
         "type": "object"
       },
       "ChatFindingInchesOut": {
@@ -4527,6 +4592,25 @@
             "title": "Category",
             "type": "string"
           },
+          "check_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "different_extent",
+                  "which_governs",
+                  "pairing_not_certain",
+                  "scaled",
+                  "site_verify"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why two printed values that differ still need a person (#1545); without one, code makes such a finding Wrong.",
+            "title": "Check Reason"
+          },
           "checks": {
             "anyOf": [
               {
@@ -4574,6 +4658,17 @@
               }
             ],
             "description": "The reviewer's latest decision on this finding (#1521); null: not decided."
+          },
+          "decision_help": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatFindingDecisionHelpOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Status check (Your decision): what it measures, the best estimate, how likely it is fine, what to confirm (#1545)."
           },
           "evidence_kind": {
             "anyOf": [
@@ -6709,6 +6804,7 @@
           "review_results",
           "compare_rounds",
           "verify_value",
+          "measure_on_drawing",
           "zoom",
           "read_under_markup",
           "remember"

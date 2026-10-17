@@ -50,6 +50,7 @@ from reportlab.platypus import (  # type: ignore[import-untyped]
     TableStyle,
 )
 
+from app.review.assistant.chat_findings import decision_help_lines
 from app.review.assistant.chat_trust import CLOUD_WORDS, TRUST_WORDS, cloud_kind, needs_text
 from app.review.assistant.cloud_layout import (
     MAX_CLOUD_PT,
@@ -922,7 +923,8 @@ def _where(finding: Mapping[str, Any], where: str) -> str:
 
 
 def entry_lines(finding: Mapping[str, Any]) -> list[str]:
-    """A finding's lines on the notes pages: vendor and what it needs (or the architect's), why."""
+    """A finding's lines on the notes pages: vendor and what it needs (or the architect's), why,
+    and a "Your decision" item's decision help."""
     vendor, architect = finding.get("vendor"), finding.get("architect")
     if cloud_kind(finding) == "wrong":
         needs = needs_text(finding)
@@ -934,6 +936,8 @@ def entry_lines(finding: Mapping[str, Any]) -> list[str]:
     lines = [line]
     if finding.get("why"):
         lines.append(f"Why: {finding['why']}")
+    # A "Your decision" item's reasoning (#1545): what it measures, our estimate, likely, confirm.
+    lines.extend(decision_help_lines(finding))
     return lines
 
 
