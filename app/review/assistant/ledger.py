@@ -64,6 +64,7 @@ __all__ = [
     "Reading",
     "ReadingLedger",
     "StringEntry",
+    "add_up",
     "format_inches",
     "governing_view",
     "item_key",
@@ -513,6 +514,10 @@ def _add_up(
         "adds_up" if closure.status == chains.ClosureStatus.CLOSED else ("does_not_add_up")
     )
     return result, parts_sum, off_by
+
+
+#: The chain check for other code that adds up strings (`vendor_consistency`).
+add_up = _add_up
 
 
 # ---- which part is likely misread (#1545) --------------------------------------------------------

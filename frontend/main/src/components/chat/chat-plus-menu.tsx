@@ -10,6 +10,7 @@ import {
   GitCompareArrows,
   Layers,
   LayoutPanelLeft,
+  ListChecks,
   ListX,
   LoaderCircle,
   Mail,
@@ -55,6 +56,7 @@ const ICONS: Record<PlusIcon, LucideIcon> = {
   page: FileSearch,
   area: LayoutPanelLeft,
   rules: BookCheck,
+  consistency: ListChecks,
   strings: Sigma,
   missing: ListX,
   rounds: GitCompareArrows,
@@ -90,6 +92,11 @@ export interface PlusMenuProps {
     /** #1569: code's plan and its 0-3 questions, read when the confirm view opens. */
     loadPlan?: () => Promise<ChatFullCheckPlan>;
   };
+  /**
+   * #1584: the vendor consistency check ($0, by code); null where it cannot run (no chat API for it).
+   * `onRun` settles when the stored answer is shown (or says why it could not run).
+   */
+  consistency?: { onRun: () => Promise<void> } | null;
   /** The newest finished answer with findings, for the $0 files. */
   lastFindings: { messageId: string; findings: ChatFinding[] } | null;
   /** Code draws the answer's findings on a copy of the vendor's drawing (the existing markup-pdf route). */
@@ -157,6 +164,9 @@ export function PlusMenu(props: PlusMenuProps) {
     switch (action.run.kind) {
       case 'full_check':
         return fullCheck.blocked;
+      case 'consistency':
+        if (!props.consistency) return 'Not available here';
+        return running ? 'After this answer' : null;
       case 'cloud':
         if (!makeMarkupPdf) return 'Not available here';
         return lastFindings ? null : 'After an answer with findings';
@@ -194,6 +204,19 @@ export function PlusMenu(props: PlusMenuProps) {
       case 'full_check':
         setView('confirm');
         return;
+      case 'consistency': {
+        const check = props.consistency;
+        if (!check) return;
+        remember(action.id);
+        setOpen(false);
+        setBusy('Checking the vendor’s numbers…');
+        setStatus('Checking the vendor’s numbers');
+        check.onRun().finally(() => {
+          setBusy(null);
+          setStatus('Vendor consistency check finished');
+        });
+        return;
+      }
       case 'cloud':
         if (!lastFindings || !makeMarkupPdf) return;
         remember(action.id);
