@@ -130,6 +130,21 @@ export interface ChatMessage {
   products?: ChatProduct[] | null;
   /** Chat v5: code's accuracy score for the answer; absent on older answers. */
   accuracy?: ChatAccuracy | null;
+  /** #1522: what the answer covers (server, when it sends it): the whole set, or a few pages / an area. */
+  scope?: ChatScope | null;
+}
+
+/** What an answer covers: the whole drawing set, or some pages or one area (a narrow question). */
+export type ChatScope = 'whole_set' | { pages?: number[] | null; area?: string | null };
+
+/** The reviewer's answer on one finding (PATH step 5), recorded append-only by the server. */
+export type FindingDecisionValue = 'agree' | 'not_a_problem';
+
+export interface FindingDecision {
+  decision: FindingDecisionValue;
+  note?: string | null;
+  by?: string | null;
+  at?: string | null;
 }
 
 export type ChatBlock =
@@ -239,6 +254,8 @@ export interface ChatFinding {
   reads?: FindingRead[] | null;
   /** #1498: the critic's look at it (whole-set answers). */
   critic?: FindingCritic | null;
+  /** #1522: the reviewer's latest Agree / Not a problem on it, when the server sends it. */
+  decision?: FindingDecision | null;
 }
 
 export type EvidenceKind = 'observed' | 'derived' | 'inferred';
@@ -624,7 +641,29 @@ export const chatPaths = {
   picture: (chatId: string, pictureId: string) => `${BASE}/chats/${id(chatId)}/pictures/${id(pictureId)}`,
   /** Chat v2: code draws the message's findings on a copy of the upload and returns it as a file. */
   markupPdf: (chatId: string, messageId: string) => `${BASE}/chats/${id(chatId)}/messages/${id(messageId)}/markup-pdf`,
+  /** #1522: the reviewer's Agree / Not a problem on one finding (POST). */
+  decision: (chatId: string, messageId: string, findingId: string) =>
+    `${BASE}/chats/${id(chatId)}/messages/${id(messageId)}/findings/${id(findingId)}/decision`,
 };
+
+/**
+ * Whether the server has the decision route yet, without changing anything: a GET on a POST-only
+ * route answers 405 when it exists and 404 when it does not. Anything else (no network, an error)
+ * counts as "not yet", so the buttons stay hidden.
+ */
+export async function decisionRouteReady(chatId: string, messageId: string, findingId: string): Promise<boolean> {
+  try {
+    const response = await fetch(chatPaths.decision(chatId, messageId, findingId), { method: 'GET', headers: { Accept: 'application/json' } });
+    return response.status === 405 || response.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** Record the reviewer's Agree / Not a problem on one finding. */
+export function decideFinding(chatId: string, messageId: string, findingId: string, decision: FindingDecisionValue, note?: string): Promise<unknown> {
+  return json<unknown>(chatPaths.decision(chatId, messageId, findingId), { method: 'POST', body: JSON.stringify(note ? { decision, note } : { decision }) });
+}
 
 // ── Requests ────────────────────────────────────────────────
 
@@ -794,6 +833,9 @@ export interface ChatApi {
   follow: typeof followChatMessage;
   cancel: typeof cancelChat;
   markup: typeof makeMarkupPdf;
+  /** #1522: Agree / Not a problem per finding; optional so a fake API can leave it out. */
+  decide?: typeof decideFinding;
+  decisionReady?: typeof decisionRouteReady;
 }
 
 export const LIVE_CHAT_API: ChatApi = {
@@ -805,4 +847,6 @@ export const LIVE_CHAT_API: ChatApi = {
   follow: followChatMessage,
   cancel: cancelChat,
   markup: makeMarkupPdf,
+  decide: decideFinding,
+  decisionReady: decisionRouteReady,
 };

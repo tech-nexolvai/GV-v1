@@ -562,6 +562,8 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                     onRetry={canRetry ? () => void send(question) : undefined}
                     latest={at === messages.length - 1}
                     makeMarkupPdf={(messageId) => api.markup(chatId, messageId)}
+                    decide={api.decide ? (messageId, findingId, decision) => api.decide!(chatId, messageId, findingId, decision) : undefined}
+                    decisionReady={api.decisionReady ? (messageId, findingId) => api.decisionReady!(chatId, messageId, findingId) : undefined}
                     fullPageHref={formatRoute({ page: 'review', packageId })}
                     fullCheck={isFullCheck(message, asked?.role === 'user' ? asked : null)}
                   />

@@ -18,14 +18,14 @@ export const TRUST_ORDER: readonly TrustLevel[] = ['confirmed', 'likely', 'to_ch
 export const TRUST_WORDS: Record<TrustLevel, string> = {
   confirmed: 'Confirmed',
   likely: 'Likely',
-  to_check: 'To check',
+  to_check: 'AI reading only',
 };
 
 /** What each level means, for its chip's tooltip. */
 export const TRUST_MEANING: Record<TrustLevel, string> = {
   confirmed: 'A check that is not AI backs it (printed on the drawing, or worked out by code) and an AI reading agrees',
   likely: 'Two AI readings agree (second or third read, the lead’s check, the critic), or a non-AI check backs it alone',
-  to_check: 'Fewer checks passed, or one disagreed: a person should look',
+  to_check: 'Only an AI reading backs it, or a check disagreed: look at the pictures yourself',
 };
 
 // ── Evidence kind ───────────────────────────────────────────
@@ -336,6 +336,44 @@ export function criticCheck(finding: Pick<ChatFinding, 'checks' | 'critic'>): Ch
   return null;
 }
 
+/**
+ * The checks in the reviewer's words (#1522, owner: "never show internal check names"): what was
+ * looked at and what it said, one plain sentence each. Checks that did not run are left out, and a
+ * value that is words (not a length) is never called "not a number".
+ */
+export function plainChecks(finding: ChatFinding): string[] {
+  const checks = finding.checks;
+  const lines: string[] = [];
+  const printed = (['architect', 'vendor'] as const).map((side) => [side, printedOf(finding, side)] as const);
+  if (printed.every(([, result]) => result === 'match')) lines.push('Code found both values printed at their spots on the drawings.');
+  else {
+    for (const [side, result] of printed) {
+      const whose = side === 'architect' ? 'architect’s' : 'vendor’s';
+      if (result === 'match') lines.push(`Code found the ${whose} value printed at its spot.`);
+      if (result === 'not_found') lines.push(`Code could not find the ${whose} value printed at its spot.`);
+      if (result === 'no_text') lines.push(`The ${whose} numbers are drawn as pen strokes, so code could not read them.`);
+    }
+  }
+  const second = finding.reads?.find((read) => read.role === 'second');
+  const third = finding.reads?.find((read) => read.role === 'third');
+  const seen = (read: FindingRead | undefined) => (read ? `: it read ${readValue(read)}` : '');
+  if (checks?.second_read === 'agrees') lines.push('A second, separate AI reading agrees.');
+  if (checks?.second_read === 'disagrees') lines.push(`A second, separate AI reading disagrees${seen(second)}.`);
+  if (checks?.second_read === 'unsure') lines.push('A second, separate AI reading was unsure.');
+  if (checks?.adjudication === 'agrees_after_adjudication') lines.push(`A third, sharper reading settled it in favour${seen(third)}.`);
+  if (checks?.adjudication === 'disagrees') lines.push(`A third, sharper reading also disagrees${seen(third)}.`);
+  if (checks?.adjudication === 'unsure') lines.push('A third, sharper reading could not settle it.');
+  lines.push(leadChecked(finding) ? 'The AI looked at the spot on the drawing itself.' : 'A helper AI found this; it was not looked at again on the drawing.');
+  if (checks?.rule === 'agrees') lines.push('GV Review’s own rule check agrees.');
+  if (checks?.rule === 'disagrees') lines.push('GV Review’s own rule check disagrees.');
+  if (checks?.arithmetic === 'adds_up') lines.push('Code added up the vendor’s parts: they match the printed total.');
+  if (checks?.arithmetic === 'does_not_add_up') lines.push('Code added up the vendor’s parts: they do not match the printed total.');
+  if (checks?.critic === 'passed') lines.push('A critic confirmed it is the same item, the right dimension and the vendor’s own ink.');
+  if (checks?.critic === 'objects') lines.push(`A critic objected${finding.critic?.note?.trim() ? `: ${finding.critic.note.trim()}` : ''}.`);
+  if (checks?.critic === 'unsure') lines.push('A critic was unsure.');
+  return lines;
+}
+
 /** Every check in words, for the evidence viewer: the four, then the critic when it looked. */
 export function allChecks(finding: ChatFinding): CheckResult[] {
   const critic = criticCheck(finding);
@@ -343,7 +381,7 @@ export function allChecks(finding: ChatFinding): CheckResult[] {
 }
 
 /**
- * Why a finding is To check, in code's words: the checks that disagreed ("Second read disagrees"),
+ * Why a finding is AI reading only, in code's words: the checks that disagreed ("Second read disagrees"),
  * else how many checks passed; null when it is not To check and nothing disagreed.
  */
 export function trustReason(finding: ChatFinding): string | null {

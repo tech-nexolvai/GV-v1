@@ -9,7 +9,7 @@
  * drawing and the check report, then What's wrong / To check / What's right.
  */
 
-import type { ChatFile, ChatProduct, FindingSource } from '@/lib/chat-api';
+import type { ChatFile, ChatFinding, ChatProduct, FindingSource } from '@/lib/chat-api';
 import type { ViewMessage } from '@/lib/chat-messages';
 
 export const PRODUCTS: readonly ChatProduct[] = ['countertop', 'cabinet'];
@@ -128,4 +128,37 @@ export function fullCheckFiles(files: readonly ChatFile[]): { cloud: ChatFile | 
   const report = files.find((file) => file.kind === 'check_report' && file !== cloud)
     ?? files.find((file) => !file.kind && file !== cloud && pdf(file) && /report/i.test(file.name)) ?? null;
   return { cloud, report, rest: files.filter((file) => file !== cloud && file !== report) };
+}
+
+// ── Live progress while a full check runs (PATH step 3, #1522) ─
+
+/**
+ * One calm line while a full check runs, from what has streamed so far: "Checking page 12 of 60 ·
+ * 8 wrong so far · about 6 min left". The page count comes from the coverage map (pages the AI has
+ * accounted for); the time left is the time per page so far times the pages left, shown only once
+ * three pages are done and the total is known. Without coverage yet: "Starting the full check…".
+ */
+export function progressWords(
+  message: Pick<ViewMessage, 'created_at' | 'findings' | 'coverage'>,
+  now: number = Date.now(),
+): string {
+  const pages = message.coverage?.pages ?? [];
+  const done = new Set(pages.filter((page) => page.status !== 'not_opened').map((page) => page.page)).size;
+  const total = message.coverage?.counts?.total ?? null;
+  const wrong = (message.findings ?? []).filter((finding) => finding.status === 'different').length;
+  if (!done && !wrong) return 'Starting the full check…';
+  const parts = [total ? `Checking page ${Math.min(done + 1, total)} of ${total}` : `Checking · ${done} ${done === 1 ? 'page' : 'pages'} done`];
+  parts.push(`${wrong} wrong so far`);
+  const started = Date.parse(message.created_at);
+  if (total && done >= 3 && done < total && Number.isFinite(started) && now > started) {
+    const minutes = (((now - started) / done) * (total - done)) / 60000;
+    parts.push(minutes < 1 ? 'under a minute left' : `about ${Math.ceil(minutes)} min left`);
+  }
+  return parts.join(' · ');
+}
+
+/** The page the cloud drawing's preview shows: the first wrong item's vendor page, else the first item's, else 1. */
+export function previewPage(findings: readonly Pick<ChatFinding, 'status' | 'page' | 'vendor_box'>[]): number {
+  const first = findings.find((finding) => finding.status === 'different') ?? findings.find((finding) => finding.status === 'check') ?? findings[0];
+  return first ? first.vendor_box?.page ?? first.page : 1;
 }

@@ -7,7 +7,7 @@
  * message, which then replaces what was built live: a reload and a live answer end up identical.
  */
 
-import type { ChatAccuracy, ChatAgent, ChatBlock, ChatCite, ChatCoverage, ChatEffort, ChatEvent, ChatFile, ChatFinding, ChatMessage, ChatMode, ChatModel, ChatProduct, ChatStep, ChatStopped, ChatSummary, ChatTask, ChatTrust, ChatUnknown } from '@/lib/chat-api';
+import type { ChatAccuracy, ChatAgent, ChatBlock, ChatCite, ChatCoverage, ChatEffort, ChatEvent, ChatFile, ChatFinding, ChatMessage, ChatMode, ChatModel, ChatProduct, ChatScope, ChatStep, ChatStopped, ChatSummary, ChatTask, ChatTrust, ChatUnknown } from '@/lib/chat-api';
 import { EFFORT_WORDS } from '@/lib/chat-settings';
 
 /** A helper agent while its Agent step runs: `running` until its `agent_end`. */
@@ -52,6 +52,8 @@ export interface ViewMessage {
   /** Chat v4: how it was asked (a full check, or absent for an ordinary message) and for which products. */
   mode?: ChatMode | null;
   products?: ChatProduct[] | null;
+  /** #1522: what the answer covers, when the server sends it (else worked out from its pages). */
+  scope?: ChatScope | null;
   /** Chat v5: the numbers the answer backed with a spot on a drawing (latest version by id). */
   cites?: ChatCite[];
   /** Chat v5: code's accuracy score; absent on older answers (they show no badge). */
@@ -144,6 +146,7 @@ export function fromSaved(message: ChatMessage): ViewMessage {
     coverage,
     trust,
     mode: message.mode ?? null,
+    scope: message.scope ?? null,
     products: message.products ?? null,
     cites,
     accuracy: message.accuracy ?? accuracy,
@@ -300,6 +303,7 @@ export function applyChatEvent(message: ViewMessage, event: ChatEvent): ViewMess
         coverage: stored.coverage ?? message.coverage ?? null,
         trust: stored.trust ?? message.trust ?? null,
         mode: stored.mode ?? message.mode ?? null,
+        scope: stored.scope ?? message.scope ?? null,
         cites: stored.cites?.length ? stored.cites : message.cites ?? [],
         accuracy: stored.accuracy ?? message.accuracy ?? null,
         unknowns: stored.unknowns?.length ? stored.unknowns : message.unknowns ?? [],
