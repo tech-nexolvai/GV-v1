@@ -26,11 +26,16 @@ places, the symbol font decoded. On top of that:
   number is millimetres);
 - a scale note (`1/2" = 1'-0"`) is not a dimension.
 
-**The drawn route** (only within a time budget, `drawn_budget_s`): numbers drawn as lines are
-grouped into clusters of character-sized ink; a cluster with a dimension line beside it is read by
-`verify_value`'s two OCR engines (four reads), and becomes a label only when exactly one value
-passes `verify_value`'s own match rule (two reads, both engines, no near-miss, a `1` that looks
-like a `1`). A label read this way is the drawn-ink witness, never more (#756 D2).
+**The drawn route** (the vendor's numbers drawn as lines, within a time budget,
+`drawn_budget_s`; the set pack runs it after every page's text): character-sized ink is grouped
+into clusters, each split into labels by its vectors (`ink_labels`, as `verify_value`'s label route
+does), each label gathered again until it is whole. A label is read only when it is on the
+vendor's drawing, ends in an inch mark, has no other ink in line with it a word space away, and
+sits beside a dimension line of its own. Each row is re-typeset on one line and read by two OCR
+engines (RapidOCR's recogniser alone, `LineReader`, then Tesseract), and the label is kept only
+when exactly one value is read as a whole row by both, no reading of it is a near-miss, a `1` in
+it is shaped as a 1, and no reading holds a word, a `+` or a leading zero. A label read this way is
+the drawn-ink witness, never more (#756 D2).
 
 **Ids are stable:** text labels are numbered in reading order (top to bottom, left to right), then
 drawn labels after them, so a drawn label found or not never moves a text label's id.
@@ -45,17 +50,21 @@ import io
 import logging
 import math
 import re
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
+from importlib import import_module
 from itertools import pairwise
 from pathlib import Path
 from time import monotonic
 from typing import Any, Final
 
+import cv2
 import pdfplumber
 from PIL import Image, ImageDraw, ImageFont
 
+from app.review.assistant import ink_labels
 from app.review.assistant import verify_value as vv
 from app.review.assistant.finding_checks import to_inches, units_check
 from app.review.assistant.measure import _pieces
@@ -63,10 +72,13 @@ from extraction.stamp_text import path_ink
 
 __all__ = [
     "LABELS_VERSION",
+    "LineReader",
     "PageLabels",
     "build_dims",
     "dimension_line",
     "draw_marks",
+    "drawn_labels",
+    "drawn_readers",
     "page_labels",
 ]
 
@@ -85,9 +97,17 @@ _CLUSTER_MIN_PT: Final = 4.0
 _CLUSTER_MAX_PT: Final = 60.0
 _CLUSTER_GAP_PT: Final = 1.5
 _MAX_CLUSTERS: Final = 300
+#: A label this far inside the edge of the ink gathered round its cluster is whole: a glyph that
+#: joins a label is at most 1.1 glyph sizes (a word space) away, within this for a drawn number.
+_WHOLE_INSIDE_PT: Final = 8.0
+#: A drawn label with more character-sized paths round it than this is in hatching or a fill.
+_MAX_NEAR_PATHS: Final = 150
 #: How far a dimension line's length per inch may be from its drawing's median (`scale_ok`).
 _SCALE_TOLERANCE: Final = 0.08
 _MM_BARE: Final = re.compile(r"^\d{2,5}$")
+#: A drawn label read with a leading zero (`03`), or read as a word of letters only (`EQ`).
+_LEADING_ZERO: Final = re.compile(r"(?<![\d/.])0\d")
+_WORD: Final = re.compile(r"[A-Za-z]{2,}")
 _SCALE_WORDS: Final = re.compile(r"\bSCALE\b|=", re.IGNORECASE)
 
 type Box = tuple[float, float, float, float]
@@ -560,24 +580,177 @@ def _clusters(paths: Sequence[Any], skip: Sequence[Box]) -> list[Box]:
     return sorted(out, key=lambda b: (round(b[1] / 4), b[0]))[:_MAX_CLUSTERS]
 
 
-def _drawn_value(page: Any, box: Box, readers: Sequence[Any]) -> Decimal | None:
-    """The one value the drawn ink in `box` reads as under `verify_value`'s match rule, or
-    `None` (no value, or more than one passes)."""
-    spot = (box[0] - 1, box[1] - 1, box[2] + 1, box[3] + 1)
-    reads = vv._read_ink(page, spot, readers)
-    values = {v for read in reads for v in read.values if v > 0}
-    passing: list[Decimal] = []
-    for value in values:
-        votes = [read for read in reads if value in read.values]
-        engines = {read.engine for read in votes}
-        if len(votes) < vv._VOTES_NEEDED or len(engines) < 2:
-            continue
-        if any(vv.near_miss(value, other) for other in values if other != value):
-            continue
-        if vv._ones_unsure(votes, value) is not None:
-            continue
-        passing.append(value)
-    return passing[0] if len(passing) == 1 else None
+class LineReader:
+    """RapidOCR reading one re-typeset row as one line: its recogniser only, no text detection.
+
+    `ink_labels` has already cut the row out and set it on one line, so the detector (most of
+    RapidOCR's time: about a second a picture, against a twentieth for the recogniser) has
+    nothing left to find. Used by the drawn route only; `verify_value` keeps its own engines."""
+
+    name = "RapidOCR"
+    reads_inch_marks = False
+    """As `verify_value.RapidReader`: it often reads an inch mark as `99`."""
+
+    def __init__(self) -> None:
+        engine = import_module("rapidocr_onnxruntime")
+        self._engine = engine.RapidOCR()
+        self._lock = threading.Lock()
+
+    def __call__(self, picture: Any, *, single_line: bool) -> list[str]:
+        rgb = cv2.cvtColor(picture, cv2.COLOR_GRAY2RGB)
+        with self._lock:
+            result, _elapsed = self._engine(rgb, use_det=not single_line, use_cls=False)
+        lines: list[str] = []
+        for item in result or ():
+            text = str(item[1] if len(item) == 3 else item[0])
+            if text.strip():
+                lines.append(text)
+        return lines
+
+
+_DRAWN_READERS: list[Any] | None = None
+_DRAWN_READERS_LOCK: Final = threading.Lock()
+
+
+def drawn_readers() -> list[Any]:
+    """The drawn route's engines, loaded once: the one-line RapidOCR first (fast: a label it
+    cannot read as a dimension is not shown to Tesseract), then Tesseract."""
+    global _DRAWN_READERS
+    with _DRAWN_READERS_LOCK:
+        if _DRAWN_READERS is None:
+            found: list[Any] = []
+            try:
+                found.append(LineReader())
+            except Exception as missing:  # noqa: BLE001 - an engine not installed
+                _log.warning("dimension labels: RapidOCR is not available: %s", missing)
+            found += [reader for reader in vv.default_readers() if reader.name != "RapidOCR"]
+            _DRAWN_READERS = found
+        return list(_DRAWN_READERS)
+
+
+def _label_reads(label: ink_labels.Label, engines: Sequence[Any]) -> list[Any]:
+    """One drawn label read by each engine the way `verify_value`'s label route reads it: each
+    row re-typeset on one line (`ink_labels`), at two sizes, in each plausible reading direction.
+    An engine after the first runs only when an earlier one read a whole dimension: a label that
+    no engine reads as one can never have two engines agree."""
+    reads: list[Any] = []
+    for reader in engines:
+        if reads and not any(read.whole for read in reads):
+            break
+        read = vv._InkRead(f"drawn label, {reader.name}", reader.name, 1)
+        for turn in ink_labels.turns(label):
+            for row in ink_labels.rows(label, turn):
+                mark = getattr(reader, "reads_inch_marks", True) or not (
+                    ink_labels.inch_mark_at_end(row, turn)
+                )
+                for height in ink_labels.HEIGHTS_PX:
+                    picture = ink_labels.row_picture(row, turn, height, inch_mark=mark)
+                    if picture is None:
+                        continue
+                    line = " ".join(reader(picture, single_line=True)).strip()
+                    read.add(reader, picture, [line] if line else [], True)
+                    whole = vv._row_value(line, inch_mark=mark)
+                    if whole is not None:
+                        read.whole.add(whole)
+        reads.append(read)
+    return reads
+
+
+def _inch_marked(label: ink_labels.Label) -> bool:
+    """Whether the label's own strokes end a row in an inch mark (two ticks), in some reading
+    direction: how a drawn dimension is written. A bare drawn number (a tag, a count, a symbol
+    an engine reads as a digit) is never a label: its vectors, not OCR, decide."""
+    return any(
+        ink_labels.inch_mark_at_end(row, turn)
+        for turn in ink_labels.turns(label)
+        for row in ink_labels.rows(label, turn)
+    )
+
+
+def _crowded(page: Any, label: ink_labels.Label) -> bool:
+    """Whether other character-sized ink sits in line with the label, closer than 1.2 times its
+    height (a word space), in a direction it may read: a word or a number the label belongs to
+    (`WD-` before `02`, `SCALE :` before `1"`, `2'-` before `10"`). Such a label is not read: what
+    it is part of decides its value."""
+    own = {id(path) for glyph in label.glyphs for path in glyph.paths}
+    near = [path for path in vv._ink_paths_near(page, label.box) if id(path) not in own]
+    for turn in ink_labels.turns(label):
+        frame = ink_labels._frame(label.box, turn)
+        tall = frame[3] - frame[1]
+        for path in near:
+            other = ink_labels._frame(path.box, turn)
+            if other[3] - other[1] < 0.15 * tall:  # a piece of the dimension line it sits on
+                continue
+            across = min(frame[3], other[3]) - max(frame[1], other[1])
+            gap = max(other[0] - frame[2], frame[0] - other[2])
+            if across >= 0.5 * min(tall, other[3] - other[1]) and gap < 1.2 * tall:
+                return True
+    return False
+
+
+def _whole_label(
+    page: Any, label: ink_labels.Label, gathered: Box | None = None
+) -> ink_labels.Label | None:
+    """The label gathered again round its own box until it stops growing, or `None`. A cluster
+    gathers the ink a few points round it, so a label at the edge of what it gathered may have
+    lost a digit (`51"` cut to `1"`): only a label that gathers to itself is read. A label that
+    grows past a written number's size (hatching, a dotted fill) is none. A label well inside
+    what was gathered round `gathered` (further than a word space from its edge) is whole."""
+    if gathered is not None:
+        reach = ink_labels.GATHER_PT - _WHOLE_INSIDE_PT
+        x0, y0, x1, y1 = label.box
+        if (
+            x0 >= gathered[0] - reach
+            and y0 >= gathered[1] - reach
+            and x1 <= gathered[2] + reach
+            and y1 <= gathered[3] + reach
+        ):
+            return label
+    for _ in range(4):
+        box = label.box
+        if max(box[2] - box[0], box[3] - box[1]) > _CLUSTER_MAX_PT:
+            return None
+        near = vv._ink_paths_near(page, box)
+        if len(near) > _MAX_NEAR_PATHS:
+            return None
+        again = [other for other in ink_labels.labels(near, box) if _overlap(other.box, box) > 0.5]
+        if not again:
+            return None
+        grown = max(again, key=lambda other: _overlap(other.box, label.box))
+        if grown.box == label.box:
+            return label
+        label = grown
+    return None
+
+
+def _drawn_value(reads: Sequence[Any]) -> Decimal | None:
+    """The one value a drawn label reads as, or `None`: `verify_value`'s label rule with no value
+    to expect. Exactly one value read as a whole row by two engines, no reading of the label a
+    near-miss of it (one digit off, or inside a longer number), and a `1` in it shaped as a 1. A
+    zero or a number too big for inches is no dimension, and neither is a sum written out
+    (`2"+3" FILLER`: the line it sits on spans both)."""
+    lines = [line for read in reads for line in read.lines]
+    if any("+" in line or _LEADING_ZERO.search(line) or _WORD.search(line) for line in lines):
+        # A sum written out; a number with a leading zero, which no dimension has (`EQ` read
+        # upside down is `03`); or a word read in it (a tag `LA-002`, a note `(2) ADJ.
+        # SHELVES`, or a dimension with its note, left to the AI): no label then.
+        return None
+    engines: dict[Decimal, set[str]] = {}
+    for read in reads:
+        for value in read.whole:
+            engines.setdefault(value, set()).add(read.engine)
+    agreed = [value for value, names in engines.items() if len(names) >= 2]
+    if len(agreed) != 1:
+        return None
+    value = agreed[0]
+    if not 0 < value <= _BARE_MAX_IN:
+        return None
+    seen = {v for read in reads for v in read.values} | set(engines)
+    if any(vv.near_miss(value, other) for other in seen):
+        return None
+    if vv._ones_unsure(list(reads), value) is not None:
+        return None
+    return value
 
 
 # ---- one page ------------------------------------------------------------------------------------
@@ -656,6 +829,48 @@ def page_labels(
     installed ones)."""
     started = clock()
     parsed = _parse(Path(pdf), page - 1)
+    result = PageLabels(labels=_text_labels(parsed, halves))
+    if drawn_budget_s > 0:
+        _add_drawn(
+            result,
+            parsed,
+            halves,
+            budget_s=drawn_budget_s - (clock() - started),
+            readers=readers,
+            clock=clock,
+        )
+    _number(result.labels)
+    result.seconds = round(clock() - started, 2)
+    return result
+
+
+def drawn_labels(
+    pdf: Path,
+    page: int,
+    halves: Sequence[Mapping[str, Any]],
+    text_labels: Sequence[Mapping[str, Any]],
+    *,
+    budget_s: float,
+    readers: Sequence[Any] | None = None,
+    clock: Callable[[], float] = monotonic,
+) -> PageLabels:
+    """Page `page`'s text labels (as `page_labels` gave them) with its drawn labels added after
+    them, read within `budget_s` seconds: the pack's second pass, after every page's text."""
+    started = clock()
+    result = PageLabels(labels=[dict(label) for label in text_labels if label["route"] == "text"])
+    _add_drawn(result, _parse(Path(pdf), page - 1), halves, budget_s, readers, clock)
+    _number(result.labels)
+    result.seconds = round(clock() - started, 2)
+    return result
+
+
+def _number(labels: list[dict[str, Any]]) -> None:
+    _scale_checks(labels)
+    for number, label in enumerate(labels, start=1):
+        label["id"] = f"D{number}"
+
+
+def _text_labels(parsed: _Parsed, halves: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     readings, millimetres = _paired(_text_readings(parsed.page))
     kept: list[tuple[_Reading, dict[str, Any] | None]] = []
     for reading in sorted(readings, key=lambda r: (not r.bracket, r.bare, -len(r.text))):
@@ -670,54 +885,84 @@ def page_labels(
             continue
         kept.append((reading, line))
     kept.sort(key=lambda item: (round(item[0].box[1] / 4), item[0].box[0]))
-    labels = [_label(r, line, _side(r.box, halves)) for r, line in kept[:MAX_LABELS]]
-    result = PageLabels(labels=labels)
-    if drawn_budget_s > 0 and parsed.page.paths:
-        engines = list(vv.default_readers() if readers is None else readers)
-        if len(engines) < 2:
-            result.drawn = "no_engine"
-        else:
-            result.drawn = "done"
-            skip = [tuple(label["box"]) for label in labels]
-            drawn: list[dict[str, Any]] = []
-            for cluster in _clusters(parsed.page.paths, skip):
-                if len(labels) + len(drawn) >= MAX_LABELS:
+    return [_label(r, line, _side(r.box, halves)) for r, line in kept[:MAX_LABELS]]
+
+
+def _add_drawn(
+    result: PageLabels,
+    parsed: _Parsed,
+    halves: Sequence[Mapping[str, Any]],
+    budget_s: float,
+    readers: Sequence[Any] | None,
+    clock: Callable[[], float],
+) -> None:
+    """The drawn route: character-sized ink outside the text labels, grouped into clusters, each
+    split into labels by its vectors (`ink_labels`); a label beside a dimension line of its own is
+    read (`_label_reads`) and kept when `_drawn_value` gives its one value. Added after the text
+    labels (sorted among themselves), so a text label's id never moves."""
+    started = clock()
+    if not parsed.page.paths:
+        result.drawn = "done"
+        return
+    engines = list(drawn_readers() if readers is None else readers)
+    if len(engines) < 2:
+        result.drawn = "no_engine"
+        return
+    result.drawn = "done"
+    labels = result.labels
+    skip = [tuple(label["box"]) for label in labels]
+    seen: list[Box] = []
+    drawn: list[dict[str, Any]] = []
+    for cluster in _clusters(parsed.page.paths, skip):
+        near = vv._ink_paths_near(parsed.page, cluster)
+        if len(near) > _MAX_NEAR_PATHS:  # hatching or a dotted fill, not a written number
+            continue
+        for piece in ink_labels.labels(near, cluster):
+            if len(labels) + len(drawn) >= MAX_LABELS:
+                break
+            if clock() - started > budget_s:
+                result.drawn = "partial"
+                break
+            label = _whole_label(parsed.page, piece, cluster)
+            if label is None:
+                continue
+            box = label.box
+            # Clusters gather their neighbours' ink too: a label is read once.
+            if any(_overlap(box, other) > 0.5 for other in seen):
+                continue
+            seen.append(box)
+            side = _side(box, halves)
+            if side != "vendor" or not _inch_marked(label) or _crowded(parsed.page, label):
+                continue
+            width, height = box[2] - box[0], box[3] - box[1]
+            found = None
+            for orientation, font in (("h", height), ("v", width)):
+                found = dimension_line(box, orientation, parsed.segments, font)
+                if found is not None:
                     break
-                if clock() - started > drawn_budget_s:
-                    result.drawn = "partial"
-                    break
-                width, height = cluster[2] - cluster[0], cluster[3] - cluster[1]
-                found = None
-                for orientation, font in (("h", height), ("v", width)):
-                    found = dimension_line(cluster, orientation, parsed.segments, font)
-                    if found is not None:
-                        break
-                if found is None:
-                    continue
-                try:
-                    value = _drawn_value(parsed.page, cluster, engines)
-                except Exception as failed:  # noqa: BLE001 - an unread cluster is left out
-                    _log.warning("dimension labels: drawn read failed: %s", type(failed).__name__)
-                    continue
-                if value is None:
-                    continue
-                reading = _Reading(
-                    text=vv._inches_text(value),
-                    inches=value,
-                    box=cluster,
-                    along=(1.0, 0.0) if orientation == "h" else (0.0, 1.0),
-                    font=min(width, height),
-                    bare=False,
-                    route="drawn",
-                )
-                drawn.append(_label(reading, found, _side(cluster, halves)))
-            drawn.sort(key=lambda label: (round(label["box"][1] / 4), label["box"][0]))
-            labels += drawn
-    _scale_checks(labels)
-    for number, label in enumerate(labels, start=1):
-        label["id"] = f"D{number}"
-    result.seconds = round(clock() - started, 2)
-    return result
+            if found is None:
+                continue
+            try:
+                value = _drawn_value(_label_reads(label, engines))
+            except Exception as failed:  # noqa: BLE001 - an unread label is left out
+                _log.warning("dimension labels: drawn read failed: %s", type(failed).__name__)
+                continue
+            if value is None:
+                continue
+            reading = _Reading(
+                text=vv._inches_text(value),
+                inches=value,
+                box=box,
+                along=(1.0, 0.0) if orientation == "h" else (0.0, 1.0),
+                font=min(width, height),
+                bare=False,
+                route="drawn",
+            )
+            drawn.append(_label(reading, found, side))
+        if result.drawn == "partial" or len(labels) + len(drawn) >= MAX_LABELS:
+            break
+    drawn.sort(key=lambda label: (round(label["box"][1] / 4), label["box"][0]))
+    labels += drawn
 
 
 def build_dims(
@@ -727,9 +972,11 @@ def build_dims(
     drawn_budget_s: float = 0.0,
     on_page: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
-    """The set pack's `dims.json`: every page of every upload, its labels (text route; the drawn
-    route shares `drawn_budget_s` seconds across the set). `on_page` sees the document after each
-    page (to write it as it grows)."""
+    """The set pack's `dims.json`: every page of every upload and its labels. Two passes: the text
+    route on every page first (the agent has every printed label in minutes), then the drawn
+    route page by page, sharing `drawn_budget_s` seconds across the set (a page it does not reach
+    stays `not_run`; one it leaves half read is `partial`). `on_page` sees the document after each
+    page of each pass (to write it as it grows)."""
     halves: dict[tuple[str, int], list[Mapping[str, Any]]] = {}
     entries = page_map.get("pages") if isinstance(page_map, Mapping) else None
     for entry in entries if isinstance(entries, list) else []:
@@ -737,28 +984,47 @@ def build_dims(
             key = (str(entry.get("file")), int(entry.get("page") or 0))
             halves[key] = [h for h in entry.get("halves") or [] if isinstance(h, Mapping)]
     document: dict[str, Any] = {"version": LABELS_VERSION, "files": list(pdfs), "pages": []}
-    left = drawn_budget_s
     for name, pdf in pdfs.items():
         count = 0
         if pdf.is_file():
             with pdfplumber.open(str(pdf)) as opened:
                 count = len(opened.pages)
         for number in range(1, count + 1):
-            started = monotonic()
             try:
-                found = page_labels(
-                    pdf, number, halves.get((name, number), ()), drawn_budget_s=max(0.0, left)
-                )
+                found = page_labels(pdf, number, halves.get((name, number), ()))
             except Exception as failed:  # noqa: BLE001 - a page code cannot read has no labels
                 _log.warning("dimension labels: page failed: %s", type(failed).__name__)
                 found = PageLabels(drawn="failed")
-            if left > 0 and found.drawn != "not_run":
-                left -= monotonic() - started
             document["pages"].append(
                 {"file": name, "page": number, "drawn": found.drawn, "labels": found.labels}
             )
             if on_page is not None:
                 on_page(document)
+    left = drawn_budget_s
+    for entry in document["pages"]:
+        if left <= 0:
+            break
+        if entry["drawn"] != "not_run":
+            continue
+        name, number = entry["file"], entry["page"]
+        started = monotonic()
+        try:
+            found = drawn_labels(
+                pdfs[name],
+                number,
+                halves.get((name, number), ()),
+                entry["labels"],
+                budget_s=left,
+            )
+        except Exception as failed:  # noqa: BLE001 - the page keeps its text labels
+            _log.warning("dimension labels: drawn pass failed: %s", type(failed).__name__)
+            entry["drawn"] = "failed"
+            continue
+        finally:
+            left -= monotonic() - started
+        entry["drawn"], entry["labels"] = found.drawn, found.labels
+        if on_page is not None:
+            on_page(document)
     return document
 
 

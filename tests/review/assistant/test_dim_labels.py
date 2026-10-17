@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import io
 import json
+import threading
 import zlib
 from collections.abc import Mapping, Sequence
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -20,8 +22,9 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from app.review.assistant import chat_drawing
+from app.review.assistant import chat_drawing, ink_labels
 from app.review.assistant import dim_labels as dl
+from app.review.assistant import verify_value as vv
 from app.review.assistant.chat_findings import FindingBook
 from app.review.assistant.chat_tools import ChatTools, new_step
 from app.review.assistant.chat_trust import apply_checks
@@ -201,28 +204,48 @@ class _Scripted:
     def __init__(self, name: str, lines: list[str]) -> None:
         self.name = name
         self.lines = lines
+        self.calls = 0
 
     def __call__(self, picture: np.ndarray, *, single_line: bool) -> list[str]:
+        self.calls += 1
         return list(self.lines)
 
 
-def _drawn_page() -> bytes:
-    """`_page_one`, plus a number drawn as lines (no text) over a dimension line of its own."""
-    glyphs = b"".join(f"0 0 0 rg {x} 52 2.4 6 re f ".encode() for x in (300.0, 303.5, 307.0))
-    return _page_one() + _dimension(280, 340, 50) + glyphs
+def _glyphs(*xs: float, y: float = 52, inch_mark: bool = True) -> bytes:
+    """A number drawn as lines (no text): one filled bar per digit at each `x`, 2.4 x 6 points,
+    and an inch mark (two small ticks) after the last one."""
+    body = b"".join(f"0 0 0 rg {x} {y} 2.4 6 re f ".encode() for x in xs)
+    if inch_mark:
+        end = max(xs) + 3.2
+        body += f"0 0 0 rg {end} {y + 4} 0.4 2 re f {end + 1} {y + 4} 0.4 2 re f ".encode()
+    return body
+
+
+def _drawn_page(glyphs: bytes | None = None) -> bytes:
+    """`_page_one`, plus a number drawn as lines over a dimension line of its own (vendor half)."""
+    return _page_one() + _dimension(280, 340, 50) + (glyphs or _glyphs(300.0, 303.5, 307.0))
+
+
+def _drawn(path: Path, readers: Sequence[Any], halves: Sequence[Any] = HALVES) -> list[Any]:
+    found = dl.page_labels(path, 1, halves, drawn_budget_s=60, readers=readers)
+    return [label for label in found.labels if label["route"] == "drawn"]
+
+
+def _agreeing() -> list[_Scripted]:
+    return [_Scripted("RapidOCR", ['24"']), _Scripted("Tesseract", ['24"'])]
 
 
 def test_the_drawn_route_adds_labels_after_the_text_ones(tmp_path: Path) -> None:
     path = tmp_path / "drawn.pdf"
     path.write_bytes(_pdf([_drawn_page()]))
-    readers = [_Scripted("Tesseract", ['24"']), _Scripted("RapidOCR", ['24"'])]
 
     text_only = dl.page_labels(path, 1, HALVES).labels
-    both = dl.page_labels(path, 1, HALVES, drawn_budget_s=60, readers=readers)
+    both = dl.page_labels(path, 1, HALVES, drawn_budget_s=60, readers=_agreeing())
 
     assert both.drawn == "done"
     drawn = [label for label in both.labels if label["route"] == "drawn"]
     assert [(label["text"], label["side"]) for label in drawn] == [('24"', "vendor")]
+    assert drawn[0]["dim_line"] is not None
     # The text labels keep their ids: drawn labels are numbered after them.
     assert [(lab["id"], lab["text"]) for lab in both.labels[: len(text_only)]] == [
         (lab["id"], lab["text"]) for lab in text_only
@@ -233,15 +256,130 @@ def test_the_drawn_route_adds_labels_after_the_text_ones(tmp_path: Path) -> None
 def test_the_drawn_route_needs_two_engines_that_agree(tmp_path: Path) -> None:
     path = tmp_path / "drawn.pdf"
     path.write_bytes(_pdf([_drawn_page()]))
-    split = [_Scripted("Tesseract", ['24"']), _Scripted("RapidOCR", ['21"'])]
+    split = [_Scripted("RapidOCR", ['24"']), _Scripted("Tesseract", ['21"'])]
     one = [_Scripted("Tesseract", ['24"'])]
 
-    assert not [
-        label
-        for label in dl.page_labels(path, 1, drawn_budget_s=60, readers=split).labels
-        if label["route"] == "drawn"
-    ]
+    assert not _drawn(path, split)
     assert dl.page_labels(path, 1, drawn_budget_s=60, readers=one).drawn == "no_engine"
+
+
+def test_a_label_no_engine_reads_is_not_shown_to_the_next_engine(tmp_path: Path) -> None:
+    path = tmp_path / "drawn.pdf"
+    path.write_bytes(_pdf([_drawn_page()]))
+    blank, second = _Scripted("RapidOCR", []), _Scripted("Tesseract", ['24"'])
+
+    assert not _drawn(path, [blank, second])
+    assert blank.calls > 0 and second.calls == 0
+
+
+def test_only_the_vendors_drawn_numbers_with_an_inch_mark_and_room_round_them(
+    tmp_path: Path,
+) -> None:
+    # The architect's drawn lettering, tags and notes are left to the AI: only the vendor's.
+    path = tmp_path / "drawn.pdf"
+    path.write_bytes(_pdf([_drawn_page()]))
+    assert not _drawn(path, _agreeing(), halves=[{"box": [0, 0, 600, 400], "role": "architect"}])
+    # A drawn number with no inch mark (a tag `B30`, a count, a symbol read as a digit).
+    bare = tmp_path / "bare.pdf"
+    bare.write_bytes(_pdf([_drawn_page(_glyphs(300.0, 303.5, 307.0, inch_mark=False))]))
+    assert not _drawn(bare, _agreeing())
+    # Ink in line with it, about a word space away: part of a word or a longer number (`WD-02`,
+    # `SCALE : 1"`, `2'-10"`).
+    crowded = tmp_path / "crowded.pdf"
+    crowded.write_bytes(
+        _pdf([_drawn_page(_glyphs(300.0, 303.5, 307.0) + _glyphs(290.7, inch_mark=False))])
+    )
+    assert not _drawn(crowded, _agreeing())
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        ['03"'],  # a leading zero: `EQ` read upside down
+        ['WD-02"'],  # a word in it: a tag
+        ['24" FILLER'],  # a dimension with its note: left to the AI
+        ['2"+24"'],  # a sum written out
+        ['0"'],  # no length
+    ],
+)
+def test_a_drawn_label_that_is_not_one_plain_dimension_is_not_listed(
+    tmp_path: Path, lines: list[str]
+) -> None:
+    path = tmp_path / "drawn.pdf"
+    path.write_bytes(_pdf([_drawn_page()]))
+    assert not _drawn(path, [_Scripted("RapidOCR", lines), _Scripted("Tesseract", lines)])
+
+
+def test_a_near_miss_read_anywhere_in_the_label_refuses_it() -> None:
+    def read(engine: str, lines: list[str], whole: set[Decimal]) -> Any:
+        made = vv._InkRead(engine, engine, 1)
+        made.lines, made.values, made.whole = lines, set(whole), set(whole)
+        return made
+
+    agree = [read("RapidOCR", ['24"'], {Decimal(24)}), read("Tesseract", ['24"'], {Decimal(24)})]
+    assert dl._drawn_value(agree) == Decimal(24)
+    near = [*agree, read("Tesseract", ['34"'], {Decimal(34)})]
+    assert dl._drawn_value(near) is None
+    two = [*agree, read("RapidOCR", ['30"'], {Decimal(30)}), read("Tesseract", ['30"'], set())]
+    two[-1].whole = {Decimal(30)}
+    assert dl._drawn_value(two) is None
+
+
+def test_a_label_cut_by_its_clusters_edge_is_gathered_whole(tmp_path: Path) -> None:
+    path = tmp_path / "drawn.pdf"
+    path.write_bytes(_pdf([_drawn_page()]))
+    parsed = dl._parse(path, 0)
+    whole = ink_labels.labels(parsed.page.paths, (299.0, 340.0, 312.0, 350.0))
+    assert len(whole) == 1
+    # Only its last digit and mark, as a cluster at the edge of what it gathered would see it.
+    cut = ink_labels.Label(whole[0].glyphs[-3:], whole[0].glyphs[-3].box)
+    found = dl._whole_label(parsed.page, cut)
+    assert found is not None and found.box == whole[0].box
+
+
+def test_the_one_line_reader_reads_rapidocrs_recogniser_only() -> None:
+    class Engine:
+        def __init__(self) -> None:
+            self.asked: list[dict[str, Any]] = []
+
+        def __call__(self, rgb: np.ndarray, **options: Any) -> tuple[Any, float]:
+            self.asked.append(options)
+            if options["use_det"]:
+                return [[[[0, 0], [1, 0], [1, 1], [0, 1]], "24", 0.9]], 0.1
+            return [["24 1/2", 0.9]], 0.1
+
+    reader = dl.LineReader.__new__(dl.LineReader)
+    reader._engine, reader._lock = Engine(), threading.Lock()
+    picture = np.full((20, 60), 255, np.uint8)
+    assert reader(picture, single_line=True) == ["24 1/2"]
+    assert reader(picture, single_line=False) == ["24"]
+    assert reader._engine.asked == [
+        {"use_det": False, "use_cls": False},
+        {"use_det": True, "use_cls": False},
+    ]
+
+
+def test_build_dims_reads_every_pages_text_first_then_the_drawn_ink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "drawn.pdf"
+    path.write_bytes(_pdf([_drawn_page(), _page_two()]))
+    page_map = {"pages": [{"file": "set.pdf", "page": 1, "halves": HALVES}]}
+    seen: list[list[str]] = []
+    monkeypatch.setattr(dl, "drawn_readers", _agreeing)
+    document = dl.build_dims(
+        {"set.pdf": path},
+        page_map,
+        drawn_budget_s=60,
+        on_page=lambda doc: seen.append([e["drawn"] for e in doc["pages"]]),
+    )
+    none = dl.build_dims({"set.pdf": path}, page_map, drawn_budget_s=0)
+    # Every page's text labels are written before any drawn ink is read.
+    assert seen == [["not_run"], ["not_run", "not_run"], ["done", "not_run"], ["done", "done"]]
+    first = document["pages"][0]["labels"]
+    assert [label["text"] for label in first if label["route"] == "drawn"] == ['24"']
+    assert [label["id"] for label in first] == [f"D{n}" for n in range(1, len(first) + 1)]
+    assert [e["drawn"] for e in none["pages"]] == ["not_run", "not_run"]
 
 
 def test_build_dims_lists_every_page(pdf: Path) -> None:

@@ -21,6 +21,8 @@ that set-up once per upload, in the background, and the agent sees it read-only 
   value, inches, box, whose drawing it is on, and its dimension and extension lines when found
   (`dim_labels.py`). The `zoom` tool draws these ids on a crop; findings name them. Written as
   it grows, page by page, after the pictures; a page not in it yet is read when it is asked for.
+  Every page's text labels come first; then the vendor's drawn numbers (pen strokes, read by two
+  OCR engines) are added page by page within `DIMS_DRAWN_BUDGET_S`, after the text ids.
 - `status.json`: `building`, `ready` or `failed`, and the steps done. The agent can work before
   the pack is ready (the first message never waits); the `zoom` tool makes the drawings-only copy
   it needs at once if the pack has not made it yet.
@@ -82,13 +84,13 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 #: Changes when what the pack holds changes: an older pack is built again.
-PACK_VERSION: Final = 2
+PACK_VERSION: Final = 3
 RENDER_DPI: Final = 100
-#: Seconds the dimension labels' drawn-ink route (OCR) may spend on one set
-#: (`GV_DIM_LABELS_DRAWN_BUDGET_S`). Off by default: measured on a real set, reading drawn numbers
-#: with no expected value found almost none in 100 s a page (#1558); drawn values keep the typed
-#: path and `verify_value`.
-DIMS_DRAWN_BUDGET_S: Final = 0.0
+#: Seconds the dimension labels' drawn-ink route (OCR) may spend on one set, after every page's
+#: text labels (`GV_DIM_LABELS_DRAWN_BUDGET_S`; 0 turns it off). It reads the vendor's drawn
+#: numbers label by label in the labels' own low-priority process (#1571); pages it does not reach
+#: stay `not_run`, and their drawn values keep `verify_value`.
+DIMS_DRAWN_BUDGET_S: Final = 1200.0
 #: The hi-res page cache's folder inside the pack (`page_cache`, #1548): 300-dpi tiles of each page
 #: a crop was cut from, made on first need.
 HIRES: Final = "hires"
@@ -534,6 +536,8 @@ pages/<name>/p-NNN.png every page at 100 dpi (drawings only). Zoom to read numbe
 contact/*.png          nine pages per picture, page numbers stamped: the whole set at a glance.
 dims.json              every printed dimension code found, numbered per page (D17): value,
                        inches, box, side, dimension line. zoom marks: true draws the ids.
+                       route "drawn": the vendor's drawn numbers read by two OCR engines
+                       (added later; check one with zoom before you rely on it).
 status.json            building / ready / failed.
 hires/                 code's 300-dpi tiles of the pages zoom has cut from (not for reading:
                        zoom gives you any area sharp).
@@ -594,8 +598,9 @@ def _drawn_budget() -> float:
         return DIMS_DRAWN_BUDGET_S
 
 
-#: The most seconds the labels' own process may take for one set.
-DIMS_TIMEOUT_S: Final = 1800
+#: The most seconds the labels' own process may take for one set: the text route and the drawn
+#: route's budget, with room to spare.
+DIMS_TIMEOUT_S: Final = 2400
 
 
 def _dims(
