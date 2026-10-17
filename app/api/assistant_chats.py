@@ -22,6 +22,12 @@ The message runs in its own thread (`chat_service.run_message`) until it ends or
 like claude.ai: the browser going away (a closed tab, a reload) does not stop it, and it is stored
 when it ends. Its events go into the message's feed (`chat_feed.MessageFeed`); the `POST` stream and
 every `GET .../events` are followers of that feed.
+
+A server restart (#1514): at start-up, and whenever a chat (or a message's events) is read, a
+question left with no reply and nothing running for it gets its reply stored as `stopped:
+interrupted` with the work saved so far. On SIGTERM no new message is taken (503), running answers
+get a short wait, and each one still running is stored as interrupted before the process exits.
+`POST .../messages` with `continue_from` goes on from an interrupted answer.
 """
 
 from __future__ import annotations
@@ -29,16 +35,19 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
+import signal
 import threading
 import uuid
 from collections.abc import AsyncIterator, Callable, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any, Final
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from sqlalchemy import select
@@ -93,7 +102,9 @@ from app.review.assistant.chat_service import (
     UploadSource,
     default_skill_builder,
     package_spent_micros,
+    recover_interrupted,
     run_message,
+    shutdown_chats,
 )
 from app.review.assistant.chat_store import (
     add_file,
@@ -112,7 +123,6 @@ from app.review.assistant.chat_trust import findings_csv
 from app.review.assistant.sandbox import ChatWorkspace, Sandbox, open_sandbox
 from app.runs.rates import ModelRates, rates_from_environment
 
-router = APIRouter(tags=["assistant chats"])
 _log = logging.getLogger(__name__)
 
 NOT_FOUND_DETAIL: Final = "Not found"
@@ -132,16 +142,109 @@ def _not_found() -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
 
 
-def chat_registry(request: Request) -> ChatRegistry:
-    """The process's running messages (one per chat at most)."""
-    registry: ChatRegistry | None = getattr(request.app.state, _REGISTRY_STATE, None)
+def _registry_of(app: Any) -> ChatRegistry:
+    registry: ChatRegistry | None = getattr(app.state, _REGISTRY_STATE, None)
     if registry is None:
         with _REGISTRY_LOCK:
-            registry = getattr(request.app.state, _REGISTRY_STATE, None)
+            registry = getattr(app.state, _REGISTRY_STATE, None)
             if registry is None:
                 registry = ChatRegistry()
-                setattr(request.app.state, _REGISTRY_STATE, registry)
+                setattr(app.state, _REGISTRY_STATE, registry)
     return registry
+
+
+def chat_registry(request: Request) -> ChatRegistry:
+    """The process's running messages (one per chat at most)."""
+    return _registry_of(request.app)
+
+
+# ---- a server restart (#1514) --------------------------------------------------------------------
+
+
+def _chat_root(app: Any) -> Path:
+    settings: Settings = app.state.settings
+    return Path(settings.assistant_chat_root).expanduser()
+
+
+def _recover_at_start(app: Any) -> None:
+    """The answers the last run of the server left without a reply, stored as interrupted."""
+    try:
+        from app.api.dependencies import _ENGINE_STATE, _engine_lock
+        from app.db.session import engine_from_settings
+
+        with _engine_lock:
+            engine = getattr(app.state, _ENGINE_STATE, None)
+            if engine is None:
+                engine = engine_from_settings(app.state.settings)
+                setattr(app.state, _ENGINE_STATE, engine)
+        count = recover_interrupted(
+            sessionmaker(bind=engine, expire_on_commit=False), _registry_of(app), _chat_root(app)
+        )
+        if count:
+            _log.info("assistant chats: %d answers stored as interrupted by a restart", count)
+    except Exception as failed:  # noqa: BLE001 - a chat is also repaired when it is next read
+        _log.warning("assistant chats could not be checked at start-up: %s", type(failed).__name__)
+
+
+def _pass_on(previous: Any, signum: int, frame: Any) -> None:
+    """The signal handed to whoever handled it before (uvicorn), or its default."""
+    if callable(previous):
+        previous(signum, frame)
+    elif previous == signal.SIG_DFL:
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+
+def _graceful_sigterm(app: Any) -> Callable[[], None] | None:
+    """On SIGTERM: no new message, running answers saved (a bounded wait), then the server's own
+    shutdown. Only in the main thread (where signals are handled); returns the undo."""
+    if threading.current_thread() is not threading.main_thread():
+        return None
+    previous = signal.getsignal(signal.SIGTERM)
+    stopping = threading.Event()
+
+    def on_term(signum: int, frame: Any) -> None:
+        registry = _registry_of(app)
+        if stopping.is_set() or not registry.runs():
+            registry.close()
+            _pass_on(previous, signum, frame)
+            return
+        stopping.set()
+
+        def stop() -> None:
+            try:
+                count = shutdown_chats(registry)
+                _log.info("assistant chats: %d running answers stored as interrupted", count)
+            finally:
+                _pass_on(previous, signum, frame)
+
+        threading.Thread(target=stop, name="assistant-chat-shutdown", daemon=True).start()
+
+    signal.signal(signal.SIGTERM, on_term)
+
+    def undo() -> None:
+        if signal.getsignal(signal.SIGTERM) is on_term:
+            signal.signal(signal.SIGTERM, previous)
+
+    return undo
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    threading.Thread(
+        target=_recover_at_start, args=(app,), name="assistant-chat-recover", daemon=True
+    ).start()
+    undo = _graceful_sigterm(app)
+    try:
+        yield
+    finally:
+        if undo is not None:
+            undo()
+        # Whatever is still running when the app ends is kept as interrupted, not lost.
+        shutdown_chats(_registry_of(app), wait_seconds=0)
+
+
+router = APIRouter(tags=["assistant chats"], lifespan=_lifespan)
 
 
 def _rates(model_key: str) -> ModelRates | None:
@@ -313,14 +416,27 @@ def start_chat(
     return ChatCreatedOut(id=chat.id, title=None, created_at=chat.created_at)
 
 
+def _repair(request: Request, session: Session, registry: ChatRegistry, chat_id: UUID) -> None:
+    """A question of this chat left with no reply and nothing running for it (a restart): its
+    reply stored as interrupted, before the chat is read."""
+    if registry.get(chat_id) is not None:
+        return
+    try:
+        recover_interrupted(_factory(session), registry, _chat_root(request.app), [chat_id])
+    except Exception:  # noqa: BLE001 - the chat still reads; the next read tries again
+        _log.exception("assistant chat could not store an interrupted answer")
+
+
 @router.get("/chats/{chat_id}", response_model=ChatOut, summary="One chat and its messages")
 def read_chat(
+    request: Request,
     chat_id: UUID,
     principal: Authenticated,
     session: Annotated[Session, Depends(get_session)],
     registry: Annotated[ChatRegistry, Depends(chat_registry)],
 ) -> ChatOut:
     chat, package = _chat(session, chat_id, principal)
+    _repair(request, session, registry, chat_id)
     messages = messages_of(session, chat_id)
     files = files_of(session, chat_id)
     first = first_question(messages)
@@ -607,6 +723,11 @@ def _message(
     (503), and the chat's one slot (409)."""
     settings: Settings = request.app.state.settings
     chat, package = _chat(session, chat_id, principal)
+    if registry.closing:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The server is restarting. Send your message again in a moment.",
+        )
     try:
         model = check_choice(body.model, body.effort, body.thinking)
     except ChoiceRefused as refused:
@@ -626,6 +747,14 @@ def _message(
         if body.products is not None
         else (None if own is None else (own.value,))
     )
+    mode: str = body.mode
+    continue_from = None if body.continue_from is None else UUID(body.continue_from)
+    if continue_from is not None:
+        # Continue asks the way the interrupted answer was asked (a full check stays one).
+        resume = _resume_of(session, chat.id, continue_from)
+        mode = str(resume.get("mode") or "chat")
+        if resume.get("products"):
+            products = tuple(resume["products"])
     run = registry.claim(chat.id, package.id, uuid4())
     if run is None:
         raise CodedHTTPException(
@@ -662,13 +791,33 @@ def _message(
             results=_results_loader(factory, package.project_id, package.id, revision_id),
             open_sandbox=runtime.open_sandbox,
             skill_builder=runtime.skill_builder(),
-            mode=body.mode,
+            mode=mode,
             products=products,
+            continue_from=continue_from,
         )
     except BaseException:
         registry.release(run)
         raise
     return _Message(job=job, run=run)
+
+
+def _resume_of(session: Session, chat_id: UUID, message_id: UUID) -> dict[str, Any]:
+    """The interrupted answer's `resume` block; 422 when it is not an interrupted answer here."""
+    row = session.get(AssistantChatMessage, message_id)
+    if row is None or row.chat_id != chat_id or row.stopped != "interrupted":
+        raise CodedHTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "invalid_request",
+            "continue_from is not an interrupted answer of this chat.",
+        )
+    return next(
+        (
+            dict(block.get("resume") or {})
+            for block in reversed(row.blocks or [])
+            if isinstance(block, dict) and block.get("type") == "resume"
+        ),
+        {},
+    )
 
 
 @router.post(
@@ -677,8 +826,14 @@ def _message(
     summary="Send a message and stream the answer",
     responses={
         409: {"description": "`message_running`: a message is being answered in this chat."},
-        422: {"description": "`choice_refused`: a model, effort and thinking the API refuses."},
-        503: {"description": "No AI provider key is set (the reason: GET /assistant/models)."},
+        422: {
+            "description": "`choice_refused`: a model, effort and thinking the API refuses; "
+            "`invalid_request`: a body (or a `continue_from`) that is not right."
+        },
+        503: {
+            "description": "No AI provider key is set (the reason: GET /assistant/models), or "
+            "the server is restarting."
+        },
     },
 )
 async def send_message(
@@ -708,6 +863,7 @@ class _Followed:
 
 
 def _followed(
+    request: Request,
     chat_id: UUID,
     message_id: UUID,
     principal: Authenticated,
@@ -715,11 +871,13 @@ def _followed(
     registry: Annotated[ChatRegistry, Depends(chat_registry)],
 ) -> _Followed:
     """Access (404), then the running message's feed, else the stored answer (404 when there is
-    neither: an unknown id, or an answer that was never stored)."""
+    neither: an unknown id, or an answer that was never stored). A message a restart cut off is
+    stored as interrupted first, under the id the screen was following."""
     _chat(session, chat_id, principal)
     run = registry.get(chat_id)
     if run is not None and run.message_id == message_id:
         return _Followed(feed=run.feed, stored=None)
+    _repair(request, session, registry, chat_id)
     # The feed closes before the slot is freed, and the answer is stored before the feed closes:
     # a message no longer running is in the database (unless it could not be stored).
     row = session.get(AssistantChatMessage, message_id)

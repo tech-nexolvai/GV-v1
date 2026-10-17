@@ -36,7 +36,7 @@ import { FullCheckButton, ProductChips } from '@/components/chat/chat-full-check
 import { ChatList, type ChatListState } from '@/components/chat/chat-list';
 import { AssistantMessage, UserMessage } from '@/components/chat/chat-message';
 import { ApiError } from '@/api/client';
-import { chatFailureWords, isAbort, LIVE_CHAT_API, type Chat, type ChatApi, type ChatEvent, type ChatMessage, type ChatMode, type ChatModels, type ChatProduct } from '@/lib/chat-api';
+import { chatFailureWords, CONTINUE_TEXT, isAbort, LIVE_CHAT_API, type Chat, type ChatApi, type ChatEvent, type ChatMessage, type ChatMode, type ChatModels, type ChatProduct } from '@/lib/chat-api';
 import { confirmWords, effectiveProducts, FULL_CHECK_TEXT, isFullCheck, readProducts, saveProducts, toggleProduct } from '@/lib/chat-full-check';
 import { applyChatEvent, CHAT_STARTERS, chatTitle, dollars, followedAnswer, fromSaved, localAnswer, localQuestion, previousQuestion, settle, type ViewMessage } from '@/lib/chat-messages';
 import { browserStorage, EFFORT_WORDS, readChoice, resolveChoice, saveChoice, shortModelLabel, type ChatChoice } from '@/lib/chat-settings';
@@ -369,7 +369,8 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
     : null;
   const blocked = unavailable ?? (models.status === 'loading' ? 'Loading the models…' : chatId && !chat ? 'Opening the chat…' : null);
 
-  async function send(text: string, mode: ChatMode = 'chat') {
+  /** `continueFrom` (#1514): the interrupted answer Continue goes on from, and how it was asked. */
+  async function send(text: string, mode: ChatMode = 'chat', continueFrom?: { id: string; mode: ChatMode }) {
     const question = text.trim();
     if (!question || runRef.current || blocked || !choice) return;
     counter.current += 1;
@@ -414,7 +415,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
       messages: [
         ...(now?.chatId === sendTo ? now.messages : []),
         localQuestion(userKey, question, new Date(), { mode, products, effort: choice.effort }),
-        localAnswer(answerKey, choice, new Date(), { mode, products }),
+        localAnswer(answerKey, choice, new Date(), { mode: continueFrom?.mode ?? mode, products }),
       ],
     }));
 
@@ -427,6 +428,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
           text: question, model: choice.model, effort: choice.effort, thinking: choice.thinking,
           ...(mode === 'full_check' ? { mode } : {}),
           ...(products ? { products } : {}),
+          ...(continueFrom ? { continue_from: continueFrom.id } : {}),
         }, onEvent, signal).catch((error: unknown) => {
           refusal = error;
           throw error;
@@ -437,7 +439,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
     if (ended === 'refused') {
       // Refused before anything began (busy, too long, offline): the question goes back to the box.
       setThread((now) => (now && now.chatId === sendTo ? { ...now, messages: now.messages.filter((message) => message.key !== userKey && message.key !== answerKey) } : now));
-      if (mode === 'chat') setDraft((now) => (now.trim() ? now : question));
+      if (mode === 'chat' && !continueFrom) setDraft((now) => (now.trim() ? now : question));
       const words = chatFailureWords(refusal);
       setNotice(words);
       setAnnounce(words);
@@ -551,6 +553,8 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                 // Retry asks the answer's question again, as a new message (claude.ai's Retry).
                 const question = previousQuestion(messages, message.key);
                 const canRetry = question !== null && !running && !blocked;
+                // Continue (#1514): only the newest answer, when a server restart interrupted it.
+                const resumeId = message.stopped === 'interrupted' && message.id && at === messages.length - 1 && !running && !blocked ? message.id : null;
                 return (
                   <AssistantMessage
                     key={message.key}
@@ -560,6 +564,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                     messageCapUsd={cap}
                     onReload={reload}
                     onRetry={canRetry ? () => void send(question) : undefined}
+                    onContinue={resumeId ? () => void send(CONTINUE_TEXT, 'chat', { id: resumeId, mode: message.resume?.mode ?? 'chat' }) : undefined}
                     latest={at === messages.length - 1}
                     makeMarkupPdf={(messageId) => api.markup(chatId, messageId)}
                     fullPageHref={formatRoute({ page: 'review', packageId })}

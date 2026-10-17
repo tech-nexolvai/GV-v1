@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Sequence
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, Final
 from uuid import UUID
@@ -35,7 +36,9 @@ __all__ = [
     "TITLE_CHARS",
     "add_assistant_message",
     "add_file",
+    "add_interrupted_message",
     "add_user_message",
+    "chat_cost_since",
     "chat_summaries",
     "chat_title",
     "create_chat",
@@ -45,6 +48,7 @@ __all__ = [
     "package_name",
     "recorded_chat_spend",
     "stored_chat_spend",
+    "unanswered_questions",
 ]
 
 TITLE_CHARS: Final = 60
@@ -139,6 +143,82 @@ def add_assistant_message(
     session.add(message)
     session.flush()
     return message
+
+
+def add_interrupted_message(
+    session: Session,
+    *,
+    message_id: UUID,
+    question: AssistantChatMessage,
+    model: str | None,
+    effort: str | None,
+    thinking: bool | None,
+    blocks: list[dict[str, Any]],
+    cost_micros: int,
+) -> AssistantChatMessage:
+    """The reply a server restart cut off (#1514): `stopped: interrupted`, the work saved so far.
+
+    Its `seq` is the question's plus one, never "the next free one": when the real reply (or a
+    newer question) already took that place, the unique `(chat_id, seq)` refuses this row, so a
+    question never gets two replies and a reply never lands after a later question. Nothing is
+    replayed from it (`api_content` stays empty): Continue hands its work over in words."""
+    message = AssistantChatMessage(
+        id=message_id,
+        chat_id=question.chat_id,
+        seq=question.seq + 1,
+        role="assistant",
+        created_by=question.created_by,
+        model=model,
+        effort=effort,
+        thinking=thinking,
+        text="",
+        blocks=blocks,
+        api_content=[],
+        cost_micros=cost_micros,
+        stopped="interrupted",
+    )
+    session.add(message)
+    session.flush()
+    return message
+
+
+def unanswered_questions(
+    session: Session, chat_ids: Sequence[UUID] | None = None
+) -> list[AssistantChatMessage]:
+    """Each chat's last message when it is a question: one with no reply after it (of the given
+    chats, else of all)."""
+    last = select(
+        AssistantChatMessage.chat_id.label("chat_id"),
+        func.max(AssistantChatMessage.seq).label("seq"),
+    ).group_by(AssistantChatMessage.chat_id)
+    if chat_ids is not None:
+        last = last.where(AssistantChatMessage.chat_id.in_(list(chat_ids)))
+    tail = last.subquery()
+    return list(
+        session.scalars(
+            select(AssistantChatMessage)
+            .join(
+                tail,
+                (tail.c.chat_id == AssistantChatMessage.chat_id)
+                & (tail.c.seq == AssistantChatMessage.seq),
+            )
+            .where(AssistantChatMessage.role == "user")
+            .order_by(AssistantChatMessage.created_at)
+        )
+    )
+
+
+def chat_cost_since(session: Session, chat_id: UUID, since: datetime) -> int:
+    """What the chat's calls recorded since `since` cost (the Usage page's rows, `chat:<id>`)."""
+    return int(
+        session.scalar(
+            select(func.coalesce(func.sum(ModelInvocation.cost_micros), 0)).where(
+                ModelInvocation.template_id == f"chat:{chat_id}",
+                ModelInvocation.created_at >= since,
+            )
+        )
+        or 0
+    )
 
 
 def add_file(
@@ -248,6 +328,14 @@ def message_out(
                     block.get("accuracy")
                     for block in reversed(message.blocks or [])
                     if isinstance(block, dict) and block.get("type") == "accuracy"
+                ),
+                None,
+            ),
+            "resume": next(
+                (
+                    block.get("resume")
+                    for block in reversed(message.blocks or [])
+                    if isinstance(block, dict) and block.get("type") == "resume"
                 ),
                 None,
             ),

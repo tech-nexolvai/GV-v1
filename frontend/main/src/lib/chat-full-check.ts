@@ -94,7 +94,8 @@ export function confirmWords(products: readonly ChatProduct[] | null, model: str
  */
 export function isFullCheck(message: Pick<ViewMessage, 'mode'>, question?: Pick<ViewMessage, 'mode'> & { text?: string | null } | null): boolean {
   if (message.mode === 'full_check' || question?.mode === 'full_check') return true;
-  return question?.mode == null && /^Full check(?: · [^\n]*)?$/.test(question?.text?.trim() ?? '');
+  // "Continue the full check · …" is a full check that goes on after a server restart (#1514).
+  return question?.mode == null && /^(?:Full|Continue the full) check(?: · [^\n]*)?$/.test(question?.text?.trim() ?? '');
 }
 
 /** What a right finding matched, under its value: "matches architect". */

@@ -561,6 +561,35 @@ class ChatEngine:
         index = self._add_block({"type": "text", "text": text})
         self.emit("text_delta", {"index": index, "text": text})
 
+    def carry_over(
+        self, findings: Sequence[Mapping[str, Any]], coverage: Mapping[str, Any] | None
+    ) -> int:
+        """Continue (#1514): the findings and page coverage an answer a server restart cut off had
+        already made, kept as this answer's own (shown at once; code checks each again). Returns
+        how many findings were kept."""
+        kept = 0
+        for given in findings:
+            finding = self.book.add_code_finding(given)
+            if finding is None:
+                continue
+            finding = {
+                **finding,
+                "created_by": str(given.get("created_by") or "lead"),
+                "verified": bool(given.get("verified")),
+            }
+            self.book.replace(finding)
+            self._show_finding(finding)
+            kept += 1
+        pages = [
+            {key: entry[key] for key in ("page", "pair_page", "status", "note") if key in entry}
+            for entry in (coverage or {}).get("pages") or []
+            if isinstance(entry, Mapping)
+            and (entry.get("status") != "not_opened" or entry.get("note"))
+        ]
+        if pages:
+            self._show_coverage(self.book.set_coverage({"pages": pages}, "earlier"))
+        return kept
+
     # ---- money -----------------------------------------------------------------------------------
 
     @property

@@ -4818,6 +4818,11 @@ export interface components {
          */
         ChatMessageIn: {
             /**
+             * Continue From
+             * @description Continue (#1514): the id of the answer a server restart interrupted. The answer goes on from its saved work; a full check keeps its findings and checks only the pages not yet done (`mode` and `products` are then the interrupted answer's).
+             */
+            continue_from?: string | null;
+            /**
              * Effort
              * @enum {string}
              */
@@ -4848,7 +4853,7 @@ export interface components {
             /** @description The answer's accuracy by code (its `accuracy` block); null on older answers. */
             accuracy?: components["schemas"]["ChatAccuracyOut"] | null;
             /** Blocks */
-            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"])[] | null;
+            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"] | components["schemas"]["ChatResumeBlock"])[] | null;
             /** @description With `stopped: cost_cap`: `message` (this answer's cap) or `package` (the drawing set's budget ran out). */
             cap_hit?: components["schemas"]["ChatCapHit"] | null;
             /** Cost Usd */
@@ -4881,6 +4886,8 @@ export interface components {
              * @description The drawing set's AI budget this answer ran under ("40.00").
              */
             package_cap_usd?: string | null;
+            /** @description With `stopped: interrupted`: how Continue picks up (its `resume` block). */
+            resume?: components["schemas"]["ChatResumeOut"] | null;
             /**
              * Role
              * @enum {string}
@@ -5004,6 +5011,44 @@ export interface components {
             /** Recorded */
             recorded: number;
         };
+        /** ChatResumeBlock */
+        ChatResumeBlock: {
+            resume: components["schemas"]["ChatResumeOut"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "resume";
+        };
+        /**
+         * ChatResumeOut
+         * @description How an answer a server restart interrupted can be continued (#1514), in plain words.
+         */
+        ChatResumeOut: {
+            /**
+             * Findings
+             * @description Findings already made: kept, not made again.
+             */
+            findings: number;
+            /**
+             * Mode
+             * @description How the interrupted answer was asked: Continue asks the same way.
+             * @enum {string}
+             */
+            mode: "chat" | "full_check";
+            /**
+             * Pages Done
+             * @description Pages already accounted for: not opened again.
+             */
+            pages_done: number;
+            /** Products */
+            products?: ("countertop" | "cabinet")[] | null;
+            /**
+             * Redo
+             * @description What Continue will do again, in one or two plain sentences.
+             */
+            redo: string;
+        };
         /**
          * ChatRoundPairOut
          * @description One round pair compared by code (compare_rounds).
@@ -5106,7 +5151,7 @@ export interface components {
         /** @enum {string} */
         ChatStepTool: "bash_tool" | "view" | "create_file" | "str_replace" | "present_files" | "TaskCreate" | "TaskUpdate" | "Agent" | "review_results" | "compare_rounds";
         /** @enum {string} */
-        ChatStopped: "cost_cap" | "cancelled" | "error" | "turn_limit";
+        ChatStopped: "cost_cap" | "cancelled" | "error" | "turn_limit" | "interrupted";
         /** ChatSummaryOut */
         ChatSummaryOut: {
             /**
@@ -11232,14 +11277,14 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description `choice_refused`: a model, effort and thinking the API refuses. */
+            /** @description `choice_refused`: a model, effort and thinking the API refuses; `invalid_request`: a body (or a `continue_from`) that is not right. */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description No AI provider key is set (the reason: GET /assistant/models). */
+            /** @description No AI provider key is set (the reason: GET /assistant/models), or the server is restarting. */
             503: {
                 headers: {
                     [name: string]: unknown;

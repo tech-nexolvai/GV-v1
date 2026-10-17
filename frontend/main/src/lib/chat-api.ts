@@ -99,7 +99,24 @@ export interface Chat {
 }
 
 /** Why a message stopped before it finished; null or absent when it finished. */
-export type ChatStopped = 'cost_cap' | 'cancelled' | 'error' | 'turn_limit';
+export type ChatStopped = 'cost_cap' | 'cancelled' | 'error' | 'turn_limit' | 'interrupted';
+
+/**
+ * With `stopped: "interrupted"` (#1514): a server restart cut the answer off. How Continue picks it
+ * up, and what it will do again, in plain words.
+ */
+export interface ChatResume {
+  mode: ChatMode;
+  products?: ChatProduct[] | null;
+  /** Findings already made: kept, not made again. */
+  findings: number;
+  /** Pages already accounted for: not opened again. */
+  pages_done: number;
+  redo: string;
+}
+
+/** The follow-up Continue sends (the server hands the interrupted work over with it). */
+export const CONTINUE_TEXT = 'Continue from where you stopped';
 
 /** A message as stored and as returned. */
 export interface ChatMessage {
@@ -130,6 +147,8 @@ export interface ChatMessage {
   products?: ChatProduct[] | null;
   /** Chat v5: code's accuracy score for the answer; absent on older answers. */
   accuracy?: ChatAccuracy | null;
+  /** With `stopped: "interrupted"`: how Continue picks up (#1514). */
+  resume?: ChatResume | null;
 }
 
 export type ChatBlock =
@@ -141,7 +160,8 @@ export type ChatBlock =
   | { type: 'trust'; trust: ChatTrust }
   | { type: 'cite'; cite: ChatCite }
   | { type: 'accuracy'; accuracy: ChatAccuracy }
-  | { type: 'unknowns'; unknowns: ChatUnknown[] };
+  | { type: 'unknowns'; unknowns: ChatUnknown[] }
+  | { type: 'resume'; resume: ChatResume };
 
 // ── Chat v2 (CONTRACT2-findings): findings with evidence, and page coverage ──
 
@@ -559,6 +579,8 @@ export interface SendMessageBody {
   mode?: ChatMode;
   /** Chat v4: the products to focus on; absent means the set's own product type. */
   products?: ChatProduct[];
+  /** Continue (#1514): the interrupted answer to go on from; the server then asks the same way. */
+  continue_from?: string;
 }
 
 /** The stream's events, in the contract's words. `index` is the block's place in `blocks`. */
