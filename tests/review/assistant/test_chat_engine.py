@@ -228,7 +228,12 @@ def test_a_tool_turn_runs_the_tool_and_sends_the_reply_back_unchanged(tmp_path: 
                 {
                     "type": "tool_result",
                     "tool_use_id": "t1",
-                    "content": [{"type": "text", "text": "[exit code 0]\nPages: 60"}],
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": '[exit code 0]\n<drawing_data source="bash_tool">\nPages: 60\n</drawing_data>',
+                        }
+                    ],
                 }
             ],
         },
@@ -246,7 +251,7 @@ def test_a_tool_turn_runs_the_tool_and_sends_the_reply_back_unchanged(tmp_path: 
     ]
     assert len(harness.ledger.rows) == 2
     assert {row["prompt_id"] for row in harness.ledger.rows} == {
-        "review-assistant-chat-anthropic-chat-v17"
+        "review-assistant-chat-anthropic-chat-v18"
     }
 
 

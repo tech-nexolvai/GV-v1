@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { ArrowRightLeft, ChevronRight, CircleAlert, Download, FileDown, Sheet, FileImage, FileSpreadsheet, FileText, File as FileIcon, Play, RotateCw, ScanSearch } from 'lucide-react';
 
 import { ApiError } from '@/api/client';
@@ -304,14 +304,26 @@ export interface AssistantMessageProps {
   decide?: (messageId: string, findingId: string, decision: FindingDecisionValue) => Promise<unknown>;
   /** #1525: make the cloud drawing again from the reviewer's decisions; returns the new drawing. */
   remakeCloud?: (messageId: string) => Promise<ChatFile>;
+  /** #1578: a finding of this answer to open in the evidence viewer at once (the job tracker's link). */
+  focusFindingId?: string | null;
 }
 
-export function AssistantMessage({ message, chatId, models, onReload, onRetry, onContinue, latest = false, makeMarkupPdf, fullPageHref, fullCheck = false, decide, remakeCloud }: AssistantMessageProps) {
+export function AssistantMessage({ message, chatId, models, onReload, onRetry, onContinue, latest = false, makeMarkupPdf, fullPageHref, fullCheck = false, decide, remakeCloud, focusFindingId = null }: AssistantMessageProps) {
   const running = message.status === 'running';
   const reduced = useReducedMotion();
   const pictureUrl = (pictureId: string) => chatPaths.picture(chatId, pictureId);
   const [filter, setFilter] = useState<FindingFilter>(NO_FILTER);
-  const [viewing, setViewing] = useState<string | null>(null);
+  const [viewing, setViewing] = useState<string | null>(focusFindingId);
+  // #1578: a link from the job tracker opens its finding, and brings the answer into view behind it.
+  const [focused, setFocused] = useState(focusFindingId);
+  if (focused !== focusFindingId) {
+    setFocused(focusFindingId);
+    if (focusFindingId) setViewing(focusFindingId);
+  }
+  const articleRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (focusFindingId) articleRef.current?.scrollIntoView?.({ block: 'start' });
+  }, [focusFindingId]);
   const [madeFiles, setMadeFiles] = useState<ChatFile[]>([]);
   const baseId = useId();
   const sectionIds = { different: `${baseId}-wrong`, check: `${baseId}-decide`, same: `${baseId}-right` };
@@ -475,6 +487,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
 
   return (
     <article
+      ref={articleRef}
       data-slot="chat-assistant-message"
       data-status={message.status}
       data-short={short ? 'true' : undefined}
