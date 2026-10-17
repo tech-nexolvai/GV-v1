@@ -42,9 +42,9 @@ HELP: dict[str, Any] = {
 
 
 def _check(**changes: Any) -> dict[str, Any]:
-    """A Your-decision finding: the architect prints no size, the vendor prints 191"."""
+    """A Your-decision finding: the architect prints no size, the vendor prints 147"."""
     return finding_input(
-        status="check", architect="not dimensioned", vendor='191"', item="Run length", **changes
+        status="check", architect="not dimensioned", vendor='147"', item="Run length", **changes
     )
 
 
@@ -252,21 +252,21 @@ def test_the_one_change_that_makes_a_string_add_up_is_named_and_seen_in_the_othe
         {
             "page": 3,
             "side": "vendor",
-            "parts": ['10"', '13 1/8"', '16 1/2"'],
-            "printed_total": '39 1/2"',
+            "parts": ['10"', '11 1/8"', '16 1/2"'],
+            "printed_total": '37 1/2"',
         }
     )
-    assert 'the part 13 1/8" (its fraction dropped); as 13" the string adds up exactly' in first
+    assert 'the part 11 1/8" (its fraction dropped); as 11" the string adds up exactly' in first
     ledger.record_string(
-        {"page": 39, "side": "vendor", "parts": ['13 1/8"', '32 1/4"'], "printed_total": '45 1/4"'}
+        {"page": 17, "side": "vendor", "parts": ['11 1/8"', '32 1/4"'], "printed_total": '43 1/4"'}
     )
     whys = [f["why"] for f in ledger.ledger_findings() if f["source"] == "vendor_arithmetic"]
     assert len(whys) == 2
-    assert 'The same 13 1/8" is off the same way on p.39 (to 45 1/4")' in whys[0]
-    assert 'The same 13 1/8" is off the same way on p.3 (to 39 1/2")' in whys[1]
+    assert 'The same 11 1/8" is off the same way on p.17 (to 43 1/4")' in whys[0]
+    assert 'The same 11 1/8" is off the same way on p.3 (to 37 1/2")' in whys[1]
     assert all("A hint only" in why for why in whys)
     # Never corrected: the recorded parts are as printed.
-    assert ledger.strings[0].parts == ('10"', '13 1/8"', '16 1/2"')
+    assert ledger.strings[0].parts == ('10"', '11 1/8"', '16 1/2"')
 
 
 def test_a_swapped_digit_and_an_ambiguous_string() -> None:

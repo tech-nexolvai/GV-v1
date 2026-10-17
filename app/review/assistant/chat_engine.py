@@ -217,6 +217,9 @@ _log = logging.getLogger(__name__)
 HARNESS_ID: Final = "chat-v11"
 #: Helpers that may run at once, at most, whatever the setting says.
 MAX_PARALLEL_AGENTS_LIMIT: Final = 12
+#: Helpers one lead turn may start. More than run at once wait for a free place in the same turn:
+#: refusing them cost the lead a whole extra turn (a real full check, 2026-10-17: 7 of 13 refused).
+MAX_AGENTS_PER_TURN: Final = 20
 #: The second reads, third reads and critic calls of one message that run at once.
 CHECK_WORKERS: Final = 8
 #: A full check's helpers (#1512): their reading tool calls (zoom, view, commands; recording a
@@ -2200,10 +2203,11 @@ class ChatEngine:
             except SandboxRefused as refused:
                 results[id(call)] = self._not_run(call, f"refused: {refused}")
                 continue
-            if len(accepted) >= self._max_agents:
+            if len(accepted) >= MAX_AGENTS_PER_TURN:
                 results[id(call)] = self._not_run(
                     call,
-                    f"at most {self._max_agents} agents run at once; start it again next turn",
+                    f"at most {MAX_AGENTS_PER_TURN} agents start in one turn; start it again "
+                    "next turn",
                 )
                 continue
             accepted.append((call, agent))
