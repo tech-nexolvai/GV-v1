@@ -40,6 +40,8 @@ CHAT_ROLES: tuple[str, ...] = ("user", "assistant")
 CHAT_STOPS: tuple[str, ...] = ("cost_cap", "cancelled", "error", "turn_limit")
 #: With `stopped = 'cost_cap'`, which cap stopped it: the answer's own, or the drawing set's budget.
 CHAT_CAPS: tuple[str, ...] = ("message", "package")
+#: What a message was (#1513): a typed question, or the one-click full check.
+CHAT_MODES: tuple[str, ...] = ("chat", "full_check")
 
 
 def _listed(values: tuple[str, ...]) -> str:
@@ -90,6 +92,10 @@ class AssistantChatMessage(Base, TimestampedUUID, Immutable):
     """The drawing set's AI budget the answer ran under."""
     cap_hit: Mapped[str | None] = mapped_column(String(16), default=None)
     """With `stopped = 'cost_cap'`: `message` or `package`."""
+    mode: Mapped[str | None] = mapped_column(String(16), default=None)
+    """`chat` or `full_check`, on the question and its answer (#1513); NULL for older rows."""
+    products: Mapped[list[str] | None] = mapped_column(JSONB(none_as_null=True), default=None)
+    """The products the message was about (`countertop`, `cabinet`); NULL for older rows."""
 
     __table_args__ = (
         UniqueConstraint("chat_id", "seq"),
@@ -102,6 +108,10 @@ class AssistantChatMessage(Base, TimestampedUUID, Immutable):
         CheckConstraint(
             f"cap_hit IS NULL OR cap_hit IN ({_listed(CHAT_CAPS)})",
             name="assistant_chat_message_cap_hit",
+        ),
+        CheckConstraint(
+            f"mode IS NULL OR mode IN ({_listed(CHAT_MODES)})",
+            name="assistant_chat_message_mode",
         ),
     )
 

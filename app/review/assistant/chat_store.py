@@ -30,6 +30,7 @@ from app.review.assistant.chat_contract import (
     ChatMessageOut,
     ChatSummaryOut,
 )
+from app.review.assistant.chat_trust import rescored
 
 __all__ = [
     "TITLE_CHARS",
@@ -84,7 +85,13 @@ def _next_seq(session: Session, chat_id: UUID) -> int:
 
 
 def add_user_message(
-    session: Session, *, chat_id: UUID, created_by: str, text: str
+    session: Session,
+    *,
+    chat_id: UUID,
+    created_by: str,
+    text: str,
+    mode: str | None = None,
+    products: Sequence[str] | None = None,
 ) -> AssistantChatMessage:
     message = AssistantChatMessage(
         chat_id=chat_id,
@@ -92,6 +99,8 @@ def add_user_message(
         role="user",
         created_by=created_by[:200],
         text=text,
+        mode=mode,
+        products=None if products is None else list(products),
     )
     session.add(message)
     session.flush()
@@ -116,6 +125,8 @@ def add_assistant_message(
     message_cap_micros: int | None = None,
     package_cap_micros: int | None = None,
     cap_hit: str | None = None,
+    mode: str | None = None,
+    products: Sequence[str] | None = None,
 ) -> AssistantChatMessage:
     message = AssistantChatMessage(
         id=message_id,
@@ -135,6 +146,8 @@ def add_assistant_message(
         message_cap_micros=message_cap_micros,
         package_cap_micros=package_cap_micros,
         cap_hit=cap_hit,
+        mode=mode,
+        products=None if products is None else list(products),
     )
     session.add(message)
     session.flush()
@@ -222,9 +235,18 @@ def _usd(micros: int | None) -> str | None:
 def message_out(
     message: AssistantChatMessage, files: Iterable[AssistantChatFile]
 ) -> ChatMessageOut:
+    """A stored message for the screen. An answer's accuracy is scored again from its stored
+    findings with today's calibration (#1513; nothing is written)."""
     if message.role == "user":
-        return ChatMessageOut(
-            id=message.id, role="user", created_at=message.created_at, text=message.text
+        return ChatMessageOut.model_validate(
+            {
+                "id": message.id,
+                "role": "user",
+                "created_at": message.created_at,
+                "text": message.text,
+                "mode": message.mode,
+                "products": message.products,
+            }
         )
     return ChatMessageOut.model_validate(
         {
@@ -243,14 +265,19 @@ def message_out(
             "message_cap_usd": _usd(message.message_cap_micros),
             "package_cap_usd": _usd(message.package_cap_micros),
             "cap_hit": message.cap_hit,
-            "accuracy": next(
-                (
-                    block.get("accuracy")
-                    for block in reversed(message.blocks or [])
-                    if isinstance(block, dict) and block.get("type") == "accuracy"
+            "accuracy": rescored(
+                next(
+                    (
+                        block.get("accuracy")
+                        for block in reversed(message.blocks or [])
+                        if isinstance(block, dict) and block.get("type") == "accuracy"
+                    ),
+                    None,
                 ),
-                None,
+                message.blocks,
             ),
+            "mode": message.mode,
+            "products": message.products,
         }
     )
 

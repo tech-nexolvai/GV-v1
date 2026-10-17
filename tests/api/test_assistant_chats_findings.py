@@ -161,7 +161,7 @@ def test_the_marked_up_pdf_is_drawn_by_code_once_per_answer(postgres_engine, tmp
         assert len(reader.pages) == 4
         assert "AI markup: draft, not GV's signed review" in reader.pages[0].extract_text()
         # The checks modules are off here, so the finding is "to check": an amber cloud.
-        assert "AI 1 ? Check: Vanity top length" in reader.pages[1].extract_text()
+        assert "AI 1 ? Your decision: Vanity top length" in reader.pages[1].extract_text()
         assert _red_near(pdf.content, 2, VENDOR_BOX) > 5
         assert _red_near(pdf.content, 3, VENDOR_BOX) == 0
         # The same file again, and it is the answer's file on reload.
@@ -414,6 +414,10 @@ def test_a_full_check_through_the_route_shows_its_label_and_ends_with_its_two_fi
         assert message["accuracy"] is not None and message["accuracy"]["claims"] == 1
         chat = world.client.get(f"/api/v1/chats/{chat_id}").json()
         assert chat["messages"][0]["text"] == "Full check · Countertops · High effort"
+        # Both the question and its answer say what they were (#1513).
+        for stored in (*chat["messages"], message):
+            assert stored["mode"] == "full_check" and stored["products"] == ["countertop"]
+        assert chat["messages"][1]["accuracy"]["rescored"] is False
         sent = json.loads(world.provider.lead_calls[0])["messages"][0]["content"]
         words = " ".join(block.get("text", "") for block in sent)
         assert "Focus for this chat: countertops." in words
@@ -428,3 +432,77 @@ def test_a_full_check_through_the_route_shows_its_label_and_ends_with_its_two_fi
             json={**ASK, "text": "hi", "products": ["cabinet", "cabinet"]},
         )
         assert empty.status_code == 422 and twice.status_code == 422
+
+
+def test_a_typed_question_keeps_its_mode_and_an_old_badge_is_scored_again(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """#1513: a typed question and its answer come back as `chat` with the products picked; an
+    answer stored before the recalibration (here: the same answer with an old 78 and no mode) is
+    scored again on read and by the follow route, and nothing in the database changes."""
+    from sqlalchemy import select
+
+    from app.models import AssistantChatMessage
+    from app.review.assistant.chat_store import add_assistant_message
+
+    provider = ScriptedProvider(
+        lead=[
+            reply(tool("r1", "report_finding", finding_input()), stop="tool_use"),
+            reply(text("One item looks wrong.")),
+        ]
+    )
+    with _world(postgres_engine, tmp_path, provider=provider, pdf=PDF3, pages=3) as world:
+        chat_id = world.chat()
+        response = world.client.post(
+            f"/api/v1/chats/{chat_id}/messages",
+            json={**ASK, "text": "Is the vanity top right?", "products": ["cabinet"]},
+        )
+        assert response.status_code == 200, response.text
+        today = _named(_events(response.text), "message_end")[0]["message"]
+        assert today["mode"] == "chat" and today["products"] == ["cabinet"]
+        assert today["accuracy"]["rescored"] is False
+
+        row = world.session.get(AssistantChatMessage, UUID(today["id"]))
+        old_blocks = [
+            (
+                {
+                    "type": "accuracy",
+                    "accuracy": {**block["accuracy"], "score": 78, "level": "orange"},
+                }
+                if block.get("type") == "accuracy"
+                else block
+            )
+            for block in row.blocks
+        ]
+        old = add_assistant_message(
+            world.session,
+            message_id=uuid4(),
+            chat_id=row.chat_id,
+            created_by="someone",
+            model=row.model,
+            effort=row.effort,
+            thinking=row.thinking,
+            text=row.text,
+            blocks=old_blocks,
+            api_content=[],
+            cost_micros=0,
+            stopped=None,
+            error=None,
+        )
+        world.session.commit()
+
+        chat = world.client.get(f"/api/v1/chats/{chat_id}").json()
+        question, answer, older = chat["messages"]
+        assert question["mode"] == "chat" and question["products"] == ["cabinet"]
+        assert answer["accuracy"]["score"] == today["accuracy"]["score"]
+        assert older["mode"] is None and older["products"] is None
+        assert older["accuracy"]["score"] == today["accuracy"]["score"] != 78
+        assert older["accuracy"]["rescored"] is True
+        follow = world.client.get(f"/api/v1/chats/{chat_id}/messages/{old.id}/events")
+        followed = _named(_events(follow.text), "message_end")[0]["message"]
+        assert followed["accuracy"] == older["accuracy"]
+
+        # Read only: the stored block still says 78.
+        world.session.expire_all()
+        stored = world.session.scalars(
+            select(AssistantChatMessage).where(AssistantChatMessage.id == old.id)
+        ).one()
+        assert next(b for b in stored.blocks if b["type"] == "accuracy")["accuracy"]["score"] == 78

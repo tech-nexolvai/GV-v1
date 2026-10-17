@@ -569,7 +569,7 @@ def test_a_full_check_seeds_recorded_results_and_makes_the_cloud_drawing_and_rep
         "AI check report: draft, not GV's signed review",
         "Countertop",
         "What's wrong (1)",
-        "To check (0)",
+        "Your decision (0)",
         "What's right (1)",
         "Backsplash height",
         "Not checked",

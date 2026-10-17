@@ -3610,6 +3610,18 @@
             "description": "\"What's right\" items not compared: not scored.",
             "title": "Not Compared"
           },
+          "rescored": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "True when this score was worked out again from the stored findings with today's calibration and differs from the score stored with the answer (#1513).",
+            "title": "Rescored"
+          },
           "score": {
             "anyOf": [
               {
@@ -5372,7 +5384,7 @@
                 "type": "null"
               }
             ],
-            "description": "The answer's accuracy by code (its `accuracy` block); null on older answers."
+            "description": "The answer's accuracy by code (its `accuracy` block, scored again with today's calibration: see `rescored`); null on older answers."
           },
           "blocks": {
             "anyOf": [
@@ -5514,6 +5526,22 @@
             "description": "The per-answer cap this answer ran under (\"5.00\").",
             "title": "Message Cap Usd"
           },
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "chat",
+                  "full_check"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A typed question (`chat`) or the one-click full check; null on messages stored before it was kept (#1513).",
+            "title": "Mode"
+          },
           "model": {
             "anyOf": [
               {
@@ -5536,6 +5564,25 @@
             ],
             "description": "The drawing set's AI budget this answer ran under (\"40.00\").",
             "title": "Package Cap Usd"
+          },
+          "products": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "countertop",
+                    "cabinet"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The products the message was about; null on older messages.",
+            "title": "Products"
           },
           "role": {
             "enum": [

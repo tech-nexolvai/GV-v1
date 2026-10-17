@@ -1871,7 +1871,7 @@ class ChatEngine:
         )
         counts = {
             kind: sum(1 for f in findings if cloud_kind(f) == key)
-            for kind, key in (("wrong", "wrong"), ("to check", "check"), ("right", None))
+            for kind, key in (("wrong", "wrong"), ("your decision", "check"), ("right", None))
         }
         coverage = book.coverage_map()["counts"] if book.coverage_used else None
         trust = report.get("counts") or {}
@@ -1881,7 +1881,7 @@ class ChatEngine:
             "Products": products,
             "Made": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
             "Model": f"{self.settings.model.label}, {self.settings.effort} effort",
-            "Items": f"{counts['wrong']} wrong, {counts['to check']} to check, "
+            "Items": f"{counts['wrong']} wrong, {counts['your decision']} need your decision, "
             f"{counts['right']} right",
             "Coverage": (
                 "not recorded"
@@ -1890,7 +1890,7 @@ class ChatEngine:
                 f"accounted for ({coverage['not_comparable']} not comparable)"
             ),
             "Trust": f"{trust.get('confirmed', 0)} confirmed, {trust.get('likely', 0)} likely, "
-            f"{trust.get('to_check', 0)} to check",
+            f"{trust.get('to_check', 0)} AI reading only",
         }
         not_checked = list(report.get("not_checked") or [])
         for item in (report.get("gv_checks") or {}).get("left_out") or []:

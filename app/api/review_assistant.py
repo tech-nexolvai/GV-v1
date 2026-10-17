@@ -38,6 +38,7 @@ from app.review.assistant.contract import (
     AssistantRequest,
     model_label,
 )
+from app.review.assistant.full_check_brief import LEAD_RESULTS
 from app.review.assistant.model import OpenRouterAssistantModel
 from app.review.assistant.page_pictures import RevisionPagePictures
 from app.review.assistant.records import ReviewSnapshot, build_snapshot
@@ -307,8 +308,14 @@ def ai_review_and_job_values(
             counts: dict[str, int] = {}
             for row in sheet.rows:
                 counts[row.result] = counts.get(row.result, 0) + 1
-            rows = [row for row in rows if row["result"] == "different"]
-            pages.append({"page": sheet.page, "status": sheet.status, **counts, "different": rows})
+            summary: dict[str, Any] = {"page": sheet.page, "status": sheet.status, **counts}
+            summary["different"] = [row for row in rows if row["result"] == "different"]
+            # The rows the page review could not settle or saw on one side only: leads a full
+            # check settles on the drawing (#1515), never recorded results.
+            leads = [row for row in rows if row["result"] in LEAD_RESULTS]
+            if leads:
+                summary["leads"] = leads
+            pages.append(summary)
         else:
             pages.append({"page": sheet.page, "status": sheet.status, "rows": rows})
     _version, values, _rows = _project_set(session, project_id)

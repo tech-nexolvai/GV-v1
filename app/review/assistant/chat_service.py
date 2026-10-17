@@ -517,7 +517,14 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             else job.text
         )
         with job.factory() as session:
-            add_user_message(session, chat_id=job.chat_id, created_by=job.created_by, text=shown)
+            add_user_message(
+                session,
+                chat_id=job.chat_id,
+                created_by=job.created_by,
+                text=shown,
+                mode=job.mode,
+                products=job.products,
+            )
             session.commit()
     except Exception:  # noqa: BLE001 - told plainly; nothing was sent
         _log.exception("assistant chat could not store the question")
@@ -700,6 +707,8 @@ def _finish(job: MessageJob, run: RunningMessage, emit: Emit, outcome: MessageOu
                 message_cap_micros=job.message_cap_micros,
                 package_cap_micros=job.package_cap_micros,
                 cap_hit=outcome.cap_hit if outcome.stopped == "cost_cap" else None,
+                mode=job.mode,
+                products=job.products,
             )
             session.commit()
             stored = message_out(message, files_of(session, job.chat_id))
