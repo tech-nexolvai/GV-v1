@@ -41,7 +41,7 @@ import { ApiError } from '@/api/client';
 import { chatFailureWords, chatPaths, CONTINUE_TEXT, isAbort, LIVE_CHAT_API, type Chat, type ChatApi, type ChatEvent, type ChatMessage, type ChatMode, type ChatModels, type ChatProduct } from '@/lib/chat-api';
 import { confirmWords, effectiveProducts, FULL_CHECK_TEXT, isFullCheck, readProducts, saveProducts, toggleProduct } from '@/lib/chat-full-check';
 import { knownAreas, lastFindings, withPrompt } from '@/lib/chat-plus-actions';
-import { applyChatEvent, CHAT_STARTERS, chatTitle, dollars, followedAnswer, fromSaved, localAnswer, localQuestion, previousQuestion, settle, type ViewMessage } from '@/lib/chat-messages';
+import { applyChatEvent, applyCorrection, CHAT_STARTERS, chatTitle, dollars, followedAnswer, fromSaved, localAnswer, localQuestion, previousQuestion, settle, type ViewMessage } from '@/lib/chat-messages';
 import { browserStorage, EFFORT_WORDS, readChoice, resolveChoice, saveChoice, shortModelLabel, type ChatChoice } from '@/lib/chat-settings';
 import { cn } from '@/lib/utils';
 
@@ -242,6 +242,11 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
           if (!started) onStarted?.();
           started = true;
           patch((message) => applyChatEvent(message, event));
+          if (event.event === 'finding_update' && event.data.update?.ref) {
+            // #1548: the earlier answer it corrects shows the newest version at once.
+            const { update } = event.data;
+            setThread((now) => (now && now.chatId === target ? { ...now, messages: applyCorrection(now.messages, update) } : now));
+          }
         }, run.controller.signal);
         patch((message) => (message.status === 'running' ? settle(message) : message));
         setAnnounce('Answer ready');

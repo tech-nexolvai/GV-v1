@@ -416,6 +416,11 @@ function FindingRow({ finding, area, open, leaving, onToggle, onOpen, pictureUrl
             {statusOf(finding) === 'not_compared' && <StatusMark finding={finding} />}
             <Confidence finding={finding} />
             <RoundChip finding={finding} />
+            {finding.updated_in && (
+              <span data-slot="chat-finding-updated" className="text-xs text-muted-foreground">
+                Updated in a later message
+              </span>
+            )}
             {tag && <span data-slot="chat-finding-source" className="text-xs text-muted-foreground">{tag.replace(/^vs /, 'Compared with the ')}</span>}
             {finding.vs_page != null && finding.vs_page !== finding.page && <span className="hidden text-xs text-muted-foreground tabular-nums lg:inline">vs page {finding.vs_page}</span>}
           </span>

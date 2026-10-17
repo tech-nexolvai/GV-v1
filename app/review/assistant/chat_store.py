@@ -31,6 +31,7 @@ from app.review.assistant.chat_contract import (
     ChatMessageOut,
     ChatSummaryOut,
 )
+from app.review.assistant.chat_corrections import with_corrections
 from app.review.assistant.chat_decisions import with_decisions
 from app.review.assistant.chat_trust import rescored
 
@@ -321,10 +322,13 @@ def message_out(
     message: AssistantChatMessage,
     files: Iterable[AssistantChatFile],
     decisions: Mapping[str, Mapping[str, Any]] | None = None,
+    corrections: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> ChatMessageOut:
     """A stored message for the screen. An answer's accuracy is scored again from its stored
     findings with today's calibration (#1513; nothing is written). `decisions`: the answer's
-    latest decision per finding id (#1521), added to its findings."""
+    latest decision per finding id (#1521), added to its findings. `corrections`: later messages'
+    newest correction per finding id (#1548, `chat_corrections`): each such finding is shown at its
+    newest version, marked as updated (or dropped) in a later message."""
     if message.role == "user":
         return ChatMessageOut.model_validate(
             {
@@ -345,7 +349,8 @@ def message_out(
             "model": message.model,
             "effort": message.effort,
             "thinking": message.thinking,
-            "blocks": with_decisions(message.blocks, decisions) or [],
+            "blocks": with_decisions(with_corrections(message.blocks, corrections), decisions)
+            or [],
             "files": [file_out(row) for row in files if row.message_id == message.id],
             "cost_usd": _usd(message.cost_micros),
             "stopped": message.stopped,

@@ -7,7 +7,7 @@
  * message, which then replaces what was built live: a reload and a live answer end up identical.
  */
 
-import type { ChatAccuracy, ChatAgent, ChatBlock, ChatCite, ChatCoverage, ChatEffort, ChatEvent, ChatFile, ChatFinding, ChatMessage, ChatMode, ChatModel, ChatProduct, ChatProgress, ChatResume, ChatScope, ChatStep, ChatStopped, ChatSummary, ChatTask, ChatTrust, ChatUnknown } from '@/lib/chat-api';
+import type { ChatAccuracy, ChatAgent, ChatBlock, ChatCite, ChatCoverage, ChatEffort, ChatEvent, ChatFile, ChatFinding, ChatFindingUpdate, ChatMessage, ChatMode, ChatModel, ChatProduct, ChatProgress, ChatResume, ChatScope, ChatStep, ChatStopped, ChatSummary, ChatTask, ChatTrust, ChatUnknown } from '@/lib/chat-api';
 import { EFFORT_WORDS } from '@/lib/chat-settings';
 
 /** A helper agent while its Agent step runs: `running` until its `agent_end`. */
@@ -64,6 +64,8 @@ export interface ViewMessage {
   unknowns?: ChatUnknown[];
   /** With `stopped: "interrupted"`: how Continue picks up (#1514). */
   resume?: ChatResume | null;
+  /** #1548: the earlier answers' findings this answer corrected (newest per ref). */
+  corrections?: ChatFindingUpdate[];
   cost_usd: string | null;
   stopped: ChatStopped | null;
   error: string | null;
@@ -91,6 +93,38 @@ export function withFinding(findings: readonly ChatFinding[], finding: ChatFindi
   return findings.some((known) => known.id === finding.id)
     ? findings.map((known) => (known.id === finding.id ? finding : known))
     : [...findings, finding];
+}
+
+/** A correction added, or put in place of its earlier version (same ref). */
+export function withCorrection(corrections: readonly ChatFindingUpdate[], update: ChatFindingUpdate): ChatFindingUpdate[] {
+  return corrections.some((known) => known.ref === update.ref)
+    ? corrections.map((known) => (known.ref === update.ref ? update : known))
+    : [...corrections, update];
+}
+
+/**
+ * #1548: a later message corrected a finding of an earlier answer. That answer shows the newest
+ * version ("updated in a later message"), or loses it when it was dropped. The server reads it the
+ * same way on reload; this keeps the screen in step while the later answer streams.
+ */
+export function applyCorrection(messages: readonly ViewMessage[], update: ChatFindingUpdate, laterId: string | null = null): ViewMessage[] {
+  return messages.map((message) => {
+    if (message.id !== update.message_id || !message.findings) return message;
+    if (update.dropped) return { ...message, findings: message.findings.filter((finding) => finding.id !== update.finding_id) };
+    const newest: ChatFinding = {
+      ...update.finding,
+      id: update.finding_id,
+      updated_in: { message_id: laterId ?? '', answer: update.by_answer ?? null, version: update.version },
+    };
+    return { ...message, findings: message.findings.map((finding) => (finding.id === update.finding_id ? newest : finding)) };
+  });
+}
+
+/** The corrections a saved answer made (#1548), newest per ref. */
+export function correctionsOf(blocks: readonly ChatBlock[]): ChatFindingUpdate[] {
+  let corrections: ChatFindingUpdate[] = [];
+  for (const block of blocks) if (block.type === 'finding_update' && block.update?.ref) corrections = withCorrection(corrections, block.update);
+  return corrections;
 }
 
 /** A cite added, or put in place of its earlier version (same id). */
@@ -175,6 +209,7 @@ export function fromSaved(message: ChatMessage): ViewMessage {
     unknowns,
     progress,
     resume: message.resume ?? resumeOf(saved),
+    corrections: correctionsOf(saved),
     cost_usd: message.cost_usd ?? null,
     stopped: message.stopped ?? null,
     error: message.error ?? null,
@@ -304,6 +339,8 @@ export function applyChatEvent(message: ViewMessage, event: ChatEvent): ViewMess
       return event.data.finding?.id ? { ...message, findings: withFinding(message.findings ?? [], event.data.finding) } : message;
     case 'finding_dropped':
       return { ...message, findings: (message.findings ?? []).filter((finding) => finding.id !== event.data.finding_id) };
+    case 'finding_update':
+      return event.data.update?.ref ? { ...message, corrections: withCorrection(message.corrections ?? [], event.data.update) } : message;
     case 'coverage':
       return { ...message, coverage: event.data.coverage ?? message.coverage ?? null };
     case 'scope':
@@ -333,6 +370,7 @@ export function applyChatEvent(message: ViewMessage, event: ChatEvent): ViewMess
         mode: stored.mode ?? message.mode ?? null,
         scope: stored.scope ?? message.scope ?? null,
         cites: stored.cites?.length ? stored.cites : message.cites ?? [],
+        corrections: stored.corrections?.length ? stored.corrections : message.corrections ?? [],
         accuracy: stored.accuracy ?? message.accuracy ?? null,
         unknowns: stored.unknowns?.length ? stored.unknowns : message.unknowns ?? [],
         progress: stored.progress ?? message.progress ?? null,

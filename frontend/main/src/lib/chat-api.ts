@@ -192,6 +192,7 @@ export type ChatBlock =
   | { type: 'text'; text: string; by?: 'code' | null }
   | { type: 'step'; step: ChatStep }
   | { type: 'finding'; finding: ChatFinding }
+  | { type: 'finding_update'; update: ChatFindingUpdate }
   | { type: 'coverage'; coverage: ChatCoverage }
   | { type: 'progress'; progress: ChatProgress }
   | { type: 'scope'; scope: ChatScope }
@@ -299,6 +300,30 @@ export interface ChatFinding {
   critic?: FindingCritic | null;
   /** #1522: the reviewer's latest Agree / Not a problem on it, when the server sends it. */
   decision?: FindingDecision | null;
+  /** #1548: set when a later message of the chat corrected it; this is its newest version. */
+  updated_in?: FindingLater | null;
+}
+
+/** #1548: the later answer of the same chat that corrected a finding. */
+export interface FindingLater {
+  message_id: string;
+  answer?: number | null;
+  version: number;
+}
+
+/** #1548: a later message's correction of an earlier answer's finding (`A1-F5`). */
+export interface ChatFindingUpdate {
+  ref: string;
+  /** The earlier answer the finding belongs to. */
+  message_id: string;
+  finding_id: string;
+  answer: number;
+  by_answer?: number | null;
+  version: number;
+  /** The new version (the last one, when dropped). */
+  finding: ChatFinding;
+  /** Why it was dropped; null when it was updated. */
+  dropped?: string | null;
 }
 
 export type EvidenceKind = 'observed' | 'derived' | 'inferred';
@@ -605,7 +630,8 @@ export type ChatTool =
   | 'compare_rounds'
   | 'verify_value'
   | 'zoom'
-  | 'read_under_markup';
+  | 'read_under_markup'
+  | 'remember';
 
 /** One tool the assistant used. `step_start` sends it without its output; `step_end` sends it whole. */
 export interface ChatStep {
@@ -693,6 +719,7 @@ export type ChatEvent =
   | { event: 'error'; data: { message: string } }
   | { event: 'finding'; data: { finding: ChatFinding } }
   | { event: 'finding_dropped'; data: { finding_id: string } }
+  | { event: 'finding_update'; data: { index?: number; update: ChatFindingUpdate } }
   | { event: 'coverage'; data: { coverage: ChatCoverage } }
   | { event: 'progress'; data: { index?: number; progress: ChatProgress } }
   | { event: 'scope'; data: { index?: number | null; scope: ChatScope } }
@@ -706,7 +733,7 @@ export type ChatEventName = ChatEvent['event'];
 const EVENT_NAMES: ReadonlySet<string> = new Set<ChatEventName>([
   'message_start', 'thinking_start', 'thinking_delta', 'thinking_end', 'text_delta', 'step_start', 'step_end',
   'tasks', 'agent_start', 'agent_step', 'agent_end', 'file', 'usage', 'message_end', 'error',
-  'finding', 'finding_dropped', 'coverage', 'progress', 'scope', 'trust', 'cite', 'accuracy', 'unknowns',
+  'finding', 'finding_dropped', 'finding_update', 'coverage', 'progress', 'scope', 'trust', 'cite', 'accuracy', 'unknowns',
 ]);
 
 /**

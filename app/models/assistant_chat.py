@@ -14,8 +14,11 @@
   (so it has no foreign key).
 * `AssistantFindingDecision` (#1521): the reviewer's ✓ Agree / ✗ Not a problem on one finding of an
   answer. A changed mind is a new row; the latest row per finding wins when read.
+* `AssistantSetNote` (#1548): the drawing set's memory across chats: a fact the reviewer or the AI
+  established (a decision with the person's name, a correction, what a dimension measures, which
+  document governs). Every chat on the set starts with the newest ones.
 
-All four are append-only (the same trigger and grants as every other record table).
+All five are append-only (the same trigger and grants as every other record table).
 """
 
 from __future__ import annotations
@@ -169,12 +172,47 @@ class AssistantFindingDecision(Base, TimestampedUUID, Immutable):
     )
 
 
+#: Who established a set note (#1548): the AI (`remember`), or a reviewer's decision.
+SET_NOTE_SOURCES: tuple[str, ...] = ("ai", "decision")
+
+
+class AssistantSetNote(Base, TimestampedUUID, Immutable):
+    """One fact about a drawing set, kept for every chat on it (#1548). Never changed: a newer
+    note that says otherwise is a new row, and the newest notes come first."""
+
+    __tablename__ = "assistant_set_notes"
+
+    package_id: Mapped[UUID] = mapped_column(
+        ForeignKey("packages.id", ondelete="RESTRICT"), index=True
+    )
+    note: Mapped[str] = mapped_column(Text)
+    page: Mapped[int | None] = mapped_column(default=None)
+    """The page of the vendor's file the note is about, when it is about one."""
+    source: Mapped[str] = mapped_column(String(16))
+    chat_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("assistant_chats.id", ondelete="RESTRICT"), default=None, index=True
+    )
+    message_id: Mapped[UUID | None] = mapped_column(default=None)
+    """The answer it came from (written before that answer is stored, so no foreign key)."""
+    created_by: Mapped[str] = mapped_column(String(200))
+
+    __table_args__ = (
+        CheckConstraint(
+            f"source IN ({_listed(SET_NOTE_SOURCES)})", name="assistant_set_note_source"
+        ),
+        CheckConstraint("note <> ''", name="assistant_set_note_text"),
+        CheckConstraint("page IS NULL OR page >= 1", name="assistant_set_note_page"),
+    )
+
+
 __all__ = [
     "CHAT_ROLES",
     "CHAT_STOPS",
     "FINDING_DECISIONS",
+    "SET_NOTE_SOURCES",
     "AssistantChat",
     "AssistantChatFile",
     "AssistantChatMessage",
     "AssistantFindingDecision",
+    "AssistantSetNote",
 ]
