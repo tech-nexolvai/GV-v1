@@ -115,7 +115,7 @@ export function FindingLineText({ finding }: { finding: ChatFinding }) {
         <span
           data-slot="chat-finding-difference"
           className={cn(
-            'ml-1.5 inline-flex h-[18px] items-center rounded-[5px] px-1.5 align-[1px] text-[11.5px] font-semibold tabular-nums',
+            'ml-1.5 inline-flex h-[18px] items-center rounded-[5px] px-1.5 align-[1px] text-xs font-semibold tabular-nums',
             finding.status === 'different' ? 'bg-outcome-fail-bg text-outcome-fail-fg' : 'bg-muted text-muted-foreground',
           )}
         >
@@ -133,7 +133,7 @@ export function EvidenceThumb({ src, label, className }: { src: string | null; l
   const [broken, setBroken] = useState<string | null>(null);
   if (!src || broken === src) {
     return (
-      <span data-slot="chat-evidence-thumb" data-missing="true" className={cn('grid place-items-center rounded-md border border-dashed bg-muted/40 px-2 text-center text-[11.5px] text-muted-foreground', className)}>
+      <span data-slot="chat-evidence-thumb" data-missing="true" className={cn('grid place-items-center rounded-md border border-dashed bg-muted/40 px-2 text-center text-xs text-muted-foreground', className)}>
         <ImageOff aria-hidden="true" className="mb-0.5 size-3.5" />
         <span>{label}: no evidence picture</span>
       </span>
@@ -156,7 +156,7 @@ function PairSide({ src, side, label, onOpen }: { src: string | null; side: 'A' 
       className="group/pic relative block h-24 min-w-0 rounded-md border bg-white focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none"
     >
       <EvidenceThumb src={src} label={label} className="size-full rounded-[5px] p-[3px]" />
-      <span aria-hidden="true" className="absolute top-1 left-1 rounded-[4px] bg-black/70 px-1 py-0.5 text-[10px] leading-none font-semibold text-white">{side}</span>
+      <span aria-hidden="true" className="absolute top-1 left-1 rounded-[4px] bg-black/70 px-1 py-0.5 text-xs leading-none font-semibold text-white">{side}</span>
       {/* Hover / focus zoom: a larger copy beside the pair, never covering the row's words. */}
       <span
         aria-hidden="true"

@@ -86,7 +86,7 @@ describe('the reading ledger on the screen', () => {
       gv_checks: { recorded: 9, included: 9, left_out: [] },
       rounds: { fixed: 1, still_wrong: 2, new: 0, unrequested: 2, line: 'Vendor fixed 1 of 3 round-1 items · 2 still wrong · 2 changes nobody asked for' },
     };
-    const node = show(answer({ findings: [CROSS, SUM], trust, scope: 'whole_set' }));
+    const node = show(answer({ findings: [CROSS, SUM], trust, scope: { kind: 'whole_set' } }));
     const summary = within(node).getByRole('region', { name: 'How this was checked' });
     await user.click(within(summary).getByRole('button', { name: 'How this was checked' }));
     const ledger = within(summary).getByRole('button', { name: /Read and checked by code: 41 strings · 38 add up · 3 don’t/ });

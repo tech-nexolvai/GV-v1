@@ -345,9 +345,14 @@ describe('areas and one-line rows (#1508)', () => {
     const few = [finding('n1', { page: 8 }), finding('n2', { page: 8, vs_page: 9 })];
     expect(isNarrowAnswer({ findings: few, coverage: null }, false)).toBe(true);
     expect(isNarrowAnswer({ findings: few, coverage: null }, true)).toBe(false);
-    expect(isNarrowAnswer({ findings: few, coverage: null, scope: 'whole_set' }, false)).toBe(false);
+    expect(isNarrowAnswer({ findings: few, coverage: null, scope: { kind: 'whole_set' } }, false)).toBe(false);
     const many = [1, 2, 3, 4].map((page) => finding(`m${page}`, { page }));
     expect(isNarrowAnswer({ findings: many, coverage: null }, false)).toBe(false);
-    expect(isNarrowAnswer({ findings: many, coverage: null, scope: { pages: [8] } }, false)).toBe(true);
+    expect(isNarrowAnswer({ findings: many, coverage: null, scope: { kind: 'pages', pages: [8], label: 'page 8' } }, false)).toBe(true);
+    // The scope comes from the stream (#1528) and from a saved message's scope block.
+    const live = applyChatEvent(localAnswer('k', { model: 'm', effort: 'high', thinking: true }), { event: 'scope', data: { index: null, scope: { kind: 'area', area: 'Buffet', label: 'the Buffet' } } });
+    expect(live.scope).toEqual({ kind: 'area', area: 'Buffet', label: 'the Buffet' });
+    const saved = fromSaved({ id: 's', role: 'assistant', created_at: '2026-10-17T10:00:00Z', text: 'x', blocks: [{ type: 'scope', scope: { kind: 'pages', pages: [8] } }] } as never);
+    expect(saved.scope).toEqual({ kind: 'pages', pages: [8] });
   });
 });

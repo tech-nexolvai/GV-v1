@@ -146,8 +146,17 @@ export interface ChatProgress {
   eta_seconds: number | null;
 }
 
-/** What an answer covers: the whole drawing set, or some pages or one area (a narrow question). */
-export type ChatScope = 'whole_set' | { pages?: number[] | null; area?: string | null };
+/**
+ * What an answer covers (#1528), worked out by code: the whole drawing set, or some pages, or one
+ * area (a narrow question). `label` says it in words ("page 8", "pages 27-28", "the whole set").
+ */
+export interface ChatScope {
+  kind: 'whole_set' | 'pages' | 'area';
+  pages?: number[] | null;
+  area?: string | null;
+  why?: string | null;
+  label?: string | null;
+}
 
 /** The reviewer's answer on one finding (PATH step 5), recorded append-only by the server. */
 export type FindingDecisionValue = 'agree' | 'not_a_problem';
@@ -166,6 +175,7 @@ export type ChatBlock =
   | { type: 'finding'; finding: ChatFinding }
   | { type: 'coverage'; coverage: ChatCoverage }
   | { type: 'progress'; progress: ChatProgress }
+  | { type: 'scope'; scope: ChatScope }
   | { type: 'trust'; trust: ChatTrust }
   | { type: 'cite'; cite: ChatCite }
   | { type: 'accuracy'; accuracy: ChatAccuracy }
@@ -612,6 +622,7 @@ export type ChatEvent =
   | { event: 'finding_dropped'; data: { finding_id: string } }
   | { event: 'coverage'; data: { coverage: ChatCoverage } }
   | { event: 'progress'; data: { index?: number; progress: ChatProgress } }
+  | { event: 'scope'; data: { index?: number | null; scope: ChatScope } }
   | { event: 'trust'; data: { trust: ChatTrust } }
   | { event: 'cite'; data: { cite: ChatCite } }
   | { event: 'accuracy'; data: { accuracy: ChatAccuracy } }
@@ -622,7 +633,7 @@ export type ChatEventName = ChatEvent['event'];
 const EVENT_NAMES: ReadonlySet<string> = new Set<ChatEventName>([
   'message_start', 'thinking_start', 'thinking_delta', 'thinking_end', 'text_delta', 'step_start', 'step_end',
   'tasks', 'agent_start', 'agent_step', 'agent_end', 'file', 'usage', 'message_end', 'error',
-  'finding', 'finding_dropped', 'coverage', 'progress', 'trust', 'cite', 'accuracy', 'unknowns',
+  'finding', 'finding_dropped', 'coverage', 'progress', 'scope', 'trust', 'cite', 'accuracy', 'unknowns',
 ]);
 
 /**

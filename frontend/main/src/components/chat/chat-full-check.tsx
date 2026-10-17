@@ -126,7 +126,7 @@ function CloudPreview({ href, page, total }: { href: string; page: number; total
       ) : (
         <img src={state.src} alt={`Cloud drawing, page ${page}`} className="size-full object-cover object-[50%_88%]" />
       )}
-      <span className="absolute bottom-2 left-2 rounded-[5px] bg-black/70 px-1.5 py-0.5 text-[11px] font-medium text-white tabular-nums">
+      <span className="absolute bottom-2 left-2 rounded-[5px] bg-black/70 px-1.5 py-0.5 text-xs font-medium text-white tabular-nums">
         Page {page}{total ? ` of ${total}` : ''}
       </span>
     </span>

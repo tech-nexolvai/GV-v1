@@ -534,14 +534,13 @@ export const NARROW_PAGES = 3;
 /**
  * True for an answer about a few pages ("Do the fillers on page 8 meet the rule?"): it shows its
  * words, its findings and one quiet confidence line, never the whole-set panels (page grid,
- * coverage, GV matches, ledger). The server's `scope` decides when it sends one; until then, an
- * answer that is not a full check and touches at most three pages is narrow.
+ * coverage, GV matches, ledger). The server's `scope` (#1528) decides; an older answer without
+ * one is narrow when it is not a full check and touches at most three pages.
  */
 export function isNarrowAnswer(message: Pick<ViewMessage, 'findings' | 'coverage'> & { scope?: ViewMessage['scope'] }, fullCheck: boolean): boolean {
   if (fullCheck) return false;
-  const scope = message.scope;
-  if (scope === 'whole_set') return false;
-  if (scope && typeof scope === 'object') return true;
+  // #1528: the server's own scope decides when it sent one.
+  if (message.scope?.kind) return message.scope.kind !== 'whole_set';
   const pages = new Set<number>();
   for (const finding of message.findings ?? []) {
     pages.add(finding.page);

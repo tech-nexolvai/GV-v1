@@ -122,6 +122,13 @@ export function evidenceOf(blocks: readonly ChatBlock[]): { findings: ChatFindin
   return { findings, coverage, trust, cites, accuracy, unknowns, progress };
 }
 
+/** The last scope block of a saved message (#1528), when the message itself carries none. */
+function scopeOf(blocks: readonly ChatBlock[]): ChatScope | null {
+  let scope: ChatScope | null = null;
+  for (const block of blocks) if (block.type === 'scope' && block.scope) scope = block.scope;
+  return scope;
+}
+
 /** A saved message, as the screen shows it. A saved answer with words but no blocks shows its words. */
 export function fromSaved(message: ChatMessage): ViewMessage {
   const saved = message.blocks ?? [];
@@ -150,7 +157,7 @@ export function fromSaved(message: ChatMessage): ViewMessage {
     coverage,
     trust,
     mode: message.mode ?? null,
-    scope: message.scope ?? null,
+    scope: message.scope ?? scopeOf(saved),
     products: message.products ?? null,
     cites,
     accuracy: message.accuracy ?? accuracy,
@@ -287,6 +294,8 @@ export function applyChatEvent(message: ViewMessage, event: ChatEvent): ViewMess
       return { ...message, findings: (message.findings ?? []).filter((finding) => finding.id !== event.data.finding_id) };
     case 'coverage':
       return { ...message, coverage: event.data.coverage ?? message.coverage ?? null };
+    case 'scope':
+      return event.data.scope ? { ...message, scope: event.data.scope } : message;
     case 'progress':
       return { ...message, progress: event.data.progress ?? message.progress ?? null };
     case 'trust':

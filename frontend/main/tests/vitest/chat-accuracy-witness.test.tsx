@@ -97,7 +97,7 @@ describe('unknowns', () => {
     const user = userEvent.setup();
     expect(unknownsWords(UNKNOWNS)).toBe('3 not checked');
     expect(unknownsWords([])).toBeNull();
-    render(<AssistantMessage message={answer({ findings: FINDINGS, scope: 'whole_set', unknowns: UNKNOWNS, trust: { evidence: { observed: 1, derived: 1, inferred: 1 }, not_compared: 1 } })} chatId="c-1" models={[OPUS]} />);
+    render(<AssistantMessage message={answer({ findings: FINDINGS, scope: { kind: 'whole_set' }, unknowns: UNKNOWNS, trust: { evidence: { observed: 1, derived: 1, inferred: 1 }, not_compared: 1 } })} chatId="c-1" models={[OPUS]} />);
     const summary = screen.getByRole('region', { name: 'How this was checked' });
     await user.click(within(summary).getByRole('button', { name: 'How this was checked' }));
     expect(summary.querySelector('[data-slot="chat-trust-evidence"]')?.textContent).toBe('1 printed on the drawing · 1 worked out by code · 1 AI reading only · 1 not compared');
