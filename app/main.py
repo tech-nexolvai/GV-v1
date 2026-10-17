@@ -151,6 +151,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finding_export,
         findings,
         item_architect,
+        job_tracker,
         measurements,
         operations,
         packages,
@@ -244,6 +245,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(review_assistant.router, prefix=API_PREFIX)
     # The chat-first assistant (#1463): saved chats per drawing set, streamed, read-only on the review.
     app.include_router(assistant_chats.router, prefix=API_PREFIX)
+    # The job tracker (#1578): every item found across the project's sets, rounds and checks, and
+    # the vendor scorecard; read-only, built by code from the stored chat answers and decisions.
+    app.include_router(job_tracker.router, prefix=API_PREFIX)
 
     @app.middleware("http")
     async def _request_id(
