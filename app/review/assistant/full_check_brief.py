@@ -44,6 +44,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Final
 
 from app.review.assistant.chat_trust import recorded_from
+from app.review.assistant.dim_index import checklist_label_gaps
 from vocabulary.product_registry import Product, registry
 
 __all__ = [
@@ -54,10 +55,12 @@ __all__ = [
     "checklist_gaps",
     "checklist_send_back",
     "helper_brief",
+    "label_summary",
     "leads_on_pages",
     "page_lines",
     "product_checklist",
     "recorded_on_pages",
+    "with_label_gaps",
 ]
 
 #: The AI page review results that are leads for a full check (GV's page review could not settle
@@ -199,6 +202,10 @@ CHECKLIST, for every page:
 {checklist}
 
 {product_checklist}
+
+DIMENSION LABELS: code numbered every printed dimension it found on your pages (zoom with marks: true shows the ids; set pack dims.json lists them):
+{labels}
+Every VENDOR label on your pages must be handled: matched in a finding (report_finding vendor_dim, with architect_dim for the architect's), part of a string you recorded (record_string), or named on a line LABELS p<N> not on architect: D3, D9. Code counts the vendor labels left over.
 
 OUTPUT: report_finding for every item you compare, the Right ones too (status different = Wrong, check = Your decision with decision_help, same = Right), with vendor_box and arch_box (each with its page), values as printed in inches, round on vendor findings, vs_page when the architect is on another page. Name each item starting with its area from the list above ("<area>: counter height"), the same way on every page, view and round. record_string for every dimension string and record_reading for every value you read, both sides; never add up yourself. set_coverage for each page. verified: false (the lead verifies).
 
@@ -345,10 +352,12 @@ def helper_brief(
     file_name: str,
     page_map: Mapping[str, Any] | Sequence[Any] | None = None,
     review_document: Mapping[str, Any] | None = None,
+    labels: Mapping[int, Sequence[Mapping[str, Any]] | None] | None = None,
     products: Sequence[str] | None = None,
 ) -> str:
     """The brief for one full-check helper: its pages (with areas and pairs from the page map),
-    GV's recorded results and its page review's leads on them, and the per-page checklist.
+    GV's recorded results and its page review's leads on them, the per-page checklist, and the
+    numbered dimension labels on its pages (`labels`: per page, #1558; `None`: not listed yet).
 
     `review_document` is `review_results`' whole-set document (what the lead's `review_results`
     call returns); `None` when it could not be read, and the brief says so. `products`: the products
@@ -365,8 +374,51 @@ def helper_brief(
         recorded="\n".join(recorded) or (unread if review_document is None else _NONE),
         leads="\n".join(leads) or _NONE,
         checklist="\n".join(f"- {name}: {text}" for name, text in PAGE_CHECKLIST),
+        labels=(
+            "\n".join(label_summary(pages, labels))
+            if labels is not None
+            else "- not listed yet: zoom with marks: true to see them"
+        ),
         product_checklist=product_checklist(products),
     )
+
+
+def label_summary(
+    pages: Iterable[int], labels: Mapping[int, Sequence[Mapping[str, Any]] | None]
+) -> list[str]:
+    """One line per page: how many dimension labels code found on each drawing (#1558)."""
+    lines: list[str] = []
+    for page in sorted(set(pages)):
+        found = labels.get(page)
+        if found is None:
+            lines.append(f"- p{page}: not listed yet (zoom with marks: true)")
+            continue
+        counts: dict[str, int] = {}
+        for label in found:
+            side = str(label.get("side") or "unknown")
+            counts[side] = counts.get(side, 0) + 1
+        words = ", ".join(f"{side} {count}" for side, count in sorted(counts.items()))
+        lines.append(f"- p{page}: {len(found)} labels ({words or 'none'})")
+    return lines
+
+
+def with_label_gaps(
+    gaps: Mapping[int, str],
+    report: str,
+    pages: Iterable[int],
+    labels: Mapping[int, Sequence[Mapping[str, Any]] | None],
+    findings: Iterable[Mapping[str, Any]],
+    strings: Iterable[Mapping[str, Any]] = (),
+    readings: Iterable[Mapping[str, Any]] = (),
+) -> dict[int, str]:
+    """`checklist_gaps` plus the vendor dimension labels nobody handled (#1558), per page."""
+    wanted = set(pages)
+    known = {page: found for page, found in labels.items() if page in wanted and found is not None}
+    left = checklist_label_gaps(report, known, findings, strings, readings)
+    out = dict(gaps)
+    for page, why in left.items():
+        out[page] = f"{out[page]}; {why}" if page in out else why
+    return out
 
 
 # ---- reading the checklist back ------------------------------------------------------------------

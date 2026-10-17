@@ -41,6 +41,8 @@ from typing import Any, Final
 from uuid import uuid4
 
 from app.review.assistant.chat_corrections import parse_ref
+from app.review.assistant.dim_findings import LabelRefused, fill_from_labels, label_for_cite
+from app.review.assistant.dim_index import DimLabels, labels_for
 from app.review.assistant.sandbox import UPLOADS, ChatWorkspace, SandboxRefused
 from app.review.assistant.tool_schema import box_schema
 from vocabulary.product_registry import registry
@@ -258,6 +260,16 @@ _FINDING_FIELDS: Final[Mapping[str, Any]] = {
         "description": "Which round of the set (1 = first submittal) when the set has rounds",
     },
     "decision_help": _DECISION_HELP_SCHEMA,
+    "architect_dim": {
+        "type": "string",
+        "description": "Instead of architect and arch_box: a label id from zoom marks (D17; "
+        "p22.D17 for another page); code fills both",
+    },
+    "vendor_dim": {
+        "type": "string",
+        "description": "Instead of vendor and vendor_box: a label id from zoom marks (D42); code "
+        "fills both",
+    },
     "check_reason": {
         "type": "string",
         "enum": list(CHECK_REASONS),
@@ -294,7 +306,8 @@ REPORT_FINDING: Final[Mapping[str, Any]] = {
     "input_schema": {
         "type": "object",
         "additionalProperties": False,
-        "required": sorted(_REQUIRED),
+        # The values may come from labels (architect_dim / vendor_dim); code still requires them.
+        "required": sorted(_REQUIRED - {"architect", "vendor"}),
         "properties": dict(_FINDING_FIELDS),
     },
 }
@@ -439,6 +452,11 @@ CITE: Final[Mapping[str, Any]] = {
         "required": ["value"],
         "properties": {
             "value": {"type": "string", "description": "The value as you state it"},
+            "dim": {
+                "type": "string",
+                "description": "Instead of page and box: the value's label id from zoom marks "
+                "(D17 with page, or p23.D17)",
+            },
             "page": {
                 "type": "integer",
                 "minimum": 1,
@@ -923,6 +941,35 @@ class FindingBook:
         item = main_upload(self.listing)
         return None if item is None else str(item["name"])
 
+    @property
+    def dim_labels(self) -> DimLabels:
+        """The set's numbered dimension labels (#1558)."""
+        return labels_for(self.workspace.set_pack, self.workspace.uploads)
+
+    def _labelled(
+        self, raw: Mapping[str, Any], current: Mapping[str, Any] | None
+    ) -> tuple[dict[str, Any], dict[str, Any] | None, list[str]]:
+        """`architect_dim` / `vendor_dim` turned into values and boxes (`dim_findings`)."""
+        if raw.get("architect_dim") is None and raw.get("vendor_dim") is None:
+            given = {k: v for k, v in raw.items() if k not in ("architect_dim", "vendor_dim")}
+            before = (current or {}).get("dims")
+            dims = dict(before) if isinstance(before, Mapping) else {}
+            for side, box in (("architect", "arch_box"), ("vendor", "vendor_box")):
+                if side in given or box in given:
+                    dims.pop(side, None)
+            return given, (dims or None), []
+        architect = _architect_upload(self.listing)
+        try:
+            return fill_from_labels(
+                raw,
+                self.dim_labels,
+                vendor_file=self.main_file,
+                architect_file=None if architect is None else str(architect["name"]),
+                current=current,
+            )
+        except LabelRefused as refused:
+            raise SandboxRefused(str(refused)) from None
+
     def _box(self, raw: object, name: str, *, architect: bool) -> dict[str, Any] | None:
         if raw is None:
             return None
@@ -1064,6 +1111,7 @@ class FindingBook:
         unknown = set(raw) - set(_FINDING_FIELDS)
         if unknown:
             raise SandboxRefused(f"unknown argument {min(unknown)!r}")
+        raw, dims, label_notes = self._labelled(raw, None)
         fields = self._fields(raw, partial=False)
         if created_by != "lead":
             fields["verified"] = False
@@ -1100,12 +1148,13 @@ class FindingBook:
             "created_by": created_by,
             "decision_help": fields.get("decision_help"),
             "check_reason": fields.get("check_reason"),
+            "dims": dims,
         }
         if self.checker is not None:
             finding = self.checker(finding)
         with self._lock:
             self.findings[finding_id] = finding
-        notes = [
+        notes = [*label_notes] + [
             f"{side} box: no picture ({why})"
             for side, why, given in (
                 ("architect", arch_why, fields.get("arch_box")),
@@ -1293,10 +1342,16 @@ class FindingBook:
         if unknown:
             raise SandboxRefused(f"unknown argument {min(unknown)!r}")
         finding_id = self._known(raw)
-        changes = self._fields({k: v for k, v in raw.items() if k != "finding_id"}, partial=True)
+        with self._lock:
+            current = dict(self.findings[finding_id])
+        given, dims, label_notes = self._labelled(
+            {k: v for k, v in raw.items() if k != "finding_id"}, current
+        )
+        changes = self._fields(given, partial=True)
         if not changes:
             raise SandboxRefused("give at least one field to change")
-        notes: list[str] = []
+        changes["dims"] = dims
+        notes: list[str] = list(label_notes)
         for box, picture, side in (
             ("arch_box", "arch_picture_id", "architect"),
             ("vendor_box", "vendor_picture_id", "vendor"),
@@ -1358,9 +1413,17 @@ class FindingBook:
         a fact about the file (checked here)."""
         if not isinstance(raw, Mapping):
             raise SandboxRefused("the tool's input is not an object")
-        unknown = set(raw) - {"value", "page", "box", "fact", "file"}
+        unknown = set(raw) - {"value", "page", "box", "fact", "file", "dim"}
         if unknown:
             raise SandboxRefused(f"unknown argument {min(unknown)!r}")
+        label: dict[str, Any] | None = None
+        if raw.get("dim") is not None:
+            named = raw.get("file")
+            short = named.strip().removeprefix(UPLOADS + "/") if isinstance(named, str) else None
+            try:
+                raw, label = label_for_cite(raw, self.dim_labels, file=short or self.main_file)
+            except LabelRefused as refused:
+                raise SandboxRefused(str(refused)) from None
         value = _text(raw, "value", _MAX_VALUE)
         fact = raw.get("fact")
         names = [str(item["name"]) for item in self.listing]
@@ -1385,6 +1448,7 @@ class FindingBook:
             "picture_id": None,
             "printed": "not_run",
             "evidence_kind": "inferred",
+            "dim": None if label is None else label.get("id"),
         }
         if fact is not None:
             cite["fact"] = _choice(fact, "fact", ("page_count", "file_name"))

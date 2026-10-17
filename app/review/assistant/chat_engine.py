@@ -180,10 +180,12 @@ from app.review.assistant.chat_trust import (
     with_second_read,
 )
 from app.review.assistant.chat_unknowns import refused_from_diff, unknown_records
+from app.review.assistant.dim_index import labels_for
 from app.review.assistant.full_check_brief import (
     checklist_gaps,
     checklist_send_back,
     helper_brief,
+    with_label_gaps,
 )
 from app.review.assistant.full_check_plan import (
     FanOutPlan,
@@ -226,9 +228,10 @@ _log = logging.getLogger(__name__)
 #: lines, #1548. chat-v13: the prompt and tool audit, #1559: one vocabulary, every tool says when
 #: to use it, what it returns and one example, every schema field described, the box units said
 #: one way, the lead prompt without its tool catalogue. chat-v14: remember, the corrections of an
-#: earlier answer's finding, and server-side clearing of old tool results, #1548.) Only the
-#: request's prefix changes; a chat's stored messages replay unchanged.
-HARNESS_ID: Final = "chat-v14"
+#: earlier answer's finding, and server-side clearing of old tool results, #1548. chat-v15: numbered
+#: dimension labels: zoom marks and guides, architect_dim / vendor_dim / dim, the helper brief's
+#: label rule, #1558.) Only the request's prefix changes; a chat's stored messages replay unchanged.
+HARNESS_ID: Final = "chat-v15"
 #: Helpers that may run at once, at most, whatever the setting says.
 MAX_PARALLEL_AGENTS_LIMIT: Final = 12
 #: Helpers one lead turn may start. More than run at once wait for a free place in the same turn:
@@ -2486,6 +2489,7 @@ class ChatEngine:
             file_name=f"{UPLOADS}/{job.file}",
             page_map=page_map,
             review_document=document,
+            labels=self._dim_labels(job.file, job.pages, read_now=False),
             products=self.settings.products,
         )
         overview = (
@@ -2510,6 +2514,35 @@ class ChatEngine:
                 f"GV's rules for {products} (summary; all of them in {SKILLS}/rules.md):\n{rules}"
             )
         return "\n\n".join(lines)
+
+    def _dim_labels(
+        self, file: str | None, pages: Sequence[int], *, read_now: bool = True
+    ) -> dict[int, list[dict[str, Any]] | None]:
+        """The numbered dimension labels on these pages of `file` (#1558)."""
+        if file is None:
+            return {}
+        labels = labels_for(self.tools.workspace.set_pack, self.tools.workspace.uploads)
+        return {page: labels.on_page(file, page, read_now=read_now) for page in pages}
+
+    def _label_gaps(
+        self, report: str, pages: Sequence[int], gaps: dict[int, str]
+    ) -> dict[int, str]:
+        """A helper's checklist gaps with the vendor labels nobody handled (#1558): on the pages
+        whose labels are known now (the set pack's, or read for a zoom), never waiting to read
+        a page."""
+        try:
+            return with_label_gaps(
+                gaps,
+                report,
+                pages,
+                self._dim_labels(self.book.main_file, pages, read_now=False),
+                self.book.live(),
+                [entry.as_dict() for entry in self.reading_ledger.strings],
+                [entry.as_dict() for entry in self.reading_ledger.readings],
+            )
+        except Exception:  # noqa: BLE001 - the checklist without labels still stands
+            _log.warning("assistant chat label gaps could not be counted")
+            return gaps
 
     def _merge_seeds(self, by: str) -> None:
         """A helper's finding for a difference GV Review recorded (same `record_id`) fills in the
@@ -2856,7 +2889,7 @@ class ChatEngine:
             if agent.pages:
                 # A code-planned helper's checklist (#1515): sent back once to finish it while it
                 # has turns left; what is still open goes to the lead.
-                gaps = checklist_gaps(report, agent.pages)
+                gaps = self._label_gaps(report, agent.pages, checklist_gaps(report, agent.pages))
                 note = checklist_send_back(gaps)
                 if (
                     note is not None

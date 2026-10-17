@@ -4587,6 +4587,44 @@ export interface components {
             note?: string | null;
         };
         /**
+         * ChatFindingDimOut
+         * @description A numbered dimension label a finding's side was built from (#1558).
+         */
+        ChatFindingDimOut: {
+            /**
+             * Box
+             * @description x0, y0, x1, y1: PDF points, origin top-left.
+             */
+            box: number[];
+            /** File */
+            file?: string | null;
+            /**
+             * Id
+             * @description The label's id on its page (D17).
+             */
+            id: string;
+            /** Inches */
+            inches: string;
+            /** Page */
+            page: number;
+            /**
+             * Route
+             * @description text: the drawing's characters; drawn: the vendor's drawn ink, by two OCR engines.
+             * @enum {string}
+             */
+            route: "text" | "drawn";
+            /**
+             * Side
+             * @description architect, vendor, brand or unknown.
+             */
+            side?: string | null;
+            /**
+             * Text
+             * @description The value as printed.
+             */
+            text: string;
+        };
+        /**
          * ChatFindingDroppedBlock
          * @description A finding the assistant dropped (in the place its finding block was).
          */
@@ -4687,6 +4725,13 @@ export interface components {
             decision?: components["schemas"]["ChatFindingDecisionOut"] | null;
             /** @description Status check (Your decision): what it measures, the best estimate, how likely it is fine, what to confirm (#1545). */
             decision_help?: components["schemas"]["ChatFindingDecisionHelpOut"] | null;
+            /**
+             * Dims
+             * @description The numbered dimension label each side was built from (#1558), by side (architect, vendor); code filled that side's value and box from it.
+             */
+            dims?: {
+                [key: string]: components["schemas"]["ChatFindingDimOut"];
+            } | null;
             /**
              * Evidence Kind
              * @description observed: printed on the drawing at its spots (text layer); derived: worked out by code (rule, arithmetic, ledger, mm/inch); inferred: AI reading only.
