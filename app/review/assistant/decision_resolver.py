@@ -1151,7 +1151,29 @@ def resolve(findings: Sequence[Mapping[str, Any]], ctx: ResolverContext) -> Reso
 
 # ---- the counts in the answer's words -----------------------------------------------------------
 
-_NUMBER_WORDS: Final = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty"]
+_NUMBER_WORDS: Final = [
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+    "twenty",
+]
 _COUNT_KIND: Final = (
     r"wrong|different|incorrect|need(?:s)?\s+(?:your|a|the\s+reviewer'?s)\s+(?:decision|call)"
     r"|your\s+decision|to\s+decide|to\s+check|right|correct|match(?:es)?"
@@ -1201,7 +1223,9 @@ def recount_words(text: str, counts: Mapping[str, int]) -> str:
                 number = number.capitalize()
         words = match.group("kind")
         if re.match(r"needs?\b", words, re.IGNORECASE):
-            words = re.sub(r"^needs?", "needs" if value == 1 else "need", words, flags=re.IGNORECASE)
+            words = re.sub(
+                r"^needs?", "needs" if value == 1 else "need", words, flags=re.IGNORECASE
+            )
         return f"{number}{match.group('mid')}{words}"
 
     return _COUNT.sub(fix, text)
