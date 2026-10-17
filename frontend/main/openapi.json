@@ -7596,7 +7596,8 @@
           "measure_on_drawing",
           "zoom",
           "read_under_markup",
-          "remember"
+          "remember",
+          "drawing_facts"
         ],
         "type": "string"
       },

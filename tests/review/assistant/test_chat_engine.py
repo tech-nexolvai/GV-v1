@@ -1253,3 +1253,31 @@ def test_a_chats_kept_system_prompt_and_tools_go_out_unchanged(tmp_path: Path) -
     sent = _sent(provider.lead_calls[0])
     assert sent["system"][0]["text"] == "An older lead prompt."
     assert strip_cache_control(sent["tools"]) == kept_tools
+
+
+def test_a_paused_tool_search_is_sent_back_as_it_is_and_the_answer_goes_on(
+    tmp_path: Path,
+) -> None:
+    searched = {
+        "type": "server_tool_use",
+        "id": "srv_1",
+        "name": "tool_search_tool_regex",
+        "input": {"query": "facts"},
+    }
+    paused = reply(text("Searching my tools."), searched, stop="pause_turn")
+    provider = ScriptedProvider(lead=[paused, reply(text("Done."))])
+    harness = Harness(tmp_path, provider)
+
+    outcome = harness.run()
+
+    assert outcome.text.endswith("Done.")
+    second = _sent(provider.lead_calls[1])
+    # The paused turn goes back unchanged, with no turn of ours after it.
+    assert second["messages"][-1]["role"] == "assistant"
+    assert strip_cache_control(second["messages"][-1]["content"]) == [
+        {"type": "text", "text": "Searching my tools."},
+        searched,
+    ]
+    # Anthropic's tool search leads the tools; the deferred tools are sent with their flag.
+    assert second["tools"][0]["type"] == "tool_search_tool_regex_20251119"
+    assert any(tool.get("defer_loading") for tool in second["tools"])

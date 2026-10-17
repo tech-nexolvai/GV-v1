@@ -525,6 +525,11 @@ def _merge_usage(usage: dict[str, Any], update: Mapping[str, Any] | None) -> Non
             usage[key] = value
 
 
+#: Blocks whose input streams as JSON: our tools' calls, and Anthropic's own (tool search), which
+#: run inside its API and are kept in the history as received.
+_CALLS: Final = frozenset({"tool_use", "server_tool_use"})
+
+
 def _accumulate(
     events: Any,
     display: _Display | None,
@@ -585,7 +590,10 @@ def _accumulate(
                 block["citations"] = [*(block["citations"] or []), delta.get("citation")]
         elif kind == "content_block_stop":
             index = int(event.get("index", 0))
-            if index < len(content) and content[index].get("type") == "tool_use":
+            server = index < len(content) and content[index].get("type") == "server_tool_use"
+            if server and index not in buffers:
+                pass  # Its input came whole with the block's start.
+            elif index < len(content) and content[index].get("type") in _CALLS:
                 raw = buffers.pop(index, "")
                 try:
                     parsed = json.loads(raw) if raw.strip() else {}
@@ -1288,6 +1296,8 @@ class ChatEngine:
             return tools.verify_value(raw, step)
         if name == "measure_on_drawing":
             return tools.measure_on_drawing(raw, step)
+        if name == "drawing_facts":
+            return tools.drawing_facts(raw, step)
         if name == "read_under_markup":
             return tools.read_under_markup(raw, step, by)
         if not helper:
@@ -3451,6 +3461,11 @@ class ChatEngine:
                 break
             answered = True
             turn.append({"role": "assistant", "content": reply.history_content()})
+            if reply.stop_reason == "pause_turn" and not final:
+                # Anthropic paused its own tool (a long tool search): sent back as it is, it goes on.
+                tool_turns += 1
+                if tool_turns < settings.lead_max_turns:
+                    continue
             calls = reply.tool_uses()
             if reply.stop_reason == "tool_use" and calls and not final:
                 turn.append({"role": "user", "content": self._run_lead_tools(reply)})

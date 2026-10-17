@@ -32,6 +32,7 @@ from app.review.assistant.chat_tools import (
     HELPER_SYSTEM_PROMPT,
     HELPER_TOOL_NAMES,
     HELPER_TOOLS,
+    LEAD_LOADED,
     LEAD_SYSTEM_PROMPT,
     LEAD_TOOLS,
 )
@@ -220,5 +221,20 @@ def test_the_prompts_stay_within_their_budgets() -> None:
         assert len(prompts[where]) <= most, (where, len(prompts[where]))
     # chat-v16 (#1558): the numbered dimension labels' fields (zoom marks and guides,
     # architect_dim / vendor_dim on report and update, cite's dim) took about 900 characters.
-    assert len(json.dumps(list(LEAD_TOOLS))) <= 45_000
+    # Tool search (Anthropic's API): only the tools always loaded enter the lead's context, so
+    # they keep the budget; the deferred ones reach it when its search finds them.
+    loaded = [tool for tool in LEAD_TOOLS if not tool.get("defer_loading")]
+    assert len(json.dumps(loaded)) <= 30_000
+    assert len(json.dumps(list(LEAD_TOOLS))) <= 90_000
     assert len(json.dumps(list(HELPER_TOOLS))) <= 29_000
+
+
+def test_the_lead_keeps_its_core_tools_loaded_and_defers_the_rest() -> None:
+    names = {str(tool["name"]): tool for tool in LEAD_TOOLS}
+    assert LEAD_LOADED <= set(names)
+    for name, tool in names.items():
+        assert bool(tool.get("defer_loading")) is (name not in LEAD_LOADED), name
+    # A deferred tool is found by its name and description: each says what it is for.
+    for tool in LEAD_TOOLS:
+        if tool.get("defer_loading"):
+            assert len(str(tool["description"]).split(".")[0]) >= 30, tool["name"]

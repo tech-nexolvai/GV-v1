@@ -59,3 +59,36 @@ def test_the_update_note_comes_once_and_only_for_an_older_prompt(
     assert LEAD_SYSTEM_PROMPT in note
     history = [{"role": "user", "content": [{"type": "text", "text": note}]}]
     assert update_note(older, history) is None
+
+
+def test_a_chats_deferred_tools_are_stored_with_their_flags_and_replayed_byte_for_byte(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.review.assistant.chat_request import MODELS, call_params, thinking_config
+
+    first = harness_for(tmp_path, replayed=False)
+    stored = json.loads((tmp_path / HARNESS_FILE).read_text(encoding="utf-8"))["tools"]
+    deferred = [tool["name"] for tool in stored if tool.get("defer_loading") is True]
+    assert deferred and "drawing_facts" in deferred and "bash_tool" not in deferred
+    # A later deploy changes today's tools: the chat still sends its own, byte for byte.
+    monkeypatch.setattr(chat_harness, "LEAD_TOOLS", tuple(LEAD_TOOLS[:3]))
+    again = harness_for(tmp_path, replayed=True)
+    assert json.dumps(list(again.tools)) == json.dumps(list(first.tools))
+    model = MODELS["claude-opus-5-5"]
+
+    def sent(tools: tuple[dict[str, object], ...]) -> str:
+        params = call_params(
+            provider="anthropic",
+            model=model,
+            effort="high",
+            thinking=thinking_config(model, True),
+            system=again.system,
+            tools=tools,
+            messages=[{"role": "user", "content": [{"type": "text", "text": "Hi"}]}],
+            final=False,
+            max_tokens=64000,
+        )
+        return json.dumps(params["tools"])
+
+    assert sent(again.tools) == sent(first.tools)
+    assert '"defer_loading": true' in sent(again.tools)
