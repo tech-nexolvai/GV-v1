@@ -25,7 +25,7 @@ import { activeProducts, productCatalog, type ProductCatalog } from '@/lib/produ
 export type PlusGroup = 'checks' | 'outputs' | 'focus';
 
 export type PlusIcon =
-  | 'full_check' | 'page' | 'area' | 'rules' | 'strings' | 'missing' | 'rounds'
+  | 'full_check' | 'page' | 'area' | 'rules' | 'consistency' | 'strings' | 'missing' | 'rounds'
   | 'cloud' | 'csv' | 'letter' | 'rfi' | 'summary'
   | 'product' | 'both' | 'quick' | 'thorough';
 
@@ -33,6 +33,8 @@ export type PlusIcon =
 export type PlusRun =
   | { kind: 'prompt'; text: string }
   | { kind: 'full_check' }
+  /** #1584: the vendor consistency check, by code ($0, no AI), stored as an answer. */
+  | { kind: 'consistency' }
   | { kind: 'cloud' }
   | { kind: 'csv' }
   | { kind: 'products'; products: ChatProduct[]; comingLater?: boolean }
@@ -129,6 +131,7 @@ export const PLUS_ACTIONS: readonly PlusAction[] = [
   { id: 'check_page', group: 'checks', label: 'Check one page…', hint: 'One vendor page against the architect', estimate: '~2 min · ~$0.50', icon: 'page', keywords: ['sheet', 'page number'], run: { kind: 'prompt', text: PROMPTS.page } },
   { id: 'compare_area', group: 'checks', label: 'Compare an area…', hint: 'One room or unit on both drawings', estimate: '~2 min · ~$0.50', icon: 'area', keywords: ['room', 'unit', 'elevation', 'vanity', 'kitchen'], run: { kind: 'prompt', text: PROMPTS.area } },
   { id: 'gv_rules', group: 'checks', label: 'Check GV rules', hint: 'GV’s standards for the selected products', estimate: '~5 min · ~$1.50', icon: 'rules', keywords: ['rulebook', 'standards', 'filler', 'sink', 'cut-out', 'overhang', 'field cut'], run: { kind: 'prompt', text: PROMPTS.rules } },
+  { id: 'consistency', group: 'checks', label: 'Vendor consistency check', hint: 'The vendor’s own numbers against each other, by code', estimate: '$0', icon: 'consistency', keywords: ['contradiction', 'add up', 'strings', 'sum', 'missing sheet', 'round', 'index', 'self-check', 'free'], run: { kind: 'consistency' } },
   { id: 'strings', group: 'checks', label: 'Do the dimension strings add up?', hint: 'The vendor’s own sums', estimate: '~5 min · ~$1.50', icon: 'strings', keywords: ['sum', 'arithmetic', 'total', 'overall', 'math'], run: { kind: 'prompt', text: PROMPTS.strings } },
   { id: 'missing', group: 'checks', label: 'What’s missing on either side?', hint: 'Items on one drawing only', estimate: '~5 min · ~$1.50', icon: 'missing', keywords: ['completeness', 'left out', 'extra', 'added'], run: { kind: 'prompt', text: PROMPTS.missing } },
   { id: 'rounds', group: 'checks', label: 'What changed between rounds?', hint: 'Fixed, still wrong, or new changes', estimate: '~3 min · ~$1', icon: 'rounds', keywords: ['diff', 'revision', 'round 1', 'round 2', 'resubmittal', 'compare'], run: { kind: 'prompt', text: PROMPTS.rounds } },

@@ -80,6 +80,9 @@ export const UNKNOWN_WHY_WORDS: Record<UnknownWhy, string> = {
   missing_job_value: 'job value missing',
   pairing_uncertain: 'page pair unsure',
   refused_alignment: 'rounds would not line up',
+  no_counterpart: 'on one drawing only',
+  missing_round: 'round not in the set',
+  not_in_set: 'sheet not in the set',
 };
 
 /** "3 not checked", or null when there are none. */
