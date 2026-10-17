@@ -4389,10 +4389,20 @@ export interface components {
          */
         ChatFindingChecksOut: {
             /**
+             * Adjudication
+             * @description The third read's majority when the second read disagreed or was unsure: agrees_after_adjudication | disagrees | unsure (#1498).
+             */
+            adjudication?: string | null;
+            /**
              * Arithmetic
              * @description adds_up | does_not_add_up | not_a_number (vendor arithmetic)
              */
             arithmetic?: string | null;
+            /**
+             * Critic
+             * @description The adversarial critic (whole-set answers): passed | objects | unsure | not_run (#1498).
+             */
+            critic?: string | null;
             /** Lead Checked */
             lead_checked: boolean;
             /**
@@ -4422,6 +4432,32 @@ export interface components {
              * @description agrees | disagrees: millimetres and inches printed together (940 [37]).
              */
             units?: string | null;
+        };
+        /**
+         * ChatFindingCriticOut
+         * @description The critic's look at one finding (#1498).
+         */
+        ChatFindingCriticOut: {
+            /**
+             * Answers
+             * @description same_item, right_dimension, vendor_ink, architect_side: yes | no | unsure.
+             */
+            answers?: {
+                [key: string]: string;
+            };
+            /** Model */
+            model?: string | null;
+            /**
+             * Note
+             * @description What is wrong, when it objects.
+             * @default
+             */
+            note: string;
+            /**
+             * Result
+             * @enum {string}
+             */
+            result: "passed" | "objects" | "unsure";
         };
         /**
          * ChatFindingDroppedBlock
@@ -4482,6 +4518,7 @@ export interface components {
              * @description "lead", "helper:<n>", "gv_review" (made by code from a recorded result), or "ledger" (made by code from the reading ledger).
              */
             created_by: string;
+            critic?: components["schemas"]["ChatFindingCriticOut"] | null;
             /**
              * Evidence Kind
              * @description observed: printed on the drawing at its spots (text layer); derived: worked out by code (rule, arithmetic, ledger, mm/inch); inferred: AI reading only.
@@ -4505,6 +4542,11 @@ export interface components {
             parts?: string[] | null;
             /** Printed Total */
             printed_total?: string | null;
+            /**
+             * Reads
+             * @description Every reading, when a third read settled the second (#1498).
+             */
+            reads?: components["schemas"]["ChatFindingReadOut"][] | null;
             /**
              * Record Id
              * @description The difference GV Review recorded that this finding is.
@@ -4556,6 +4598,35 @@ export interface components {
              * @description The non-AI witnesses behind it: printed, rule, arithmetic, ledger, units.
              */
             witnesses?: string[] | null;
+        };
+        /**
+         * ChatFindingReadOut
+         * @description One reading of a finding's values (#1498): its own, the second read's, the third read's.
+         */
+        ChatFindingReadOut: {
+            /**
+             * Dpi
+             * @description The third read's crop resolution.
+             */
+            dpi?: number | null;
+            /** Model */
+            model: string;
+            /** Role */
+            role?: ("first" | "second" | "third") | null;
+            /**
+             * Sure
+             * @description null for the finding's own values.
+             */
+            sure?: boolean | null;
+            /**
+             * Turned
+             * @description Whether a quarter-turned copy was shown (sideways text).
+             */
+            turned?: boolean | null;
+            /** Value Arch */
+            value_arch?: string | null;
+            /** Value Vendor */
+            value_vendor?: string | null;
         };
         /**
          * ChatGvChecksOut
@@ -5102,10 +5173,18 @@ export interface components {
         };
         /** ChatTrustChecksOut */
         ChatTrustChecksOut: {
+            /** Adjudication */
+            adjudication?: {
+                [key: string]: number;
+            } | null;
             /** Arithmetic */
             arithmetic: {
                 [key: string]: number;
             };
+            /** Critic */
+            critic?: {
+                [key: string]: number;
+            } | null;
             /** Lead Checked */
             lead_checked: number;
             /** Printed At Spot */

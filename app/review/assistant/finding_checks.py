@@ -56,7 +56,9 @@ __all__ = [
     "arithmetic_check",
     "arithmetic_off_by",
     "check_finding",
+    "critic_passed",
     "printed_at_spot",
+    "read_result",
     "to_inches",
     "trust_level",
     "units_check",
@@ -448,16 +450,24 @@ def _side(value: object, box: object, pdf_paths: Mapping[str, Path]) -> PrintedR
 # ---- trust level ---------------------------------------------------------------------------------
 
 
+#: The read's result (the third read's majority when one was made, #1498) and the critic: the
+#: trust rule's own helpers (`witness.py`).
+read_result = witness.read_result
+critic_passed = witness.critic_passed
+
+
 def trust_level(checks: Mapping[str, Any], *, status: str | None = None) -> TrustLevel:
     """Confirmed / Likely / To check from a finding's full checks (CONTRACT3, as changed by the
     accuracy rules in `witness.py`).
 
     `checks` holds `printed_architect`, `printed_vendor`, `second_read`, `rule`, `arithmetic`,
-    `lead_checked` and, when present, `ledger` and `units`. Confirmed needs a non-AI witness (both
-    values printed at their spots, GV's rule check, code's arithmetic, the reading ledger, or the
-    millimetres and inches agreeing) AND an AI reading that agrees (the second read or the lead's
-    check). Two AI readings alone are Likely at best; a non-AI witness alone is Likely. Any check
-    that disagrees (given the finding's `status` for the arithmetic) makes it To check.
+    `lead_checked` and, when present, `adjudication` (the third read, #1498), `critic`, `ledger`
+    and `units`. Confirmed needs a non-AI witness (both values printed at their spots, GV's rule
+    check, code's arithmetic, the reading ledger, or the millimetres and inches agreeing) AND an AI
+    witness that agrees (the read, the lead's check, or the critic passing it). Two AI witnesses
+    alone are Likely at best; a non-AI witness alone is Likely. Any check that disagrees (the read,
+    the critic objecting, the rule, the ledger, mm/inch, or given the finding's `status` code's
+    arithmetic) makes it To check.
     """
     level = witness.trust_level(checks, status)
     return "confirmed" if level == "confirmed" else "likely" if level == "likely" else "to_check"

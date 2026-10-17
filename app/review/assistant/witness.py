@@ -9,11 +9,12 @@ A finding is the AI's claim. What backs it is one of three kinds of evidence:
   the millimetres and inches printed together agreeing;
 - **inferred**: only AI readings back it (the lead's own reading, its re-check, a second read).
 
-**Trust rule.** Confirmed needs at least one non-AI witness (observed or derived) AND an AI reading
-that agrees (the second read, or the lead's own check on the drawing). Two AI readings agreeing
-with no non-AI witness is Likely at best; a non-AI witness alone is Likely. Any check that
-disagrees makes it To check. A side drawn as pen strokes (`no_text`) is neutral: it neither backs
-nor contradicts.
+**Trust rule.** Confirmed needs at least one non-AI witness (observed or derived) AND an AI witness
+that agrees: the read (the second read, or the third read's majority when one settled it, #1498),
+the lead's own check on the drawing, or the critic passing it. Two AI witnesses agreeing with no
+non-AI witness is Likely at best; a non-AI witness alone is Likely. Any check that disagrees makes
+it To check (the read, the critic objecting, GV's rule, code's arithmetic, the ledger, mm/inch). A
+side drawn as pen strokes (`no_text`) is neutral: it neither backs nor contradicts.
 
 Pure code, no imports beyond the standard library, so both `finding_checks` and `chat_trust` use it.
 """
@@ -27,8 +28,11 @@ __all__ = [
     "EVIDENCE_KINDS",
     "WITNESS_WORDS",
     "EvidenceKind",
+    "ai_witnesses",
+    "critic_passed",
     "disagreement",
     "evidence_kind",
+    "read_result",
     "trust_level",
     "witnesses",
 ]
@@ -60,6 +64,34 @@ def _arithmetic_backs(checks: Mapping[str, Any], status: object) -> bool | None:
     return None
 
 
+def read_result(checks: Mapping[str, Any]) -> object:
+    """The read's result: the third read's majority when one was made (#1498), else the second
+    read's. A third read that ends unsure leaves the second read's result as it was."""
+    adjudication = checks.get("adjudication")
+    if adjudication == "agrees_after_adjudication":
+        return "agrees"
+    if adjudication == "disagrees":
+        return "disagrees"
+    return checks.get("second_read")
+
+
+def critic_passed(checks: Mapping[str, Any]) -> bool:
+    """The adversarial critic passed it (an AI witness, never a non-AI one)."""
+    return checks.get("critic") == "passed"
+
+
+def ai_witnesses(checks: Mapping[str, Any]) -> list[str]:
+    """The AI readings that agree with the finding: `read`, `lead`, `critic`."""
+    out: list[str] = []
+    if read_result(checks) == "agrees":
+        out.append("read")
+    if checks.get("lead_checked") is True:
+        out.append("lead")
+    if critic_passed(checks):
+        out.append("critic")
+    return out
+
+
 def witnesses(checks: Mapping[str, Any], status: object = None) -> list[str]:
     """The non-AI witnesses that back the finding, in a fixed order."""
     out: list[str] = []
@@ -78,8 +110,12 @@ def witnesses(checks: Mapping[str, Any], status: object = None) -> list[str]:
 
 def disagreement(checks: Mapping[str, Any], status: object = None) -> str | None:
     """Which check disagrees with the finding, in plain words; `None` when none does."""
-    if checks.get("second_read") == "disagrees":
+    if checks.get("adjudication") == "disagrees":
+        return "the third read sides with the second read against it"
+    if read_result(checks) == "disagrees":
         return "the second read disagrees"
+    if checks.get("critic") == "objects":
+        return "the critic objects"
     if checks.get("rule") == "disagrees":
         return "GV's recorded check disagrees"
     if _arithmetic_backs(checks, status) is False:
@@ -105,10 +141,9 @@ def trust_level(checks: Mapping[str, Any], status: object = None) -> str:
     if disagreement(checks, status) is not None:
         return "to_check"
     non_ai = bool(witnesses(checks, status))
-    second = checks.get("second_read") == "agrees"
-    lead = checks.get("lead_checked") is True
-    if non_ai and (second or lead):
+    ai = len(ai_witnesses(checks))
+    if non_ai and ai:
         return "confirmed"
-    if non_ai or (second and lead):
+    if non_ai or ai >= 2:
         return "likely"
     return "to_check"

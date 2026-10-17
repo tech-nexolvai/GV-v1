@@ -10,6 +10,12 @@ Every finding carries `checks`, run by code (and one cheap independent AI read t
 - `second_read`: a fresh model shown only the two crops (`agrees` / `disagrees` / `unsure` /
   `not_run`); run by the engine after the lead finishes.
 - `lead_checked`: the lead read both values on the drawing itself (`verified`).
+- `adjudication` (#1498): when the second read disagrees or is unsure, a third read by a stronger
+  model on sharper crops; the majority of the three readings (`agrees_after_adjudication` /
+  `disagrees` / `unsure`) stands in for the second read (`read_adjudication.py`).
+- `critic` (#1498, whole-set answers): an adversarial model's look at the finding (`passed` /
+  `objects` / `unsure` / `not_run`); `objects` makes it To check, `passed` is one more AI witness
+  (`finding_critic.py`).
 
 `inches` are code's numbers (`to_inches`), with the difference (vendor minus architect); the screen
 never shows the AI's arithmetic. `trust_level`: `confirmed` / `likely` / `to_check`.
@@ -59,6 +65,7 @@ __all__ = [
     "load_module",
     "mark_compared",
     "needs_text",
+    "read_result",
     "recorded_from",
     "recorded_missing",
     "round_statuses",
@@ -255,6 +262,10 @@ def trust_level(checks: Mapping[str, Any], status: object = None) -> str:
     return witness.trust_level(checks, status if isinstance(status, str) else None)
 
 
+#: The read's result (the third read's majority when one was made, #1498).
+read_result = witness.read_result
+
+
 def judged(finding: Mapping[str, Any]) -> dict[str, Any]:
     """The finding with its trust level, evidence kind and non-AI witnesses worked out again from
     its checks (after any check changed)."""
@@ -303,6 +314,8 @@ def apply_checks(
         "lead_checked": bool(finding.get("verified")),
         "ledger": _ledger_made(finding),
         "units": None,
+        "adjudication": None,
+        "critic": None,
     }
     module = load_module(CHECKS_MODULE)
     if module is not None:
@@ -315,6 +328,9 @@ def apply_checks(
             _log.warning("assistant chat finding check failed: %s", type(failed).__name__)
     architect, vendor = _inches(finding.get("architect")), _inches(finding.get("vendor"))
     out["checks"] = checks
+    # The third read and the critic start again too (#1498): they come after the lead's answer.
+    out["reads"] = None
+    out["critic"] = None
     out["inches"] = {
         "architect": _number(architect),
         "vendor": _number(vendor),
@@ -574,6 +590,9 @@ def trust_report(
     by_category: dict[str, dict[str, int]] = {}
     printed = {k: 0 for k in ("match", "not_found", "no_text", "not_a_number", "no_box", "not_run")}
     second = {k: 0 for k in ("agrees", "disagrees", "unsure", "not_run")}
+    adjudication = {k: 0 for k in ("agrees_after_adjudication", "disagrees", "unsure")}
+    critic = {k: 0 for k in ("passed", "objects", "unsure", "not_run")}
+    third_not_run = 0
     arithmetic = {k: 0 for k in ("adds_up", "does_not_add_up", "not_a_number")}
     rules: list[dict[str, Any]] = []
     lead_checked = 0
@@ -600,6 +619,12 @@ def trust_report(
         )
         if checks.get("arithmetic") in arithmetic:
             arithmetic[checks["arithmetic"]] += 1
+        if checks.get("adjudication") in adjudication:
+            adjudication[checks["adjudication"]] += 1
+        elif checks.get("second_read") in ("disagrees", "unsure"):
+            third_not_run += 1
+        if checks.get("critic") in critic:
+            critic[checks["critic"]] += 1
         if checks.get("rule") is not None:
             rules.append(
                 {
@@ -646,6 +671,13 @@ def trust_report(
         not_checked.append(
             f"Second read not run on {second_reads_skipped} findings (limit or cap)."
         )
+    if third_not_run:
+        not_checked.append(
+            f"Third read not run on {third_not_run} findings whose second read disagreed or was "
+            "unsure (limit, cap or no box)."
+        )
+    if critic["not_run"]:
+        not_checked.append(f"Critic not run on {critic['not_run']} findings (limit or cap).")
     if recorded is None or not recorded.readable:
         not_checked.append("GV Review's own recorded checks could not be read for this answer.")
     by_why: dict[str, int] = {}
@@ -660,6 +692,8 @@ def trust_report(
         "checks": {
             "printed_at_spot": printed,
             "second_read": second,
+            "adjudication": adjudication,
+            "critic": critic,
             "rules": rules,
             "arithmetic": arithmetic,
             "lead_checked": lead_checked,
@@ -774,6 +808,9 @@ def accuracy(
         level = str(finding.get("trust_level") or trust_level(checks, status))
         kind = str(finding.get("evidence_kind") or witness.evidence_kind(checks, status))
         against = witness.disagreement(checks, status)
+        note = str((finding.get("critic") or {}).get("note") or "").strip()
+        if against == "the critic objects" and note:
+            against = f"the critic objects: {note}"
         if against:
             points, how = ACCURACY_DISAGREES, against
         elif finding.get("created_by") == "gv_review" and finding.get("status") != "same":

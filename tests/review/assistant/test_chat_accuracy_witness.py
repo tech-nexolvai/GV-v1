@@ -446,3 +446,34 @@ def test_findings_stating_a_value_need_its_box() -> None:
     ]
     note = boxless_note(boxless_findings(findings))
     assert "F1 (page 8: Fillers; needs vendor_box)" in note and "F2" in note
+
+
+def test_the_third_read_and_the_critic_are_ai_witnesses() -> None:
+    """#1498: a third read's agreement and the critic passing count as AI witnesses (never as
+    non-AI ones); a third read siding against it, or the critic objecting, is a disagreement."""
+    settled = {"second_read": "disagrees", "adjudication": "agrees_after_adjudication"}
+    assert witness.trust_level(_checks(**settled, lead_checked=True), "different") == "likely"
+    assert witness.trust_level(_checks(**PRINTED, **settled), "different") == "confirmed"
+    assert witness.trust_level(_checks(critic="passed", lead_checked=True), "different") == "likely"
+    assert witness.trust_level(_checks(**PRINTED, critic="passed"), "different") == "confirmed"
+    assert witness.evidence_kind(_checks(critic="passed", lead_checked=True)) == "inferred"
+    against = {"second_read": "unsure", "adjudication": "disagrees"}
+    assert witness.trust_level(_checks(**PRINTED, **against, lead_checked=True)) == "to_check"
+    objects = _checks(**PRINTED, second_read="agrees", critic="objects")
+    assert witness.trust_level(objects, "different") == "to_check"
+    score = accuracy(
+        [
+            judged(
+                {
+                    "id": "F1",
+                    "status": "different",
+                    "checks": objects,
+                    "critic": {"result": "objects", "note": "not the same cabinet"},
+                }
+            )
+        ],
+        [],
+        None,
+    )
+    assert score["breakdown"][0]["points"] == 0.0
+    assert score["breakdown"][0]["how"] == "the critic objects: not the same cabinet"
