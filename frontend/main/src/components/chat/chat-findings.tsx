@@ -133,7 +133,7 @@ export function EvidenceThumb({ src, label, className }: { src: string | null; l
   const [broken, setBroken] = useState<string | null>(null);
   if (!src || broken === src) {
     return (
-      <span data-slot="chat-evidence-thumb" data-missing="true" className={cn('grid place-items-center rounded-md border border-dashed bg-muted/40 px-2 text-center text-xs text-muted-foreground', className)}>
+      <span data-slot="chat-evidence-thumb" data-missing="true" className={cn('grid place-items-center rounded-lg border border-dashed bg-muted/40 px-2 text-center text-xs text-muted-foreground', className)}>
         <ImageOff aria-hidden="true" className="mb-0.5 size-3.5" />
         <span>{label}: no evidence picture</span>
       </span>
@@ -153,9 +153,9 @@ function PairSide({ src, side, label, onOpen }: { src: string | null; side: 'A' 
       data-side={side}
       onClick={(event) => { event.stopPropagation(); onOpen(); }}
       aria-label={`Open the pictures large: ${label}`}
-      className="group/pic relative block h-24 min-w-0 rounded-md border bg-white focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none"
+      className="group/pic relative block h-24 min-w-0 rounded-lg border border-border/70 bg-white focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none"
     >
-      <EvidenceThumb src={src} label={label} className="size-full rounded-[5px] p-[3px]" />
+      <EvidenceThumb src={src} label={label} className="size-full rounded-[7px] p-1" />
       <span aria-hidden="true" className="absolute top-1 left-1 rounded-[4px] bg-black/70 px-1 py-0.5 text-xs leading-none font-semibold text-white">{side}</span>
       {/* Hover / focus zoom: a larger copy beside the pair, never covering the row's words. */}
       <span
@@ -380,12 +380,12 @@ function FindingRow({ finding, area, open, leaving, onToggle, onOpen, pictureUrl
       data-status={statusOf(finding)}
       data-open={open ? 'true' : undefined}
       data-leaving={leaving ? 'true' : undefined}
-      className={cn('border-b border-border/70 last:border-b-0', leaving && 'chat-leave pointer-events-none')}
+      className={cn('border-b border-border/60 last:border-b-0', leaving && 'chat-leave pointer-events-none')}
     >
       <div
         onClick={leaving ? undefined : onToggle}
         className={cn(
-          'grid cursor-pointer gap-3 px-4 py-3.5 transition-colors hover:bg-muted/40 motion-reduce:transition-none lg:grid-cols-[2.5rem_minmax(0,1fr)_16rem_auto] lg:items-center lg:gap-4',
+          'grid cursor-pointer gap-3 px-4 py-4 transition-colors hover:bg-muted/40 motion-reduce:transition-none lg:grid-cols-[2.5rem_minmax(0,1fr)_16rem_auto] lg:items-center lg:gap-4',
           open && 'bg-muted/40',
         )}
       >
@@ -424,7 +424,7 @@ function FindingRow({ finding, area, open, leaving, onToggle, onOpen, pictureUrl
         <span className="flex lg:justify-end">{decision && <DecisionButtons {...decision} />}</span>
       </div>
       {open && !leaving && (
-        <div id={detailId} data-slot="chat-finding-detail" data-id={finding.id} className="border-t border-border/70 bg-muted/30 px-4 py-5 lg:pl-[4.5rem]">
+        <div id={detailId} data-slot="chat-finding-detail" data-id={finding.id} className="border-t border-border/60 bg-muted/30 px-4 py-6 lg:pl-[4.5rem]">
           <FindingCard finding={finding} pictureUrl={pictureUrl} onOpen={onOpen} fullPageHref={fullPageHref} />
         </div>
       )}
@@ -466,7 +466,7 @@ export function FindingsList({ findings, openGroups = 'all', openRowsAtFirst = f
   const toggleRow = (id: string) => setRows((now) => { const next = new Set(now); if (next.has(id)) next.delete(id); else next.add(id); return next; });
 
   return (
-    <div data-slot="chat-findings-list" aria-label={label} role="region" className="rounded-xl border bg-card shadow-[0_1px_2px_rgb(0_0_0/0.04)]">
+    <div data-slot="chat-findings-list" aria-label={label} role="region" className="rounded-xl border border-border/70 bg-card">
       {groups.map((group, index) => {
         const open = isOpen(group, index);
         const listId = `${baseId}-group-${index}`;
@@ -480,7 +480,7 @@ export function FindingsList({ findings, openGroups = 'all', openRowsAtFirst = f
               onClick={() => toggleGroup(group, index)}
               data-slot="chat-findings-group-toggle"
               className={cn(
-                'sticky top-0 z-20 flex w-full min-w-0 items-center gap-2.5 border-b border-border/70 bg-muted/90 px-4 py-2.5 text-left text-[13px] backdrop-blur-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset supports-[backdrop-filter]:bg-muted/75',
+                'sticky top-0 z-20 flex h-10 w-full min-w-0 items-center gap-2 border-b border-border/60 bg-muted/90 px-4 text-left text-[13px] backdrop-blur-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset supports-[backdrop-filter]:bg-muted/75',
                 index === 0 && 'rounded-t-xl',
                 !open && index === groups.length - 1 && 'rounded-b-xl border-b-0',
               )}

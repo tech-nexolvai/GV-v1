@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 
 import { ChatMarkdown } from '@/components/chat/chat-markdown';
-import { Collapse, Shimmer, Spinner } from '@/components/chat/chat-motion';
+import { Collapse, GVSpark, Shimmer, Spinner } from '@/components/chat/chat-motion';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import type { ChatStep, ChatTask } from '@/lib/chat-api';
 import {
@@ -353,6 +353,8 @@ export function ActivityRow({
         onClick={() => setOpen(!open)}
         className={cn(ROW_BUTTON, 'w-fit max-w-full text-sm')}
       >
+        {/* #1534: GV's sign leads the work fold; it turns while the work runs. */}
+        <GVSpark state={active ? 'working' : 'still'} size={16} />
         <Shimmer active={active} className="min-w-0 truncate">{title}</Shimmer>
         <Chevron open={open} />
       </button>
