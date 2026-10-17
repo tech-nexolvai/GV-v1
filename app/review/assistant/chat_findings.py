@@ -86,6 +86,7 @@ __all__ = [
     "products_words",
     "read_listing",
     "reviewers",
+    "round_two_report",
 ]
 
 _log = logging.getLogger(__name__)
@@ -1774,6 +1775,7 @@ def make_proof_file(
     pack = workspace.set_pack
     drawing = import_module(PROOF_MODULE)
     date = today or datetime.now(UTC).strftime("%Y-%m-%d")
+    rounds = round_two_report(workspace, name, ordered, pack)
     drawing.proof_markup_pdf(
         workspace.uploads / name,
         placed,
@@ -1785,11 +1787,68 @@ def make_proof_file(
         cache=None if pack is None else pack / "hires",
         assumptions=plan.plan_assumptions(pack, name),
         settled=settled,
+        rounds=rounds,
     )
     data = out.read_bytes()
     return MarkupFile(
         markup_name(name, CLOUD_DRAWING_KIND), len(data), hashlib.sha256(data).hexdigest()
     )
+
+
+def round_two_report(
+    workspace: ChatWorkspace,
+    main_file: str,
+    findings: Sequence[Mapping[str, Any]],
+    pack: Path | None,
+) -> Any:
+    """The automatic round-2 check (#1603, `round_check.round_two`) for the cloud drawing: the set
+    pack's dimension labels and page map (with code's own plan-check answers), and the drawings'
+    ink compared by `revision_diff.diff_pages` as a second witness. `None` without a pack, or
+    when it fails (the drawing is made without it)."""
+    if pack is None:
+        return None
+    try:
+        dims = json.loads((pack / "dims.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    plan = import_module("app.review.assistant.full_check_plan")
+    page_map = plan.read_page_map(pack, assume=True, main_file=main_file)
+    pdf = workspace.uploads / main_file
+    diff = import_module("app.review.assistant.revision_diff")
+    seen: dict[tuple[int, int], list[tuple[float, float, float, float]] | None] = {}
+
+    def zones(
+        first: int,
+        first_box: tuple[float, float, float, float],
+        second: int,
+        second_box: tuple[float, float, float, float],
+    ) -> list[tuple[float, float, float, float]] | None:
+        if (first, second) not in seen:
+            found = diff.diff_pages(
+                pdf, first, second, region_a=first_box, region_b=second_box, auto_regions=False
+            )
+            seen[(first, second)] = (
+                [
+                    (
+                        float(zone["box_a"]["x0"]),
+                        float(zone["box_a"]["y0"]),
+                        float(zone["box_a"]["x1"]),
+                        float(zone["box_a"]["y1"]),
+                    )
+                    for zone in found.get("zones") or []
+                ]
+                # Zones left out of the list say nothing about a spot: no ink witness then.
+                if found.get("aligned") and not found.get("more_zones")
+                else None
+            )
+        return seen[(first, second)]
+
+    try:
+        checker = import_module("app.review.assistant.round_check")
+        return checker.round_two(findings, dims, page_map, zones=zones)
+    except Exception as failed:  # noqa: BLE001 - the drawing is made without the round-2 check
+        _log.warning("assistant round-2 check failed: %s", type(failed).__name__)
+        return None
 
 
 type Placed = tuple[int, Mapping[str, Any], int | None, tuple[float, ...] | None, str]
