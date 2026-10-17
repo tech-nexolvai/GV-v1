@@ -535,9 +535,9 @@ function BiggestFirst({ findings, onOpen, pictureUrl, fullPageHref, decisionFor 
   const toggleRow = (id: string) => setRows((now) => { const next = new Set(now); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   return (
     <div data-slot="chat-findings-biggest" role="region" aria-label="Biggest first" className="rounded-xl border border-border/70 bg-card">
-      <p className="flex h-10 items-center gap-2 border-b border-border/60 px-4 text-[13px] text-muted-foreground">
-        <span className="font-semibold text-foreground">Biggest first</span>
-        <span>· what changes fabrication most, the most certain first</span>
+      <p className="flex min-h-10 flex-wrap items-center gap-x-2 gap-y-0.5 border-b border-border/60 px-4 py-2 text-[13px] text-muted-foreground">
+        <span className="font-semibold whitespace-nowrap text-foreground">Biggest first</span>
+        <span>what changes fabrication most, the most certain first</span>
       </p>
       <ul className="grid">
         {findings.map((finding) => (

@@ -22,6 +22,7 @@ function PagePicture({ doubt }: { doubt: ChatPlanDoubt }) {
     );
   }
   const box = doubt.box;
+  // The page picture is always white (a drawing), so the mark is a fixed dark ring in both themes.
   return (
     <span className="relative block h-[72px] w-[56px] shrink-0 overflow-hidden rounded-md border bg-white">
       <img src={doubt.picture_url} alt={`Page ${doubt.page}`} onError={() => setBroken(true)} className="h-full w-full object-contain" />
@@ -29,7 +30,7 @@ function PagePicture({ doubt }: { doubt: ChatPlanDoubt }) {
         <span
           aria-hidden="true"
           data-slot="chat-plan-box"
-          className="absolute rounded-[2px] ring-2 ring-primary"
+          className="absolute rounded-[2px] ring-2 ring-neutral-900"
           style={{ left: `${box[0] * 100}%`, top: `${box[1] * 100}%`, width: `${(box[2] - box[0]) * 100}%`, height: `${(box[3] - box[1]) * 100}%` }}
         />
       )}
