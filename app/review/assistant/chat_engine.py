@@ -881,7 +881,8 @@ class ChatEngine:
             and (entry.get("status") != "not_opened" or entry.get("note"))
         ]
         if pages:
-            self._show_coverage(self.book.set_coverage({"pages": pages}, "earlier"))
+            self.book.set_coverage({"pages": pages}, "earlier")
+            self._show_coverage()
         return kept
 
     # ---- money -----------------------------------------------------------------------------------
@@ -1460,7 +1461,7 @@ class ChatEngine:
         if scope != self._started_scope:
             self.emit("scope", {"index": index, "scope": json.loads(json.dumps(scope))})
         if self.book.coverage_used and self.book.scope_pages != before:
-            self._show_coverage(self.book.coverage_map())  # the coverage map, re-scoped
+            self._show_coverage()  # the coverage map, re-scoped
 
     # ---- findings, coverage and trust (chat v2 / v3) ---------------------------------------------
 
@@ -1559,15 +1560,19 @@ class ChatEngine:
         if self._progress is not None:
             self._progress.changed()
 
-    def _show_coverage(self, coverage: dict[str, Any]) -> None:
+    def _show_coverage(self) -> None:
+        """The coverage block (replaced in place) and the `coverage` event. The map is read again
+        under the lock, and sent under it: helpers record coverage at once, and a map read before
+        another helper's must never land after it (its pages would show as not opened)."""
         with self._lock:
+            coverage = self.book.coverage_map()
             index = self._coverage_index
             if index is None:
                 self.blocks.append({"type": "coverage", "coverage": coverage})
                 index = self._coverage_index = len(self.blocks) - 1
             else:
                 self.blocks[index] = {"type": "coverage", "coverage": coverage}
-        self.emit("coverage", {"index": index, "coverage": json.loads(json.dumps(coverage))})
+            self.emit("coverage", {"index": index, "coverage": json.loads(json.dumps(coverage))})
         if self._progress is not None:
             self._progress.changed()
 
@@ -1636,7 +1641,7 @@ class ChatEngine:
                 text = f"Finding {finding_id} dropped."
             else:
                 coverage = book.set_coverage(raw, by)
-                self._show_coverage(coverage)
+                self._show_coverage()
                 counts = coverage["counts"]
                 gaps = book.coverage_gaps()
                 text = (
@@ -2960,7 +2965,7 @@ class ChatEngine:
         self._plan = plan
         if plan.skipped:
             try:
-                coverage = self.book.set_coverage(
+                self.book.set_coverage(
                     {
                         "pages": [
                             {"page": page, "status": "not_comparable", "note": why}
@@ -2969,7 +2974,7 @@ class ChatEngine:
                     },
                     "code",
                 )
-                self._show_coverage(coverage)
+                self._show_coverage()
             except SandboxRefused as refused:
                 _log.warning("assistant chat could not record the divider pages: %s", refused)
         model = self._helper_model()
@@ -2998,9 +3003,8 @@ class ChatEngine:
         return True
 
     def _note_coverage(self, page: int, note: str) -> None:
-        coverage = self.book.note_coverage(page, note)
-        if coverage is not None:
-            self._show_coverage(coverage)
+        if self.book.note_coverage(page, note) is not None:
+            self._show_coverage()
 
     def _lead_message(self, agents: Sequence[_Agent], entries: Sequence[Mapping[str, Any]]) -> None:
         """The lead's first message of a code-planned full check: the verify-only instruction,
