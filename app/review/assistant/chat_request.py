@@ -83,6 +83,7 @@ __all__ = [
     "inline_pictures",
     "picture_sizes",
     "rates_key_for",
+    "schema_note",
     "thinking_config",
 ]
 
@@ -355,6 +356,12 @@ TOOL_SEARCH: Final[Mapping[str, str]] = {
 }
 
 
+def schema_note(schema: Mapping[str, Any]) -> str:
+    """The system prompt's last line where the provider takes no `output_config.format`."""
+    shape = json.dumps(schema, separators=(",", ":"), sort_keys=True)
+    return f"Answer with one JSON object that follows this JSON schema, and nothing else: {shape}"
+
+
 def call_params(
     *,
     provider: Provider,
@@ -367,10 +374,15 @@ def call_params(
     final: bool,
     max_tokens: int,
     context_management: Mapping[str, Any] | None = None,
+    output_format: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The keyword arguments of one streamed call (`client.beta.messages.create(stream=True)` on
     Anthropic's API with a beta, else `client.messages.create(stream=True)`): everything that
-    leaves the process apart from the key. `messages` already carry their pictures' bytes."""
+    leaves the process apart from the key. `messages` already carry their pictures' bytes.
+
+    `output_format`: a JSON schema the reply must follow (structured outputs). On Anthropic's own
+    API it goes in `output_config.format`, so the reply is that JSON and nothing else; OpenRouter's
+    route is not known to pass it through, so there the schema is added to the system prompt."""
     listed = [dict(tool) for tool in tools]
     if provider != "anthropic":
         # Tool search is Anthropic's: every tool goes loaded elsewhere.
@@ -386,6 +398,8 @@ def call_params(
     ]
     if loaded:
         listed[loaded[-1]]["cache_control"] = dict(_EPHEMERAL)
+    if output_format is not None and provider != "anthropic":
+        system = f"{system}\n\n{schema_note(output_format)}"
     params: dict[str, Any] = {
         "model": model.id if provider == "anthropic" else model.openrouter,
         "max_tokens": max_tokens,
@@ -400,6 +414,11 @@ def call_params(
     if not listed:
         # A call without tools (a finding's second read) sends neither field.
         del params["tools"], params["tool_choice"]
+    if output_format is not None and provider == "anthropic":
+        params["output_config"]["format"] = {
+            "type": "json_schema",
+            "schema": json.loads(json.dumps(output_format)),
+        }
     if provider == "anthropic":
         betas: list[str] = []
         if thinking.get("type") == "adaptive":

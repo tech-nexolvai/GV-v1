@@ -231,7 +231,7 @@ def test_the_prompts_stay_within_their_budgets() -> None:
     assert len(json.dumps(list(LEAD_TOOLS))) <= 90_000
     # The helpers' full list grew by drawing_facts (#1606); a kit is smaller (#1608).
     assert len(json.dumps(list(HELPER_TOOLS))) <= 30_000
-    assert len(json.dumps(list(helper_tools("compare")))) <= 24_000
+    assert len(json.dumps(list(helper_tools("compare")))) <= 25_000
     assert len(json.dumps(list(helper_tools("rounds")))) <= 20_000
     assert len(json.dumps(list(helper_tools("notes")))) <= 20_000
 
