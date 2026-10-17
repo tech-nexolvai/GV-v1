@@ -220,6 +220,7 @@ from app.review.assistant.full_check_plan import (
 from app.review.assistant.ledger import LEDGER_TOOL_NAMES, ReadingLedger, recorded_results_check
 from app.review.assistant.sandbox import SET_PACK, SKILLS, UPLOADS, SandboxRefused
 from app.review.assistant.sharpen import helper_lines
+from app.review.assistant.vendor_consistency import add_to_answer as add_consistency
 from app.runs.rates import ModelRates, call_cost_micros
 
 __all__ = [
@@ -750,6 +751,9 @@ class ChatEngine:
         self._recorded_document: Mapping[str, Any] | None = None
         self._recorded_read = False
         self._unknowns: list[dict[str, Any]] = []
+        # The vendor consistency check's grey items (#1584), for the "not checked" list.
+        self.consistency_gaps: list[dict[str, Any]] = []
+        self.consistency_line: str | None = None
         # The decision items code settled itself (#1554), for the cloud drawing and the report.
         self._settled: list[dict[str, Any]] = []
         """What this answer did not check (`chat_unknowns`), set by the trust phase."""
@@ -2123,6 +2127,10 @@ class ChatEngine:
                 self._ledger_findings()
             except Exception:  # noqa: BLE001 - the answer goes on without the ledger's findings
                 _log.exception("assistant chat ledger findings failed")
+            try:
+                add_consistency(self)  # a full check's vendor consistency check (#1584), $0
+            except Exception:  # noqa: BLE001 - the answer goes on without it
+                _log.exception("assistant chat vendor consistency check failed")
         if not book.live() and not book.coverage_used and not self._ledger_used():
             self._close_checks()
             return
@@ -2155,6 +2163,10 @@ class ChatEngine:
                 self._ledger_findings()
             except Exception:  # noqa: BLE001 - the answer goes on without the ledger's findings
                 _log.exception("assistant chat ledger findings failed")
+            try:
+                add_consistency(self)  # a full check's vendor consistency check (#1584), $0
+            except Exception:  # noqa: BLE001 - the answer goes on without it
+                _log.exception("assistant chat vendor consistency check failed")
             if self._ledger_used():
                 ledger = self.reading_ledger.as_dict()
                 for finding in book.live():
@@ -2204,6 +2216,7 @@ class ChatEngine:
             coverage,
             waiting=recorded.waiting,
             refused_diffs=list(self.refused_diffs),
+            set_gaps=self.consistency_gaps,
         )
         if self._unknowns:
             index = self._add_block({"type": "unknowns", "unknowns": self._unknowns})
@@ -2452,7 +2465,13 @@ class ChatEngine:
                 names = self._full_check_files()
             except Exception:  # noqa: BLE001 - the answer still ends, with its summary
                 _log.exception("assistant chat full-check files failed")
+        line = self.consistency_line
         if not needs_code_summary(text, stopped):
+            if line:
+                # The vendor consistency check's line (#1584), after the AI's own summary.
+                index = self._add_block({"type": "text", "text": line, "by": "code"})
+                self.emit("text_delta", {"index": index, "text": line, "by": "code"})
+                text = f"{text}\n\n{line}"
             return text
         book, settings = self.book, self.settings
         summary = code_summary(
@@ -2466,6 +2485,7 @@ class ChatEngine:
             budget_usd=cap_text(settings.package_cap_micros),
             turns=settings.lead_max_turns,
             files=names,
+            also=[line] if line else (),
         )
         index = self._add_block({"type": "text", "text": summary, "by": "code"})
         self.emit("text_delta", {"index": index, "text": summary, "by": "code"})

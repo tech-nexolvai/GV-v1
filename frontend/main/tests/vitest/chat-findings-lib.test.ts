@@ -341,6 +341,14 @@ describe('areas and one-line rows (#1508)', () => {
     const proto = finding('p', { source: 'brand_prototype', architect: "5'-6\"", vendor: '94"', inches: { architect: null, vendor: '94', difference: null } });
     expect(findingLine(proto)).toMatchObject({ verb: 'brand prototype shows', reference: { text: "5'-6\"" }, printed: null });
     expect(reviewerWords(proto)).toMatchObject({ referenceLabel: 'Brand prototype shows', tell: "Confirm which governs: the brand prototype shows 5'-6\", the vendor drew 94 in." });
+    // #1584: the vendor's own numbers name no architect, and code's sum is not "printed".
+    const sum = finding('s', { source: 'vendor_arithmetic', architect: '90 1/2"', vendor: '88 1/2"', inches: { architect: '90.5', vendor: '88.5', difference: '-2' } });
+    expect(reviewerWords(sum)).toMatchObject({ reference: '90 1/2 in', tell: 'Correct the string: its parts add up to 90 1/2 in, but its overall prints 88 1/2 in.' });
+    const twice = finding('t', { source: 'cross_view', architect: '36"', vendor: '36 1/2"', inches: { architect: '36', vendor: '36.5', difference: '0.5' } });
+    expect(reviewerWords(twice).tell).toBe('Print one value for this span: the drawing measures 36 in, this view prints 36 1/2 in.');
+    // Likely from code alone is said as code's proof, not as two AI readings.
+    expect(sureWords({ trust_level: 'likely', witnesses: ['arithmetic'] })).toBe('Code proved it from the drawing; no AI reading has checked it yet.');
+    expect(sureWords({ trust_level: 'likely', witnesses: [] })).toBe('Two separate AI readings agree; no code check could read it.');
     // The value's own "prototype" lead-in is not said twice.
     const said = finding('q', { source: 'brand_prototype', status: 'check', architect: "prototype 3'-2\" (38\")", vendor: '42"', inches: null });
     expect(findingLine(said)).toMatchObject({ verb: 'brand prototype shows', reference: { text: "3'-2\"" } });
