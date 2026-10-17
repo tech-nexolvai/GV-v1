@@ -29,12 +29,15 @@ from app.review.assistant.chat_engine import (
 from app.review.assistant.chat_findings import boxless_note, coverage_note, decision_help_note
 from app.review.assistant.chat_tools import (
     FABLE_NOTE,
+    HELPER_KITS,
     HELPER_SYSTEM_PROMPT,
     HELPER_TOOL_NAMES,
     HELPER_TOOLS,
     LEAD_LOADED,
     LEAD_SYSTEM_PROMPT,
     LEAD_TOOLS,
+    helper_system_prompt,
+    helper_tools,
 )
 from app.review.assistant.full_check_brief import checklist_send_back, helper_brief
 from app.review.assistant.tool_schema import BOX_UNITS
@@ -226,7 +229,23 @@ def test_the_prompts_stay_within_their_budgets() -> None:
     loaded = [tool for tool in LEAD_TOOLS if not tool.get("defer_loading")]
     assert len(json.dumps(loaded)) <= 30_000
     assert len(json.dumps(list(LEAD_TOOLS))) <= 90_000
-    assert len(json.dumps(list(HELPER_TOOLS))) <= 29_000
+    # The helpers' full list grew by drawing_facts (#1606); a kit is smaller (#1608).
+    assert len(json.dumps(list(HELPER_TOOLS))) <= 30_000
+    assert len(json.dumps(list(helper_tools("compare")))) <= 25_000
+    assert len(json.dumps(list(helper_tools("rounds")))) <= 20_000
+    assert len(json.dumps(list(helper_tools("notes")))) <= 20_000
+
+
+def test_each_helper_kit_has_known_tools_and_a_prompt_naming_only_those() -> None:
+    known = {str(tool["name"]) for tool in (*HELPER_TOOLS, *LEAD_TOOLS)}
+    for kit, names in HELPER_KITS.items():
+        tools = helper_tools(kit)
+        assert [tool["name"] for tool in tools] == list(names) and set(names) <= known, kit
+        assert {"zoom", "report_finding", "set_coverage", "drawing_facts"} <= set(names), kit
+        prompt = helper_system_prompt(kit)
+        for name in ("record_string", "record_reading"):
+            assert (name in prompt) is (name in names), (kit, name)
+    assert helper_tools() == HELPER_TOOLS and helper_system_prompt() == HELPER_SYSTEM_PROMPT
 
 
 def test_the_lead_keeps_its_core_tools_loaded_and_defers_the_rest() -> None:
