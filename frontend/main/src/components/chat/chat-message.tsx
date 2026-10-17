@@ -1,18 +1,19 @@
-import { useId, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { ChevronRight, CircleAlert, Download, FileDown, Sheet, FileImage, FileSpreadsheet, FileText, File as FileIcon, Play, RotateCw, ScanSearch } from 'lucide-react';
 
 import { AccuracyBadge, CiteChips } from '@/components/chat/chat-accuracy';
 import { ActivityRow, TaskChecklist } from '@/components/chat/chat-activity';
 import { CoverageStrip } from '@/components/chat/chat-coverage';
 import { EvidenceViewer } from '@/components/chat/chat-evidence';
-import { FindingsTable } from '@/components/chat/chat-findings';
-import { FindingsKpis, FullCheckFiles } from '@/components/chat/chat-full-check';
-import { TrustSummary } from '@/components/chat/chat-trust';
+import { FindingsSections, type DecisionProps } from '@/components/chat/chat-findings';
+import { FullCheckFiles, FullCheckProgress, ResultNumbers, type CloudReview } from '@/components/chat/chat-full-check';
+import { ConfidenceLine, HowChecked } from '@/components/chat/chat-trust';
 import { ChatMarkdown } from '@/components/chat/chat-markdown';
 import { Collapse, CopyButton, Shimmer, Spark, Spinner } from '@/components/chat/chat-motion';
-import { chatPaths, type ChatEffort, type ChatFile, type ChatModel } from '@/lib/chat-api';
-import { findingCounts, groupByArea, isShortAnswer, NO_FILTER, type FindingFilter } from '@/lib/chat-findings';
-import { fullCheckBubble, fullCheckFiles } from '@/lib/chat-full-check';
+import { chatPaths, type ChatEffort, type ChatFile, type ChatFinding, type ChatModel, type FindingDecision, type FindingDecisionValue } from '@/lib/chat-api';
+import { coverageCounts, findingCounts, isNarrowAnswer, isShortAnswer, NO_FILTER, sectionOrder, type FindingFilter } from '@/lib/chat-findings';
+import { fullCheckBubble, fullCheckFiles, previewPage, productsWords, withoutCodeNote } from '@/lib/chat-full-check';
+import { useReducedMotion } from '@/lib/chat-motion';
 import { EFFORT_WORDS } from '@/lib/chat-settings';
 import { downloadFile, downloadFindingsCsv, markupFailureWords } from '@/lib/chat-exports';
 import { hasTrust, roundCounts } from '@/lib/chat-trust';
@@ -222,6 +223,11 @@ function isFewLines(text: string): boolean {
   return lines.length <= 2 && !lines.some((line) => /^\s*(\||```)/.test(line));
 }
 
+/** The server's answer to a decision: `{decision, note, by, at}`. */
+function isDecision(value: unknown): value is FindingDecision {
+  return Boolean(value) && typeof value === 'object' && ((value as FindingDecision).decision === 'agree' || (value as FindingDecision).decision === 'not_a_problem');
+}
+
 export interface AssistantMessageProps {
   message: ViewMessage;
   chatId: string;
@@ -256,14 +262,23 @@ export interface AssistantMessageProps {
    * trust summary → coverage.
    */
   fullCheck?: boolean;
+  /** #1522 (PATH step 5): record the reviewer's Agree / Not a problem on a finding. */
+  decide?: (messageId: string, findingId: string, decision: FindingDecisionValue) => Promise<unknown>;
+  /** #1522: whether the server has the decision route yet; the buttons stay hidden until it says yes. */
+  decisionReady?: (messageId: string, findingId: string) => Promise<boolean>;
+  /** #1525: make the cloud drawing again from the reviewer's decisions; returns the new drawing. */
+  remakeCloud?: (messageId: string) => Promise<ChatFile>;
 }
 
-export function AssistantMessage({ message, chatId, models, onReload, onRetry, onContinue, latest = false, makeMarkupPdf, fullPageHref, fullCheck = false }: AssistantMessageProps) {
+export function AssistantMessage({ message, chatId, models, onReload, onRetry, onContinue, latest = false, makeMarkupPdf, fullPageHref, fullCheck = false, decide, decisionReady, remakeCloud }: AssistantMessageProps) {
   const running = message.status === 'running';
+  const reduced = useReducedMotion();
   const pictureUrl = (pictureId: string) => chatPaths.picture(chatId, pictureId);
   const [filter, setFilter] = useState<FindingFilter>(NO_FILTER);
   const [viewing, setViewing] = useState<string | null>(null);
   const [madeFiles, setMadeFiles] = useState<ChatFile[]>([]);
+  const baseId = useId();
+  const sectionIds = { different: `${baseId}-wrong`, check: `${baseId}-decide`, same: `${baseId}-right` };
   const findings = message.findings ?? [];
   const coverage = message.coverage ?? null;
   // A one- or two-line answer with no work, findings or files: just its words and the meta line.
@@ -271,12 +286,11 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
   const blocks = shownBlocks(message);
   const { items: allItems } = answerItems(blocks, Boolean(message.tasks?.length));
   const items = short ? allItems.filter((item) => item.kind === 'text') : allItems;
-  // A full check opens on its first tab that has rows (What's wrong, else To check, else What's right).
   const counts = findingCounts(findings);
-  const opening = counts.different ? 'different' : counts.check ? 'check' : 'same';
-  const shownFilter: FindingFilter = fullCheck && filter.status === 'all' ? { ...filter, status: opening } : filter;
-  // The viewer's arrows step through the findings in the table's order (by area), under its filter.
-  const ordered = groupByArea(findings, shownFilter).flatMap((group) => group.findings);
+  // #1522: a narrow answer (a few pages) shows no whole-set panels: no page grid, no coverage, no ledger.
+  const narrow = isNarrowAnswer(message, fullCheck);
+  // The viewer's arrows step through the findings in the order the sections show them.
+  const ordered = sectionOrder(findings, filter);
   const allFiles = [...message.files, ...madeFiles.filter((made) => !message.files.some((file) => file.id === made.id))];
   const made = fullCheck ? fullCheckFiles(allFiles) : { cloud: null, report: null, rest: allFiles };
   const files = made.rest;
@@ -285,12 +299,12 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
   // A full check's cloud drawing already is the marked-up PDF.
   const canMarkup = finished && messageId !== null && makeMarkupPdf !== undefined && !made.cloud;
   const showTrust = (findings.length > 0 && (hasTrust(findings, message.trust) || roundCounts(findings, message.trust) !== null)) || (message.unknowns?.length ?? 0) > 0;
-  // The coverage strip sits in the trust summary when there is one, else on its own under the table.
-  const coverageStrip = coverage ? (
+  // ONE coverage display: the compact line (grid on expand) inside "How this was checked", whole-set answers only.
+  const coverageStrip = coverage && !narrow ? (
     <CoverageStrip
       coverage={coverage}
       page={filter.page}
-      onPickPage={findings.length ? (page) => setFilter({ ...filter, status: fullCheck ? shownFilter.status : 'all', page: filter.page === page ? null : page }) : undefined}
+      onPickPage={findings.length ? (page) => setFilter({ ...filter, page: filter.page === page ? null : page }) : undefined}
     />
   ) : null;
   const streaming = textStreaming(message);
@@ -298,6 +312,69 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
   const answerText = (message.stopped ? withoutStopNote(message.text) : message.text)
     || blocks.filter((block) => block.type === 'text').map((block) => block.text).join('\n\n');
   const retry = !running && onRetry ? onRetry : undefined;
+
+  // PATH step 5: Agree / Not a problem (optimistic; deciding again is the undo), shown once the
+  // server says it has the route.
+  const actionable = findings.filter((finding) => finding.status !== 'same');
+  const [routeReady, setRouteReady] = useState(false);
+  const [decisions, setDecisions] = useState<Record<string, FindingDecision>>({});
+  const [decideFailed, setDecideFailed] = useState(false);
+  const probeId = finished && messageId && actionable.length && decide && decisionReady ? actionable[0].id : null;
+  useEffect(() => {
+    if (!probeId || !messageId || !decisionReady) return;
+    let cancelled = false;
+    decisionReady(messageId, probeId).then((ready) => { if (!cancelled) setRouteReady(ready); }, () => undefined);
+    return () => { cancelled = true; };
+  }, [probeId, messageId, decisionReady]);
+  const decisionOf = (finding: ChatFinding): FindingDecision | null => decisions[finding.id] ?? finding.decision ?? null;
+  const decisionFor = routeReady && decide && messageId ? (finding: ChatFinding): DecisionProps => ({
+    decision: decisionOf(finding)?.decision ?? null,
+    onDecide: (decision) => {
+      const before = decisions[finding.id];
+      setDecideFailed(false);
+      setDecisions((now) => ({ ...now, [finding.id]: { ...(now[finding.id] ?? finding.decision ?? {}), decision } }));
+      decide(messageId, finding.id, decision).then(
+        (saved) => setDecisions((now) => ({ ...now, [finding.id]: isDecision(saved) ? saved : { decision } })),
+        () => {
+          setDecideFailed(true);
+          setDecisions((now) => {
+            const next = { ...now };
+            if (before) next[finding.id] = before;
+            else delete next[finding.id];
+            return next;
+          });
+        },
+      );
+    },
+  }) : null;
+  // #1525: "12 of 43 decided", and the cloud drawing made again from the answers.
+  const decidedCount = actionable.filter((finding) => decisionOf(finding)).length;
+  const deciders = [...new Set(actionable.map((finding) => decisionOf(finding)?.by).filter((by): by is string => Boolean(by)))];
+  const [cloudState, setCloudState] = useState<'idle' | 'updating' | 'failed'>('idle');
+  const updateCloud = remakeCloud && messageId && decisionFor ? () => {
+    setCloudState('updating');
+    remakeCloud(messageId).then(
+      (file) => {
+        setCloudState('idle');
+        setMadeFiles((known) => (known.some((each) => each.id === file.id) ? known : [...known, file]));
+        // The new check report is added to the message's files on the server: read the chat again.
+        onReload?.();
+      },
+      () => setCloudState('failed'),
+    );
+  } : null;
+  const review: CloudReview | null = decisionFor ? {
+    decided: decidedCount,
+    total: actionable.length,
+    reviewedBy: decidedCount === actionable.length && deciders.length ? deciders.join(', ') : null,
+    onUpdate: updateCloud,
+    updating: cloudState === 'updating',
+    failed: cloudState === 'failed',
+  } : null;
+
+  const jumpTo = (status: 'different' | 'check' | 'same') => {
+    document.getElementById(sectionIds[status])?.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
+  };
   // The task list sits inside the activity timeline, at its newest update (the last task step);
   // the list from the newest `tasks` event wins over the one that step carried.
   const lastTaskAt = blocks.reduce((last, block, at) => (block.type === 'step' && (block.step.tool === 'TaskCreate' || block.step.tool === 'TaskUpdate') ? at : last), -1);
@@ -334,44 +411,90 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
       </div>
     );
   };
-  const table = findings.length > 0 ? (
-    <FindingsTable findings={findings} filter={shownFilter} onFilter={setFilter} onOpen={(finding) => setViewing(finding.id)} pictureUrl={pictureUrl} tabs={fullCheck} />
+  const sections = findings.length > 0 ? (
+    <FindingsSections
+      findings={findings}
+      filter={filter}
+      onFilter={setFilter}
+      onOpen={(finding) => setViewing(finding.id)}
+      pictureUrl={pictureUrl}
+      fullPageHref={fullPageHref}
+      decisionFor={decisionFor}
+      narrow={narrow}
+      ids={sectionIds}
+    />
   ) : null;
-  const trustCard = showTrust ? <TrustSummary findings={findings} trust={message.trust} coverage={coverage} coverageStrip={fullCheck ? null : coverageStrip} unknowns={message.unknowns} /> : null;
+  const decideError = decideFailed ? (
+    <p role="alert" data-slot="chat-decision-error" className="inline-flex items-center gap-1.5 text-sm text-muted-foreground">
+      <CircleAlert className="size-4 shrink-0" aria-hidden="true" />
+      Your answer was not saved. Try again.
+    </p>
+  ) : null;
+  const howChecked = showTrust && !narrow ? (
+    <HowChecked findings={findings} trust={message.trust} coverage={coverage} coverageStrip={coverageStrip} unknowns={message.unknowns} />
+  ) : null;
+  const hasResult = fullCheck && (findings.length > 0 || coverage !== null || made.cloud !== null || made.report !== null);
+  // A full check stopped by the reviewer says so once, quietly, in its summary (not as a floating "Stopped").
+  // An interrupted answer says so (with Continue) under the answer, not here as well.
+  const stopNote = message.stopped === 'cancelled' ? 'You stopped this check before the end, so some items may be missing.' : message.stopped === 'interrupted' ? null : stopped;
+  const textItems = items.filter((item) => item.kind === 'text');
 
   return (
     <article
       data-slot="chat-assistant-message"
       data-status={message.status}
       data-short={short ? 'true' : undefined}
+      data-narrow={findings.length && narrow ? 'true' : undefined}
       aria-label="Answer"
       className={cn('group/message chat-rise flex min-w-0 flex-col', short ? 'gap-1' : 'gap-3')}
     >
-      {/* #1508: a full check leads with its summary, the cloud drawing and the findings; its notes follow. */}
       {(fullCheck ? items.filter((item) => item.kind === 'activity') : items).map((item) => renderItem(item, items.indexOf(item)))}
-      {fullCheck && (findings.length > 0 || coverage || made.cloud || made.report) && (
-        <div data-slot="chat-full-check-lead" className="chat-wide grid min-w-0 gap-3">
-          {(findings.length > 0 || coverage) && (
-            <FindingsKpis counts={counts} coverage={coverage} accuracy={message.accuracy} status={shownFilter.status} onPick={(status) => setFilter({ ...filter, status })} />
-          )}
-          <FullCheckFiles cloud={made.cloud} report={made.report} chatId={chatId} />
-          {table}
+      {fullCheck && running && <div className="chat-wide grid min-w-0"><FullCheckProgress message={message} /></div>}
+      {hasResult && !running && (
+        <div data-slot="chat-full-check-lead" className="chat-wide grid min-w-0 gap-7">
+          {/* PATH 4.1: the summary, prominent. */}
+          <section data-slot="chat-summary" aria-label="Summary" className="grid max-w-3xl min-w-0 gap-2.5">
+            <p className="text-xs font-medium text-muted-foreground">{['Full check', productsWords(message.products)].filter(Boolean).join(' · ')}</p>
+            <h2 data-slot="chat-summary-headline" className="text-xl leading-snug font-semibold tracking-[-0.015em]">
+              {counts.different > 0 ? <span className="text-outcome-fail-fg">{counts.different} wrong</span> : 'Nothing wrong'} on the vendor’s drawings
+              {counts.check > 0 ? `, ${counts.check} ${counts.check === 1 ? 'needs' : 'need'} your decision.` : '.'}
+            </h2>
+            {textItems.map((item) => {
+              const block = blocks[item.index] as Extract<ViewBlock, { type: 'text' }>;
+              if (block.by !== 'code') return renderItem(item, items.indexOf(item));
+              const words = withoutCodeNote(block.text);
+              return (
+                <div key={`text-${item.index}`} className="grid min-w-0 gap-1.5">
+                  <ChatMarkdown text={words.text} />
+                  <p data-slot="chat-summary-by-code" className="text-[12.5px] text-muted-foreground">{words.note ?? 'Summary written by GV Review: the AI did not finish its own.'}</p>
+                </div>
+              );
+            })}
+            {stopNote && message.stopped !== 'error' && <p data-slot="chat-stopped" data-stopped={message.stopped ?? undefined} className="text-[12.5px] text-muted-foreground">{stopNote}</p>}
+          </section>
+          {/* PATH 4.2: the three numbers, pages and accuracy (each once). */}
+          {(findings.length > 0 || coverage) && <ResultNumbers counts={counts} coverage={coverage} accuracy={message.accuracy} onPick={jumpTo} />}
+          {/* PATH 4.3: the cloud drawing, the main output. */}
+          <FullCheckFiles cloud={made.cloud} report={made.report} chatId={chatId} page={previewPage(findings)} totalPages={coverage ? coverageCounts(coverage).total : null} counts={counts} review={review} />
+          {/* PATH 4.4 to 4.6: What's wrong, Your decision, Right (folded). */}
+          {decideError}
+          {sections}
+          {/* PATH 4.7: everything else, folded. */}
+          {howChecked}
         </div>
       )}
-      {fullCheck && items.filter((item) => item.kind === 'text').map((item) => renderItem(item, items.indexOf(item)))}
+      {fullCheck && !(hasResult && !running) && textItems.map((item) => renderItem(item, items.indexOf(item)))}
       {looseTasks}
 
       {(message.cites?.length ?? 0) > 0 && <CiteChips cites={message.cites ?? []} pictureUrl={pictureUrl} />}
 
-      {trustCard}
-
-      {!fullCheck && table && <div className="chat-wide grid min-w-0">{table}</div>}
+      {!fullCheck && sections && <div className="chat-wide grid min-w-0 gap-3">{decideError}{sections}</div>}
+      {!fullCheck && findings.length > 0 && narrow && <ConfidenceLine findings={findings} trust={message.trust} />}
+      {!fullCheck && howChecked}
+      {!fullCheck && !howChecked && coverageStrip}
       {findings.length > 0 && (
         <EvidenceViewer findings={ordered} openId={viewing} onOpen={setViewing} pictureUrl={pictureUrl} fullPageHref={fullPageHref} />
       )}
-
-      {coverage && (fullCheck || !showTrust) && coverageStrip}
-
       {finished && (
         <div data-slot="chat-exports" className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
           {canMarkup && (
@@ -420,7 +543,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
         </div>
       )}
 
-      {stopped && message.stopped !== 'error' && message.stopped !== 'interrupted' && (
+      {stopped && message.stopped !== 'error' && message.stopped !== 'interrupted' && !(hasResult && !running) && (
         <p data-slot="chat-stopped" data-stopped={message.stopped ?? undefined} className="text-sm text-muted-foreground">{stopped}</p>
       )}
 
@@ -470,7 +593,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
           <span className="flex min-w-0 flex-wrap items-center justify-end gap-x-3 gap-y-1">
             <span data-slot="chat-meta" className="min-w-0 text-xs text-muted-foreground">{footerWords(message, models)}</span>
             {/* Chat v5: code's accuracy closes every answer that has one (older answers show none). */}
-            {message.accuracy && <AccuracyBadge accuracy={message.accuracy} />}
+            {message.accuracy && !(hasResult && !running && (findings.length > 0 || coverage)) && <AccuracyBadge accuracy={message.accuracy} />}
           </span>
         </div>
       )}

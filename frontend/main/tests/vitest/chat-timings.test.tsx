@@ -32,7 +32,8 @@ function answer(trust: ChatTrust): ViewMessage {
   return {
     key: 'a', id: 'msg-1', role: 'assistant', created_at: '2026-10-17T10:00:00Z', text: '', model: 'claude-opus-5-5', effort: 'high', thinking: true,
     blocks: [{ type: 'text', text: 'Two items differ.' }], files: [], tasks: null, cost_usd: '4.12', stopped: null, error: null, status: 'done',
-    findings: [finding('f1', { trust_level: 'likely' })], trust,
+    // A whole-set answer: its "How this was checked" holds the timings (#1522).
+    findings: [finding('f1', { trust_level: 'likely' })], trust, scope: { kind: 'whole_set' },
   };
 }
 

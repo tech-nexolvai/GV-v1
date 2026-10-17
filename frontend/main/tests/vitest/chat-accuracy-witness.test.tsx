@@ -37,23 +37,20 @@ const UNKNOWNS: ChatUnknown[] = [
 ];
 
 describe('evidence kinds', () => {
-  it('says what backs each finding, in words (in a row’s detail) and in the Trust tooltip', async () => {
-    const user = userEvent.setup();
+  it('says what backs each finding, in words, and on screen as one How sure line per card', () => {
     expect(evidenceWords(FINDINGS[0])).toBe('Printed on the drawing: both values printed at their spots');
     expect(evidenceWords(FINDINGS[1])).toBe('AI reading only');
     expect(evidenceWords(FINDINGS[2])).toBe('Worked out by code: GV’s rule check agrees');
     expect(evidenceWords(finding('old'))).toBeNull();
 
+    // #1522: on screen it is one plain "How sure" line in each item's card (no chip, no tooltip).
     render(<AssistantMessage message={answer({ findings: FINDINGS })} chatId="c-1" models={[OPUS]} />);
     const node = screen.getByRole('article', { name: 'Answer' });
-    for (const row of [...node.querySelectorAll<HTMLElement>('[data-slot="chat-finding-row"]')]) await user.click(row);
-    const tags = [...node.querySelectorAll<HTMLElement>('[data-slot="chat-finding-detail"] [data-slot="chat-evidence-kind"]')];
-    expect(tags.map((tag) => [tag.dataset.kind, tag.textContent])).toEqual([
-      ['observed', 'printed on the drawing'],
-      ['inferred', 'AI reading only'],
-    ]);
-    const chip = node.querySelector<HTMLElement>('[data-slot="chat-trust-level"][data-level="likely"]')!;
-    expect(chip.title).toContain('Evidence: AI reading only');
+    // A narrow answer (one page): the cards of its few items are open at first.
+    const sure = [...node.querySelectorAll<HTMLElement>('[data-slot="chat-finding-sure"]')].map((line) => line.textContent);
+    expect(sure[0]).toBe('How sure: Confirmed. Code found the values printed on the drawing (or worked them out), and an AI reading agrees.');
+    expect(sure[1]).toBe('How sure: Likely. Two separate AI readings agree; no code check could read it.');
+    expect(node.querySelector('[data-slot="chat-trust-level"]')).toBeNull();
   });
 
   it('adds an Evidence column to the CSV', () => {
@@ -73,36 +70,37 @@ describe('not seen is not right', () => {
     expect(levelCounts(FINDINGS, null)).toEqual({ confirmed: 1, likely: 2, to_check: 0 });
   });
 
-  it('shows a "Not compared" tab in a full check, with why', async () => {
+  it('shows "Not compared" apart in a full check (folded), with why', async () => {
     const user = userEvent.setup();
     render(<AssistantMessage message={answer({ findings: FINDINGS })} chatId="c-1" models={[OPUS]} fullCheck />);
     const node = screen.getByRole('article', { name: 'Answer' });
-    const tabs = within(node).getAllByRole('tab');
-    expect(tabs.map((tab) => tab.textContent)).toEqual(['What’s wrong(1)', 'To check(1)', 'What’s right(1)', 'Not compared(1)']);
-    await user.click(tabs[3]);
-    const rows = [...node.querySelectorAll<HTMLElement>('[data-slot="chat-finding-row"]')].map((row) => row.dataset.id);
-    expect(rows).toEqual(['n1']);
-    // The row says Not compared (never Same), with why on hover; its detail says why in words.
+    expect([...node.querySelectorAll('[data-slot="chat-kpis"] [data-kpi]')].map((tile) => tile.getAttribute('data-kpi'))).toEqual(['different', 'check', 'same', 'pages', 'accuracy']);
+    const rows = () => [...node.querySelectorAll<HTMLElement>('[data-slot="chat-finding-row"]')].map((row) => row.dataset.id);
+    expect(rows()).toEqual(['o1', 'i1']);
+    await user.click(within(node).getByRole('button', { name: /^Not compared\s*1/ }));
+    expect(rows()).toEqual(['o1', 'i1', 'n1']);
+    // The row says Not compared (never Right); its card says why in words.
     const status = node.querySelector<HTMLElement>('[data-id="n1"] [data-slot="chat-finding-status"]')!;
-    expect([status.dataset.status, status.textContent, status.title]).toEqual(['not_compared', 'Not compared', 'Not compared: both sides were not looked at']);
-    await user.click(node.querySelector<HTMLElement>('[data-id="n1"]')!);
-    expect(node.querySelector('[data-slot="chat-finding-not-compared"]')?.textContent).toBe('not compared: both sides were not looked at');
+    expect([status.dataset.status, status.textContent]).toEqual(['not_compared', 'Not compared']);
+    await user.click(within(node.querySelector<HTMLElement>('[data-id="n1"]')!).getByRole('button', { name: 'Sink model' }));
+    expect(node.querySelector('[data-slot="chat-finding-detail"][data-id="n1"] [data-slot="chat-finding-why"]')?.textContent).toBe('Both sides were not looked at, so this is not counted as right.');
   });
 
-  it('has no "Not compared" tab when every item was compared', () => {
+  it('has no "Not compared" part when every item was compared', () => {
     render(<AssistantMessage message={answer({ findings: FINDINGS.slice(0, 3) })} chatId="c-1" models={[OPUS]} fullCheck />);
-    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['What’s wrong(1)', 'To check(1)', 'What’s right(1)']);
+    expect(screen.queryByRole('button', { name: /^Not compared/ })).toBeNull();
   });
 });
 
 describe('unknowns', () => {
-  it('lists what was not checked under the trust card: why and what is needed', async () => {
+  it('lists what was not checked in “How this was checked”: why and what is needed', async () => {
     const user = userEvent.setup();
     expect(unknownsWords(UNKNOWNS)).toBe('3 not checked');
     expect(unknownsWords([])).toBeNull();
-    render(<AssistantMessage message={answer({ findings: FINDINGS, unknowns: UNKNOWNS, trust: { evidence: { observed: 1, derived: 1, inferred: 1 }, not_compared: 1 } })} chatId="c-1" models={[OPUS]} />);
-    const summary = screen.getByRole('region', { name: 'Why this can be trusted' });
-    expect(summary.querySelector('[data-slot="chat-trust-evidence"]')?.textContent).toBe('Evidence: 1 printed on the drawing · 1 worked out by code · 1 AI reading only · 1 not compared');
+    render(<AssistantMessage message={answer({ findings: FINDINGS, scope: { kind: 'whole_set' }, unknowns: UNKNOWNS, trust: { evidence: { observed: 1, derived: 1, inferred: 1 }, not_compared: 1 } })} chatId="c-1" models={[OPUS]} />);
+    const summary = screen.getByRole('region', { name: 'How this was checked' });
+    await user.click(within(summary).getByRole('button', { name: 'How this was checked' }));
+    expect(summary.querySelector('[data-slot="chat-trust-evidence"]')?.textContent).toBe('1 printed on the drawing · 1 worked out by code · 1 AI reading only · 1 not compared');
     await user.click(within(summary).getByRole('button', { name: /3 not checked/ }));
     const items = [...summary.querySelectorAll<HTMLElement>('[data-slot="chat-unknowns"] li')];
     expect(items.map((item) => item.dataset.why)).toEqual(['not_opened', 'unreadable', 'missing_job_value']);
