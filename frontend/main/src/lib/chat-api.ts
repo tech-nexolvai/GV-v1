@@ -383,6 +383,8 @@ export interface ChatFinding {
    * proved are clouded. Added on a stored answer (not while it streams); follows the decision.
    */
   proof?: FindingProof | null;
+  /** #1581: proof that both numbers measure the same thing; an architect comparison needs it to be clouded. */
+  pairing?: { proved: boolean; method: 'code_geometry' | 'blind_picks'; how?: string | null } | null;
 }
 
 /** #1581: the zero-click cloud drawing's group for a finding, and its words. */

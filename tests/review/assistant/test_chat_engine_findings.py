@@ -410,8 +410,8 @@ def test_second_reads_run_after_the_lead_and_feed_the_trust_report(
         assert call["thinking"] == {"type": "disabled"} and call["max_tokens"] == 1024
         assert "tools" not in call and "tool_choice" not in call
     prompt_ids = [row["prompt_id"] for row in harness.ledger.rows]
-    assert prompt_ids.count("review-assistant-chat-check-anthropic-chat-v16") == 2
-    assert prompt_ids.count("review-assistant-chat-adjudicate-anthropic-chat-v16") == 1
+    assert prompt_ids.count("review-assistant-chat-check-anthropic-chat-v17") == 2
+    assert prompt_ids.count("review-assistant-chat-adjudicate-anthropic-chat-v17") == 1
     assert outcome.cost_micros > 0
 
 
@@ -562,7 +562,7 @@ def test_a_full_check_seeds_recorded_results_and_makes_the_cloud_drawing_and_rep
     ]
     # The two files, made by code, handed over (the service announces each with `file`).
     names = [f["name"] for f in harness.files]
-    assert names == ["Vendor set - AI cloud drawing.pdf", "Vendor set - AI check report.pdf"]
+    assert names == ["Vendor set - GV cloud drawing.pdf", "Vendor set - AI check report.pdf"]
     from pypdf import PdfReader
 
     workspace = harness.workspace

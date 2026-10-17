@@ -18,6 +18,7 @@ export const PROOF_GROUPS: readonly ProofGroup[] = ['clouded', 'not_verified', '
 export type ProofCounts = Record<ProofGroup, number>;
 
 const PROVED_LEVELS = new Set(['confirmed', 'likely']);
+const PAIRING_METHODS = new Set(['code_geometry', 'blind_picks']);
 const SCALED = /\bscal(?:e|es|ed|ing)\b|\bmeasured (?:off|on) the drawing\b/i;
 
 /** The rule for a finding with no `proof` from the server yet (a streaming answer). */
@@ -28,7 +29,9 @@ function codeProved(finding: ChatFinding): boolean {
   if (!PROVED_LEVELS.has(finding.trust_level ?? '') || witnesses.length === 0) return false;
   if (witnesses.includes('rule') || finding.settled?.method === 'gv_limits') return true;
   if (finding.source === 'vendor_arithmetic' && witnesses.includes('arithmetic')) return true;
-  return finding.inches?.architect != null;
+  // An architect comparison also needs proof that both numbers measure the same thing.
+  const paired = finding.pairing?.proved === true && PAIRING_METHODS.has(finding.pairing.method);
+  return finding.inches?.architect != null && finding.source !== 'rules' && paired;
 }
 
 /** Where the zero-click drawing puts a finding, with the reviewer's newest click laid over. */

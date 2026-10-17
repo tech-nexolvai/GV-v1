@@ -2437,6 +2437,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/tracker": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every item found across the project's drawing sets, rounds and checks */
+        get: operations["read_tracker_api_v1_projects__project_id__tracker_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/tracker.xlsx": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The tracker as a workbook (Items, Vendors, Checks); CSV of the items without openpyxl */
+        get: operations["export_tracker_api_v1_projects__project_id__tracker_xlsx_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/usage": {
         parameters: {
             query?: never;
@@ -4867,6 +4901,8 @@ export interface components {
             not_compared_why?: ("not_viewed" | "pair_not_covered") | null;
             /** Page */
             page: number;
+            /** @description Proof that both numbers measure the same thing (#1581); without it an architect comparison is never clouded automatically. */
+            pairing?: components["schemas"]["ChatFindingPairingOut"] | null;
             /** Parts */
             parts?: string[] | null;
             /**
@@ -4943,6 +4979,26 @@ export interface components {
              * @description The non-AI witnesses behind it: printed, rule, arithmetic, ledger, units.
              */
             witnesses?: string[] | null;
+        };
+        /**
+         * ChatFindingPairingOut
+         * @description Proof that the vendor's and the architect's numbers measure the same thing (#1581): needed
+         *     before an architect comparison is clouded with no human step.
+         */
+        ChatFindingPairingOut: {
+            /**
+             * How
+             * @description In plain words, for the proof page.
+             */
+            how?: string | null;
+            /**
+             * Method
+             * @description code_geometry: both values printed at their spots and their dimension lines' end points on the same drawn extent; blind_picks: two blind AI picks of the same labels plus code's checks (setting assistant_pairing_proof).
+             * @enum {string}
+             */
+            method: "code_geometry" | "blind_picks";
+            /** Proved */
+            proved: boolean;
         };
         /**
          * ChatFindingProofOut
@@ -11390,6 +11446,8 @@ export interface components {
             /** Unpriced Calls */
             unpriced_calls: number;
         };
+        /** @enum {string} */
+        StateFilter: "open" | "fixed" | "not_a_problem" | "right_later" | "all";
         /**
          * StoredList
          * @description One many-valued input as stored, in layout order.
@@ -11538,6 +11596,311 @@ export interface components {
             source: string;
             /** Value */
             value: string;
+        };
+        /** @enum {string} */
+        TrackerCheckKind: "full_check" | "question";
+        /** TrackerCheckOut */
+        TrackerCheckOut: {
+            /** At */
+            at: string;
+            /** Chat Id */
+            chat_id: string;
+            /** Decision */
+            decision: number;
+            kind: components["schemas"]["TrackerCheckKind"];
+            /** Message Id */
+            message_id: string;
+            /** Right */
+            right: number;
+            /** Rounds */
+            rounds: number[];
+            /** Stopped */
+            stopped: string | null;
+            /** Title */
+            title: string;
+            /** Wrong */
+            wrong: number;
+        };
+        /** TrackerItemLinkOut */
+        TrackerItemLinkOut: {
+            /** Chat Id */
+            chat_id: string;
+            /** Finding Id */
+            finding_id: string;
+            /** Message Id */
+            message_id: string;
+            /** Package Id */
+            package_id: string;
+        };
+        /**
+         * TrackerItemOut
+         * @description One item found, across its checks and rounds.
+         */
+        TrackerItemOut: {
+            /** Architect Value */
+            architect_value: string;
+            /** Category */
+            category: string;
+            /** Category Label */
+            category_label: string;
+            /** Check */
+            check: string;
+            /** Check Label */
+            check_label: string;
+            /** Checks Seen */
+            checks_seen: number;
+            /** Decided At */
+            decided_at: string | null;
+            /** Decided By */
+            decided_by: string | null;
+            /** Decision */
+            decision: string | null;
+            /** Ever Wrong */
+            ever_wrong: boolean;
+            /** First Round */
+            first_round: number;
+            /** First Seen At */
+            first_seen_at: string;
+            /** Fixed Round */
+            fixed_round: number | null;
+            /** History */
+            history: components["schemas"]["TrackerSightingOut"][];
+            /**
+             * Impact
+             * @description Open items: how much it matters (#1569), 0-100.
+             */
+            impact: number | null;
+            /** Item */
+            item: string;
+            /**
+             * Key
+             * @description Stable id: from the first check that found it.
+             */
+            key: string;
+            /**
+             * Kind
+             * @description What it touches, by code ("Overall size", "Height").
+             */
+            kind: string;
+            /** Last Seen At */
+            last_seen_at: string;
+            link: components["schemas"]["TrackerItemLinkOut"];
+            /** Open Kind */
+            open_kind: ("wrong" | "decision") | null;
+            /** Package Id */
+            package_id: string;
+            /** Page */
+            page: number | null;
+            /** Round Now */
+            round_now: number;
+            /** Rounds */
+            rounds: number[];
+            /** Set Name */
+            set_name: string;
+            state: components["schemas"]["TrackerState"];
+            /** Status Now */
+            status_now: string;
+            /**
+             * Tags
+             * @description "New in round 2", "Still wrong".
+             */
+            tags: string[];
+            /** Vendor Key */
+            vendor_key: string;
+            /** Vendor Name */
+            vendor_name: string;
+            /** Vendor Value */
+            vendor_value: string;
+        };
+        /** TrackerOut */
+        TrackerOut: {
+            /** Items */
+            items: components["schemas"]["TrackerItemOut"][];
+            /** Made At */
+            made_at: string;
+            /** Project Id */
+            project_id: string;
+            /** Sets */
+            sets: components["schemas"]["TrackerSetOut"][];
+            totals: components["schemas"]["TrackerTotalsOut"];
+            /** Vendors */
+            vendors: components["schemas"]["TrackerVendorOut"][];
+        };
+        /** TrackerRankOut */
+        TrackerRankOut: {
+            /** Count */
+            count: number;
+            /** Label */
+            label: string;
+            /**
+             * Share
+             * @description Percent of the vendor's mistakes, whole number.
+             */
+            share: string | null;
+        };
+        /** TrackerRoundOut */
+        TrackerRoundOut: {
+            /** Decision */
+            decision: number;
+            /**
+             * Fixed
+             * @description Items this round fixed (Wrong before, right here).
+             */
+            fixed: number;
+            /** Items */
+            items: number;
+            /** Open */
+            open: number;
+            /** Round */
+            round: number;
+            /** Wrong */
+            wrong: number;
+        };
+        /** @enum {string} */
+        TrackerRoundStatus: "fixed" | "still_wrong" | "new" | "not_in_later_round" | "single_round";
+        /** TrackerSetOut */
+        TrackerSetOut: {
+            /** Checks */
+            checks: components["schemas"]["TrackerCheckOut"][];
+            /** Fixed */
+            fixed: number;
+            /** Items */
+            items: number;
+            /** Last Checked At */
+            last_checked_at: string;
+            /** Name */
+            name: string;
+            /** Not A Problem */
+            not_a_problem: number;
+            /** Open */
+            open: number;
+            /** Package Id */
+            package_id: string;
+            /** Product */
+            product: string | null;
+            /** Rounds */
+            rounds: components["schemas"]["TrackerRoundOut"][];
+            /** Vendor Key */
+            vendor_key: string;
+            /** Vendor Name */
+            vendor_name: string;
+        };
+        /**
+         * TrackerSightingOut
+         * @description One check that saw the item: when, which round and page, and what it said.
+         */
+        TrackerSightingOut: {
+            /** Architect */
+            architect: string;
+            /** At */
+            at: string;
+            /** Chat Id */
+            chat_id: string;
+            check: components["schemas"]["TrackerCheckKind"];
+            /** Check Title */
+            check_title: string;
+            /**
+             * Compared
+             * @description False: a Right that was not compared, so no proof.
+             */
+            compared: boolean;
+            /** Decided By */
+            decided_by: string | null;
+            /** Decision */
+            decision: string | null;
+            /**
+             * Finding Id
+             * @description The live finding a click opens (the carrier of a fold).
+             */
+            finding_id: string;
+            /**
+             * Folded
+             * @description A page the resolver folded into another finding (#1554).
+             */
+            folded: boolean;
+            /** Message Id */
+            message_id: string;
+            /** Page */
+            page: number | null;
+            /** Round */
+            round: number;
+            round_status: components["schemas"]["TrackerRoundStatus"] | null;
+            /**
+             * Status
+             * @description different (Wrong), check (Your decision) or same (Right).
+             */
+            status: string;
+            /** Vendor */
+            vendor: string;
+        };
+        /** @enum {string} */
+        TrackerState: "open" | "fixed" | "not_a_problem" | "right_later";
+        /** TrackerTotalsOut */
+        TrackerTotalsOut: {
+            /**
+             * Checks
+             * @description Stored answers with findings (full checks and questions).
+             */
+            checks: number;
+            /** Fixed */
+            fixed: number;
+            /** Items */
+            items: number;
+            /** Not A Problem */
+            not_a_problem: number;
+            /** Open */
+            open: number;
+            /** Open Decision */
+            open_decision: number;
+            /** Open Wrong */
+            open_wrong: number;
+            /** Right Later */
+            right_later: number;
+            /**
+             * Sets
+             * @description Drawing sets with at least one check that found items.
+             */
+            sets: number;
+        };
+        /**
+         * TrackerVendorOut
+         * @description The vendor scorecard: what it gets wrong most, and how it fixes.
+         */
+        TrackerVendorOut: {
+            /** Average Open Per Round */
+            average_open_per_round: string | null;
+            /** By Check */
+            by_check: components["schemas"]["TrackerRankOut"][];
+            /** By Kind */
+            by_kind: components["schemas"]["TrackerRankOut"][];
+            /** By Product */
+            by_product: components["schemas"]["TrackerRankOut"][];
+            /**
+             * Fixed Next Of
+             * @description Wrong items seen again in the next round.
+             */
+            fixed_next_of: number;
+            /** Fixed Next Round */
+            fixed_next_round: number;
+            /** Fixed Next Share */
+            fixed_next_share: string | null;
+            /** Items */
+            items: number;
+            /**
+             * Mistakes
+             * @description Items Wrong at least once, minus Not a problem.
+             */
+            mistakes: number;
+            /** Open */
+            open: number;
+            /** Rounds */
+            rounds: number;
+            /** Sets */
+            sets: number;
+            /** Vendor Key */
+            vendor_key: string;
+            /** Vendor Name */
+            vendor_name: string;
         };
         /**
          * UnaccountedOut
@@ -15961,6 +16324,73 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ProjectSinkOut"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_tracker_api_v1_projects__project_id__tracker_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrackerOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_tracker_api_v1_projects__project_id__tracker_xlsx_get: {
+        parameters: {
+            query?: {
+                /** @description Which items: all (default), open, fixed, not_a_problem, right_later. */
+                state?: components["schemas"]["StateFilter"];
+                /** @description One drawing set only. */
+                package_id?: string | null;
+                /** @description One vendor only (its name, any case). */
+                vendor?: string | null;
+            };
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

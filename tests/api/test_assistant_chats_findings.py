@@ -419,7 +419,7 @@ def test_a_full_check_through_the_route_shows_its_label_and_ends_with_its_two_fi
         events = _events(response.text)
         message = _named(events, "message_end")[0]["message"]
         names = [f["name"] for f in message["files"]]
-        assert names == ["Vendor set - AI cloud drawing.pdf", "Vendor set - AI check report.pdf"]
+        assert names == ["Vendor set - GV cloud drawing.pdf", "Vendor set - AI check report.pdf"]
         assert [d["file"]["name"] for d in _named(events, "file")] == names
         assert message["accuracy"] is not None and message["accuracy"]["claims"] == 1
         chat = world.client.get(f"/api/v1/chats/{chat_id}").json()
@@ -546,6 +546,6 @@ def test_a_full_check_with_no_words_is_stored_with_codes_summary_and_its_progres
         progress = [b for b in stored["blocks"] if b["type"] == "progress"]
         assert len(progress) == 1 and progress[0]["progress"]["phase"] == "writing"
         assert [f["name"] for f in stored["files"]] == [
-            "Vendor set - AI cloud drawing.pdf",
+            "Vendor set - GV cloud drawing.pdf",
             "Vendor set - AI check report.pdf",
         ]

@@ -96,6 +96,7 @@ from app.review.assistant.proof import (
     proof_line,
     should_be,
     should_be_value,
+    unproved_reason,
     vendor_value,
 )
 
@@ -900,9 +901,8 @@ def _list_entries(
 
 
 def _not_verified_line(finding: Mapping[str, Any]) -> str:
-    return (
-        f"vendor {vendor_value(finding)}; should be {should_be(finding)}. Only AI readings back "
-        "it: no code check proved it."
+    return f"vendor {vendor_value(finding)}; should be {should_be(finding)}. " + unproved_reason(
+        finding
     )
 
 

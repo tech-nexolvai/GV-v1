@@ -42,6 +42,7 @@ export function DataTable<TData, TValue>({
   className,
   initialSorting = [],
   label,
+  rowLimit,
 }: {
   columns: ColumnDef<TData, TValue>[];
   data: TData[];
@@ -55,6 +56,8 @@ export function DataTable<TData, TValue>({
   initialSorting?: SortingState;
   /** The table's accessible name. */
   label?: string;
+  /** Show only the first rows after sorting and filtering (the caller offers "Show all"). */
+  rowLimit?: number;
 }) {
   const [sorting, setSorting] = useState<SortingState>(initialSorting);
   const [globalFilter, setGlobalFilter] = useState('');
@@ -73,7 +76,8 @@ export function DataTable<TData, TValue>({
     getFilteredRowModel: getFilteredRowModel(),
   });
 
-  const rows = table.getRowModel().rows;
+  const sortedRows = table.getRowModel().rows;
+  const rows = rowLimit === undefined ? sortedRows : sortedRows.slice(0, rowLimit);
 
   return (
     <div data-slot="data-table" className={cn('flex flex-col gap-3', className)}>

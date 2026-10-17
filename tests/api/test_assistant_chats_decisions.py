@@ -157,7 +157,7 @@ def test_the_cloud_drawing_follows_the_decisions_and_keeps_older_files(postgres_
         made = world.client.post(url)
         assert made.status_code == 200, made.text
         first = made.json()
-        assert first["name"] == "Vendor set - AI cloud drawing.pdf"
+        assert first["name"] == "Vendor set - GV cloud drawing.pdf"
         pdf = world.client.get(first["url"]).content
         pages = _text(pdf)
         # The zero-click drawing (#1581): cover, the 3 sheets, one proof page, notes.

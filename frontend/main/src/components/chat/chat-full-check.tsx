@@ -18,7 +18,8 @@ import { cn } from '@/lib/utils';
  * Chat v4 (CONTRACT4-full-check, #1483): the one-click full check's parts. The Countertop / Cabinet
  * chips (in the composer), the "Run full check" button with its small confirm popover, and the
  * large cloud-drawing card a full-check answer leads with. Read-only: nothing changes the review;
- * the cloud drawing is an AI markup draft made by code, not GV's signed review.
+ * the cloud drawing is made by code with no clicks (#1581): only Wrong values code proved are
+ * clouded, so it is ready to download at once; the reviewer's decisions are optional overrides.
  */
 
 /**

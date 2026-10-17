@@ -45,7 +45,7 @@ def main() -> int:
 
     from app.db.session import session_factory
 
-    factory = session_factory(create_engine(settings.database_url))
+    factory = session_factory(create_engine(settings.database_url, hide_parameters=True))
     return run_dispatcher(settings, factory=factory, start=hatchet_starter(settings))
 
 

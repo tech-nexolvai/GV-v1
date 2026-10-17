@@ -1728,7 +1728,7 @@ def make_markup_file(
 #: The zero-click drawing (#1581) is drawn by this module, loaded by name.
 PROOF_MODULE: Final = "app.review.assistant.proof_drawing"
 #: The cloud drawing's file name ends with this.
-CLOUD_DRAWING_KIND: Final = "AI cloud drawing"
+CLOUD_DRAWING_KIND: Final = "GV cloud drawing"
 
 
 def reviewers(findings: Sequence[Mapping[str, Any]]) -> list[str]:
