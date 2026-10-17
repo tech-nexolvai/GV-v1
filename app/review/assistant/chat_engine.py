@@ -97,6 +97,7 @@ from app.review.assistant.chat_findings import (
     products_words,
     read_listing,
 )
+from app.review.assistant.chat_progress import FullCheckProgress
 from app.review.assistant.chat_provider import ChatProvider, ProviderFailure, failure_from
 from app.review.assistant.chat_read_review import (
     Budget,
@@ -118,6 +119,7 @@ from app.review.assistant.chat_request import (
     picture_sizes,
     thinking_config,
 )
+from app.review.assistant.chat_summary import code_summary, needs_code_summary
 from app.review.assistant.chat_timings import Timings
 from app.review.assistant.chat_tools import (
     HELPER_SYSTEM_PROMPT,
@@ -266,7 +268,15 @@ WRAP_UP_NOTE: Final = (
 #: The lead follows it when it plans the helpers itself (no page map).
 FULL_CHECK_INSTRUCTION: Final = """Full check of this drawing set (the reviewer pressed Run full check). Read /mnt/skills/gv-review/SKILL.md and rules.md first, and call review_results for the whole set.
 
-Review the WHOLE set: GV's rules for the picked products first, then compare everything on the vendor's drawings with the architect's (brand prototype differences as their own group). Report EVERY item you compare with report_finding, the right ones too (status same), with boxes. Check each finding the app made from GV Review's recorded results. Brief helpers to report findings and set_coverage, and on every page to record every dimension string with record_string and every value they read with record_reading (both sides; name an item the same way on every page and view), so code adds them up and compares the views. Record every page with set_coverage. Verify leads. End with 2-4 short lines of notes, no tables: the app draws the cloud drawing, the report and the lists."""
+Review the WHOLE set: GV's rules for the picked products first, then compare everything on the vendor's drawings with the architect's (brand prototype differences as their own group). Report EVERY item you compare with report_finding, the right ones too (status same), with boxes. Check each finding the app made from GV Review's recorded results. Brief helpers to report findings and set_coverage, and on every page to record every dimension string with record_string and every value they read with record_reading (both sides; name an item the same way on every page and view), so code adds them up and compares the views. Record every page with set_coverage. Verify leads.
+
+End with a 5-6 line plain-English summary for the reviewer (no tables, no disclaimers: the app draws the cloud drawing, the report and the lists):
+1. What was checked: pages, products, rounds.
+2. The overall verdict in one line (how many items look wrong, need the reviewer's decision, match).
+3. The top 3-5 issues by impact, each with its page, item, and architect vs vendor value.
+4. What needs the reviewer's decision.
+5. The next step (e.g. "send the cloud drawing to the vendor; confirm the 3 items that need your decision").
+If you are told to stop early, still write this summary from what you have."""
 
 #: What the lead is told instead when code planned and ran the helpers (#1512).
 FULL_CHECK_LEAD_INSTRUCTION: Final = """Full check of this drawing set (the reviewer pressed Run full check). The app has already split the set by area and run one helper per part with GV's per-page checklist, made a finding for each difference GV Review recorded, and read the helpers' findings a second time. Their reports and every finding follow. You verify and sum up; you do not plan. In this order, since a cap can stop you before the end:
@@ -274,7 +284,13 @@ FULL_CHECK_LEAD_INSTRUCTION: Final = """Full check of this drawing set (the revi
 - Then the findings listed under "To verify": zoom on both sides of four findings per zoom call (8 crops) and put several zoom calls in one reply; then, in one reply, update_finding for each (verified true, or the values as printed) or drop_finding with your reason. Findings under "Backed" need no re-check.
 - Each finding the app made from GV Review's recorded results that is still without boxes: check it on the drawing (update_finding with boxes) or drop_finding with your reason.
 - Pages listed as not accounted for: set_coverage, or compare them yourself (a helper only for several pages).
-End with 2-4 short lines of notes, no tables: the app draws the cloud drawing, the report and the lists."""
+End with a 5-6 line plain-English summary for the reviewer (no tables, no disclaimers: the app draws the cloud drawing, the report and the lists):
+1. What was checked: pages, products, rounds.
+2. The overall verdict in one line (how many items look wrong, need the reviewer's decision, match).
+3. The top 3-5 issues by impact, each with its page, item, and architect vs vendor value.
+4. What needs the reviewer's decision.
+5. The next step (e.g. "send the cloud drawing to the vendor; confirm the 3 items that need your decision").
+If you are told to stop early, still write this summary from what you have."""
 
 
 def prompt_ids(provider: str) -> tuple[str, str]:
@@ -588,6 +604,8 @@ class ChatEngine:
         self.blocks: list[dict[str, Any]] = []
         self._discarded: set[int] = set()
         self._lock = threading.RLock()
+        self._progress: FullCheckProgress | None = None
+        self._progress_index: int | None = None
         self._spent = 0
         self._attempt_blocks: list[int] = []
         self._streams: set[Any] = set()
@@ -1143,6 +1161,8 @@ class ChatEngine:
             else:
                 self.blocks[index] = {"type": "finding", "finding": finding}
         self.emit("finding", {"index": index, "finding": json.loads(json.dumps(finding))})
+        if self._progress is not None:
+            self._progress.changed()
 
     def _show_coverage(self, coverage: dict[str, Any]) -> None:
         with self._lock:
@@ -1153,6 +1173,20 @@ class ChatEngine:
             else:
                 self.blocks[index] = {"type": "coverage", "coverage": coverage}
         self.emit("coverage", {"index": index, "coverage": json.loads(json.dumps(coverage))})
+        if self._progress is not None:
+            self._progress.changed()
+
+    def _show_progress(self, progress: dict[str, Any]) -> None:
+        """Full check: the progress numbers, one block replaced in place, and `progress`."""
+        with self._lock:
+            block = {"type": "progress", "progress": progress}
+            if self._progress_index is None:
+                self.blocks.append(block)
+                self._progress_index = len(self.blocks) - 1
+            else:
+                self.blocks[self._progress_index] = block
+            index = self._progress_index
+        self.emit("progress", {"index": index, "progress": dict(progress)})
 
     def _finding_tool(self, name: str, raw: object, by: str) -> ToolResult:
         """`report_finding`, `update_finding`, `drop_finding`, `set_coverage`: no step on the
@@ -1710,6 +1744,8 @@ class ChatEngine:
     def _trust_phase(self) -> None:
         """After the lead's answer: the checks of the findings, round links, then the trust report."""
         book = self.book
+        if self._progress is not None:
+            self._progress.phase("checking")
         with self.timings.phase("finish_checks"):
             try:
                 self._ledger_findings()
@@ -1899,14 +1935,15 @@ class ChatEngine:
         self._markup_base = pool.submit(make)
         pool.shutdown(wait=False)
 
-    def _full_check_files(self) -> None:
-        """Full check: the cloud drawing and the check report, made by code, as chat files. The
-        two are written at the same time; the drawing on the copy made at the start."""
+    def _full_check_files(self) -> list[str]:
+        """Full check: the cloud drawing and the check report, made by code, as chat files (the
+        names of those made). The two are written at the same time; the drawing on the copy made
+        at the start."""
         register: Callable[[str, str, int, str, str], dict[str, Any]] | None = (
             self.tools.register_file
         )
         if register is None:
-            return
+            return []
         book, workspace = self.book, self.tools.workspace
         findings = book.live()
         report: dict[str, Any] = next(
@@ -1970,6 +2007,7 @@ class ChatEngine:
                     out.unlink(missing_ok=True)
                     raise
 
+        names: list[str] = []
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix="gv-chat-files") as pool:
             futures = [(what, pool.submit(make, phase, maker)) for what, phase, maker in makers]
             for what, future in futures:
@@ -1977,11 +2015,44 @@ class ChatEngine:
                 try:
                     file_id, made = future.result()
                     register(file_id, made.name, made.size, "application/pdf", made.sha256)
+                    names.append(made.name)
                 except Exception as failed:  # noqa: BLE001 - told plainly in the answer
                     _log.warning("assistant chat %s failed: %s", what, type(failed).__name__)
                     if file_id is not None:
                         (workspace.files / file_id).unlink(missing_ok=True)
                     self._add_text(f"*The {what} could not be made for this answer.*")
+        return names
+
+    def _close_full_check(self, text: str, stopped: str | None, cap_hit: str | None) -> str:
+        """Full check (#1518): the two files, also when it stopped early with findings; then
+        code's summary (no AI call) when the AI did not write its own. Returns the answer's text."""
+        names: list[str] = []
+        if self._progress is not None:
+            self._progress.phase("writing")
+            self._progress.stop()
+        if stopped not in ("cancelled", "error") or self.book.live():
+            try:
+                names = self._full_check_files()
+            except Exception:  # noqa: BLE001 - the answer still ends, with its summary
+                _log.exception("assistant chat full-check files failed")
+        if not needs_code_summary(text, stopped):
+            return text
+        book, settings = self.book, self.settings
+        summary = code_summary(
+            book.live(),
+            coverage=book.coverage_map()["counts"] if book.coverage_used else None,
+            page_count=self.tools.page_count,
+            products=settings.products,
+            stopped=stopped,
+            cap_hit=cap_hit,
+            cap_usd=cap_text(settings.message_cap_micros),
+            budget_usd=cap_text(settings.package_cap_micros),
+            turns=settings.lead_max_turns,
+            files=names,
+        )
+        index = self._add_block({"type": "text", "text": summary, "by": "code"})
+        self.emit("text_delta", {"index": index, "text": summary, "by": "code"})
+        return f"{text}\n\n{summary}" if text.strip() else summary
 
     # ---- helpers (`Agent`) -----------------------------------------------------------------------
 
@@ -2607,6 +2678,24 @@ class ChatEngine:
 
     def run(self) -> MessageOutcome:
         """The lead's loop. Never raises: every way it ends is a stored outcome."""
+        if self.settings.mode == "full_check":
+            book = self.book
+            self._progress = FullCheckProgress(
+                lambda: (
+                    book.live(),
+                    book.coverage_map()["counts"] if book.coverage_used else None,
+                    self.tools.page_count,
+                ),
+                self._show_progress,
+            )
+            self._progress.start()
+        try:
+            return self._ended()
+        finally:
+            if self._progress is not None:
+                self._progress.stop()
+
+    def _ended(self) -> MessageOutcome:
         try:
             return self._run()
         except Exception as failed:  # noqa: BLE001 - the message is still stored, plainly
@@ -2616,8 +2705,18 @@ class ChatEngine:
                 self._close_checks()
             except Exception:  # noqa: BLE001 - best effort
                 _log.debug("assistant chat checks did not close")
+            text = ""
+            if self.settings.mode == "full_check":
+                try:
+                    self._code_finish()
+                except Exception:  # noqa: BLE001 - the files and summary still come
+                    _log.exception("assistant chat stopped finish failed")
+                try:
+                    text = self._close_full_check("", "error", None)
+                except Exception:  # noqa: BLE001 - stored without the summary
+                    _log.exception("assistant chat full-check summary failed")
             return MessageOutcome(
-                text="",
+                text=text,
                 blocks=self.stored_blocks(),
                 api_content=[],
                 cost_micros=self.spent,
@@ -2825,7 +2924,7 @@ class ChatEngine:
             # answer); a note is written only when there is no answer to show.
             stopped = forced
             break
-        if stopped in ("cost_cap", "turn_limit") and not text:
+        if stopped in ("cost_cap", "turn_limit") and not text and settings.mode != "full_check":
             text = _stop_note(stopped, self.settings, cap_hit)
             self._add_text(text)
         elif stopped in ("cancelled", "error"):
@@ -2841,18 +2940,17 @@ class ChatEngine:
                 self._trust_phase()
             except Exception:  # noqa: BLE001 - the answer is stored without its trust report
                 _log.exception("assistant chat trust report failed")
-            if settings.mode == "full_check":
-                self._full_check_files()
         elif settings.mode == "full_check":
             # A stopped full check still gets code's $0 finish (#1515): the ledger's findings and
-            # sums, the trust report with the recorded results, and the two files. The AI checks
-            # (second and third reads, the critic) are left out.
+            # sums and the trust report with the recorded results, before the files and the
+            # summary. The AI checks (second and third reads, the critic) are left out.
             try:
                 self._code_finish()
             except Exception:  # noqa: BLE001 - the answer is stored without its trust report
                 _log.exception("assistant chat stopped finish failed")
-            self._full_check_files()
         self._close_checks()
+        if settings.mode == "full_check":
+            text = self._close_full_check(text, stopped, cap_hit)
         try:
             self._accuracy()
         except Exception:  # noqa: BLE001 - the answer is stored without its score
