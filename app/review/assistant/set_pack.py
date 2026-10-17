@@ -55,11 +55,13 @@ from PIL import Image, ImageDraw, ImageFont
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import ArrayObject, NameObject
 
+from app.review.assistant import page_cache
 from app.review.assistant.chat_drawing import PDFIUM_LOCK
 from app.review.assistant.page_pictures import fitting_dpi
 from vocabulary.panel_headings import HeadingMeaning, heading_meaning
 
 __all__ = [
+    "HIRES",
     "PACK_VERSION",
     "Crop",
     "build_pack",
@@ -75,6 +77,9 @@ _log = logging.getLogger(__name__)
 #: Changes when what the pack holds changes: an older pack is built again.
 PACK_VERSION: Final = 1
 RENDER_DPI: Final = 100
+#: The hi-res page cache's folder inside the pack (`page_cache`, #1548): 300-dpi tiles of each page
+#: a crop was cut from, made on first need.
+HIRES: Final = "hires"
 #: Contact sheets: pages per picture (3 x 3) and each tile's size, so a sheet is at most 2576 px.
 CONTACT_COLUMNS: Final = 3
 CONTACT_ROWS: Final = 3
@@ -84,6 +89,7 @@ _LABEL_PX: Final = 44
 MAX_CROP_EDGE_PX: Final = 2576
 MIN_CROP_DPI: Final = 72
 MAX_CROP_DPI: Final = 600
+_CROP_PNG_LEVEL: Final = 3
 #: GV types its headings and round captions at 24 pt, its notes at 12 pt or less.
 _LABEL_MIN_PT: Final = 14
 #: A section title on a divider page (36 pt).
@@ -515,6 +521,8 @@ pages/<name>/p-NNN.png every page at 100 dpi (drawings only). Zoom to read numbe
                        NNN is the page with three digits.
 contact/*.png          nine pages per picture, page numbers stamped: the whole set at a glance.
 status.json            building / ready / failed.
+hires/                 code's 300-dpi tiles of the pages zoom has cut from (not for reading:
+                       zoom gives you any area sharp).
 
 Boxes are PDF points of the page as displayed (rotation applied), origin top-left, y down
 (as pdftotext -bbox and zoom use).
@@ -624,9 +632,65 @@ def crop_dpi(box: Box, wanted: int | None) -> int:
     return fits
 
 
-def crop_picture(pdf: Path, page_number: int, box: Box, dpi: int | None = None) -> Crop:
+def _clamp(box: Box, width: float, height: float, page_number: int) -> Box:
+    x0, y0, x1, y1 = box
+    left, top = max(0.0, min(x0, x1)), max(0.0, min(y0, y1))
+    right, bottom = min(width, max(x0, x1)), min(height, max(y0, y1))
+    if right - left < 2 or bottom - top < 2:
+        raise ValueError(
+            f"the box is not on page {page_number} (the page is "
+            f"{round(width)} x {round(height)} points, origin top-left)"
+        )
+    return left, top, right, bottom
+
+
+def _png_crop(picture: Image.Image, clamped: Box, scale: float) -> Crop:
+    if max(picture.size) > MAX_CROP_EDGE_PX:
+        picture.thumbnail((MAX_CROP_EDGE_PX, MAX_CROP_EDGE_PX))
+    buffer = io.BytesIO()
+    # Plain zlib, not `optimize`: the model reads pixels, and an optimised PNG of a 2576 px crop
+    # took longer to write than to cut (#1548).
+    picture.save(buffer, format="PNG", compress_level=_CROP_PNG_LEVEL)
+    return Crop(
+        png=buffer.getvalue(),
+        width=picture.width,
+        height=picture.height,
+        dpi=round(scale * 72),
+        box=(
+            round(clamped[0], 1),
+            round(clamped[1], 1),
+            round(clamped[2], 1),
+            round(clamped[3], 1),
+        ),
+    )
+
+
+def crop_picture(
+    pdf: Path, page_number: int, box: Box, dpi: int | None = None, *, cache: Path | None = None
+) -> Crop:
     """The area `box` (points, origin top-left, as shown) of a page as a PNG. Raises `ValueError`
-    with a plain reason when the page or the box is not on the page."""
+    with a plain reason when the page or the box is not on the page.
+
+    With `cache` (the pack's `hires/` folder, #1548) a crop of 300 dpi or less is cut from the
+    page's 300-dpi picture, drawn once on first need (`page_cache`); only a sharper one renders."""
+    if cache is not None:
+        try:
+            sizes = page_cache.page_sizes(cache, pdf)
+        except OSError:
+            sizes = []
+        if sizes:
+            if not 1 <= page_number <= len(sizes):
+                raise ValueError(f"there is no page {page_number} (the file has {len(sizes)})")
+            size = sizes[page_number - 1]
+            clamped = _clamp(box, size.width, size.height, page_number)
+            left, top, right, bottom = clamped
+            chosen = crop_dpi(
+                (round(left, 1), round(top, 1), round(right, 1), round(bottom, 1)), dpi
+            )
+            scale = min(chosen / 72, MAX_CROP_EDGE_PX / max(right - left, bottom - top))
+            picture = page_cache.cut(cache, pdf, page_number, clamped, scale)
+            if picture is not None:
+                return _png_crop(picture, clamped, scale)
     with PDFIUM_LOCK:
         document = pdfium.PdfDocument(str(pdf))
         try:
@@ -634,16 +698,11 @@ def crop_picture(pdf: Path, page_number: int, box: Box, dpi: int | None = None) 
                 raise ValueError(f"there is no page {page_number} (the file has {len(document)})")
             page = document[page_number - 1]
             width, height = page.get_size()
-            x0, y0, x1, y1 = box
-            left, top = max(0.0, min(x0, x1)), max(0.0, min(y0, y1))
-            right, bottom = min(width, max(x0, x1)), min(height, max(y0, y1))
-            if right - left < 2 or bottom - top < 2:
-                raise ValueError(
-                    f"the box is not on page {page_number} (the page is "
-                    f"{round(width)} x {round(height)} points, origin top-left)"
-                )
-            clamped = (round(left, 1), round(top, 1), round(right, 1), round(bottom, 1))
-            chosen = crop_dpi(clamped, dpi)
+            clamped = _clamp(box, width, height, page_number)
+            left, top, right, bottom = clamped
+            chosen = crop_dpi(
+                (round(left, 1), round(top, 1), round(right, 1), round(bottom, 1)), dpi
+            )
             scale = min(chosen / 72, MAX_CROP_EDGE_PX / max(right - left, bottom - top))
             bitmap = page.render(
                 scale=scale,
@@ -653,14 +712,4 @@ def crop_picture(pdf: Path, page_number: int, box: Box, dpi: int | None = None) 
             picture = bitmap.to_pil().convert("RGB")
         finally:
             document.close()
-    if max(picture.size) > MAX_CROP_EDGE_PX:
-        picture.thumbnail((MAX_CROP_EDGE_PX, MAX_CROP_EDGE_PX))
-    buffer = io.BytesIO()
-    picture.save(buffer, format="PNG", optimize=True)
-    return Crop(
-        png=buffer.getvalue(),
-        width=picture.width,
-        height=picture.height,
-        dpi=round(scale * 72),
-        box=clamped,
-    )
+    return _png_crop(picture, clamped, scale)

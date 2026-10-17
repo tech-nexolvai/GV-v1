@@ -20,7 +20,7 @@ function answer(change: Partial<ViewMessage> = {}): ViewMessage {
 }
 
 const HELPED: ChatFinding = finding('d1', {
-  item: 'Run length', status: 'check', architect: 'not dimensioned', vendor: '191"', why: 'The architect prints no overall length.',
+  item: 'Run length', status: 'check', architect: 'not dimensioned', vendor: '147"', why: 'The architect prints no overall length.',
   decision_help: {
     measures: 'From the wall to the far end of the run, fillers included',
     estimate: { value_in: 185.53, plus_minus_in: 1, method: 'outlet string added up, and scaled against two printed dims' },

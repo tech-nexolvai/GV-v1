@@ -180,7 +180,7 @@ HELPER_BRIEF: Final = """OBJECTIVE: a full GV review of the vendor's drawings on
 {page_lines}
 Read /mnt/skills/gv-review/SKILL.md sections 4, 5, 7, 9 and 10 and the settings table of rules.md before you judge a number (a setting nobody entered is missing: say so, never assume one).
 
-HOW: zoom the architect's and the vendor's drawing of each page (the app picks the sharpest dpi that fits; up to 8 crops per call). Numbers drawn as pen strokes are read from the picture; `pdftotext -f N -l N -bbox` of the drawings-only copy gives the boxes of text numbers. Anything coloured is GV's markup, never a value; a vendor number under it is still to be found (drawings-only text, 300 dpi, its mm against its inches) before you call it unreadable.
+HOW: zoom the architect's and the vendor's drawing of each page (the app picks the sharpest dpi that fits; up to 8 crops per call). Numbers drawn as pen strokes are read from the picture; `pdftotext -f N -l N -bbox` of the drawings-only copy gives the boxes of text numbers. Anything coloured is GV's markup, never a value; a vendor number under it is still to be found (read_under_markup on that spot, 300 dpi, its mm against its inches) before you call it unreadable.
 
 ALREADY RECORDED by GV Review on your pages (the lead checks these: do not report them again, but still compare everything around them, the strings that build them too; a recorded item never closes its area):
 {recorded}

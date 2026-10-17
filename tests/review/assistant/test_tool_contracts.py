@@ -124,7 +124,6 @@ RETIRED: dict[str, str] = {
     r"\bNeeds checking\b": "the status is 'Your decision'",
     r"Download marked-up PDF": "the cloud drawing (made by code)",
     r"\bdelegate\b": "the Agent tool",
-    r"\bread_under_markup\b": "zoom (GV's markup hidden)",
     r"`plan`|`bash`": "TaskCreate / bash_tool",
     r"pages/<file>/": "pages/<upload name without .pdf>/",
 }
@@ -204,7 +203,7 @@ def test_the_effort_scaling_is_the_same_everywhere() -> None:
 
 
 def test_the_prompts_stay_within_their_budgets() -> None:
-    """Characters, measured at chat-v12 (the audit), with a little room. The tools grew on purpose
+    """Characters, measured at chat-v13 (the audit), with a little room. The tools grew on purpose
     (what each field means, when to use the tool, one example); the prompts shrank."""
     budgets = {
         "lead system prompt": 2600,
@@ -216,5 +215,5 @@ def test_the_prompts_stay_within_their_budgets() -> None:
     prompts = _prompts()
     for where, most in budgets.items():
         assert len(prompts[where]) <= most, (where, len(prompts[where]))
-    assert len(json.dumps(list(LEAD_TOOLS))) <= 42_000
-    assert len(json.dumps(list(HELPER_TOOLS))) <= 27_000
+    assert len(json.dumps(list(LEAD_TOOLS))) <= 44_000
+    assert len(json.dumps(list(HELPER_TOOLS))) <= 29_000

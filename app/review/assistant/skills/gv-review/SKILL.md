@@ -102,9 +102,9 @@ A page with no stamps is ordinary page content: render it as it is. Coloured ink
 stays in the copy; treat it as GV's.
 
 **A vendor number under GV's markup** (a yellow box, a cloud, a red note over it) is still the
-vendor's number to find, not "unreadable" at first sight: look in the drawings-only copy's text
-(`pdftotext -bbox`), `zoom` that spot at 300 dpi, and check its millimetres against its inches
-(`610 [24]`: 610 / 25.4 = 24). Only when all three fail: "unreadable", with the page and spot.
+vendor's number to find, not "unreadable" at first sight: `read_under_markup` on that spot (or
+the drawings-only text, `pdftotext -bbox`), `zoom` at 300 dpi, and its millimetres against its
+inches (`610 [24]`: 610 / 25.4 = 24). Only when all three fail: "unreadable", with the page and spot.
 
 ## 6. GV's rules first, then everything else against the architect
 

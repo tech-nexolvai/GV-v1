@@ -421,7 +421,7 @@ def test_usage_rows_name_the_route_and_the_purpose() -> None:
 
 
 def test_the_system_prompt_is_short_and_names_the_skill_and_the_three_facts() -> None:
-    # Short like claude.ai's. chat-v12 (the prompt audit) took out the tool catalogue: each tool's
+    # Short like claude.ai's. chat-v13 (the prompt audit) took out the tool catalogue: each tool's
     # own description says what it does and when to use it.
     assert len(LEAD_SYSTEM_PROMPT) < 2600
     for words in (
@@ -455,6 +455,7 @@ def test_the_system_prompt_is_short_and_names_the_skill_and_the_three_facts() ->
         "compare_rounds",
         "verify_value",
         "measure_on_drawing",
+        "read_under_markup",
     ]
     # The reviewer's words, once, in the lead's prompt.
     for words in ("Wrong, Your decision or Right", "Not compared", "AI reading only"):
