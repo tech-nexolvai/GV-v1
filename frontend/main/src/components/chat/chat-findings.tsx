@@ -7,7 +7,8 @@ import type { ChatFinding, ChatResolver, ChatResolverEntry, FindingCategory, Fin
 import {
   alsoOnWords,
   architectPage,
-  CATEGORY_WORDS,
+  biggestFirst,
+  categoryWords,
   categoriesPresent,
   decisionHelpRows,
   findingLine,
@@ -495,6 +496,11 @@ function FindingRow({ finding, area, open, leaving, onToggle, onOpen, pictureUrl
             {statusOf(finding) === 'not_compared' && <StatusMark finding={finding} />}
             <Confidence finding={finding} />
             <RoundChip finding={finding} />
+            {finding.updated_in && (
+              <span data-slot="chat-finding-updated" className="text-xs text-muted-foreground">
+                Updated in a later message
+              </span>
+            )}
             {tag && <span data-slot="chat-finding-source" className="text-xs text-muted-foreground">{tag.replace(/^vs /, 'Compared with the ')}</span>}
             {finding.vs_page != null && finding.vs_page !== finding.page && <span className="hidden text-xs text-muted-foreground tabular-nums lg:inline">vs page {finding.vs_page}</span>}
             {(finding.also_on?.length ?? 0) > 0 && <span data-slot="chat-finding-also" className="text-xs text-muted-foreground tabular-nums">{alsoOnWords(finding)}</span>}
@@ -595,6 +601,40 @@ export function FindingsList({ findings, openGroups = 'all', openRowsAtFirst = f
   );
 }
 
+/**
+ * The biggest Wrong items first (#1569): code's impact order (checked before AI reading only, then
+ * what changes fabrication and the size of the difference), under a quiet "Biggest first" note.
+ * The same rows as below; the list by area then holds the rest.
+ */
+function BiggestFirst({ findings, onOpen, pictureUrl, fullPageHref, decisionFor }: Omit<FindingsListProps, 'label' | 'openGroups' | 'openRowsAtFirst'>) {
+  const [rows, setRows] = useState<ReadonlySet<string>>(() => new Set());
+  const toggleRow = (id: string) => setRows((now) => { const next = new Set(now); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  return (
+    <div data-slot="chat-findings-biggest" role="region" aria-label="Biggest first" className="rounded-xl border border-border/70 bg-card">
+      <p className="flex min-h-10 flex-wrap items-center gap-x-2 gap-y-0.5 border-b border-border/60 px-4 py-2 text-[13px] text-muted-foreground">
+        <span className="font-semibold whitespace-nowrap text-foreground">Biggest first</span>
+        <span>what changes fabrication most, the most certain first</span>
+      </p>
+      <ul className="grid">
+        {findings.map((finding) => (
+          <FindingRow
+            key={finding.id}
+            finding={finding}
+            area={null}
+            open={rows.has(finding.id)}
+            leaving={false}
+            onToggle={() => toggleRow(finding.id)}
+            onOpen={() => onOpen(finding)}
+            pictureUrl={pictureUrl}
+            fullPageHref={fullPageHref}
+            decision={decisionFor ? decisionFor(finding) : null}
+          />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 // ── The sections (PATH step 4.4 to 4.6) ─────────────────────
 
 export interface FindingsSectionsProps {
@@ -615,7 +655,7 @@ export interface FindingsSectionsProps {
 
 const SECTIONS = [
   { status: 'different', words: 'What’s wrong', hint: null },
-  { status: 'check', words: 'Your decision', hint: 'The AI could not settle these on its own.' },
+  { status: 'check', words: 'Your decision', hint: 'GV Review could not settle these from the drawings.' },
 ] as const;
 
 function SectionHead({ status, words, count, hint, children, id }: { status: RowStatus; words: string; count: number; hint?: string | null; children?: React.ReactNode; id?: string }) {
@@ -691,7 +731,7 @@ export function FindingsSections({ findings, filter, onFilter, onOpen, pictureUr
                 filter.category === category ? 'bg-card text-foreground shadow-[0_1px_2px_rgb(0_0_0/0.08),0_0_0_1px_var(--border)]' : 'text-muted-foreground hover:text-foreground',
               )}
             >
-              {category ? CATEGORY_WORDS[category] : 'All'}
+              {category ? categoryWords(category) : 'All'}
             </button>
           ))}
         </div>
@@ -716,13 +756,22 @@ export function FindingsSections({ findings, filter, onFilter, onOpen, pictureUr
       {SECTIONS.map((section) => {
         const list = of(section.status);
         if (!list.length) return null;
+        // #1569: the biggest Wrong items first (only when there are more than a handful).
+        const biggest = section.status === 'different' && list.length > 3 ? biggestFirst(list) : [];
+        const top = new Set(biggest.map((finding) => finding.id));
+        const rest = list.filter((finding) => !top.has(finding.id));
         return (
           <section key={section.status} data-slot={`chat-findings-${section.status}`} aria-labelledby={ids?.[section.status]} className="min-w-0 scroll-mt-4">
             <SectionHead status={section.status} words={section.words} count={list.length} hint={section.hint} id={ids?.[section.status]}>
               {section.status === firstHead && filters}
             </SectionHead>
-            <FindingsList
-              findings={list}
+            {biggest.length > 0 && (
+              <div className={cn(rest.length > 0 && 'mb-3')}>
+                <BiggestFirst findings={biggest} onOpen={onOpen} pictureUrl={pictureUrl} fullPageHref={fullPageHref} decisionFor={decisionFor} />
+              </div>
+            )}
+            {rest.length > 0 && <FindingsList
+              findings={rest}
               label={section.words}
               openGroups={section.status === 'different' ? 'all' : 3}
               openRowsAtFirst={narrow && of('different').length + of('check').length <= 3}
@@ -730,7 +779,7 @@ export function FindingsSections({ findings, filter, onFilter, onOpen, pictureUr
               pictureUrl={pictureUrl}
               fullPageHref={fullPageHref}
               decisionFor={decisionFor}
-            />
+            />}
           </section>
         );
       })}

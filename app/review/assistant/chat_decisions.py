@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import AssistantChatMessage, AssistantFindingDecision
+from app.review.assistant.chat_corrections import with_corrections
 from app.review.assistant.chat_findings import (
     MarkupFile,
     live_findings,
@@ -33,6 +34,7 @@ from app.review.assistant.chat_findings import (
     read_listing,
 )
 from app.review.assistant.chat_trust import cloud_kind
+from app.review.assistant.impact import by_impact
 from app.review.assistant.sandbox import ChatWorkspace
 
 __all__ = [
@@ -121,10 +123,13 @@ def with_decisions(
 
 
 def decided_findings(
-    message: AssistantChatMessage, decided: Mapping[str, Mapping[str, Any]] | None
+    message: AssistantChatMessage,
+    decided: Mapping[str, Mapping[str, Any]] | None,
+    corrections: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """The answer's findings, in order, each with its latest decision."""
-    return live_findings(with_decisions(message.blocks, decided))
+    """The answer's findings, in order, each at its newest version (a later message's correction,
+    #1548) and with its latest decision."""
+    return live_findings(with_decisions(with_corrections(message.blocks, corrections), decided))
 
 
 def _trust(blocks: Sequence[Mapping[str, Any]] | None) -> Mapping[str, Any]:
@@ -212,7 +217,9 @@ def make_decided_files(
     report_out: Path,
 ) -> DecidedFiles:
     """The cloud drawing and the check report from the findings' decisions, written to the two
-    paths. Raises `LookupError` when the chat has no copy of the set's PDFs."""
+    paths. Raises `LookupError` when the chat has no copy of the set's PDFs. The biggest items
+    first (#1569), so the drawing's and the report's numbers agree."""
+    findings = by_impact(findings)
     name, placed = place_findings(workspace, findings)
     module = import_module(DRAWING_MODULE)
     module.decided_markup_pdf(workspace.uploads / name, placed, drawing_out)

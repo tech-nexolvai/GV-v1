@@ -40,8 +40,13 @@ from pathlib import Path
 from typing import Any, Final
 from uuid import uuid4
 
+from app.review.assistant.chat_corrections import parse_ref
+from app.review.assistant.dim_findings import LabelRefused, fill_from_labels, label_for_cite
+from app.review.assistant.dim_index import DimLabels, labels_for
+from app.review.assistant.impact import by_impact
 from app.review.assistant.sandbox import UPLOADS, ChatWorkspace, SandboxRefused
 from app.review.assistant.tool_schema import box_schema
+from vocabulary.product_registry import registry
 
 __all__ = [
     "CHECK_REASONS",
@@ -63,6 +68,7 @@ __all__ = [
     "coverage_note",
     "decision_help_lines",
     "decision_help_note",
+    "finding_categories",
     "helpless_decisions",
     "live_findings",
     "main_upload",
@@ -79,7 +85,17 @@ __all__ = [
 
 _log = logging.getLogger(__name__)
 
-CATEGORIES: Final = ("countertop", "cabinet", "other")
+#: A finding's category: an active product id from the product registry (`vocabulary/products.yaml`,
+#: #1547), or "other". Read when this module loads, for the tool's schema; `finding_categories()`
+#: is the registry in force, which is what a finding is checked against.
+CATEGORIES: Final = registry().categories()
+
+
+def finding_categories() -> tuple[str, ...]:
+    """The categories a finding may have now: every active registry product id, then "other"."""
+    return registry().categories()
+
+
 STATUSES: Final = ("different", "check", "same")
 SOURCES: Final = ("architect", "brand_prototype", "rules", "vendor_arithmetic", "gv_review")
 #: Sources only code makes (the reading ledger): never in the tool's enum.
@@ -245,6 +261,16 @@ _FINDING_FIELDS: Final[Mapping[str, Any]] = {
         "description": "Which round of the set (1 = first submittal) when the set has rounds",
     },
     "decision_help": _DECISION_HELP_SCHEMA,
+    "architect_dim": {
+        "type": "string",
+        "description": "Instead of architect and arch_box: a label id from zoom marks (D17; "
+        "p22.D17 for another page); code fills both",
+    },
+    "vendor_dim": {
+        "type": "string",
+        "description": "Instead of vendor and vendor_box: a label id from zoom marks (D42); code "
+        "fills both",
+    },
     "check_reason": {
         "type": "string",
         "enum": list(CHECK_REASONS),
@@ -281,7 +307,8 @@ REPORT_FINDING: Final[Mapping[str, Any]] = {
     "input_schema": {
         "type": "object",
         "additionalProperties": False,
-        "required": sorted(_REQUIRED),
+        # The values may come from labels (architect_dim / vendor_dim); code still requires them.
+        "required": sorted(_REQUIRED - {"architect", "vendor"}),
         "properties": dict(_FINDING_FIELDS),
     },
 }
@@ -290,7 +317,7 @@ UPDATE_FINDING: Final[Mapping[str, Any]] = {
     "description": (
         "Change fields of a finding already recorded in this answer. Use it after you check a "
         "lead (verified true, or the values as printed), to add a missing box or decision_help, "
-        "or when the app sends you back about a finding. Give finding_id and only the fields "
+        "or when the app sends you back about a finding. In a follow-up, also correct an earlier answer's finding (A1-F5). Give finding_id and only the fields "
         'that change; the field meanings are report_finding\'s. Returns "Finding F3 updated." '
         'with any notes from code\'s checks, or "Refused: <why>". '
         'Example: {"finding_id": "F3", "verified": true, "vendor": "45 1/2\\""}'
@@ -315,7 +342,7 @@ UPDATE_FINDING: Final[Mapping[str, Any]] = {
 DROP_FINDING: Final[Mapping[str, Any]] = {
     "name": "drop_finding",
     "description": (
-        "Remove a finding of this answer. Use it when you checked the finding on the drawing and "
+        "Remove a finding of this answer (F4), or of an earlier answer in this chat (A1-F5). Use it when you checked the finding on the drawing and "
         "found it wrong (a misread, the wrong pairing, GV's markup taken for a value); use "
         'update_finding instead when only a value or a box needs correcting. Returns "Finding F4 dropped." or '
         '"Refused: <why>". '
@@ -426,6 +453,11 @@ CITE: Final[Mapping[str, Any]] = {
         "required": ["value"],
         "properties": {
             "value": {"type": "string", "description": "The value as you state it"},
+            "dim": {
+                "type": "string",
+                "description": "Instead of page and box: the value's label id from zoom marks "
+                "(D17 with page, or p23.D17)",
+            },
             "page": {
                 "type": "integer",
                 "minimum": 1,
@@ -451,12 +483,9 @@ FINDING_TOOL_NAMES: Final = frozenset(
 HELPER_FINDING_TOOL_NAMES: Final = frozenset({"report_finding", "set_coverage"})
 
 
-_PRODUCT_WORDS: Final = {"countertop": "Countertops", "cabinet": "Cabinets"}
-
-
 def products_words(products: Sequence[str]) -> str:
-    """["countertop", "cabinet"] as "Countertops and Cabinets"."""
-    return " and ".join(_PRODUCT_WORDS.get(p, p) for p in products) or "All products"
+    """["countertop", "cabinet"] as "Countertops and Cabinets", in the product registry's words."""
+    return registry().words(products)
 
 
 # ---- uploads -------------------------------------------------------------------------------------
@@ -896,6 +925,11 @@ class FindingBook:
     """This message's extent checks (`measure_on_drawing` with a `dimension`, `ChatTools.extents`):
     each `{file, page, printed_in, covers_more, unit_in, plus_minus_in, measures, words}`."""
     cites: list[dict[str, Any]] = field(default_factory=list)
+    earlier: dict[str, dict[str, Any]] = field(default_factory=dict)
+    """Earlier answers' findings in this chat at their newest version, by ref (`A1-F5`), that a
+    follow-up may correct (#1548, `chat_corrections.earlier_findings`)."""
+    corrections: dict[str, dict[str, Any]] = field(default_factory=dict)
+    """This answer's corrections of earlier findings, by ref (the update stored)."""
     _cites: int = 0
     """The recorded differences this answer must account for (set by the engine)."""
     _count: int = 0
@@ -907,6 +941,35 @@ class FindingBook:
     def main_file(self) -> str | None:
         item = main_upload(self.listing)
         return None if item is None else str(item["name"])
+
+    @property
+    def dim_labels(self) -> DimLabels:
+        """The set's numbered dimension labels (#1558)."""
+        return labels_for(self.workspace.set_pack, self.workspace.uploads)
+
+    def _labelled(
+        self, raw: Mapping[str, Any], current: Mapping[str, Any] | None
+    ) -> tuple[dict[str, Any], dict[str, Any] | None, list[str]]:
+        """`architect_dim` / `vendor_dim` turned into values and boxes (`dim_findings`)."""
+        if raw.get("architect_dim") is None and raw.get("vendor_dim") is None:
+            given = {k: v for k, v in raw.items() if k not in ("architect_dim", "vendor_dim")}
+            before = (current or {}).get("dims")
+            dims = dict(before) if isinstance(before, Mapping) else {}
+            for side, box in (("architect", "arch_box"), ("vendor", "vendor_box")):
+                if side in given or box in given:
+                    dims.pop(side, None)
+            return given, (dims or None), []
+        architect = _architect_upload(self.listing)
+        try:
+            return fill_from_labels(
+                raw,
+                self.dim_labels,
+                vendor_file=self.main_file,
+                architect_file=None if architect is None else str(architect["name"]),
+                current=current,
+            )
+        except LabelRefused as refused:
+            raise SandboxRefused(str(refused)) from None
 
     def _box(self, raw: object, name: str, *, architect: bool) -> dict[str, Any] | None:
         if raw is None:
@@ -1001,7 +1064,7 @@ class FindingBook:
         if "item" in present:
             out["item"] = _text(given, "item", _MAX_ITEM)
         if "category" in present:
-            out["category"] = _choice(given["category"], "category", CATEGORIES)
+            out["category"] = _choice(given["category"], "category", finding_categories())
         for name in ("architect", "vendor"):
             if name in present:
                 out[name] = _text(given, name, _MAX_VALUE)
@@ -1049,6 +1112,7 @@ class FindingBook:
         unknown = set(raw) - set(_FINDING_FIELDS)
         if unknown:
             raise SandboxRefused(f"unknown argument {min(unknown)!r}")
+        raw, dims, label_notes = self._labelled(raw, None)
         fields = self._fields(raw, partial=False)
         if created_by != "lead":
             fields["verified"] = False
@@ -1085,12 +1149,13 @@ class FindingBook:
             "created_by": created_by,
             "decision_help": fields.get("decision_help"),
             "check_reason": fields.get("check_reason"),
+            "dims": dims,
         }
         if self.checker is not None:
             finding = self.checker(finding)
         with self._lock:
             self.findings[finding_id] = finding
-        notes = [
+        notes = [*label_notes] + [
             f"{side} box: no picture ({why})"
             for side, why, given in (
                 ("architect", arch_why, fields.get("arch_box")),
@@ -1192,6 +1257,85 @@ class FindingBook:
                 )
         return finding_id
 
+    def earlier_ref(self, raw: object) -> str | None:
+        """The ref when `raw` names an earlier answer's finding (`A1-F5`), else `None`; a ref that
+        is not one of this chat's findings is refused."""
+        if not isinstance(raw, Mapping):
+            return None
+        given = raw.get("finding_id")
+        if not isinstance(given, str) or parse_ref(given) is None:
+            return None
+        ref = given.strip()
+        if ref not in self.earlier:
+            raise SandboxRefused(
+                f"there is no finding {ref} in this chat's earlier answers (A1-F5 = the first "
+                "answer's F5)"
+            )
+        return ref
+
+    def _corrected(self, ref: str) -> dict[str, Any]:
+        """The newest version of an earlier finding: this answer's correction, else as stored."""
+        with self._lock:
+            made = self.corrections.get(ref)
+            if made is not None and made.get("dropped"):
+                raise SandboxRefused(f"finding {ref} was dropped in this answer")
+            if made is not None:
+                return dict(made["finding"])
+            return dict(self.earlier[ref]["finding"])
+
+    def correct(self, raw: object) -> tuple[str, dict[str, Any], list[str]]:
+        """`update_finding` on an earlier answer's finding: (ref, the new version before code's
+        checks, notes). Stored with `store_correction` once checked."""
+        assert isinstance(raw, Mapping)
+        unknown = set(raw) - set(_FINDING_FIELDS) - {"finding_id"}
+        if unknown:
+            raise SandboxRefused(f"unknown argument {min(unknown)!r}")
+        ref = str(raw["finding_id"]).strip()
+        changes = self._fields({k: v for k, v in raw.items() if k != "finding_id"}, partial=True)
+        if not changes:
+            raise SandboxRefused("give at least one field to change")
+        notes: list[str] = []
+        for box, picture, side in (
+            ("arch_box", "arch_picture_id", "architect"),
+            ("vendor_box", "vendor_picture_id", "vendor"),
+        ):
+            if box in changes:
+                changes[picture], why = self._picture(changes[box])
+                if changes[box] is not None and why is not None:
+                    notes.append(f"{side} box: no picture ({why})")
+        return ref, {**self._corrected(ref), **changes}, notes
+
+    def store_correction(
+        self, ref: str, finding: Mapping[str, Any] | None, dropped: str | None, by_answer: int
+    ) -> dict[str, Any]:
+        """This answer's correction of `ref` (a new version, or dropped with a reason), replacing
+        an earlier correction of it in the same answer."""
+        earlier = self.earlier[ref]
+        last = dict(finding) if finding is not None else self._corrected(ref)
+        update = {
+            "ref": ref,
+            "message_id": earlier["message_id"],
+            "finding_id": str(earlier["finding"].get("id")),
+            "answer": earlier["answer"],
+            "by_answer": by_answer,
+            "version": int(earlier.get("version") or 1) + 1,
+            "finding": last,
+            "dropped": dropped,
+        }
+        with self._lock:
+            self.corrections[ref] = update
+        return dict(update)
+
+    def drop_earlier(self, raw: object) -> tuple[str, str]:
+        """`drop_finding` on an earlier answer's finding: (ref, reason)."""
+        assert isinstance(raw, Mapping)
+        unknown = set(raw) - {"finding_id", "reason"}
+        if unknown:
+            raise SandboxRefused(f"unknown argument {min(unknown)!r}")
+        ref = str(raw["finding_id"]).strip()
+        self._corrected(ref)
+        return ref, _text(raw, "reason", _MAX_NOTE)
+
     def update(self, raw: object) -> tuple[dict[str, Any], list[str]]:
         if not isinstance(raw, Mapping):
             raise SandboxRefused("the tool's input is not an object")
@@ -1199,10 +1343,16 @@ class FindingBook:
         if unknown:
             raise SandboxRefused(f"unknown argument {min(unknown)!r}")
         finding_id = self._known(raw)
-        changes = self._fields({k: v for k, v in raw.items() if k != "finding_id"}, partial=True)
+        with self._lock:
+            current = dict(self.findings[finding_id])
+        given, dims, label_notes = self._labelled(
+            {k: v for k, v in raw.items() if k != "finding_id"}, current
+        )
+        changes = self._fields(given, partial=True)
         if not changes:
             raise SandboxRefused("give at least one field to change")
-        notes: list[str] = []
+        changes["dims"] = dims
+        notes: list[str] = list(label_notes)
         for box, picture, side in (
             ("arch_box", "arch_picture_id", "architect"),
             ("vendor_box", "vendor_picture_id", "vendor"),
@@ -1264,9 +1414,17 @@ class FindingBook:
         a fact about the file (checked here)."""
         if not isinstance(raw, Mapping):
             raise SandboxRefused("the tool's input is not an object")
-        unknown = set(raw) - {"value", "page", "box", "fact", "file"}
+        unknown = set(raw) - {"value", "page", "box", "fact", "file", "dim"}
         if unknown:
             raise SandboxRefused(f"unknown argument {min(unknown)!r}")
+        label: dict[str, Any] | None = None
+        if raw.get("dim") is not None:
+            named = raw.get("file")
+            short = named.strip().removeprefix(UPLOADS + "/") if isinstance(named, str) else None
+            try:
+                raw, label = label_for_cite(raw, self.dim_labels, file=short or self.main_file)
+            except LabelRefused as refused:
+                raise SandboxRefused(str(refused)) from None
         value = _text(raw, "value", _MAX_VALUE)
         fact = raw.get("fact")
         names = [str(item["name"]) for item in self.listing]
@@ -1291,6 +1449,7 @@ class FindingBook:
             "picture_id": None,
             "printed": "not_run",
             "evidence_kind": "inferred",
+            "dim": None if label is None else label.get("id"),
         }
         if fact is not None:
             cite["fact"] = _choice(fact, "fact", ("page_count", "file_name"))
@@ -1349,7 +1508,11 @@ class FindingBook:
             "page": page,
             "vs_page": None,
             "item": " ".join(str(record.get("what") or "Recorded difference").split())[:_MAX_ITEM],
-            "category": record.get("category") if record.get("category") in CATEGORIES else "other",
+            "category": (
+                record.get("category")
+                if record.get("category") in finding_categories()
+                else "other"
+            ),
             "architect": str(record.get("architect") or "see GV Review's record")[:_MAX_VALUE],
             "vendor": str(record.get("vendor") or "see GV Review's record")[:_MAX_VALUE],
             "status": "different",
@@ -1542,7 +1705,7 @@ def make_markup_file(
     1, and every finding listed again on the notes pages. Raises `LookupError` when the chat has no
     copy of the set's PDFs. `base`: a `markup_base` copy to draw on (used once). `settled`: the
     decision items code settled itself (#1554), listed on the notes pages."""
-    name, placed = place_findings(workspace, findings)
+    name, placed = place_findings(workspace, by_impact(findings))
     drawing = import_module("app.review.assistant.chat_drawing")
     drawing.markup_pdf(
         workspace.uploads / name,
@@ -1601,7 +1764,7 @@ def make_report_file(
     main = main_upload(read_listing(workspace))
     name = "drawing set" if main is None else str(main["name"])
     drawing = import_module("app.review.assistant.chat_drawing")
-    drawing.check_report_pdf(out, summary, findings, not_checked, settled=settled)
+    drawing.check_report_pdf(out, summary, by_impact(findings), not_checked, settled=settled)
     data = out.read_bytes()
     return MarkupFile(
         markup_name(name, "AI check report"), len(data), hashlib.sha256(data).hexdigest()

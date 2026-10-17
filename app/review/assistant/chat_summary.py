@@ -9,11 +9,11 @@ trust report, with no AI call. Pure functions: no I/O, no money.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from decimal import Decimal, InvalidOperation
 from typing import Any, Final
 
 from app.review.assistant.chat_findings import products_words
 from app.review.assistant.chat_trust import cloud_kind
+from app.review.assistant.impact import by_impact
 
 #: The small note under a summary code wrote (the screen shows it as written).
 CODE_SUMMARY_NOTE: Final = "*Summary written by GV Review: the AI did not finish its own.*"
@@ -21,40 +21,20 @@ CODE_SUMMARY_NOTE: Final = "*Summary written by GV Review: the AI did not finish
 #: How many issues the summary names.
 TOP_ISSUES: Final = 5
 
-_TRUST_ORDER: Final = {"confirmed": 0, "likely": 1, "to_check": 2}
-
 
 def needs_code_summary(text: str, stopped: str | None) -> bool:
     """A full check that stopped early, or ended with no words, gets code's summary."""
     return stopped is not None or not text.strip()
 
 
-def _size(finding: Mapping[str, Any]) -> Decimal:
-    """How far the vendor is off, in inches (code's numbers), else 0."""
-    difference = (finding.get("inches") or {}).get("difference")
-    try:
-        return abs(Decimal(str(difference))) if difference is not None else Decimal(0)
-    except (InvalidOperation, ValueError):
-        return Decimal(0)
-
-
 def top_issues(
     findings: Sequence[Mapping[str, Any]], limit: int = TOP_ISSUES
 ) -> list[Mapping[str, Any]]:
-    """The issues by impact: wrong before your decision; among the wrong ones, those a check
-    confirmed (Confirmed, Likely) before an AI reading only; then the bigger difference, then the
-    more trusted; right items never."""
-    issues = [f for f in findings if cloud_kind(f) is not None]
-    issues.sort(
-        key=lambda f: (
-            0 if cloud_kind(f) == "wrong" else 1,
-            0 if f.get("trust_level") in ("confirmed", "likely") else 1,
-            -_size(f),
-            _TRUST_ORDER.get(str(f.get("trust_level")), 3),
-            int(f.get("page") or 0),
-        )
-    )
-    return issues[:limit]
+    """The issues by impact (`impact.by_impact`, #1569): wrong before your decision; among the
+    wrong ones, those a check confirmed (Confirmed, Likely) before an AI reading only; then the
+    biggest (the size of the difference, whether it changes fabrication, how sure); right items
+    never."""
+    return [f for f in by_impact(findings) if cloud_kind(f) is not None][:limit]
 
 
 def _pages(pages: Sequence[int]) -> str:

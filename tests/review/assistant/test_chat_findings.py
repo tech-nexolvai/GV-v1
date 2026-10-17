@@ -37,6 +37,7 @@ from app.review.assistant.chat_trust import (
     trust_report,
 )
 from app.review.assistant.sandbox import ChatWorkspace, SandboxRefused
+from vocabulary.product_registry import registry
 
 WIDTH, HEIGHT = 612.0, 792.0
 #: Where the test PDF prints its numbers (points, origin top-left): page 1 architect, page 2 vendor.
@@ -101,18 +102,21 @@ def test_the_tool_schemas_are_strict() -> None:
     for tool in (REPORT_FINDING, UPDATE_FINDING, DROP_FINDING, SET_COVERAGE):
         assert tool["input_schema"]["additionalProperties"] is False
     report = REPORT_FINDING["input_schema"]
+    # The two values may come from numbered labels (architect_dim / vendor_dim, #1558); code
+    # still refuses a finding with neither a value nor a label.
     assert set(report["required"]) == {
         "page",
         "item",
         "category",
-        "architect",
-        "vendor",
         "status",
         "verified",
         "source",
     }
+    assert {"architect_dim", "vendor_dim"} <= set(report["properties"])
     props = report["properties"]
-    assert props["category"]["enum"] == ["countertop", "cabinet", "other"]
+    # #1547: every active product of the registry, then "other".
+    assert props["category"]["enum"][:2] == ["countertop", "cabinet"]
+    assert props["category"]["enum"] == [*registry().active_ids(), "other"]
     assert props["status"]["enum"] == ["different", "check", "same"]
     assert props["source"]["enum"] == [
         "architect",
@@ -349,7 +353,8 @@ def test_the_marked_up_pdf_has_clouds_at_the_boxes_notes_and_the_stamp(tmp_path:
     assert _red_pixels(out, 1, (a0 - 14, b0 - 4, a0 - 4, b1 + 4)) > 5
     assert _red_pixels(out, 3, (200, 200, 500, 600)) == 0
     page2 = reader.pages[1].extract_text()
-    assert "\u00d7 1" in page2 and 'Vanity top length: vendor 3\'-10", make it 37"' in page2
+    # Numbered biggest first (#1569): the sink (a cut-out) and the height come before a length.
+    assert "\u00d7 3" in page2 and 'Vanity top length: vendor 3\'-10", make it 37"' in page2
     assert "AI markup: draft, not GV's signed review" in reader.pages[0].extract_text()
     notes = reader.pages[3].extract_text()
     for words in (

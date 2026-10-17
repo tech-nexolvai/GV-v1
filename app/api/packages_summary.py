@@ -32,7 +32,7 @@ from sqlalchemy import ColumnElement, Select, and_, case, collate, func, or_, se
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_session
-from app.api.packages import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, PRODUCT_LABELS
+from app.api.packages import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from app.auth import Action, Principal, require_action, require_project_access
 from app.models import (
     Approval,
@@ -50,6 +50,7 @@ from app.schemas.visual_ui import (
     PackageSummaryItemOut,
     PackageSummaryPageOut,
 )
+from vocabulary.product_registry import registry
 
 router = APIRouter(tags=["visual reviewer"])
 
@@ -195,7 +196,9 @@ def packages_summary(
     if search is not None:
         needle = search.lower()
         products = [
-            product.value for product, label in PRODUCT_LABELS.items() if needle in label.lower()
+            product.id
+            for product in registry().products
+            if needle in product.label.lower() or needle in product.plural.lower()
         ]
         matched = Package.vendor.icontains(search, autoescape=True)
         filters.append(or_(matched, Package.product_type.in_(products)) if products else matched)

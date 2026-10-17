@@ -57,6 +57,7 @@ from typing import Any, Final
 
 from app.review.assistant import witness
 from app.review.assistant.chat_findings import live_findings, page_ranges
+from app.review.assistant.dim_findings import label_checks
 
 __all__ = [
     "ACCURACY_CALIBRATION_LINE",
@@ -371,6 +372,8 @@ def apply_checks(
                     checks[key] = found[key]
         except Exception as failed:  # noqa: BLE001 - a check that fails is "not run", never a crash
             _log.warning("assistant chat finding check failed: %s", type(failed).__name__)
+    # A side built from a numbered dimension label was read by code (#1558).
+    checks = label_checks(finding, checks)
     architect, vendor = _inches(finding.get("architect")), _inches(finding.get("vendor"))
     out["checks"] = checks
     # The third read and the critic start again too (#1498): they come after the lead's answer.
@@ -379,6 +382,8 @@ def apply_checks(
     # Nobody has decided on a finding being written (#1521): the reviewer's decision is added when
     # the stored answer is read.
     out["decision"] = None
+    # A later message may correct it (#1548): marked when the stored answer is read.
+    out["updated_in"] = None
     out["inches"] = {
         "architect": _number(architect),
         "vendor": _number(vendor),

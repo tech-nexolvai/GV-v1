@@ -3,11 +3,14 @@ import { Download, ExternalLink, FileText, RefreshCw, ScanSearch } from 'lucide-
 
 import { AccuracyBadge } from '@/components/chat/chat-accuracy';
 import { GVSpark } from '@/components/chat/chat-motion';
+import { PlanCheck } from '@/components/chat/chat-plan-check';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { chatPaths, type ChatAccuracy, type ChatCoverage, type ChatFile, type ChatProduct } from '@/lib/chat-api';
+import { chatPaths, type ChatAccuracy, type ChatCoverage, type ChatFile, type ChatFullCheckPlan, type ChatPlanAnswer, type ChatProduct } from '@/lib/chat-api';
 import { coverageCounts, coverageWords, type FindingCounts } from '@/lib/chat-findings';
-import { PRODUCT_WORDS, PRODUCTS, progressWords } from '@/lib/chat-full-check';
+import { progressWords } from '@/lib/chat-full-check';
+import { planAnswers, usePlanCheck } from '@/lib/chat-plan-check';
 import { fileKind, fileSize, type ViewMessage } from '@/lib/chat-messages';
+import { activeProducts, comingLater, useProductCatalog } from '@/lib/products';
 import { cn } from '@/lib/utils';
 
 /**
@@ -17,11 +20,17 @@ import { cn } from '@/lib/utils';
  * the cloud drawing is an AI markup draft made by code, not GV's signed review.
  */
 
-/** Countertop / Cabinet: multi-select, at least one stays picked. None shown picked = the set's own product. */
+/**
+ * The product chips (#1547: the registry's active products, from `GET /products`): multi-select, at
+ * least one stays picked. None shown picked = the set's own product. The products not ready yet are
+ * one greyed chip, "N coming later", naming them.
+ */
 export function ProductChips({ products, onToggle, disabled }: { products: readonly ChatProduct[] | null; onToggle: (product: ChatProduct) => void; disabled?: boolean }) {
+  const catalog = useProductCatalog();
+  const later = comingLater(catalog);
   return (
     <div role="group" aria-label="Products to check" data-slot="chat-products" className="flex min-w-0 items-center gap-1">
-      {PRODUCTS.map((product) => {
+      {activeProducts(catalog).map(({ id: product, label, description }) => {
         const on = Boolean(products?.includes(product));
         return (
           <button
@@ -30,16 +39,26 @@ export function ProductChips({ products, onToggle, disabled }: { products: reado
             aria-pressed={on}
             disabled={disabled}
             onClick={() => onToggle(product)}
-            title={products ? undefined : 'Not picked yet: the drawing set’s own product is used'}
+            title={products ? description : 'Not picked yet: the drawing set’s own product is used'}
             className={cn(
               'inline-flex h-7 items-center rounded-full border px-2.5 text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-50 motion-reduce:transition-none',
               on ? 'border-foreground bg-foreground text-background' : 'bg-background text-muted-foreground hover:bg-accent hover:text-foreground',
             )}
           >
-            {PRODUCT_WORDS[product]}
+            {label}
           </button>
         );
       })}
+      {later.length > 0 && (
+        <span
+          data-slot="chat-products-later"
+          aria-disabled="true"
+          title={`Coming later: ${later.map((product) => product.plural).join(', ')}`}
+          className="hidden h-7 shrink-0 cursor-default items-center rounded-full border border-dashed px-2.5 text-xs text-muted-foreground opacity-60 sm:inline-flex"
+        >
+          {later.length} coming later
+        </span>
+      )}
     </div>
   );
 }
@@ -47,18 +66,24 @@ export function ProductChips({ products, onToggle, disabled }: { products: reado
 export interface FullCheckButtonProps {
   /** "Full check · Countertops · Opus 5.5 · High · up to $15". */
   summary: string;
-  onRun: () => void;
+  /** Runs it, with the reviewer's answers to the plan check (#1569), if any. */
+  onRun: (answers?: ChatPlanAnswer[]) => void;
   /** Why it cannot run now, in plain words; null when it can. */
   blocked: string | null;
   /** `primary`: the empty chat's main action. `bar`: the smaller one in the top bar. */
   variant?: 'primary' | 'bar';
+  /** #1569: code's plan and its 0-3 questions, read when the popover opens; absent: none asked. */
+  loadPlan?: () => Promise<ChatFullCheckPlan>;
 }
 
 /** "Run full check", confirmed in a small popover that names the products, model, effort and cap. */
-export function FullCheckButton({ summary, onRun, blocked, variant = 'primary' }: FullCheckButtonProps) {
+export function FullCheckButton({ summary, onRun, blocked, variant = 'primary', loadPlan }: FullCheckButtonProps) {
   const [open, setOpen] = useState(false);
+  const [picked, setPicked] = useState<Record<string, string>>({});
+  const plan = usePlanCheck(loadPlan, open);
+  const doubts = plan.status === 'ready' ? plan.plan.doubts : [];
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={(next) => { setOpen(next); if (next) setPicked({}); }}>
       <PopoverTrigger
         disabled={Boolean(blocked)}
         title={blocked ?? 'Check the whole drawing set: what is wrong, what to check, what is right'}
@@ -74,18 +99,24 @@ export function FullCheckButton({ summary, onRun, blocked, variant = 'primary' }
         <ScanSearch className="size-4" aria-hidden="true" />
         Run full check
       </PopoverTrigger>
-      <PopoverContent align={variant === 'primary' ? 'center' : 'end'} className="w-[min(22rem,calc(100vw-24px))] gap-3 rounded-xl p-3 font-sans">
+      <PopoverContent align={variant === 'primary' ? 'center' : 'end'} className="w-[min(24rem,calc(100vw-24px))] gap-3 rounded-xl p-3 font-sans">
         <p data-slot="chat-full-check-summary" className="text-sm font-medium tabular-nums">{summary}</p>
         <p className="text-xs text-muted-foreground">
           Checks every page against the architect and GV’s rules, then code draws the cloud drawing and the check report.
         </p>
+        <PlanCheck state={plan} picked={picked} onPick={(id, value) => setPicked((now) => ({ ...now, [id]: value }))} />
         <div className="flex justify-end gap-2">
           <button type="button" onClick={() => setOpen(false)} className="h-8 rounded-lg border bg-background px-3 text-sm hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
             Cancel
           </button>
           <button
             type="button"
-            onClick={() => { setOpen(false); onRun(); }}
+            onClick={() => {
+              const answers = planAnswers(doubts, picked);
+              setOpen(false);
+              if (answers.length) onRun(answers);
+              else onRun();
+            }}
             className="h-8 rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none"
           >
             Run
@@ -281,9 +312,11 @@ export function ResultNumbers({ counts, coverage, accuracy, onPick }: ResultNumb
             aria-label={`${number.words}: ${count}. Go to them`}
             className="grid min-w-0 gap-1 rounded-xl bg-muted/50 p-3 text-left transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:cursor-default disabled:hover:bg-muted/50 motion-reduce:transition-none sm:p-4"
           >
-            <span className="flex min-w-0 items-center gap-1.5 text-[13px] font-medium text-muted-foreground">
-              <span aria-hidden="true" className={cn('size-2 shrink-0 rounded-full', number.dot)} />
-              <span className="truncate">{number.words}</span>
+            {/* The label wraps instead of cutting "Your decision" short on a phone; two lines are kept
+                for every card there, so the three numbers stay on one level. */}
+            <span data-slot="chat-kpi-label" className="flex min-h-[2.5em] min-w-0 items-start gap-1.5 text-[13px] leading-[1.25] font-medium text-muted-foreground sm:min-h-0 sm:items-center">
+              <span aria-hidden="true" className={cn('mt-[0.3em] size-2 shrink-0 rounded-full sm:mt-0', number.dot)} />
+              <span className="min-w-0 break-words">{number.words}</span>
             </span>
             <span className={cn('text-2xl leading-8 font-semibold tracking-[-0.03em] tabular-nums sm:text-[30px] sm:leading-9', count === 0 && 'text-muted-foreground')}>{count}</span>
             <span className="hidden text-xs text-muted-foreground sm:block">{number.hint}</span>

@@ -48,8 +48,8 @@ export interface ChatModels {
   package_spent_usd: string;
 }
 
-/** Chat v4 (CONTRACT4): the products a message focuses on. */
-export type ChatProduct = 'countertop' | 'cabinet';
+/** Chat v4 (CONTRACT4): a product a message focuses on: a product id from `GET /products` (#1547). */
+export type ChatProduct = string;
 
 /** Chat v4: an ordinary question, or the one-click full check (the app's own fixed instruction). */
 export type ChatMode = 'chat' | 'full_check';
@@ -151,6 +151,8 @@ export interface ChatMessage {
   scope?: ChatScope | null;
   /** With `stopped: "interrupted"`: how Continue picks up (#1514). */
   resume?: ChatResume | null;
+  /** #1551: how the app understood the question (the answer's `understood` block); null when none. */
+  understood?: ChatUnderstood | null;
 }
 
 /** A full check's progress, by code (#1524): the last one is stored as a block. */
@@ -177,6 +179,47 @@ export interface ChatScope {
   label?: string | null;
 }
 
+/** #1551: what a typed question asks for, as the app's sharpen step read it. */
+export type ChatIntent = 'fact' | 'compare' | 'whole_set' | 'rules' | 'arithmetic' | 'rounds' | 'file' | 'summary' | 'clarify' | 'refuse_action';
+export type ChatOutputShape = 'one_line' | 'short' | 'findings' | 'file';
+
+/**
+ * #1551: how the app understood a typed question before any tool ran (its task spec). Shown as a
+ * quiet "Understood as: <label> · Edit" line under the question. A guide for the AI only: the
+ * reviewer's own words are always sent unchanged.
+ */
+export interface ChatUnderstood {
+  task: string;
+  intent: ChatIntent;
+  scope: { kind: 'whole_set' | 'pages' | 'area'; pages?: number[] | null; area?: string | null; label: string };
+  products?: string[] | null;
+  what_to_compare?: string[] | null;
+  checks_to_run?: string[] | null;
+  output_shape: ChatOutputShape;
+  assumptions?: string[] | null;
+  /** With intent `clarify`: a question back the lead may ask (the lead always answers). */
+  question_back?: string | null;
+  /** A short hint for the lead (an unclear question, or an order only a person carries out). */
+  hint?: string | null;
+  /** "Compare outlet heights (architect vs vendor) · page 4 · short answer". */
+  label: string;
+  /** Code rules ($0), the cheap model, or the reviewer's own correction. */
+  path: 'code' | 'model' | 'edited';
+  seconds?: number | null;
+  cost_usd?: string | null;
+}
+
+/** #1551: the reviewer's correction of an "Understood as" line, sent with the same question. */
+export interface ChatTaskEdit {
+  task: string;
+  intent?: ChatIntent;
+  what_to_compare?: string[];
+  checks_to_run?: string[];
+  /** Empty: the whole set. */
+  pages?: number[];
+  output_shape?: ChatOutputShape;
+}
+
 /** The reviewer's answer on one finding (PATH step 5), recorded append-only by the server. */
 export type FindingDecisionValue = 'agree' | 'not_a_problem';
 
@@ -192,6 +235,7 @@ export type ChatBlock =
   | { type: 'text'; text: string; by?: 'code' | null }
   | { type: 'step'; step: ChatStep }
   | { type: 'finding'; finding: ChatFinding }
+  | { type: 'finding_update'; update: ChatFindingUpdate }
   | { type: 'coverage'; coverage: ChatCoverage }
   | { type: 'progress'; progress: ChatProgress }
   | { type: 'scope'; scope: ChatScope }
@@ -200,12 +244,14 @@ export type ChatBlock =
   | { type: 'accuracy'; accuracy: ChatAccuracy }
   | { type: 'unknowns'; unknowns: ChatUnknown[] }
   | { type: 'resume'; resume: ChatResume }
-  | { type: 'resolver'; resolver: ChatResolver };
+  | { type: 'resolver'; resolver: ChatResolver }
+  | { type: 'understood'; understood: ChatUnderstood };
 
 // ── Chat v2 (CONTRACT2-findings): findings with evidence, and page coverage ──
 
 /** Which group a finding sits in. */
-export type FindingCategory = 'countertop' | 'cabinet' | 'other';
+/** A product id from `GET /products` (#1547), or "other". */
+export type FindingCategory = string;
 
 /** `different`: the drawings disagree. `check`: a person should look. `same`: they agree. */
 export type FindingStatus = 'different' | 'check' | 'same';
@@ -312,6 +358,21 @@ export interface ChatFinding {
   keep_reason?: KeepReason | null;
   /** #1554: the same item on other pages or rounds, folded into this one. */
   also_on?: FindingAlsoOn[] | null;
+  /**
+   * #1569: how much a Wrong (or Your-decision) item matters, by code: ordering only, never a status
+   * or a colour. `rank` 1 is the biggest of its status; the cloud drawing and the report use the
+   * same order. Added on a stored answer (not while it streams).
+   */
+  impact?: FindingImpact | null;
+  /** #1548: set when a later message of the chat corrected it; this is its newest version. */
+  updated_in?: FindingLater | null;
+}
+
+/** #1569: code's impact score (0-100), its place among the items of its status, and why. */
+export interface FindingImpact {
+  score: number;
+  rank?: number | null;
+  why: string;
 }
 
 export type CheckReason = 'different_extent' | 'which_governs' | 'pairing_not_certain' | 'scaled' | 'site_verify';
@@ -381,6 +442,28 @@ export interface ChatResolver {
   kept: Record<string, number>;
   reads: number;
   cost_usd: string;
+}
+
+/** #1548: the later answer of the same chat that corrected a finding. */
+export interface FindingLater {
+  message_id: string;
+  answer?: number | null;
+  version: number;
+}
+
+/** #1548: a later message's correction of an earlier answer's finding (`A1-F5`). */
+export interface ChatFindingUpdate {
+  ref: string;
+  /** The earlier answer the finding belongs to. */
+  message_id: string;
+  finding_id: string;
+  answer: number;
+  by_answer?: number | null;
+  version: number;
+  /** The new version (the last one, when dropped). */
+  finding: ChatFinding;
+  /** Why it was dropped; null when it was updated. */
+  dropped?: string | null;
 }
 
 export type EvidenceKind = 'observed' | 'derived' | 'inferred';
@@ -688,7 +771,8 @@ export type ChatTool =
   | 'verify_value'
   | 'measure_on_drawing'
   | 'zoom'
-  | 'read_under_markup';
+  | 'read_under_markup'
+  | 'remember';
 
 /** One tool the assistant used. `step_start` sends it without its output; `step_end` sends it whole. */
 export interface ChatStep {
@@ -742,6 +826,42 @@ export interface ChatFile {
   url: string;
 }
 
+/** #1569: one answer to a plan-check question, sent with the full check. */
+export interface ChatPlanAnswer {
+  id: string;
+  answer: string;
+}
+
+export interface ChatPlanOption {
+  value: string;
+  label: string;
+}
+
+/** #1569: a question code asks before a paid full check, where it is unsure of the page map. */
+export interface ChatPlanDoubt {
+  id: string;
+  kind: 'prototype' | 'role' | 'pair' | 'round' | 'heading';
+  page: number;
+  question: string;
+  /** The likely answer first. */
+  options: ChatPlanOption[];
+  /** The page's picture (drawings only), when the set pack made it. */
+  picture_url?: string | null;
+  /** The drawing it is about, as fractions of the picture: x0, y0, x1, y1. */
+  box?: [number, number, number, number] | null;
+}
+
+/** `GET /packages/{id}/full-check-plan` (#1569): code's plan in one line and its 0-3 questions. */
+export interface ChatFullCheckPlan {
+  /** `building`: ask again in a moment; `none`: no page map can be made, run without questions. */
+  state: 'ready' | 'building' | 'none';
+  /** "60 pages · 22 pairs · rounds 1-2 · 3 general pages". */
+  summary: string | null;
+  doubts: ChatPlanDoubt[];
+  /** Further unsure places, compared as read. */
+  more: number;
+}
+
 /** `POST /chats/{id}/messages`. */
 export interface SendMessageBody {
   /** 1 to 8000 characters. */
@@ -755,6 +875,10 @@ export interface SendMessageBody {
   products?: ChatProduct[];
   /** Continue (#1514): the interrupted answer to go on from; the server then asks the same way. */
   continue_from?: string;
+  /** #1569, a full check only: the answers to the plan check's questions. */
+  plan_answers?: ChatPlanAnswer[];
+  /** #1551: the reviewer's corrected "Understood as" (Edit), sent with the question unchanged. */
+  task?: ChatTaskEdit;
 }
 
 /** The stream's events, in the contract's words. `index` is the block's place in `blocks`. */
@@ -776,9 +900,11 @@ export type ChatEvent =
   | { event: 'error'; data: { message: string } }
   | { event: 'finding'; data: { finding: ChatFinding } }
   | { event: 'finding_dropped'; data: { finding_id: string } }
+  | { event: 'finding_update'; data: { index?: number; update: ChatFindingUpdate } }
   | { event: 'coverage'; data: { coverage: ChatCoverage } }
   | { event: 'progress'; data: { index?: number; progress: ChatProgress } }
   | { event: 'scope'; data: { index?: number | null; scope: ChatScope } }
+  | { event: 'understood'; data: { index?: number | null; understood: ChatUnderstood } }
   | { event: 'trust'; data: { trust: ChatTrust } }
   | { event: 'cite'; data: { cite: ChatCite } }
   | { event: 'accuracy'; data: { accuracy: ChatAccuracy } }
@@ -790,7 +916,7 @@ export type ChatEventName = ChatEvent['event'];
 const EVENT_NAMES: ReadonlySet<string> = new Set<ChatEventName>([
   'message_start', 'thinking_start', 'thinking_delta', 'thinking_end', 'text_delta', 'step_start', 'step_end',
   'tasks', 'agent_start', 'agent_step', 'agent_end', 'file', 'usage', 'message_end', 'error',
-  'finding', 'finding_dropped', 'coverage', 'progress', 'scope', 'trust', 'cite', 'accuracy', 'unknowns',
+  'finding', 'finding_dropped', 'finding_update', 'coverage', 'progress', 'scope', 'trust', 'cite', 'accuracy', 'unknowns', 'understood',
   'resolver',
 ]);
 
@@ -826,6 +952,8 @@ export const chatPaths = {
   markupPdf: (chatId: string, messageId: string) => `${BASE}/chats/${id(chatId)}/messages/${id(messageId)}/markup-pdf`,
   /** #1525: the cloud drawing and report made again from the reviewer's decisions (POST). */
   cloudDrawing: (chatId: string, messageId: string) => `${BASE}/chats/${id(chatId)}/messages/${id(messageId)}/cloud-drawing`,
+  /** #1569: code's plan for a full check of the set, and where it is unsure (no AI call). */
+  fullCheckPlan: (packageId: string) => `${BASE}/packages/${id(packageId)}/full-check-plan`,
   /** #1522: the reviewer's Agree / Not a problem on one finding (POST). */
   decision: (chatId: string, messageId: string, findingId: string) =>
     `${BASE}/chats/${id(chatId)}/messages/${id(messageId)}/findings/${id(findingId)}/decision`,
@@ -873,6 +1001,11 @@ export function listChats(packageId: string): Promise<ChatList> {
 
 export function createChat(packageId: string): Promise<CreatedChat> {
   return json<CreatedChat>(chatPaths.chats(packageId), { method: 'POST', body: '{}' });
+}
+
+/** #1569: the plan check before a full check ($0); `building` means ask again shortly. */
+export function getFullCheckPlan(packageId: string): Promise<ChatFullCheckPlan> {
+  return json<ChatFullCheckPlan>(chatPaths.fullCheckPlan(packageId));
 }
 
 export function getChat(chatId: string): Promise<Chat> {
@@ -1012,6 +1145,8 @@ export interface ChatApi {
   /** #1522: Agree / Not a problem per finding; optional so a fake API can leave it out. */
   decide?: typeof decideFinding;
   remakeCloud?: typeof remakeCloudDrawing;
+  /** #1569: the plan check; optional so a fake API can leave it out (then no questions). */
+  plan?: typeof getFullCheckPlan;
 }
 
 export const LIVE_CHAT_API: ChatApi = {
@@ -1025,4 +1160,5 @@ export const LIVE_CHAT_API: ChatApi = {
   markup: makeMarkupPdf,
   decide: decideFinding,
   remakeCloud: remakeCloudDrawing,
+  plan: getFullCheckPlan,
 };

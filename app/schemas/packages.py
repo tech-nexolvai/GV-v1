@@ -33,7 +33,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.document import DocumentKind, clean_file_name
-from vocabulary.semantic_types import ProductType
+from vocabulary.product_registry import registry
 
 #: A lowercase hex SHA-256, matched against the same shape the database checks
 #: (`source_artifact_sha256`). Validated at the boundary as well as in the schema so a malformed hash
@@ -54,14 +54,26 @@ class PackageCreate(BaseModel):
             "vendor name is worse than an absent one, because it reads as a fact."
         ),
     )
-    product_type: ProductType = Field(
+    product_type: str = Field(
+        min_length=1,
+        max_length=32,
         description=(
-            "What product this drawing set is for, chosen by the reviewer (#994). Only the published "
-            "checks for this product are run, and the readers are told it. Must be one of the "
-            "values `GET /product-types` lists: a product with no published check is refused, "
-            "because a set checked against nothing would look exactly like a clean one."
+            "What product this drawing set is for, chosen by the reviewer (#994): an active product "
+            "id from `GET /products` (the product registry, #1547). Only the published checks for "
+            "this product are run, and the readers are told it. A product with no published check "
+            "is refused, because a set checked against nothing would look exactly like a clean one."
         ),
     )
+
+    @field_validator("product_type")
+    @classmethod
+    def _an_active_product(cls, value: str) -> str:
+        product = registry().get(value)
+        if product is None:
+            raise ValueError(f"{value!r} is not a product (see GET /products)")
+        if not product.active:
+            raise ValueError(f"{product.plural} is not available yet (coming later)")
+        return value
 
 
 class ProductTypeChoice(BaseModel):
@@ -71,11 +83,47 @@ class ProductTypeChoice(BaseModel):
     once there is at least one check for it.
     """
 
-    value: ProductType
+    value: str
+    """A product id of the product registry (#1547)."""
     label: str
     """Plain English for the dropdown, e.g. `Countertop`. Display only; `value` is what is sent."""
     published_checks: int
     """How many published rules check this product — what choosing it will run."""
+
+
+class ProductChecklistItemOut(BaseModel):
+    """One thing to compare on every page for a product (#1547)."""
+
+    name: str
+    text: str
+
+
+class ProductOut(BaseModel):
+    """One product of the product registry (#1547), as the screens offer it.
+
+    The chat's product chips and "+" menu, the findings' grouping and the upload picker are built
+    from this list, never from a list in the frontend. An inactive product is shown greyed ("coming
+    later") and cannot be picked; an active one with no published check cannot start an upload
+    (nothing would check it) but can still be the focus of a chat.
+    """
+
+    id: str
+    """What is sent and stored, e.g. `countertop`; also a finding's `category`."""
+    label: str
+    """One of them, e.g. "Countertop"."""
+    plural: str
+    """Several, e.g. "Countertops": chips, headings and the report."""
+    description: str
+    active: bool
+    """Can be picked now; false: shown greyed, "coming later"."""
+    draft: bool
+    """Its checklist is a generic starter, not yet checked with GV."""
+    check_kinds: list[Literal["dimension_match", "global_rules"]]
+    category_label: str
+    """How its findings are grouped on screen and in the report."""
+    checklist: list[ProductChecklistItemOut]
+    published_checks: int
+    """How many published rules check this product."""
 
 
 class ReadingProgressOut(BaseModel):
@@ -232,8 +280,8 @@ class PackageOut(BaseModel):
     id: UUID
     project_id: UUID
     vendor: str | None
-    product_type: ProductType | None
-    """What the drawing set is for (#994). `null` for a package created before the reviewer could
+    product_type: str | None
+    """What the drawing set is for (#994): a product id of the product registry (#1547). `null` for a package created before the reviewer could
     say — its checks run for every product, as they always did."""
     created_at: datetime
     current_revision_id: UUID

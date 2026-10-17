@@ -23,7 +23,7 @@
  * becomes a recorded result.
  */
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, ChevronRight, CircleAlert, ListChecks, RotateCw } from 'lucide-react';
 
 import { formatRoute } from '@/app/route';
@@ -37,11 +37,13 @@ import { FullCheckButton, ProductChips } from '@/components/chat/chat-full-check
 import { ChatList, type ChatListState } from '@/components/chat/chat-list';
 import { PlusMenu } from '@/components/chat/chat-plus-menu';
 import { AssistantMessage, UserMessage } from '@/components/chat/chat-message';
+import { UnderstoodLine } from '@/components/chat/chat-understood';
 import { ApiError } from '@/api/client';
-import { chatFailureWords, chatPaths, CONTINUE_TEXT, isAbort, LIVE_CHAT_API, type Chat, type ChatApi, type ChatEvent, type ChatMessage, type ChatMode, type ChatModels, type ChatProduct } from '@/lib/chat-api';
-import { confirmWords, effectiveProducts, FULL_CHECK_TEXT, isFullCheck, readProducts, saveProducts, toggleProduct } from '@/lib/chat-full-check';
+import { chatFailureWords, chatPaths, CONTINUE_TEXT, isAbort, LIVE_CHAT_API, type Chat, type ChatApi, type ChatEvent, type ChatMessage, type ChatMode, type ChatModels, type ChatPlanAnswer, type ChatProduct, type ChatTaskEdit } from '@/lib/chat-api';
+import { confirmWords, effectiveProducts, FULL_CHECK_TEXT, isFullCheck, pickable, readProducts, saveProducts, toggleProduct } from '@/lib/chat-full-check';
+import { useProductCatalog } from '@/lib/products';
 import { knownAreas, lastFindings, withPrompt } from '@/lib/chat-plus-actions';
-import { applyChatEvent, CHAT_STARTERS, chatTitle, dollars, followedAnswer, fromSaved, localAnswer, localQuestion, previousQuestion, settle, type ViewMessage } from '@/lib/chat-messages';
+import { applyChatEvent, applyCorrection, CHAT_STARTERS, chatTitle, dollars, followedAnswer, fromSaved, localAnswer, localQuestion, previousQuestion, settle, type ViewMessage } from '@/lib/chat-messages';
 import { browserStorage, EFFORT_WORDS, readChoice, resolveChoice, saveChoice, shortModelLabel, type ChatChoice } from '@/lib/chat-settings';
 import { cn } from '@/lib/utils';
 
@@ -207,19 +209,23 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   const messages = chatId && thread?.chatId === chatId ? thread.messages : NO_MESSAGES;
   const name = chat?.package_name ?? listName;
 
-  // ── Products (chat v4): Countertop / Cabinet, remembered per drawing set ──
+  // ── Products (chat v4; #1547: the registry's active products), remembered per drawing set ──
+  const catalog = useProductCatalog();
   const [pickedProducts, setPickedProducts] = useState<{ packageId: string; products: ChatProduct[] } | null>(null);
   const [rememberedProducts] = useState(() => ({ packageId, products: readProducts(browserStorage(), packageId) }));
+  const rememberedHere = rememberedProducts.packageId === packageId ? rememberedProducts.products : readProducts(browserStorage(), packageId, catalog);
   const products = effectiveProducts(
     pickedProducts?.packageId === packageId ? pickedProducts.products : null,
-    rememberedProducts.packageId === packageId ? rememberedProducts.products : readProducts(browserStorage(), packageId),
+    // Remembered before the products loaded: one that cannot be picked now is left out.
+    catalog.length && rememberedHere ? rememberedHere.filter((product) => pickable(catalog).includes(product)) : rememberedHere,
     chat?.product_type ?? listProduct,
+    catalog,
   );
   function setProducts(next: ChatProduct[]) {
     setPickedProducts({ packageId, products: next });
     saveProducts(browserStorage(), packageId, next);
   }
-  const toggle = (product: ChatProduct) => setProducts(toggleProduct(products, product));
+  const toggle = (product: ChatProduct) => setProducts(toggleProduct(products, product, catalog));
 
   useEffect(() => {
     if (name) onNameChange?.(name);
@@ -242,6 +248,11 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
           if (!started) onStarted?.();
           started = true;
           patch((message) => applyChatEvent(message, event));
+          if (event.event === 'finding_update' && event.data.update?.ref) {
+            // #1548: the earlier answer it corrects shows the newest version at once.
+            const { update } = event.data;
+            setThread((now) => (now && now.chatId === target ? { ...now, messages: applyCorrection(now.messages, update) } : now));
+          }
         }, run.controller.signal);
         patch((message) => (message.status === 'running' ? settle(message) : message));
         setAnnounce('Answer ready');
@@ -373,7 +384,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   const blocked = unavailable ?? (models.status === 'loading' ? 'Loading the models…' : chatId && !chat ? 'Opening the chat…' : null);
 
   /** `continueFrom` (#1514): the interrupted answer Continue goes on from, and how it was asked. */
-  async function send(text: string, mode: ChatMode = 'chat', continueFrom?: { id: string; mode: ChatMode }) {
+  async function send(text: string, mode: ChatMode = 'chat', continueFrom?: { id: string; mode: ChatMode }, task?: ChatTaskEdit, planAnswers?: ChatPlanAnswer[]) {
     const question = text.trim();
     if (!question || runRef.current || blocked || !choice) return;
     counter.current += 1;
@@ -432,6 +443,8 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
           ...(mode === 'full_check' ? { mode } : {}),
           ...(products ? { products } : {}),
           ...(continueFrom ? { continue_from: continueFrom.id } : {}),
+          ...(task ? { task } : {}),
+          ...(mode === 'full_check' && planAnswers?.length ? { plan_answers: planAnswers } : {}),
         }, onEvent, signal).catch((error: unknown) => {
           refusal = error;
           throw error;
@@ -490,13 +503,16 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   const pickedModel = choice ? modelList.find((model) => model.id === choice.model) ?? null : null;
   const fullCheckSummary = confirmWords(products, pickedModel ? shortModelLabel(pickedModel) : null, choice ? EFFORT_WORDS[choice.effort] : null, money(cap));
   const fullCheckBlocked = blocked ?? (running ? 'A message is still running in this chat.' : null);
-  const runFullCheck = () => void send(FULL_CHECK_TEXT, 'full_check');
+  const runFullCheck = (answers?: ChatPlanAnswer[]) => void send(FULL_CHECK_TEXT, 'full_check', undefined, undefined, answers);
+  // #1569: the plan check before a paid full check (a fake API may leave it out: no questions).
+  const planApi = api.plan;
+  const loadPlan = useMemo(() => (planApi ? () => planApi(packageId) : undefined), [planApi, packageId]);
 
   return (
     <TooltipProvider delayDuration={300}>
       <div data-tw data-slot="chat-page" className="flex min-h-0 w-full min-w-0 flex-1 font-sans text-sm text-foreground antialiased">
         <HeaderActions>
-          {!centred && <FullCheckButton variant="bar" summary={fullCheckSummary} onRun={runFullCheck} blocked={fullCheckBlocked} />}
+          {!centred && <FullCheckButton variant="bar" summary={fullCheckSummary} onRun={runFullCheck} blocked={fullCheckBlocked} loadPlan={loadPlan} />}
           <Button variant="ghost" size="sm" asChild>
             <a href={formatRoute({ page: 'review', packageId })} aria-label="Review list">
               <ListChecks /> <span className="hidden sm:inline">Review list</span>
@@ -550,7 +566,20 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                 if (message.role === 'user') {
                   // A saved full check's bubble names the effort its answer ran at.
                   const answer = messages[at + 1];
-                  return <UserMessage key={message.key} message={message} effort={message.effort ?? (answer?.role === 'assistant' ? answer.effort : null)} />;
+                  // #1551: how the app understood a typed question, with Edit to correct it and resend.
+                  const understood = answer?.role === 'assistant' && message.mode !== 'full_check' ? answer.understood : null;
+                  return (
+                    <Fragment key={message.key}>
+                      <UserMessage message={message} effort={message.effort ?? (answer?.role === 'assistant' ? answer.effort : null)} />
+                      {understood && (
+                        <UnderstoodLine
+                          understood={understood}
+                          disabled={running || Boolean(blocked)}
+                          onResend={(task) => void send(message.text, 'chat', undefined, task)}
+                        />
+                      )}
+                    </Fragment>
+                  );
                 }
                 const asked = messages[at - 1];
                 // Retry asks the answer's question again, as a new message (claude.ai's Retry).
@@ -591,7 +620,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
             {centred && <Greeting name={name} />}
             {centred && (
               <div className="mb-4 flex flex-col items-center gap-1.5">
-                <FullCheckButton summary={fullCheckSummary} onRun={runFullCheck} blocked={fullCheckBlocked} />
+                <FullCheckButton summary={fullCheckSummary} onRun={runFullCheck} blocked={fullCheckBlocked} loadPlan={loadPlan} />
                 <p className="text-center text-xs text-muted-foreground">What’s wrong, what to check and what’s right on every page, with the cloud drawing</p>
               </div>
             )}
@@ -643,7 +672,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                   <PlusMenu
                     onPrompt={(text) => setDraft((now) => withPrompt(now, text))}
                     textareaRef={textareaRef}
-                    fullCheck={{ summary: fullCheckSummary, blocked: fullCheckBlocked, onRun: runFullCheck }}
+                    fullCheck={{ summary: fullCheckSummary, blocked: fullCheckBlocked, onRun: runFullCheck, loadPlan }}
                     lastFindings={lastFindings(messages)}
                     makeMarkupPdf={chatId ? (messageId) => api.markup(chatId, messageId) : null}
                     fileHref={(file) => file.url || (chatId ? chatPaths.file(chatId, file.id) : '')}

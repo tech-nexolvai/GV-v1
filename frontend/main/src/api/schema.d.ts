@@ -329,6 +329,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/packages/{package_id}/full-check-plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Code's plan for a full check and its 0-3 questions (no AI call)
+         * @description Copies the set's latest PDFs aside and starts its set pack when it is not made yet, then
+         *     reads the page map: `building` until it is made (ask again in a moment).
+         */
+        get: operations["get_full_check_plan_api_v1_packages__package_id__full_check_plan_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/packages/{package_id}/plan-pages/{page}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A page's picture for a plan-check question */
+        get: operations["plan_page_api_v1_packages__package_id__plan_pages__page__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/product-types": {
         parameters: {
             query?: never;
@@ -338,13 +376,38 @@ export interface paths {
         };
         /**
          * The products a drawing set may be for
-         * @description Every product the published rulebook has at least one check for, in vocabulary order (#994).
+         * @description Every active product the published rulebook has at least one check for, in the product
+         *     registry's order (#994, #1547).
          *
-         *     The upload screen's dropdown is filled from this, so it never offers a product that would be
-         *     checked against nothing, and a product appears the day its first rule is published. Empty when
-         *     nothing is published — a real answer, and the upload screen says so.
+         *     Kept for older screens: the upload screen now reads `GET /products`, which lists every product
+         *     (inactive ones too, greyed). Empty when nothing is published — a real answer.
          */
         get: operations["list_product_types_api_v1_product_types_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/products": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every product GV Review knows (the product registry)
+         * @description Every product of the product registry (`vocabulary/products.yaml`, #1547), in its order,
+         *     with whether it can be picked now and how many published checks it has.
+         *
+         *     The single list the screens build their product choices from: the chat's chips and "+" menu,
+         *     the findings' groups, the upload picker. Adding a product to the registry adds it here with no
+         *     code change.
+         */
+        get: operations["list_products_api_v1_products_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -4582,10 +4645,50 @@ export interface components {
             note?: string | null;
         };
         /**
+         * ChatFindingDimOut
+         * @description A numbered dimension label a finding's side was built from (#1558).
+         */
+        ChatFindingDimOut: {
+            /**
+             * Box
+             * @description x0, y0, x1, y1: PDF points, origin top-left.
+             */
+            box: number[];
+            /** File */
+            file?: string | null;
+            /**
+             * Id
+             * @description The label's id on its page (D17).
+             */
+            id: string;
+            /** Inches */
+            inches: string;
+            /** Page */
+            page: number;
+            /**
+             * Route
+             * @description text: the drawing's characters; drawn: the vendor's drawn ink, by two OCR engines.
+             * @enum {string}
+             */
+            route: "text" | "drawn";
+            /**
+             * Side
+             * @description architect, vendor, brand or unknown.
+             */
+            side?: string | null;
+            /**
+             * Text
+             * @description The value as printed.
+             */
+            text: string;
+        };
+        /**
          * ChatFindingDroppedBlock
          * @description A finding the assistant dropped (in the place its finding block was).
          */
         ChatFindingDroppedBlock: {
+            /** @description Set when a later message of the chat dropped it (#1548). */
+            dropped_in?: components["schemas"]["ChatFindingLaterOut"] | null;
             /** Finding Id */
             finding_id: string;
             /** Reason */
@@ -4609,6 +4712,27 @@ export interface components {
             value_in: number;
         };
         /**
+         * ChatFindingImpactOut
+         * @description How much a Wrong item matters (#1569), by code: ordering only, never a status or colour.
+         */
+        ChatFindingImpactOut: {
+            /**
+             * Rank
+             * @description Its place among the answer's items of the same status (1 = biggest).
+             */
+            rank?: number | null;
+            /**
+             * Score
+             * @description Bigger matters more.
+             */
+            score: number;
+            /**
+             * Why
+             * @description Plain words: "changes fabrication (overall size); 9 in off".
+             */
+            why: string;
+        };
+        /**
          * ChatFindingInchesOut
          * @description Code's numbers (decimal strings, inches): never the AI's arithmetic.
          */
@@ -4622,6 +4746,24 @@ export interface components {
             difference?: string | null;
             /** Vendor */
             vendor?: string | null;
+        };
+        /**
+         * ChatFindingLaterOut
+         * @description The later answer of the same chat that corrected a finding (#1548).
+         */
+        ChatFindingLaterOut: {
+            /**
+             * Answer
+             * @description That answer's number in the chat.
+             */
+            answer?: number | null;
+            /** Message Id */
+            message_id: string;
+            /**
+             * Version
+             * @description The finding's version: 1 is the original, 2 the first fix.
+             */
+            version: number;
         };
         /**
          * ChatFindingOut
@@ -4643,9 +4785,9 @@ export interface components {
             architect: string;
             /**
              * Category
-             * @enum {string}
+             * @description The product the item belongs to (a product id from `GET /products`), or `other`.
              */
-            category: "countertop" | "cabinet" | "other";
+            category: string;
             /**
              * Check Reason
              * @description Why two printed values that differ still need a person (#1545); without one, code makes such a finding Wrong.
@@ -4668,12 +4810,21 @@ export interface components {
             /** @description Status check (Your decision): what it measures, the best estimate, how likely it is fine, what to confirm (#1545). */
             decision_help?: components["schemas"]["ChatFindingDecisionHelpOut"] | null;
             /**
+             * Dims
+             * @description The numbered dimension label each side was built from (#1558), by side (architect, vendor); code filled that side's value and box from it.
+             */
+            dims?: {
+                [key: string]: components["schemas"]["ChatFindingDimOut"];
+            } | null;
+            /**
              * Evidence Kind
              * @description observed: printed on the drawing at its spots (text layer); derived: worked out by code (rule, arithmetic, ledger, mm/inch); inferred: AI reading only.
              */
             evidence_kind?: ("observed" | "derived" | "inferred") | null;
             /** Id */
             id: string;
+            /** @description Wrong and Your-decision items (#1569): how much it matters, by code; the screen, the cloud drawing's numbers and the check report follow this order. */
+            impact?: components["schemas"]["ChatFindingImpactOut"] | null;
             inches?: components["schemas"]["ChatFindingInchesOut"] | null;
             /** Item */
             item: string;
@@ -4739,6 +4890,8 @@ export interface components {
             sum_text?: string | null;
             /** Trust Level */
             trust_level?: ("confirmed" | "likely" | "to_check") | null;
+            /** @description Set when a later message of the chat corrected this finding (#1548): the finding shown is its newest version ("updated in a later message"). */
+            updated_in?: components["schemas"]["ChatFindingLaterOut"] | null;
             /** Vendor */
             vendor: string;
             vendor_box?: components["schemas"]["ChatBoxOut"] | null;
@@ -4809,6 +4962,78 @@ export interface components {
              */
             was: "check";
         };
+        /** ChatFindingUpdateBlock */
+        ChatFindingUpdateBlock: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "finding_update";
+            update: components["schemas"]["ChatFindingUpdateOut"];
+        };
+        /**
+         * ChatFindingUpdateOut
+         * @description A later message's correction of an earlier answer's finding (#1548), stored in the later
+         *     answer; the earlier answer is read with its newest version.
+         */
+        ChatFindingUpdateOut: {
+            /**
+             * Answer
+             * @description The earlier answer's number in the chat.
+             */
+            answer: number;
+            /**
+             * By Answer
+             * @description This answer's number in the chat.
+             */
+            by_answer?: number | null;
+            /**
+             * Dropped
+             * @description Why it was dropped; null: updated.
+             */
+            dropped?: string | null;
+            /** @description The new version (the last one, when dropped). */
+            finding: components["schemas"]["ChatFindingOut"];
+            /** Finding Id */
+            finding_id: string;
+            /**
+             * Message Id
+             * @description The earlier answer the finding belongs to.
+             */
+            message_id: string;
+            /**
+             * Ref
+             * @description "A1-F5": the chat's first answer, finding F5.
+             */
+            ref: string;
+            /** Version */
+            version: number;
+        };
+        /**
+         * ChatFullCheckPlanOut
+         * @description `GET /chats/{chat_id}/full-check-plan` (#1569): code's plan and its 0-3 questions.
+         */
+        ChatFullCheckPlanOut: {
+            /** Doubts */
+            doubts?: components["schemas"]["ChatPlanDoubtOut"][];
+            /**
+             * More
+             * @description Further unsure places, compared as read.
+             * @default 0
+             */
+            more: number;
+            /**
+             * State
+             * @description ready: the page map is read; building: ask again in a moment; none: no page map can be made (no PDFs): run without questions.
+             * @enum {string}
+             */
+            state: "ready" | "building" | "none";
+            /**
+             * Summary
+             * @description "60 pages · 22 pairs · rounds 1-2 · 3 general pages".
+             */
+            summary?: string | null;
+        };
         /**
          * ChatGvChecksOut
          * @description Of the differences GV Review's own checks recorded, how many this answer includes.
@@ -4823,6 +5048,8 @@ export interface components {
             /** Recorded */
             recorded: number;
         };
+        /** @enum {string} */
+        ChatIntent: "fact" | "compare" | "whole_set" | "rules" | "arithmetic" | "rounds" | "file" | "summary" | "clarify" | "refuse_action";
         /** @enum {string} */
         ChatKeepReason: "architect_prints_nothing" | "measures_something_else" | "which_governs" | "unreadable" | "needs_job_value" | "layout" | "vendor_disagrees" | "other";
         /** ChatLedgerBoxOut */
@@ -4997,7 +5224,8 @@ export interface components {
          *
          *     `mode: full_check` (CONTRACT4) runs the app's own fixed whole-set check instead of a typed
          *     question (`text` is then not needed: the question shown is "Full check · Countertops · High
-         *     effort"). `products`: the products picked in the composer (default: the set's own).
+         *     effort"). `products`: the products picked in the composer (default: the set's own), each an
+         *     ACTIVE product id of the product registry (`GET /products`, #1547).
          */
         ChatMessageIn: {
             /**
@@ -5018,8 +5246,18 @@ export interface components {
             mode: "chat" | "full_check";
             /** Model */
             model: string;
-            /** Products */
-            products?: ("countertop" | "cabinet")[] | null;
+            /**
+             * Plan Answers
+             * @description A full check only (#1569): the answers to the plan check's questions (`GET /packages/{package_id}/full-check-plan`), kept with the drawing set's page map.
+             */
+            plan_answers?: components["schemas"]["ChatPlanAnswerIn"][] | null;
+            /**
+             * Products
+             * @description Active product ids from `GET /products` (e.g. countertop, cabinet).
+             */
+            products?: string[] | null;
+            /** @description #1551: the reviewer's correction of how the app understood the question (Edit on the 'Understood as' line); the question's words are sent unchanged in `text`. */
+            task?: components["schemas"]["ChatTaskSpecIn"] | null;
             /**
              * Text
              * @default
@@ -5036,7 +5274,7 @@ export interface components {
             /** @description The answer's accuracy by code (its `accuracy` block, scored again with today's calibration: see `rescored`); null on older answers. */
             accuracy?: components["schemas"]["ChatAccuracyOut"] | null;
             /** Blocks */
-            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"] | components["schemas"]["ChatScopeBlock"] | components["schemas"]["ChatProgressBlock"] | components["schemas"]["ChatResumeBlock"] | components["schemas"]["ChatResolverBlock"])[] | null;
+            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatFindingUpdateBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"] | components["schemas"]["ChatScopeBlock"] | components["schemas"]["ChatProgressBlock"] | components["schemas"]["ChatResumeBlock"] | components["schemas"]["ChatResolverBlock"] | components["schemas"]["ChatUnderstoodBlock"])[] | null;
             /** @description With `stopped: cost_cap`: `message` (this answer's cap) or `package` (the drawing set's budget ran out). */
             cap_hit?: components["schemas"]["ChatCapHit"] | null;
             /** Cost Usd */
@@ -5076,9 +5314,9 @@ export interface components {
             package_cap_usd?: string | null;
             /**
              * Products
-             * @description The products the message was about; null on older messages.
+             * @description The products the message was about (product ids); null on older messages.
              */
-            products?: ("countertop" | "cabinet")[] | null;
+            products?: string[] | null;
             /** @description With `stopped: interrupted`: how Continue picks up (its `resume` block). */
             resume?: components["schemas"]["ChatResumeOut"] | null;
             /**
@@ -5096,6 +5334,8 @@ export interface components {
             text: string;
             /** Thinking */
             thinking?: boolean | null;
+            /** @description #1551: how the app understood the question before the work (its `understood` block); null when it made no task spec, and on older answers. */
+            understood?: components["schemas"]["ChatUnderstoodOut"] | null;
         };
         /**
          * ChatModelChoice
@@ -5151,6 +5391,60 @@ export interface components {
             running_message_id?: string | null;
             /** Title */
             title: string | null;
+        };
+        /** @enum {string} */
+        ChatOutputShape: "one_line" | "short" | "findings" | "file";
+        /**
+         * ChatPlanAnswerIn
+         * @description The reviewer's answer to one plan-check question (#1569).
+         */
+        ChatPlanAnswerIn: {
+            /**
+             * Answer
+             * @description One of its options' `value`.
+             */
+            answer: string;
+            /**
+             * Id
+             * @description The question's id (its `id`).
+             */
+            id: string;
+        };
+        /**
+         * ChatPlanDoubtOut
+         * @description One question code asks before a full check, where it is unsure of the page map (#1569).
+         */
+        ChatPlanDoubtOut: {
+            /**
+             * Box
+             * @description The drawing it is about, as fractions of the picture (x0, y0, x1, y1).
+             */
+            box?: number[] | null;
+            /** Id */
+            id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "prototype" | "role" | "pair" | "round" | "heading";
+            /** Options */
+            options: components["schemas"]["ChatPlanOptionOut"][];
+            /** Page */
+            page: number;
+            /**
+             * Picture Url
+             * @description The page's picture (drawings only, 100 dpi), when made.
+             */
+            picture_url?: string | null;
+            /** Question */
+            question: string;
+        };
+        /** ChatPlanOptionOut */
+        ChatPlanOptionOut: {
+            /** Label */
+            label: string;
+            /** Value */
+            value: string;
         };
         /** ChatProgressBlock */
         ChatProgressBlock: {
@@ -5338,7 +5632,7 @@ export interface components {
              */
             pages_done: number;
             /** Products */
-            products?: ("countertop" | "cabinet")[] | null;
+            products?: string[] | null;
             /**
              * Redo
              * @description What Continue will do again, in one or two plain sentences.
@@ -5490,7 +5784,7 @@ export interface components {
             tool: components["schemas"]["ChatStepTool"];
         };
         /** @enum {string} */
-        ChatStepTool: "bash_tool" | "view" | "create_file" | "str_replace" | "present_files" | "TaskCreate" | "TaskUpdate" | "Agent" | "review_results" | "compare_rounds" | "verify_value" | "measure_on_drawing" | "zoom" | "read_under_markup";
+        ChatStepTool: "bash_tool" | "view" | "create_file" | "str_replace" | "present_files" | "TaskCreate" | "TaskUpdate" | "Agent" | "review_results" | "compare_rounds" | "verify_value" | "measure_on_drawing" | "zoom" | "read_under_markup" | "remember";
         /** @enum {string} */
         ChatStopped: "cost_cap" | "cancelled" | "error" | "turn_limit" | "interrupted";
         /** ChatSummaryOut */
@@ -5525,6 +5819,26 @@ export interface components {
             status: "pending" | "in_progress" | "completed";
             /** Subject */
             subject: string;
+        };
+        /**
+         * ChatTaskSpecIn
+         * @description #1551: the task spec as the reviewer corrected it on the screen ("Understood as … Edit").
+         *     It is used as given (checked by code), with no model call.
+         */
+        ChatTaskSpecIn: {
+            /** Checks To Run */
+            checks_to_run?: string[];
+            intent?: components["schemas"]["ChatIntent"] | null;
+            output_shape?: components["schemas"]["ChatOutputShape"] | null;
+            /**
+             * Pages
+             * @description Empty: the whole set.
+             */
+            pages?: number[];
+            /** Task */
+            task: string;
+            /** What To Compare */
+            what_to_compare?: string[];
         };
         /** ChatTextBlock */
         ChatTextBlock: {
@@ -5712,6 +6026,84 @@ export interface components {
             };
             /** Total */
             total: number;
+        };
+        /** ChatUnderstoodBlock */
+        ChatUnderstoodBlock: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "understood";
+            understood: components["schemas"]["ChatUnderstoodOut"];
+        };
+        /**
+         * ChatUnderstoodOut
+         * @description #1551: how the app understood a typed question (its task spec), before any tool ran. Shown
+         *     as a quiet "Understood as: <label> · Edit" line under the question. A guide for the lead and
+         *     its helpers only: the reviewer's own words are always sent unchanged.
+         */
+        ChatUnderstoodOut: {
+            /** Assumptions */
+            assumptions?: string[];
+            /** Checks To Run */
+            checks_to_run?: string[];
+            /**
+             * Cost Usd
+             * @description What it cost ("0.0003").
+             */
+            cost_usd: string;
+            /**
+             * Hint
+             * @description A short hint for the lead (an unclear question, or an order only a person carries out). Code never answers for Claude.
+             */
+            hint?: string | null;
+            intent: components["schemas"]["ChatIntent"];
+            /**
+             * Label
+             * @description "Compare outlet heights (architect vs vendor) · page 4 · …".
+             */
+            label: string;
+            output_shape: components["schemas"]["ChatOutputShape"];
+            /**
+             * Path
+             * @description How it was made: code rules ($0), the cheap model, or the reviewer's edit.
+             * @enum {string}
+             */
+            path: "code" | "model" | "edited";
+            /** Products */
+            products?: string[];
+            /**
+             * Question Back
+             * @description With intent `clarify`: a question back the lead may ask (the lead answers).
+             */
+            question_back?: string | null;
+            scope: components["schemas"]["ChatUnderstoodScopeOut"];
+            /**
+             * Seconds
+             * @description The time it added before the work started.
+             */
+            seconds: number;
+            /** Task */
+            task: string;
+            /** What To Compare */
+            what_to_compare?: string[];
+        };
+        /** ChatUnderstoodScopeOut */
+        ChatUnderstoodScopeOut: {
+            /** Area */
+            area?: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "whole_set" | "pages" | "area";
+            /**
+             * Label
+             * @description In plain words: "page 4", "the whole set".
+             */
+            label: string;
+            /** Pages */
+            pages?: number[];
         };
         /**
          * ChatUnknownOut
@@ -7976,8 +8368,11 @@ export interface components {
          * @description A new reviewable drawing package.
          */
         PackageCreate: {
-            /** @description What product this drawing set is for, chosen by the reviewer (#994). Only the published checks for this product are run, and the readers are told it. Must be one of the values `GET /product-types` lists: a product with no published check is refused, because a set checked against nothing would look exactly like a clean one. */
-            product_type: components["schemas"]["ProductType"];
+            /**
+             * Product Type
+             * @description What product this drawing set is for, chosen by the reviewer (#994): an active product id from `GET /products` (the product registry, #1547). Only the published checks for this product are run, and the readers are told it. A product with no published check is refused, because a set checked against nothing would look exactly like a clean one.
+             */
+            product_type: string;
             /**
              * Vendor
              * @description Who supplied the drawings, if it is known. Left null rather than guessed — an invented vendor name is worse than an absent one, because it reads as a fact.
@@ -8018,7 +8413,8 @@ export interface components {
              * @default []
              */
             pages_waiting_for_budget: number[];
-            product_type: components["schemas"]["ProductType"] | null;
+            /** Product Type */
+            product_type: string | null;
             /**
              * Project Id
              * Format: uuid
@@ -8586,19 +8982,46 @@ export interface components {
             upload_url: string;
         };
         /**
-         * ProductType
-         * @description What kind of thing a rule checks — the client's checklist, in one word.
-         *
-         *     A controlled vocabulary rather than a free string (ADR-0007). The applicability resolver
-         *     matches this exactly and case-sensitively, so a free string would let ``"Countertop"`` or a
-         *     typo publish cleanly and then match nothing: a rule that exists, looks authored, and never
-         *     fires. Validation at publish turns that into a loud authoring error instead.
-         *
-         *     Adding a product type is a one-line change here, which is the point of keeping the
-         *     vocabulary in one module.
-         * @enum {string}
+         * ProductChecklistItemOut
+         * @description One thing to compare on every page for a product (#1547).
          */
-        ProductType: "countertop" | "cabinet";
+        ProductChecklistItemOut: {
+            /** Name */
+            name: string;
+            /** Text */
+            text: string;
+        };
+        /**
+         * ProductOut
+         * @description One product of the product registry (#1547), as the screens offer it.
+         *
+         *     The chat's product chips and "+" menu, the findings' grouping and the upload picker are built
+         *     from this list, never from a list in the frontend. An inactive product is shown greyed ("coming
+         *     later") and cannot be picked; an active one with no published check cannot start an upload
+         *     (nothing would check it) but can still be the focus of a chat.
+         */
+        ProductOut: {
+            /** Active */
+            active: boolean;
+            /** Category Label */
+            category_label: string;
+            /** Check Kinds */
+            check_kinds: ("dimension_match" | "global_rules")[];
+            /** Checklist */
+            checklist: components["schemas"]["ProductChecklistItemOut"][];
+            /** Description */
+            description: string;
+            /** Draft */
+            draft: boolean;
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /** Plural */
+            plural: string;
+            /** Published Checks */
+            published_checks: number;
+        };
         /**
          * ProductTypeChoice
          * @description One product a drawing set may be for, as the upload screen offers it (#994).
@@ -8611,7 +9034,8 @@ export interface components {
             label: string;
             /** Published Checks */
             published_checks: number;
-            value: components["schemas"]["ProductType"];
+            /** Value */
+            value: string;
         };
         /**
          * ProjectSettingOut
@@ -12177,6 +12601,74 @@ export interface operations {
             };
         };
     };
+    get_full_check_plan_api_v1_packages__package_id__full_check_plan_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatFullCheckPlanOut"];
+                };
+            };
+            /** @description No such drawing set (or no access). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    plan_page_api_v1_packages__package_id__plan_pages__page__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                package_id: string;
+                page: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_product_types_api_v1_product_types_get: {
         parameters: {
             query?: never;
@@ -12193,6 +12685,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProductTypeChoice"][];
+                };
+            };
+        };
+    };
+    list_products_api_v1_products_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProductOut"][];
                 };
             };
         };

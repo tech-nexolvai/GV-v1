@@ -161,7 +161,13 @@ def pack(tmp_path: Path, uploads: Path) -> Path:
 def test_the_pack_holds_the_page_map_annotations_pictures_and_contact_sheets(pack: Path) -> None:
     status = json.loads((pack / "status.json").read_text())
     assert status["state"] == "ready"
-    assert status["done"] == ["drawings_only", "page_map", "pages", "contact_sheets"]
+    assert status["done"] == ["drawings_only", "page_map", "pages", "contact_sheets", "dims"]
+    dims = json.loads((pack / "dims.json").read_text())
+    assert [(entry["file"], entry["page"]) for entry in dims["pages"]] == [
+        ("combined.pdf", 1),
+        ("combined.pdf", 2),
+        ("combined.pdf", 3),
+    ]
     assert sorted(p.name for p in (pack / "pages" / "combined").iterdir()) == [
         "p-001.png",
         "p-002.png",

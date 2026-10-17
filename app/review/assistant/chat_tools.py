@@ -51,8 +51,11 @@ from app.review.assistant.chat_findings import (
     main_upload,
     page_ranges,
 )
+from app.review.assistant.chat_memory import MAX_NOTE_CHARS, REMEMBER
+from app.review.assistant.dim_index import label_lines, labels_for
 from app.review.assistant.internal_refs import without_ticket_refs
 from app.review.assistant.ledger import LEDGER_TOOLS
+from app.review.assistant.plan_check import apply_answers, read_answers
 from app.review.assistant.sandbox import (
     OUTPUTS,
     SCRATCH,
@@ -121,6 +124,10 @@ PARALLEL_TOOLS: Final = frozenset(
         "measure_on_drawing",
     }
 )
+#: Labels one marked crop lists in words (the picture shows them all).
+_MAX_LISTED: Final = 60
+#: Guides one crop draws.
+_MAX_GUIDES: Final = 4
 #: What a helper is told to spend, in tool calls (its real limit is the helper turn limit).
 HELPER_CALL_BUDGET: Final = 12
 #: What a step shows of a tool's output; the model gets up to the sandbox's 20 KB.
@@ -152,7 +159,7 @@ HELPER_TOOL_NAMES: Final = (
 
 LEAD_SYSTEM_PROMPT: Final = f"""\
 You are Claude, an AI assistant made by Anthropic, working inside GV Review. Graniti Vicentia (GV) \
-reviews vendors' countertop and cabinet shop drawings against the architect's drawings. A GV \
+reviews vendors' shop drawings against the architect's drawings. A GV \
 reviewer is chatting with you about one drawing set: you find and explain differences; the \
 reviewer decides.
 
@@ -191,7 +198,8 @@ back. Never cite internal ticket numbers. Write in markdown."""
 
 HELPER_SYSTEM_PROMPT: Final = f"""\
 You are a helper agent working for Claude inside GV Review, on part of one drawing set of \
-countertop and cabinet shop drawings. You share Claude's Linux computer (no internet access): the \
+shop drawings (the products in focus are in {SKILLS}/products/). You share Claude's Linux \
+computer (no internet access): the \
 PDFs read-only in {UPLOADS}, the set pack in {SET_PACK} (page_map.json, drawings-only PDFs, page \
 pictures), your working folder {SCRATCH}, and GV's review skill in {SKILLS} (read SKILL.md there \
 when your task is a review).
@@ -468,8 +476,21 @@ _ZOOM: Final[Mapping[str, Any]] = {
                             "description": "The upload's file name, when the set has more than one",
                         },
                         "label": {"type": "string", "description": "What this crop is, short"},
+                        "guides": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "maxItems": 4,
+                            "description": "Label ids (D17) whose dimension line and extension "
+                            "lines code draws right across this crop: what the dimension spans",
+                        },
                     },
                 },
+            },
+            "marks": {
+                "type": "boolean",
+                "description": "Also return each crop with its printed dimensions numbered by "
+                "code (D17), listed: name one in report_finding (vendor_dim, architect_dim) or "
+                "cite (dim) for its exact value and box",
             },
             "dpi": {
                 "type": "integer",
@@ -698,6 +719,7 @@ LEAD_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     VERIFY_VALUE,
     MEASURE_ON_DRAWING,
     READ_UNDER_MARKUP,
+    REMEMBER,
 )
 HELPER_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     _BASH,
@@ -728,6 +750,7 @@ _DEFAULT_LABELS: Final[Mapping[str, str]] = {
     "verify_value": "Checked a printed value",
     "measure_on_drawing": "Measured on the drawing",
     "read_under_markup": "Read under GV's markup",
+    "remember": "Remembered for this drawing set",
 }
 
 
@@ -894,6 +917,8 @@ class ChatTools:
     uploads: Sequence[Mapping[str, Any]] = ()
     """The set's PDFs as copied into the chat (`uploads.json`): name, pages, kind."""
     register_file: FileRegistrar | None = None
+    remember_note: Callable[[str, int | None], None] | None = None
+    """Keeps a set note (#1548): (note, page). `None`: this chat keeps none."""
     seen: list[dict[str, Any]] = field(default_factory=list)
     """Every zoom crop of this message: `{by, file, page, box, dpi, picture_id}` (the "seen" log
     the trust checks read; also kept in each zoom step)."""
@@ -1149,6 +1174,44 @@ class ChatTools:
             ),
         )
 
+    def remember(self, raw: object, step: dict[str, Any]) -> ToolResult:
+        """`remember {note, page?}`: one fact kept for every later chat on the set (#1548)."""
+        started = monotonic()
+        try:
+            given = arguments(raw, frozenset({"note", "page"}), frozenset({"note"}))
+            note = given.get("note")
+            if not isinstance(note, str) or not note.strip():
+                raise SandboxRefused("note must be the fact, as text")
+            if len(note) > MAX_NOTE_CHARS:
+                raise SandboxRefused(f"note must be at most {MAX_NOTE_CHARS} characters")
+            page = given.get("page")
+            if page is not None and (
+                isinstance(page, bool) or not isinstance(page, int) or page < 1
+            ):
+                raise SandboxRefused("page must be a whole number from 1")
+        except SandboxRefused as refused:
+            return _refused(step, started, str(refused))
+        if self.remember_note is None:
+            return _refused(step, started, "this chat cannot keep notes")
+        clean = " ".join(note.split())
+        try:
+            self.remember_note(clean, page)
+        except Exception as failed:  # noqa: BLE001 - told plainly; the answer goes on
+            _log.warning("assistant chat note not kept: %s", type(failed).__name__)
+            return _refused(step, started, "the note could not be kept just now")
+        where = f" (page {page})" if page else ""
+        text = f"Kept for every chat on this drawing set{where}: {clean}"
+        return ToolResult(
+            content=[{"type": "text", "text": text}],
+            step=_done(
+                step,
+                started,
+                ok=True,
+                label=f"Remembered: {clean[:80]}" + ("\u2026" if len(clean) > 80 else ""),
+                output=_shown(text),
+            ),
+        )
+
     def _hires(self) -> Path | None:
         """The set pack's hi-res page cache (#1548), when the chat has a pack."""
         pack = self.workspace.set_pack
@@ -1199,14 +1262,30 @@ class ChatTools:
         """Up to four crops of the drawings-only copies, each its own picture, logged as seen."""
         started = monotonic()
         try:
-            given = arguments(raw, frozenset({"crops", "dpi", "description"}), frozenset({"crops"}))
+            given = arguments(
+                raw, frozenset({"crops", "dpi", "description", "marks"}), frozenset({"crops"})
+            )
             crops = given["crops"]
             if not isinstance(crops, list) or not 1 <= len(crops) <= MAX_ZOOM_CROPS:
                 raise SandboxRefused(f"crops must be a list of 1 to {MAX_ZOOM_CROPS} areas")
             dpi = given.get("dpi")
             if dpi is not None and (isinstance(dpi, bool) or not isinstance(dpi, int)):
                 raise SandboxRefused("dpi must be a whole number")
-            wanted = [self._crop_request(item, n) for n, item in enumerate(crops)]
+            marks = given.get("marks", False)
+            if not isinstance(marks, bool):
+                raise SandboxRefused("marks must be true or false")
+            guides = [zoom_guides(item, n) for n, item in enumerate(crops)]
+            wanted = [
+                self._crop_request(
+                    (
+                        {k: v for k, v in item.items() if k != "guides"}
+                        if isinstance(item, Mapping)
+                        else item
+                    ),
+                    n,
+                )
+                for n, item in enumerate(crops)
+            ]
         except SandboxRefused as refused:
             return _refused(step, started, str(refused))
         pack = import_module("app.review.assistant.set_pack")
@@ -1262,6 +1341,10 @@ class ChatTools:
                     "picture_id": picture_id,
                 }
             )
+            if marks or guides[number - 1]:
+                content.extend(
+                    self._marked(title, name, page, crop, guides[number - 1], every=marks)
+                )
         with self._lock:
             self.seen.extend(seen)
         label = step["label"]
@@ -1281,6 +1364,61 @@ class ChatTools:
             ),
             is_error=not seen,
         )
+
+    def _marked(
+        self, title: str, name: str, page: int, crop: Any, guides: Sequence[str], *, every: bool
+    ) -> list[dict[str, Any]]:
+        """The numbered copy of one crop (#1558): its dimension labels marked, the guides drawn,
+        and the labels listed. Told plainly when there are none."""
+        labels = labels_for(self.workspace.set_pack, self.workspace.uploads)
+        try:
+            shown = labels.in_area(name, page, crop.box)
+            drawn: list[dict[str, Any]] = []
+            missing: list[str] = []
+            for ref in guides:
+                try:
+                    found = labels.resolve(ref, name, page)
+                except LookupError as why:
+                    missing.append(f"{ref}: {why}")
+                    continue
+                if found.get("page") != page:
+                    missing.append(f"{ref}: it is on page {found.get('page')}, not this crop's")
+                    continue
+                drawn.append(found)
+            if not shown and not drawn:
+                return [{"type": "text", "text": f"{title}: no numbered dimension labels here."}]
+            module = import_module("app.review.assistant.dim_labels")
+            png = module.draw_marks(crop.png, crop.box, shown if every else drawn, drawn)
+        except Exception as failed:  # noqa: BLE001 - the clean crop is still there
+            _log_failure(failed)
+            return [{"type": "text", "text": f"{title}: the labels could not be drawn just now."}]
+        picture_id = str(uuid4())
+        (self.workspace.pictures / f"{picture_id}.png").write_bytes(png)
+        listed = shown if every else drawn
+        text = f"{title} numbered: {label_lines(listed[:_MAX_LISTED]) or 'none'}"
+        if len(listed) > _MAX_LISTED:
+            text += f"; and {len(listed) - _MAX_LISTED} more (zoom closer)"
+        for label in drawn:
+            spans = "its extension lines" if any(label.get("extension") or []) else "its ends"
+            text += (
+                f"\nGuide {label['id']}: drawn through {spans}"
+                if label.get("dim_line")
+                else f"\nGuide {label['id']}: no dimension line found, nothing drawn"
+            )
+        if missing:
+            text += "\nNot drawn: " + "; ".join(missing)
+        return [
+            {"type": "text", "text": text},
+            {
+                "type": "image",
+                "source": {
+                    "type": "gv_picture",
+                    "picture_id": picture_id,
+                    "width": crop.width,
+                    "height": crop.height,
+                },
+            },
+        ]
 
     # ---- create_file / str_replace ---------------------------------------------------------------
 
@@ -1481,6 +1619,22 @@ class ChatTools:
         )
 
 
+def zoom_guides(item: object, number: int) -> list[str]:
+    """A crop's `guides`: the label ids whose extension lines to draw (#1558), checked."""
+    if not isinstance(item, Mapping) or item.get("guides") is None:
+        return []
+    guides = item["guides"]
+    if (
+        not isinstance(guides, list)
+        or len(guides) > _MAX_GUIDES
+        or not all(isinstance(ref, str) and ref.strip() for ref in guides)
+    ):
+        raise SandboxRefused(
+            f"crops[{number}].guides must be a list of up to {_MAX_GUIDES} label ids (D17)"
+        )
+    return [ref.strip() for ref in guides]
+
+
 def _done_presented(
     step: dict[str, Any], started: float, presented: list[dict[str, Any]], problem: str | None
 ) -> ToolResult:
@@ -1586,6 +1740,8 @@ def helper_footer(
     if pages:
         try:
             page_map = json.loads((folder / "page_map.json").read_text(encoding="utf-8"))
+            # The reviewer's plan-check answers laid over it, as the plan and brief see it (#1569).
+            page_map = apply_answers(page_map, read_answers(folder))
             wanted = set(pages)
             entries = [
                 e

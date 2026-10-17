@@ -13,6 +13,9 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.review.assistant.plan_check import MAX_DOUBTS, valid_answer
+from vocabulary.product_registry import registry
+
 __all__ = [
     "MAX_MESSAGE_TEXT",
     "AssistantModelOut",
@@ -36,12 +39,20 @@ __all__ = [
     "ChatFindingDecisionOut",
     "ChatFindingDroppedBlock",
     "ChatFindingEstimateOut",
+    "ChatFindingImpactOut",
+    "ChatFindingLaterOut",
     "ChatFindingOut",
     "ChatFindingSettledOut",
+    "ChatFindingUpdateBlock",
+    "ChatFindingUpdateOut",
+    "ChatFullCheckPlanOut",
     "ChatListOut",
     "ChatMessageIn",
     "ChatMessageOut",
     "ChatOut",
+    "ChatPlanAnswerIn",
+    "ChatPlanDoubtOut",
+    "ChatPlanOptionOut",
     "ChatProgressBlock",
     "ChatProgressOut",
     "ChatResolverBlock",
@@ -54,6 +65,7 @@ __all__ = [
     "ChatStepOut",
     "ChatSummaryOut",
     "ChatTaskOut",
+    "ChatTaskSpecIn",
     "ChatTextBlock",
     "ChatThinkingBlock",
     "ChatTimingHelperOut",
@@ -61,6 +73,9 @@ __all__ = [
     "ChatTimingsOut",
     "ChatTrustBlock",
     "ChatTrustOut",
+    "ChatUnderstoodBlock",
+    "ChatUnderstoodOut",
+    "ChatUnderstoodScopeOut",
     "ChatUnknownOut",
     "ChatUnknownsBlock",
 ]
@@ -82,9 +97,52 @@ type ChatStepTool = Literal[
     "measure_on_drawing",
     "zoom",
     "read_under_markup",
+    "remember",
 ]
+type ChatIntent = Literal[
+    "fact",
+    "compare",
+    "whole_set",
+    "rules",
+    "arithmetic",
+    "rounds",
+    "file",
+    "summary",
+    "clarify",
+    "refuse_action",
+]
+type ChatOutputShape = Literal["one_line", "short", "findings", "file"]
 type ChatStopped = Literal["cost_cap", "cancelled", "error", "turn_limit", "interrupted"]
 type ChatCapHit = Literal["message", "package"]
+
+
+class ChatPlanAnswerIn(BaseModel):
+    """The reviewer's answer to one plan-check question (#1569)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    id: str = Field(min_length=1, max_length=40, description="The question's id (its `id`).")
+    answer: str = Field(min_length=1, max_length=20, description="One of its options' `value`.")
+
+
+class ChatTaskSpecIn(BaseModel):
+    """#1551: the task spec as the reviewer corrected it on the screen ("Understood as … Edit").
+    It is used as given (checked by code), with no model call."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    task: str = Field(min_length=1, max_length=200)
+    intent: ChatIntent | None = None
+    what_to_compare: list[Annotated[str, Field(min_length=1, max_length=80)]] = Field(
+        default_factory=list, max_length=6
+    )
+    checks_to_run: list[Annotated[str, Field(min_length=1, max_length=40)]] = Field(
+        default_factory=list, max_length=8
+    )
+    pages: list[Annotated[int, Field(ge=1, le=2000)]] = Field(
+        default_factory=list, max_length=60, description="Empty: the whole set."
+    )
+    output_shape: ChatOutputShape | None = None
 
 
 class ChatMessageIn(BaseModel):
@@ -92,7 +150,8 @@ class ChatMessageIn(BaseModel):
 
     `mode: full_check` (CONTRACT4) runs the app's own fixed whole-set check instead of a typed
     question (`text` is then not needed: the question shown is "Full check · Countertops · High
-    effort"). `products`: the products picked in the composer (default: the set's own)."""
+    effort"). `products`: the products picked in the composer (default: the set's own), each an
+    ACTIVE product id of the product registry (`GET /products`, #1547)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -101,8 +160,11 @@ class ChatMessageIn(BaseModel):
     effort: Literal["low", "medium", "high", "xhigh", "max"]
     thinking: bool
     mode: Literal["chat", "full_check"] = "chat"
-    products: list[Literal["countertop", "cabinet"]] | None = Field(
-        default=None, min_length=1, max_length=2
+    products: list[Annotated[str, Field(min_length=1, max_length=32)]] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=32,
+        description="Active product ids from `GET /products` (e.g. countertop, cabinet).",
     )
     continue_from: str | None = Field(
         default=None,
@@ -111,13 +173,39 @@ class ChatMessageIn(BaseModel):
         "answer goes on from its saved work; a full check keeps its findings and checks only the "
         "pages not yet done (`mode` and `products` are then the interrupted answer's).",
     )
+    plan_answers: list[ChatPlanAnswerIn] | None = Field(
+        default=None,
+        max_length=MAX_DOUBTS,
+        description="A full check only (#1569): the answers to the plan check's questions "
+        "(`GET /packages/{package_id}/full-check-plan`), kept with the drawing set's page map.",
+    )
+    task: ChatTaskSpecIn | None = Field(
+        default=None,
+        description="#1551: the reviewer's correction of how the app understood the question "
+        "(Edit on the 'Understood as' line); the question's words are sent unchanged in `text`.",
+    )
 
     @model_validator(mode="after")
     def _a_question_or_a_full_check(self) -> ChatMessageIn:
         if self.mode == "chat" and not self.text.strip():
             raise ValueError("text is needed for a chat message")
-        if self.products is not None and len(set(self.products)) != len(self.products):
-            raise ValueError("each product at most once")
+        if self.plan_answers is not None:
+            if self.mode != "full_check":
+                raise ValueError("plan_answers go with a full check only")
+            if len({answer.id for answer in self.plan_answers}) != len(self.plan_answers):
+                raise ValueError("each plan question at most once")
+            if not all(valid_answer(answer.id, answer.answer) for answer in self.plan_answers):
+                raise ValueError("a plan answer is not one of its question's options")
+        if self.products is not None:
+            if len(set(self.products)) != len(self.products):
+                raise ValueError("each product at most once")
+            known = registry()
+            for product in self.products:
+                entry = known.get(product)
+                if entry is None:
+                    raise ValueError(f"{product!r} is not a product (see GET /products)")
+                if not entry.active:
+                    raise ValueError(f"{entry.plural} is not available yet (coming later)")
         return self
 
 
@@ -409,6 +497,48 @@ class ChatFindingAlsoOnOut(BaseModel):
     architect: str | None = None
 
 
+class ChatFindingDimOut(BaseModel):
+    """A numbered dimension label a finding's side was built from (#1558)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str = Field(description="The label's id on its page (D17).")
+    page: int
+    file: str | None = None
+    text: str = Field(description="The value as printed.")
+    inches: str
+    route: Literal["text", "drawn"] = Field(
+        description="text: the drawing's characters; drawn: the vendor's drawn ink, by two OCR "
+        "engines."
+    )
+    side: str | None = Field(default=None, description="architect, vendor, brand or unknown.")
+    box: list[float] = Field(description="x0, y0, x1, y1: PDF points, origin top-left.")
+
+
+class ChatFindingImpactOut(BaseModel):
+    """How much a Wrong item matters (#1569), by code: ordering only, never a status or colour."""
+
+    model_config = ConfigDict(frozen=True)
+
+    score: int = Field(ge=0, le=100, description="Bigger matters more.")
+    rank: int | None = Field(
+        default=None,
+        ge=1,
+        description="Its place among the answer's items of the same status (1 = biggest).",
+    )
+    why: str = Field(description='Plain words: "changes fabrication (overall size); 9 in off".')
+
+
+class ChatFindingLaterOut(BaseModel):
+    """The later answer of the same chat that corrected a finding (#1548)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    message_id: str
+    answer: int | None = Field(default=None, description="That answer's number in the chat.")
+    version: int = Field(description="The finding's version: 1 is the original, 2 the first fix.")
+
+
 class ChatFindingOut(BaseModel):
     """One difference the assistant reported, with code-made evidence and checks."""
 
@@ -418,7 +548,10 @@ class ChatFindingOut(BaseModel):
     page: int
     vs_page: int | None = None
     item: str
-    category: Literal["countertop", "cabinet", "other"]
+    category: str = Field(
+        description="The product the item belongs to (a product id from `GET /products`), or "
+        "`other`."
+    )
     architect: str
     vendor: str
     status: Literal["different", "check", "same"]
@@ -507,6 +640,11 @@ class ChatFindingOut(BaseModel):
         description="Status check (Your decision): what it measures, the best estimate, how "
         "likely it is fine, what to confirm (#1545).",
     )
+    impact: ChatFindingImpactOut | None = Field(
+        default=None,
+        description="Wrong and Your-decision items (#1569): how much it matters, by code; the "
+        "screen, the cloud drawing's numbers and the check report follow this order.",
+    )
     check_reason: (
         Literal["different_extent", "which_governs", "pairing_not_certain", "scaled", "site_verify"]
         | None
@@ -514,6 +652,16 @@ class ChatFindingOut(BaseModel):
         default=None,
         description="Why two printed values that differ still need a person (#1545); without "
         "one, code makes such a finding Wrong.",
+    )
+    dims: dict[str, ChatFindingDimOut] | None = Field(
+        default=None,
+        description="The numbered dimension label each side was built from (#1558), by side "
+        "(architect, vendor); code filled that side's value and box from it.",
+    )
+    updated_in: ChatFindingLaterOut | None = Field(
+        default=None,
+        description="Set when a later message of the chat corrected this finding (#1548): the "
+        'finding shown is its newest version ("updated in a later message").',
     )
     settled: ChatFindingSettledOut | None = Field(
         default=None,
@@ -546,6 +694,32 @@ class ChatFindingDroppedBlock(BaseModel):
     type: Literal["finding_dropped"]
     finding_id: str
     reason: str
+    dropped_in: ChatFindingLaterOut | None = Field(
+        default=None, description="Set when a later message of the chat dropped it (#1548)."
+    )
+
+
+class ChatFindingUpdateOut(BaseModel):
+    """A later message's correction of an earlier answer's finding (#1548), stored in the later
+    answer; the earlier answer is read with its newest version."""
+
+    model_config = ConfigDict(frozen=True)
+
+    ref: str = Field(description='"A1-F5": the chat\'s first answer, finding F5.')
+    message_id: str = Field(description="The earlier answer the finding belongs to.")
+    finding_id: str
+    answer: int = Field(description="The earlier answer's number in the chat.")
+    by_answer: int | None = Field(default=None, description="This answer's number in the chat.")
+    version: int
+    finding: ChatFindingOut = Field(description="The new version (the last one, when dropped).")
+    dropped: str | None = Field(default=None, description="Why it was dropped; null: updated.")
+
+
+class ChatFindingUpdateBlock(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["finding_update"]
+    update: ChatFindingUpdateOut
 
 
 class ChatCoveragePageOut(BaseModel):
@@ -1035,10 +1209,58 @@ class ChatResumeOut(BaseModel):
     mode: Literal["chat", "full_check"] = Field(
         description="How the interrupted answer was asked: Continue asks the same way."
     )
-    products: list[Literal["countertop", "cabinet"]] | None = None
+    products: list[str] | None = None
     findings: int = Field(description="Findings already made: kept, not made again.")
     pages_done: int = Field(description="Pages already accounted for: not opened again.")
     redo: str = Field(description="What Continue will do again, in one or two plain sentences.")
+
+
+class ChatUnderstoodScopeOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["whole_set", "pages", "area"]
+    pages: list[int] = Field(default_factory=list)
+    area: str | None = None
+    label: str = Field(description='In plain words: "page 4", "the whole set".')
+
+
+class ChatUnderstoodOut(BaseModel):
+    """#1551: how the app understood a typed question (its task spec), before any tool ran. Shown
+    as a quiet "Understood as: <label> · Edit" line under the question. A guide for the lead and
+    its helpers only: the reviewer's own words are always sent unchanged."""
+
+    model_config = ConfigDict(frozen=True)
+
+    task: str
+    intent: ChatIntent
+    scope: ChatUnderstoodScopeOut
+    products: list[str] = Field(default_factory=list)
+    what_to_compare: list[str] = Field(default_factory=list)
+    checks_to_run: list[str] = Field(default_factory=list)
+    output_shape: ChatOutputShape
+    assumptions: list[str] = Field(default_factory=list)
+    question_back: str | None = Field(
+        default=None,
+        description="With intent `clarify`: a question back the lead may ask (the lead answers).",
+    )
+    hint: str | None = Field(
+        default=None,
+        description="A short hint for the lead (an unclear question, or an order only a person "
+        "carries out). Code never answers for Claude.",
+    )
+    label: str = Field(description='"Compare outlet heights (architect vs vendor) · page 4 · …".')
+    path: Literal["code", "model", "edited"] = Field(
+        description="How it was made: code rules ($0), the cheap model, or the reviewer's edit."
+    )
+    seconds: float = Field(description="The time it added before the work started.")
+    cost_usd: str = Field(description='What it cost ("0.0003").')
+
+
+class ChatUnderstoodBlock(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["understood"]
+    understood: ChatUnderstoodOut
 
 
 class ChatResumeBlock(BaseModel):
@@ -1100,6 +1322,7 @@ ChatBlock = Annotated[
     | ChatStepBlock
     | ChatFindingBlock
     | ChatFindingDroppedBlock
+    | ChatFindingUpdateBlock
     | ChatCoverageBlock
     | ChatTrustBlock
     | ChatCiteBlock
@@ -1108,7 +1331,8 @@ ChatBlock = Annotated[
     | ChatScopeBlock
     | ChatProgressBlock
     | ChatResumeBlock
-    | ChatResolverBlock,
+    | ChatResolverBlock
+    | ChatUnderstoodBlock,
     Field(discriminator="type"),
 ]
 
@@ -1161,8 +1385,9 @@ class ChatMessageOut(BaseModel):
         description="A typed question (`chat`) or the one-click full check; null on messages "
         "stored before it was kept (#1513).",
     )
-    products: list[Literal["countertop", "cabinet"]] | None = Field(
-        default=None, description="The products the message was about; null on older messages."
+    products: list[str] | None = Field(
+        default=None,
+        description="The products the message was about (product ids); null on older messages.",
     )
     resume: ChatResumeOut | None = Field(
         default=None,
@@ -1172,6 +1397,11 @@ class ChatMessageOut(BaseModel):
         default=None,
         description="What the answer is about (its `scope` block): the whole set, or pages or an "
         "area; null on older answers.",
+    )
+    understood: ChatUnderstoodOut | None = Field(
+        default=None,
+        description="#1551: how the app understood the question before the work (its "
+        "`understood` block); null when it made no task spec, and on older answers.",
     )
 
 
@@ -1183,6 +1413,48 @@ class ChatSummaryOut(BaseModel):
     created_at: datetime
     last_message_at: datetime | None
     turns: int
+
+
+class ChatPlanOptionOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    value: str
+    label: str
+
+
+class ChatPlanDoubtOut(BaseModel):
+    """One question code asks before a full check, where it is unsure of the page map (#1569)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    kind: Literal["prototype", "role", "pair", "round", "heading"]
+    page: int
+    question: str
+    options: list[ChatPlanOptionOut]
+    picture_url: str | None = Field(
+        default=None, description="The page's picture (drawings only, 100 dpi), when made."
+    )
+    box: list[float] | None = Field(
+        default=None,
+        description="The drawing it is about, as fractions of the picture (x0, y0, x1, y1).",
+    )
+
+
+class ChatFullCheckPlanOut(BaseModel):
+    """`GET /chats/{chat_id}/full-check-plan` (#1569): code's plan and its 0-3 questions."""
+
+    model_config = ConfigDict(frozen=True)
+
+    state: Literal["ready", "building", "none"] = Field(
+        description="ready: the page map is read; building: ask again in a moment; none: no page "
+        "map can be made (no PDFs): run without questions."
+    )
+    summary: str | None = Field(
+        default=None, description='"60 pages · 22 pairs · rounds 1-2 · 3 general pages".'
+    )
+    doubts: list[ChatPlanDoubtOut] = Field(default_factory=list)
+    more: int = Field(default=0, description="Further unsure places, compared as read.")
 
 
 class ChatListOut(BaseModel):

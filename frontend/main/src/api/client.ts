@@ -442,7 +442,7 @@ async function send<T>(path: string, body: unknown): Promise<T> {
 export function createPackage(
   projectId: string,
   vendor: string | null,
-  productType: components['schemas']['ProductType'],
+  productType: string,
 ) {
   type Body =
     paths['/api/v1/projects/{project_id}/packages']['post']['requestBody']['content']['application/json'];
@@ -459,6 +459,16 @@ export function createPackage(
  * one check for, with the words to show. The upload screen's dropdown is filled from this so it
  * never offers a product nothing would check. Empty until a rulebook is published.
  */
+/**
+ * Every product GV Review knows (#1547): the product registry, in its order, with whether each can be
+ * picked now (inactive ones are shown greyed, "coming later") and how many published checks it has.
+ * The chat's chips, "+" menu and findings' groups and the upload picker are built from this.
+ */
+export function listProducts() {
+  type Products = paths['/api/v1/products']['get']['responses']['200']['content']['application/json'];
+  return request<Products>('/products');
+}
+
 export function listProductTypes() {
   type Choices =
     paths['/api/v1/product-types']['get']['responses']['200']['content']['application/json'];

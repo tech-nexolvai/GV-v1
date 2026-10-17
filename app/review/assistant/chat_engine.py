@@ -50,6 +50,14 @@ second reads still to make, the third reads (each started as its second read com
 critic run in one bounded pool; the cloud drawing's slow copy of the PDF is made in a thread from
 the start, and the drawing and the report are written together at the end.
 
+**Two helpers per page group (#1569).** With `drawn_helpers` on, each code-planned job gets a second
+helper on Sonnet at low effort whose brief covers only what is drawn and written (notes against the
+drawing, doors and drawers, hardware, extent, the brand prototype, finish tags); the first keeps the
+numbers. The drawn-things helpers queue after the numbers ones (at most `max_parallel_agents` run at
+once) and each stays within its own money cap. When both helpers of a group have reported, code
+folds their duplicates by page and item (`full_check_lenses`) before their second reads start; a
+disagreement goes to the lead to verify first.
+
 **Timings.** Every phase's seconds and cost (`chat_timings.py`) go in the trust block's `timings`
 and the log.
 
@@ -79,6 +87,13 @@ from app.review.assistant.agent import (
     billed_input_tokens,
     estimate_micros,
     prompt_tokens_upper,
+)
+from app.review.assistant.chat_context import (
+    NEAR_SHARE,
+    context_edits,
+    context_keep_turns,
+    context_tokens,
+    history_summary,
 )
 from app.review.assistant.chat_findings import (
     COVERAGE_CHECK_PREFIX,
@@ -174,11 +189,14 @@ from app.review.assistant.chat_trust import (
 )
 from app.review.assistant.chat_unknowns import refused_from_diff, unknown_records
 from app.review.assistant.decision_resolver import resolve_answer
+from app.review.assistant.dim_index import labels_for
 from app.review.assistant.full_check_brief import (
     checklist_gaps,
     checklist_send_back,
     helper_brief,
+    with_label_gaps,
 )
+from app.review.assistant.full_check_lenses import Fold, lens_folds
 from app.review.assistant.full_check_plan import (
     FanOutPlan,
     HelperJob,
@@ -186,9 +204,11 @@ from app.review.assistant.full_check_plan import (
     plan_jobs,
     rules_summary,
     wait_for_page_map,
+    with_lenses,
 )
 from app.review.assistant.ledger import LEDGER_TOOL_NAMES, ReadingLedger, recorded_results_check
 from app.review.assistant.sandbox import SET_PACK, SKILLS, UPLOADS, SandboxRefused
+from app.review.assistant.sharpen import helper_lines
 from app.runs.rates import ModelRates, call_cost_micros
 
 __all__ = [
@@ -218,9 +238,11 @@ _log = logging.getLogger(__name__)
 #: check_reason, #1545. chat-v12: read_under_markup for the lead and the helpers, and its prompt
 #: lines, #1548. chat-v13: the prompt and tool audit, #1559: one vocabulary, every tool says when
 #: to use it, what it returns and one example, every schema field described, the box units said
-#: one way, the lead prompt without its tool catalogue.) Only the request's prefix changes; a
-#: chat's stored messages replay unchanged.
-HARNESS_ID: Final = "chat-v13"
+#: one way, the lead prompt without its tool catalogue. chat-v14: remember, the corrections of an
+#: earlier answer's finding, and server-side clearing of old tool results, #1548. chat-v15: numbered
+#: dimension labels: zoom marks and guides, architect_dim / vendor_dim / dim, the helper brief's
+#: label rule, #1558.) Only the request's prefix changes; a chat's stored messages replay unchanged.
+HARNESS_ID: Final = "chat-v15"
 #: Helpers that may run at once, at most, whatever the setting says.
 MAX_PARALLEL_AGENTS_LIMIT: Final = 12
 #: Helpers one lead turn may start. More than run at once wait for a free place in the same turn:
@@ -372,6 +394,13 @@ class EngineSettings:
     """`chat`, or `full_check` (CONTRACT4): GV's recorded differences are made findings at the
     start, and code makes the cloud drawing and the check report at the end."""
     products: tuple[str, ...] = ()
+    drawn_helpers: bool = False
+    """A full check's second, drawn-things helper per page group (#1569,
+    `GV_ASSISTANT_DRAWN_HELPERS`)."""
+    context_tokens: int = field(default_factory=context_tokens)
+    """The prompt size at which old tool results are cleared (`chat_context`, #1548)."""
+    context_keep_turns: int = field(default_factory=context_keep_turns)
+    """The turns kept whole when clearing (this question and the ones before it)."""
 
 
 @dataclass(slots=True)
@@ -581,6 +610,15 @@ class _Agent:
     number: int = 0
     pages: tuple[int, ...] | None = None
     """A code-planned helper's pages (#1512): its footer lists them from the page map."""
+    lens: str = "both"
+    """A code-planned helper's lens (#1569): `both`, `numbers` or `drawn`."""
+    effort: str | None = None
+    """Its own effort (a drawn-things helper: low), else the full check's helper effort."""
+    cap_micros: int | None = None
+    """Its own money cap (a drawn-things helper), besides the helpers' share."""
+    spent: int = 0
+    partner: _Agent | None = None
+    """The other lens's helper on the same pages."""
 
 
 @dataclass(slots=True)
@@ -690,6 +728,20 @@ class ChatEngine:
         self._trust_index: int | None = None
         #: A code-planned helper's checklist pages still open after its report (#1515).
         self._checklist_gaps: dict[int, dict[int, str]] = {}
+        #: Two-lens helpers (#1569): those reported whose partner has not yet (their findings'
+        #: second reads wait for the fold), and the folds where the two disagreed.
+        self._lens_reported: set[int] = set()
+        self._lens_waiting: set[str] = set()
+        self._lens_disagree: list[Fold] = []
+        # A long chat (#1548): clearing old thinking too, once the prompt neared the threshold;
+        # and whether the history was replaced by code's summary (no context editing).
+        self._context_near = False
+        self.summarised = False
+        #: This answer's number in its chat (#1548): a correction of an earlier finding names it.
+        self.answer_number = 1
+        #: The question's task spec (`sharpen`, #1551), set before `run()`; its lines go into every
+        #: helper's brief.
+        self.task_spec: dict[str, Any] | None = None
 
     # ---- the screen ------------------------------------------------------------------------------
 
@@ -867,6 +919,7 @@ class ChatEngine:
         max_tokens: int,
         prompt_id: str,
         display: Callable[[], _Display] | None,
+        context_management: Mapping[str, Any] | None = None,
     ) -> _Reply:
         """One call, streamed, asked once more after a provider failure worth retrying. Raises
         `ProviderFailure` or `_Cancelled`."""
@@ -891,6 +944,7 @@ class ChatEngine:
                 messages=inlined,
                 final=final,
                 max_tokens=max_tokens,
+                context_management=context_management,
             )
             started = monotonic_ns()
             shown = display() if display is not None else None
@@ -1085,6 +1139,8 @@ class ChatEngine:
         if name == "read_under_markup":
             return tools.read_under_markup(raw, step, by)
         if not helper:
+            if name == "remember":
+                return tools.remember(raw, step)
             if name == "present_files":
                 return tools.present_files(raw, step)
             if name == "TaskCreate":
@@ -1264,6 +1320,38 @@ class ChatEngine:
             checked.setdefault(key, None)
         return checked
 
+    def _checked_earlier(self, ref: str, finding: dict[str, Any]) -> dict[str, Any]:
+        """A new version of an earlier answer's finding with code's checks (#1548). Its second
+        read is kept while what it read is unchanged; no new AI read is made for it."""
+        before = self.book.earlier[ref]["finding"]
+        kept = (before.get("checks") or {}).get("second_read") or "not_run"
+        same = _read_key(before) == _read_key(finding)
+        recorded = self._recorded_checks() if finding.get("source") == "rules" else None
+        checked = apply_checks(
+            finding,
+            self.book.pdf_paths(),
+            recorded,
+            second_read=kept if same else "not_run",
+        )
+        if not same:
+            checked["second_read_values"] = None
+        return checked
+
+    def _show_correction(self, update: dict[str, Any]) -> None:
+        """A correction of an earlier answer's finding: its block (replaced in place when the same
+        finding is corrected again) and the `finding_update` event."""
+        key = f"update:{update['ref']}"
+        block = {"type": "finding_update", "update": update}
+        with self._lock:
+            index = self._positions.get(key)
+            if index is None:
+                self.blocks.append(block)
+                index = len(self.blocks) - 1
+                self._positions[key] = index
+            else:
+                self.blocks[index] = block
+        self.emit("finding_update", {"index": index, "update": json.loads(json.dumps(update))})
+
     def _show_finding(self, finding: dict[str, Any]) -> None:
         """A new or changed finding: its block (replaced in place) and the `finding` event."""
         with self._lock:
@@ -1311,6 +1399,22 @@ class ChatEngine:
                 finding, notes = book.report(raw, by)
                 self._show_finding(finding)
                 text = f"Finding {finding['id']} recorded."
+            elif name == "update_finding" and (ref := book.earlier_ref(raw)) is not None:
+                ref, changed, notes = book.correct(raw)
+                update = book.store_correction(
+                    ref, self._checked_earlier(ref, changed), None, self.answer_number
+                )
+                self._show_correction(update)
+                text = (
+                    f"Finding {ref} updated: version {update['version']}, shown in answer "
+                    f"{update['answer']} as updated in a later message."
+                )
+            elif name == "drop_finding" and (ref := book.earlier_ref(raw)) is not None:
+                ref, reason = book.drop_earlier(raw)
+                notes = []
+                update = book.store_correction(ref, None, reason, self.answer_number)
+                self._show_correction(update)
+                text = f"Finding {ref} dropped from answer {update['answer']}."
             elif name == "update_finding":
                 finding, notes = book.update(raw)
                 self._show_finding(finding)
@@ -2438,6 +2542,9 @@ class ChatEngine:
             file_name=f"{UPLOADS}/{job.file}",
             page_map=page_map,
             review_document=document,
+            lens=job.lens,
+            labels=self._dim_labels(job.file, job.pages, read_now=False),
+            products=self.settings.products,
         )
         overview = (
             f"view your pages' overview pictures, all in one reply ({pictures})"
@@ -2445,11 +2552,18 @@ class ChatEngine:
             else "zoom on each of your whole pages at 72 dpi, all in one call (the page pictures "
             "are still being made)"
         )
+        others = (
+            "one other has the same pages for the "
+            + ("drawn things" if job.lens == "numbers" else "numbers")
+            + ", the rest have the other pages"
+            if job.partner is not None
+            else "the others have the other pages"
+        )
         lines = [
             brief,
             (
-                f"START: you are one of {helpers} helpers; the others have the other pages. "
-                f"First {overview}; then zoom only to read values, every crop you need in one call."
+                f"START: you are one of {helpers} helpers; {others}. First {overview}; then zoom "
+                "only to read what you compare, every crop you need in one call."
             ),
             f"PRODUCTS: {products}; a brand prototype's differences are their own group.",
         ]
@@ -2461,6 +2575,35 @@ class ChatEngine:
                 f"GV's rules for {products} (summary; all of them in {SKILLS}/rules.md):\n{rules}"
             )
         return "\n\n".join(lines)
+
+    def _dim_labels(
+        self, file: str | None, pages: Sequence[int], *, read_now: bool = True
+    ) -> dict[int, list[dict[str, Any]] | None]:
+        """The numbered dimension labels on these pages of `file` (#1558)."""
+        if file is None:
+            return {}
+        labels = labels_for(self.tools.workspace.set_pack, self.tools.workspace.uploads)
+        return {page: labels.on_page(file, page, read_now=read_now) for page in pages}
+
+    def _label_gaps(
+        self, report: str, pages: Sequence[int], gaps: dict[int, str]
+    ) -> dict[int, str]:
+        """A helper's checklist gaps with the vendor labels nobody handled (#1558): on the pages
+        whose labels are known now (the set pack's, or read for a zoom), never waiting to read
+        a page."""
+        try:
+            return with_label_gaps(
+                gaps,
+                report,
+                pages,
+                self._dim_labels(self.book.main_file, pages, read_now=False),
+                self.book.live(),
+                [entry.as_dict() for entry in self.reading_ledger.strings],
+                [entry.as_dict() for entry in self.reading_ledger.readings],
+            )
+        except Exception:  # noqa: BLE001 - the checklist without labels still stands
+            _log.warning("assistant chat label gaps could not be counted")
+            return gaps
 
     def _merge_seeds(self, by: str) -> None:
         """A helper's finding for a difference GV Review recorded (same `record_id`) fills in the
@@ -2494,12 +2637,47 @@ class ChatEngine:
 
     def _helper_done(self, agent: _Agent, entry: Mapping[str, Any]) -> None:
         """As each code-planned helper reports: its readings of recorded differences folded in,
-        and the second reads of the differences found so far started."""
+        and the second reads of the differences found so far started. A two-lens helper's
+        findings wait for its partner: then their duplicates are folded first (#1569)."""
         del entry
         self._merge_seeds(f"helper:{agent.number}")
+        if agent.partner is not None:
+            with self._lock:
+                self._lens_reported.add(agent.number)
+                both = agent.partner.number in self._lens_reported
+                if not both:
+                    self._lens_waiting.add(f"helper:{agent.number}")
+            if both:
+                self._fold_lenses(agent)
+        with self._lock:
+            waiting = set(self._lens_waiting)
         self._queue_second_reads(
-            [f for f in self.book.live() if f.get("status") in ("different", "check")]
+            [
+                f
+                for f in self.book.live()
+                if f.get("status") in ("different", "check") and f.get("created_by") not in waiting
+            ]
         )
+
+    def _fold_lenses(self, agent: _Agent) -> None:
+        """One page group's two helpers, both reported: each item and page kept once
+        (`full_check_lenses.lens_folds`); a disagreement is kept for the lead."""
+        partner = agent.partner
+        assert partner is not None
+        numbers, drawn = (agent, partner) if agent.lens == "numbers" else (partner, agent)
+        with self._lock:
+            self._lens_waiting.discard(f"helper:{partner.number}")
+        folds = lens_folds(
+            self.book.by(f"helper:{numbers.number}"), self.book.by(f"helper:{drawn.number}")
+        )
+        for fold in folds:
+            with self.finding_lock:
+                if not self.book.absorb(fold.drop):
+                    continue
+            self._show_dropped(fold.drop, fold.reason)
+            if fold.disagree:
+                with self._lock:
+                    self._lens_disagree.append(fold)
 
     def _fan_out(self) -> bool:
         """A full check's helpers, planned by code from the set pack's page map and run at once;
@@ -2521,6 +2699,8 @@ class ChatEngine:
             warm_pool.shutdown(wait=True)
         if plan is None or self.cancel.is_set():
             return False
+        if self.settings.drawn_helpers:
+            plan = with_lenses(plan)
         self._plan = plan
         if plan.skipped:
             try:
@@ -2542,11 +2722,17 @@ class ChatEngine:
                 f"plan-{job.number}",
                 job.description,
                 self._job_brief(job, rules, len(plan.jobs), pictures, page_map),
-                model,
+                BY_SHORT["sonnet"] if job.lens == "drawn" else model,
                 pages=job.pages,
+                lens=job.lens,
+                effort="low" if job.lens == "drawn" else None,
+                cap_micros=job.cap_micros,
             )
             for job in plan.jobs
         ]
+        by_job = {job.number: agent for job, agent in zip(plan.jobs, agents, strict=True)}
+        for job, agent in zip(plan.jobs, agents, strict=True):
+            agent.partner = None if job.partner is None else by_job.get(job.partner)
         entries = self._launch(agents, on_done=self._helper_done)
         # The rest of the helpers' findings (the right items too), now every helper is done.
         self._queue_second_reads(self.book.live())
@@ -2582,6 +2768,17 @@ class ChatEngine:
         if gap_lines:
             parts.append(
                 f"Checklist gaps, verify these first ({len(gap_lines)}):\n" + "\n".join(gap_lines)
+            )
+        with self._lock:
+            disagree = list(self._lens_disagree)
+        if disagree:
+            parts.append(
+                f"The two helpers of a page disagree, verify these first ({len(disagree)}):\n"
+                + "\n".join(
+                    f"- {fold.keep} page {fold.page}: {fold.item}: numbers helper "
+                    f"{fold.statuses[0]}, drawn-things helper {fold.statuses[1]}"
+                    for fold in disagree
+                )
             )
         main = self.book.main_file
         backed: list[str] = []
@@ -2651,6 +2848,9 @@ class ChatEngine:
             return lambda: cut
         name = str(call.get("name"))
         by = f"helper:{agent.number}"
+        if name == "set_coverage" and agent.lens == "drawn":
+            skipped = self._not_run(call, "the numbers helper records these pages' coverage")
+            return lambda: skipped
         if name in HELPER_FINDING_TOOL_NAMES:
             return lambda: self._result(call, self._finding_tool(name, call.get("input"), by))
         if name in LEDGER_TOOL_NAMES:
@@ -2677,7 +2877,7 @@ class ChatEngine:
         `FULL_CHECK_HELPER_CALLS` reading tool calls."""
         model = agent.model
         full_check = self.settings.mode == "full_check"
-        effort = (
+        effort = agent.effort or (
             full_check_helper_effort(self.settings.effort)
             if full_check
             else helper_effort(self.settings.effort)
@@ -2695,7 +2895,12 @@ class ChatEngine:
             _log.warning("assistant chat helper footer could not be made")
             footer = ""
         messages: list[dict[str, Any]] = [
-            {"role": "user", "content": [{"type": "text", "text": agent.prompt + footer}]}
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": agent.prompt + helper_lines(self.task_spec) + footer}
+                ],
+            }
         ]
         turns = reading = 0
         budget = FULL_CHECK_HELPER_CALLS
@@ -2730,6 +2935,10 @@ class ChatEngine:
                     wrap, why = "turn_limit", "you have used your tool calls"
                 elif not self._fits(estimate):
                     wrap, why = "cost_cap", "this message is near its money cap"
+                elif agent.cap_micros is not None and agent.spent + (estimate or 0) > (
+                    agent.cap_micros
+                ):
+                    wrap, why = "cost_cap", "you have used your part of the money"
                 elif not self._hold(share, estimate):
                     wrap, why = "cost_cap", "the helpers have used their share of the money"
                 if why is not None:
@@ -2760,6 +2969,7 @@ class ChatEngine:
                 return _report_from_steps(entry["steps"], str(failure)), False, "error"
             finally:
                 self._release(share, held)
+            agent.spent += self._price(model, *self._weighted(model, reply.usage)) or 0
             cached = sum(
                 int(reply.usage.get(key) or 0)
                 for key in (
@@ -2802,8 +3012,10 @@ class ChatEngine:
             if agent.pages:
                 # A code-planned helper's checklist (#1515): sent back once to finish it while it
                 # has turns left; what is still open goes to the lead.
-                gaps = checklist_gaps(report, agent.pages)
-                note = checklist_send_back(gaps)
+                gaps = checklist_gaps(report, agent.pages, agent.lens)
+                if agent.lens != "drawn":  # the dimension labels are the numbers' (#1558)
+                    gaps = self._label_gaps(report, agent.pages, gaps)
+                note = checklist_send_back(gaps, agent.lens)
                 if (
                     note is not None
                     and not sent_back
@@ -2930,6 +3142,54 @@ class ChatEngine:
             self.blocks[index] = {"type": "trust", "trust": trust}
         self.emit("trust", {"index": index, "trust": json.loads(json.dumps(trust))})
 
+    # ---- room in a long chat (#1548) ---------------------------------------------------------------
+
+    @property
+    def clears_context(self) -> bool:
+        """Whether the provider clears old tool results server-side (Anthropic's context editing);
+        OpenRouter's route sends no beta."""
+        return self.provider.name == "anthropic"
+
+    def _context_for(
+        self, messages: Sequence[Mapping[str, Any]], prompt_tokens: int
+    ) -> dict[str, Any] | None:
+        """The lead call's `context_management` (`chat_context.context_edits`): clearing old tool
+        results past the threshold, and old thinking too once the prompt is near it (from then on,
+        for the rest of the answer, so the request stays the same call to call)."""
+        if not self.clears_context:
+            return None
+        threshold = self.settings.context_tokens
+        if prompt_tokens >= threshold * NEAR_SHARE:
+            self._context_near = True
+        return context_edits(
+            messages,
+            threshold=threshold,
+            keep_turns=self.settings.context_keep_turns,
+            near=self._context_near,
+        )
+
+    def _room_for_history(self) -> None:
+        """Where the provider cannot clear old turns, a history that alone would pass the
+        threshold is replaced by code's summary of it (simple compaction: nothing older is
+        replayed, so no thinking is sent outside the conversation that made it)."""
+        if self.clears_context or not self.history:
+            return
+        body = self._body(
+            model=self.settings.model,
+            thinking=thinking_config(self.settings.model, self.settings.thinking),
+            system=LEAD_SYSTEM_PROMPT,
+            tools=LEAD_TOOLS,
+            messages=self.history,
+            final=False,
+            max_tokens=self._lead_max_tokens,
+        )
+        if prompt_tokens_upper(body, picture_sizes(self.history)) < self.settings.context_tokens:
+            return
+        summary = history_summary(self.history)
+        self.history = []
+        self.summarised = True
+        self.user_content = [{"type": "text", "text": summary}, *self.user_content]
+
     def _run(self) -> MessageOutcome:
         settings = self.settings
         model = settings.model
@@ -2944,6 +3204,7 @@ class ChatEngine:
         cap_hit: str | None = None
         text = ""
         guard_sent = False
+        self._room_for_history()
         if settings.mode == "full_check":
             self._start_full_check()
         # The scope as asked, at once (the screen hides the whole-set panels for a narrow one).
@@ -2995,6 +3256,7 @@ class ChatEngine:
                         max_tokens=max_tokens,
                         prompt_id=self.lead_prompt_id,
                         display=self._new_attempt,
+                        context_management=self._context_for(messages, cached or upper),
                     )
             except _Cancelled:
                 stopped = "cancelled"

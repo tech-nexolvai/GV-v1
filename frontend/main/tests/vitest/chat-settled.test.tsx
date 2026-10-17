@@ -8,10 +8,11 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 
+import { ResultNumbers } from '@/components/chat/chat-full-check';
 import { AssistantMessage } from '@/components/chat/chat-message';
 import type { ChatFinding, ChatResolver } from '@/lib/chat-api';
 import { applyChatEvent, evidenceOf, type ViewMessage } from '@/lib/chat-messages';
-import { alsoOnWords } from '@/lib/chat-findings';
+import { alsoOnWords, type FindingCounts } from '@/lib/chat-findings';
 import { finding, OPUS } from './fixtures/chat';
 
 const RESOLVER: ChatResolver = {
@@ -91,5 +92,15 @@ describe('fewer decisions (#1554)', () => {
     expect(live.resolver).toEqual(RESOLVER);
     expect(alsoOnWords({ also_on: [{ finding_id: 'a', page: 3 }, { finding_id: 'b', page: 3 }, { finding_id: 'c', page: 9 }] })).toBe('Also on p.3, p.9');
     expect(alsoOnWords({ also_on: null })).toBe('');
+  });
+
+  it('lets the stat card labels wrap on a phone instead of cutting "Your decision" short', () => {
+    render(<ResultNumbers counts={{ different: 2, check: 1, same: 0, not_compared: 0, total: 3 } as FindingCounts} coverage={null} accuracy={null} onPick={() => {}} />);
+    const labels = [...document.querySelectorAll<HTMLElement>('[data-slot="chat-kpi-label"]')];
+    expect(labels.map((label) => label.textContent)).toEqual(['Wrong', 'Your decision', 'Right']);
+    for (const label of labels) {
+      expect(label.querySelector('.truncate')).toBeNull();
+      expect(label.className).toContain('min-h-[2.5em]');
+    }
   });
 });

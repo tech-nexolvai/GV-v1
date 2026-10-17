@@ -7,7 +7,7 @@
  * message, which then replaces what was built live: a reload and a live answer end up identical.
  */
 
-import type { ChatAccuracy, ChatAgent, ChatBlock, ChatCite, ChatCoverage, ChatEffort, ChatEvent, ChatFile, ChatFinding, ChatMessage, ChatMode, ChatModel, ChatProduct, ChatProgress, ChatResolver, ChatResume, ChatScope, ChatStep, ChatStopped, ChatSummary, ChatTask, ChatTrust, ChatUnknown } from '@/lib/chat-api';
+import type { ChatAccuracy, ChatAgent, ChatBlock, ChatCite, ChatCoverage, ChatEffort, ChatEvent, ChatFile, ChatFinding, ChatFindingUpdate, ChatMessage, ChatMode, ChatModel, ChatProduct, ChatProgress, ChatResolver, ChatResume, ChatScope, ChatStep, ChatStopped, ChatSummary, ChatTask, ChatTrust, ChatUnderstood, ChatUnknown } from '@/lib/chat-api';
 import { EFFORT_WORDS } from '@/lib/chat-settings';
 
 /** A helper agent while its Agent step runs: `running` until its `agent_end`. */
@@ -66,6 +66,10 @@ export interface ViewMessage {
   resolver?: ChatResolver | null;
   /** With `stopped: "interrupted"`: how Continue picks up (#1514). */
   resume?: ChatResume | null;
+  /** #1548: the earlier answers' findings this answer corrected (newest per ref). */
+  corrections?: ChatFindingUpdate[];
+  /** #1551: how the app understood the question before the work; shown under the question. */
+  understood?: ChatUnderstood | null;
   cost_usd: string | null;
   stopped: ChatStopped | null;
   error: string | null;
@@ -93,6 +97,38 @@ export function withFinding(findings: readonly ChatFinding[], finding: ChatFindi
   return findings.some((known) => known.id === finding.id)
     ? findings.map((known) => (known.id === finding.id ? finding : known))
     : [...findings, finding];
+}
+
+/** A correction added, or put in place of its earlier version (same ref). */
+export function withCorrection(corrections: readonly ChatFindingUpdate[], update: ChatFindingUpdate): ChatFindingUpdate[] {
+  return corrections.some((known) => known.ref === update.ref)
+    ? corrections.map((known) => (known.ref === update.ref ? update : known))
+    : [...corrections, update];
+}
+
+/**
+ * #1548: a later message corrected a finding of an earlier answer. That answer shows the newest
+ * version ("updated in a later message"), or loses it when it was dropped. The server reads it the
+ * same way on reload; this keeps the screen in step while the later answer streams.
+ */
+export function applyCorrection(messages: readonly ViewMessage[], update: ChatFindingUpdate, laterId: string | null = null): ViewMessage[] {
+  return messages.map((message) => {
+    if (message.id !== update.message_id || !message.findings) return message;
+    if (update.dropped) return { ...message, findings: message.findings.filter((finding) => finding.id !== update.finding_id) };
+    const newest: ChatFinding = {
+      ...update.finding,
+      id: update.finding_id,
+      updated_in: { message_id: laterId ?? '', answer: update.by_answer ?? null, version: update.version },
+    };
+    return { ...message, findings: message.findings.map((finding) => (finding.id === update.finding_id ? newest : finding)) };
+  });
+}
+
+/** The corrections a saved answer made (#1548), newest per ref. */
+export function correctionsOf(blocks: readonly ChatBlock[]): ChatFindingUpdate[] {
+  let corrections: ChatFindingUpdate[] = [];
+  for (const block of blocks) if (block.type === 'finding_update' && block.update?.ref) corrections = withCorrection(corrections, block.update);
+  return corrections;
 }
 
 /** A cite added, or put in place of its earlier version (same id). */
@@ -133,6 +169,12 @@ function scopeOf(blocks: readonly ChatBlock[]): ChatScope | null {
   let scope: ChatScope | null = null;
   for (const block of blocks) if (block.type === 'scope' && block.scope) scope = block.scope;
   return scope;
+}
+
+/** The `understood` block of an answer (#1551), or null. */
+export function understoodOf(blocks: readonly ChatBlock[]): ChatUnderstood | null {
+  for (const block of blocks) if (block.type === 'understood' && block.understood) return block.understood;
+  return null;
 }
 
 /** The `resume` block of an interrupted answer (#1514), or null. */
@@ -180,6 +222,8 @@ export function fromSaved(message: ChatMessage): ViewMessage {
     progress,
     resolver,
     resume: message.resume ?? resumeOf(saved),
+    corrections: correctionsOf(saved),
+    understood: message.understood ?? understoodOf(saved),
     cost_usd: message.cost_usd ?? null,
     stopped: message.stopped ?? null,
     error: message.error ?? null,
@@ -309,10 +353,14 @@ export function applyChatEvent(message: ViewMessage, event: ChatEvent): ViewMess
       return event.data.finding?.id ? { ...message, findings: withFinding(message.findings ?? [], event.data.finding) } : message;
     case 'finding_dropped':
       return { ...message, findings: (message.findings ?? []).filter((finding) => finding.id !== event.data.finding_id) };
+    case 'finding_update':
+      return event.data.update?.ref ? { ...message, corrections: withCorrection(message.corrections ?? [], event.data.update) } : message;
     case 'coverage':
       return { ...message, coverage: event.data.coverage ?? message.coverage ?? null };
     case 'scope':
       return event.data.scope ? { ...message, scope: event.data.scope } : message;
+    case 'understood':
+      return event.data.understood ? { ...message, understood: event.data.understood } : message;
     case 'progress':
       return { ...message, progress: event.data.progress ?? message.progress ?? null };
     case 'trust':
@@ -339,7 +387,9 @@ export function applyChatEvent(message: ViewMessage, event: ChatEvent): ViewMess
         trust: stored.trust ?? message.trust ?? null,
         mode: stored.mode ?? message.mode ?? null,
         scope: stored.scope ?? message.scope ?? null,
+        understood: stored.understood ?? message.understood ?? null,
         cites: stored.cites?.length ? stored.cites : message.cites ?? [],
+        corrections: stored.corrections?.length ? stored.corrections : message.corrections ?? [],
         accuracy: stored.accuracy ?? message.accuracy ?? null,
         unknowns: stored.unknowns?.length ? stored.unknowns : message.unknowns ?? [],
         progress: stored.progress ?? message.progress ?? null,
@@ -454,6 +504,10 @@ function phraseFor(step: ChatStep): { key: string; phrase: Phrase } {
       return { key: 'tasks', phrase: { once: 'updated the task list' } };
     case 'Agent':
       return { key: 'agents', phrase: { one: 'ran an agent', many: (n) => `ran ${n} agents` } };
+    case 'read_under_markup':
+      return { key: 'under', phrase: { one: "read under GV's markup", many: (n) => `read under GV's markup ${n} times` } };
+    case 'remember':
+      return { key: 'remember', phrase: { one: 'kept a note for this set', many: (n) => `kept ${n} notes for this set` } };
     default:
       return { key: 'results', phrase: { once: 'read the review results' } };
   }
@@ -538,7 +592,7 @@ export function previousQuestion(messages: readonly Pick<ViewMessage, 'key' | 'r
 /** The three questions an empty chat offers (the contract's words). */
 export const CHAT_STARTERS: readonly string[] = [
   'Which items are wrong comparing the vendor and architect drawings?',
-  'Summarise every countertop and cabinet issue',
+  'Summarise every issue, product by product',
   'Make me a marked-up PDF of the problems',
 ];
 

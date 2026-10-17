@@ -24,6 +24,10 @@ anything else is a 404 that says nothing. The routes, under `/api/v1`:
 - `POST /chats/{chat_id}/messages/{message_id}/cloud-drawing` (#1521): the cloud drawing and the
   check report made again by code from the current decisions (only agreed items clouded); a new
   pair of files each time, the older ones kept.
+- `GET  /packages/{package_id}/full-check-plan` (#1569): before a paid full check, code's plan in
+  one line and 0-3 questions where it is unsure of the page map (whose drawing, which round, which
+  architect page); the answers go with the full check (`plan_answers`). `$0`: no AI call. `GET
+  /packages/{package_id}/plan-pages/{page}`: the page's picture for a question.
 
 The message runs in its own thread (`chat_service.run_message`) until it ends or Stop is pressed,
 like claude.ai: the browser going away (a closed tab, a reload) does not stop it, and it is stored
@@ -55,6 +59,7 @@ from typing import Annotated, Any, Final
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi import Path as Path_
 from fastapi.responses import FileResponse, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from sqlalchemy import select
@@ -83,10 +88,12 @@ from app.review.assistant.chat_contract import (
     ChatFileOut,
     ChatFindingDecisionIn,
     ChatFindingDecisionOut,
+    ChatFullCheckPlanOut,
     ChatListOut,
     ChatMessageIn,
     ChatOut,
 )
+from app.review.assistant.chat_corrections import corrections_by_answer, with_corrections
 from app.review.assistant.chat_decisions import (
     decided_findings,
     decided_summary,
@@ -98,6 +105,7 @@ from app.review.assistant.chat_decisions import (
 from app.review.assistant.chat_engine import cost_text
 from app.review.assistant.chat_feed import MessageFeed
 from app.review.assistant.chat_findings import live_findings, make_markup_file
+from app.review.assistant.chat_memory import add_note, decision_note
 from app.review.assistant.chat_provider import (
     AnthropicSdkProvider,
     ChatProvider,
@@ -118,7 +126,9 @@ from app.review.assistant.chat_service import (
     SkillBuilder,
     UploadSource,
     default_skill_builder,
+    full_check_plan,
     package_spent_micros,
+    plan_page_picture,
     recover_interrupted,
     run_message,
     shutdown_chats,
@@ -284,6 +294,10 @@ class ChatRuntime:
     open_sandbox: Callable[[ChatWorkspace], Sandbox | None]
     skill_builder: Callable[[], SkillBuilder | None]
     rates: Callable[[str], ModelRates | None]
+    sharpen: bool = False
+    """#1551: sharpen a question no code rule settles with the cheap model (a deployment turns it
+    on; a test runtime keeps code rules only unless it asks)."""
+    sharpen_deadline_seconds: float = 1.5
 
 
 def _secret(value: Any) -> str | None:
@@ -316,6 +330,8 @@ def chat_runtime(request: Request) -> ChatRuntime:
         open_sandbox=sandbox,
         skill_builder=default_skill_builder,
         rates=_rates,
+        sharpen=settings.assistant_sharpen,
+        sharpen_deadline_seconds=settings.assistant_sharpen_deadline_seconds,
     )
 
 
@@ -459,13 +475,17 @@ def read_chat(
     first = first_question(messages)
     run = registry.get(chat_id)
     decisions = latest_decisions(session, chat_id)
+    corrections = corrections_by_answer(messages)
     return ChatOut(
         id=chat.id,
         package_id=package.id,
         package_name=package_name(package),
         title=chat.title or (chat_title(first) if first else None),
         created_at=chat.created_at,
-        messages=[message_out(message, files, decisions.get(message.id)) for message in messages],
+        messages=[
+            message_out(message, files, decisions.get(message.id), corrections.get(str(message.id)))
+            for message in messages
+        ],
         running=run is not None,
         running_message_id=None if run is None else run.message_id,
     )
@@ -533,10 +553,73 @@ def read_picture(
     return FileResponse(path, media_type="image/png")
 
 
+# ---- the plan check before a full check (#1569) --------------------------------------------------
+
+
+@router.get(
+    "/packages/{package_id}/full-check-plan",
+    response_model=ChatFullCheckPlanOut,
+    summary="Code's plan for a full check and its 0-3 questions (no AI call)",
+    responses={404: {"description": "No such drawing set (or no access)."}},
+)
+def get_full_check_plan(
+    request: Request,
+    package_id: UUID,
+    principal: Authenticated,
+    session: Annotated[Session, Depends(get_session)],
+) -> ChatFullCheckPlanOut:
+    """Copies the set's latest PDFs aside and starts its set pack when it is not made yet, then
+    reads the page map: `building` until it is made (ask again in a moment)."""
+    package = _package(session, package_id, principal)
+    uploads = _upload_sources(
+        _factory(session),
+        getattr(request.app.state, ARTIFACT_STORE_STATE, None),
+        package.id,
+        _latest_revision_id(session, package.id),
+    )
+    try:
+        plan = full_check_plan(
+            _chat_root(request.app),
+            package.id,
+            uploads,
+            lambda page: f"/api/v1/packages/{package.id}/plan-pages/{page}",
+        )
+    except Exception as failed:  # noqa: BLE001 - the full check still runs, without questions
+        _log.warning("assistant chat plan check failed: %s", type(failed).__name__)
+        plan = {"state": "none", "summary": None, "doubts": [], "more": 0}
+    return ChatFullCheckPlanOut.model_validate(plan)
+
+
+@router.get(
+    "/packages/{package_id}/plan-pages/{page}",
+    response_class=FileResponse,
+    summary="A page's picture for a plan-check question",
+)
+def plan_page(
+    request: Request,
+    package_id: UUID,
+    page: Annotated[int, Path_(ge=1, le=9999)],
+    principal: Authenticated,
+    session: Annotated[Session, Depends(get_session)],
+) -> FileResponse:
+    _package(session, package_id, principal)
+    path = plan_page_picture(_chat_root(request.app), package_id, page)
+    if path is None:
+        raise _not_found()
+    return FileResponse(path, media_type="image/png")
+
+
 # ---- an answer's findings: the marked-up PDF and the CSV -----------------------------------------
 
 #: A marked-up PDF's file id is made from its answer's id, so asking twice finds the first file.
 _MARKUP_NAMESPACE: Final = uuid.UUID("6c1f4a8e-1d1b-4c6e-9a54-6a1d2e7f0b3c")
+
+
+def _corrections(
+    session: Session, chat_id: UUID, row: AssistantChatMessage
+) -> dict[str, dict[str, Any]]:
+    """Later messages' newest correction of each of this answer's findings (#1548)."""
+    return corrections_by_answer(messages_of(session, chat_id)).get(str(row.id), {})
 
 
 def _answer(session: Session, chat_id: UUID, message_id: UUID) -> AssistantChatMessage:
@@ -568,7 +651,7 @@ def markup_pdf(
     listing every finding. Kept as a file of the answer; asking again returns the same file."""
     _chat(session, chat_id, principal)
     row = _answer(session, chat_id, message_id)
-    findings = live_findings(row.blocks)
+    findings = live_findings(with_corrections(row.blocks, _corrections(session, chat_id, row)))
     if not findings:
         raise CodedHTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -634,7 +717,7 @@ def findings_spreadsheet(
     _chat(session, chat_id, principal)
     row = _answer(session, chat_id, message_id)
     decided = latest_decisions(session, chat_id, message_id).get(message_id)
-    body = findings_csv(decided_findings(row, decided))
+    body = findings_csv(decided_findings(row, decided, _corrections(session, chat_id, row)))
     return Response(
         content=body.encode("utf-8"),
         media_type="text/csv; charset=utf-8",
@@ -678,7 +761,9 @@ def decide_finding(
     _chat(session, chat_id, principal)
     _not_running(registry, chat_id, message_id)
     row = _answer(session, chat_id, message_id)
-    if not any(str(finding.get("id")) == finding_id for finding in live_findings(row.blocks)):
+    corrected = live_findings(with_corrections(row.blocks, _corrections(session, chat_id, row)))
+    finding = next((f for f in corrected if str(f.get("id")) == finding_id), None)
+    if finding is None:
         raise _not_found()
     decided = record_decision(
         session,
@@ -689,6 +774,20 @@ def decide_finding(
         note=body.note,
         decided_by=principal.id,
     )
+    # The set's memory (#1548): every later chat on the set knows what the reviewer decided.
+    text, page = decision_note(finding, body.decision, principal.id, body.note)
+    chat = session.get(AssistantChat, chat_id)
+    if chat is not None:
+        add_note(
+            session,
+            package_id=chat.package_id,
+            note=text,
+            page=page,
+            source="decision",
+            chat_id=chat_id,
+            message_id=message_id,
+            created_by=principal.id,
+        )
     session.commit()
     return ChatFindingDecisionOut.model_validate(decision_out(decided))
 
@@ -722,7 +821,11 @@ def cloud_drawing(
     chat, package = _chat(session, chat_id, principal)
     _not_running(registry, chat_id, message_id)
     row = _answer(session, chat_id, message_id)
-    findings = decided_findings(row, latest_decisions(session, chat_id, message_id).get(message_id))
+    findings = decided_findings(
+        row,
+        latest_decisions(session, chat_id, message_id).get(message_id),
+        _corrections(session, chat_id, row),
+    )
     if not findings:
         raise CodedHTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -952,6 +1055,15 @@ def _message(
             mode=mode,
             products=products,
             continue_from=continue_from,
+            drawn_helpers=settings.assistant_drawn_helpers,
+            plan_answers=(
+                None
+                if mode != "full_check" or not body.plan_answers
+                else {answer.id: answer.answer for answer in body.plan_answers}
+            ),
+            sharpen_model=runtime.sharpen,
+            sharpen_deadline_seconds=runtime.sharpen_deadline_seconds,
+            task_edit=None if body.task is None else body.task.model_dump(),
         )
     except BaseException:
         registry.release(run)
