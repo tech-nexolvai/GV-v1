@@ -5,17 +5,32 @@ are, following Anthropic's rules for each model (CONTRACT, "Models, effort, thin
 
 | model | thinking on | thinking off |
 |---|---|---|
-| Claude Opus 5.5 | `{"type": "adaptive", "display": "summarized"}` | not offered (always on) |
+| Claude Fable 5.1 | `{"type": "adaptive", "display": "summarized"}` | not offered (always on) |
+| Claude Opus 5.5 | the same | not offered (always on) |
 | Claude Sonnet 5.5 | the same | `{"type": "between_tools"}`, effort `high` or below |
 | Claude Haiku 5.5 | the same | `{"type": "disabled"}`, effort `high` or below |
 
 Effort goes in `output_config.effort`. A helper's effort is the lead's, but never above
 `HELPER_MAX_EFFORT` (medium): Anthropic's advice is low or medium effort for subagents, and a helper
 at the lead's high effort spent most of a message's money thinking. No `budget_tokens`, no `temperature`; `tool_choice` is
-`auto`, or `none` for a forced final answer. Opus 5.5 and Sonnet 5.5 on Anthropic's own API carry the
-server-side refusal fallback (`fallbacks: "default"`, beta `server-side-fallback-2026-07-01`);
-Haiku 5.5 has no server-side fallback, and OpenRouter takes neither (its keep-no-data routing block
-goes in `provider` instead).
+`auto`, or `none` for a forced final answer (`any` and `tool` are a 400 on Fable 5.1 and the 5.5
+models). Fable 5.1, Opus 5.5 and Sonnet 5.5 on Anthropic's own API carry the server-side refusal
+fallback (`fallbacks: "default"`, beta `server-side-fallback-2026-07-01`); Haiku 5.5 has no
+server-side fallback, and OpenRouter takes neither (its keep-no-data routing block goes in
+`provider` instead).
+
+**Claude Fable 5.1 (#1577)** is offered on Anthropic's own API only: it needs an account with 30-day
+data retention, and the OpenRouter route keeps no data. Its thinking display stays `summarized`, as
+for the other models: the summary includes Fable's progress notes between tool calls, and the feed
+shows thinking blocks as "Thought for Ns" (the `updates` display would hide the reasoning summary
+and needs one more beta for no gain on this screen).
+
+**Preserved thinking.** A thinking block is bound to its model and to the conversation before it:
+the system prompt, the tools and every earlier message. The lead's system prompt and tools are
+frozen per chat (`chat_harness`), and the history is append-only. As a safety net, adaptive
+thinking on Anthropic's own API carries `block_binding: {prefix_mismatch_behavior: "drop_block"}`
+(beta `thinking-binding-controls-2026-08-01`): a block that no longer matches is dropped instead of
+failing the whole call, and the reply's `input_transformations` say so (the engine logs them).
 
 **Prompt caching.** Three cache breakpoints: the last tool (so the tool list is cached), the system
 prompt, and the newest message's last block. Each turn re-sends the whole conversation unchanged,
@@ -30,6 +45,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from importlib import import_module
@@ -38,6 +54,7 @@ from typing import Any, Final, Literal
 from app.review.assistant.chat_context import CONTEXT_BETA
 
 __all__ = [
+    "BINDING_BETA",
     "DEFAULT_EFFORT",
     "DEFAULT_MODEL",
     "EFFORTS",
@@ -54,9 +71,11 @@ __all__ = [
     "check_choice",
     "full_check_helper_effort",
     "helper_effort",
+    "helper_shorts",
     "helper_thinking",
     "inline_pictures",
     "picture_sizes",
+    "rates_key_for",
     "thinking_config",
 ]
 
@@ -74,6 +93,10 @@ HELPER_MAX_TOKENS: Final = 32000
 HELPER_MAX_EFFORT: Final = "medium"
 #: The server-side refusal fallback's `"default"` form (Anthropic's own API only).
 FALLBACK_BETA: Final = "server-side-fallback-2026-07-01"
+#: Lets a call say what happens to a thinking block that no longer matches its conversation, and
+#: makes the reply list what was dropped (`input_transformations`).
+BINDING_BETA: Final = "thinking-binding-controls-2026-08-01"
+_BLOCK_BINDING: Final[Mapping[str, str]] = {"prefix_mismatch_behavior": "drop_block"}
 #: OpenRouter's Anthropic-compatible endpoint; the SDK adds `/v1/messages`.
 OPENROUTER_BASE_URL: Final = "https://openrouter.ai/api"
 _EPHEMERAL: Final[Mapping[str, str]] = {"type": "ephemeral"}
@@ -90,13 +113,18 @@ class ChatModel:
     """OpenRouter's name for the same model."""
     rates_key: str
     """The model's key in the price file (`deploy/model_rates.us-east-1.json`)."""
-    short: Literal["opus", "sonnet", "haiku"]
+    short: Literal["fable", "opus", "sonnet", "haiku"]
     thinking: Literal["always", "optional"]
     thinking_off: Mapping[str, str] | None
     """What "thinking off" sends (`None`: it cannot be turned off)."""
     fallbacks: bool
     """Whether Anthropic's own API takes the server-side refusal fallback for it."""
     default: bool = False
+    providers: tuple[Provider, ...] = ("anthropic", "openrouter")
+    """The routes that offer it (Fable 5.1: Anthropic's own API only)."""
+    helper: bool = True
+    """Whether the `Agent` tool may name it for a helper (not Fable 5.1: a helper's work is
+    routine reading, and Fable costs 2.5 times Opus 5.5 per token)."""
 
     @property
     def thinking_off_max_effort(self) -> str | None:
@@ -137,21 +165,59 @@ MODELS: Final[Mapping[str, ChatModel]] = {
             thinking_off={"type": "disabled"},
             fallbacks=False,
         ),
+        # #1577: the premium choice, last in the menu; not the default (Anthropic: Fable is for
+        # the hardest long tasks, at 2.5 times Opus 5.5's price per token).
+        ChatModel(
+            id="claude-fable-5-1",
+            label="Claude Fable 5.1",
+            openrouter="",
+            rates_key="anthropic.claude-fable-5-1",
+            short="fable",
+            thinking="always",
+            thinking_off=None,
+            fallbacks=True,
+            providers=("anthropic",),
+            helper=False,
+        ),
     )
 }
-#: A helper's model by the `Agent` tool's short name.
+#: A model by its short name (the `Agent` tool takes only those `helper_shorts` lists).
 BY_SHORT: Final[Mapping[str, ChatModel]] = {model.short: model for model in MODELS.values()}
+
+
+def helper_shorts() -> tuple[str, ...]:
+    """The short names the `Agent` tool may name for a helper."""
+    return tuple(model.short for model in MODELS.values() if model.helper)
+
+
+_SNAPSHOT_SUFFIX: Final = re.compile(r"-\d{8}$")
+
+
+def rates_key_for(model_id: str) -> str:
+    """The price-file key of a model the API named (a refusal fallback's model too): the offered
+    model's own key, else `anthropic.<id>` without a dated snapshot suffix."""
+    base = _SNAPSHOT_SUFFIX.sub("", model_id.removeprefix("anthropic/"))
+    known = MODELS.get(base)
+    return known.rates_key if known is not None else f"anthropic.{base}"
 
 
 class ChoiceRefused(ValueError):
     """A model, effort and thinking combination the API would refuse, in plain words."""
 
 
-def check_choice(model_id: str, effort: str, thinking: bool) -> ChatModel:
-    """The model, after checking the combination is one the API takes (else `ChoiceRefused`)."""
+def check_choice(
+    model_id: str, effort: str, thinking: bool, provider: Provider | None = None
+) -> ChatModel:
+    """The model, after checking the combination is one the API takes (else `ChoiceRefused`).
+    With `provider`, also that the route offers the model."""
     model = MODELS.get(model_id)
     if model is None:
         raise ChoiceRefused(f"{model_id!r} is not one of the models offered here")
+    if provider is not None and provider not in model.providers:
+        raise ChoiceRefused(
+            f"{model.label} is offered only on Anthropic's own API (it needs 30-day data "
+            "retention), and this server uses OpenRouter's keep-no-data route. Pick Claude Opus 5.5."
+        )
     if effort not in EFFORTS:
         raise ChoiceRefused(f"effort must be one of {', '.join(EFFORTS)}")
     if not thinking:
@@ -299,6 +365,7 @@ def call_params(
         "system": [{"type": "text", "text": system, "cache_control": dict(_EPHEMERAL)}],
         "messages": _with_breakpoint([dict(message) for message in messages]),
         "tools": listed,
+        # Never `any` or `tool`: forced tool use is a 400 on Fable 5.1 and the 5.5 models.
         "tool_choice": {"type": "none"} if final else {"type": "auto"},
         "thinking": dict(thinking),
         "output_config": {"effort": effort},
@@ -308,6 +375,11 @@ def call_params(
         del params["tools"], params["tool_choice"]
     if provider == "anthropic":
         betas: list[str] = []
+        if thinking.get("type") == "adaptive":
+            # The safety net for preserved thinking (`between_tools` and `disabled` take no other
+            # field, and carry no thinking to bind).
+            params["thinking"]["block_binding"] = dict(_BLOCK_BINDING)
+            betas.append(BINDING_BETA)
         if model.fallbacks:
             betas.append(FALLBACK_BETA)
             params["fallbacks"] = "default"

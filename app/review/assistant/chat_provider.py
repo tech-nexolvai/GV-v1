@@ -5,7 +5,8 @@ else OpenRouter when `OPENROUTER_API_KEY` is set; `anthropic` or `openrouter` fo
 the `anthropic` SDK and stream:
 
 - **Anthropic:** `client.beta.messages.create(stream=True)` with the server-side refusal fallback for
-  Opus 5.5 and Sonnet 5.5 (`chat_request.call_params`), else `client.messages.create(stream=True)`.
+  Fable 5.1, Opus 5.5 and Sonnet 5.5, and the thinking-binding safety net on adaptive thinking
+  (`chat_request.call_params`), else `client.messages.create(stream=True)`.
   The client is given the key explicitly, so no other credential (a profile on disk, another
   environment variable) is ever used.
 - **OpenRouter:** the same SDK pointed at `https://openrouter.ai/api` with the key as a bearer token
@@ -30,6 +31,7 @@ from typing import Any, Final, Literal, Protocol
 from app.review.assistant.chat_request import OPENROUTER_BASE_URL, Provider
 
 __all__ = [
+    "RETENTION_WORDS",
     "AnthropicSdkProvider",
     "ChatProvider",
     "EventStream",
@@ -118,6 +120,23 @@ def choose_provider(
     return ProviderChoice("openrouter", None, reason)
 
 
+#: Claude Fable 5.1 on an account without 30-day data retention (a zero-data-retention account gets
+#: a 400 on every request; an early draft of Anthropic's docs said 404).
+RETENTION_WORDS: Final = (
+    "Claude Fable 5.1 needs 30-day data retention on this Anthropic account, and this account "
+    "does not have it. Pick Claude Opus 5.5, or ask your admin to turn on data retention."
+)
+
+
+def _says_retention(error: BaseException) -> bool:
+    """Whether a provider error is about the account's data retention. Only matched, never shown:
+    the provider's own words stay out of every message."""
+    words = " ".join(
+        str(part) for part in (getattr(error, "message", ""), getattr(error, "body", "")) if part
+    )
+    return "retention" in words.lower()
+
+
 class ProviderFailure(Exception):
     """A model call that failed, in plain words. `retryable`: a 5xx, 520/529 or a lost
     connection, worth asking once more; `status`: the HTTP status when there was one."""
@@ -165,6 +184,8 @@ def failure_from(error: BaseException) -> ProviderFailure:
             status=status,
             retryable=False,
         )
+    if status in (400, 404) and _says_retention(error):
+        return ProviderFailure(RETENTION_WORDS, status=status, retryable=False)
     if isinstance(error, anthropic.APIStatusError):
         if status is not None and status < 400:
             # An `error` event in the middle of a stream (overloaded, api_error): the HTTP

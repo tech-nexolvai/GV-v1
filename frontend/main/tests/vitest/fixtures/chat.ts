@@ -11,6 +11,8 @@ const ALL = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export const OPUS: ChatModel = { id: 'claude-opus-5-5', label: 'Claude Opus 5.5', default: true, efforts: [...ALL], default_effort: 'high', thinking: 'always', thinking_off_max_effort: null };
 export const SONNET: ChatModel = { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5', default: false, efforts: [...ALL], default_effort: 'high', thinking: 'optional', thinking_off_max_effort: 'high' };
 export const HAIKU: ChatModel = { id: 'claude-haiku-5-5', label: 'Claude Haiku 5.5', default: false, efforts: [...ALL], default_effort: 'high', thinking: 'optional', thinking_off_max_effort: 'high' };
+/** #1577: Claude Fable 5.1, offered on Anthropic's own API only; always thinks. */
+export const FABLE: ChatModel = { id: 'claude-fable-5-1', label: 'Claude Fable 5.1', default: false, efforts: [...ALL], default_effort: 'high', thinking: 'always', thinking_off_max_effort: null };
 
 export function modelsOut(change: Partial<ChatModels> = {}): ChatModels {
   return {
