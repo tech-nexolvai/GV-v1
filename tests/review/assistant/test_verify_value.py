@@ -13,8 +13,8 @@ when they are installed.
 from __future__ import annotations
 
 import zlib
-from decimal import Decimal
 from collections.abc import Sequence
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
