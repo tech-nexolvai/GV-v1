@@ -3514,6 +3514,22 @@
             "title": "Claim",
             "type": "string"
           },
+          "evidence_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "observed",
+                  "derived",
+                  "inferred"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Kind"
+          },
           "how": {
             "title": "How",
             "type": "string"
@@ -3540,6 +3556,18 @@
             },
             "title": "Breakdown",
             "type": "array"
+          },
+          "calibration": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How the points per claim were calibrated on GV's test sets.",
+            "title": "Calibration"
           },
           "claims": {
             "title": "Claims",
@@ -3570,6 +3598,18 @@
             "title": "Measured",
             "type": "string"
           },
+          "not_compared": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "\"What's right\" items not compared: not scored.",
+            "title": "Not Compared"
+          },
           "score": {
             "anyOf": [
               {
@@ -3580,6 +3620,18 @@
               }
             ],
             "title": "Score"
+          },
+          "unknowns": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the answer did not check.",
+            "title": "Unknowns"
           }
         },
         "required": [
@@ -3760,6 +3812,22 @@
                 "type": "null"
               }
             ]
+          },
+          "evidence_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "observed",
+                  "derived",
+                  "inferred"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Kind"
           },
           "fact": {
             "anyOf": [
@@ -4106,6 +4174,18 @@
             "title": "Lead Checked",
             "type": "boolean"
           },
+          "ledger": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "agrees | disagrees: code's reading ledger (a string that adds up, other views agreeing); null: the ledger says nothing about it.",
+            "title": "Ledger"
+          },
           "printed_architect": {
             "description": "match | not_found | no_text | no_box | not_a_number | not_run",
             "title": "Printed Architect",
@@ -4131,6 +4211,18 @@
             "description": "agrees | disagrees | unsure | not_run",
             "title": "Second Read",
             "type": "string"
+          },
+          "units": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "agrees | disagrees: millimetres and inches printed together (940 [37]).",
+            "title": "Units"
           }
         },
         "required": [
@@ -4300,6 +4392,18 @@
               }
             ]
           },
+          "compared": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A \"same\" item: true when both sides were seen and its page pair is covered; false: \"Not compared\" (not counted as right).",
+            "title": "Compared"
+          },
           "created_by": {
             "description": "\"lead\", \"helper:<n>\", \"gv_review\" (made by code from a recorded result), or \"ledger\" (made by code from the reading ledger).",
             "title": "Created By",
@@ -4314,6 +4418,23 @@
                 "type": "null"
               }
             ]
+          },
+          "evidence_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "observed",
+                  "derived",
+                  "inferred"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "observed: printed on the drawing at its spots (text layer); derived: worked out by code (rule, arithmetic, ledger, mm/inch); inferred: AI reading only.",
+            "title": "Evidence Kind"
           },
           "id": {
             "title": "Id",
@@ -4347,6 +4468,21 @@
             ],
             "description": "The reading ledger's entries (S<n>, R<n>) behind it.",
             "title": "Ledger Ids"
+          },
+          "not_compared_why": {
+            "anyOf": [
+              {
+                "enum": [
+                  "not_viewed",
+                  "pair_not_covered"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Not Compared Why"
           },
           "page": {
             "title": "Page",
@@ -4571,6 +4707,21 @@
               }
             ],
             "title": "Why"
+          },
+          "witnesses": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The non-AI witnesses behind it: printed, rule, arithmetic, ledger, units.",
+            "title": "Witnesses"
           }
         },
         "required": [
@@ -5237,7 +5388,8 @@
                       "step": "#/components/schemas/ChatStepBlock",
                       "text": "#/components/schemas/ChatTextBlock",
                       "thinking": "#/components/schemas/ChatThinkingBlock",
-                      "trust": "#/components/schemas/ChatTrustBlock"
+                      "trust": "#/components/schemas/ChatTrustBlock",
+                      "unknowns": "#/components/schemas/ChatUnknownsBlock"
                     },
                     "propertyName": "type"
                   },
@@ -5268,6 +5420,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ChatAccuracyBlock"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChatUnknownsBlock"
                     }
                   ]
                 },
@@ -6286,6 +6441,21 @@
               }
             ]
           },
+          "evidence": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Findings by evidence kind: observed, derived, inferred.",
+            "title": "Evidence"
+          },
           "gv_checks": {
             "anyOf": [
               {
@@ -6323,6 +6493,18 @@
             "title": "Not Checked",
             "type": "array"
           },
+          "not_compared": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "\"What's right\" items not compared (not counted above).",
+            "title": "Not Compared"
+          },
           "recorded_results": {
             "anyOf": [
               {
@@ -6337,6 +6519,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/ChatRoundsOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "unknowns": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatTrustUnknownsOut"
               },
               {
                 "type": "null"
@@ -6390,6 +6582,105 @@
           }
         },
         "title": "ChatTrustRuleOut",
+        "type": "object"
+      },
+      "ChatTrustUnknownsOut": {
+        "properties": {
+          "by_why": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "By Why",
+            "type": "object"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "by_why"
+        ],
+        "title": "ChatTrustUnknownsOut",
+        "type": "object"
+      },
+      "ChatUnknownOut": {
+        "description": "One thing the answer did not check, and what would settle it (built by code).",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "needs": {
+            "title": "Needs",
+            "type": "string"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "scope": {
+            "default": "item",
+            "enum": [
+              "page",
+              "item"
+            ],
+            "title": "Scope",
+            "type": "string"
+          },
+          "what": {
+            "title": "What",
+            "type": "string"
+          },
+          "why": {
+            "enum": [
+              "unreadable",
+              "not_opened",
+              "missing_job_value",
+              "pairing_uncertain",
+              "refused_alignment"
+            ],
+            "title": "Why",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "what",
+          "why",
+          "needs"
+        ],
+        "title": "ChatUnknownOut",
+        "type": "object"
+      },
+      "ChatUnknownsBlock": {
+        "properties": {
+          "type": {
+            "const": "unknowns",
+            "title": "Type",
+            "type": "string"
+          },
+          "unknowns": {
+            "items": {
+              "$ref": "#/components/schemas/ChatUnknownOut"
+            },
+            "title": "Unknowns",
+            "type": "array"
+          }
+        },
+        "required": [
+          "type",
+          "unknowns"
+        ],
+        "title": "ChatUnknownsBlock",
         "type": "object"
       },
       "CheckOut": {

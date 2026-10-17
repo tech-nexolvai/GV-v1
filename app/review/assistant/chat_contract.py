@@ -44,6 +44,8 @@ __all__ = [
     "ChatThinkingBlock",
     "ChatTrustBlock",
     "ChatTrustOut",
+    "ChatUnknownOut",
+    "ChatUnknownsBlock",
 ]
 
 MAX_MESSAGE_TEXT = 8000
@@ -190,6 +192,15 @@ class ChatFindingChecksOut(BaseModel):
         default=None, description="adds_up | does_not_add_up | not_a_number (vendor arithmetic)"
     )
     lead_checked: bool
+    ledger: str | None = Field(
+        default=None,
+        description="agrees | disagrees: code's reading ledger (a string that adds up, other "
+        "views agreeing); null: the ledger says nothing about it.",
+    )
+    units: str | None = Field(
+        default=None,
+        description="agrees | disagrees: millimetres and inches printed together (940 [37]).",
+    )
     adjudication: str | None = Field(
         default=None,
         description="The third read's majority when the second read disagreed or was unsure: "
@@ -319,6 +330,21 @@ class ChatFindingOut(BaseModel):
         | None
     ) = None
     second_read_values: ChatSecondReadValuesOut | None = None
+    evidence_kind: Literal["observed", "derived", "inferred"] | None = Field(
+        default=None,
+        description="observed: printed on the drawing at its spots (text layer); derived: worked "
+        "out by code (rule, arithmetic, ledger, mm/inch); inferred: AI reading only.",
+    )
+    witnesses: list[str] | None = Field(
+        default=None,
+        description="The non-AI witnesses behind it: printed, rule, arithmetic, ledger, units.",
+    )
+    compared: bool | None = Field(
+        default=None,
+        description='A "same" item: true when both sides were seen and its page pair is covered; '
+        'false: "Not compared" (not counted as right).',
+    )
+    not_compared_why: Literal["not_viewed", "pair_not_covered"] | None = None
     reads: list[ChatFindingReadOut] | None = Field(
         default=None, description="Every reading, when a third read settled the second (#1498)."
     )
@@ -601,12 +627,26 @@ class ChatRecordedResultsOut(BaseModel):
     )
 
 
+class ChatTrustUnknownsOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    total: int
+    by_why: dict[str, int]
+
+
 class ChatTrustOut(BaseModel):
     """Why the answer can be believed, built by code from its findings and coverage."""
 
     model_config = ConfigDict(frozen=True)
 
     counts: dict[str, int] = Field(description="confirmed, likely, to_check, total.")
+    evidence: dict[str, int] | None = Field(
+        default=None, description="Findings by evidence kind: observed, derived, inferred."
+    )
+    not_compared: int | None = Field(
+        default=None, description='"What\'s right" items not compared (not counted above).'
+    )
+    unknowns: ChatTrustUnknownsOut | None = None
     by_category: dict[str, dict[str, int]]
     checks: ChatTrustChecksOut
     coverage: ChatTrustCoverageOut | None = None
@@ -640,6 +680,7 @@ class ChatCiteOut(BaseModel):
     printed: str = Field(
         description="match | not_found | no_text | no_box | not_a_number | not_run"
     )
+    evidence_kind: Literal["observed", "derived", "inferred"] | None = None
 
 
 class ChatCiteBlock(BaseModel):
@@ -655,6 +696,7 @@ class ChatAccuracyClaimOut(BaseModel):
     claim: str
     how: str
     points: float
+    evidence_kind: Literal["observed", "derived", "inferred"] | None = None
 
 
 class ChatAccuracyOut(BaseModel):
@@ -668,6 +710,13 @@ class ChatAccuracyOut(BaseModel):
     breakdown: list[ChatAccuracyClaimOut]
     coverage_factor: float | None = None
     measured: str
+    calibration: str | None = Field(
+        default=None, description="How the points per claim were calibrated on GV's test sets."
+    )
+    not_compared: int | None = Field(
+        default=None, description='"What\'s right" items not compared: not scored.'
+    )
+    unknowns: int | None = Field(default=None, description="What the answer did not check.")
 
 
 class ChatAccuracyBlock(BaseModel):
@@ -675,6 +724,28 @@ class ChatAccuracyBlock(BaseModel):
 
     type: Literal["accuracy"]
     accuracy: ChatAccuracyOut
+
+
+class ChatUnknownOut(BaseModel):
+    """One thing the answer did not check, and what would settle it (built by code)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    page: int | None = None
+    what: str
+    why: Literal[
+        "unreadable", "not_opened", "missing_job_value", "pairing_uncertain", "refused_alignment"
+    ]
+    needs: str
+    scope: Literal["page", "item"] = "item"
+
+
+class ChatUnknownsBlock(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["unknowns"]
+    unknowns: list[ChatUnknownOut]
 
 
 ChatBlock = Annotated[
@@ -686,7 +757,8 @@ ChatBlock = Annotated[
     | ChatCoverageBlock
     | ChatTrustBlock
     | ChatCiteBlock
-    | ChatAccuracyBlock,
+    | ChatAccuracyBlock
+    | ChatUnknownsBlock,
     Field(discriminator="type"),
 ]
 

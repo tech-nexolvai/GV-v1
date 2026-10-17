@@ -263,7 +263,7 @@ describe('trust', () => {
     await user.click(within(node).getByRole('button', { name: 'Download Excel (CSV)' }));
     expect(clicks).toEqual(['findings-msg-1.csv|blob:csv']);
     const text = await (saved as unknown as Blob).text();
-    expect(text).toContain('Trust,Printed at spot');
+    expect(text).toContain('Trust,Evidence,Printed at spot');
     expect(text).toContain('Sink base width');
   });
 });

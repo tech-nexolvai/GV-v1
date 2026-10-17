@@ -70,6 +70,8 @@ from app.review.assistant.chat_findings import (
     HELPER_FINDING_TOOL_NAMES,
     FindingBook,
     MarkupFile,
+    boxless_findings,
+    boxless_note,
     coverage_note,
     main_upload,
     make_markup_file,
@@ -116,13 +118,16 @@ from app.review.assistant.chat_trust import (
     apply_checks,
     cloud_kind,
     load_module,
+    mark_compared,
     recorded_from,
     recorded_missing,
     round_statuses,
     states_drawing_values,
     trust_report,
+    with_ledger,
     with_second_read,
 )
+from app.review.assistant.chat_unknowns import refused_from_diff, unknown_records
 from app.review.assistant.ledger import LEDGER_TOOL_NAMES, ReadingLedger, recorded_results_check
 from app.review.assistant.sandbox import SandboxRefused
 from app.runs.rates import ModelRates, call_cost_micros
@@ -526,6 +531,10 @@ class ChatEngine:
         self._recorded: Recorded | None = None
         self._recorded_document: Mapping[str, Any] | None = None
         self._recorded_read = False
+        self._unknowns: list[dict[str, Any]] = []
+        """What this answer did not check (`chat_unknowns`), set by the trust phase."""
+        self.refused_diffs: list[dict[str, Any]] = []
+        """Round pairs `compare_rounds` would not line up (an unknown each)."""
         # compare_rounds: each finding's round status measured on the drawings (kept over the
         # status worked out from `round` fields), and each compared pair's summary.
         self._diff_status: dict[str, str] = {}
@@ -1141,6 +1150,10 @@ class ChatEngine:
             text = "Not run: the two rounds could not be compared."
             return ToolResult([{"type": "text", "text": text}], done(text, False), is_error=True)
         text = str(result.get("text") or "")
+        not_lined_up = refused_from_diff(result, raw)
+        if not_lined_up is not None:
+            with self._lock:
+                self.refused_diffs.append(not_lined_up)
         notes = self._apply_round_status(result, findings, raw)
         if notes:
             text += "\nRe-read of changed spots: " + "; ".join(notes) + "."
@@ -1479,7 +1492,12 @@ class ChatEngine:
         """The answer's accuracy, by code (CONTRACT5): a block and the `accuracy` event."""
         book = self.book
         whole_set = book.coverage_used or self.settings.mode == "full_check"
-        score = accuracy(book.live(), list(book.cites), book.coverage_map() if whole_set else None)
+        score = accuracy(
+            book.live(),
+            list(book.cites),
+            book.coverage_map() if whole_set else None,
+            self._unknowns,
+        )
         index = self._add_block({"type": "accuracy", "accuracy": score})
         self.emit("accuracy", {"index": index, "accuracy": json.loads(json.dumps(score))})
 
@@ -1492,6 +1510,13 @@ class ChatEngine:
             _log.exception("assistant chat ledger findings failed")
         if not book.live() and not book.coverage_used and not self._ledger_used():
             return
+        if self._ledger_used():
+            # The reading ledger as a non-AI witness for the lead's own findings.
+            ledger = self.reading_ledger.as_dict()
+            for finding in book.live():
+                backed = with_ledger(finding, ledger)
+                if backed != finding and book.replace(backed):
+                    self._show_finding(backed)
         skipped = self._second_reads()
         review_reads(self)  # third reads and the critic (#1498)
         statuses = round_statuses(book.live())
@@ -1508,12 +1533,31 @@ class ChatEngine:
                 updated["trust_level"] = "to_check"
             if updated != finding and book.replace(updated):
                 self._show_finding(updated)
+        coverage = book.coverage_map() if book.coverage_used else None
+        # Not seen is not right: a "same" item counts only when both sides were seen (the zoom
+        # log, `seen_log`, once the zoom tool records one; else the lead's own check).
+        for updated in mark_compared(book.live(), coverage, getattr(self, "seen_log", None)):
+            if book.replace(updated):
+                self._show_finding(updated)
+        recorded = self._recorded_checks()
+        self._unknowns = unknown_records(
+            book.live(),
+            coverage,
+            waiting=recorded.waiting,
+            refused_diffs=list(self.refused_diffs),
+        )
+        if self._unknowns:
+            index = self._add_block({"type": "unknowns", "unknowns": self._unknowns})
+            self.emit(
+                "unknowns", {"index": index, "unknowns": json.loads(json.dumps(self._unknowns))}
+            )
         report = trust_report(
             book.live(),
-            book.coverage_map() if book.coverage_used else None,
-            self._recorded_checks(),
+            coverage,
+            recorded,
             second_reads_skipped=skipped,
             dismissed=book.dismissed,
+            unknowns=self._unknowns,
         )
         self._ledger_trust(report)
         self._diff_rounds(report)
@@ -1540,7 +1584,11 @@ class ChatEngine:
         """The finish check's note: pages unaccounted for (when coverage was used), GV Review's
         recorded differences the answer lost, and drawing values stated with no evidence."""
         parts: list[str] = []
-        if states_drawing_values(answer) and not self._has_evidence():
+        boxless = boxless_findings(self.book.live())
+        if boxless:
+            # A finding that states a drawing value needs its box (the evidence picture).
+            parts.append(boxless_note(boxless))
+        elif states_drawing_values(answer) and not self._has_evidence():
             parts.append(
                 f"{COVERAGE_CHECK_PREFIX} show the evidence: your answer states values read off "
                 "the drawings with no evidence. Back each with report_finding (a comparison) or "

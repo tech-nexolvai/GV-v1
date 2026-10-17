@@ -283,6 +283,7 @@ def test_check_finding_checks_both_sides(sheet: Path) -> None:
         "printed_architect": "match",
         "printed_vendor": "match",
         "arithmetic": None,
+        "units": None,
     }
 
 
@@ -367,8 +368,10 @@ def _checks(**fields: Any) -> dict[str, Any]:
         ({"lead_checked": False}, "confirmed"),
         ({"printed_vendor": "no_text"}, "likely"),
         ({"printed_vendor": "no_text", "lead_checked": False}, "to_check"),
-        ({"second_read": "unsure"}, "likely"),
-        ({"second_read": "not_run", "lead_checked": False}, "to_check"),
+        # A non-AI witness (printed at both spots) and the lead's own check: confirmed.
+        ({"second_read": "unsure"}, "confirmed"),
+        # A non-AI witness alone: likely.
+        ({"second_read": "not_run", "lead_checked": False}, "likely"),
         ({"second_read": "disagrees"}, "to_check"),
         ({"rule": "disagrees"}, "to_check"),
         ({"printed_architect": "not_found", "rule": "agrees"}, "confirmed"),

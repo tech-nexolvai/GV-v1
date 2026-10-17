@@ -277,7 +277,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, l
   const finished = !running && message.status === 'done' && findings.length > 0;
   // A full check's cloud drawing already is the marked-up PDF.
   const canMarkup = finished && messageId !== null && makeMarkupPdf !== undefined && !made.cloud;
-  const showTrust = findings.length > 0 && (hasTrust(findings, message.trust) || roundCounts(findings, message.trust) !== null);
+  const showTrust = (findings.length > 0 && (hasTrust(findings, message.trust) || roundCounts(findings, message.trust) !== null)) || (message.unknowns?.length ?? 0) > 0;
   // The coverage strip sits in the trust summary when there is one, else on its own under the table.
   const coverageStrip = coverage ? (
     <CoverageStrip
@@ -339,7 +339,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, l
 
       {(message.cites?.length ?? 0) > 0 && <CiteChips cites={message.cites ?? []} pictureUrl={pictureUrl} />}
 
-      {showTrust && <TrustSummary findings={findings} trust={message.trust} coverage={coverage} coverageStrip={fullCheck ? null : coverageStrip} />}
+      {showTrust && <TrustSummary findings={findings} trust={message.trust} coverage={coverage} coverageStrip={fullCheck ? null : coverageStrip} unknowns={message.unknowns} />}
 
       {fullCheck && <FullCheckFiles cloud={made.cloud} report={made.report} chatId={chatId} />}
 

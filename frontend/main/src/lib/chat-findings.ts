@@ -100,14 +100,18 @@ export function pageWords(finding: Pick<ChatFinding, 'page' | 'vs_page'>): strin
 export interface FindingCounts {
   different: number;
   check: number;
+  /** "What's right" items that were compared (seen on both sides, page pair covered). */
   same: number;
+  /** "What's right" items not compared: not seen is not right, so they are counted apart. */
+  not_compared: number;
   total: number;
 }
 
-export function findingCounts(findings: readonly Pick<ChatFinding, 'status'>[]): FindingCounts {
-  const counts: FindingCounts = { different: 0, check: 0, same: 0, total: findings.length };
+export function findingCounts(findings: readonly Pick<ChatFinding, 'status' | 'compared'>[]): FindingCounts {
+  const counts: FindingCounts = { different: 0, check: 0, same: 0, not_compared: 0, total: findings.length };
   for (const finding of findings) {
-    if (finding.status === 'different' || finding.status === 'check' || finding.status === 'same') counts[finding.status] += 1;
+    if (finding.status === 'same' && finding.compared === false) counts.not_compared += 1;
+    else if (finding.status === 'different' || finding.status === 'check' || finding.status === 'same') counts[finding.status] += 1;
   }
   return counts;
 }
@@ -125,7 +129,7 @@ export function countWords(counts: Pick<FindingCounts, 'different' | 'check'>): 
  * The table's filter. `all` shows every difference and every "check"; rows that are the Same show
  * only when the filter asks for them (`same`). `page` narrows to one page (from the coverage grid).
  */
-export type StatusFilter = 'all' | 'different' | 'check' | 'same';
+export type StatusFilter = 'all' | 'different' | 'check' | 'same' | 'not_compared';
 
 export interface FindingFilter {
   status: StatusFilter;
@@ -136,7 +140,11 @@ export interface FindingFilter {
 export const NO_FILTER: FindingFilter = { status: 'all', category: null, page: null };
 
 export function matchesFilter(finding: ChatFinding, filter: FindingFilter): boolean {
-  const status = filter.status === 'all' ? finding.status !== 'same' : finding.status === filter.status;
+  const unseen = finding.status === 'same' && finding.compared === false;
+  const status = filter.status === 'all' ? finding.status !== 'same'
+    : filter.status === 'not_compared' ? unseen
+    : filter.status === 'same' ? finding.status === 'same' && !unseen
+    : finding.status === filter.status;
   const category = filter.category === null || categoryOf(finding) === filter.category;
   const page = filter.page === null || finding.page === filter.page || finding.vs_page === filter.page;
   return status && category && page;

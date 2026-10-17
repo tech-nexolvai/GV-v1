@@ -394,7 +394,10 @@ def no_checks_module(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_trust_levels_follow_contract3(no_checks_module: None) -> None:
     printed = {"printed_architect": "match", "printed_vendor": "match"}
     assert trust_level(_checks(**printed, second_read="agrees")) == "confirmed"
-    assert trust_level(_checks(**printed, lead_checked=True)) == "likely"
+    # A non-AI witness and the lead's own check on the drawing.
+    assert trust_level(_checks(**printed, lead_checked=True)) == "confirmed"
+    assert trust_level(_checks(**printed)) == "likely"
+    # Two AI readings agreeing, no non-AI witness: Likely at best.
     assert trust_level(_checks(second_read="agrees", lead_checked=True)) == "likely"
     assert trust_level(_checks(lead_checked=True)) == "to_check"
     assert trust_level(_checks(**printed, second_read="disagrees", lead_checked=True)) == "to_check"
@@ -557,14 +560,15 @@ def test_code_numbers_come_from_the_checks_module(monkeypatch: pytest.MonkeyPatc
                 "arithmetic": None,
             }
         ),
-        trust_level=lambda checks, status=None: "likely" if status == "different" else "?",
     )
     monkeypatch.setattr(chat_trust, "load_module", lambda name: fake)
     checked = chat_trust.apply_checks(finding_input(), {}, None)
     assert checked["inches"] == {"architect": "37", "vendor": "46", "difference": "9"}
     assert checked["checks"]["printed_vendor"] == "match"
     assert checked["checks"]["lead_checked"] is True
-    assert checked["trust_level"] == "likely"
+    # Printed at both spots (a non-AI witness) and checked by the lead.
+    assert checked["trust_level"] == "confirmed"
+    assert checked["evidence_kind"] == "observed" and checked["witnesses"] == ["printed"]
 
 
 def test_accuracy_points_levels_and_the_coverage_penalty() -> None:
@@ -588,9 +592,9 @@ def test_accuracy_points_levels_and_the_coverage_penalty() -> None:
         },
     ]
     score = accuracy(findings, [{"id": "C1", "value": "3", "printed": "no_text"}], None)
-    assert [item["points"] for item in score["breakdown"]] == [1.0, 0.75, 0.0, 1.0, 0.5]
-    assert score["score"] == 65 and score["level"] == "orange" and score["claims"] == 5
-    assert "test sets" in score["measured"]
+    assert [item["points"] for item in score["breakdown"]] == [1.0, 0.9, 0.0, 1.0, 0.75]
+    assert score["score"] == 73 and score["level"] == "orange" and score["claims"] == 5
+    assert "test sets" in score["measured"] and "24 of 24" in score["calibration"]
     coverage = {
         "counts": {"total": 4},
         "pages": [
@@ -609,5 +613,8 @@ def test_accuracy_points_levels_and_the_coverage_penalty() -> None:
         "breakdown": [],
         "coverage_factor": None,
         "measured": score["measured"],
+        "calibration": score["calibration"],
+        "not_compared": 0,
+        "unknowns": 0,
     }
     assert accuracy(findings[:1], [], None)["level"] == "green"

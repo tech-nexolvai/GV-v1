@@ -58,10 +58,12 @@ from app.review.assistant.chat_store import (
     files_of,
     history,
     message_out,
+    messages_of,
     recorded_chat_spend,
     stored_chat_spend,
 )
 from app.review.assistant.chat_tools import MAX_AGENTS, ChatTools, ResultsLoader
+from app.review.assistant.chat_unknowns import asks_for_the_rest, last_unknowns, work_list_note
 from app.review.assistant.sandbox import UPLOADS, ChatWorkspace, Sandbox, safe_file_name
 from app.runs.rates import ModelRates
 
@@ -581,6 +583,16 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
     run.sandbox = sandbox
     with job.factory() as session:
         replay = history(session, job.chat_id)
+        # "Check the rest": the last answer's unknowns become this answer's work list.
+        work_list = None
+        if job.mode != "full_check" and asks_for_the_rest(job.text):
+            work_list = work_list_note(
+                last_unknowns(
+                    message.blocks
+                    for message in messages_of(session, job.chat_id)
+                    if message.role == "assistant"
+                )
+            )
     user_content: list[dict[str, Any]] = []
     # The files are listed in the first message the model sees (an earlier message that got no
     # answer is not in its history), and again when the set's PDFs changed.
@@ -598,6 +610,8 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
         marker.write_text(wanted, encoding="utf-8")
     if focus is not None:
         user_content.append({"type": "text", "text": focus})
+    if work_list is not None:
+        user_content.append({"type": "text", "text": work_list})
     question = FULL_CHECK_INSTRUCTION if job.mode == "full_check" else job.text
     user_content.append({"type": "text", "text": question})
 

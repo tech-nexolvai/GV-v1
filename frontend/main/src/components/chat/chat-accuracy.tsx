@@ -5,7 +5,7 @@ import { NoPicture, ZoomPane } from '@/components/chat/chat-evidence';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import type { ChatAccuracy, ChatCite } from '@/lib/chat-api';
-import { ACCURACY_MEANING, accuracyRows, accuracyTone, accuracyWords, coverageFactorWords, pointsWords, TEST_SET_LINE, type AccuracyTone } from '@/lib/chat-accuracy';
+import { ACCURACY_MEANING, accuracyRows, accuracyTone, accuracyWords, coverageFactorWords, excludedWords, pointsWords, TEST_SET_LINE, type AccuracyTone } from '@/lib/chat-accuracy';
 import { cn } from '@/lib/utils';
 
 /**
@@ -69,7 +69,9 @@ export function AccuracyBadge({ accuracy }: { accuracy: ChatAccuracy }) {
           </div>
         )}
         {factor && <p className="text-xs text-muted-foreground tabular-nums">{factor}</p>}
+        {excludedWords(accuracy) && <p data-slot="chat-accuracy-excluded" className="text-xs text-muted-foreground tabular-nums">{excludedWords(accuracy)}</p>}
         <p className="text-xs text-muted-foreground">{ACCURACY_MEANING}</p>
+        {accuracy.calibration && <p data-slot="chat-accuracy-calibration" className="text-xs text-muted-foreground">{accuracy.calibration}</p>}
         {TEST_SET_LINE && <p data-slot="chat-accuracy-test-set" className="text-xs font-medium tabular-nums">{TEST_SET_LINE}</p>}
       </PopoverContent>
     </Popover>

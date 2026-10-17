@@ -208,6 +208,14 @@ this on **every** paired page, including the second round (revision) pages.
 - `source`: `architect`; `brand_prototype` (section 1); `rules` with `rule_check_id` (the check's
   id in `review_results`); `vendor_arithmetic` with `parts` and `printed_total` (a dimension string
   that does not add up). `verified: true` only when you read both values on the drawing yourself.
+- **Every value a finding states needs its box**: `vendor_box` where the vendor's value is printed,
+  `arch_box` where the architect's is. For `source: rules` the architect field is the rule (e.g.
+  `rule 1-2"`) and the `vendor_box` is the spot of the vendor value the rule read. The app sends
+  you back, naming them, for findings with a value and no box.
+- **One rule, one page, one finding** (narrow questions): when one GV rule applies to several values
+  on the same page (the fillers on page 8), report ONE finding that lists the values (vendor
+  `1 1/2", 2", 3"`, architect `rule 1-2"`, why `one filler too wide: 3"`), with a `vendor_box`
+  around them, not one finding per value. Give a value its own finding only to show it is wrong.
 - Every other value you state from a drawing (a size, a count, a page count): back it with `cite`
   (page and box, or `fact` for a file's page count or name), so the app checks it.
 - **Never drop a result GV Review recorded.** Each code FAIL and each AI page review `different` row

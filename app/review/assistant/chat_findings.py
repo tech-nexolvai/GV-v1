@@ -29,6 +29,7 @@ import hashlib
 import json
 import logging
 import math
+import re
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -52,6 +53,8 @@ __all__ = [
     "UPDATE_FINDING",
     "FindingBook",
     "MarkupFile",
+    "boxless_findings",
+    "boxless_note",
     "coverage_note",
     "live_findings",
     "main_upload",
@@ -326,6 +329,57 @@ def page_ranges(pages: Sequence[int]) -> str:
     return ", ".join(out)
 
 
+def _states(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def boxless_findings(findings: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The model's findings that state a drawing value with no box where it is printed: a vendor
+    value needs `vendor_box`; an architect value needs `arch_box` when it is read off the
+    architect's drawing (`source: architect`; a GV rule, a brand prototype or the vendor's own sum
+    is not on the architect's drawing). Code's own findings (GV Review's records, the ledger) are
+    left out. Each: `{id, page, item, missing: ["vendor_box", ...]}`."""
+    out: list[dict[str, Any]] = []
+    for finding in findings:
+        if finding.get("created_by") in ("gv_review", "ledger"):
+            continue
+        missing: list[str] = []
+        if _states(finding.get("vendor")) and not finding.get("vendor_box"):
+            missing.append("vendor_box")
+        if (
+            finding.get("source", "architect") == "architect"
+            and _states(finding.get("architect"))
+            and not finding.get("arch_box")
+        ):
+            missing.append("arch_box")
+        if missing:
+            out.append(
+                {
+                    "id": finding.get("id"),
+                    "page": finding.get("page"),
+                    "item": finding.get("item"),
+                    "missing": missing,
+                }
+            )
+    return out
+
+
+def boxless_note(boxless: Sequence[Mapping[str, Any]]) -> str:
+    """The send-back line naming each finding with a value and no box."""
+    listed = "; ".join(
+        f"{item['id']} (page {item.get('page')}: {item.get('item')}; needs "
+        f"{' and '.join(item['missing'])})"
+        for item in boxless[:30]
+    )
+    more = f" and {len(boxless) - 30} more" if len(boxless) > 30 else ""
+    return (
+        f"{COVERAGE_CHECK_PREFIX} show the evidence: these findings state a drawing value with no "
+        f"box where it is printed: {listed}{more}. Give each its box with update_finding (for a GV "
+        "rule, the vendor_box of the value the rule read); findings about one rule on one page "
+        "may be merged into one finding listing the values (drop the others)."
+    )
+
+
 def coverage_note(gaps: Sequence[int], file_name: str | None) -> str:
     where = f" of {file_name}" if file_name else ""
     return (
@@ -360,6 +414,12 @@ def _choice(value: object, name: str, allowed: Sequence[str]) -> str:
     if value not in allowed:
         raise SandboxRefused(f"{name} must be one of {', '.join(allowed)}")
     return str(value)
+
+
+def _stated_count(value: str) -> int | None:
+    """The one whole number a stated count holds ("60", "60 pages", "60 pp."), else `None`."""
+    numbers = re.findall(r"\d+", value.replace(",", ""))
+    return int(numbers[0]) if len(numbers) == 1 else None
 
 
 @dataclass(slots=True)
@@ -746,6 +806,7 @@ class FindingBook:
             "file": chosen,
             "picture_id": None,
             "printed": "not_run",
+            "evidence_kind": "inferred",
         }
         if fact is not None:
             cite["fact"] = _choice(fact, "fact", ("page_count", "file_name"))
@@ -753,8 +814,9 @@ class FindingBook:
             if cite["fact"] == "file_name":
                 ok = value.removeprefix(UPLOADS + "/") in names
             else:
-                ok = item is not None and value.strip() == str(item.get("pages"))
+                ok = item is not None and _stated_count(value) == item.get("pages")
             cite["printed"] = "match" if ok else "not_found"
+            cite["evidence_kind"] = "derived" if ok else "inferred"
             with self._lock:
                 self.cites.append(cite)
             return dict(cite)
@@ -770,16 +832,20 @@ class FindingBook:
         cite["page"], cite["box"] = page, box
         if box is None:
             cite["printed"] = "no_box"
+            cite["evidence_kind"] = "inferred"
             with self._lock:
                 self.cites.append(cite)
             return dict(cite)
         cite["picture_id"], _why = self._picture(box)
+        cite["evidence_kind"] = "inferred"
         pdf = self.workspace.uploads / str(box["file"])
         try:
             cite["printed"] = printed(pdf, int(box["page"]), box, value)
         except Exception as failed:  # noqa: BLE001 - a check that cannot run is "not run"
             _log.warning("assistant chat cite check failed: %s", type(failed).__name__)
             cite["printed"] = "not_run"
+        if cite["printed"] == "match":
+            cite["evidence_kind"] = "observed"
         with self._lock:
             self.cites.append(cite)
         return dict(cite)

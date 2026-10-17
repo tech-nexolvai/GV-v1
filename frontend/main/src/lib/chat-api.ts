@@ -140,7 +140,8 @@ export type ChatBlock =
   | { type: 'coverage'; coverage: ChatCoverage }
   | { type: 'trust'; trust: ChatTrust }
   | { type: 'cite'; cite: ChatCite }
-  | { type: 'accuracy'; accuracy: ChatAccuracy };
+  | { type: 'accuracy'; accuracy: ChatAccuracy }
+  | { type: 'unknowns'; unknowns: ChatUnknown[] };
 
 // ── Chat v2 (CONTRACT2-findings): findings with evidence, and page coverage ──
 
@@ -224,10 +225,36 @@ export interface ChatFinding {
   reference_side?: 'vendor' | 'architect' | null;
   /** A ledger sum, written out by code: "12 + 15 1/2 = 27 1/2 ≠ 27 1/4 printed (off 1/4)". */
   sum_text?: string | null;
+  /**
+   * What backs it: `observed` (printed on the drawing at its spots), `derived` (worked out by code:
+   * GV rule, arithmetic, ledger, mm/inch), `inferred` (AI reading only).
+   */
+  evidence_kind?: EvidenceKind | null;
+  /** The non-AI witnesses behind it: printed, rule, arithmetic, ledger, units. */
+  witnesses?: string[] | null;
+  /** A "same" item: false when both sides were not seen or its page pair is not covered ("Not compared"). */
+  compared?: boolean | null;
+  not_compared_why?: 'not_viewed' | 'pair_not_covered' | null;
   /** #1498: every reading of the values, when the second read was settled by a third. */
   reads?: FindingRead[] | null;
   /** #1498: the critic's look at it (whole-set answers). */
   critic?: FindingCritic | null;
+}
+
+export type EvidenceKind = 'observed' | 'derived' | 'inferred';
+
+/** Why something was not checked (an unknown record). */
+export type UnknownWhy = 'unreadable' | 'not_opened' | 'missing_job_value' | 'pairing_uncertain' | 'refused_alignment';
+
+/** One thing the answer did not check, and what would settle it (built by code). */
+export interface ChatUnknown {
+  id: string;
+  page?: number | null;
+  what: string;
+  why: UnknownWhy;
+  needs: string;
+  /** `page`: a whole page; `item`: one value. */
+  scope?: 'page' | 'item' | null;
 }
 
 /**
@@ -262,6 +289,10 @@ export interface FindingChecks {
   arithmetic?: 'adds_up' | 'does_not_add_up' | 'not_a_number' | null;
   /** The lead checked it on the drawing itself. */
   lead_checked?: boolean | null;
+  /** Code's reading ledger: a string that adds up, or other views agreeing. */
+  ledger?: 'agrees' | 'disagrees' | null;
+  /** Millimetres and inches printed together (940 [37]) agree. */
+  units?: 'agrees' | 'disagrees' | null;
   /**
    * #1498: when the second read disagreed or was unsure, a stronger model read the spot again from a
    * sharper crop, and code took the majority of the three readings (it stands in for the second read).
@@ -348,6 +379,12 @@ export interface ChatTrust {
   /** What it did NOT check, in code's plain words (pen-stroke numbers, pages not opened…). */
   not_checked?: string[] | null;
   /** Rounds of comments: round-1 differences fixed in a later round, still wrong, not in it, and new ones. */
+  /** Findings by evidence kind. */
+  evidence?: Partial<Record<EvidenceKind, number>> | null;
+  /** "What's right" items not compared (not counted as right). */
+  not_compared?: number | null;
+  /** What the answer did not check, counted by why. */
+  unknowns?: { total: number; by_why?: Partial<Record<UnknownWhy, number>> | null } | null;
   rounds?: {
     fixed: number;
     still_wrong: number;
@@ -400,6 +437,7 @@ export interface ChatCite {
   picture_id?: string | null;
   /** Printed at the spot: match / not_found / no_text … (code's check). */
   printed?: PrintedResult | null;
+  evidence_kind?: EvidenceKind | null;
 }
 
 /** One checkable claim of an answer, how code checked it, and the points it earned (0 to 1). */
@@ -407,6 +445,7 @@ export interface AccuracyClaim {
   claim: string;
   how: string;
   points: number;
+  evidence_kind?: EvidenceKind | null;
 }
 
 /**
@@ -420,6 +459,12 @@ export interface ChatAccuracy {
   breakdown?: AccuracyClaim[] | null;
   /** Whole-set answers: the share of pages accounted for, already applied to the score. */
   coverage_factor?: number | null;
+  /** How the points per claim were calibrated on GV's test sets. */
+  calibration?: string | null;
+  /** "What's right" items not compared: not scored. */
+  not_compared?: number | null;
+  /** What the answer did not check. */
+  unknowns?: number | null;
 }
 
 export type CoverageStatus = 'same' | 'different' | 'not_comparable' | 'not_opened';
@@ -538,14 +583,15 @@ export type ChatEvent =
   | { event: 'coverage'; data: { coverage: ChatCoverage } }
   | { event: 'trust'; data: { trust: ChatTrust } }
   | { event: 'cite'; data: { cite: ChatCite } }
-  | { event: 'accuracy'; data: { accuracy: ChatAccuracy } };
+  | { event: 'accuracy'; data: { accuracy: ChatAccuracy } }
+  | { event: 'unknowns'; data: { unknowns: ChatUnknown[] } };
 
 export type ChatEventName = ChatEvent['event'];
 
 const EVENT_NAMES: ReadonlySet<string> = new Set<ChatEventName>([
   'message_start', 'thinking_start', 'thinking_delta', 'thinking_end', 'text_delta', 'step_start', 'step_end',
   'tasks', 'agent_start', 'agent_step', 'agent_end', 'file', 'usage', 'message_end', 'error',
-  'finding', 'finding_dropped', 'coverage', 'trust', 'cite', 'accuracy',
+  'finding', 'finding_dropped', 'coverage', 'trust', 'cite', 'accuracy', 'unknowns',
 ]);
 
 /**

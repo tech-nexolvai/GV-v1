@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ImageOff, X } from 'lucide-react';
 
-import { CheckIcons, RoundChip, TrustChip } from '@/components/chat/chat-trust';
+import { CheckIcons, EvidenceTag, RoundChip, TrustChip } from '@/components/chat/chat-trust';
 import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
 import { useMediaQuery } from '@/hooks/use-media-query';
 import type { ChatFinding, FindingCategory, FindingStatus } from '@/lib/chat-api';
@@ -21,7 +21,7 @@ import {
 } from '@/lib/chat-findings';
 import { useReducedMotion } from '@/lib/chat-motion';
 import { matchesWords } from '@/lib/chat-full-check';
-import { differenceOf, differenceWords, sideValue, sumWords } from '@/lib/chat-trust';
+import { differenceOf, differenceWords, NOT_COMPARED_WORDS, notCompared, sideValue, sumWords } from '@/lib/chat-trust';
 import { cn } from '@/lib/utils';
 
 /**
@@ -204,11 +204,16 @@ const TABS = [
   { status: 'different', words: 'What’s wrong' },
   { status: 'check', words: 'To check' },
   { status: 'same', words: 'What’s right' },
+  { status: 'not_compared', words: 'Not compared' },
 ] as const;
 
-/** Under a right finding's vendor value: what it matched ("matches architect"). */
+/** Under a right finding's vendor value: what it matched ("matches architect"), or why it was not compared. */
 function Matches({ finding }: { finding: ChatFinding }) {
   if (finding.status !== 'same') return null;
+  if (notCompared(finding)) {
+    const why = finding.not_compared_why ? NOT_COMPARED_WORDS[finding.not_compared_why] : null;
+    return <span data-slot="chat-finding-not-compared" className="mt-0.5 block text-xs text-muted-foreground">{why ? `not compared: ${why}` : 'not compared'}</span>;
+  }
   return <span data-slot="chat-finding-matches" className="mt-0.5 block text-xs text-outcome-pass-fg">{matchesWords(finding.source)}</span>;
 }
 
@@ -227,6 +232,8 @@ export function FindingsTable({ findings, filter, onFilter, onOpen, pictureUrl, 
   const showDifference = findings.some((finding) => finding.inches);
 
   const setStatus = (status: StatusFilter) => onFilter({ ...filter, status });
+  // "Not compared" shows only when an answer has such items (not seen is not right).
+  const tabsShown = TABS.filter((tab) => tab.status !== 'not_compared' || counts.not_compared > 0 || filter.status === 'not_compared');
   const setCategory = (category: FindingCategory) => onFilter({ ...filter, category: filter.category === category ? null : category });
 
   return (
@@ -240,13 +247,13 @@ export function FindingsTable({ findings, filter, onFilter, onOpen, pictureUrl, 
             className="flex max-w-full min-w-0 flex-wrap gap-1 rounded-xl bg-muted p-1"
             onKeyDown={(event) => {
               if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return;
-              const at = TABS.findIndex((tab) => tab.status === filter.status);
-              const next = TABS[(at + (event.key === 'ArrowRight' ? 1 : TABS.length - 1)) % TABS.length];
+              const at = tabsShown.findIndex((tab) => tab.status === filter.status);
+              const next = tabsShown[(at + (event.key === 'ArrowRight' ? 1 : tabsShown.length - 1)) % tabsShown.length];
               setStatus(next.status);
               event.currentTarget.querySelector<HTMLElement>(`[data-tab="${next.status}"]`)?.focus();
             }}
           >
-            {TABS.map((tab) => {
+            {tabsShown.map((tab) => {
               const selected = filter.status === tab.status;
               return (
                 <button
@@ -276,6 +283,7 @@ export function FindingsTable({ findings, filter, onFilter, onOpen, pictureUrl, 
           {!tabs && <Chip pressed={filter.status === 'different'} onClick={() => setStatus('different')} count={counts.different}>Different</Chip>}
           {!tabs && <Chip pressed={filter.status === 'check'} onClick={() => setStatus('check')} count={counts.check}>Check</Chip>}
           {!tabs && counts.same > 0 && <Chip pressed={filter.status === 'same'} onClick={() => setStatus('same')} count={counts.same}>Same</Chip>}
+          {!tabs && counts.not_compared > 0 && <Chip pressed={filter.status === 'not_compared'} onClick={() => setStatus('not_compared')} count={counts.not_compared}>Not compared</Chip>}
           {!tabs && categories.length > 1 && <span aria-hidden="true" className="mx-0.5 h-4 w-px bg-border" />}
           {categories.length > 1 && categories.map((category) => (
             <Chip key={category} pressed={filter.category === category} onClick={() => setCategory(category)}>{CATEGORY_WORDS[category]}</Chip>
@@ -332,7 +340,7 @@ export function FindingsTable({ findings, filter, onFilter, onOpen, pictureUrl, 
                         {showDifference && <span className="text-muted-foreground">Difference</span>}
                         {showDifference && <FindingDifference finding={finding} />}
                         <span className="text-muted-foreground">Trust</span>
-                        <span className="flex flex-wrap items-center gap-2"><TrustChip finding={finding} /><CheckIcons finding={finding} /></span>
+                        <span className="flex flex-wrap items-center gap-2"><TrustChip finding={finding} /><CheckIcons finding={finding} /><EvidenceTag finding={finding} /></span>
                       </span>
                       <Thumbs finding={finding} pictureUrl={pictureUrl} />
                     </button>
@@ -395,7 +403,7 @@ export function FindingsTable({ findings, filter, onFilter, onOpen, pictureUrl, 
                         {showDifference && differenceOf(finding) !== null && <span className="mt-0.5 block text-xs font-medium"><FindingDifference finding={finding} /></span>}
                       </td>
                       <td className="px-2.5 py-2"><StatusChip status={finding.status} /></td>
-                      <td className="px-2.5 py-2"><span className="grid gap-1"><TrustChip finding={finding} /><CheckIcons finding={finding} /></span></td>
+                      <td className="px-2.5 py-2"><span className="grid gap-1"><TrustChip finding={finding} /><CheckIcons finding={finding} /><EvidenceTag finding={finding} /></span></td>
                       <td className="px-2.5 py-1.5"><Thumbs finding={finding} pictureUrl={pictureUrl} /></td>
                     </tr>
                   );
