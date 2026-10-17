@@ -10,20 +10,29 @@ backend is missing; the Docker ones need the built `gv-assistant-sandbox` image)
 - long output is cut with "Output truncated";
 - no server environment variable reaches the command;
 - Docker's command line keeps the locks (no network, read-only root and uploads, no capabilities,
-  limits, an unprivileged user), checked without Docker.
+  limits, an unprivileged user, a file-size limit), checked without Docker;
+- `auto` never falls back to macOS `sandbox-exec` (security audit 2026-10-18): without Docker there
+  is no shell; `sandbox-exec` runs only when `macos` is named;
+- disk: a 300 MB write fails cleanly at the file-size limit, and a command that fills the writable
+  folders past their limit is stopped with a plain line (the next command still runs).
 
 All file names and contents here are made up.
 """
 
 from __future__ import annotations
 
+import os
+import re
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from app.review.assistant import sandbox as sandbox_module
 from app.review.assistant.sandbox import (
+    MAX_FILE_BYTES,
     MAX_OUTPUT_CHARS,
     SCRATCH,
     UPLOADS,
@@ -33,6 +42,8 @@ from app.review.assistant.sandbox import (
     Workspace,
     cut_output,
     docker_image_ready,
+    folder_bytes,
+    open_sandbox,
     safe_file_name,
 )
 
@@ -162,6 +173,7 @@ def test_docker_command_line_keeps_the_locks(workspace: Workspace) -> None:
         "--memory 768m",
         "--cpus 1",
         "--user 65534:65534",
+        f"--ulimit fsize={MAX_FILE_BYTES}",
         f"source={workspace.work},target={UPLOADS},readonly",
         f"source={workspace.out},target={SCRATCH}",
     ):
@@ -169,3 +181,109 @@ def test_docker_command_line_keeps_the_locks(workspace: Workspace) -> None:
     assert argv[-3:] == ["bash", "-c", f"pdfinfo {UPLOADS}/x.pdf"]
     # No host environment is passed in: only the one HOME for the container's user.
     assert [argv[i + 1] for i, item in enumerate(argv) if item == "--env"] == [f"HOME={SCRATCH}"]
+
+
+# ---- no silent fallback (security audit 2026-10-18) ----------------------------------------------
+
+
+@pytest.mark.parametrize("prefer", ["auto", "docker"])
+def test_without_docker_there_is_no_shell_never_the_mac_sandbox(
+    workspace: Workspace, monkeypatch: pytest.MonkeyPatch, prefer: str
+) -> None:
+    monkeypatch.setattr(sandbox_module, "docker_image_ready", lambda *a, **k: False)
+    assert open_sandbox(workspace, prefer=prefer) is None
+
+
+def test_docker_is_chosen_when_it_answers(
+    workspace: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sandbox_module, "docker_image_ready", lambda *a, **k: True)
+    chosen = open_sandbox(workspace, prefer="auto", docker_limits=("2", "2g"))
+    assert isinstance(chosen, DockerSandbox) and chosen.memory == "2g"
+
+
+def test_the_mac_sandbox_runs_only_when_named(
+    workspace: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sandbox_module, "docker_image_ready", lambda *a, **k: False)
+    chosen = open_sandbox(workspace, prefer="macos")
+    if _MAC:
+        assert isinstance(chosen, MacSandbox)
+    else:
+        assert chosen is None
+
+
+def test_the_settings_default_never_names_the_mac_sandbox() -> None:
+    from app.config import Settings
+
+    fields = Settings.model_fields
+    assert fields["assistant_sandbox"].default == "auto"
+    assert fields["review_assistant_sandbox"].default == "auto"
+
+
+# ---- disk ------------------------------------------------------------------------------------------
+
+_WRITE_300_MB = "dd if=/dev/zero of=big.bin bs=1048576 count=300; echo exit=$?"
+
+
+def test_a_300_mb_write_fails_cleanly(workspace: Workspace) -> None:
+    """One file may not grow past `MAX_FILE_BYTES`: the write stops there, the command says so,
+    and the sandbox goes on."""
+    for sandbox in _backends(workspace):
+        result = sandbox.run(_WRITE_300_MB)
+        assert "exit=0" not in result.output, result.output
+        # Linux bash says "File size limit exceeded", macOS bash "Filesize limit exceeded".
+        said = re.search(r"file ?size limit exceeded|file too large", result.output, re.IGNORECASE)
+        assert said is not None, result.output
+        big = workspace.out / "big.bin"
+        assert not big.exists() or big.stat().st_size <= MAX_FILE_BYTES
+        big.unlink(missing_ok=True)
+        assert sandbox.run("echo still here").output.strip() == "still here"
+
+
+def test_filling_the_folders_past_their_limit_is_stopped(workspace: Workspace) -> None:
+    """Many files under the file-size limit: code measures the folders and stops the command."""
+    for sandbox in _backends(workspace):
+        sandbox.max_folder_bytes = 30_000_000
+        sandbox.timeout_seconds = 30
+        result = sandbox.run(
+            "for i in $(seq 1 40); do dd if=/dev/zero of=f$i.bin bs=1048576 count=4 2>/dev/null;"
+            " sleep 0.05; done; echo finished"
+        )
+        assert "finished" not in result.output
+        assert "would hold more than 30 MB" in result.output
+        # Stopped soon after the limit (one poll's writes over it at most).
+        assert folder_bytes([workspace.out]) < 30_000_000 + 25_000_000
+        cleaned = sandbox.run("rm -f f*.bin; echo cleaned")
+        assert cleaned.output.strip() == "cleaned"
+
+
+def test_the_disk_watch_stops_a_command_and_says_so(tmp_path: Path) -> None:
+    """Without any sandbox: the watch measures the writable folders while something writes."""
+    out = tmp_path / "out"
+    out.mkdir()
+    space = Workspace(root=tmp_path, work=tmp_path, out=out, file_names=())
+    stopped = threading.Event()
+    watch = sandbox_module._DiskWatch(space, stopped.set, limit=2_000_000, every=0.02)
+    with watch:
+        for n in range(10):
+            (out / f"f{n}.bin").write_bytes(os.urandom(500_000))
+            if stopped.wait(0.1):
+                break
+    assert stopped.is_set() and watch.over
+    assert "would hold more than 2 MB" in watch.note() and SCRATCH in watch.note()
+    quiet = sandbox_module._DiskWatch(space, lambda: None, limit=50_000_000, every=0.02)
+    with quiet:
+        (out / "small.txt").write_text("made up")
+    assert not quiet.over and quiet.note() == ""
+
+
+def test_a_command_may_delete_when_the_folders_are_already_over(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "old.bin").write_bytes(os.urandom(3_000_000))
+    space = Workspace(root=tmp_path, work=tmp_path, out=out, file_names=())
+    watch = sandbox_module._DiskWatch(space, lambda: None, limit=1_000_000, every=0.02)
+    with watch:
+        (out / "old.bin").unlink()
+    assert not watch.over

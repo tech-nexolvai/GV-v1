@@ -491,7 +491,7 @@ def test_the_leads_read_only_tools_run_together_and_reply_in_order(tmp_path: Pat
     # One user message with every result, in the order asked.
     results = outcome.api_content[2]["content"]
     assert [r["tool_use_id"] for r in results] == ["a", "b", "c"]
-    assert results[0]["content"][0]["text"].endswith("out slow")
+    assert results[0]["content"][0]["text"].endswith("out slow\n</drawing_data>")
     # The steps show in the order asked too.
     starts = [data["step"]["id"] for event, data in harness.events if event == "step_start"]
     assert starts == ["a", "b", "c"]

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { BarChart2, BookOpen, Files, ListChecks, Moon, SlidersHorizontal, SquarePen, Sun } from 'lucide-react';
+import { BarChart2, BookOpen, Files, History as HistoryIcon, ListChecks, Moon, SlidersHorizontal, SquarePen, Sun } from 'lucide-react';
 
 import { listPackages } from '@/api/client';
 import { liveReviewItemsApi } from '@/api/review-items';
@@ -36,6 +36,8 @@ const IN_REVIEW = new Set(['AWAITING_REVIEW', 'NEEDS_INPUT', 'CHANGES_REQUESTED'
 
 const PRIMARY_NAV: { id: Page; label: string; icon: typeof Files }[] = [
   { id: 'documents', label: 'Documents', icon: Files },
+  // Every item across the project's sets, rounds and checks, and the vendor scorecard (#1578).
+  { id: 'tracker', label: 'Tracker', icon: HistoryIcon },
   { id: 'rulebook', label: 'Rulebook', icon: BookOpen },
 ];
 

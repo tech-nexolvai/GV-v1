@@ -175,6 +175,25 @@ export function getUsageProviderCheck(projectId: string) {
   return request<UsageProviderChecks>(`/projects/${projectId}/usage/provider-check`);
 }
 
+/** The job tracker (#1578): every item found across the project's sets, rounds and checks. */
+export type Tracker = Get<'/api/v1/projects/{project_id}/tracker'>;
+export type TrackerItem = Tracker['items'][number];
+export type TrackerSet = Tracker['sets'][number];
+export type TrackerVendor = Tracker['vendors'][number];
+export function getTracker(projectId: string) {
+  return request<Tracker>(`/projects/${projectId}/tracker`);
+}
+
+/** The tracker's workbook (CSV where the server has no spreadsheet library), filtered like the screen. */
+export function trackerExportUrl(projectId: string, filters: { state?: string; packageId?: string | null; vendor?: string | null } = {}): string {
+  const query = new URLSearchParams();
+  if (filters.state && filters.state !== 'all') query.set('state', filters.state);
+  if (filters.packageId) query.set('package_id', filters.packageId);
+  if (filters.vendor) query.set('vendor', filters.vendor);
+  const search = query.toString();
+  return `${BASE}/projects/${projectId}/tracker.xlsx${search ? `?${search}` : ''}`;
+}
+
 export function getPackage(projectId: string, packageId: string) {
   return request<PackageDetail>(`/projects/${projectId}/packages/${packageId}`);
 }
