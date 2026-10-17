@@ -677,8 +677,8 @@ class MessageJob:
 
 
 _NO_SANDBOX: Final = (
-    "The chat's computer (the sandbox) is not running on this server, so Claude cannot open the "
-    "drawings. Start Docker Desktop (with the gv-assistant-sandbox image built), then ask again."
+    "The secure sandbox (Docker) is not running, so Claude cannot open the drawings. Start Docker "
+    "Desktop (with the gv-assistant-sandbox image built), then ask again."
 )
 _NO_UPLOADS: Final = (
     "The drawing set's PDFs could not be copied into the chat's computer. Please ask again; if it "

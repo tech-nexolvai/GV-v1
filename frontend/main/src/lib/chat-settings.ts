@@ -50,7 +50,7 @@ export function alwaysThinksWords(model: Pick<ChatModel, 'label'>): string {
 export function modelBlurb(model: Pick<ChatModel, 'id' | 'label'>): string {
   const name = `${model.id} ${model.label}`.toLowerCase();
   if (name.includes('fable')) return 'Hardest tasks · about 2.5× Opus cost';
-  if (name.includes('opus')) return 'Most capable for complex work';
+  if (name.includes('opus')) return 'Best for most review work';
   if (name.includes('sonnet')) return 'Smart, efficient model for everyday use';
   if (name.includes('haiku')) return 'Fastest model for daily tasks';
   return '';

@@ -251,7 +251,7 @@ def test_the_notes_block_puts_the_asked_pages_first_and_keeps_it_short() -> None
     assert block is not None
     lines = [line for line in block.splitlines() if line.startswith("- ")]
     assert len(lines) == MAX_NOTES
-    assert all(line.startswith("- p.3:") for line in lines[:6])
+    assert all(line.startswith("- p.3 [") for line in lines[:6])
     assert "reviewer's decision" in lines[0] or "reviewer's decision" in block
     assert "older notes not shown" in block and block.startswith("<set_notes>")
     assert "New notes" in (notes_block(rows[:1], new=True) or "")  # type: ignore[arg-type]
