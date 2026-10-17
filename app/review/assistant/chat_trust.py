@@ -87,6 +87,7 @@ __all__ = [
     "recorded_from",
     "recorded_missing",
     "rescored",
+    "round_item_key",
     "round_statuses",
     "shown_counts",
     "states_drawing_values",
@@ -671,6 +672,12 @@ def mark_compared(
 
 def _key(finding: Mapping[str, Any]) -> str:
     return re.sub(r"[^a-z0-9]+", " ", str(finding.get("item") or "").lower()).strip()
+
+
+def round_item_key(finding: Mapping[str, Any]) -> str:
+    """The words that link the same item across rounds (`round_statuses`): its item text, case,
+    spacing and punctuation aside. The job tracker (#1578) links rounds with the same key."""
+    return _key(finding)
 
 
 def round_statuses(findings: Sequence[Mapping[str, Any]]) -> dict[str, str]:

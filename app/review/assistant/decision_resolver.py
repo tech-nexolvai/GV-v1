@@ -27,8 +27,14 @@ the report. It takes every finding whose status is `check` ("Your decision") and
    - printed against printed: both values read at their spots by `verify_value` (code's $0
      witness), the same kind of size, not scaled, nothing saying they measure different things:
      Wrong, or Right within the drawing's precision (1/16");
-   - the newest round prints the architect's value: Right;
-   - the brand prototype prints the vendor's value and the lead says it matches: Right.
+   - the brand prototype prints the vendor's value, the lead says it matches, and code reads both
+     values at their spots: Right.
+
+   **No Right on the AI's word alone** (security audit 2026-10-18): every Right needs code's
+   witness (both values printed at their spots, the vendor's sum, GV's rule, or the drawings' own
+   legend line); without it the item stays "Your decision". A newer round's value quoted by the AI
+   is not printed at the item's spot, so it no longer settles an item by itself, and a decision
+   never joins a Right item that only the AI calls right.
 3. **A sharper read** where the only thing missing is the vendor's number (under GV's markup,
    uncertain, cut off): one Sonnet read at low effort on a crop without GV's markup proposes the
    value, and code compares only after `verify_value` confirms it is printed there. Capped
@@ -64,6 +70,7 @@ from app.review.assistant.finding_checks import (
     dimension_tokens,
     to_inches,
 )
+from app.review.assistant.witness import disagreement, witnesses
 
 __all__ = [
     "PRECISION",
@@ -159,7 +166,6 @@ _OTHER_TRADES: Final = frozenset(
 #: Tag families of the millwork GV reviews (stone, laminate, wood, solid surface, quartz).
 _MILLWORK: Final = frozenset({"ST", "LA", "WD", "PL", "PLAM", "SS", "QZ", "CT", "MW", "L", "WV"})
 _ROUND_ONE: Final = re.compile(r"\(\s*round\s*1\b[^)]*\)|round\s*1\s*:[^;)]*", re.IGNORECASE)
-_NEWER_ROUND: Final = re.compile(r"round\s*([2-9])\b[^:;]*:\s*([^;,)]+)", re.IGNORECASE)
 _SCALES_ABOUT: Final = re.compile(
     r"scal\w*\s+(?:about\s+|~\s*)?(\d+(?:\s+\d+/\d+)?\s*\"?)", re.IGNORECASE
 )
@@ -574,31 +580,10 @@ def _printed_vs_printed(finding: Mapping[str, Any], ctx: ResolverContext) -> _Se
     return _Settle("wrong", "printed_vs_printed", apart, seen)
 
 
-def _newest_round(finding: Mapping[str, Any], ctx: ResolverContext) -> _Settle | None:
-    """The vendor's newer round, quoted in the finding, prints the architect's printed value."""
-    match = _NEWER_ROUND.search(str(finding.get("vendor") or ""))
-    if match is None:
-        return None
-    newer = claim_value(match.group(2))
-    architect = _side_value(finding, "architect") or (finding.get("inches") or {}).get("architect")
-    if newer is None or architect is None:
-        return None
-    a, v = to_inches(str(architect)), to_inches(newer)
-    if a is None or v is None or abs(a - v) > PRECISION:
-        return None
-    if (finding.get("checks") or {}).get("printed_architect") != "match":
-        return None
-    return _Settle(
-        "right",
-        "newest_round",
-        f"round {match.group(1)} prints {newer}, the architect's {_inches_words(a)}: the vendor "
-        "fixed it.",
-    )
-
-
 def _prototype_prints_it(finding: Mapping[str, Any], ctx: ResolverContext) -> _Settle | None:
-    """The brand prototype prints the vendor's value and the lead says it matches: Right. When
-    code also reads both values at their spots, that is recorded as the printed witness."""
+    """The brand prototype prints the vendor's value and the lead says it matches: Right only when
+    code also reads both values at their spots (the printed witness). Without that it is the AI's
+    word alone, and the item stays (security audit 2026-10-18)."""
     if finding.get("source") != "brand_prototype":
         return None
     if not re.search(r"\bmatch(?:es|ed)?\b", str(finding.get("why") or ""), re.IGNORECASE):
@@ -613,17 +598,14 @@ def _prototype_prints_it(finding: Mapping[str, Any], ctx: ResolverContext) -> _S
             seen_vendor = (
                 _witness(finding, "vendor", vendor_value, ctx) if vendor_value is not None else None
             )
-            seen = (
-                {**seen_architect, **seen_vendor}
-                if seen_architect is not None and seen_vendor is not None
-                else {}
-            )
-            read = "; code reads both at their spots" if seen else ""
+            if seen_architect is None or seen_vendor is None:
+                return None
             return _Settle(
                 "right",
                 "prototype_prints_it",
-                f"the brand prototype prints {token}, the vendor's {_inches_words(vendor)}{read}.",
-                seen,
+                f"the brand prototype prints {token}, the vendor's {_inches_words(vendor)}; code "
+                "reads both at their spots.",
+                {**seen_architect, **seen_vendor},
             )
     return None
 
@@ -864,7 +846,10 @@ def _family(finding: Mapping[str, Any]) -> str:
 
 def _may_join(duplicate: Mapping[str, Any], other: Mapping[str, Any]) -> bool:
     """A decision joins an item compared with the same drawing; an item whose architect prints
-    nothing to compare may also join the same size compared with the brand prototype."""
+    nothing to compare may also join the same size compared with the brand prototype. It never
+    joins a Right item that only the AI calls right: that would make it Right on the AI's word."""
+    if other.get("status") == "same" and not _code_backs(other):
+        return False
     if _family(duplicate) == _family(other):
         return True
     return keep_reason(duplicate) == "architect_prints_nothing"
@@ -999,6 +984,23 @@ def _same_question(kept: Sequence[tuple[dict[str, Any], KeepReason]]) -> dict[st
     return folded
 
 
+def _backs_right(finding: Mapping[str, Any], settle: _Settle) -> bool:
+    """A Right settle has code's witness (security audit 2026-10-18): both values printed at their
+    spots, the vendor's sum, GV's rule, or the drawings' own legend line read by code; and no check
+    disagrees. Otherwise it would be the AI's word alone."""
+    if settle.method == "legend":
+        return True
+    checks = {**(finding.get("checks") or {}), **settle.checks}
+    return bool(witnesses(checks, "same")) and disagreement(checks, "same") is None
+
+
+def _code_backs(finding: Mapping[str, Any]) -> bool:
+    """A finding's own status has code's witness and no check against it."""
+    checks = finding.get("checks") or {}
+    status = finding.get("status")
+    return bool(witnesses(checks, status)) and disagreement(checks, status) is None
+
+
 def _settle_one(
     finding: Mapping[str, Any], ctx: ResolverContext
 ) -> tuple[_Settle | None, KeepReason | None, str | None]:
@@ -1020,7 +1022,6 @@ def _settle_one(
         reason = summed
     for later in (
         _printed_vs_printed(finding, ctx),
-        _newest_round(finding, ctx),
         _prototype_prints_it(finding, ctx),
     ):
         if later is not None:
@@ -1080,6 +1081,8 @@ def resolve(findings: Sequence[Mapping[str, Any]], ctx: ResolverContext) -> Reso
             continue
         current = changed.get(finding_id) or dict(finding)
         settle, reason, read_words = _settle_one(current, ctx)
+        if settle is not None and settle.outcome == "right" and not _backs_right(current, settle):
+            settle = None  # the AI's word alone never makes an item Right: it stays
         if settle is None:
             kept.append((current, reason or keep_reason(current), read_words))
             continue
