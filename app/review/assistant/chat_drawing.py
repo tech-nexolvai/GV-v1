@@ -29,7 +29,7 @@ from pypdf import PdfReader, PdfWriter
 from reportlab.lib.colors import Color, white  # type: ignore[import-untyped]
 from reportlab.pdfgen import canvas  # type: ignore[import-untyped]
 
-from app.review.assistant.chat_trust import cloud_kind, needs_text
+from app.review.assistant.chat_trust import CLOUD_WORDS, TRUST_WORDS, cloud_kind, needs_text
 
 __all__ = [
     "MARKUP_TITLE",
@@ -154,7 +154,10 @@ def _note_text(number: int, finding: Mapping[str, Any]) -> str:
         if needs != architect:
             text += f" (architect {architect})"
     else:
-        text = f"AI {number} ? Check: {finding.get('item')}: vendor {vendor}; architect {architect}"
+        text = (
+            f"AI {number} ? Your decision: {finding.get('item')}: vendor {vendor}; "
+            f"architect {architect}"
+        )
     return text if len(text) <= _NOTE_CHARS else text[: _NOTE_CHARS - 1] + "\u2026"
 
 
@@ -249,7 +252,8 @@ def _notes_pages(
 
 LEGEND: Final = (
     "Red cloud with a cross: the vendor's value is wrong; the note says what it needs to be. "
-    "Amber cloud with ?: to check. Right items are not clouded; they are listed below."
+    "Amber cloud with ?: needs your decision (the AI cannot call it right or wrong, or no "
+    "independent check confirmed its reading). Right items are not clouded; they are listed below."
 )
 
 
@@ -259,7 +263,7 @@ def markup_pdf(
     out: Path,
 ) -> None:
     """A copy of `source` with a cloud and a short note at each placed finding that is not right
-    (red: wrong, amber: to check), the draft stamp on page 1, and a legend and notes page listing
+    (red: wrong, amber: needs your decision), the draft stamp on page 1, and a legend and notes page listing
     every finding. `findings`: (number, finding, page, box, where) with `page`/`box` `None` when
     the finding cannot be placed on this file (`where` says why, for the notes page)."""
     writer = PdfWriter(clone_from=PdfReader(str(source)))
@@ -294,8 +298,10 @@ def markup_pdf(
         width, height = height, width
     lines: list[tuple[str, bool]] = [(LEGEND, False)]
     for number, finding, where in listed:
-        kind = {"wrong": "Wrong", "check": "To check", None: "Right"}[cloud_kind(finding)]
-        checked = str(finding.get("trust_level") or ("verified" if finding.get("verified") else ""))
+        kind = CLOUD_WORDS[cloud_kind(finding)]
+        level = finding.get("trust_level")
+        checked = TRUST_WORDS.get(str(level), str(level)) if level else ""
+        checked = checked or ("verified" if finding.get("verified") else "")
         vs = f" (architect page {finding['vs_page']})" if finding.get("vs_page") else ""
         head = f"AI {number}  page {finding.get('page')}{vs}  {finding.get('item')}  "
         lines.append((head + f"[{kind}{', ' + checked if checked else ''}]", True))
@@ -326,7 +332,7 @@ def check_report_pdf(
     not_checked: Sequence[str],
 ) -> None:
     """The full check's report: a cover (set, products, date, model and effort, counts, coverage,
-    trust), then What's wrong, To check, What's right and Not checked."""
+    trust), then What's wrong, Your decision, What's right and Not checked."""
     from xml.sax.saxutils import escape
 
     from reportlab.lib import colors  # type: ignore[import-untyped]
@@ -383,14 +389,14 @@ def check_report_pdf(
                     needs_text(f),
                     f.get("architect"),
                     f.get("source"),
-                    f.get("trust_level"),
+                    TRUST_WORDS.get(str(f.get("trust_level")), ""),
                 ]
                 for f in wrong
             ],
             [26, 34, 170, 90, 70, 90, 80, 60],
         ),
         (
-            f"To check ({len(check)})",
+            f"Your decision ({len(check)})",
             ["AI", "Page", "Item", "Vendor", "Architect", "Why", "Trust"],
             [
                 [
@@ -400,7 +406,7 @@ def check_report_pdf(
                     f.get("vendor"),
                     f.get("architect"),
                     f.get("why"),
-                    f.get("trust_level"),
+                    TRUST_WORDS.get(str(f.get("trust_level")), ""),
                 ]
                 for f in check
             ],

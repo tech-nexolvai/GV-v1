@@ -541,7 +541,7 @@ def test_the_csv_has_trust_columns_and_never_runs_a_formula() -> None:
     assert header[0] == "AI #" and "Trust" in header and "Second read" in header
     values = dict(zip(header, row, strict=True))
     assert values["Item"] == "'=HYPERLINK(1)"
-    assert values["Difference (in)"] == "9" and values["Trust"] == "likely"
+    assert values["Difference (in)"] == "9" and values["Trust"] == "Likely"
     assert values["Checked on drawing by Claude"] == "yes"
 
 
