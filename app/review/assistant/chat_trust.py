@@ -1065,7 +1065,8 @@ def accuracy(
                 "not_found": "not found at that spot",
             }.get(check, "could not be checked at a spot")
         breakdown.append({"claim": claim, "how": how, "points": points, "evidence_kind": kind})
-    item_unknowns = sum(1 for u in unknowns if u.get("scope") != "page")
+    # A set gap (#1584: a sheet the set lacks) is not this answer's work: not counted.
+    item_unknowns = sum(1 for u in unknowns if u.get("scope") not in ("page", "set"))
     base: dict[str, Any] = {
         "measured": ACCURACY_MEASURED_LINE,
         "calibration": ACCURACY_CALIBRATION_LINE,
