@@ -28,6 +28,8 @@ that set-up once per upload, in the background, and the agent sees it read-only 
   with `dims.json`. `measure_on_drawing` uses it when no calibration is given.
 - `notes.json`: each drawing's printed tags and notes (`drawing_notes.py`, from the phrases
   `dims.json` keeps), and the architect's tags the vendor's drawing does not print.
+- `pairs.json`: architect against vendor dimensions paired by drawn position (`dim_pairs.py`,
+  wrapping `extraction/architect/pairing.py`), each `same` or `different`.
 - `status.json`: `building`, `ready` or `failed`, and the steps done. The agent can work before
   the pack is ready (the first message never waits); the `zoom` tool makes the drawings-only copy
   it needs at once if the pack has not made it yet.
@@ -549,6 +551,9 @@ scales.json            each drawing's scale measured from its own printed dimens
                        Per label: drawn_in, off_by, drawn_to_value.
 notes.json             per drawing: the tags (WD-01, V-322-CUST) and notes it prints, and per
                        page the architect's tags the vendor's drawing does not print.
+pairs.json             architect against vendor dimensions paired by drawn position (both
+                       ends on each other's ticks at each drawing's measured scale, never by
+                       value), each same or different; and why a row could not be paired.
 status.json            building / ready / failed.
 hires/                 code's 300-dpi tiles of the pages zoom has cut from (not for reading:
                        zoom gives you any area sharp).
@@ -663,6 +668,7 @@ def write_dims(
 
     scales = import_module("app.review.assistant.view_scales")
     notes = import_module("app.review.assistant.drawing_notes")
+    pairs = import_module("app.review.assistant.dim_pairs")
     pages = {"pages": list(page_map)}
 
     def written(document: dict[str, Any]) -> None:
@@ -670,7 +676,10 @@ def write_dims(
             raise SystemExit(0)
         _write_json(folder / "dims.json", document)
         # Each drawing's scale, measured from its printed dimensions (a few milliseconds).
-        _write_json(folder / scales.SCALES_FILE, scales.set_scales(document))
+        measured = scales.set_scales(document)
+        _write_json(folder / scales.SCALES_FILE, measured)
+        # Architect against vendor dimensions paired by drawn position, compared exactly.
+        _write_json(folder / pairs.PAIRS_FILE, pairs.set_pairs(document, measured))
         # Each drawing's printed notes and tags (from the phrases dims.json keeps).
         _write_json(folder / notes.NOTES_FILE, notes.set_notes(document, pages))
 
