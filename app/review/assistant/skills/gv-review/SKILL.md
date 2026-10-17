@@ -1,6 +1,6 @@
 ---
 name: gv-review
-description: How GV reviews a vendor's shop drawings (millwork and furnishings; the products in focus are in products/) against the architect's drawings and GV's own rules. Read this before you answer any question about the drawing set in /mnt/user-data/uploads, compare the vendor with the architect, or make a marked-up PDF.
+description: How GV reviews a vendor's shop drawings (millwork and furnishings; the products in focus are in products/) against the architect's drawings and GV's own rules. Read this before you answer any question about the drawing set in /mnt/user-data/uploads, compare the vendor with the architect, or make a cloud drawing (a marked-up PDF).
 ---
 
 # GV review: the vendor's shop drawing against the architect's drawing
@@ -106,9 +106,9 @@ A page with no stamps is ordinary page content: render it as it is. Coloured ink
 stays in the copy; treat it as GV's.
 
 **A vendor number under GV's markup** (a yellow box, a cloud, a red note over it) is still the
-vendor's number to find, not "unreadable" at first sight: look in the drawings-only copy's text
-(`pdftotext -bbox`), `zoom` that spot at 300 dpi, and check its millimetres against its inches
-(`610 [24]`: 610 / 25.4 = 24). Only when all three fail: "unreadable", with the page and spot.
+vendor's number to find, not "unreadable" at first sight: `read_under_markup` on that spot (or
+the drawings-only text, `pdftotext -bbox`), `zoom` at 300 dpi, and its millimetres against its
+inches (`610 [24]`: 610 / 25.4 = 24). Only when all three fail: "unreadable", with the page and spot.
 
 ## 6. GV's rules first, then everything else against the architect
 
@@ -151,14 +151,16 @@ numbers ("pull-out drawers", "by others"): a note the vendor does not follow is 
   dropped or changed.
 - **Construction notes** the vendor contradicts, on the architect's or brand sheet ("toe kick
   integrated with door", "door to the floor", "pull-out drawers for bins", "metal lining").
-- **ID set vs brand prototype** conflicts: status `check`, "Your decision: which governs".
+- **ID set vs brand prototype** conflicts: status `check` (Your decision), `check_reason:
+  which_governs`.
 - **Scaled values**: where the architect prints no size, `measure_on_drawing` (two printed dimensions
-  of the same view) gives "about X (±T)": status `check`, never `different` (Wrong).
+  of the same view) gives "about X (±T)": status `check` (Your decision), never `different` (Wrong).
 - **Extent first**: before a height or width is Wrong, check what the architect's dimension spans
   (`measure_on_drawing` with `dimension`). Floor to the top of a box, soffit or blocking beyond the
-  unit is not the unit: status `check`, `check_reason: different_extent`.
-- **Printed vs printed is Wrong**: a vendor value PRINTED unlike the architect's PRINTED value for the
-  same span (counter height 34" vs 2'-9") is `different`, not `check`, unless a `check_reason` holds.
+  unit is not the unit: status `check` (Your decision), `check_reason: different_extent`.
+- **Printed vs printed is Wrong**: a vendor value printed unlike the architect's printed value for the
+  same span (counter height 34" vs 2'-9") is `different` (Wrong), not `check`, unless a
+  `check_reason` holds.
 - **GV's standards that are not on the drawing**: each product's file names the kinds; the values
   are in `rules.md`. A product with no published rule yet: report what the vendor shows, status
   `check`.
@@ -169,8 +171,8 @@ numbers ("pull-out drawers", "by others"): a note the vendor does not follow is 
 - **One item or one page pair** ("is the sink on pages 27-28 the architect's?"): you alone. Open
   only the pages asked (page map, then one `zoom` with every crop you need), 1-3 findings for the
   items asked (not the rest of the page), cite, answer, in a few turns.
-- **The whole set** ("what did the vendor get wrong?", a full check): helpers, by page pair.
-- **Batch**: the tool calls of one reply run at once; ask for all you need (8 crops per `zoom`).
+- **The whole set** ("what did the vendor get wrong?", a full check): helpers, by page pair. The
+  tool calls of one reply run at once: ask for all you need together (8 crops per `zoom`).
 
 ## 8a. Working the whole set
 
@@ -185,23 +187,22 @@ In a full check the app has done steps 1-3 (split, helpers, checklist): start at
    results on its pages as "already recorded: do not report them again, but still compare
    everything around them, the strings that build them too": a recorded item never closes its area.
 3. **The per-page checklist.** Each helper ends its report with one line per page,
-   `CHECKLIST p<N>: architect a/b; notes a/b; strings a/b; not compared: <what and why, or none>`:
-   every architect dimension (each segment) has the vendor's value at that spot or "not shown on
-   the vendor"; every architect note, callout and tag has what the vendor shows; every vendor
-   dimension string is recorded with `record_string` and every vendor value has an architect value
-   or "not on the architect"; where nothing is printed, counts and layout are compared; a round-2
-   page is compared with the architect and with round 1. A line with a gap is work left, not done.
-4. **Verify every lead yourself, in batches** (a helper's finding is a lead): one `zoom` call of
-   up to 8 crops checks 4 findings (both sides); then `update_finding` with `verified: true` (or correct it), or
-   `drop_finding` when it is wrong. A finding whose second read agrees and whose ledger adds up
-   needs no re-check from you. One you had no time to check stays unverified. **First** the gaps:
-   each "not compared" line and checklist gap in the helper reports and each re-check you planned;
-   a money or time cap can stop you before the end.
-5. **Whole-set questions cover every page pair** (section 7). Record every page with
-   `set_coverage`: same, different, not_comparable (note why) or not_opened (note why). The app
-   sends you back once if a page is not accounted for.
+   `CHECKLIST p<N>: architect a/b; notes a/b; strings a/b; not compared: <what and why, or none>`
+   (the helper brief says what each count covers). A line with a gap is work left, not done.
+4. **First** the gaps: each "not compared" line and checklist gap in the helper reports, and each
+   re-check you planned (a money or time cap can stop you before the end). Then **verify the leads,
+   in batches**: a helper's finding is a lead until something backs it; one `zoom` call of up to 8
+   crops checks 4 findings (both sides), then `update_finding` with `verified: true` (or correct
+   it), or `drop_finding` when it is wrong. A finding the app lists as backed (a second read
+   agrees, or a code check) needs no re-check; one you had no time to check stays unverified.
+5. **Whole-set questions cover every page pair** (section 7): every page in `set_coverage`
+   (not_comparable and not_opened with a note why); the app sends you back once for a page left out.
 
 ## 9. How to answer
+
+The reviewer's words: each item is **Wrong** (`status: different`), **Your decision** (`check`) or
+**Right** (`same`); a page nobody compared is **Not compared**. Trust (**Confirmed**, **Likely**,
+**AI reading only**) is scored by code from independent checks: never claim it yourself.
 
 - **Every difference is a finding**: `report_finding` for each, with the page, item, category (the
   product id of its `products/` file, or `other`),
@@ -220,7 +221,7 @@ In a full check the app has done steps 1-3 (split, helpers, checklist): start at
   `rule 1-2"`) and the `vendor_box` is the spot of the vendor value the rule read. The app sends
   you back, naming them, for findings with a value and no box.
 - **One rule, one page, one finding** (narrow questions): when one GV rule applies to several values
-  on the same page (the fillers on page 8), report ONE finding that lists the values (vendor
+  on the same page (the fillers on page 8), report one finding that lists the values (vendor
   `1 1/2", 2", 3"`, architect `rule 1-2"`, why `one filler too wide: 3"`), with a `vendor_box`
   around them, not one finding per value. Give a value its own finding only to show it is wrong.
 - Every other value you state from a drawing (a size, a count, a page count): back it with `cite`
@@ -237,22 +238,21 @@ In a full check the app has done steps 1-3 (split, helpers, checklist): start at
   findings. If code says a string does not add up, re-read it once, record it again (`replaces`).
 - Sets in rounds (a first and a later submittal): give each finding its `round` (1, 2, ...) and
   name the same item the same way in every round, so the app can link them.
-- Match the question (yes/no: one line; a comparison: the findings plus two plain lines at most).
-  No preamble, no disclaimer. One line on what you did not check when it matters. Unclear: ask.
 - Never write pass, fail, approved or signed off: GV's code records, a GV reviewer decides.
 
-## 10. Boxes, and the marked-up PDF
+## 10. Boxes, and the cloud drawing
 
-A box is where the value is printed: `{page, x0, y0, x1, y1}` in PDF points of the page as shown,
-origin top-left, a little larger than the number. Give `file` only when the set has more than one
-PDF and the box is not on the default (architect box: the architect's file; vendor box: the vendor's).
+A box is where the value is printed, a little larger than the number: `{page, x0, y0, x1, y1}` in
+PDF points (1/72 inch) of the page as displayed (rotation applied), origin top-left, y down (a
+finding's box without `page` is on its page). Give `file` only with 2+ PDFs when the box is not on
+its default (architect box: the architect's file; vendor box: the vendor's).
 `pdftotext -f N -l N -bbox F.pdf /home/claude/words.html` lists each word's box in exactly these
 units (it also reads text inside stamps). For a number drawn as lines, measure it on a picture:
 points = pixels x 72 / dpi (add the crop's offset when you rendered part of a page).
 
-The reviewer's **Download marked-up PDF** button draws, by code, a red cloud and a note at each
-finding's vendor box (else its architect box) on a copy of the vendor's PDF, the stamp
-"AI markup: draft, not GV's signed review" on page 1 and a notes page. So when asked for a marked-up PDF,
-report the findings with good boxes and say the button under the answer makes it. Draw one
-yourself (reportlab and pypdf on a copy, never the upload, saved in `/mnt/user-data/outputs/`; the
-same stamp and notes page; check it by rendering; `present_files`) only for what the button lacks.
+The app makes the **cloud drawing** (the marked-up PDF) by code from the findings, on a copy of the
+vendor's PDF: a red cloud and note at each Wrong item's box, a numbered amber circle for each
+Your-decision item, the stamp "AI markup: draft, not GV's signed review" and notes pages. So when
+asked for a marked-up PDF, report the findings with good boxes and say the cloud drawing under the
+answer has them. Draw one yourself (reportlab and pypdf on a copy, never the upload, saved in
+`/mnt/user-data/outputs/`; the same stamp; `present_files`) only for what the cloud drawing lacks.

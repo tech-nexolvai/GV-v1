@@ -66,9 +66,11 @@ from app.review.assistant.sandbox import (
     cut_output,
     view_path,
 )
+from app.review.assistant.tool_schema import box_schema, point_schema
 
 __all__ = [
     "COMPARE_ROUNDS",
+    "HELPERS_PER_TURN",
     "HELPER_FOOTER_MARK",
     "HELPER_SYSTEM_PROMPT",
     "HELPER_TOOLS",
@@ -93,6 +95,10 @@ _log = logging.getLogger(__name__)
 
 #: Helpers run at once by default (`GV_ASSISTANT_MAX_PARALLEL_AGENTS`, at most 12).
 MAX_AGENTS: Final = 8
+#: Helpers one lead reply may start (#1555): those over the parallel limit wait for a free place in
+#: the same turn; only calls past this many come back "Not run". The engine uses it; the Agent
+#: tool's description says it.
+HELPERS_PER_TURN: Final = 20
 #: Crops one `zoom` call draws (both sides of four findings).
 MAX_ZOOM_CROPS: Final = 8
 #: Sandbox commands one message runs at the same time (helpers' parallel tools included).
@@ -127,45 +133,55 @@ _MAX_TASKS: Final = 50
 _MAX_SUBJECT: Final = 120
 _MAX_LABEL: Final = 160
 
+#: The helpers' tools by name (the `Agent` description and the helper prompt name them; a test
+#: keeps this list the same as `HELPER_TOOLS`).
+HELPER_TOOL_NAMES: Final = (
+    "bash_tool",
+    "view",
+    "zoom",
+    "create_file",
+    "str_replace",
+    "report_finding",
+    "set_coverage",
+    "record_string",
+    "record_reading",
+    "verify_value",
+    "measure_on_drawing",
+    "read_under_markup",
+)
+
 LEAD_SYSTEM_PROMPT: Final = f"""\
 You are Claude, an AI assistant made by Anthropic, working inside GV Review. Graniti Vicentia (GV) \
-reviews vendors' shop drawings against the architect's drawings. A GV reviewer is chatting with \
-you about one drawing set.
+reviews vendors' shop drawings against the architect's drawings. A GV \
+reviewer is chatting with you about one drawing set: you find and explain differences; the \
+reviewer decides.
 
-You have a Linux computer with no internet access:
+Your Linux computer has no internet access:
 - {UPLOADS}: the drawing set's PDFs (read-only).
-- {SCRATCH}: your working folder. Its files stay for the whole chat.
-- {OUTPUTS}: files for the reviewer. Make them here, then hand them over with present_files.
-- {SKILLS}: how GV reviews drawings, and this set's rules (read-only). Read {SKILLS}/SKILL.md \
-first, before you review, compare or mark up drawings.
 - {SET_PACK}: made by code (read-only): page_map.json (whose drawing is on each page), \
-drawings-only PDFs, page pictures. Use it; never rebuild it.
+drawings-only PDFs, page pictures. Use it instead of building your own.
+- {SKILLS}: how GV reviews drawings, and this set's rules (read-only). Read {SKILLS}/SKILL.md \
+before you review, compare or mark up drawings.
+- {SCRATCH}: your working folder, kept for the whole chat. {OUTPUTS}: files for the reviewer, \
+handed over with present_files.
 
-Your tools: bash_tool runs a command (poppler, and Python with pypdf, pdfplumber, pypdfium2, \
-Pillow, reportlab, matplotlib and openpyxl); view shows you a picture, a text file or a folder; \
-zoom crops up to {MAX_ZOOM_CROPS} areas of pages at once, sharp, GV's markup hidden; \
-read_under_markup shows what GV's markup covers in one area (and the drawing's text there); \
-create_file and str_replace write files in {SCRATCH} or {OUTPUTS}; present_files hands files to \
-the reviewer; TaskCreate and TaskUpdate keep a task list the reviewer sees; Agent starts a helper \
-with the same reading tools (several run at once: give each its pages, and check what a helper \
-reports before you state it); \
-review_results reads what GV Review's own checks recorded for this set; report_finding records \
-each difference you find, with boxes so the app crops the evidence, checks it and draws the table \
-(update_finding, drop_finding as you check); set_coverage records the pages you compared (a \
-whole-set answer accounts for every page); dismiss_recorded sets aside a difference GV Review \
-recorded, with your reason; cite backs any other value you state with where it is printed; \
-verify_value checks a value and measure_on_drawing scales a length, by code ($0). \
-Record every dimension string with record_string and every value you read with record_reading.
-
-Three GV facts:
+GV facts:
 - Measurements are in inches. Answer in inches.
-- GV's markup (annotations GV reviewers added to the PDFs: clouds, boxes, coloured notes) is GV's \
-notes, never the vendor's or the architect's numbers.
+- The architect's drawing (the ID set) is the design; the vendor's shop drawing is what you check.
+- GV's markup (anything coloured that GV's reviewers added: clouds, boxes, notes) is GV's \
+comments, never the vendor's or the architect's number.
 - You cannot change the review. Nothing you do records a result; the reviewer decides and signs off.
 
-Work fast: the tool calls of one reply run at once, so ask for all you need together (all crops \
-in one zoom). Scale to the question: a fact, 1-3 calls; one item or one page pair, you alone, only \
-those pages, 1-3 findings; helpers only for the whole set, by page pair.
+The reviewer's words: each compared item is Wrong, Your decision or Right (report_finding's \
+status different, check, same); a page nobody compared is Not compared. How far a finding can be \
+trusted (Confirmed, Likely, AI reading only) is scored by code from independent checks, so never \
+claim it yourself.
+
+Scale the work to the question: a fact, 1-3 tool calls; one item or one page pair, you alone, \
+only those pages; the whole set, helpers by page pair, and set_coverage for every page. The tool \
+calls of one reply run at the same time, so ask for everything you need together. A helper's \
+finding is a lead: verify it on the drawing before you state it (update_finding or \
+drop_finding), unless the app lists it as backed by a second read or a code check.
 
 How to answer: match the question. A yes/no or a number: one line. "Summarize": one or two lines. \
 A list: a short list. A comparison: report_finding for each item, then at most two plain lines; \
@@ -178,44 +194,56 @@ You are a helper agent working for Claude inside GV Review, on part of one drawi
 shop drawings (the products in focus are in {SKILLS}/products/). You share Claude's Linux \
 computer (no internet access): the \
 PDFs read-only in {UPLOADS}, the set pack in {SET_PACK} (page_map.json, drawings-only PDFs, page \
-pictures), the working folder {SCRATCH}, {OUTPUTS}, and GV's review skill in {SKILLS} (read \
-SKILL.md there when your task is a review). Your tools: bash_tool, view, zoom, create_file, \
-str_replace, report_finding, set_coverage, record_string, record_reading, read_under_markup \
-(what GV's markup covers in one area), verify_value (code \
-reads the number printed in a box, $0: check a value before you report it) and measure_on_drawing \
-(code scales a length against printed dimensions, $0). Tool calls of one \
-reply run at the same time: ask for all the crops you need in one zoom call.
+pictures), your working folder {SCRATCH}, and GV's review skill in {SKILLS} (read SKILL.md there \
+when your task is a review).
 
-Do the task you are given. Record each difference you find with report_finding: both values as \
-printed, and boxes (PDF points of the page as shown, origin top-left) so the app can crop the \
-evidence. Record the pages you compared with set_coverage. Record every dimension string with \
-record_string and every value you read with record_reading (code adds them up). Then reply with \
-your report in markdown (at most 300 words): what you found, with page numbers and the values as \
-printed, and what you could not read or did not get to. Measurements are in inches. GV's markup \
-(annotations GV reviewers added to the PDFs) is GV's notes, never the \
-vendor's or the architect's numbers. Never guess a number you cannot read."""
+Do the task in your brief, on your pages only. Record each item your brief asks you to compare \
+with report_finding (both values as printed, in inches, each with its box), the pages you \
+compared with set_coverage, and every dimension string and value you read with record_string and \
+record_reading (code adds them up and compares them). The lead verifies your findings. The tool \
+calls of one reply run at the same time: ask for all the crops you need in one zoom call.
+
+Then reply with your report in markdown, within the length the app's note gives: what you found, \
+with page numbers and the values as printed, and what you could not read or did not get to. GV's \
+markup (anything coloured that GV's reviewers added) is GV's comments, never the vendor's or the \
+architect's number. Never guess a number you cannot read: say where it is unreadable."""
 
 _BASH: Final[Mapping[str, Any]] = {
     "name": "bash_tool",
     "description": (
-        "Run a bash command on the Linux computer (no internet access; a time limit per "
-        "command; long output is cut at about 20 KB)."
+        "Run one bash command on the Linux computer: poppler (pdfinfo, pdftotext, pdftoppm) and "
+        "Python with pypdf, pdfplumber, pypdfium2, Pillow, reportlab, matplotlib and openpyxl. "
+        "Use it to search the PDFs' text (pdftotext -bbox gives each word's box in the units "
+        "the other tools use), list or read files, or make a file. No internet; 60 seconds per "
+        "command; output over 20,000 characters is cut. Use zoom, not a rendered page, to read "
+        "numbers. Returns the exit status and the output. "
+        'Example: {"command": "pdftotext -f 7 -l 7 -bbox /mnt/user-data/set/A_drawings_only.pdf '
+        '/home/claude/p7.html", "description": "Word boxes of page 7"}'
     ),
     "input_schema": {
         "type": "object",
         "additionalProperties": False,
         "required": ["command", "description"],
         "properties": {
-            "command": {"type": "string", "description": "Bash command to run"},
-            "description": {"type": "string", "description": "Why I'm running this command"},
+            "command": {"type": "string", "description": "The bash command to run"},
+            "description": {
+                "type": "string",
+                "description": "Why you run it, a few words (shown to the reviewer)",
+            },
         },
     },
 }
 _VIEW: Final[Mapping[str, Any]] = {
     "name": "view",
     "description": (
-        "View a picture (png, jpg, gif, webp: shown to you), a text file (numbered lines; "
-        "view_range [start_line, end_line] for part of it) or a folder (two levels deep)."
+        "Look at a file: a picture (png, jpg, gif, webp) is shown to you, a text file comes back "
+        "with numbered lines (view_range for part of it), a folder is listed two levels deep. Use "
+        "it for the set pack's page pictures (pages/<upload name without .pdf>/p-NNN.png, 100 dpi, "
+        "e.g. /mnt/user-data/set/pages/Set_A/p-003.png) and contact sheets, the skill's files and "
+        "your own files; use zoom instead to read numbers. Returns the picture, the text or the "
+        "listing, or 'Refused: <why>' with where the files really are. "
+        'Example: {"path": "/mnt/user-data/set/page_map.json", "description": "Whose drawing is '
+        'on each page"}'
     ),
     "input_schema": {
         "type": "object",
@@ -223,10 +251,13 @@ _VIEW: Final[Mapping[str, Any]] = {
         "required": ["path", "description"],
         "properties": {
             "path": {"type": "string", "description": "Absolute path to a file or folder"},
-            "description": {"type": "string", "description": "Why I need to view this"},
+            "description": {
+                "type": "string",
+                "description": "Why you look at it, a few words (shown to the reviewer)",
+            },
             "view_range": {
                 "type": "array",
-                "items": {"type": "integer"},
+                "items": {"type": "integer", "description": "A line number (from 1; -1 = end)"},
                 "minItems": 2,
                 "maxItems": 2,
                 "description": "Optional [start_line, end_line] of a text file (from 1; -1 = end)",
@@ -236,32 +267,52 @@ _VIEW: Final[Mapping[str, Any]] = {
 }
 _CREATE: Final[Mapping[str, Any]] = {
     "name": "create_file",
-    "description": f"Create a file (or overwrite one) in {SCRATCH} or {OUTPUTS}.",
+    "description": (
+        f"Create a file, or overwrite one, in {SCRATCH} (your working files) or {OUTPUTS} "
+        "(files for the reviewer; hand them over with present_files). Nothing else is writable. "
+        "Use it for scripts, notes and files the reviewer asked for. Returns the path written, "
+        "or 'Refused: <why>'. "
+        'Example: {"path": "/home/claude/sum.py", "file_text": "print(12 + 15.5 + 18)", '
+        '"description": "Add the string"}'
+    ),
     "input_schema": {
         "type": "object",
         "additionalProperties": False,
         "required": ["description", "path", "file_text"],
         "properties": {
-            "description": {"type": "string", "description": "Why I'm creating this file"},
+            "description": {
+                "type": "string",
+                "description": "Why you create it, a few words (shown to the reviewer)",
+            },
             "path": {"type": "string", "description": "Absolute path of the file to create"},
-            "file_text": {"type": "string", "description": "The file's content"},
+            "file_text": {"type": "string", "description": "The file's whole content"},
         },
     },
 }
 _REPLACE: Final[Mapping[str, Any]] = {
     "name": "str_replace",
     "description": (
-        f"Replace a string in a file in {SCRATCH} or {OUTPUTS}. old_str must appear exactly once "
-        "in the file."
+        f"Replace one exact piece of text in a file in {SCRATCH} or {OUTPUTS}. old_str must "
+        "appear exactly once in the file; an empty or missing new_str deletes it. Use it for a "
+        "small edit instead of rewriting the file with create_file. Returns a confirmation, or "
+        "'Refused: <why>' (not found, or found more than once). "
+        'Example: {"path": "/home/claude/sum.py", "old_str": "18)", "new_str": "18.5)", '
+        '"description": "Fix the last part"}'
     ),
     "input_schema": {
         "type": "object",
         "additionalProperties": False,
         "required": ["description", "path", "old_str"],
         "properties": {
-            "description": {"type": "string", "description": "Why I'm making this edit"},
+            "description": {
+                "type": "string",
+                "description": "Why you edit it, a few words (shown to the reviewer)",
+            },
             "path": {"type": "string", "description": "Absolute path of the file to edit"},
-            "old_str": {"type": "string", "description": "The text to replace (unique)"},
+            "old_str": {
+                "type": "string",
+                "description": "The exact text to replace (must appear once)",
+            },
             "new_str": {
                 "type": "string",
                 "description": "The text to put in its place (empty to delete)",
@@ -272,8 +323,11 @@ _REPLACE: Final[Mapping[str, Any]] = {
 _PRESENT: Final[Mapping[str, Any]] = {
     "name": "present_files",
     "description": (
-        f"Hand files to the reviewer as downloads. Give paths in {OUTPUTS} (a file in {SCRATCH} "
-        "is copied there first)."
+        f"Hand files to the reviewer as downloads under your answer. Use it only for a file the "
+        f"reviewer asked for and the app does not make itself (the app makes the cloud drawing "
+        f"and the check report). Give paths in {OUTPUTS} (a file in {SCRATCH} is copied there "
+        "first). Returns the files handed over, or 'Refused: <why>'. "
+        'Example: {"filepaths": ["/mnt/user-data/outputs/fillers.xlsx"]}'
     ),
     "input_schema": {
         "type": "object",
@@ -282,7 +336,7 @@ _PRESENT: Final[Mapping[str, Any]] = {
         "properties": {
             "filepaths": {
                 "type": "array",
-                "items": {"type": "string"},
+                "items": {"type": "string", "description": "An absolute path"},
                 "minItems": 1,
                 "description": "Absolute paths of the files to hand over",
             }
@@ -291,43 +345,65 @@ _PRESENT: Final[Mapping[str, Any]] = {
 }
 _TASK_CREATE: Final[Mapping[str, Any]] = {
     "name": "TaskCreate",
-    "description": "Add a task to your task list (the reviewer sees it as Progress).",
+    "description": (
+        "Add a task to your task list, which the reviewer sees as Progress. Use it for a "
+        "whole-set answer with several steps (a short plan, one task per step); a narrow "
+        "question needs none. Returns 'Task #1 created: <subject>' (its id is 1). "
+        'Example: {"subject": "Compare pages 3-9", "description": "Helpers by page pair", '
+        '"activeForm": "Comparing pages 3-9"}'
+    ),
     "input_schema": {
         "type": "object",
         "additionalProperties": False,
         "required": ["subject", "description"],
         "properties": {
-            "subject": {"type": "string", "description": "A brief title for the task"},
+            "subject": {"type": "string", "description": "A short title for the task"},
             "description": {"type": "string", "description": "What needs to be done"},
             "activeForm": {
                 "type": "string",
-                "description": "Present continuous form shown while in progress",
+                "description": "The title in the present continuous, shown while it is running",
             },
         },
     },
 }
 _TASK_UPDATE: Final[Mapping[str, Any]] = {
     "name": "TaskUpdate",
-    "description": "Update a task's status: pending, in_progress or completed.",
+    "description": (
+        "Change a task's status on your task list (the reviewer sees it as Progress). Use it as "
+        "you work: in_progress when you start a task, completed when it is done. Returns 'Task #1 is now completed.' or 'Refused: <why>'. "
+        'Example: {"taskId": "1", "status": "completed"}'
+    ),
     "input_schema": {
         "type": "object",
         "additionalProperties": False,
         "required": ["taskId", "status"],
         "properties": {
             "taskId": {"type": "string", "description": "The task's id from TaskCreate"},
-            "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]},
+            "status": {
+                "type": "string",
+                "enum": ["pending", "in_progress", "completed"],
+                "description": "The task's new status",
+            },
         },
     },
 }
 _AGENT: Final[Mapping[str, Any]] = {
     "name": "Agent",
     "description": (
-        "Start a helper agent with bash_tool, view, zoom, read_under_markup, create_file, "
-        "str_replace, report_finding, set_coverage, record_string and record_reading on this "
-        "computer. Agent calls in one turn run at the same time; each "
-        "returns a short report to you. Use helpers only for whole-set work: split it by page "
-        "pair, 3-5 pages per helper, all helpers in one turn. A question about one item or one "
-        "page pair needs no helper."
+        "Start a helper agent: another model with its own context and the tools "
+        f"{', '.join(HELPER_TOOL_NAMES)}, on this computer. Use helpers only for whole-set work: "
+        "split the set by page pair, 3-5 pages per helper, and start them all in one reply. Up "
+        f"to {MAX_AGENTS} run at once (fewer if the deployment says so); the others wait for a free "
+        f"place in the same turn, up to {HELPERS_PER_TURN} in one reply (a call past that comes back "
+        "'Not run': start it in your next reply). A question about one item or one "
+        "page pair needs no helper. The app adds to each brief its pages from the page map, "
+        "where the pictures are, the zoom tool, a budget and the report's length. Returns the "
+        "helper's report and the findings it recorded (leads: verify them before you state "
+        "them). "
+        'Example: {"description": "Compare pages 12-15", "prompt": "Objective: compare the '
+        "vendor's countertops on pages 12-15 with the architect's... Output: report_finding for "
+        "each difference, set_coverage for each page... Sources: SKILL.md sections 4, 5, 7... "
+        'Boundaries: only pages 12-15; never guess a number."}'
     ),
     "input_schema": {
         "type": "object",
@@ -344,17 +420,16 @@ _AGENT: Final[Mapping[str, Any]] = {
                     "The helper's brief, in four parts. Objective: what to compare and why, and "
                     'its pages ("pages 12-15"). Output: what to record (report_finding with '
                     "boxes for each difference, set_coverage for each page) and what to report. "
-                    "Tools and sources: which files and pages, what to read in the skill. "
-                    "Boundaries: what not to do (other pages, guesses). The app adds where the "
-                    "pictures are, the page map of its pages, the zoom tool and its budget."
+                    "Sources: which files and pages, what to read in the skill. Boundaries: "
+                    "what not to do (other pages, guesses)."
                 ),
             },
             "model": {
                 "type": "string",
                 "enum": ["opus", "sonnet", "haiku"],
                 "description": (
-                    "Optional model for this agent. Default: sonnet (opus only for a hard visual "
-                    "check)"
+                    "Optional model for this helper. Default: sonnet (opus only for a hard "
+                    "visual check)"
                 ),
             },
         },
@@ -363,9 +438,14 @@ _AGENT: Final[Mapping[str, Any]] = {
 _ZOOM: Final[Mapping[str, Any]] = {
     "name": "zoom",
     "description": (
-        f"Look closely at 1-{MAX_ZOOM_CROPS} areas of the drawings in one call: each crop is drawn "
-        "from the drawings-only copy (GV's markup hidden) at the sharpest dpi that fits (300 dpi "
-        "for a small area) and comes back as its own picture. Ask for every area you need at once."
+        f"Look closely at 1-{MAX_ZOOM_CROPS} areas of the drawings in one call. Each crop is "
+        "drawn from the drawings-only copy (GV's markup hidden) at the sharpest dpi that fits "
+        "(300 dpi for a small area). Use it to read numbers and to look at both sides of a "
+        f"finding; ask for every area you need at once (both sides of {MAX_ZOOM_CROPS // 2} "
+        "findings in one call). Returns one picture per crop, with its label. "
+        'Example: {"crops": [{"page": 6, "box": {"x0": 380, "y0": 280, "x1": 470, "y1": 330}, '
+        '"label": "architect top depth"}, {"page": 7, "box": {"x0": 490, "y0": 270, "x1": 580, '
+        '"y1": 320}, "label": "vendor top depth"}], "description": "Read both depths"}'
     ),
     "input_schema": {
         "type": "object",
@@ -376,28 +456,14 @@ _ZOOM: Final[Mapping[str, Any]] = {
                 "type": "array",
                 "minItems": 1,
                 "maxItems": MAX_ZOOM_CROPS,
+                "description": "The areas to look at",
                 "items": {
                     "type": "object",
                     "additionalProperties": False,
                     "required": ["page", "box"],
                     "properties": {
                         "page": {"type": "integer", "minimum": 1, "description": "Page (from 1)"},
-                        "box": {
-                            "type": "object",
-                            "additionalProperties": False,
-                            "required": ["x0", "y0", "x1", "y1"],
-                            "properties": {
-                                "x0": {"type": "number"},
-                                "y0": {"type": "number"},
-                                "x1": {"type": "number"},
-                                "y1": {"type": "number"},
-                            },
-                            "description": (
-                                "The area in PDF points of the page as shown, origin top-left "
-                                "(as pdftotext -bbox and page_map.json give; points = pixels x "
-                                "72 / dpi on a page picture)"
-                            ),
-                        },
+                        "box": box_schema("The area to crop."),
                         "file": {
                             "type": "string",
                             "description": "The upload's file name, when the set has more than one",
@@ -412,22 +478,33 @@ _ZOOM: Final[Mapping[str, Any]] = {
                 "maximum": 600,
                 "description": "Optional lower dpi; the app never goes over what fits",
             },
-            "description": {"type": "string", "description": "Why I'm zooming in"},
+            "description": {
+                "type": "string",
+                "description": "Why you zoom, a few words (shown to the reviewer)",
+            },
         },
     },
 }
 _RESULTS: Final[Mapping[str, Any]] = {
     "name": "review_results",
     "description": (
-        "What GV Review's own checks recorded for this drawing set (decided by code): the review "
-        "list, failures with their reasons, checks not run, the AI page review's rows and the "
-        "job's values. Give a page for that page only."
+        "Read what GV Review's own checks recorded for this drawing set (decided by code, "
+        "read-only): the review list, failures with their reasons, checks not run, the AI page "
+        "review's rows (rows marked unsure or not_shown are leads, not results) and the job's "
+        "values. Use it before you judge the set or a page, and quote what it recorded as "
+        "recorded. Give page for that page only. Returns the recorded results as JSON. "
+        'Example: {"page": 8}'
     ),
     "input_schema": {
         "type": "object",
         "additionalProperties": False,
+        "required": [],
         "properties": {
-            "page": {"type": "integer", "description": "A page number (from 1); omit for all"}
+            "page": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "A page number (from 1); leave it out for the whole set",
+            }
         },
     },
 }
@@ -436,19 +513,31 @@ _RESULTS: Final[Mapping[str, Any]] = {
 COMPARE_ROUNDS: Final[Mapping[str, Any]] = {
     "name": "compare_rounds",
     "description": (
-        "Compare two rounds of the vendor's drawing (e.g. 'First set of comments' and 'Second set "
-        "of comments') by code, pixel by pixel with GV's markup removed: where the drawing changed, "
-        "and for this answer's findings on the round-1 page whether their spot changed. Give "
-        "round1_page; round2_page is found from the headings when omitted. Give neither to list "
-        "the round pairs in the set. Zones say WHERE ink changed, not the new value: read the "
-        "number in a zone before saying what the vendor changed."
+        "Compare two rounds of the vendor's drawing (a first submittal and a later one) by code, "
+        "pixel by pixel with GV's markup removed ($0, no AI). Use it when the set holds rounds "
+        "and the question is what the vendor changed or fixed. Give neither page to list the "
+        "round pairs in the set; give round1_page (round2_page is found from the headings when "
+        "omitted) to compare a pair. Returns the change zones (where ink changed, as boxes on "
+        "both rounds, plus a picture of the overlay), and for this answer's findings on the "
+        "round-1 page whether their spot changed. A zone says WHERE ink changed, not the new "
+        "value: read the number in a zone before saying what the vendor changed. "
+        'Example: {"round1_page": 31, "round2_page": 32}'
     ),
     "input_schema": {
         "type": "object",
         "additionalProperties": False,
+        "required": [],
         "properties": {
-            "round1_page": {"type": "integer", "description": "Page of the earlier round (from 1)"},
-            "round2_page": {"type": "integer", "description": "Page of the later round (from 1)"},
+            "round1_page": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Page of the earlier round (from 1)",
+            },
+            "round2_page": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Page of the later round (from 1)",
+            },
             "round1_file": {
                 "type": "string",
                 "description": "Upload holding round 1, when the set has 2+ PDFs",
@@ -460,14 +549,18 @@ COMPARE_ROUNDS: Final[Mapping[str, Any]] = {
         },
     },
 }
+
 #: `verify_value` (#1531): code reads the number printed at a spot, $0, no AI.
 VERIFY_VALUE: Final[Mapping[str, Any]] = {
     "name": "verify_value",
     "description": (
         "Check one number before you report it: code reads what the drawing prints inside a box "
         "($0, no AI): first the drawing's text, else the vendor's drawn ink by two OCR engines (a "
-        "few seconds). Answers match, mismatch (with what the drawing prints there) or "
-        "cannot_read (with why). One value per call; draw the box tight round that one dimension."
+        "few seconds). Use it for each value you are about to put in a finding, one value per "
+        "call, with the box drawn tight round that one dimension. Returns match, mismatch (with "
+        "what the drawing prints there) or cannot_read (with why). "
+        'Example: {"page": 7, "box": {"x0": 515, "y0": 288, "x1": 545, "y1": 300}, '
+        '"expected": "24\\""}'
     ),
     "input_schema": {
         "type": "object",
@@ -475,18 +568,7 @@ VERIFY_VALUE: Final[Mapping[str, Any]] = {
         "required": ["page", "box", "expected"],
         "properties": {
             "page": {"type": "integer", "minimum": 1, "description": "Page (from 1)"},
-            "box": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["x0", "y0", "x1", "y1"],
-                "properties": {
-                    "x0": {"type": "number"},
-                    "y0": {"type": "number"},
-                    "x1": {"type": "number"},
-                    "y1": {"type": "number"},
-                },
-                "description": "PDF points of the page as shown, origin top-left",
-            },
+            "box": box_schema("Tight round the one value."),
             "expected": {
                 "type": "string",
                 "description": 'The one value, as printed (46", 3\'-10", 1168 [46])',
@@ -498,34 +580,36 @@ VERIFY_VALUE: Final[Mapping[str, Any]] = {
         },
     },
 }
-_POINT: Final[Mapping[str, Any]] = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["x", "y"],
-    "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
-    "description": "PDF points of the page as shown, origin top-left",
-}
+_POINT: Final[Mapping[str, Any]] = point_schema("A point on the page")
 _SPAN: Final[Mapping[str, Any]] = {
     "type": "object",
     "additionalProperties": False,
     "required": ["from", "to", "printed"],
     "properties": {
-        "from": _POINT,
-        "to": _POINT,
+        "from": point_schema("One end of the dimension's extension lines"),
+        "to": point_schema("The other end"),
         "printed": {"type": "string", "description": 'The dimension as printed (3\'-1", 36")'},
     },
+    "description": "A printed dimension: its two ends and its value",
 }
 #: `measure_on_drawing` (#1545): code's ruler, $0, no AI.
 MEASURE_ON_DRAWING: Final[Mapping[str, Any]] = {
     "name": "measure_on_drawing",
     "description": (
-        "Measure a length the drawing does not print, by code ($0, no AI): give its two ends and "
-        "at least two PRINTED dimensions of the same view to calibrate (each the two ends of its "
-        "extension lines and the value as printed). Code snaps each end to the nearest drawn "
-        "line end or extension line, checks the printed dimensions agree on one scale (refuses "
-        "over 3%) and answers 'about X in (±T)'. Optional `dimension`: a printed dimension's two "
-        "ends, to check its extent: does it span the unit itself (from-to) or more (a box, soffit "
-        "or blocking beyond it)? Scaled is never Wrong by itself."
+        "Measure a length the drawing does not print, by code ($0, no AI). Use it where the "
+        "architect prints no size, and before you call a height or width Wrong, to check what "
+        "the architect's dimension spans. Give the length's two ends and at least two PRINTED "
+        "dimensions of the same view to calibrate (each the two ends of its extension lines and "
+        "the value as printed). Code snaps each end to the nearest drawn line end or extension "
+        "line and checks the printed dimensions agree on one scale (it refuses over 3%). "
+        "Optional dimension: a printed dimension's two ends, to check its extent (does it span "
+        "the unit itself, from-to, or more: a box, soffit or blocking beyond it?). Returns "
+        "'about X in (±T)' and the extent check. A scaled value is only ever Your decision "
+        "(status check), never Wrong. "
+        'Example: {"page": 7, "from": {"x": 300, "y": 520}, "to": {"x": 300, "y": 610}, "axis": '
+        '"v", "calibrate": [{"from": {"x": 250, "y": 400}, "to": {"x": 250, "y": 610}, '
+        '"printed": "34\\""}, {"from": {"x": 320, "y": 640}, "to": {"x": 500, "y": 640}, '
+        '"printed": "30\\""}]}'
     ),
     "input_schema": {
         "type": "object",
@@ -533,14 +617,20 @@ MEASURE_ON_DRAWING: Final[Mapping[str, Any]] = {
         "required": ["page", "from", "to", "calibrate"],
         "properties": {
             "page": {"type": "integer", "minimum": 1, "description": "Page (from 1)"},
-            "from": _POINT,
-            "to": _POINT,
+            "from": point_schema("One end of the length to measure"),
+            "to": point_schema("The other end"),
             "axis": {
                 "type": "string",
                 "enum": ["h", "v", "along"],
                 "description": "h: left-right only; v: up-down only; along: straight (default)",
             },
-            "calibrate": {"type": "array", "minItems": 2, "maxItems": 8, "items": _SPAN},
+            "calibrate": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 8,
+                "items": _SPAN,
+                "description": "At least two printed dimensions of the same view",
+            },
             "dimension": {
                 **_SPAN,
                 "description": "Extent check: the printed dimension whose span you compare with "
@@ -558,11 +648,15 @@ MEASURE_ON_DRAWING: Final[Mapping[str, Any]] = {
 READ_UNDER_MARKUP: Final[Mapping[str, Any]] = {
     "name": "read_under_markup",
     "description": (
-        "Read what GV's markup covers in one area of a page ($0, code): the reviewers' notes and "
-        "boxes removed (the pasted drawings kept), small coloured boxes baked inside a pasted "
-        "drawing hidden where code can tell them apart, and the drawing's own text in the area "
-        "(its text layer, which still holds what an opaque box covers). Returns the area as shown "
-        "and under the markup, and says what it removed. Use it where GV's markup hides a value."
+        "Read what GV's markup covers in one area of a page, by code ($0, no AI): the reviewers' "
+        "notes and boxes removed (the pasted drawings kept), small coloured boxes baked inside a "
+        "pasted drawing hidden where code can tell them apart, and the drawing's own text in "
+        "the area (its text layer still holds what an opaque box covers). Use it where GV's "
+        "markup hides a vendor or architect value, before you call it unreadable; zoom is "
+        "enough where nothing covers the value. Returns two pictures (the area as shown, then "
+        "under the markup), what was removed, and the text found there. "
+        'Example: {"page": 8, "box": {"x0": 340, "y0": 410, "x1": 420, "y1": 440}, '
+        '"description": "Filler under the yellow box"}'
     ),
     "input_schema": {
         "type": "object",
@@ -570,23 +664,15 @@ READ_UNDER_MARKUP: Final[Mapping[str, Any]] = {
         "required": ["page", "box"],
         "properties": {
             "page": {"type": "integer", "minimum": 1, "description": "Page (from 1)"},
-            "box": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["x0", "y0", "x1", "y1"],
-                "properties": {
-                    "x0": {"type": "number"},
-                    "y0": {"type": "number"},
-                    "x1": {"type": "number"},
-                    "y1": {"type": "number"},
-                },
-                "description": "PDF points of the page as shown, origin top-left",
-            },
+            "box": box_schema("The area to read, round the covered value."),
             "file": {
                 "type": "string",
                 "description": "The upload's file name, when the set has more than one",
             },
-            "description": {"type": "string", "description": "Why I'm reading under the markup"},
+            "description": {
+                "type": "string",
+                "description": "Why you read under the markup, a few words (shown to the reviewer)",
+            },
         },
     },
 }
@@ -1519,7 +1605,8 @@ def helper_footer(
     if state == "ready":
         lines.append(
             f"- The set pack is ready at {SET_PACK}/: page_map.json, *_drawings_only.pdf, "
-            "pages/<file>/p-NNN.png (100 dpi, drawings only), contact/ (nine pages a picture)."
+            "pages/<upload name without .pdf>/p-NNN.png (100 dpi, drawings only), contact/ "
+            "(nine pages a picture)."
         )
     else:
         lines.append(
@@ -1533,9 +1620,9 @@ def helper_footer(
         ),
         f"- Budget: about {HELPER_CALL_BUDGET} tool calls; report before then.",
         (
-            "- Return: each difference with report_finding (both values as printed, with boxes), "
-            f"set_coverage for your pages, then a report of at most {report_words} words that "
-            "names the pages you did not reach."
+            "- Return: the findings your brief asks for with report_finding (both values as "
+            f"printed, each with its box), set_coverage for your pages, then a report of at most "
+            f"{report_words} words that names the pages you did not reach."
         ),
     ]
     return "\n".join(lines)

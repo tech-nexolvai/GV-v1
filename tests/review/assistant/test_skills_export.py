@@ -428,7 +428,7 @@ def test_skill_md_stays_short_and_says_the_rules_that_matter() -> None:
         "in inches",
         "GV's markup is GV's reviewer comments",
         "-hide-annotations",
-        "Verify every lead yourself",
+        "verify the leads",
         "AI markup: draft, not GV's signed review",
         "/mnt/user-data/outputs",
         "present_files",
@@ -438,7 +438,7 @@ def test_skill_md_stays_short_and_says_the_rules_that_matter() -> None:
         "update_finding",
         "drop_finding",
         "never write the findings again as a markdown table",
-        "Download marked-up PDF",
+        "cloud drawing",
         "origin top-left",
     ):
         assert words in SKILL_TEXT, words
