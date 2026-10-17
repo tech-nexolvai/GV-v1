@@ -24,7 +24,7 @@
  */
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowDown, ChevronRight, CircleAlert, ListChecks, RotateCw, Sparkle } from 'lucide-react';
+import { ArrowDown, ChevronRight, CircleAlert, ListChecks, RotateCw } from 'lucide-react';
 
 import { formatRoute } from '@/app/route';
 import { HeaderActions, HeaderTitleExtra, SidebarChats } from '@/components/shell/ShellHeader';
@@ -32,6 +32,7 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { ChatComposer } from '@/components/chat/chat-composer';
+import { GVSpark } from '@/components/chat/chat-motion';
 import { FullCheckButton, ProductChips } from '@/components/chat/chat-full-check';
 import { ChatList, type ChatListState } from '@/components/chat/chat-list';
 import { PlusMenu } from '@/components/chat/chat-plus-menu';
@@ -517,7 +518,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
           <ChatList packageId={packageId} activeChatId={chatId} state={list} creating={false} onNewChat={newChat} freshTitles={freshTitles} />
         </SidebarChats>
 
-        <section aria-label={activeSummary ? chatTitle(activeSummary) : 'Conversation'} className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+        <section aria-label={activeSummary ? chatTitle(activeSummary) : 'Conversation'} data-slot="chat-page" className="chat-brand relative flex min-h-0 min-w-0 flex-1 flex-col">
           {/* Positioned, so screen-reader-only text deep in the thread is placed (and clipped) inside it,
               not against the shell, where it would make the whole page scrollable. */}
           <div
@@ -530,7 +531,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
             {/* Keyed by the chat, so switching chats (or a chat finishing loading) fades the thread in. */}
             <div
               key={`${chatId ?? 'new'}:${chat ? 'ready' : 'waiting'}`}
-              className="mx-auto flex min-h-full w-full max-w-3xl flex-col gap-8 px-4 pt-8 pb-16 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-150"
+              className="mx-auto flex min-h-full w-full max-w-[62rem] flex-col gap-8 px-4 pt-8 pb-16 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-150"
             >
               {failedToLoad && (
                 failedToLoad.missing ? (
@@ -583,7 +584,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
             data-slot="chat-dock"
             data-centred={centred ? 'true' : undefined}
             className={cn(
-              'relative mx-auto flex w-full max-w-3xl flex-col px-3 sm:px-4',
+              'relative mx-auto flex w-full max-w-[62rem] flex-col px-4',
               centred ? 'flex-1 justify-center gap-0 pb-[14vh]' : 'shrink-0 pt-1 pb-[calc(8px+env(safe-area-inset-bottom,0px))]',
             )}
           >
@@ -695,7 +696,7 @@ function Greeting({ name }: { name: string | null }) {
     <div data-slot="chat-empty" className="mb-6 flex items-center justify-center gap-3 px-2 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-300">
       {name ? (
         <h2 className="flex items-start gap-2.5 text-center text-[1.6rem] leading-tight font-normal tracking-tight text-balance sm:text-[1.9rem]">
-          <Sparkle className="mt-1.5 size-6 shrink-0 fill-current text-foreground/80 sm:size-7" aria-hidden="true" />
+          <GVSpark state="done" size={28} className="mt-1" />
           <span>What do you want to know about {name}?</span>
         </h2>
       ) : (

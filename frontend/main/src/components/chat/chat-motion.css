@@ -6,28 +6,44 @@
  */
 @layer legacy {
 
-/* The spark: eight rays that turn and breathe, like claude.ai's while it writes. */
-.chat-spark {
+/*
+ * GV's AI sign (#1534): the four-point star in GV's maroon. Two layers, so turning and breathing
+ * run on their own clocks: the outer one turns, the inner one breathes. Transforms and opacity only.
+ */
+.gv-spark__turn,
+.gv-spark__breathe {
   transform-origin: 50% 50%;
-  animation: chat-spark-turn 2.8s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  will-change: transform;
 }
-.chat-spark line {
-  transform-origin: 12px 12px;
-  animation: chat-spark-breathe 1.4s ease-in-out infinite;
-}
-.chat-spark line:nth-child(even) {
-  animation-delay: -0.7s;
-}
+.gv-spark[data-state='thinking'] .gv-spark__turn { animation: gv-spark-turn 4.8s linear infinite; }
+.gv-spark[data-state='thinking'] .gv-spark__breathe { animation: gv-spark-breathe 1.6s ease-in-out infinite; }
+.gv-spark[data-state='working'] .gv-spark__turn { animation: gv-spark-turn 2.4s linear infinite; }
+.gv-spark[data-state='working'] .gv-spark__breathe { animation: gv-spark-breathe 1.6s ease-in-out infinite; }
+.gv-spark[data-state='streaming'] .gv-spark__breathe { animation: gv-spark-pulse 1.6s ease-in-out infinite; }
+.gv-spark[data-state='done'] .gv-spark__breathe { animation: gv-spark-settle 360ms cubic-bezier(0.2, 0, 0, 1) both; }
 
-@keyframes chat-spark-turn {
-  0% { transform: rotate(0deg) scale(1); }
-  50% { transform: rotate(90deg) scale(0.86); }
-  100% { transform: rotate(180deg) scale(1); }
+@keyframes gv-spark-turn {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
-
-@keyframes chat-spark-breathe {
+@keyframes gv-spark-breathe {
   0%, 100% { transform: scale(1); opacity: 1; }
-  50% { transform: scale(0.7); opacity: 0.55; }
+  50% { transform: scale(0.78); opacity: 0.6; }
+}
+@keyframes gv-spark-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(0.9); opacity: 0.75; }
+}
+@keyframes gv-spark-settle {
+  from { transform: scale(0.8) rotate(-30deg); opacity: 0.6; }
+  to { transform: scale(1) rotate(0deg); opacity: 1; }
+}
+
+/* The chat's brand accent (#1534): primary buttons and focus rings take GV's maroon, here only. */
+.chat-brand {
+  --primary: var(--gv-maroon-solid);
+  --primary-foreground: #ffffff;
+  --ring: color-mix(in srgb, var(--gv-maroon) 60%, transparent);
 }
 
 /* A light sweeping across muted words: the text is a gradient clipped to its letters. */
@@ -37,7 +53,7 @@
     90deg,
     var(--muted-foreground) 0%,
     var(--muted-foreground) 35%,
-    var(--foreground) 50%,
+    var(--gv-maroon) 50%,
     var(--muted-foreground) 65%,
     var(--muted-foreground) 100%
   );
@@ -82,8 +98,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .chat-spark,
-  .chat-spark line,
+  .gv-spark__turn,
+  .gv-spark__breathe,
   .chat-fade-in,
   .chat-rise,
   .chat-leave {
@@ -98,14 +114,13 @@
 }
 
 /*
- * #1508: the findings (and a full check's summary and files) may use more width than the text
- * column, centred on it, so the evidence column fits. The chat thread is its size container.
+ * #1508 made the findings wider than the text column; #1534 puts every part of the chat on ONE
+ * 960 px column instead (the thread and the composer share its edges), so this is full width.
  */
 .chat-wide {
-  --chat-wide: min(76rem, 100cqw - 2rem);
-  width: var(--chat-wide);
+  /* #1534: one content column for everything (text, findings, composer): no wider band. */
+  width: 100%;
   max-width: none;
-  margin-inline-start: calc((100% - var(--chat-wide)) / 2);
 }
 
 } /* @layer legacy */

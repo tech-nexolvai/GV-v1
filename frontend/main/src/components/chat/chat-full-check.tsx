@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Download, ExternalLink, FileText, RefreshCw, ScanSearch } from 'lucide-react';
 
 import { AccuracyBadge } from '@/components/chat/chat-accuracy';
+import { GVSpark } from '@/components/chat/chat-motion';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { chatPaths, type ChatAccuracy, type ChatCoverage, type ChatFile, type ChatProduct } from '@/lib/chat-api';
 import { coverageCounts, coverageWords, type FindingCounts } from '@/lib/chat-findings';
@@ -175,11 +176,11 @@ export function FullCheckFiles({ cloud, report, chatId, page = 1, totalPages = n
   );
   if (!cloud) return <div className="rounded-xl border bg-card px-4 py-3">{reportLine}</div>;
   return (
-    <section data-slot="chat-cloud-drawing" aria-label="Cloud drawing" className="chat-rise grid overflow-hidden rounded-2xl border bg-card shadow-[0_1px_2px_rgb(0_0_0/0.04)] md:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
-      <a href={href(cloud)} target="_blank" rel="noopener noreferrer" aria-label="Open the cloud drawing" className="grid border-b bg-muted/40 p-4 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset md:border-r md:border-b-0">
+    <section data-slot="chat-cloud-drawing" aria-label="Cloud drawing" className="chat-rise grid overflow-hidden rounded-xl border border-border/70 bg-card md:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
+      <a href={href(cloud)} target="_blank" rel="noopener noreferrer" aria-label="Open the cloud drawing" className="grid border-b border-border/60 bg-muted/40 p-4 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset md:border-r md:border-b-0">
         <CloudPreview href={href(cloud)} page={page} total={totalPages} />
       </a>
-      <div className="grid content-center gap-3 p-5 md:p-6">
+      <div className="grid content-center gap-4 p-6">
         <div className="grid gap-1.5">
           <p className="text-xs font-medium text-muted-foreground">Main output</p>
           <p className="text-[17px] font-semibold tracking-[-0.01em]">Cloud drawing</p>
@@ -267,7 +268,7 @@ export interface ResultNumbersProps {
 export function ResultNumbers({ counts, coverage, accuracy, onPick }: ResultNumbersProps) {
   const pages = coverage ? coverageCounts(coverage) : null;
   return (
-    <section data-slot="chat-kpis" aria-label="The result in numbers" className="chat-rise grid grid-cols-3 gap-2.5 md:grid-cols-[repeat(3,minmax(0,1fr))_minmax(0,1.1fr)]">
+    <section data-slot="chat-kpis" aria-label="The result in numbers" className="chat-rise grid grid-cols-3 gap-2 md:grid-cols-[repeat(3,minmax(0,1fr))_minmax(0,1.1fr)]">
       {NUMBERS.map((number) => {
         const count = counts[number.status];
         return (
@@ -278,7 +279,7 @@ export function ResultNumbers({ counts, coverage, accuracy, onPick }: ResultNumb
             disabled={count === 0}
             onClick={() => onPick(number.status)}
             aria-label={`${number.words}: ${count}. Go to them`}
-            className="grid min-w-0 gap-1 rounded-xl border bg-card px-3 py-3 text-left shadow-[0_1px_2px_rgb(0_0_0/0.04)] transition-colors hover:border-foreground/25 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:cursor-default disabled:hover:border-border motion-reduce:transition-none sm:px-4 sm:py-3.5"
+            className="grid min-w-0 gap-1 rounded-xl bg-muted/50 p-3 text-left transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:cursor-default disabled:hover:bg-muted/50 motion-reduce:transition-none sm:p-4"
           >
             <span className="flex min-w-0 items-center gap-1.5 text-[13px] font-medium text-muted-foreground">
               <span aria-hidden="true" className={cn('size-2 shrink-0 rounded-full', number.dot)} />
@@ -289,7 +290,7 @@ export function ResultNumbers({ counts, coverage, accuracy, onPick }: ResultNumb
           </button>
         );
       })}
-      <div data-slot="chat-facts" className="col-span-3 grid content-center gap-2.5 rounded-xl border bg-muted/30 px-4 py-3 md:col-span-1">
+      <div data-slot="chat-facts" className="col-span-3 grid content-center gap-2 rounded-xl bg-muted/50 p-4 md:col-span-1">
         <div data-kpi="pages" className="flex items-center justify-between gap-2 text-[13px] text-muted-foreground" title={pages ? coverageWords(pages) : undefined}>
           <span>Pages checked</span>
           {pages ? (
@@ -314,11 +315,8 @@ export function FullCheckProgress({ message }: { message: Pick<ViewMessage, 'cre
     return () => window.clearInterval(timer);
   }, []);
   return (
-    <p data-slot="chat-progress" role="status" className="flex min-w-0 items-center gap-2.5 rounded-xl border bg-card px-4 py-3 text-sm font-medium tabular-nums shadow-[0_1px_2px_rgb(0_0_0/0.04)]">
-      <span aria-hidden="true" className="relative flex size-2 shrink-0">
-        <span className="absolute inline-flex size-full animate-ping rounded-full bg-foreground/40 motion-reduce:animate-none" />
-        <span className="relative inline-flex size-2 rounded-full bg-foreground" />
-      </span>
+    <p data-slot="chat-progress" role="status" className="flex min-h-12 min-w-0 items-center gap-3 rounded-xl bg-muted/50 px-4 text-sm font-medium tabular-nums">
+      <GVSpark state={message.progress?.phase === 'writing' ? 'streaming' : 'working'} size={16} />
       <span className="min-w-0">{progressWords(message, now)}</span>
     </p>
   );

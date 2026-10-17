@@ -101,6 +101,11 @@
     --outcome-missing: #8a8a8a;
     --outcome-missing-fg: #525252;
     --outcome-missing-bg: #f4f4f4;
+    /* GV's maroon (#1534): the Graniti Vicentia logo's own red, measured from logo-graniti.svg.
+       The brand accent only: the AI sign, primary buttons, focus rings. Never a status colour.
+       --gv-maroon is for marks and text (6.1:1 on white); --gv-maroon-solid fills buttons. */
+    --gv-maroon: #c21531;
+    --gv-maroon-solid: #c21531;
 
     /* Typography (admin decision, 2026-10-08): a sans for words, a mono for numbers,
        dimensions and ids. Set --font-ui to the mono to go back to an all-typewriter screen. */
@@ -155,6 +160,9 @@
     --outcome-missing: #8a8a8a;
     --outcome-missing-fg: #b4b4b4;
     --outcome-missing-bg: #232323;
+    /* Lighter on dark so the sign keeps 4.7:1 on the page; buttons keep the logo red (white text 6.1:1). */
+    --gv-maroon: #e5485e;
+    --gv-maroon-solid: #c21531;
   }
 
   /* shadcn's `* { border-color; outline-color }` base rule lives in preflight-scoped.css, scoped to
@@ -220,6 +228,8 @@
   --color-outcome-missing: var(--outcome-missing);
   --color-outcome-missing-fg: var(--outcome-missing-fg);
   --color-outcome-missing-bg: var(--outcome-missing-bg);
+  --color-gv-maroon: var(--gv-maroon);
+  --color-gv-maroon-solid: var(--gv-maroon-solid);
 
   --font-sans: var(--font-ui);
   --font-mono: var(--font-num);

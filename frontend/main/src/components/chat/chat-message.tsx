@@ -10,7 +10,7 @@ import { FindingsSections, type DecisionProps } from '@/components/chat/chat-fin
 import { FullCheckFiles, FullCheckProgress, ResultNumbers, type CloudReview } from '@/components/chat/chat-full-check';
 import { ConfidenceLine, HowChecked } from '@/components/chat/chat-trust';
 import { ChatMarkdown } from '@/components/chat/chat-markdown';
-import { Collapse, CopyButton, Shimmer, Spark, Spinner } from '@/components/chat/chat-motion';
+import { Collapse, CopyButton, GVSpark, Shimmer, Spark, Spinner, type SparkState } from '@/components/chat/chat-motion';
 import { chatPaths, type ChatEffort, type ChatFile, type ChatFinding, type ChatModel, type FindingDecision, type FindingDecisionValue } from '@/lib/chat-api';
 import { coverageCounts, findingCounts, isNarrowAnswer, isShortAnswer, NO_FILTER, sectionOrder, type FindingFilter } from '@/lib/chat-findings';
 import { fullCheckBubble, fullCheckFiles, previewPage, productsWords, withoutCodeNote } from '@/lib/chat-full-check';
@@ -91,6 +91,7 @@ export function ThinkingBlock({ block }: { block: Extract<ViewBlock, { type: 'th
         onClick={() => setOpen(!open)}
         className="flex w-fit max-w-full min-w-0 items-center gap-1.5 rounded-md py-1 text-left text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
       >
+        <GVSpark state={block.live ? 'thinking' : 'still'} size={16} />
         <Shimmer active={block.live} className="min-w-0 truncate">{title}</Shimmer>
         <ChevronRight aria-hidden="true" className={cn('size-3.5 shrink-0 transition-transform duration-200 ease-out motion-reduce:transition-none', open && 'rotate-90')} />
       </button>
@@ -216,6 +217,17 @@ function RetryButton({ onRetry, withWords = false }: { onRetry: () => void; with
       {withWords && <span aria-hidden="true">Retry</span>}
     </button>
   );
+}
+
+/**
+ * What GV's sign does at the foot of a running answer (#1534): thinking while it thinks, turning
+ * while a tool or helper runs, a gentle pulse while words stream in.
+ */
+function sparkState(blocks: readonly ViewBlock[], streaming: boolean): SparkState {
+  const last = blocks[blocks.length - 1];
+  if (streaming || (last?.type === 'text' && last.text.trim())) return 'streaming';
+  if (last?.type === 'step') return 'working';
+  return 'thinking';
 }
 
 /** One or two lines of words (no table or code): set with tight spacing. */
@@ -401,7 +413,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
             text={(blocks[item.index] as Extract<ViewBlock, { type: 'text' }>).text}
             streaming={streaming && last && item.index === blocks.length - 1}
             // A short answer's lines sit close together; a long answer keeps its reading rhythm.
-            className={short || isFewLines((blocks[item.index] as Extract<ViewBlock, { type: 'text' }>).text) ? 'gap-2' : undefined}
+            className={cn('max-w-[46rem]', short || isFewLines((blocks[item.index] as Extract<ViewBlock, { type: 'text' }>).text) ? 'gap-2' : undefined)}
           />
         )}
       </div>
@@ -450,7 +462,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
         <div data-slot="chat-full-check-lead" className="chat-wide grid min-w-0 gap-7">
           {/* PATH 4.1: the summary, prominent. */}
           <section data-slot="chat-summary" aria-label="Summary" className="grid max-w-3xl min-w-0 gap-2.5">
-            <p className="text-xs font-medium text-muted-foreground">{['Full check', productsWords(message.products)].filter(Boolean).join(' · ')}</p>
+            <p className="flex items-center gap-2 text-xs font-medium text-muted-foreground"><GVSpark size={16} />{['Full check', productsWords(message.products)].filter(Boolean).join(' · ')}</p>
             <h2 data-slot="chat-summary-headline" className="text-xl leading-snug font-semibold tracking-[-0.015em]">
               {counts.different > 0 ? <span className="text-outcome-fail-fg">{counts.different} wrong</span> : 'Nothing wrong'} on the vendor’s drawings
               {counts.check > 0 ? `, ${counts.check} ${counts.check === 1 ? 'needs' : 'need'} your decision.` : '.'}
@@ -572,10 +584,10 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
         </div>
       )}
 
-      {running && <Spark label={message.id ? 'Working' : 'Sending your message'} className="chat-fade-in" />}
+      {running && <Spark label={message.id ? 'Working' : 'Sending your message'} state={sparkState(blocks, streaming)} className="chat-fade-in" />}
 
       {!running && (
-        <div data-slot="chat-footer" className="-ml-1.5 flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1">
+        <div data-slot="chat-footer" className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1">
           <div
             data-slot="chat-actions"
             className={cn(
