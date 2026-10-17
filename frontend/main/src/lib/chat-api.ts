@@ -504,7 +504,10 @@ export interface ChatFindingUpdate {
 export type EvidenceKind = 'observed' | 'derived' | 'inferred';
 
 /** Why something was not checked (an unknown record). */
-export type UnknownWhy = 'unreadable' | 'not_opened' | 'missing_job_value' | 'pairing_uncertain' | 'refused_alignment';
+export type UnknownWhy =
+  | 'unreadable' | 'not_opened' | 'missing_job_value' | 'pairing_uncertain' | 'refused_alignment'
+  /** #1584, the vendor consistency check: an area on one side only, a round or an indexed sheet the set lacks. */
+  | 'no_counterpart' | 'missing_round' | 'not_in_set';
 
 /** One thing the answer did not check, and what would settle it (built by code). */
 export interface ChatUnknown {
@@ -513,8 +516,8 @@ export interface ChatUnknown {
   what: string;
   why: UnknownWhy;
   needs: string;
-  /** `page`: a whole page; `item`: one value. */
-  scope?: 'page' | 'item' | null;
+  /** `page`: a whole page; `item`: one value; `set`: the drawing set itself (not counted against the answer). */
+  scope?: 'page' | 'item' | 'set' | null;
 }
 
 /**
@@ -988,6 +991,8 @@ export const chatPaths = {
   markupPdf: (chatId: string, messageId: string) => `${BASE}/chats/${id(chatId)}/messages/${id(messageId)}/markup-pdf`,
   /** #1525: the cloud drawing and report made again from the reviewer's decisions (POST). */
   cloudDrawing: (chatId: string, messageId: string) => `${BASE}/chats/${id(chatId)}/messages/${id(messageId)}/cloud-drawing`,
+  /** #1584: the vendor consistency check, by code ($0, POST). */
+  consistency: (chatId: string) => `${BASE}/chats/${id(chatId)}/consistency`,
   /** #1569: code's plan for a full check of the set, and where it is unsure (no AI call). */
   fullCheckPlan: (packageId: string) => `${BASE}/packages/${id(packageId)}/full-check-plan`,
   /** #1522: the reviewer's Agree / Not a problem on one finding (POST). */
@@ -1061,6 +1066,17 @@ export function makeMarkupPdf(chatId: string, messageId: string): Promise<ChatFi
 /** #1525: make the cloud drawing (and report) again from the reviewer's decisions; returns the new drawing. */
 export function remakeCloudDrawing(chatId: string, messageId: string): Promise<ChatFile> {
   return json<ChatFile>(chatPaths.cloudDrawing(chatId, messageId), { method: 'POST', body: '{}' });
+}
+
+/** #1584: the "model" of an answer code wrote alone (the vendor consistency check): no AI. */
+export const CHECK_MODEL = 'code-check';
+
+/**
+ * #1584: the vendor consistency check, by code only ($0, no AI): stored in the chat as a question and
+ * its answer, which it returns. A 409 says why it cannot run yet (a message running, the set still read).
+ */
+export function runConsistencyCheck(chatId: string): Promise<ChatMessage> {
+  return json<ChatMessage>(chatPaths.consistency(chatId), { method: 'POST', body: '{}' });
 }
 
 /**
@@ -1181,6 +1197,8 @@ export interface ChatApi {
   /** #1522: Agree / Not a problem per finding; optional so a fake API can leave it out. */
   decide?: typeof decideFinding;
   remakeCloud?: typeof remakeCloudDrawing;
+  /** #1584: the $0 vendor consistency check; optional so a fake API can leave it out (no menu item then). */
+  consistency?: typeof runConsistencyCheck;
   /** #1569: the plan check; optional so a fake API can leave it out (then no questions). */
   plan?: typeof getFullCheckPlan;
 }
@@ -1196,5 +1214,6 @@ export const LIVE_CHAT_API: ChatApi = {
   markup: makeMarkupPdf,
   decide: decideFinding,
   remakeCloud: remakeCloudDrawing,
+  consistency: runConsistencyCheck,
   plan: getFullCheckPlan,
 };

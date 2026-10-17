@@ -25,6 +25,7 @@ from reportlab.pdfgen import canvas  # type: ignore[import-untyped]
 
 from app.review.assistant.proof import (
     AI_ONLY_REASON,
+    LEFT_CAPTIONS,
     PAIRING_REASON,
     RULE_LINE,
     code_proved,
@@ -36,6 +37,7 @@ from app.review.assistant.proof import (
     proof_of,
     should_be,
     unproved_reason,
+    vendor_own,
     vendor_value,
 )
 from app.review.assistant.proof_drawing import (
@@ -509,3 +511,45 @@ def test_unsure_page_map_questions_get_code_s_likely_answer(tmp_path: Path) -> N
     assert plan_assumptions(tmp_path, "set.pdf") == []
     answered = read_page_map(tmp_path, assume=True, main_file="set.pdf")
     assert answered is not None and answered["pages"][0]["halves"][1]["role"] == "general"
+
+
+def test_the_vendor_s_own_string_or_span_is_not_labelled_architect(tmp_path: Path) -> None:
+    """A proof that is the vendor's own string (parts against total) or the vendor printing the
+    same span twice has no architect's side: the proof page says whose numbers they are."""
+    summed = _proved(
+        id="F5",
+        item="Run height string",
+        source="vendor_arithmetic",
+        architect='80"',
+        vendor='80"',
+        parts=['40"', '40 1/8"'],
+        printed_total='80"',
+        parts_sum="80.125",
+        witnesses=["arithmetic"],
+        inches={"architect": None, "vendor": "80"},
+        arch_box=None,
+        pairing=None,
+    )
+    span = _proved(
+        id="F6",
+        item="Base: same span printed twice",
+        source="cross_view",
+        reference_side="vendor",
+        created_by="consistency",
+        architect='34"',
+        vendor='46"',
+        inches={"architect": "34", "vendor": "46"},
+        pairing=None,
+    )
+    assert vendor_own(summed) == "sum" and vendor_own(span) == "span"
+    assert vendor_own(_proved()) is None
+    # The same span proved by the drawing's geometry needs no other pairing proof.
+    assert not needs_pairing(span) and proof_group(span) == "clouded"
+    assert needs_pairing({**span, "created_by": "ledger"})
+    out = _draw(tmp_path, [summed, span])
+    proof = _words("".join(page.extract_text() for page in PdfReader(str(out)).pages))
+    assert LEFT_CAPTIONS["sum"] in proof
+    assert '40" + 40 1/8" = 80 1/8"' in proof
+    assert LEFT_CAPTIONS["span"] in proof
+    assert "Architect / rule" not in proof
+    assert "the vendor's own other dimension of the same span" in proof

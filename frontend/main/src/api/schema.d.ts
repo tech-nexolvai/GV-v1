@@ -55,6 +55,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/chats/{chat_id}/consistency": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * The vendor consistency check: the vendor's drawings against themselves (code, $0)
+         * @description The "+" menu's Vendor consistency check (#1584), by code only (no AI call, $0): every
+         *     dimension string the drawing proves is one string added up, two values printed for one span
+         *     compared, and the areas, rounds and indexed sheets the set lacks listed. Stored in the chat as
+         *     a question and its answer (findings with code's proof, the "not checked" list), so the cloud
+         *     drawing and the CSV work on it as on any answer. Returns the stored answer.
+         */
+        post: operations["consistency_check_api_v1_chats__chat_id__consistency_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/chats/{chat_id}/files/{file_id}": {
         parameters: {
             query?: never;
@@ -4863,7 +4887,7 @@ export interface components {
             compared?: boolean | null;
             /**
              * Created By
-             * @description "lead", "helper:<n>", "gv_review" (made by code from a recorded result), or "ledger" (made by code from the reading ledger).
+             * @description "lead", "helper:<n>", "gv_review" (made by code from a recorded result), "ledger" (made by code from the reading ledger), or "consistency" (made by code from the vendor's own drawings: a string that does not add up, a span printed twice).
              */
             created_by: string;
             critic?: components["schemas"]["ChatFindingCriticOut"] | null;
@@ -6238,17 +6262,18 @@ export interface components {
             page?: number | null;
             /**
              * Scope
+             * @description page: a whole page; item: one value; set: the drawing set itself (an area on one side only, a round or a sheet the set lacks), not counted against the answer.
              * @default item
              * @enum {string}
              */
-            scope: "page" | "item";
+            scope: "page" | "item" | "set";
             /** What */
             what: string;
             /**
              * Why
              * @enum {string}
              */
-            why: "unreadable" | "not_opened" | "missing_job_value" | "pairing_uncertain" | "refused_alignment";
+            why: "unreadable" | "not_opened" | "missing_job_value" | "pairing_uncertain" | "refused_alignment" | "no_counterpart" | "missing_round" | "not_in_set";
         };
         /** ChatUnknownsBlock */
         ChatUnknownsBlock: {
@@ -12504,6 +12529,51 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ChatCancelOut"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    consistency_check_api_v1_chats__chat_id__consistency_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                chat_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatMessageOut"];
+                };
+            };
+            /** @description No such chat (or no access). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `message_running`: a message is being answered in this chat; `uploads_missing`: the drawing set has no PDFs; `pack_building`: the set is still being read (ask again in a minute). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

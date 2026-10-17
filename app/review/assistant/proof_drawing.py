@@ -89,6 +89,7 @@ from app.review.assistant.chat_drawing import (
 from app.review.assistant.cloud_layout import NOTE_WIDTH_PT, InkMap, marker_spot, place_notes
 from app.review.assistant.proof import (
     GROUP_WORDS,
+    LEFT_CAPTIONS,
     RULE_LINE,
     governs,
     proof_counts,
@@ -97,6 +98,7 @@ from app.review.assistant.proof import (
     should_be,
     should_be_value,
     unproved_reason,
+    vendor_own,
     vendor_value,
 )
 
@@ -816,8 +818,22 @@ def _proof_entries(
             styles["head"],
         )
         left: list[Any] = [Paragraph(_coloured("Governs: ", governs(finding), GREEN), small)]
+        own = vendor_own(finding)
         if item.architect_png is not None:
             left.insert(0, _image(item.architect_png, max_w, _CROP_MAX_H))
+        elif own == "sum":
+            parts = " + ".join(str(part) for part in finding.get("parts") or [])
+            summed = should_be_value(finding)
+            left.insert(
+                0,
+                Paragraph(
+                    escape(f"{parts} = " if parts else "The parts add up to ")
+                    + _coloured("", summed, GREEN)
+                    + "<br/>"
+                    + escape(f"The vendor prints {vendor_value(finding)} for their total."),
+                    body,
+                ),
+            )
         else:
             left.insert(
                 0,
@@ -837,7 +853,7 @@ def _proof_entries(
         pair = Table(
             [
                 [
-                    Paragraph("Architect / rule (green: what governs)", styles["caption"]),
+                    Paragraph(escape(LEFT_CAPTIONS[own]), styles["caption"]),
                     Paragraph("Vendor (red: the wrong value)", styles["caption"]),
                 ],
                 [left, right],

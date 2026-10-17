@@ -396,6 +396,8 @@ def apply_checks(
     }
     # The vendor's own string (#1554): code's sum of its parts, for the row and the notes.
     out["parts_sum"] = _parts_sum(finding)
+    # Proof that both numbers measure the same thing (#1581): set by the pairing check, if any.
+    out.setdefault("pairing", None)
     # Set for a "same" item at the finish (`mark_compared`): not seen is not right.
     out.setdefault("compared", None)
     out.setdefault("not_compared_why", None)
@@ -1072,7 +1074,8 @@ def accuracy(
                 "not_found": "not found at that spot",
             }.get(check, "could not be checked at a spot")
         breakdown.append({"claim": claim, "how": how, "points": points, "evidence_kind": kind})
-    item_unknowns = sum(1 for u in unknowns if u.get("scope") != "page")
+    # A set gap (#1584: a sheet the set lacks) is not this answer's work: not counted.
+    item_unknowns = sum(1 for u in unknowns if u.get("scope") not in ("page", "set"))
     base: dict[str, Any] = {
         "measured": ACCURACY_MEASURED_LINE,
         "calibration": ACCURACY_CALIBRATION_LINE,

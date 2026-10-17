@@ -157,6 +157,20 @@ describe('a full-check answer', () => {
     expect(scrolled[0]).toMatch(/^Your decision/);
   });
 
+  it('never labels the vendor’s own string or span “Architect” (#1581)', () => {
+    const own = [
+      finding('s1', { item: 'Run height string', status: 'different', source: 'vendor_arithmetic', parts: ['40"', '40 1/8"'], printed_total: '80"' }),
+      finding('s2', { item: 'Base: same span printed twice', status: 'different', source: 'cross_view', reference_side: 'vendor', created_by: 'consistency' }),
+    ];
+    render(<AssistantMessage message={answer({ findings: own, files: [CLOUD] })} chatId="c-1" models={[OPUS]} fullCheck />);
+    const rows = [...screen.getByRole('article', { name: 'Answer' }).querySelectorAll<HTMLElement>('[data-slot="chat-finding-row"]')];
+    expect(rows).toHaveLength(2);
+    const labels = (row: HTMLElement) => [...row.querySelectorAll('[data-slot="chat-evidence-side"]')].map((side) => `${side.getAttribute('data-side')} ${side.getAttribute('aria-label')}`);
+    expect(labels(rows[0])).toEqual(['V Open the pictures large: Vendor: the parts', 'V Open the pictures large: Vendor: the printed total']);
+    expect(labels(rows[1])[0]).toBe('V Open the pictures large: Vendor: the same span, elsewhere');
+    for (const row of rows) expect(labels(row).join(' ')).not.toMatch(/Architect/);
+  });
+
   it('leads with a drawing ready to download, counted by what code proved, decisions optional (#1581)', () => {
     const proved = [
       finding('w1', { item: 'Sink base width', status: 'different', proof: { group: 'clouded', should_be: '37" (architect)', proof: 'Printed at both spots, read by code' } }),
