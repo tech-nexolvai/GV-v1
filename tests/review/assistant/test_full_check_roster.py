@@ -30,8 +30,10 @@ from app.review.assistant import full_check_roster
 from app.review.assistant.chat_engine import FULL_CHECK_INSTRUCTION
 from app.review.assistant.full_check_advocate import (
     ADVOCATE_SYSTEM,
+    CODE_PAIRS_FILE,
     Check,
     code_checks,
+    code_pairs,
     decide,
     ink_colour,
     is_slip,
@@ -573,3 +575,54 @@ def test_the_verifiers_proofs_are_applied_by_code(tmp_path: Path) -> None:
     assert apply_proofs(engine, "not json", ["F1"]) == {
         "F1": "no proof: the verifier's reply was not readable"
     }
+
+
+def test_codes_own_pairing_is_proof_and_a_different_one_keeps_it_grey(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert code_pairs(
+        [
+            {"vendor": 'p3.D1 46"', "arch": 'p3.D2 37"', "status": "different"},
+            {"vendor": "p5.D1", "architect": "p5.D7", "status": "same"},
+            {"vendor": "p4.D1", "architect": "p4.D2", "status": "cannot_pair"},
+        ]
+    ) == {"p3.D1": "p3.D2", "p5.D1": "p5.D7"}
+    _clean_ink(monkeypatch)
+    script = _Roster(advocate_pick="D9")  # the AI pick would object: code's pairing decides
+    harness = _roster(tmp_path, script)
+    folder = harness.engine.tools.workspace.set_pack
+    assert folder is not None
+    (folder / CODE_PAIRS_FILE).write_text(
+        json.dumps(
+            [
+                {"vendor": "p3.D1", "architect": "p3.D2", "status": "different"},
+                {"vendor": "p5.D1", "architect": "p5.D7", "status": "different"},
+            ]
+        )
+    )
+
+    outcome = harness.run()
+
+    tops = {f["page"]: f for f in _findings(outcome) if f["item"].startswith("Top on page")}
+    assert tops[3]["critic"]["result"] == "passed"
+    assert tops[3]["critic"]["answers"]["pairing"] == "code"
+    assert tops[5]["critic"]["result"] == "objects"
+    assert "code pairs p5.D1 with p5.D7" in tops[5]["critic"]["note"]
+    assert "advocate" not in script.calls  # neither needed an AI pick
+
+
+def test_a_typed_value_at_a_labelled_spot_stands_for_its_label(tmp_path: Path) -> None:
+    harness = _roster(tmp_path, _Roster())
+    run = full_check_roster._Run(harness.engine)
+    finding = {
+        "page": 3,
+        "vendor": '46"',
+        "architect": "3'-1\"",
+        "vendor_box": {"page": 3, "x0": 290, "y0": 90, "x1": 370, "y1": 120},
+        "arch_box": {"page": 3, "x0": 90, "y0": 90, "x1": 170, "y1": 120},
+    }
+    assert run._label_at(finding, "vendor_box", "vendor")["id"] == "D1"  # type: ignore[index]
+    assert run._label_at(finding, "arch_box", "architect")["id"] == "D2"  # type: ignore[index]
+    # Another value at the spot, or no box: no label stands for it.
+    assert run._label_at({**finding, "vendor": '45"'}, "vendor_box", "vendor") is None
+    assert run._label_at({**finding, "vendor_box": None}, "vendor_box", "vendor") is None
