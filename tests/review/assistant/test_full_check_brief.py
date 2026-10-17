@@ -6,11 +6,15 @@
 - the brief carries the checklist and the exact report line code reads back;
 - `checklist_gaps` finds a missing line, a missing count, and a short count with "none" left;
 - the whole-set `review_results` keeps the page review's leads beside its `different` rows;
-- SKILL.md says the rules the recall study asked for.
+- SKILL.md says the rules the recall study asked for;
+- the checklist and SKILL.md name the kinds of differences the helpers used to miss (#1543):
+  hardware, construction notes, position, extent and count, ID set vs brand prototype, and scaled
+  values (only ever "Your decision"), in generic words with no client value.
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -316,3 +320,68 @@ def test_skill_md_says_the_recall_rules() -> None:
         "**First** the gaps",
     ):
         assert words in text, words
+
+
+# ---- the kinds of differences the helpers used to miss (#1543) ------------------------------------
+
+#: Each new checklist item, with words its line must carry.
+NEW_ITEMS: dict[str, tuple[str, ...]] = {
+    "hardware": ("pulls (type, size, finish)", "cam lock", "grommets", "power and data units"),
+    "construction": ("Construction notes", "brand sheet", "contradicts", "metal lining"),
+    "position": ("centred on or aligned with", "collides with a neighbour", "its own opening"),
+    "extent": ("vendor omits", "extra pieces", "doors, drawers, bins and fronts", "island faces"),
+    "brand": ("ID set vs brand prototype", "Your decision: which governs"),
+    "scaled": ('about X (scaled, ±1/2")', "only ever status check", "never different (Wrong)"),
+}
+
+#: Shapes of client values (the same as `test_skills_export.py`): a drawing or sheet number, the
+#: name of a client drawing set, a job number.
+CLIENT_VALUE_SHAPES = (
+    re.compile(r"\b[A-Z]{1,3}-?\d{3}\b"),
+    re.compile(r"\b[A-Z]{1,2}\d\.\d{2}\b"),
+    re.compile(r"\bAI[ _]Set\b", re.IGNORECASE),
+    re.compile(r"\bSet \d\b"),
+    re.compile(r"\b(?:job|project|PO) ?(?:no\.?|number|#) ?\d", re.IGNORECASE),
+)
+
+
+def test_the_checklist_names_the_differences_helpers_used_to_miss() -> None:
+    checklist = dict(PAGE_CHECKLIST)
+    brief = helper_brief([7], file_name="set.pdf", page_map=PAGE_MAP, review_document={})
+    for name, words in NEW_ITEMS.items():
+        assert name in checklist, name
+        assert f"- {name}: {checklist[name]}" in brief, name
+        for word in words:
+            assert word in checklist[name], (name, word)
+    # The report line code reads back is unchanged: the new items are not counted fields.
+    assert CHECKLIST_FIELDS == ("architect", "notes", "strings")
+    assert [name for name, _ in PAGE_CHECKLIST][-1] == "rounds"
+
+
+def test_the_brief_holds_no_client_value() -> None:
+    brief = helper_brief([7, 8, 9], file_name="set.pdf", page_map=PAGE_MAP, review_document={})
+    for shape in CLIENT_VALUE_SHAPES:
+        assert not shape.search(brief), shape.search(brief)
+
+
+def test_skill_md_says_what_to_compare_beyond_dimensions() -> None:
+    text = SKILL.read_text(encoding="utf-8")
+    assert len(text.splitlines()) <= 260
+    section = text[text.index("## 7. What to compare") : text.index("## 8. ")]
+    for words in (
+        "**Hardware and accessories**",
+        "cam lock",
+        "**Position, not only size**",
+        "misses its opening",
+        "**Extent and count**",
+        "which way an island faces",
+        "**Construction notes**",
+        "metal lining",
+        "**ID set vs brand prototype**",
+        '"Your decision: which governs"',
+        "**Scaled values**",
+        '"about X (scaled, ±1/2")": status `check`, never `different` (Wrong)',
+    ):
+        assert words in section, words
+    for shape in CLIENT_VALUE_SHAPES:
+        assert not shape.search(text), shape.search(text)

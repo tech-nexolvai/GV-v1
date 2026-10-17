@@ -16,6 +16,12 @@ GV's recorded results on those pages (not to report again, but never closing the
 GV's own page review could not settle there, and a checklist it answers in its report, one line
 per page. Code reads those lines back (`checklist_gaps`) and can send the helper back once.
 
+Later (#1543), given the same test set, claude.ai flagged kinds of differences the helpers rarely
+report because the checklist was mostly about dimensions: hardware and accessories, construction
+notes the vendor contradicts, position (centred, aligned, colliding, fitting its opening), extent
+and count, the ID set against the brand prototype, and sizes scaled where none is printed. The
+checklist names each of them; the report line code reads back is unchanged.
+
 Pure code, no AI call and no I/O: the engine calls `helper_brief` for each helper it plans and
 `checklist_gaps` on each helper's report.
 """
@@ -81,7 +87,54 @@ PAGE_CHECKLIST: Final[tuple[tuple[str, str], ...]] = (
         (
             "Where the architect prints no size: counts and layout compared (bays, doors vs "
             'drawers, shelves, uppers, splashes, sink and appliance positions), "about" when '
-            "scaled."
+            "scaled (see scaled)."
+        ),
+    ),
+    (
+        "hardware",
+        (
+            "Hardware and accessories: pulls (type, size, finish), locks (cam lock), grommets, "
+            "power and data units, legs and supports (shape, size, finish), shelves (fixed vs "
+            "pull-out): what the vendor shows against the architect's or brand sheet."
+        ),
+    ),
+    (
+        "construction",
+        (
+            "Construction notes on the architect's or brand sheet that the vendor's drawing "
+            'contradicts (e.g. "toe kick integrated with door", "door to the floor", "pull-out '
+            'drawers for bins", "metal lining"): each is a difference.'
+        ),
+    ),
+    (
+        "position",
+        (
+            "Position, not only size: an item that must be centred on or aligned with another "
+            "(microwave over the range, sink on its centre line, cabinet over the fridge); an item "
+            "that collides with a neighbour or does not fit its own opening."
+        ),
+    ),
+    (
+        "extent",
+        (
+            "Extent and count: a section the architect draws that the vendor omits, or extra pieces "
+            "the vendor adds; the number of doors, drawers, bins and fronts and their arrangement; "
+            "which way an island faces (front vs rear view)."
+        ),
+    ),
+    (
+        "brand",
+        (
+            "ID set vs brand prototype: where the two conflict, report it as status check, "
+            '"Your decision: which governs".'
+        ),
+    ),
+    (
+        "scaled",
+        (
+            "Scaled values: where the architect prints no size, a value measured off the drawing "
+            'against one of its own printed dimensions is only "about X (scaled, ±1/2")", and '
+            "only ever status check (Your decision), never different (Wrong)."
         ),
     ),
     (
