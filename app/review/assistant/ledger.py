@@ -9,6 +9,11 @@ read the number right. All of it is code: $0, no model, the same answer every ti
   printed overall. Code adds the parts up exactly with the repo's chain check
   (`extraction/chains.py` `validate_closure`, loaded by name) after `finding_checks.to_inches` reads
   each value. A vendor string that does not add up becomes a `vendor_arithmetic` finding.
+  **Which part is likely wrong** (#1545): code tries each single part's (and the overall's) common
+  misreads and typos (±1/8", ±1/4", the fraction dropped, two digits swapped, digits that look
+  alike) and names the ONE change that makes the string add up exactly, and whether the same
+  printed part makes another vendor string (e.g. the other round's) add up with the same change.
+  A hint for the reviewer only: the recorded value is never changed.
 - **Same item, different views; typical units.** `record_reading` holds one value: the page, the
   view (plan, elevation, section, detail, schedule), the side (vendor or architect), the item as the
   AI names it, what the value is (width, depth, height, centre line, tag, model, count, other) and
@@ -502,6 +507,145 @@ def _add_up(
     return result, parts_sum, off_by
 
 
+# ---- which part is likely misread (#1545) --------------------------------------------------------
+
+_EIGHTH: Final = Decimal("0.125")
+#: A plain ±1/8" or ±1/4": it fits any part of a string off by that much, so alone it names none.
+_OFF_BY: Final = "off by a small fraction"
+#: Digits a drawing's pen or a reader easily takes for each other.
+_LOOK_ALIKE: Final[Mapping[str, str]] = {
+    "1": "7",
+    "7": "1",
+    "3": "8",
+    "8": "36",
+    "6": "85",
+    "5": "6",
+    "0": "8",
+    "4": "9",
+    "9": "4",
+}
+
+
+def _whole_variants(whole: int) -> set[int]:
+    """The whole-inch number with two neighbouring digits swapped, or one digit taken for a
+    look-alike (13 -> 31, 18 -> 13)."""
+    digits = str(whole)
+    out: set[int] = set()
+    for i in range(len(digits) - 1):
+        swapped = digits[:i] + digits[i + 1] + digits[i] + digits[i + 2 :]
+        out.add(int(swapped))
+    for i, digit in enumerate(digits):
+        for other in _LOOK_ALIKE.get(digit, ""):
+            out.add(int(digits[:i] + other + digits[i + 1 :]))
+    out.discard(whole)
+    return out
+
+
+def misread_values(value: Decimal) -> dict[Decimal, str]:
+    """What a printed value may really be, each with how it was misread: ±1/8", ±1/4", the
+    fraction dropped (13 1/8 -> 13), two digits swapped or a look-alike digit (fraction kept)."""
+    whole = int(value)
+    fraction = value - whole
+    out: dict[Decimal, str] = {}
+    # The telling misreads first: a value both ways keeps the telling words.
+    if fraction:
+        out[Decimal(whole)] = "its fraction dropped"
+    for other in _whole_variants(whole):
+        out.setdefault(other + fraction, "a digit misread or swapped")
+    for step in (_EIGHTH, 2 * _EIGHTH):
+        for change in (step, -step):
+            out.setdefault(value + change, _OFF_BY)
+    return {
+        candidate: how for candidate, how in out.items() if candidate > 0 and candidate != value
+    }
+
+
+@dataclass(frozen=True, slots=True)
+class Misread:
+    """One change that makes a string add up exactly: part `index` (-1: the printed overall)."""
+
+    index: int
+    printed: str
+    likely: Decimal
+    how: str
+
+
+def string_misreads(parts: Sequence[str], printed_total: str) -> list[Misread]:
+    """Every single change (one part, or the overall) from `misread_values` that makes the string
+    add up exactly. Empty when a value is not a number or the string already adds up."""
+    values = [to_inches(part) for part in parts]
+    total = to_inches(printed_total)
+    if total is None or any(v is None for v in values):
+        return []
+    known = [v for v in values if v is not None]
+    parts_sum = sum(known, Decimal(0))
+    if parts_sum == total:
+        return []
+    found: list[Misread] = []
+    for index, value in enumerate(known):
+        for candidate, how in misread_values(value).items():
+            if parts_sum - value + candidate == total:
+                found.append(Misread(index, parts[index], candidate, how))
+    for candidate, how in misread_values(total).items():
+        if candidate == parts_sum:
+            found.append(Misread(-1, printed_total, candidate, how))
+    return found
+
+
+def _same_elsewhere(
+    entry: StringEntry, misread: Misread, others: Sequence[StringEntry]
+) -> list[StringEntry]:
+    """Other strings on the same side, also off, that hold the same printed part and add up
+    exactly with the same change (the same value drawn wrong in another round or view)."""
+    if misread.index < 0:
+        return []
+    value = to_inches(misread.printed)
+    out: list[StringEntry] = []
+    for other in others:
+        if other.id == entry.id or other.side != entry.side or other.result != "does_not_add_up":
+            continue
+        for fix in string_misreads(other.parts, other.printed_total):
+            if fix.index >= 0 and to_inches(fix.printed) == value and fix.likely == misread.likely:
+                out.append(other)
+                break
+    return out
+
+
+def _misread_words(entry: StringEntry, others: Sequence[StringEntry]) -> str | None:
+    """The hint for one vendor string that does not add up: the ONE change that makes it add up
+    exactly, preferring a change another string confirms (the same part, off the same way), then
+    a telling misread (a dropped fraction, swapped or look-alike digits) over a plain ±1/8" that
+    would fit any part. `None` when no change, or more than one equally good, fits."""
+    found = string_misreads(entry.parts, entry.printed_total)
+    confirmed = {(m.printed, m.likely): m for m in found if _same_elsewhere(entry, m, others)}
+    telling = {(m.printed, m.likely): m for m in found if m.how != _OFF_BY}
+    chosen = next(
+        (next(iter(group.values())) for group in (confirmed, telling) if len(group) == 1), None
+    )
+    if chosen is None:
+        if not found:
+            return None
+        return (
+            f"{len(found)} different single changes would make it add up: code cannot tell "
+            "which value is misread."
+        )
+    what = "the overall" if chosen.index < 0 else "the part"
+    total = chosen.likely if chosen.index < 0 else to_inches(entry.printed_total)
+    words = (
+        f"Likely misread or typo: {what} {chosen.printed} ({chosen.how}); as "
+        f"{format_inches(chosen.likely)} the string adds up exactly"
+        f"{f' to {format_inches(total)}' if total is not None else ''}."
+    )
+    same = _same_elsewhere(entry, chosen, others)
+    if same:
+        listed = ", ".join(f"p.{o.page} (to {o.printed_total})" for o in same)
+        words += (
+            f" The same {chosen.printed} is off the same way on {listed}: likely one value drawn "
+            "wrong every time."
+        )
+    return words + " A hint only: the value is not changed."
+
+
 # ---- the ledger ----------------------------------------------------------------------------------
 
 _COUNTERTOP_WORDS: Final = ("countertop", "counter", "top", "backsplash", "splash", "overhang")
@@ -667,6 +811,9 @@ class ReadingLedger:
             f"{entry.id} recorded ({entry.side}, p.{entry.page}). Code's sum: {entry.sum_text()}."
         )
         if entry.result == "does_not_add_up":
+            hint = _misread_words(entry, self.strings)
+            if hint:
+                head += f" {hint}"
             if entry.rereads == 0:
                 tail = (
                     f" Re-read this string once on the crop; record it again with replaces "
@@ -775,7 +922,14 @@ class ReadingLedger:
                 "architect": format_inches(entry.parts_sum),
                 "vendor": entry.printed_total,
                 "status": "different",
-                "why": f"Vendor's parts don't add up: {entry.sum_text()}",
+                "why": " ".join(
+                    part
+                    for part in (
+                        f"Vendor's parts don't add up: {entry.sum_text()}.",
+                        _misread_words(entry, self.strings),
+                    )
+                    if part
+                ),
                 "verified": entry.rereads > 0,
                 "source": "vendor_arithmetic",
                 "parts": list(entry.parts),
