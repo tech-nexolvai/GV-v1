@@ -717,6 +717,11 @@ class ChatAccuracyOut(BaseModel):
         default=None, description='"What\'s right" items not compared: not scored.'
     )
     unknowns: int | None = Field(default=None, description="What the answer did not check.")
+    rescored: bool | None = Field(
+        default=None,
+        description="True when this score was worked out again from the stored findings with "
+        "today's calibration and differs from the score stored with the answer (#1513).",
+    )
 
 
 class ChatAccuracyBlock(BaseModel):
@@ -803,7 +808,16 @@ class ChatMessageOut(BaseModel):
     )
     accuracy: ChatAccuracyOut | None = Field(
         default=None,
-        description="The answer's accuracy by code (its `accuracy` block); null on older answers.",
+        description="The answer's accuracy by code (its `accuracy` block, scored again with "
+        "today's calibration: see `rescored`); null on older answers.",
+    )
+    mode: Literal["chat", "full_check"] | None = Field(
+        default=None,
+        description="A typed question (`chat`) or the one-click full check; null on messages "
+        "stored before it was kept (#1513).",
+    )
+    products: list[Literal["countertop", "cabinet"]] | None = Field(
+        default=None, description="The products the message was about; null on older messages."
     )
 
 
