@@ -48,7 +48,7 @@ def _stream(body: bytes, extra: bytes = b"") -> bytes:
     )
 
 
-#: A font whose codes 0x20-0x7E read as U+F020-U+F07E: the symbol font that stores `3'-2"` as
+#: A font whose codes 0x20-0x7E read as U+F020-U+F07E: the symbol font that stores `4'-3"` as
 #: private-use characters.
 _SYMBOL_CMAP = (
     b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CMapName /Sym def "
@@ -235,29 +235,29 @@ def test_another_value_at_the_spot_is_a_mismatch_with_what_is_printed(tmp_path: 
 
 
 def test_millimetres_over_inches_on_two_lines_read_as_the_inches(tmp_path: Path) -> None:
-    pdf = _write(tmp_path, _pdf(stamp=_text(20, 100, "407") + _text(20, 88, "[16]")))
+    pdf = _write(tmp_path, _pdf(stamp=_text(20, 100, "610") + _text(20, 88, "[24]")))
     box = _box(*_shown(18, 113)[:1], _shown(18, 113)[1], *_shown(50, 85))
-    assert vv.verify_value(pdf, 1, box, '16"', drawn=False).result == "match"
-    assert vv.verify_value(pdf, 1, box, "407 [16]", drawn=False).result == "match"
+    assert vv.verify_value(pdf, 1, box, '24"', drawn=False).result == "match"
+    assert vv.verify_value(pdf, 1, box, "610 [24]", drawn=False).result == "match"
 
 
 def test_a_stacked_fraction_in_text_is_composed(tmp_path: Path) -> None:
     stamp = (
-        _text(20, 140, "89", 10)
+        _text(20, 140, "71", 10)
         + _text(33, 145, "1", 5)
         + _text(33, 137, "2", 5)
         + _text(37, 140, '"', 10)
     )
     pdf = _write(tmp_path, _pdf(stamp=stamp))
     box = _around(20, 140, 30)
-    assert vv.verify_value(pdf, 1, box, '89 1/2"', drawn=False).result == "match"
-    assert vv.verify_value(pdf, 1, box, '89-1/2"', drawn=False).result == "match"
-    for wrong in ('89"', '1"', '2"', '89 1/4"'):
+    assert vv.verify_value(pdf, 1, box, '71 1/2"', drawn=False).result == "match"
+    assert vv.verify_value(pdf, 1, box, '71-1/2"', drawn=False).result == "match"
+    for wrong in ('71"', '1"', '2"', '71 1/4"'):
         assert vv.verify_value(pdf, 1, box, wrong, drawn=False).result != "match", wrong
 
 
 def test_a_digit_of_a_stacked_fraction_is_never_a_number_of_its_own(tmp_path: Path) -> None:
-    # `29 1/4"` with a stacked `3` over `4` beside it: the lone `3` is not `3"` (the one false
+    # A stacked `3` over `4`, as beside a whole number: the lone `3` is not `3"` (the one false
     # confirmation today's check made).
     stamp = _text(20, 60, "3", 6) + _text(20, 52, "4", 6)
     pdf = _write(tmp_path, _pdf(stamp=stamp))
@@ -267,14 +267,19 @@ def test_a_digit_of_a_stacked_fraction_is_never_a_number_of_its_own(tmp_path: Pa
     assert vv.verify_value(pdf, 1, box, '3/4"', drawn=False).result == "match"
 
 
+def test_a_value_ending_a_sentence_is_read(tmp_path: Path) -> None:
+    pdf = _write(tmp_path, _pdf(stamp=_text(20, 100, 'Filler will be 3".')))
+    assert vv.verify_value(pdf, 1, _around(20, 100, 90), '3"', drawn=False).result == "match"
+
+
 def test_a_symbol_font_that_stores_feet_and_inches_as_odd_characters_is_decoded(
     tmp_path: Path,
 ) -> None:
-    pdf = _write(tmp_path, _pdf(stamp=_text(20, 100, "3'-2\"", font=b"/F2")))
+    pdf = _write(tmp_path, _pdf(stamp=_text(20, 100, "4'-3\"", font=b"/F2")))
     box = _around(20, 100, 40)
-    assert vv.verify_value(pdf, 1, box, "3'-2\"", drawn=False).result == "match"
-    assert vv.verify_value(pdf, 1, box, '38"', drawn=False).result == "match"
-    assert vv.verify_value(pdf, 1, box, '2"', drawn=False).result == "mismatch"
+    assert vv.verify_value(pdf, 1, box, "4'-3\"", drawn=False).result == "match"
+    assert vv.verify_value(pdf, 1, box, '51"', drawn=False).result == "match"
+    assert vv.verify_value(pdf, 1, box, '3"', drawn=False).result == "mismatch"
 
 
 def test_sideways_text_is_read(tmp_path: Path) -> None:
@@ -315,10 +320,10 @@ def test_what_cannot_be_checked_says_why(
 
 
 def test_a_sentence_is_checked_by_its_claimed_value(tmp_path: Path) -> None:
-    pdf = _write(tmp_path, _pdf(stamp=_text(20, 100, '39 1/2"')))
-    sentence = '39 1/2" printed overall; parts 30" + 9 1/2"'
+    pdf = _write(tmp_path, _pdf(stamp=_text(20, 100, '41 1/2"')))
+    sentence = '41 1/2" printed overall; parts 32" + 9 1/2"'
     found = vv.verify_value(pdf, 1, _around(20, 100, 40), sentence, drawn=False)
-    assert (found.result, found.value) == ("match", '39 1/2"')
+    assert (found.result, found.value) == ("match", '41 1/2"')
 
 
 # ---- route 2: the vendor's drawn ink -------------------------------------------------------------
@@ -348,15 +353,45 @@ def test_drawn_digits_reading_up_the_page_are_read_turned(tmp_path: Path) -> Non
     assert (found.result, found.route) == ("match", "drawn")
 
 
-def test_one_read_alone_never_matches(tmp_path: Path) -> None:
+def test_one_read_or_one_engine_alone_never_matches(tmp_path: Path) -> None:
     pdf = _write(tmp_path, _pdf(stamp=_outlines("46", 20, 100)))
+    box = _around(20, 100, 30)
     readers = [_Scripted("Tesseract", []), _Scripted("RapidOCR", [])]
-    found = vv.verify_value(pdf, 1, _around(20, 100, 30), '46"', readers=readers)
-    assert found.result == "cannot_read"
-    one = [_GlyphReader("Tesseract")]  # vector ink and picture by one engine: two reads, both 46
-    assert vv.verify_value(pdf, 1, _around(20, 100, 30), '46"', readers=one).result == "match"
+    assert vv.verify_value(pdf, 1, box, '46"', readers=readers).result == "cannot_read"
+    # One engine on the vector ink and on the picture: two reads, but not two engines.
+    one = [_GlyphReader("Tesseract")]
+    found = vv.verify_value(pdf, 1, box, '46"', readers=one)
+    assert (found.result, found.reason) == ("cannot_read", "only one OCR engine reads it here")
     lone = [_Scripted("Tesseract", ["46"]), _Scripted("RapidOCR", [])]
-    assert vv.verify_value(pdf, 1, _around(20, 100, 30), '46"', readers=lone).result == "match"
+    assert vv.verify_value(pdf, 1, box, '46"', readers=lone).result == "cannot_read"
+    both = [_Scripted("Tesseract", ["46"]), _Scripted("RapidOCR", ["46"])]
+    assert vv.verify_value(pdf, 1, box, '46"', readers=both).result == "match"
+
+
+class _Shaped(_Scripted):
+    """A scripted engine that also says how wide each glyph it read as `1` is (as Tesseract)."""
+
+    def __init__(self, name: str, lines: list[str], ones: list[float]) -> None:
+        super().__init__(name, lines)
+        self.ones = ones
+
+    def one_shapes(self, picture: np.ndarray, *, single_line: bool) -> list[float]:
+        return list(self.ones)
+
+
+def test_a_drawn_1_must_look_like_a_1(tmp_path: Path) -> None:
+    # Both engines read a hand-lettered `7 5/8"` as `1 5/8"`: a glyph read as 1 that is as wide as
+    # a 7 refuses the match, and a value with a 1 nobody could show the shape of is not sure.
+    pdf = _write(tmp_path, _pdf(stamp=_outlines("15", 20, 100)))
+    box = _around(20, 100, 30)
+    wide = [_Shaped("Tesseract", ['1 5/8"'], [0.5]), _Scripted("RapidOCR", ['1 5/8"'])]
+    found = vv.verify_value(pdf, 1, box, '1 5/8"', readers=wide)
+    assert found.result == "cannot_read" and "hand-lettered 7" in found.reason
+    narrow = [_Shaped("Tesseract", ['1 5/8"'], [0.3]), _Scripted("RapidOCR", ['1 5/8"'])]
+    assert vv.verify_value(pdf, 1, box, '1 5/8"', readers=narrow).result == "match"
+    unshown = [_Scripted("Tesseract", ['1 5/8"']), _Scripted("RapidOCR", ['1 5/8"'])]
+    found = vv.verify_value(pdf, 1, box, '1 5/8"', readers=unshown)
+    assert found.result == "cannot_read" and "no engine could show its shape" in found.reason
 
 
 def test_a_near_miss_read_refuses_the_match(tmp_path: Path) -> None:
@@ -414,12 +449,18 @@ def test_the_real_engines_read_drawn_digits(tmp_path: Path) -> None:
     if not readers:
         pytest.skip("no OCR engine installed here")
     pdf = _write(tmp_path, _pdf(stamp=_outlines("46", 20, 100, height=9)))
-    found = vv.verify_value(pdf, 1, _around(20, 100, 36, height=14), '46"', readers=readers)
+    box = _around(20, 100, 36, height=14)
+    found = vv.verify_value(pdf, 1, box, '46"', readers=readers)
+    # Each installed engine reads the vendor's ink and the picture of the vendor's layer.
+    for reader in readers:
+        for source in ("vendor ink", "vendor layer picture"):
+            line = next(r for r in found.reads if r.startswith(f"{source}, {reader.name}: "))
+            assert "46" in line.split(": ", 1)[1].split(" | "), found.reads
+    if len(readers) < 2:
+        assert found.result == "cannot_read"  # one engine is never two
+        return
     assert found.result == "match", found.reads
-    assert (
-        vv.verify_value(pdf, 1, _around(20, 100, 36, height=14), '47"', readers=readers).result
-        != "match"
-    )
+    assert vv.verify_value(pdf, 1, box, '47"', readers=readers).result != "match"
 
 
 # ---- a finding's sides ---------------------------------------------------------------------------

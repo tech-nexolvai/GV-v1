@@ -12,9 +12,9 @@ Only black or grey characters are read (`stamp_text.drawing_ink`, the vendor-lay
 characters are put back together by position, whichever way they turn:
 
 - one line of text is read the longest way first (`1'-9"` never also yields `9`);
-- a millimetre value over its inches on the next line (`407` over `[16]`): the bracket is inches;
-- a stacked fraction (`89` with `1` over `2`) is composed from the characters' places;
-- a symbol font that stores `3'-2"` as private-use characters (U+F020 to U+F07E) is decoded;
+- a millimetre value over its inches on the next line (`610` over `[24]`): the bracket is inches;
+- a stacked fraction (`71` with `1` over `2`) is composed from the characters' places;
+- a symbol font that stores `4'-3"` as private-use characters (U+F020 to U+F07E) is decoded;
 - a digit that is part of a stacked fraction is never read as a number of its own: the `3` of a
   stacked `3/4` is not `3"`. Two stacked digit rows code cannot put together leave the box unsure.
 
@@ -23,11 +23,13 @@ redraws only the vendor's black or grey character-sized paths, which drops GV's 
 marks and shows a number hidden under GV's yellow box. Two OCR engines (Tesseract and RapidOCR)
 read that redrawing upright and turned both ways, with a stacked fraction split at its bar and each
 part read alone; both also read a picture of the vendor's layer with coloured pixels whitened. That
-is four reads. **`match` only when at least two of the four read exactly the expected value and no
-read gives a near-miss of it** (one digit different, or the expected value as a fragment of a longer
-number): a measured 1 false confirmation in 136 planted wrong values without this guard became 0
-of the text ones and 1 of the drawn ones with it. A box over `BIG_BOX_PT2` holding several numbers is
-refused: draw the box round the one dimension.
+is four reads. **`match` only when at least two of the four read exactly the expected value, both
+engines among them, and no read gives a near-miss of it** (one digit different, or the expected value
+as a fragment of a longer number). A box over `BIG_BOX_PT2` holding several numbers is refused: draw
+the box round the one dimension. And a `1` must look like a `1`: both engines read one architect's
+hand-lettered `7 5/8"` as `1 5/8"`, so every glyph Tesseract read as `1` in the value must be a
+narrow stroke (`_ONE_MAX_WIDTH`), and a value with a `1` that no engine could show the shape of is
+not a match.
 
 **What it never does.** It never calls a model, never reads GV's coloured markup as a value, and
 never says `mismatch` from OCR alone: only when the box's text was read, none of it is the value,
@@ -96,13 +98,16 @@ _GLYPH_MAX_PT: Final = 10.0
 _GLYPH_MIN_PT: Final = 0.45
 #: The vector redrawing: pixels per point, and the largest picture drawn (pixels).
 _VECTOR_PX_PER_PT: Final = 12.0
-_MAX_PIXELS: Final = 12_000_000
+_MAX_PIXELS: Final = 4_000_000
 #: The vendor-layer picture: pixels per point, between these, aiming at this many pixels a side.
 _PICTURE_SIDE_PX: Final = 1600.0
 _PICTURE_MIN_SCALE: Final = 3.0
 _PICTURE_MAX_SCALE: Final = 10.0
 #: How many reads must give exactly the expected value for a drawn match.
 _VOTES_NEEDED: Final = 2
+#: A glyph read as `1` that is at least this wide for its height may be a hand-lettered `7` (both
+#: engines read one architect's `7 5/8"` as `1 5/8"`): a drawn `1` must be a narrow stroke.
+_ONE_MAX_WIDTH: Final = 0.45
 #: Fractions a drawing writes: halves to sixty-fourths.
 _DENOMINATORS: Final = frozenset({2, 4, 8, 16, 32, 64})
 #: The most tokens read together as one value: `3'` `-` `1` `1/2"` is four.
@@ -176,7 +181,7 @@ _MARKS: Final = (
 
 
 def _plain(text: str) -> str:
-    """Symbol-font characters (U+F020 to U+F07E, a font that stores `3'-2"` as private-use
+    """Symbol-font characters (U+F020 to U+F07E, a font that stores `4'-3"` as private-use
     characters) as the ASCII they stand for, and a drawing's marks in their plain spelling."""
     text = "".join(chr(ord(ch) - 0xF000) if 0xF020 <= ord(ch) <= 0xF07E else ch for ch in text)
     for spelling, plain in _MARKS:
@@ -189,8 +194,9 @@ _BRACKETED: Final = re.compile(r"\[\s*([0-9][0-9 /\-.]*)\s*\"?\s*\]")
 
 def _values_of_tokens(tokens: Sequence[str]) -> set[Decimal]:
     """Values in tokens in reading order, read the longest way first and consumed, so `1' - 9"`
-    never also yields `9`; plus inches in brackets (`[16]` on the line under `407`)."""
-    plain = [_plain(token) for token in tokens if token.strip()]
+    never also yields `9`; plus inches in brackets (`[24]` on the line under `610`)."""
+    plain = [_plain(token).rstrip(".,;:") for token in tokens if token.strip()]
+    plain = [token for token in plain if token]
     values: set[Decimal] = set()
     start = 0
     while start < len(plain):
@@ -625,7 +631,7 @@ def _whole_before(
     lower: Sequence[_Char],
     taken: set[int],
 ) -> str | None:
-    """The whole number written just before a stacked fraction (`29` of `29 1/4"`), if any."""
+    """The whole number written just before a stacked fraction (`27` of `27 1/4"`), if any."""
     size = max(c.size for c in (*upper, *lower))
     start = min(c.along for c in (*upper, *lower))
     low, high = lower[0].across - 0.5 * size, upper[0].across + 0.5 * size
@@ -711,6 +717,26 @@ class TesseractReader:
         )
         text = self._tesseract.image_to_string(picture, config=config, timeout=60)
         return [line for line in str(text).splitlines() if line.strip()]
+
+    def one_shapes(self, picture: np.ndarray, *, single_line: bool) -> list[float]:
+        """The width-to-height of the ink of every glyph Tesseract reads as `1` here."""
+        config = f"--psm {7 if single_line else 11} -c " + shlex.quote(
+            f"tessedit_char_whitelist={_WHITELIST}"
+        )
+        boxes = self._tesseract.image_to_boxes(picture, config=config, timeout=60)
+        height = picture.shape[0]
+        out: list[float] = []
+        for line in str(boxes).splitlines():
+            parts = line.split(" ")
+            if len(parts) < 5 or parts[0] != "1":
+                continue
+            x0, y0, x1, y1 = (int(v) for v in parts[1:5])
+            ink = np.nonzero(picture[height - y1 : height - y0, x0:x1] < 128)
+            if len(ink[0]):
+                tall = int(ink[0].max() - ink[0].min() + 1)
+                wide = int(ink[1].max() - ink[1].min() + 1)
+                out.append(wide / tall)
+        return out
 
 
 class RapidReader:
@@ -874,10 +900,12 @@ def _digits(lines: Iterable[str]) -> str:
     return re.sub(r"\D", "", "".join(lines))
 
 
-def _fractions(paths: Sequence[_Path], reader: InkReader) -> list[str]:
+def _fractions(
+    paths: Sequence[_Path], reader: InkReader
+) -> list[tuple[str, list[tuple[np.ndarray, list[str]]]]]:
     """Each stacked fraction read part by part: the whole number before the bar, the numerator
-    and the denominator, each drawn and read alone."""
-    found: list[str] = []
+    and the denominator, each drawn and read alone. `(text, [(part picture, lines read)])`."""
+    found: list[tuple[str, list[tuple[np.ndarray, list[str]]]]] = []
     for bar, way, above, below in _bars(paths):
         size = max(bar.box[2] - bar.box[0], bar.box[3] - bar.box[1])
         parts = set(map(id, above + below)) | {id(bar)}
@@ -901,16 +929,25 @@ def _fractions(paths: Sequence[_Path], reader: InkReader) -> list[str]:
                 and p.box[2] >= bar.box[0] - 1.5 * size
             ]
             turn = 90
+        read: list[tuple[np.ndarray, list[str]]] = []
 
-        def one(group: Sequence[_Path], turn: int = turn) -> str:
+        def one(
+            group: Sequence[_Path],
+            turn: int = turn,
+            read: list[tuple[np.ndarray, list[str]]] = read,
+        ) -> str:
             picture = _draw(group, turn)
-            return _digits(reader(picture, single_line=True)) if picture is not None else ""
+            if picture is None:
+                return ""
+            lines = reader(picture, single_line=True)
+            read.append((picture, lines))
+            return _digits(lines)
 
         numerator, denominator = one(above), one(below)
         if not _fraction_ok(numerator, denominator):
             continue
         whole_number = one(whole) if whole else ""
-        found.append(f'{whole_number} {numerator}/{denominator}"'.strip())
+        found.append((f'{whole_number} {numerator}/{denominator}"'.strip(), read))
     return found
 
 
@@ -988,8 +1025,22 @@ def near_miss(expected: Decimal, read: Decimal) -> bool:
 @dataclass(slots=True)
 class _InkRead:
     name: str
+    engine: str
     lines: list[str] = field(default_factory=list)
     values: set[Decimal] = field(default_factory=set)
+    passes: list[tuple[frozenset[Decimal], tuple[float, ...] | None]] = field(default_factory=list)
+    """Each picture read: its values, and the width-to-height of every glyph it read as `1`
+    (`None` when the engine cannot say where its characters are)."""
+
+    def add(self, reader: InkReader, picture: np.ndarray, lines: list[str], single: bool) -> None:
+        values = frozenset(_ocr_values(lines))
+        self.lines.extend(lines)
+        self.values |= values
+        shapes = getattr(reader, "one_shapes", None)
+        ones = None
+        if shapes is not None and any("1" in line for line in lines):
+            ones = tuple(shapes(picture, single_line=single))
+        self.passes.append((values, ones))
 
 
 _READS_CACHE: OrderedDict[tuple[int, tuple[float, ...], tuple[int, ...]], list[_InkRead]] = (
@@ -1029,29 +1080,52 @@ def _read_ink(
     picture = _picture(page, spot)
     reads: list[_InkRead] = []
     for reader in readers:
-        vector = _InkRead(f"vendor ink, {reader.name}")
+        vector = _InkRead(f"vendor ink, {reader.name}", reader.name)
         if paths:
-            for fraction in _fractions(paths, reader):
-                vector.lines.append(fraction)
+            for fraction, parts in _fractions(paths, reader):
                 value = to_inches(fraction)
+                vector.lines.append(fraction)
                 if value is not None:
                     vector.values.add(value)
+                    for part, lines in parts:
+                        ones = getattr(reader, "one_shapes", None)
+                        shapes = (
+                            tuple(ones(part, single_line=True))
+                            if ones is not None and any("1" in line for line in lines)
+                            else None
+                        )
+                        vector.passes.append((frozenset({value}), shapes))
             for turn in (0, 90, 270):
                 drawn = _draw(paths, turn)
-                if drawn is None:
-                    continue
-                lines = reader(drawn, single_line=False)
-                vector.lines.extend(lines)
-                vector.values |= _ocr_values(lines)
+                if drawn is not None:
+                    vector.add(reader, drawn, reader(drawn, single_line=False), False)
         reads.append(vector)
-        shown = _InkRead(f"vendor layer picture, {reader.name}")
+        shown = _InkRead(f"vendor layer picture, {reader.name}", reader.name)
         if picture is not None:
             for turn in (0, 90, 270):
-                lines = reader(_turned(picture, turn), single_line=False)
-                shown.lines.extend(lines)
-                shown.values |= _ocr_values(lines)
+                turned = _turned(picture, turn)
+                shown.add(reader, turned, reader(turned, single_line=False), False)
         reads.append(shown)
     return reads
+
+
+def _ones_unsure(votes: Sequence[_InkRead], wanted: Decimal) -> str | None:
+    """Why a drawn match with a `1` in it is not sure, or `None`: every glyph an engine read as `1`
+    in the pictures that gave the value must be a narrow stroke, and at least one engine must have
+    said where its `1` is (Tesseract does; a hand-lettered `7` reads as `1` to both engines)."""
+    if "1" not in _digit_string(wanted):
+        return None
+    shaped = False
+    for read in votes:
+        for values, ones in read.passes:
+            if wanted not in values or ones is None:
+                continue
+            if any(width >= _ONE_MAX_WIDTH for width in ones):
+                return "a glyph read as 1 here is as wide as a 7: it may be a hand-lettered 7"
+            shaped = shaped or bool(ones)
+    if shaped:
+        return None
+    return "a drawn 1 may be a hand-lettered 7, and no engine could show its shape"
 
 
 # ---- the one entry point -------------------------------------------------------------------------
@@ -1168,13 +1242,17 @@ def _drawn(
     misses = sorted({v for read in reads for v in read.values if near_miss(wanted, v)})
     others = {v for read in reads for v in read.values if v != wanted}
     area = (spot[2] - spot[0]) * (spot[3] - spot[1])
-    if len(votes) >= _VOTES_NEEDED and not misses:
+    engines_voting = {read.engine for read in votes}
+    if len(votes) >= _VOTES_NEEDED and len(engines_voting) >= 2 and not misses:
         if area > BIG_BOX_PT2 and others:
             reason = (
                 "the box is too big and holds several numbers: draw the box round the one "
                 "dimension"
             )
             return Verified("cannot_read", "drawn", None, all_reads, reason, value)
+        ones = _ones_unsure(votes, wanted)
+        if ones is not None:
+            return Verified("cannot_read", "drawn", None, all_reads, ones, value)
         engines_agreeing = " and ".join(read.name for read in votes)
         return Verified(
             "match",
@@ -1191,8 +1269,10 @@ def _drawn(
     if misses:
         near = ", ".join(_inches_text(v) for v in misses[:3])
         reason = f"an OCR engine read a near-miss of it here ({near})"
-    elif votes:
+    elif len(votes) == 1:
         reason = "only one reading of the drawn ink gives it"
+    elif votes:
+        reason = "only one OCR engine reads it here"
     elif not any(read.lines for read in reads):
         reason = "no number could be read at this spot"
     else:

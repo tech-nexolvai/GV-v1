@@ -156,7 +156,7 @@ def _exact_decimal(value: Fraction) -> Decimal | None:
     return exact.normalize() if exact != exact.to_integral_value() else exact.quantize(Decimal(1))
 
 
-#: One dimension inside a sentence: `940 [37]`, `3'-1 1/2"`, `39 1/2"`, `3/4"`.
+#: One dimension inside a sentence: `940 [37]`, `3'-1 1/2"`, `41 1/2"`, `3/4"`.
 _DIMENSION: Final = re.compile(
     r"""\d{2,5}\s*\[\s*\d+(?:\s+\d+/\d+|-\d+/\d+|\.\d+)?\s*"?\s*\]
      |\d+\s*'\s*-?\s*\d+(?:\s+\d+/\d+|-\d+/\d+)?\s*"?
@@ -169,7 +169,7 @@ _DIMENSION: Final = re.compile(
 
 def dimension_tokens(text: object) -> list[str]:
     """Every dimension written in `text`, in order, each one `to_inches` reads: the sentence
-    `39 1/2" printed overall; parts 30" + 9 1/2"` gives three."""
+    `41 1/2" printed overall; parts 32" + 9 1/2"` gives three."""
     if not isinstance(text, str):
         return []
     found: list[str] = []
@@ -404,7 +404,7 @@ def _side(
     value: object, box: object, pdf_paths: Mapping[str, Path]
 ) -> tuple[PrintedResult, dict[str, Any] | None]:
     """One side's printed-at-spot word and code's reading of its claimed value (a sentence's first
-    dimension: `39 1/2" printed overall; parts ...` is checked as `39 1/2"`)."""
+    dimension: `41 1/2" printed overall; parts ...` is checked as `41 1/2"`)."""
     claim = claim_value(value)
     if claim is None:
         return "not_a_number", None
