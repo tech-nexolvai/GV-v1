@@ -616,7 +616,7 @@ def test_each_call_is_recorded_for_the_usage_page_labelled_by_chat(postgres_engi
         ).all()
         assert len(rows) == 2
         assert {row.template_id for row in rows} == {f"chat:{chat_id}"}
-        assert {row.prompt_id for row in rows} == {"review-assistant-chat-anthropic-chat-v12"}
+        assert {row.prompt_id for row in rows} == {"review-assistant-chat-anthropic-chat-v13"}
         assert all(row.package_revision_id == world.revision_id for row in rows)
         assert rows[0].outcome != "ok" and rows[1].outcome == "ok"
         models = world.client.get(f"/api/v1/assistant/models?package_id={world.package_id}").json()

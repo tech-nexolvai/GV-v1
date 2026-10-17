@@ -80,6 +80,7 @@ from app.review.assistant.chat_store import (
 from app.review.assistant.chat_tools import MAX_AGENTS, ChatTools, ResultsLoader
 from app.review.assistant.chat_unknowns import asks_for_the_rest, last_unknowns, work_list_note
 from app.review.assistant.sandbox import UPLOADS, ChatWorkspace, Sandbox, safe_file_name
+from app.review.assistant.sharpen import apply_sharpen
 from app.runs.rates import ModelRates
 
 __all__ = [
@@ -508,6 +509,12 @@ class MessageJob:
     """The products picked in the composer, else the set's own (`None`: not stated)."""
     continue_from: UUID | None = None
     """Continue (#1514): the interrupted answer whose work this message goes on from."""
+    sharpen_model: bool = False
+    """#1551: a question no code rule settles is sharpened by the cheap model (off: code rules
+    only, and no spec otherwise)."""
+    sharpen_deadline_seconds: float = 1.5
+    task_edit: Mapping[str, Any] | None = None
+    """#1551: the task spec the reviewer corrected on the screen ("Understood as … Edit")."""
 
 
 _NO_SANDBOX: Final = (
@@ -766,6 +773,16 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             )
         except Exception:  # noqa: BLE001 - the check goes on; it just redoes more
             _log.exception("assistant chat could not carry over the interrupted findings")
+    if job.mode == "chat" and job.continue_from is None:
+        # #1551: the question sharpened into a task spec before any tool or helper runs.
+        apply_sharpen(
+            engine,
+            history=replay,
+            products=job.products,
+            use_model=job.sharpen_model,
+            edit=job.task_edit,
+            deadline_seconds=job.sharpen_deadline_seconds,
+        )
     if run.cancel.is_set():
         stop_with("", "cancelled")
         return
