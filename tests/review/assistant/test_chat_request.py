@@ -21,6 +21,7 @@ import pytest
 
 from app.review.assistant.chat_engine import _accumulate, prompt_ids
 from app.review.assistant.chat_provider import (
+    RETENTION_WORDS,
     AnthropicSdkProvider,
     ProviderChoice,
     ProviderFailure,
@@ -28,16 +29,20 @@ from app.review.assistant.chat_provider import (
     failure_from,
 )
 from app.review.assistant.chat_request import (
+    BINDING_BETA,
     BY_SHORT,
     EFFORTS,
+    FALLBACK_BETA,
     HELPER_MAX_EFFORT,
     MODELS,
     ChoiceRefused,
     call_params,
     check_choice,
     helper_effort,
+    helper_shorts,
     helper_thinking,
     inline_pictures,
+    rates_key_for,
     schema_note,
     thinking_config,
 )
@@ -81,16 +86,70 @@ def test_opus_always_thinks_with_the_summary_shown_and_the_refusal_fallback() ->
             {"name": "b", "input_schema": {}, "cache_control": {"type": "ephemeral"}},
         ],
         "tool_choice": {"type": "auto"},
-        "thinking": {"type": "adaptive", "display": "summarized"},
+        "thinking": {
+            "type": "adaptive",
+            "display": "summarized",
+            "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+        },
         "output_config": {"effort": "high"},
-        "betas": ["server-side-fallback-2026-07-01"],
+        "betas": ["thinking-binding-controls-2026-08-01", "server-side-fallback-2026-07-01"],
         "fallbacks": "default",
     }
+
+
+def test_fable_always_thinks_with_the_summary_shown_the_fallback_and_the_binding_net() -> None:
+    """#1577, Anthropic's Fable 5.1 guide: adaptive thinking only (no `disabled`, no budget),
+    effort the only depth control, `fallbacks: "default"` with its beta, no forced tool."""
+    params = _params("claude-fable-5-1", "xhigh", True)
+    assert params["model"] == "claude-fable-5-1"
+    assert params["thinking"] == {
+        "type": "adaptive",
+        "display": "summarized",
+        "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+    }
+    assert params["output_config"] == {"effort": "xhigh"}
+    assert params["betas"] == [BINDING_BETA, FALLBACK_BETA] and params["fallbacks"] == "default"
+    assert params["tool_choice"] == {"type": "auto"}
+    assert _params("claude-fable-5-1", "low", True, final=True)["tool_choice"] == {"type": "none"}
+    flat = json.dumps(params)
+    for banned in ("budget_tokens", "temperature", "top_p", '"disabled"', "between_tools"):
+        assert banned not in flat
+    fable = MODELS["claude-fable-5-1"]
+    assert fable.label == "Claude Fable 5.1" and fable.thinking == "always"
+    assert fable.thinking_off is None and fable.thinking_off_max_effort is None
+    assert fable.rates_key == "anthropic.claude-fable-5-1" and fable.providers == ("anthropic",)
+
+
+@pytest.mark.parametrize("model", sorted(MODELS))
+@pytest.mark.parametrize("final", [False, True])
+def test_no_model_is_ever_sent_a_forced_tool_choice(model: str, final: bool) -> None:
+    """`any` and `tool` are a 400 on Fable 5.1 and the 5.5 models: only `auto`, or `none` for a
+    forced final answer."""
+    params = _params(model, "high", True, final=final)
+    assert params["tool_choice"] in ({"type": "auto"}, {"type": "none"})
+    assert params["tool_choice"] == ({"type": "none"} if final else {"type": "auto"})
+
+
+def test_fable_is_refused_on_openrouter_in_plain_words() -> None:
+    with pytest.raises(ChoiceRefused, match="only on Anthropic's own API"):
+        check_choice("claude-fable-5-1", "high", True, provider="openrouter")
+    assert check_choice("claude-fable-5-1", "high", True, provider="anthropic").short == "fable"
+    assert check_choice("claude-opus-5-5", "high", True, provider="openrouter").short == "opus"
+
+
+def test_fable_never_runs_as_a_helper_and_a_fallback_model_has_a_price_key() -> None:
+    assert helper_shorts() == ("opus", "sonnet", "haiku")
+    assert rates_key_for("claude-fable-5-1") == "anthropic.claude-fable-5-1"
+    assert rates_key_for("claude-opus-4-8") == "anthropic.claude-opus-4-8"
+    assert rates_key_for("claude-opus-5-20260901") == "anthropic.claude-opus-5"
+    assert rates_key_for("anthropic/claude-opus-5.5") == "anthropic.claude-opus-5.5"
 
 
 @pytest.mark.parametrize(
     ("model", "effort", "on", "expected"),
     [
+        ("claude-fable-5-1", "max", True, {"type": "adaptive", "display": "summarized"}),
+        ("claude-fable-5-1", "low", True, {"type": "adaptive", "display": "summarized"}),
         ("claude-opus-5-5", "max", True, {"type": "adaptive", "display": "summarized"}),
         ("claude-opus-5-5", "low", True, {"type": "adaptive", "display": "summarized"}),
         ("claude-sonnet-5-5", "xhigh", True, {"type": "adaptive", "display": "summarized"}),
@@ -104,7 +163,16 @@ def test_each_choice_sends_its_thinking_and_effort(
     model: str, effort: str, on: bool, expected: dict[str, str]
 ) -> None:
     params = _params(model, effort, on)
-    assert params["thinking"] == expected
+    thinking = dict(params["thinking"])
+    binding = thinking.pop("block_binding", None)
+    assert thinking == expected
+    # The preserved-thinking safety net rides on adaptive thinking only (#1577): `between_tools`
+    # and `disabled` take no other field.
+    if expected["type"] == "adaptive":
+        assert binding == {"prefix_mismatch_behavior": "drop_block"}
+        assert BINDING_BETA in params["betas"]
+    else:
+        assert binding is None and BINDING_BETA not in params.get("betas", [])
     assert params["output_config"] == {"effort": effort}
     assert params["model"] == model
     # Never a budget, a temperature or a forced tool.
@@ -115,12 +183,14 @@ def test_each_choice_sends_its_thinking_and_effort(
 
 def test_haiku_has_no_server_side_fallback() -> None:
     params = _params("claude-haiku-5-5", "low", True)
-    assert "betas" not in params and "fallbacks" not in params
+    assert params["betas"] == [BINDING_BETA] and "fallbacks" not in params
+    assert "betas" not in _params("claude-haiku-5-5", "low", False)
 
 
 def test_sonnet_takes_the_default_fallback_form_only() -> None:
     params = _params("claude-sonnet-5-5", "medium", False)
     assert params["betas"] == ["server-side-fallback-2026-07-01"]
+    assert "block_binding" not in params["thinking"]
     assert params["fallbacks"] == "default"
 
 
@@ -153,7 +223,8 @@ def test_openrouter_gets_its_names_and_the_keep_no_data_routing_and_no_betas() -
         ("claude-sonnet-5-5", "xhigh", False, "high or below"),
         ("claude-sonnet-5-5", "max", False, "high or below"),
         ("claude-haiku-5-5", "max", False, "high or below"),
-        ("claude-fable-5-1", "high", True, "not one of the models"),
+        ("claude-fable-5-1", "high", False, "always on"),
+        ("claude-fable-5", "high", True, "not one of the models"),
         ("claude-opus-5-5", "extreme", True, "effort must be"),
     ],
 )
@@ -331,10 +402,15 @@ def test_anthropic_direct_streams_with_its_key_and_the_fallback_beta(
     assert str(request.url).startswith("https://api.anthropic.com/v1/messages")
     assert request.headers["x-api-key"] == ANTHROPIC_KEY
     assert "server-side-fallback-2026-07-01" in request.headers["anthropic-beta"]
+    assert "thinking-binding-controls-2026-08-01" in request.headers["anthropic-beta"]
     assert OPENROUTER_KEY not in str(request.headers)
     body = json.loads(request.content)
     assert body["stream"] is True and body["fallbacks"] == "default"
-    assert body["thinking"] == {"type": "adaptive", "display": "summarized"}
+    assert body["thinking"] == {
+        "type": "adaptive",
+        "display": "summarized",
+        "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+    }
     assert "betas" not in body
     # The stream reads back as the API sent it.
     accumulated = _accumulate(got, None, lambda: False, {})
@@ -412,6 +488,38 @@ def test_failures_are_plain_and_say_whether_to_ask_again() -> None:
         anthropic.BadRequestError("bad", response=httpx2.Response(400, request=request), body=None)
     )
     assert not bad.retryable and str(bad) == "The AI service refused the request (error 400)."
+    # #1577: Fable 5.1 on an account without 30-day retention, told plainly (never their words).
+    words = (
+        "In order to access this model, your organization or workspace must have data "
+        "retention enabled."
+    )
+    retention = failure_from(
+        anthropic.BadRequestError(
+            words,
+            response=httpx2.Response(400, request=request),
+            body={"type": "error", "error": {"type": "invalid_request_error", "message": words}},
+        )
+    )
+    assert not retention.retryable and str(retention) == RETENTION_WORDS
+    assert "Pick Claude Opus 5.5" in str(retention) and words not in str(retention)
+
+
+def test_dropped_thinking_is_read_from_the_stream() -> None:
+    """#1577: with the thinking-binding beta the reply says which thinking blocks the API left
+    out (`input_transformations`, on `message_start` and again on `message_delta`)."""
+    events = reply(text("Hi"))
+    events[0]["message"]["input_transformations"] = [
+        {
+            "type": "thinking_dropped",
+            "path": "messages.1.content.0",
+            "reason": "prefix_binding_mismatch",
+        }
+    ]
+    assert _accumulate(events, None, lambda: False, {}).transformations[0]["path"] == (
+        "messages.1.content.0"
+    )
+    events[-2]["input_transformations"] = []
+    assert _accumulate(events, None, lambda: False, {}).transformations == []
 
 
 def test_usage_rows_name_the_route_and_the_purpose() -> None:

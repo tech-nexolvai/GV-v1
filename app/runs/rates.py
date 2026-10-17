@@ -21,6 +21,11 @@ The price file's shape::
      "rates": {"mistral.ministral-3-3b-instruct":
                    {"input_per_1k_tokens": "0.0001", "output_per_1k_tokens": "0.0001"}}}
 
+A model may also state its prompt-cache prices (`cache_write_per_1k_tokens` for 5-minute cache
+writes, `cache_read_per_1k_tokens`); without them a cache write is 1.25 times the input price and a
+cache read 0.1 times (`ModelRate.cache_factors`). Claude Fable 5.1 reads its cache at 0.025 times
+(#1577).
+
 Source: issue #700. Verification: tests/app/test_model_rates.py.
 """
 
@@ -58,12 +63,36 @@ _MICROS: Final = Decimal(1_000_000)
 _THOUSAND: Final = Decimal(1_000)
 
 
+#: Anthropic's usual prompt-cache prices, as shares of the input price: a 5-minute cache write, a read.
+_CACHE_WRITE: Final = Decimal("1.25")
+_CACHE_READ: Final = Decimal("0.1")
+
+
 @dataclass(frozen=True, slots=True)
 class ModelRate:
     """One model's price per thousand tokens, in the file's currency."""
 
     input_per_1k_tokens: Decimal
     output_per_1k_tokens: Decimal
+    cache_write_per_1k_tokens: Decimal | None = None
+    cache_read_per_1k_tokens: Decimal | None = None
+
+    def cache_factors(self) -> tuple[Decimal, Decimal]:
+        """A cache write's and a cache read's price as shares of the input price (1.25 and 0.1
+        unless the file states the model's own)."""
+        if not self.input_per_1k_tokens:
+            return _CACHE_WRITE, _CACHE_READ
+        write = (
+            _CACHE_WRITE
+            if self.cache_write_per_1k_tokens is None
+            else self.cache_write_per_1k_tokens / self.input_per_1k_tokens
+        )
+        read = (
+            _CACHE_READ
+            if self.cache_read_per_1k_tokens is None
+            else self.cache_read_per_1k_tokens / self.input_per_1k_tokens
+        )
+        return write, read
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +154,11 @@ def load_model_rates(path: str | Path) -> ModelRates:
             output_per_1k_tokens=_decimal(
                 entry.get("output_per_1k_tokens"), where=f"{model_id} output_per_1k_tokens"
             ),
+            **{
+                field: _decimal(entry[field], where=f"{model_id} {field}")
+                for field in ("cache_write_per_1k_tokens", "cache_read_per_1k_tokens")
+                if field in entry
+            },
         )
     return ModelRates(
         source=source, retrieved=retrieved, currency=currency, rates=MappingProxyType(rates)

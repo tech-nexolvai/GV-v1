@@ -33,7 +33,11 @@ a helper before it reports.
 **Failures.** A provider 5xx, 520/529, a lost connection or an error in the middle of a stream is
 asked once more (for the lead and for helpers); a call's partial output is then dropped from what is
 stored. A refusal (`stop_reason: refusal`) ends the message with a plain "Claude declined" answer;
-its partial output is never stored or replayed. Cancel (or the client going away) stops between
+its partial output is never stored or replayed. When Anthropic's refusal fallback answered instead
+(#1577), the answer gets one quiet line naming both models (a `fallback` block and event), the
+declined model's thinking and tool calls before the switch are left out of the history (as the API
+asks), and the call is priced and recorded per attempt (`usage.iterations`), each at its own
+model's price. Cancel (or the client going away) stops between
 steps and in the middle of a stream, kills the running sandbox commands and stops the helpers; the
 message is still stored, `stopped: cancelled`.
 
@@ -116,7 +120,12 @@ from app.review.assistant.chat_findings import (
 )
 from app.review.assistant.chat_findings import _architect_upload as architect_upload
 from app.review.assistant.chat_progress import FullCheckProgress
-from app.review.assistant.chat_provider import ChatProvider, ProviderFailure, failure_from
+from app.review.assistant.chat_provider import (
+    RETENTION_WORDS,
+    ChatProvider,
+    ProviderFailure,
+    failure_from,
+)
 from app.review.assistant.chat_read_review import (
     READ_SYSTEM,
     Budget,
@@ -133,9 +142,11 @@ from app.review.assistant.chat_request import (
     call_params,
     full_check_helper_effort,
     helper_effort,
+    helper_shorts,
     helper_thinking,
     inline_pictures,
     picture_sizes,
+    rates_key_for,
     thinking_config,
 )
 from app.review.assistant.chat_scope import (
@@ -241,10 +252,15 @@ _log = logging.getLogger(__name__)
 #: lines, #1548. chat-v13: the prompt and tool audit, #1559: one vocabulary, every tool says when
 #: to use it, what it returns and one example, every schema field described, the box units said
 #: one way, the lead prompt without its tool catalogue. chat-v14: remember, the corrections of an
-#: earlier answer's finding, and server-side clearing of old tool results, #1548. chat-v15: numbered
+#: earlier answer's finding, and server-side clearing of old tool results, #1548. chat-v16: numbered
 #: dimension labels: zoom marks and guides, architect_dim / vendor_dim / dim, the helper brief's
-#: label rule, #1558.) Only the request's prefix changes; a chat's stored messages replay unchanged.
-HARNESS_ID: Final = "chat-v15"
+#: label rule, #1558. chat-v16: Claude Fable 5.1, its turn note, and each chat keeping the system
+#: prompt and tools it started with (`chat_harness`), #1577.) A chat's stored messages replay
+#: unchanged, and since chat-v16 so do its system prompt and tools: a newer harness reaches an older
+#: chat as one appended note. chat-v17: the knowledge pack, each full-check helper kind's own system
+#: prompt (`full_check_specialists`), the label-first brief, record_string's part_dims / total_dim,
+#: and structured outputs for the sharpen step, the reads and the critic.
+HARNESS_ID: Final = "chat-v17"
 #: Helpers that may run at once, at most, whatever the setting says.
 MAX_PARALLEL_AGENTS_LIMIT: Final = 12
 #: Helpers one lead turn may start. More than run at once wait for a free place in the same turn:
@@ -277,8 +293,9 @@ FINAL_MAX_TOKENS: Final = 16000
 #: The share of what is left of the message cap that the helpers of one delegation may spend
 #: together; the rest is the lead's, to check their reports and write the answer.
 HELPER_SHARE_PERCENT: Final = 70
-#: A helper's model when the lead names none, by the lead's: Opus leads, Sonnet helps.
+#: A helper's model when the lead names none, by the lead's: Fable or Opus leads, Sonnet helps.
 HELPER_DEFAULT_MODEL: Final[Mapping[str, str]] = {
+    "fable": "sonnet",
     "opus": "sonnet",
     "sonnet": "sonnet",
     "haiku": "haiku",
@@ -435,6 +452,9 @@ class _Reply:
     usage: dict[str, Any]
     model: str | None
     bad_inputs: set[int] = field(default_factory=set)
+    transformations: list[dict[str, Any]] = field(default_factory=list)
+    """What the API did to the request's history before the model read it (thinking blocks it
+    dropped), from `input_transformations` (sent with the thinking-binding beta)."""
 
     def history_content(self) -> list[dict[str, Any]]:
         """The content to send back. After a refusal fallback, the declined model's thinking and
@@ -462,6 +482,20 @@ class _Reply:
 
     def tool_uses(self) -> list[dict[str, Any]]:
         return [block for block in self.history_content() if block.get("type") == "tool_use"]
+
+    def switches(self) -> list[tuple[str, str]]:
+        """Each refusal-fallback switch in the reply, (declined model, answering model); a turn a
+        conversation already moved to the fallback ("sticky") has no marker, so its served model is
+        named against the one asked (`None` here: the caller knows it)."""
+        found: list[tuple[str, str]] = []
+        for block in self.content:
+            if block.get("type") != "fallback":
+                continue
+            ends = [block.get(side) for side in ("from", "to")]
+            names = [end.get("model") if isinstance(end, Mapping) else None for end in ends]
+            if all(isinstance(name, str) and name for name in names):
+                found.append((str(names[0]), str(names[1])))
+        return found
 
     @property
     def fell_back(self) -> bool:
@@ -509,6 +543,7 @@ def _accumulate(
     stop_details: Mapping[str, Any] | None = None
     model: str | None = None
     bad: set[int] = set()
+    transformations: list[dict[str, Any]] = []
     for event in events:
         if cancelled():
             raise _Cancelled
@@ -517,6 +552,9 @@ def _accumulate(
             message = event.get("message") or {}
             model = message.get("model") if isinstance(message.get("model"), str) else None
             _merge_usage(usage, message.get("usage"))
+            transformations = _transformations(
+                message.get("input_transformations"), transformations
+            )
         elif kind == "content_block_start":
             index = int(event.get("index", len(content)))
             block = dict(event.get("content_block") or {})
@@ -568,6 +606,8 @@ def _accumulate(
             details = delta.get("stop_details")
             stop_details = details if isinstance(details, Mapping) else stop_details
             _merge_usage(usage, event.get("usage"))
+            # Sent again here after a fallback in the middle of the stream: the later list wins.
+            transformations = _transformations(event.get("input_transformations"), transformations)
         if display is not None:
             display(event)
     # A tool call whose input never finished (cut at max_tokens) is not run.
@@ -580,7 +620,15 @@ def _accumulate(
         usage=usage,
         model=model,
         bad_inputs={id(content[n]) for n in bad if n < len(content)},
+        transformations=transformations,
     )
+
+
+def _transformations(value: object, before: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A reply's `input_transformations`, when the event carries a list (else what was known)."""
+    if not isinstance(value, list):
+        return before
+    return [dict(item) for item in value if isinstance(item, Mapping)]
 
 
 _SNAPSHOT: Final = re.compile(r"(?:[-@]\d{8})?")
@@ -652,8 +700,14 @@ class ChatEngine:
         read_picture: Callable[[str], bytes],
         cancel: threading.Event,
         sleep: Callable[[float], bool] | None = None,
+        lead_system: str = LEAD_SYSTEM_PROMPT,
+        lead_tools: Sequence[Mapping[str, Any]] = LEAD_TOOLS,
     ) -> None:
         self.settings = settings
+        # The lead's system prompt and tools: the chat's own, kept since its first answer
+        # (`chat_harness`, #1577), so the replayed history's thinking stays valid.
+        self.lead_system = lead_system
+        self.lead_tools = tuple(lead_tools)
         self.provider = provider
         self.tools = tools
         self.ledger = ledger
@@ -751,6 +805,10 @@ class ChatEngine:
         self.task_spec: dict[str, Any] | None = None
         #: Each helper kind's system prompt, made once (`_kind_system`).
         self._kind_systems: dict[str, str] = {}
+        #: Refusal-fallback switches already shown (#1577), and the thinking blocks the API dropped
+        #: from this answer's calls because their conversation no longer matched (a bug signal).
+        self._fallbacks_shown: set[tuple[str, str]] = set()
+        self.mismatched_thinking = 0
 
     # ---- the screen ------------------------------------------------------------------------------
 
@@ -811,22 +869,62 @@ class ChatEngine:
             return self._spent
 
     def _price(self, model: ChatModel, billed_in: int, out: int) -> int | None:
-        return call_cost_micros(
-            self.settings.rates(model.rates_key), model.rates_key, billed_in, out
-        )
+        return self._price_key(model.rates_key, billed_in, out)
 
-    def _weighted(self, model: ChatModel, usage: Mapping[str, Any]) -> tuple[int, int]:
-        """The call's tokens as price-weighted equivalents at the model's base price: cache
-        writes 1.25x, reads 0.1x; Haiku's long-prompt price 5x."""
-        billed_in = billed_input_tokens(usage)
+    def _price_key(self, key: str, billed_in: int, out: int) -> int | None:
+        return call_cost_micros(self.settings.rates(key), key, billed_in, out)
+
+    def _priced(self, key: str) -> bool:
+        rates = self.settings.rates(key)
+        return rates is not None and rates.rate_for(key) is not None
+
+    def _weighted(self, key: str, usage: Mapping[str, Any]) -> tuple[int, int]:
+        """One attempt's tokens as price-weighted equivalents at its model's base price: cache
+        writes 1.25x and reads 0.1x unless the price file states the model's own (Fable 5.1 reads
+        at 0.025x); Haiku's long-prompt price 5x."""
+        rates = self.settings.rates(key)
+        rate = None if rates is None else rates.rate_for(key)
+        billed_in = billed_input_tokens(usage, None if rate is None else rate.cache_factors())
         out = int(usage.get("output_tokens") or 0)
         prompt = sum(
-            int(usage.get(key) or 0)
-            for key in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+            int(usage.get(name) or 0)
+            for name in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
         )
-        if model.short == "haiku" and prompt > _HAIKU_LONG_PROMPT:
+        if "haiku" in key and prompt > _HAIKU_LONG_PROMPT:
             return billed_in * _HAIKU_LONG_FACTOR, out * _HAIKU_LONG_FACTOR
         return billed_in, out
+
+    def _attempts(
+        self, model: ChatModel, usage: Mapping[str, Any]
+    ) -> list[tuple[str, Mapping[str, Any]]]:
+        """Each attempt a call made, with its price key (#1577). A refusal fallback lists them in
+        `usage.iterations` (the declined model's and the fallback model's, each billed at its own
+        model's price; the top-level usage is only the attempt that answered). Without that list,
+        the call is one attempt on the model asked. A fallback model the price file does not list
+        is priced as the model asked (never cheaper than it)."""
+        entries = usage.get("iterations")
+        if isinstance(entries, list):
+            found = [
+                entry
+                for entry in entries
+                if isinstance(entry, Mapping)
+                and any(name in entry for name in ("input_tokens", "output_tokens"))
+            ]
+            if found:
+                attempts: list[tuple[str, Mapping[str, Any]]] = []
+                for entry in found:
+                    named = entry.get("model")
+                    key = rates_key_for(named) if isinstance(named, str) and named else ""
+                    attempts.append((key if key and self._priced(key) else model.rates_key, entry))
+                return attempts
+        return [(model.rates_key, usage)]
+
+    def _cost(self, model: ChatModel, usage: Mapping[str, Any]) -> int:
+        """What a call cost, its attempts added up (an unknown price counts as nothing)."""
+        return sum(
+            self._price_key(key, *self._weighted(key, part)) or 0
+            for key, part in self._attempts(model, usage)
+        )
 
     def _estimate(
         self, model: ChatModel, body: Mapping[str, Any], cached: int, previous: int
@@ -884,8 +982,7 @@ class ChatEngine:
             share.held -= held
 
     def _charge(self, model: ChatModel, usage: Mapping[str, Any]) -> None:
-        billed_in, out = self._weighted(model, usage)
-        cost = self._price(model, billed_in, out) or 0
+        cost = self._cost(model, usage)
         with self._lock:
             self._spent += cost
             total = self._spent
@@ -988,10 +1085,16 @@ class ChatEngine:
                     status=None,
                     retryable=False,
                 )
+            if failure is not None and failure.status == 404 and model.short == "fable":
+                # An early draft of Anthropic's docs: a 404 on the id when retention is off.
+                failure = ProviderFailure(RETENTION_WORDS, status=404, retryable=False)
             self._record(model, prompt_id, started, reply, failure)
             if reply is not None:
                 self._charge(model, reply.usage)
+                self._note_transformations(reply, prompt_id)
             if failure is None and reply is not None:
+                if shown is not None:
+                    self._show_fallback(model, reply)
                 return reply
             assert failure is not None
             if shown is not None:
@@ -1003,6 +1106,52 @@ class ChatEngine:
                     raise _Cancelled
                 continue
             raise failure
+
+    def _note_transformations(self, reply: _Reply, prompt_id: str) -> None:
+        """Logs the thinking blocks the API dropped or let through although their conversation had
+        changed (`prefix_binding_mismatch`: our history or prefix changed, a bug), and those a
+        model switch dropped (`model_binding_mismatch`: expected). Never the content."""
+        mismatched = [
+            item
+            for item in reply.transformations
+            if item.get("reason") == "prefix_binding_mismatch"
+        ]
+        switched = [
+            item for item in reply.transformations if item.get("reason") == "model_binding_mismatch"
+        ]
+        if mismatched:
+            with self._lock:
+                self.mismatched_thinking += len(mismatched)
+            _log.warning(
+                "assistant chat history check: %d thinking block(s) no longer match their "
+                "conversation (%s; first at %s)",
+                len(mismatched),
+                prompt_id,
+                mismatched[0].get("path"),
+            )
+        if switched:
+            _log.info(
+                "assistant chat: %d thinking block(s) from another model left out (%s)",
+                len(switched),
+                prompt_id,
+            )
+
+    def _show_fallback(self, model: ChatModel, reply: _Reply) -> None:
+        """A refusal fallback that answered the lead (#1577): one quiet line per switch, stored
+        with the answer (a `fallback` block) and sent as a `fallback` event. A reply the whole
+        chain refused is not shown here (the answer says Claude declined)."""
+        if reply.stop_reason == "refusal" or not reply.fell_back:
+            return
+        switches = reply.switches() or (
+            [(model.id, reply.model)] if reply.model and reply.model != model.id else []
+        )
+        for declined, answered in switches:
+            if (declined, answered) in self._fallbacks_shown:
+                continue
+            self._fallbacks_shown.add((declined, answered))
+            fallback = {"from_model": declined, "to_model": answered}
+            index = self._add_block({"type": "fallback", "fallback": fallback})
+            self.emit("fallback", {"index": index, "fallback": dict(fallback)})
 
     def _cancelled_call(
         self, model: ChatModel, prompt_id: str, started: int, usage: dict[str, Any]
@@ -1029,19 +1178,24 @@ class ChatEngine:
         reply: _Reply | None,
         error: BaseException | None,
     ) -> None:
-        billed_in, out = (0, 0) if reply is None else self._weighted(model, reply.usage)
-        try:
-            self.ledger.record(
-                model_key=model.rates_key,
-                prompt_id=prompt_id,
-                started_ns=started,
-                input_tokens=billed_in,
-                output_tokens=out,
-                stop_reason=None if reply is None else reply.stop_reason,
-                error=error,
-            )
-        except Exception:  # noqa: BLE001 - the answer still goes on; the failure is logged
-            _log.exception("assistant chat call could not be recorded")
+        """One Usage row per attempt (#1577: a refusal fallback's declined and answering attempts
+        each on its own model); the call's stop reason and error go on the last."""
+        attempts = [(model.rates_key, {})] if reply is None else self._attempts(model, reply.usage)
+        for number, (key, part) in enumerate(attempts, start=1):
+            last = number == len(attempts)
+            billed_in, out = (0, 0) if reply is None else self._weighted(key, part)
+            try:
+                self.ledger.record(
+                    model_key=key,
+                    prompt_id=prompt_id,
+                    started_ns=started,
+                    input_tokens=billed_in,
+                    output_tokens=out,
+                    stop_reason=None if reply is None or not last else reply.stop_reason,
+                    error=error if last else None,
+                )
+            except Exception:  # noqa: BLE001 - the answer still goes on; the failure is logged
+                _log.exception("assistant chat call could not be recorded")
 
     # ---- the lead's stream on the screen ---------------------------------------------------------
 
@@ -2357,7 +2511,7 @@ class ChatEngine:
         short = given.get("model")
         if short is None:
             model = BY_SHORT[HELPER_DEFAULT_MODEL[self.settings.model.short]]
-        elif isinstance(short, str) and short in BY_SHORT:
+        elif isinstance(short, str) and short in helper_shorts():
             model = BY_SHORT[short]
         else:
             raise SandboxRefused("model must be opus, sonnet or haiku")
@@ -3030,7 +3184,7 @@ class ChatEngine:
                 return _report_from_steps(entry["steps"], str(failure)), False, "error"
             finally:
                 self._release(share, held)
-            agent.spent += self._price(model, *self._weighted(model, reply.usage)) or 0
+            agent.spent += self._cost(model, reply.usage)
             cached = sum(
                 int(reply.usage.get(key) or 0)
                 for key in (
@@ -3238,8 +3392,8 @@ class ChatEngine:
         body = self._body(
             model=self.settings.model,
             thinking=thinking_config(self.settings.model, self.settings.thinking),
-            system=LEAD_SYSTEM_PROMPT,
-            tools=LEAD_TOOLS,
+            system=self.lead_system,
+            tools=self.lead_tools,
             messages=self.history,
             final=False,
             max_tokens=self._lead_max_tokens,
@@ -3287,8 +3441,8 @@ class ChatEngine:
             body = self._body(
                 model=model,
                 thinking=thinking,
-                system=LEAD_SYSTEM_PROMPT,
-                tools=LEAD_TOOLS,
+                system=self.lead_system,
+                tools=self.lead_tools,
                 messages=messages,
                 final=final,
                 max_tokens=max_tokens,
@@ -3310,8 +3464,8 @@ class ChatEngine:
                         model=model,
                         effort=settings.effort,
                         thinking=thinking,
-                        system=LEAD_SYSTEM_PROMPT,
-                        tools=LEAD_TOOLS,
+                        system=self.lead_system,
+                        tools=self.lead_tools,
                         messages=messages,
                         final=final,
                         max_tokens=max_tokens,
@@ -3363,8 +3517,8 @@ class ChatEngine:
                     self._body(
                         model=model,
                         thinking=thinking,
-                        system=LEAD_SYSTEM_PROMPT,
-                        tools=LEAD_TOOLS,
+                        system=self.lead_system,
+                        tools=self.lead_tools,
                         messages=[*self.history, *probe],
                         final=False,
                         max_tokens=self._lead_max_tokens,

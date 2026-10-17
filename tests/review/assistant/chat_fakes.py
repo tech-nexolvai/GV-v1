@@ -205,9 +205,14 @@ class ScriptedProvider:
     def open_stream(self, params: Mapping[str, Any]) -> _Stream:
         sent = json.dumps(params)
         system = params["system"][0]["text"]
+        # The lead: today's system prompt, or a chat's own kept one (#1577: the lead alone has the
+        # Agent tool).
+        lead = system == LEAD_SYSTEM_PROMPT or any(
+            tool.get("name") == "Agent" for tool in params.get("tools") or []
+        )
         with self._lock:
             self.calls.append(sent)
-            if system == LEAD_SYSTEM_PROMPT:
+            if lead:
                 self.lead_calls.append(sent)
                 script = self._lead.popleft()
             else:

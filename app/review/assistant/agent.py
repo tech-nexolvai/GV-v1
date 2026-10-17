@@ -791,17 +791,21 @@ def request_body(
     }
 
 
-def billed_input_tokens(usage: Mapping[str, Any]) -> int:
+def billed_input_tokens(
+    usage: Mapping[str, Any], factors: tuple[Decimal, Decimal] | None = None
+) -> int:
     """The prompt as uncached-token equivalents: uncached + 1.25 x cache writes + 0.1 x cache
-    reads, so the input price gives what the call cost."""
+    reads (or the model's own `factors`, `ModelRate.cache_factors`), so the input price gives what
+    the call cost."""
+    write_factor, read_factor = factors or (_CACHE_WRITE, _CACHE_READ)
     uncached = int(usage.get("input_tokens") or 0)
     written = int(usage.get("cache_creation_input_tokens") or 0)
     read = int(usage.get("cache_read_input_tokens") or 0)
     # Rounded up: Decimal's `//` rounds toward zero, so `-(-x // 1)` would round down.
     return (
         uncached
-        + int((written * _CACHE_WRITE).to_integral_value(rounding=ROUND_CEILING))
-        + int((read * _CACHE_READ).to_integral_value(rounding=ROUND_CEILING))
+        + int((written * write_factor).to_integral_value(rounding=ROUND_CEILING))
+        + int((read * read_factor).to_integral_value(rounding=ROUND_CEILING))
     )
 
 

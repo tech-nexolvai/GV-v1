@@ -1,5 +1,5 @@
 import { useId, useState } from 'react';
-import { ChevronRight, CircleAlert, Download, FileDown, Sheet, FileImage, FileSpreadsheet, FileText, File as FileIcon, Play, RotateCw, ScanSearch } from 'lucide-react';
+import { ArrowRightLeft, ChevronRight, CircleAlert, Download, FileDown, Sheet, FileImage, FileSpreadsheet, FileText, File as FileIcon, Play, RotateCw, ScanSearch } from 'lucide-react';
 
 import { ApiError } from '@/api/client';
 import { AccuracyBadge, CiteChips } from '@/components/chat/chat-accuracy';
@@ -22,6 +22,7 @@ import {
   answerItems,
   fileKind,
   fileSize,
+  fallbackWords,
   footerWords,
   shownBlocks,
   stoppedWords,
@@ -610,6 +611,14 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
       )}
 
       {(message.corrections?.length ?? 0) > 0 && <Corrections corrections={message.corrections ?? []} />}
+
+      {/* #1577: Anthropic's refusal fallback wrote this answer: said once, quietly. */}
+      {message.fallback && (
+        <p data-slot="chat-fallback" className="flex min-w-0 items-start gap-1.5 text-xs leading-snug text-muted-foreground">
+          <ArrowRightLeft className="mt-px size-3.5 shrink-0" aria-hidden="true" />
+          <span>{fallbackWords(message.fallback, models)}</span>
+        </p>
+      )}
 
       {running && <Spark label={message.id ? 'Working' : 'Sending your message'} state={sparkState(blocks, streaming)} className="chat-fade-in" />}
 
