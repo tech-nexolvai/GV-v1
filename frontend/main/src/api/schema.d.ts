@@ -4189,6 +4189,11 @@ export interface components {
              * @description "What's right" items not compared: not scored.
              */
             not_compared?: number | null;
+            /**
+             * Rescored
+             * @description True when this score was worked out again from the stored findings with today's calibration and differs from the score stored with the answer (#1513).
+             */
+            rescored?: boolean | null;
             /** Score */
             score: number | null;
             /**
@@ -4845,7 +4850,7 @@ export interface components {
          * @description A message as stored: the reviewer's question, or the assistant's answer.
          */
         ChatMessageOut: {
-            /** @description The answer's accuracy by code (its `accuracy` block); null on older answers. */
+            /** @description The answer's accuracy by code (its `accuracy` block, scored again with today's calibration: see `rescored`); null on older answers. */
             accuracy?: components["schemas"]["ChatAccuracyOut"] | null;
             /** Blocks */
             blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"])[] | null;
@@ -4874,6 +4879,11 @@ export interface components {
              * @description The per-answer cap this answer ran under ("5.00").
              */
             message_cap_usd?: string | null;
+            /**
+             * Mode
+             * @description A typed question (`chat`) or the one-click full check; null on messages stored before it was kept (#1513).
+             */
+            mode?: ("chat" | "full_check") | null;
             /** Model */
             model?: string | null;
             /**
@@ -4881,6 +4891,11 @@ export interface components {
              * @description The drawing set's AI budget this answer ran under ("40.00").
              */
             package_cap_usd?: string | null;
+            /**
+             * Products
+             * @description The products the message was about; null on older messages.
+             */
+            products?: ("countertop" | "cabinet")[] | null;
             /**
              * Role
              * @enum {string}
