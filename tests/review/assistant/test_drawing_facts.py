@@ -86,6 +86,8 @@ def test_the_tool_lists_scales_pairs_notes_and_one_sided_tags(tmp_path: Path) ->
     assert not result.is_error
     text = result.content[0]["text"]
     assert text.startswith("Page 4: code's facts")
+    # What the drawings print is fenced as data.
+    assert '<drawing_data source="drawing_facts">' in text and text.endswith("</drawing_data>")
     assert "architect's drawing" in text and "about 1:36" in text
     assert 'its printed note 1/4" = 1\'-0" does NOT agree' in text
     assert 'SAME: architect D1 36" vs vendor D4 36"' in text
