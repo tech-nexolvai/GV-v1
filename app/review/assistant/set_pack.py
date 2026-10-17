@@ -45,6 +45,8 @@ import json
 import logging
 import os
 import re
+import subprocess
+import sys
 import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -583,10 +585,49 @@ def _drawn_budget() -> float:
         return DIMS_DRAWN_BUDGET_S
 
 
+#: The most seconds the labels' own process may take for one set.
+DIMS_TIMEOUT_S: Final = 1800
+
+
 def _dims(
     folder: Path, uploads: Path, names: Sequence[str], page_map: Sequence[dict[str, Any]]
 ) -> None:
-    """`dims.json`: the numbered dimension labels (`dim_labels.build_dims`), written as it grows."""
+    """`dims.json`: the numbered dimension labels (`dim_labels.build_dims`), written as it grows.
+
+    Read in a process of its own, at low priority: reading every page's text is minutes of pure
+    Python for a 60-page set, and in this process it would hold the interpreter's lock that the
+    chat's own threads need (a fake full check ran a third slower with it here)."""
+    if os.environ.get("GV_DIM_LABELS_IN_PROCESS") == "1":
+        write_dims(folder, uploads, names, page_map)
+        return
+    root = Path(__file__).resolve().parents[3]
+    environment = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join(filter(None, (str(root), os.environ.get("PYTHONPATH")))),
+    }
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "app.review.assistant.dim_labels",
+            str(folder),
+            str(uploads),
+            *names,
+        ],
+        cwd=root,
+        env=environment,
+        check=True,
+        timeout=DIMS_TIMEOUT_S,
+        capture_output=True,
+    )
+    if not (folder / "dims.json").is_file():
+        raise RuntimeError("the labels' process wrote no dims.json")
+
+
+def write_dims(
+    folder: Path, uploads: Path, names: Sequence[str], page_map: Sequence[Mapping[str, Any]]
+) -> None:
+    """`dim_labels.build_dims` into `folder / dims.json`, written after each page."""
     labels = import_module("app.review.assistant.dim_labels")
     labels.build_dims(
         {name: uploads / name for name in names},

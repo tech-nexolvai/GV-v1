@@ -849,3 +849,34 @@ def draw_marks(
     buffer = io.BytesIO()
     picture.save(buffer, format="PNG", optimize=True)
     return buffer.getvalue()
+
+
+def main(arguments: Sequence[str]) -> int:
+    """`python -m app.review.assistant.dim_labels <pack folder> <uploads folder> <name>...`: the
+    set pack's `dims.json` (`set_pack.write_dims`), in a process of its own at low priority."""
+    import json
+    import os
+
+    from app.review.assistant import set_pack
+
+    if len(arguments) < 3:
+        print("usage: dim_labels <pack folder> <uploads folder> <name>...")
+        return 2
+    try:
+        os.nice(10)
+    except OSError:  # a platform without it: the labels still come, at normal priority
+        pass
+    folder, uploads, names = Path(arguments[0]), Path(arguments[1]), list(arguments[2:])
+    try:
+        document = json.loads((folder / "page_map.json").read_text(encoding="utf-8"))
+        pages = document.get("pages") or []
+    except (OSError, ValueError):
+        pages = []
+    set_pack.write_dims(folder, uploads, names, pages)
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+
+    raise SystemExit(main(sys.argv[1:]))
