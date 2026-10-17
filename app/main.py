@@ -40,6 +40,7 @@ from app.auth import authenticate
 from app.auth.development import principal_from_environment
 from app.config import Settings
 from app.errors import REQUEST_ID_STATE, _envelope, install_error_handlers
+from app.host_guard import install_host_guard
 from app.telemetry.tracing import (
     TRACE_ID_HEADER,
     TRACE_ID_STATE,
@@ -244,6 +245,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(review_assistant.router, prefix=API_PREFIX)
     # The chat-first assistant (#1463): saved chats per drawing set, streamed, read-only on the review.
     app.include_router(assistant_chats.router, prefix=API_PREFIX)
+
+    # Only this machine's own address (and the deployment's hosts), and no write from another
+    # site's page: added before the request id so that its refusals carry one (security audit
+    # 2026-10-18; `app/host_guard.py`).
+    install_host_guard(app, resolved.trusted_hosts)
 
     @app.middleware("http")
     async def _request_id(
