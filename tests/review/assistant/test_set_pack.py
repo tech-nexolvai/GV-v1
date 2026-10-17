@@ -183,6 +183,7 @@ def test_the_pack_holds_the_page_map_annotations_pictures_and_contact_sheets(pac
     notes = json.loads((pack / "notes.json").read_text())
     assert [entry["page"] for entry in scales["pages"]] == [1, 2, 3]
     assert [entry["page"] for entry in notes["pages"]] == [1, 2, 3]
+    assert json.loads((pack / "pairs.json").read_text())["version"] == 1
 
     annotations = json.loads((pack / "annotations.json").read_text())
     heading = next(a for a in annotations if a["text"] == "ID SET ELEVATION")

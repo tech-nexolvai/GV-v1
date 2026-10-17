@@ -43,6 +43,7 @@ __all__ = [
     "MIN_LABELS",
     "SCALES_FILE",
     "ViewScale",
+    "from_dict",
     "page_scales",
     "scale_at",
     "scales_on",
@@ -305,7 +306,7 @@ def set_scales(dims: Mapping[str, Any]) -> dict[str, Any]:
     return {"version": 1, "pages": pages}
 
 
-def _from_dict(raw: Mapping[str, Any]) -> ViewScale | None:
+def from_dict(raw: Mapping[str, Any]) -> ViewScale | None:
     try:
         box = tuple(float(v) for v in raw["box"])
         return ViewScale(
@@ -333,7 +334,7 @@ def scales_on(folder: Path | None, file: str, page: int) -> list[ViewScale]:
     for entry in document.get("pages") or [] if isinstance(document, Mapping) else []:
         if isinstance(entry, Mapping) and entry.get("file") == file and entry.get("page") == page:
             found = [
-                _from_dict(raw) for raw in entry.get("scales") or [] if isinstance(raw, Mapping)
+                from_dict(raw) for raw in entry.get("scales") or [] if isinstance(raw, Mapping)
             ]
             return [scale for scale in found if scale is not None]
     return []
