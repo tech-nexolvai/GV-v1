@@ -306,7 +306,7 @@ export function PlusMenu(props: PlusMenuProps) {
             if (blank && blank[0] >= at) box.setSelectionRange(blank[0], blank[1]);
             else box.setSelectionRange(box.value.length, box.value.length);
           }}
-          className="flex max-h-[min(32rem,calc(var(--radix-popover-content-available-height)-12px))] w-[24rem] max-w-[calc(100vw-2.5rem)] flex-col overflow-hidden rounded-xl p-0 font-sans shadow-lg duration-120 motion-reduce:animate-none"
+          className="flex max-h-(--radix-popover-content-available-height) w-[24rem] max-w-[calc(100vw-2.5rem)] flex-col overflow-hidden rounded-xl p-0 font-sans shadow-lg duration-120 motion-reduce:animate-none"
         >
           {view === 'confirm' ? (
             <div data-slot="chat-plus-confirm" className="grid gap-3 p-3">
@@ -341,7 +341,7 @@ export function PlusMenu(props: PlusMenuProps) {
               label={view === 'areas' ? 'Pick an area' : 'Checks, outputs and focus'}
               loop
               filter={matches}
-              className="flex min-h-0 flex-1 flex-col"
+              className="flex max-h-[32rem] min-h-0 flex-1 flex-col"
               onKeyDown={(event) => {
                 // Back out of the area list with Esc, or Backspace in an empty search.
                 if (view === 'areas' && (event.key === 'Escape' || (event.key === 'Backspace' && !search))) {
