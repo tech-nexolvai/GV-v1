@@ -80,7 +80,9 @@ describe('the work behind an answer', () => {
     const toggle = node.querySelector('[data-slot="chat-activity-toggle"]');
     expect(toggle?.textContent).toBe('Render page 3');
     expect(toggle?.querySelector('[data-slot="chat-shimmer"]')?.getAttribute('data-active')).toBe('true');
-    expect(node.querySelector('[data-slot="chat-working"]')?.getAttribute('data-motion')).toBe('full');
+    // GV's sign (#1534) turns while a step runs.
+    const sign = node.querySelector<HTMLElement>('[data-slot="chat-working"] [data-slot="gv-spark"]')!;
+    expect([sign.getAttribute('data-motion'), sign.getAttribute('data-state')]).toEqual(['full', 'working']);
     expect(node.querySelector('[data-slot="chat-footer"]')).toBeNull();
   });
 });
@@ -270,9 +272,8 @@ describe('reduced motion', () => {
     reduceMotion();
     const node = show(answer({ status: 'running', blocks: [{ type: 'thinking', text: 'Reading', seconds: null, live: true }] }));
     expect(node.querySelector('[data-slot="chat-shimmer"]')?.getAttribute('data-active')).toBe('false');
-    const spark = node.querySelector('[data-slot="chat-working"]')!;
+    const spark = node.querySelector('[data-slot="chat-working"] [data-slot="gv-spark"]')!;
     expect(spark.getAttribute('data-motion')).toBe('reduce');
-    expect(spark.querySelector('svg')?.getAttribute('class')).not.toContain('chat-spark');
     expect(node.querySelector('[data-slot="chat-collapse"]')?.className).not.toContain('transition');
   });
 
@@ -289,5 +290,23 @@ describe('the question', () => {
     expect(bubble.textContent).toBe('Line one\nLine two');
     expect(bubble.className).toContain('self-end');
     expect(bubble.className).toContain('whitespace-pre-wrap');
+  });
+});
+
+describe('GV’s sign (#1534)', () => {
+  it('is the four-point star in GV maroon, and follows the work: thinking, tools, words, done', async () => {
+    const { GVSpark } = await import('@/components/chat/chat-motion');
+    const { container, rerender } = render(<GVSpark state="thinking" />);
+    const sign = () => container.querySelector<HTMLElement>('[data-slot="gv-spark"]')!;
+    expect(sign().className).toContain('text-gv-maroon');
+    expect(sign().getAttribute('aria-hidden')).toBe('true');
+    expect(sign().querySelectorAll('path')).toHaveLength(1);
+    for (const state of ['working', 'streaming', 'done', 'still'] as const) {
+      rerender(<GVSpark state={state} />);
+      expect(sign().getAttribute('data-state')).toBe(state);
+    }
+    rerender(<GVSpark state="still" label="GV Review" />);
+    expect(sign().getAttribute('role')).toBe('img');
+    expect(sign().getAttribute('aria-label')).toBe('GV Review');
   });
 });

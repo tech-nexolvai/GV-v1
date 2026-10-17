@@ -6,35 +6,47 @@ import { cn } from '@/lib/utils';
 import './chat-motion.css';
 
 /**
- * The small moving parts of a chat message (#1470), in claude.ai's manner: the working spark, the
+ * The small moving parts of a chat message (#1470), in claude.ai's manner: GV's working sign, the
  * shimmering "Thinking…" words, a fold that opens by growing its height, a spinner and a Copy
  * button. Each one stands still when the reviewer asks the system for reduced motion.
  */
 
-/** claude.ai's spark: eight rays that turn and breathe while the answer is being written. */
-export function Spark({ label, className }: { label: string; className?: string }) {
+/** What the GV sign is doing: thinking, running tools, writing words, finished, or simply shown. */
+export type SparkState = 'thinking' | 'working' | 'streaming' | 'done' | 'still';
+
+/**
+ * GV's AI sign (#1534): the four-point star, in GV's maroon, moving the way claude.ai's spark does.
+ * Thinking: it turns slowly and breathes (about 1.6 s). Running tools or helpers: it keeps turning.
+ * Writing words: it sits at the end of the text and pulses gently. Done: it settles still with a
+ * short ease-out. Transforms only (no layout work); still under reduced motion.
+ */
+export function GVSpark({ state = 'still', size = 20, className, label }: { state?: SparkState; size?: number; className?: string; label?: string }) {
   const reduced = useReducedMotion();
-  const rays = [0, 45, 90, 135, 180, 225, 270, 315];
   return (
-    <span data-slot="chat-working" data-motion={reduced ? 'reduce' : 'full'} className={cn('inline-flex items-center gap-2 text-foreground', className)}>
-      <svg viewBox="0 0 24 24" aria-hidden="true" className={cn('size-5', !reduced && 'chat-spark')}>
-        {rays.map((angle, at) => {
-          const length = at % 2 === 0 ? 9 : 6.5;
-          const radians = (angle * Math.PI) / 180;
-          return (
-            <line
-              key={angle}
-              x1={12 + Math.cos(radians) * 2}
-              y1={12 + Math.sin(radians) * 2}
-              x2={12 + Math.cos(radians) * length}
-              y2={12 + Math.sin(radians) * length}
-              stroke="currentColor"
-              strokeWidth={2.2}
-              strokeLinecap="round"
-            />
-          );
-        })}
-      </svg>
+    <span
+      data-slot="gv-spark"
+      data-state={state}
+      data-motion={reduced ? 'reduce' : 'full'}
+      role={label ? 'img' : undefined}
+      aria-label={label}
+      aria-hidden={label ? undefined : true}
+      className={cn('gv-spark inline-grid shrink-0 place-items-center text-gv-maroon', className)}
+      style={{ width: size, height: size }}
+    >
+      <span className="gv-spark__turn grid size-full place-items-center">
+        <svg viewBox="0 0 24 24" className="gv-spark__breathe size-full" fill="currentColor">
+          <path d="M12 1.5c.55 5.6 4.9 9.95 10.5 10.5-5.6.55-9.95 4.9-10.5 10.5C11.45 16.9 7.1 12.55 1.5 12 7.1 11.45 11.45 7.1 12 1.5Z" />
+        </svg>
+      </span>
+    </span>
+  );
+}
+
+/** The working sign at the foot of an answer while it runs (kept as `Spark` for its callers). */
+export function Spark({ label, className, state = 'thinking' }: { label: string; className?: string; state?: SparkState }) {
+  return (
+    <span data-slot="chat-working" data-state={state} className={cn('inline-flex items-center gap-2 text-foreground', className)}>
+      <GVSpark state={state} size={20} />
       <span className="sr-only">{label}</span>
     </span>
   );

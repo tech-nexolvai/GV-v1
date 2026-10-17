@@ -744,20 +744,6 @@ export const chatPaths = {
     `${BASE}/chats/${id(chatId)}/messages/${id(messageId)}/findings/${id(findingId)}/decision`,
 };
 
-/**
- * Whether the server has the decision route yet, without changing anything: a GET on a POST-only
- * route answers 405 when it exists and 404 when it does not. Anything else (no network, an error)
- * counts as "not yet", so the buttons stay hidden.
- */
-export async function decisionRouteReady(chatId: string, messageId: string, findingId: string): Promise<boolean> {
-  try {
-    const response = await fetch(chatPaths.decision(chatId, messageId, findingId), { method: 'GET', headers: { Accept: 'application/json' } });
-    return response.status === 405 || response.ok;
-  } catch {
-    return false;
-  }
-}
-
 /** Record the reviewer's Agree / Not a problem on one finding; the server answers with who and when. */
 export function decideFinding(chatId: string, messageId: string, findingId: string, decision: FindingDecisionValue, note?: string): Promise<FindingDecision> {
   return json<FindingDecision>(chatPaths.decision(chatId, messageId, findingId), { method: 'POST', body: JSON.stringify(note ? { decision, note } : { decision }) });
@@ -938,7 +924,6 @@ export interface ChatApi {
   markup: typeof makeMarkupPdf;
   /** #1522: Agree / Not a problem per finding; optional so a fake API can leave it out. */
   decide?: typeof decideFinding;
-  decisionReady?: typeof decisionRouteReady;
   remakeCloud?: typeof remakeCloudDrawing;
 }
 
@@ -952,6 +937,5 @@ export const LIVE_CHAT_API: ChatApi = {
   cancel: cancelChat,
   markup: makeMarkupPdf,
   decide: decideFinding,
-  decisionReady: decisionRouteReady,
   remakeCloud: remakeCloudDrawing,
 };
