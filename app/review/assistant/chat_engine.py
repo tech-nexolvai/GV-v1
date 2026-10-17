@@ -195,6 +195,7 @@ from app.review.assistant.full_check_plan import (
 )
 from app.review.assistant.ledger import LEDGER_TOOL_NAMES, ReadingLedger, recorded_results_check
 from app.review.assistant.sandbox import SET_PACK, SKILLS, UPLOADS, SandboxRefused
+from app.review.assistant.sharpen import helper_lines
 from app.runs.rates import ModelRates, call_cost_micros
 
 __all__ = [
@@ -705,6 +706,9 @@ class ChatEngine:
         self.summarised = False
         #: This answer's number in its chat (#1548): a correction of an earlier finding names it.
         self.answer_number = 1
+        #: The question's task spec (`sharpen`, #1551), set before `run()`; its lines go into every
+        #: helper's brief.
+        self.task_spec: dict[str, Any] | None = None
 
     # ---- the screen ------------------------------------------------------------------------------
 
@@ -2739,7 +2743,12 @@ class ChatEngine:
             _log.warning("assistant chat helper footer could not be made")
             footer = ""
         messages: list[dict[str, Any]] = [
-            {"role": "user", "content": [{"type": "text", "text": agent.prompt + footer}]}
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": agent.prompt + helper_lines(self.task_spec) + footer}
+                ],
+            }
         ]
         turns = reading = 0
         budget = FULL_CHECK_HELPER_CALLS

@@ -5207,6 +5207,21 @@
         "title": "ChatGvChecksOut",
         "type": "object"
       },
+      "ChatIntent": {
+        "enum": [
+          "fact",
+          "compare",
+          "whole_set",
+          "rules",
+          "arithmetic",
+          "rounds",
+          "file",
+          "summary",
+          "clarify",
+          "refuse_action"
+        ],
+        "type": "string"
+      },
       "ChatLedgerBoxOut": {
         "properties": {
           "file": {
@@ -5700,6 +5715,17 @@
             ],
             "title": "Products"
           },
+          "task": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatTaskSpecIn"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#1551: the reviewer's correction of how the app understood the question (Edit on the 'Understood as' line); the question's words are sent unchanged in `text`."
+          },
           "text": {
             "default": "",
             "maxLength": 8000,
@@ -5752,6 +5778,7 @@
                       "text": "#/components/schemas/ChatTextBlock",
                       "thinking": "#/components/schemas/ChatThinkingBlock",
                       "trust": "#/components/schemas/ChatTrustBlock",
+                      "understood": "#/components/schemas/ChatUnderstoodBlock",
                       "unknowns": "#/components/schemas/ChatUnknownsBlock"
                     },
                     "propertyName": "type"
@@ -5798,6 +5825,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ChatResumeBlock"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChatUnderstoodBlock"
                     }
                   ]
                 },
@@ -6002,6 +6032,17 @@
               }
             ],
             "title": "Thinking"
+          },
+          "understood": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatUnderstoodOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#1551: how the app understood the question before the work (its `understood` block); null when it made no task spec, and on older answers."
           }
         },
         "required": [
@@ -6134,6 +6175,15 @@
         ],
         "title": "ChatOut",
         "type": "object"
+      },
+      "ChatOutputShape": {
+        "enum": [
+          "one_line",
+          "short",
+          "findings",
+          "file"
+        ],
+        "type": "string"
       },
       "ChatProgressBlock": {
         "properties": {
@@ -6910,6 +6960,74 @@
         "title": "ChatTaskOut",
         "type": "object"
       },
+      "ChatTaskSpecIn": {
+        "additionalProperties": false,
+        "description": "#1551: the task spec as the reviewer corrected it on the screen (\"Understood as \u2026 Edit\").\nIt is used as given (checked by code), with no model call.",
+        "properties": {
+          "checks_to_run": {
+            "items": {
+              "maxLength": 40,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 8,
+            "title": "Checks To Run",
+            "type": "array"
+          },
+          "intent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatIntent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "output_shape": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatOutputShape"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pages": {
+            "description": "Empty: the whole set.",
+            "items": {
+              "maximum": 2000.0,
+              "minimum": 1.0,
+              "type": "integer"
+            },
+            "maxItems": 60,
+            "title": "Pages",
+            "type": "array"
+          },
+          "task": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Task",
+            "type": "string"
+          },
+          "what_to_compare": {
+            "items": {
+              "maxLength": 80,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 6,
+            "title": "What To Compare",
+            "type": "array"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "title": "ChatTaskSpecIn",
+        "type": "object"
+      },
       "ChatTextBlock": {
         "properties": {
           "by": {
@@ -7421,6 +7539,173 @@
           "by_why"
         ],
         "title": "ChatTrustUnknownsOut",
+        "type": "object"
+      },
+      "ChatUnderstoodBlock": {
+        "properties": {
+          "type": {
+            "const": "understood",
+            "title": "Type",
+            "type": "string"
+          },
+          "understood": {
+            "$ref": "#/components/schemas/ChatUnderstoodOut"
+          }
+        },
+        "required": [
+          "type",
+          "understood"
+        ],
+        "title": "ChatUnderstoodBlock",
+        "type": "object"
+      },
+      "ChatUnderstoodOut": {
+        "description": "#1551: how the app understood a typed question (its task spec), before any tool ran. Shown\nas a quiet \"Understood as: <label> \u00b7 Edit\" line under the question. A guide for the lead and\nits helpers only: the reviewer's own words are always sent unchanged.",
+        "properties": {
+          "assumptions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Assumptions",
+            "type": "array"
+          },
+          "checks_to_run": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Checks To Run",
+            "type": "array"
+          },
+          "cost_usd": {
+            "description": "What it cost (\"0.0003\").",
+            "title": "Cost Usd",
+            "type": "string"
+          },
+          "hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A short hint for the lead (an unclear question, or an order only a person carries out). Code never answers for Claude.",
+            "title": "Hint"
+          },
+          "intent": {
+            "$ref": "#/components/schemas/ChatIntent"
+          },
+          "label": {
+            "description": "\"Compare outlet heights (architect vs vendor) \u00b7 page 4 \u00b7 \u2026\".",
+            "title": "Label",
+            "type": "string"
+          },
+          "output_shape": {
+            "$ref": "#/components/schemas/ChatOutputShape"
+          },
+          "path": {
+            "description": "How it was made: code rules ($0), the cheap model, or the reviewer's edit.",
+            "enum": [
+              "code",
+              "model",
+              "edited"
+            ],
+            "title": "Path",
+            "type": "string"
+          },
+          "products": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Products",
+            "type": "array"
+          },
+          "question_back": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With intent `clarify`: a question back the lead may ask (the lead answers).",
+            "title": "Question Back"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/ChatUnderstoodScopeOut"
+          },
+          "seconds": {
+            "description": "The time it added before the work started.",
+            "title": "Seconds",
+            "type": "number"
+          },
+          "task": {
+            "title": "Task",
+            "type": "string"
+          },
+          "what_to_compare": {
+            "items": {
+              "type": "string"
+            },
+            "title": "What To Compare",
+            "type": "array"
+          }
+        },
+        "required": [
+          "task",
+          "intent",
+          "scope",
+          "output_shape",
+          "label",
+          "path",
+          "seconds",
+          "cost_usd"
+        ],
+        "title": "ChatUnderstoodOut",
+        "type": "object"
+      },
+      "ChatUnderstoodScopeOut": {
+        "properties": {
+          "area": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Area"
+          },
+          "kind": {
+            "enum": [
+              "whole_set",
+              "pages",
+              "area"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "description": "In plain words: \"page 4\", \"the whole set\".",
+            "title": "Label",
+            "type": "string"
+          },
+          "pages": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Pages",
+            "type": "array"
+          }
+        },
+        "required": [
+          "kind",
+          "label"
+        ],
+        "title": "ChatUnderstoodScopeOut",
         "type": "object"
       },
       "ChatUnknownOut": {

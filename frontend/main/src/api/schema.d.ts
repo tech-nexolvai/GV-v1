@@ -4834,6 +4834,8 @@ export interface components {
             /** Recorded */
             recorded: number;
         };
+        /** @enum {string} */
+        ChatIntent: "fact" | "compare" | "whole_set" | "rules" | "arithmetic" | "rounds" | "file" | "summary" | "clarify" | "refuse_action";
         /** ChatLedgerBoxOut */
         ChatLedgerBoxOut: {
             /** File */
@@ -5029,6 +5031,8 @@ export interface components {
             model: string;
             /** Products */
             products?: ("countertop" | "cabinet")[] | null;
+            /** @description #1551: the reviewer's correction of how the app understood the question (Edit on the 'Understood as' line); the question's words are sent unchanged in `text`. */
+            task?: components["schemas"]["ChatTaskSpecIn"] | null;
             /**
              * Text
              * @default
@@ -5045,7 +5049,7 @@ export interface components {
             /** @description The answer's accuracy by code (its `accuracy` block, scored again with today's calibration: see `rescored`); null on older answers. */
             accuracy?: components["schemas"]["ChatAccuracyOut"] | null;
             /** Blocks */
-            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatFindingUpdateBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"] | components["schemas"]["ChatScopeBlock"] | components["schemas"]["ChatProgressBlock"] | components["schemas"]["ChatResumeBlock"])[] | null;
+            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatFindingUpdateBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"] | components["schemas"]["ChatScopeBlock"] | components["schemas"]["ChatProgressBlock"] | components["schemas"]["ChatResumeBlock"] | components["schemas"]["ChatUnderstoodBlock"])[] | null;
             /** @description With `stopped: cost_cap`: `message` (this answer's cap) or `package` (the drawing set's budget ran out). */
             cap_hit?: components["schemas"]["ChatCapHit"] | null;
             /** Cost Usd */
@@ -5105,6 +5109,8 @@ export interface components {
             text: string;
             /** Thinking */
             thinking?: boolean | null;
+            /** @description #1551: how the app understood the question before the work (its `understood` block); null when it made no task spec, and on older answers. */
+            understood?: components["schemas"]["ChatUnderstoodOut"] | null;
         };
         /**
          * ChatModelChoice
@@ -5161,6 +5167,8 @@ export interface components {
             /** Title */
             title: string | null;
         };
+        /** @enum {string} */
+        ChatOutputShape: "one_line" | "short" | "findings" | "file";
         /** ChatProgressBlock */
         ChatProgressBlock: {
             progress: components["schemas"]["ChatProgressOut"];
@@ -5468,6 +5476,26 @@ export interface components {
             /** Subject */
             subject: string;
         };
+        /**
+         * ChatTaskSpecIn
+         * @description #1551: the task spec as the reviewer corrected it on the screen ("Understood as … Edit").
+         *     It is used as given (checked by code), with no model call.
+         */
+        ChatTaskSpecIn: {
+            /** Checks To Run */
+            checks_to_run?: string[];
+            intent?: components["schemas"]["ChatIntent"] | null;
+            output_shape?: components["schemas"]["ChatOutputShape"] | null;
+            /**
+             * Pages
+             * @description Empty: the whole set.
+             */
+            pages?: number[];
+            /** Task */
+            task: string;
+            /** What To Compare */
+            what_to_compare?: string[];
+        };
         /** ChatTextBlock */
         ChatTextBlock: {
             /**
@@ -5654,6 +5682,84 @@ export interface components {
             };
             /** Total */
             total: number;
+        };
+        /** ChatUnderstoodBlock */
+        ChatUnderstoodBlock: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "understood";
+            understood: components["schemas"]["ChatUnderstoodOut"];
+        };
+        /**
+         * ChatUnderstoodOut
+         * @description #1551: how the app understood a typed question (its task spec), before any tool ran. Shown
+         *     as a quiet "Understood as: <label> · Edit" line under the question. A guide for the lead and
+         *     its helpers only: the reviewer's own words are always sent unchanged.
+         */
+        ChatUnderstoodOut: {
+            /** Assumptions */
+            assumptions?: string[];
+            /** Checks To Run */
+            checks_to_run?: string[];
+            /**
+             * Cost Usd
+             * @description What it cost ("0.0003").
+             */
+            cost_usd: string;
+            /**
+             * Hint
+             * @description A short hint for the lead (an unclear question, or an order only a person carries out). Code never answers for Claude.
+             */
+            hint?: string | null;
+            intent: components["schemas"]["ChatIntent"];
+            /**
+             * Label
+             * @description "Compare outlet heights (architect vs vendor) · page 4 · …".
+             */
+            label: string;
+            output_shape: components["schemas"]["ChatOutputShape"];
+            /**
+             * Path
+             * @description How it was made: code rules ($0), the cheap model, or the reviewer's edit.
+             * @enum {string}
+             */
+            path: "code" | "model" | "edited";
+            /** Products */
+            products?: string[];
+            /**
+             * Question Back
+             * @description With intent `clarify`: a question back the lead may ask (the lead answers).
+             */
+            question_back?: string | null;
+            scope: components["schemas"]["ChatUnderstoodScopeOut"];
+            /**
+             * Seconds
+             * @description The time it added before the work started.
+             */
+            seconds: number;
+            /** Task */
+            task: string;
+            /** What To Compare */
+            what_to_compare?: string[];
+        };
+        /** ChatUnderstoodScopeOut */
+        ChatUnderstoodScopeOut: {
+            /** Area */
+            area?: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "whole_set" | "pages" | "area";
+            /**
+             * Label
+             * @description In plain words: "page 4", "the whole set".
+             */
+            label: string;
+            /** Pages */
+            pages?: number[];
         };
         /**
          * ChatUnknownOut

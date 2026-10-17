@@ -51,6 +51,7 @@ __all__ = [
     "ChatStepOut",
     "ChatSummaryOut",
     "ChatTaskOut",
+    "ChatTaskSpecIn",
     "ChatTextBlock",
     "ChatThinkingBlock",
     "ChatTimingHelperOut",
@@ -58,6 +59,9 @@ __all__ = [
     "ChatTimingsOut",
     "ChatTrustBlock",
     "ChatTrustOut",
+    "ChatUnderstoodBlock",
+    "ChatUnderstoodOut",
+    "ChatUnderstoodScopeOut",
     "ChatUnknownOut",
     "ChatUnknownsBlock",
 ]
@@ -81,8 +85,41 @@ type ChatStepTool = Literal[
     "read_under_markup",
     "remember",
 ]
+type ChatIntent = Literal[
+    "fact",
+    "compare",
+    "whole_set",
+    "rules",
+    "arithmetic",
+    "rounds",
+    "file",
+    "summary",
+    "clarify",
+    "refuse_action",
+]
+type ChatOutputShape = Literal["one_line", "short", "findings", "file"]
 type ChatStopped = Literal["cost_cap", "cancelled", "error", "turn_limit", "interrupted"]
 type ChatCapHit = Literal["message", "package"]
+
+
+class ChatTaskSpecIn(BaseModel):
+    """#1551: the task spec as the reviewer corrected it on the screen ("Understood as … Edit").
+    It is used as given (checked by code), with no model call."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    task: str = Field(min_length=1, max_length=200)
+    intent: ChatIntent | None = None
+    what_to_compare: list[Annotated[str, Field(min_length=1, max_length=80)]] = Field(
+        default_factory=list, max_length=6
+    )
+    checks_to_run: list[Annotated[str, Field(min_length=1, max_length=40)]] = Field(
+        default_factory=list, max_length=8
+    )
+    pages: list[Annotated[int, Field(ge=1, le=2000)]] = Field(
+        default_factory=list, max_length=60, description="Empty: the whole set."
+    )
+    output_shape: ChatOutputShape | None = None
 
 
 class ChatMessageIn(BaseModel):
@@ -108,6 +145,11 @@ class ChatMessageIn(BaseModel):
         description="Continue (#1514): the id of the answer a server restart interrupted. The "
         "answer goes on from its saved work; a full check keeps its findings and checks only the "
         "pages not yet done (`mode` and `products` are then the interrupted answer's).",
+    )
+    task: ChatTaskSpecIn | None = Field(
+        default=None,
+        description="#1551: the reviewer's correction of how the app understood the question "
+        "(Edit on the 'Understood as' line); the question's words are sent unchanged in `text`.",
     )
 
     @model_validator(mode="after")
@@ -1024,6 +1066,54 @@ class ChatResumeOut(BaseModel):
     redo: str = Field(description="What Continue will do again, in one or two plain sentences.")
 
 
+class ChatUnderstoodScopeOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["whole_set", "pages", "area"]
+    pages: list[int] = Field(default_factory=list)
+    area: str | None = None
+    label: str = Field(description='In plain words: "page 4", "the whole set".')
+
+
+class ChatUnderstoodOut(BaseModel):
+    """#1551: how the app understood a typed question (its task spec), before any tool ran. Shown
+    as a quiet "Understood as: <label> · Edit" line under the question. A guide for the lead and
+    its helpers only: the reviewer's own words are always sent unchanged."""
+
+    model_config = ConfigDict(frozen=True)
+
+    task: str
+    intent: ChatIntent
+    scope: ChatUnderstoodScopeOut
+    products: list[str] = Field(default_factory=list)
+    what_to_compare: list[str] = Field(default_factory=list)
+    checks_to_run: list[str] = Field(default_factory=list)
+    output_shape: ChatOutputShape
+    assumptions: list[str] = Field(default_factory=list)
+    question_back: str | None = Field(
+        default=None,
+        description="With intent `clarify`: a question back the lead may ask (the lead answers).",
+    )
+    hint: str | None = Field(
+        default=None,
+        description="A short hint for the lead (an unclear question, or an order only a person "
+        "carries out). Code never answers for Claude.",
+    )
+    label: str = Field(description='"Compare outlet heights (architect vs vendor) · page 4 · …".')
+    path: Literal["code", "model", "edited"] = Field(
+        description="How it was made: code rules ($0), the cheap model, or the reviewer's edit."
+    )
+    seconds: float = Field(description="The time it added before the work started.")
+    cost_usd: str = Field(description='What it cost ("0.0003").')
+
+
+class ChatUnderstoodBlock(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["understood"]
+    understood: ChatUnderstoodOut
+
+
 class ChatResumeBlock(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -1045,7 +1135,8 @@ ChatBlock = Annotated[
     | ChatUnknownsBlock
     | ChatScopeBlock
     | ChatProgressBlock
-    | ChatResumeBlock,
+    | ChatResumeBlock
+    | ChatUnderstoodBlock,
     Field(discriminator="type"),
 ]
 
@@ -1109,6 +1200,11 @@ class ChatMessageOut(BaseModel):
         default=None,
         description="What the answer is about (its `scope` block): the whole set, or pages or an "
         "area; null on older answers.",
+    )
+    understood: ChatUnderstoodOut | None = Field(
+        default=None,
+        description="#1551: how the app understood the question before the work (its "
+        "`understood` block); null when it made no task spec, and on older answers.",
     )
 
 

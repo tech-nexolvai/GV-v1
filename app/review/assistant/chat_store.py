@@ -380,6 +380,14 @@ def message_out(
             "mode": message.mode,
             "products": message.products,
             "scope": _scope_of(message.blocks or []),
+            "understood": next(
+                (
+                    block.get("understood")
+                    for block in message.blocks or []
+                    if isinstance(block, dict) and block.get("type") == "understood"
+                ),
+                None,
+            ),
         }
     )
 
