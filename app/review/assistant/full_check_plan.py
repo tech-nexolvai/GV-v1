@@ -16,6 +16,16 @@ split at once from `page_map.json` (`set_pack.py`), so every helper starts in th
 - **Other uploads** (an architect's PDF beside the vendor's): their pages of the same area go to
   that area's job, to look at.
 
+- **Two lenses per group (#1569)**: with `with_lenses`, each job is run twice, by a NUMBERS helper
+  (sizes and strings) and a DRAWN-THINGS helper (notes, doors and drawers, hardware, extent, the
+  brand prototype, finish tags) on Sonnet at low effort, each drawn-things helper within its own
+  money cap (`drawn_job_cap`). The numbers jobs come first, so when helpers queue past the parallel
+  limit the drawn-things ones wait, not the numbers.
+- **The reviewer's plan check (#1569)**: the answers given in the Run popover (`plan_check.py`)
+  are laid over the page map when it is read: a drawing's role or round, a page paired with an
+  architect page by hand (`pair_page`, given to look at), a page skipped (recorded as not
+  comparable).
+
 Everything here is plain code on the page map: no PDF is opened, nothing is drawn.
 """
 
@@ -32,18 +42,23 @@ from time import monotonic
 from typing import Any, Final
 
 from app.review.assistant.chat_findings import page_ranges
+from app.review.assistant.plan_check import apply_answers, read_answers
 
 __all__ = [
+    "DRAWN_JOB_CAP_MICROS",
+    "DRAWN_TOTAL_CAP_MICROS",
     "MAX_JOB_PAGES",
     "MIN_JOB_PAGES",
     "PAGE_MAP_WAIT_SECONDS",
     "FanOutPlan",
     "HelperJob",
+    "drawn_job_cap",
     "pack_ready",
     "plan_jobs",
     "read_page_map",
     "rules_summary",
     "wait_for_page_map",
+    "with_lenses",
 ]
 
 MIN_JOB_PAGES: Final = 3
@@ -59,6 +74,11 @@ DIVIDER_NOTE: Final = "divider or general page: no drawing pasted on it (code)"
 _MAX_RULES_SUMMARY: Final = 2_500
 _MAX_RULE_LINE: Final = 220
 _CHECK_HEADING: Final = re.compile(r"^###\s+(.+?)\s*$")
+#: A drawn-things helper's money (#1569): at most this much each, and all of them together at
+#: most `DRAWN_TOTAL_CAP_MICROS` (research estimate: about $1.5-2.5 a 60-page set).
+DRAWN_JOB_CAP_MICROS: Final = 350_000
+DRAWN_TOTAL_CAP_MICROS: Final = 3_000_000
+_LENS_WORDS: Final = {"numbers": "numbers", "drawn": "drawn things"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,10 +92,18 @@ class HelperJob:
     reference: tuple[tuple[str, int], ...] = ()
     """Pages to look at, not to compare again: (file, page)."""
     areas: tuple[str, ...] = ()
+    lens: str = "both"
+    """`both` (one helper per group), or `numbers` / `drawn` (#1569)."""
+    partner: int | None = None
+    """The other lens's job on the same pages (its number)."""
+    cap_micros: int | None = None
+    """A drawn-things helper's own money cap."""
 
     @property
     def description(self) -> str:
         words = f"Pages {page_ranges(self.pages)}"
+        if self.lens in _LENS_WORDS:
+            words += f" · {_LENS_WORDS[self.lens]}"
         if self.areas:
             words += " · " + ", ".join(self.areas)
         return words if len(words) <= _MAX_DESCRIPTION else words[: _MAX_DESCRIPTION - 1] + "…"
@@ -89,7 +117,8 @@ class FanOutPlan:
 
     @property
     def pages(self) -> int:
-        return sum(len(job.pages) for job in self.jobs)
+        """The pages compared (each page once, whatever its lenses)."""
+        return len({page for job in self.jobs for page in job.pages})
 
 
 @dataclass(slots=True)
@@ -104,14 +133,17 @@ class _Unit:
 
 
 def read_page_map(folder: Path | None) -> dict[str, Any] | None:
-    """The pack's `page_map.json`, or `None` when it is not there (yet) or not readable."""
+    """The pack's `page_map.json` with the reviewer's plan-check answers laid over it
+    (`plan_check.apply_answers`), or `None` when it is not there (yet) or not readable."""
     if folder is None:
         return None
     try:
         loaded = json.loads((folder / "page_map.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    return loaded if isinstance(loaded, dict) and isinstance(loaded.get("pages"), list) else None
+    if not isinstance(loaded, dict) or not isinstance(loaded.get("pages"), list):
+        return None
+    return apply_answers(loaded, read_answers(folder))
 
 
 def _pack_state(folder: Path) -> tuple[str | None, list[str]]:
@@ -245,10 +277,17 @@ def plan_jobs(
     entries = _entries(page_map, main_file)
     if not entries:
         return None
-    content = [e for e in entries if e.get("halves")]
+    content = [e for e in entries if e.get("halves") and not e.get("skip")]
     if not content:
         return None
-    skipped = tuple((int(e["page"]), DIVIDER_NOTE) for e in entries if not e.get("halves"))
+    skipped = tuple(
+        (int(e["page"]), str(e["skip"]) if e.get("skip") else DIVIDER_NOTE)
+        for e in entries
+        if not e.get("halves") or e.get("skip")
+    )
+    paired = {
+        int(e["page"]): int(e["pair_page"]) for e in content if isinstance(e.get("pair_page"), int)
+    }
     parts = _split_long(_units(content))
     sizes = [len(unit.pages) for unit, _looks in parts]
     total = sum(sizes)
@@ -275,7 +314,13 @@ def plan_jobs(
         for unit, _looks in chosen:
             if unit.area and unit.area not in areas:
                 areas.append(unit.area)
-        looks = sorted({p for _unit, extra in chosen for p in extra} - set(pages))
+        looks = sorted(
+            (
+                {p for _unit, extra in chosen for p in extra}
+                | {paired[p] for p in pages if p in paired}
+            )
+            - set(pages)
+        )
         reference = [(file, p) for p in looks]
         wanted = {area.lower() for area in areas}
         reference += [
@@ -285,6 +330,39 @@ def plan_jobs(
         ]
         jobs.append(HelperJob(number, pages, file, tuple(reference), tuple(areas)))
     return FanOutPlan(tuple(jobs), skipped)
+
+
+def drawn_job_cap(jobs: int) -> int:
+    """Each drawn-things helper's money: `DRAWN_JOB_CAP_MICROS`, less when there are so many that
+    together they would pass `DRAWN_TOTAL_CAP_MICROS`."""
+    return min(DRAWN_JOB_CAP_MICROS, DRAWN_TOTAL_CAP_MICROS // max(1, jobs))
+
+
+def with_lenses(plan: FanOutPlan) -> FanOutPlan:
+    """The plan with two helpers per job (#1569): the numbers jobs first (numbered as before),
+    then a drawn-things job for each, on the same pages, with its money cap and its partner."""
+    count = len(plan.jobs)
+    cap = drawn_job_cap(count)
+    numbers = [
+        HelperJob(
+            job.number, job.pages, job.file, job.reference, job.areas, "numbers", count + job.number
+        )
+        for job in plan.jobs
+    ]
+    drawn = [
+        HelperJob(
+            count + job.number,
+            job.pages,
+            job.file,
+            job.reference,
+            job.areas,
+            "drawn",
+            job.number,
+            cap,
+        )
+        for job in plan.jobs
+    ]
+    return FanOutPlan((*numbers, *drawn), plan.skipped)
 
 
 # ---- the rules summary ----------------------------------------------------------------------------

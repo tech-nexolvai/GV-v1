@@ -64,6 +64,7 @@ from app.review.assistant.cloud_layout import (
     wrap,
 )
 from app.review.assistant.finding_checks import to_inches
+from app.review.assistant.impact import BIGGEST_FIRST, biggest_line
 from extraction.stamp_text import carries_drawing, pasted_picture
 from vocabulary.product_registry import registry
 
@@ -999,6 +1000,9 @@ def markup_pdf(
         counts_line([f for _n, f, *_rest in findings], clouded_decisions=cloud_decisions),
         LEGEND_CLOUDED if cloud_decisions else LEGEND,
     ]
+    biggest = biggest_line([(n, f) for n, f, *_rest in findings])
+    if biggest is not None:
+        front.append(biggest)
     sections = (
         Section("On the drawing", drawn),
         Section("Not on the drawing", elsewhere, by_page=False),
@@ -1010,6 +1014,11 @@ def markup_pdf(
 # ---- the check report ----------------------------------------------------------------------------
 
 REPORT_TITLE: Final = "AI check report: draft, not GV's signed review"
+#: Under What's wrong (#1569): how the list is ordered, in plain words.
+IMPACT_NOTE: Final = (
+    "checked items before AI readings only, then what changes fabrication (overall sizes, "
+    "cut-outs, heights, missing parts) and the size of the difference; tags and labels last."
+)
 
 
 def check_report_pdf(
@@ -1145,6 +1154,8 @@ def check_report_pdf(
     )
     for title, header, rows, widths in sections:
         story += [Spacer(1, 10), Paragraph(escape(title), styles["Heading2"])]
+        if rows and title.startswith("What's wrong"):
+            story.append(p(f"{BIGGEST_FIRST}: {IMPACT_NOTE}", small))
         story.append(table(header, rows, widths) if rows else p("None.", body))
     story += [Spacer(1, 10), Paragraph("Not checked", styles["Heading2"])]
     story += [p(line, body) for line in not_checked] or [p("Nothing left out.", body)]

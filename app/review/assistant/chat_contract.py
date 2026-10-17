@@ -13,6 +13,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.review.assistant.plan_check import MAX_DOUBTS, valid_answer
 from vocabulary.product_registry import registry
 
 __all__ = [
@@ -37,14 +38,19 @@ __all__ = [
     "ChatFindingDecisionOut",
     "ChatFindingDroppedBlock",
     "ChatFindingEstimateOut",
+    "ChatFindingImpactOut",
     "ChatFindingLaterOut",
     "ChatFindingOut",
     "ChatFindingUpdateBlock",
     "ChatFindingUpdateOut",
+    "ChatFullCheckPlanOut",
     "ChatListOut",
     "ChatMessageIn",
     "ChatMessageOut",
     "ChatOut",
+    "ChatPlanAnswerIn",
+    "ChatPlanDoubtOut",
+    "ChatPlanOptionOut",
     "ChatProgressBlock",
     "ChatProgressOut",
     "ChatResumeBlock",
@@ -104,6 +110,15 @@ type ChatStopped = Literal["cost_cap", "cancelled", "error", "turn_limit", "inte
 type ChatCapHit = Literal["message", "package"]
 
 
+class ChatPlanAnswerIn(BaseModel):
+    """The reviewer's answer to one plan-check question (#1569)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    id: str = Field(min_length=1, max_length=40, description="The question's id (its `id`).")
+    answer: str = Field(min_length=1, max_length=20, description="One of its options' `value`.")
+
+
 class ChatTaskSpecIn(BaseModel):
     """#1551: the task spec as the reviewer corrected it on the screen ("Understood as … Edit").
     It is used as given (checked by code), with no model call."""
@@ -152,6 +167,12 @@ class ChatMessageIn(BaseModel):
         "answer goes on from its saved work; a full check keeps its findings and checks only the "
         "pages not yet done (`mode` and `products` are then the interrupted answer's).",
     )
+    plan_answers: list[ChatPlanAnswerIn] | None = Field(
+        default=None,
+        max_length=MAX_DOUBTS,
+        description="A full check only (#1569): the answers to the plan check's questions "
+        "(`GET /packages/{package_id}/full-check-plan`), kept with the drawing set's page map.",
+    )
     task: ChatTaskSpecIn | None = Field(
         default=None,
         description="#1551: the reviewer's correction of how the app understood the question "
@@ -162,6 +183,13 @@ class ChatMessageIn(BaseModel):
     def _a_question_or_a_full_check(self) -> ChatMessageIn:
         if self.mode == "chat" and not self.text.strip():
             raise ValueError("text is needed for a chat message")
+        if self.plan_answers is not None:
+            if self.mode != "full_check":
+                raise ValueError("plan_answers go with a full check only")
+            if len({answer.id for answer in self.plan_answers}) != len(self.plan_answers):
+                raise ValueError("each plan question at most once")
+            if not all(valid_answer(answer.id, answer.answer) for answer in self.plan_answers):
+                raise ValueError("a plan answer is not one of its question's options")
         if self.products is not None:
             if len(set(self.products)) != len(self.products):
                 raise ValueError("each product at most once")
@@ -439,6 +467,20 @@ class ChatFindingDimOut(BaseModel):
     box: list[float] = Field(description="x0, y0, x1, y1: PDF points, origin top-left.")
 
 
+class ChatFindingImpactOut(BaseModel):
+    """How much a Wrong item matters (#1569), by code: ordering only, never a status or colour."""
+
+    model_config = ConfigDict(frozen=True)
+
+    score: int = Field(ge=0, le=100, description="Bigger matters more.")
+    rank: int | None = Field(
+        default=None,
+        ge=1,
+        description="Its place among the answer's items of the same status (1 = biggest).",
+    )
+    why: str = Field(description='Plain words: "changes fabrication (overall size); 9 in off".')
+
+
 class ChatFindingLaterOut(BaseModel):
     """The later answer of the same chat that corrected a finding (#1548)."""
 
@@ -549,6 +591,11 @@ class ChatFindingOut(BaseModel):
         default=None,
         description="Status check (Your decision): what it measures, the best estimate, how "
         "likely it is fine, what to confirm (#1545).",
+    )
+    impact: ChatFindingImpactOut | None = Field(
+        default=None,
+        description="Wrong and Your-decision items (#1569): how much it matters, by code; the "
+        "screen, the cloud drawing's numbers and the check report follow this order.",
     )
     check_reason: (
         Literal["different_extent", "which_governs", "pairing_not_certain", "scaled", "site_verify"]
@@ -1257,6 +1304,48 @@ class ChatSummaryOut(BaseModel):
     created_at: datetime
     last_message_at: datetime | None
     turns: int
+
+
+class ChatPlanOptionOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    value: str
+    label: str
+
+
+class ChatPlanDoubtOut(BaseModel):
+    """One question code asks before a full check, where it is unsure of the page map (#1569)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    kind: Literal["prototype", "role", "pair", "round", "heading"]
+    page: int
+    question: str
+    options: list[ChatPlanOptionOut]
+    picture_url: str | None = Field(
+        default=None, description="The page's picture (drawings only, 100 dpi), when made."
+    )
+    box: list[float] | None = Field(
+        default=None,
+        description="The drawing it is about, as fractions of the picture (x0, y0, x1, y1).",
+    )
+
+
+class ChatFullCheckPlanOut(BaseModel):
+    """`GET /chats/{chat_id}/full-check-plan` (#1569): code's plan and its 0-3 questions."""
+
+    model_config = ConfigDict(frozen=True)
+
+    state: Literal["ready", "building", "none"] = Field(
+        description="ready: the page map is read; building: ask again in a moment; none: no page "
+        "map can be made (no PDFs): run without questions."
+    )
+    summary: str | None = Field(
+        default=None, description='"60 pages · 22 pairs · rounds 1-2 · 3 general pages".'
+    )
+    doubts: list[ChatPlanDoubtOut] = Field(default_factory=list)
+    more: int = Field(default=0, description="Further unsure places, compared as read.")
 
 
 class ChatListOut(BaseModel):

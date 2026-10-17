@@ -451,12 +451,19 @@ def test_the_notes_pages_group_items_by_page_with_counts_legend_and_pictures(
     )
     assert counts in " ".join(notes.split())
     assert " ".join(LEGEND.split()[:6]) in notes
+    # The biggest Wrong items named first, by their numbers (#1569).
+    assert "Biggest first: AI 1 p.2 Second sheet outlet" in " ".join(notes.split())
     on_drawing = notes.index("On the drawing (2)")
     page1, page2 = notes.index("Page 1", on_drawing), notes.index("Page 2", on_drawing)
     assert (
-        on_drawing < page1 < notes.index("Bay sizes") < page2 < notes.index("Second sheet outlet")
+        on_drawing
+        < page1
+        < notes.index("Bay sizes", on_drawing)
+        < page2
+        < notes.index("Second sheet outlet", on_drawing)
     )
-    assert notes.index("Not on the drawing (1)") < notes.index("Backsplash height")
+    elsewhere = notes.index("Not on the drawing (1)")
+    assert elsewhere < notes.index("Backsplash height", on_drawing)
     assert notes.index("Right (not marked) (1)") < notes.index("Sink centre")
     assert "Your decision, AI reading only" in notes and 'Needs: 37"' in notes
     assert "Check" not in notes

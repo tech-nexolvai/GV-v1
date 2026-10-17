@@ -35,6 +35,7 @@ from app.review.assistant.chat_drawing import (
     entry_lines,
 )
 from app.review.assistant.chat_trust import cloud_kind, needs_text
+from app.review.assistant.impact import biggest_line
 
 __all__ = [
     "DECIDED_LEGEND",
@@ -160,6 +161,9 @@ def decided_markup_pdf(
         f"{len(grouped['right'])} right (none of these is marked)."
     )
     front = [counts, DECIDED_LEGEND]
+    biggest = biggest_line([(n, f) for n, f, *_rest in findings if _decided(f) == "agree"])
+    if biggest is not None:
+        front.append(biggest)
     sections = (
         Section("Agreed: needs correction", entries["agreed"]),
         Section("Not yet decided", entries["undecided"]),

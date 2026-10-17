@@ -108,7 +108,9 @@ def test_findings_stream_are_stored_and_reload_the_same_with_their_pictures(post
         assert guard.startswith(COVERAGE_CHECK_PREFIX) and "pages 1, 3" in guard
         # Live events and the stored blocks agree; a reload equals message_end.
         live = {data["index"]: data["finding"] for data in _named(events, "finding")}
-        assert live[0] == finding
+        # The stored answer adds code's impact on read (#1569): the biggest Wrong items first.
+        assert finding["impact"]["rank"] == 1
+        assert live[0] == {k: v for k, v in finding.items() if k != "impact"}
         assert _named(events, "coverage")[-1]["coverage"] == coverage
         assert _named(events, "trust")[-1]["trust"] == message["blocks"][5]["trust"]
         reloaded = world.client.get(f"/api/v1/chats/{chat_id}").json()["messages"][-1]
@@ -246,7 +248,9 @@ def test_following_a_running_message_replays_its_findings(postgres_engine, tmp_p
         # The finding as reported, then as code finished it (its round status): the last one is
         # the stored block.
         assert [data["index"] for data in replayed] == [0, 0]
-        assert replayed[-1]["finding"] == stored["blocks"][0]["finding"]
+        assert replayed[-1]["finding"] == {
+            k: v for k, v in stored["blocks"][0]["finding"].items() if k != "impact"
+        }
         assert [name for name, _ in seen].index("finding") < [n for n, _ in seen].index("trust")
         _until_saved(registry, chat_id)
 

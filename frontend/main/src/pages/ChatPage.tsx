@@ -23,7 +23,7 @@
  * becomes a recorded result.
  */
 
-import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, ChevronRight, CircleAlert, ListChecks, RotateCw } from 'lucide-react';
 
 import { formatRoute } from '@/app/route';
@@ -39,7 +39,7 @@ import { PlusMenu } from '@/components/chat/chat-plus-menu';
 import { AssistantMessage, UserMessage } from '@/components/chat/chat-message';
 import { UnderstoodLine } from '@/components/chat/chat-understood';
 import { ApiError } from '@/api/client';
-import { chatFailureWords, chatPaths, CONTINUE_TEXT, isAbort, LIVE_CHAT_API, type Chat, type ChatApi, type ChatEvent, type ChatMessage, type ChatMode, type ChatModels, type ChatProduct, type ChatTaskEdit } from '@/lib/chat-api';
+import { chatFailureWords, chatPaths, CONTINUE_TEXT, isAbort, LIVE_CHAT_API, type Chat, type ChatApi, type ChatEvent, type ChatMessage, type ChatMode, type ChatModels, type ChatPlanAnswer, type ChatProduct, type ChatTaskEdit } from '@/lib/chat-api';
 import { confirmWords, effectiveProducts, FULL_CHECK_TEXT, isFullCheck, pickable, readProducts, saveProducts, toggleProduct } from '@/lib/chat-full-check';
 import { useProductCatalog } from '@/lib/products';
 import { knownAreas, lastFindings, withPrompt } from '@/lib/chat-plus-actions';
@@ -384,7 +384,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   const blocked = unavailable ?? (models.status === 'loading' ? 'Loading the models…' : chatId && !chat ? 'Opening the chat…' : null);
 
   /** `continueFrom` (#1514): the interrupted answer Continue goes on from, and how it was asked. */
-  async function send(text: string, mode: ChatMode = 'chat', continueFrom?: { id: string; mode: ChatMode }, task?: ChatTaskEdit) {
+  async function send(text: string, mode: ChatMode = 'chat', continueFrom?: { id: string; mode: ChatMode }, task?: ChatTaskEdit, planAnswers?: ChatPlanAnswer[]) {
     const question = text.trim();
     if (!question || runRef.current || blocked || !choice) return;
     counter.current += 1;
@@ -444,6 +444,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
           ...(products ? { products } : {}),
           ...(continueFrom ? { continue_from: continueFrom.id } : {}),
           ...(task ? { task } : {}),
+          ...(mode === 'full_check' && planAnswers?.length ? { plan_answers: planAnswers } : {}),
         }, onEvent, signal).catch((error: unknown) => {
           refusal = error;
           throw error;
@@ -502,13 +503,16 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   const pickedModel = choice ? modelList.find((model) => model.id === choice.model) ?? null : null;
   const fullCheckSummary = confirmWords(products, pickedModel ? shortModelLabel(pickedModel) : null, choice ? EFFORT_WORDS[choice.effort] : null, money(cap));
   const fullCheckBlocked = blocked ?? (running ? 'A message is still running in this chat.' : null);
-  const runFullCheck = () => void send(FULL_CHECK_TEXT, 'full_check');
+  const runFullCheck = (answers?: ChatPlanAnswer[]) => void send(FULL_CHECK_TEXT, 'full_check', undefined, undefined, answers);
+  // #1569: the plan check before a paid full check (a fake API may leave it out: no questions).
+  const planApi = api.plan;
+  const loadPlan = useMemo(() => (planApi ? () => planApi(packageId) : undefined), [planApi, packageId]);
 
   return (
     <TooltipProvider delayDuration={300}>
       <div data-tw data-slot="chat-page" className="flex min-h-0 w-full min-w-0 flex-1 font-sans text-sm text-foreground antialiased">
         <HeaderActions>
-          {!centred && <FullCheckButton variant="bar" summary={fullCheckSummary} onRun={runFullCheck} blocked={fullCheckBlocked} />}
+          {!centred && <FullCheckButton variant="bar" summary={fullCheckSummary} onRun={runFullCheck} blocked={fullCheckBlocked} loadPlan={loadPlan} />}
           <Button variant="ghost" size="sm" asChild>
             <a href={formatRoute({ page: 'review', packageId })} aria-label="Review list">
               <ListChecks /> <span className="hidden sm:inline">Review list</span>
@@ -616,7 +620,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
             {centred && <Greeting name={name} />}
             {centred && (
               <div className="mb-4 flex flex-col items-center gap-1.5">
-                <FullCheckButton summary={fullCheckSummary} onRun={runFullCheck} blocked={fullCheckBlocked} />
+                <FullCheckButton summary={fullCheckSummary} onRun={runFullCheck} blocked={fullCheckBlocked} loadPlan={loadPlan} />
                 <p className="text-center text-xs text-muted-foreground">What’s wrong, what to check and what’s right on every page, with the cloud drawing</p>
               </div>
             )}
@@ -668,7 +672,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                   <PlusMenu
                     onPrompt={(text) => setDraft((now) => withPrompt(now, text))}
                     textareaRef={textareaRef}
-                    fullCheck={{ summary: fullCheckSummary, blocked: fullCheckBlocked, onRun: runFullCheck }}
+                    fullCheck={{ summary: fullCheckSummary, blocked: fullCheckBlocked, onRun: runFullCheck, loadPlan }}
                     lastFindings={lastFindings(messages)}
                     makeMarkupPdf={chatId ? (messageId) => api.markup(chatId, messageId) : null}
                     fileHref={(file) => file.url || (chatId ? chatPaths.file(chatId, file.id) : '')}
