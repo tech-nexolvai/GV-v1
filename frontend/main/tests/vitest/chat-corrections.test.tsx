@@ -60,3 +60,16 @@ describe('a correction of an earlier answer', () => {
     expect(list?.textContent).toContain('dropped (It is the blocking)');
   });
 });
+
+describe('the activity row names the new tools', () => {
+  it('says read under GV’s markup and kept a note', () => {
+    render(<AssistantMessage message={answer({ blocks: [
+      { type: 'step', step: { id: 's1', tool: 'read_under_markup', label: 'Read under GV’s markup on page 4', ok: true }, live: false },
+      { type: 'step', step: { id: 's2', tool: 'remember', label: 'Remembered: a fact', ok: true }, live: false },
+      { type: 'text', text: 'Done.' },
+    ] })} chatId="c-1" models={[OPUS]} messageCapUsd="5.00" />);
+    const row = document.body.textContent ?? '';
+    expect(row).toMatch(/read under GV's markup/i);
+    expect(row).toMatch(/kept a note for this set/i);
+  });
+});

@@ -484,6 +484,10 @@ function phraseFor(step: ChatStep): { key: string; phrase: Phrase } {
       return { key: 'tasks', phrase: { once: 'updated the task list' } };
     case 'Agent':
       return { key: 'agents', phrase: { one: 'ran an agent', many: (n) => `ran ${n} agents` } };
+    case 'read_under_markup':
+      return { key: 'under', phrase: { one: "read under GV's markup", many: (n) => `read under GV's markup ${n} times` } };
+    case 'remember':
+      return { key: 'remember', phrase: { one: 'kept a note for this set', many: (n) => `kept ${n} notes for this set` } };
     default:
       return { key: 'results', phrase: { once: 'read the review results' } };
   }
