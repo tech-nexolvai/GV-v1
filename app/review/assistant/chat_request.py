@@ -49,6 +49,7 @@ __all__ = [
     "Provider",
     "call_params",
     "check_choice",
+    "full_check_helper_effort",
     "helper_effort",
     "helper_thinking",
     "inline_pictures",
@@ -171,6 +172,13 @@ def helper_effort(lead_effort: str) -> str:
     """A helper's effort: the lead's, or `HELPER_MAX_EFFORT` when the lead's is higher (lead low:
     low; lead medium, high, xhigh or max: medium)."""
     return min(lead_effort, HELPER_MAX_EFFORT, key=EFFORTS.index)
+
+
+def full_check_helper_effort(lead_effort: str) -> str:
+    """A full check's helper effort (#1512): low, or `HELPER_MAX_EFFORT` (medium) when the lead's
+    is max. A full check's helpers each read a few pages with a code-written brief; the lead
+    checks what matters."""
+    return HELPER_MAX_EFFORT if lead_effort == "max" else "low"
 
 
 def helper_thinking(model: ChatModel, effort: str, thinking: bool) -> dict[str, str]:

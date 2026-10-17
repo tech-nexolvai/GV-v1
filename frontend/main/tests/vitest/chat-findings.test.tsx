@@ -83,7 +83,7 @@ describe('the findings (#1522 redesign)', () => {
     const vanity = node.querySelector<HTMLElement>('[data-id="f3"]')!;
     // The area is not repeated in the row; the full item stays the button's name.
     expect(within(vanity).getByRole('button', { name: 'Vanity top depth' }).textContent).toContain('Top depth');
-    expect(vanity.querySelector('[data-slot="chat-finding-line"]')?.textContent).toBe('Vendor drew 21 1/2" · , needs 22"');
+    expect(vanity.querySelector('[data-slot="chat-finding-line"]')?.textContent).toBe('Vendor drew 21 1/2" · , brand prototype shows 22"');
     expect(within(vanity).getByText('Compared with the brand prototype')).toBeTruthy();
     expect(within(vanity).getByRole('img', { name: 'Architect evidence' }).getAttribute('src')).toBe('/api/v1/chats/c-1/pictures/arch-f3');
     expect(within(vanity).getByText('Vendor: no evidence picture')).toBeTruthy();

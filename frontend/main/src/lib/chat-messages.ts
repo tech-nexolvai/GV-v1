@@ -7,7 +7,7 @@
  * message, which then replaces what was built live: a reload and a live answer end up identical.
  */
 
-import type { ChatAccuracy, ChatAgent, ChatBlock, ChatCite, ChatCoverage, ChatEffort, ChatEvent, ChatFile, ChatFinding, ChatMessage, ChatMode, ChatModel, ChatProduct, ChatProgress, ChatScope, ChatStep, ChatStopped, ChatSummary, ChatTask, ChatTrust, ChatUnknown } from '@/lib/chat-api';
+import type { ChatAccuracy, ChatAgent, ChatBlock, ChatCite, ChatCoverage, ChatEffort, ChatEvent, ChatFile, ChatFinding, ChatMessage, ChatMode, ChatModel, ChatProduct, ChatProgress, ChatResume, ChatScope, ChatStep, ChatStopped, ChatSummary, ChatTask, ChatTrust, ChatUnknown } from '@/lib/chat-api';
 import { EFFORT_WORDS } from '@/lib/chat-settings';
 
 /** A helper agent while its Agent step runs: `running` until its `agent_end`. */
@@ -62,6 +62,8 @@ export interface ViewMessage {
   accuracy?: ChatAccuracy | null;
   /** What the answer did not check, as records (code's `unknowns` block); absent on older answers. */
   unknowns?: ChatUnknown[];
+  /** With `stopped: "interrupted"`: how Continue picks up (#1514). */
+  resume?: ChatResume | null;
   cost_usd: string | null;
   stopped: ChatStopped | null;
   error: string | null;
@@ -129,6 +131,15 @@ function scopeOf(blocks: readonly ChatBlock[]): ChatScope | null {
   return scope;
 }
 
+/** The `resume` block of an interrupted answer (#1514), or null. */
+export function resumeOf(blocks: readonly ChatBlock[]): ChatResume | null {
+  for (let at = blocks.length - 1; at >= 0; at -= 1) {
+    const block = blocks[at];
+    if (block.type === 'resume' && block.resume) return block.resume;
+  }
+  return null;
+}
+
 /** A saved message, as the screen shows it. A saved answer with words but no blocks shows its words. */
 export function fromSaved(message: ChatMessage): ViewMessage {
   const saved = message.blocks ?? [];
@@ -163,6 +174,7 @@ export function fromSaved(message: ChatMessage): ViewMessage {
     accuracy: message.accuracy ?? accuracy,
     unknowns,
     progress,
+    resume: message.resume ?? resumeOf(saved),
     cost_usd: message.cost_usd ?? null,
     stopped: message.stopped ?? null,
     error: message.error ?? null,
@@ -605,6 +617,8 @@ export function stoppedWords(
       return 'Stopped';
     case 'turn_limit':
       return 'Stopped after the maximum number of steps';
+    case 'interrupted':
+      return 'Interrupted by a server restart';
     case 'error':
       return 'Something went wrong. Try again.';
     default:

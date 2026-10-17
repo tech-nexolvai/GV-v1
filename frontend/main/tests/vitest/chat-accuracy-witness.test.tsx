@@ -48,8 +48,8 @@ describe('evidence kinds', () => {
     const node = screen.getByRole('article', { name: 'Answer' });
     // A narrow answer (one page): the cards of its few items are open at first.
     const sure = [...node.querySelectorAll<HTMLElement>('[data-slot="chat-finding-sure"]')].map((line) => line.textContent);
-    expect(sure[0]).toBe('How sure: Confirmed. code found the values printed on the drawing (or worked them out), and an AI reading agrees.');
-    expect(sure[1]).toBe('How sure: Likely. two separate AI readings agree; no code check could read it.');
+    expect(sure[0]).toBe('How sure: Confirmed. Code found the values printed on the drawing (or worked them out), and an AI reading agrees.');
+    expect(sure[1]).toBe('How sure: Likely. Two separate AI readings agree; no code check could read it.');
     expect(node.querySelector('[data-slot="chat-trust-level"]')).toBeNull();
   });
 

@@ -334,6 +334,12 @@ describe('areas and one-line rows (#1508)', () => {
     const all = JSON.stringify([words, reviewerWords(decide), reviewerWords({ ...decide, checks: { printed_architect: 'not_a_number', printed_vendor: 'no_text' } as ChatFinding['checks'] })]);
     expect(all).not.toMatch(/not a number|2nd read|Helper lead|To check/);
     expect(sureWords({ trust_level: 'to_check', checks: { printed_vendor: 'no_text' } as ChatFinding['checks'] })).toContain('pen strokes');
+    // Pen strokes only when a check said so; sentences start with a capital.
+    expect(sureWords({ trust_level: 'to_check', checks: { printed_vendor: 'not_a_number' } as ChatFinding['checks'] })).toBe('One AI reading backs this; nothing independent confirmed it yet.');
+    // The brand prototype is not the design: no "needs", and the vendor is asked which governs.
+    const proto = finding('p', { source: 'brand_prototype', architect: "5'-6\"", vendor: '94"', inches: { architect: null, vendor: '94', difference: null } });
+    expect(findingLine(proto)).toMatchObject({ verb: 'brand prototype shows', reference: { text: "5'-6\"" }, printed: null });
+    expect(reviewerWords(proto)).toMatchObject({ referenceLabel: 'Brand prototype shows', tell: "Confirm which governs: the brand prototype shows 5'-6\", the vendor drew 94 in." });
     expect(itemTitle('Buffet lower outlet height', 'Buffet')).toBe('Lower outlet height');
     // The spot: the box padded by 24 points; none when the picture's shape shows a cut crop.
     expect(spotInsets({ x0: 0, y0: 0, x1: 52, y1: 52 })).toEqual({ left: '24.00%', top: '24.00%', right: '24.00%', bottom: '24.00%' });

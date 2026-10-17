@@ -373,7 +373,7 @@ export function fullValue(value: string | number | null | undefined): string {
 export function referenceLabel(finding: Pick<ChatFinding, 'source'>): string {
   switch (finding.source) {
     case 'brand_prototype':
-      return 'Prototype shows';
+      return 'Brand prototype shows';
     case 'rules':
       return 'GV’s rule says';
     case 'vendor_arithmetic':
@@ -426,8 +426,10 @@ export function findingLine(finding: Pick<ChatFinding, 'source' | 'status' | 'ar
   if (finding.status === 'same' && vendor.inches && reference.inches && vendor.text === reference.text) {
     return { vendor, verb: 'both', reference: null, printed: null, difference: null };
   }
-  const verb = finding.status === 'different' ? 'needs' : `${referenceWord(finding)} ${finding.source === 'rules' ? 'says' : finding.source === 'vendor_arithmetic' ? 'add to' : 'shows'}`;
-  return { vendor, verb, reference, printed: finding.status === 'different' ? printed : null, difference: differenceText };
+  // The brand prototype is not the design: a row never says the vendor "needs" it (#1530 review).
+  const needs = finding.status === 'different' && finding.source !== 'brand_prototype';
+  const verb = needs ? 'needs' : `${referenceWord(finding)} ${finding.source === 'rules' ? 'says' : finding.source === 'vendor_arithmetic' ? 'add to' : 'shows'}`;
+  return { vendor, verb, reference, printed: needs ? printed : null, difference: differenceText };
 }
 
 /** The item without its group's area ("Buffet lower outlet height" under "Buffet" → "Lower outlet height"). */
@@ -475,6 +477,7 @@ export function reviewerWords(finding: ChatFinding): ReviewerWords {
     : status === 'not_compared' ? `${finding.not_compared_why === 'pair_not_covered' ? 'Its page pair was not compared' : 'Both sides were not looked at'}, so this is not counted as right.`
     : `The vendor’s drawing matches the ${whom}.`;
   const tell = status !== 'different' ? null
+    : finding.source === 'brand_prototype' ? `Confirm which governs: the brand prototype shows ${architect !== null ? `${inchWords(architect)} in` : fullValue(finding.architect)}, the vendor drew ${vendor !== null ? `${inchWords(vendor)} in` : fullValue(finding.vendor)}.`
     : architect !== null ? `Change it to ${inchWords(architect)} in to match the ${whom}${vendor !== null ? ` (now ${inchWords(vendor)} in)` : ''}.`
     : finding.source === 'rules' ? `Fix it to meet GV’s rule: ${fullValue(finding.architect)}.`
     : `Match the ${whom}: ${fullValue(finding.architect)}.`;
@@ -493,13 +496,14 @@ export function reviewerWords(finding: ChatFinding): ReviewerWords {
 /** How sure, in one plain line: what backs it, never a check's name. */
 export function sureWords(finding: Pick<ChatFinding, 'trust_level' | 'checks'>): string {
   const checks = finding.checks;
+  // Only a check that said "no_text" may say pen strokes: most stroke numbers will get a witness.
   const strokes = checks?.printed_architect === 'no_text' || checks?.printed_vendor === 'no_text';
-  if (finding.trust_level === 'confirmed') return 'code found the values printed on the drawing (or worked them out), and an AI reading agrees.';
-  if (finding.trust_level === 'likely') return 'two separate AI readings agree; no code check could read it.';
-  if (checks?.second_read === 'disagrees' || checks?.critic === 'objects') return 'a second AI look disagreed, so check the pictures yourself.';
-  if (strokes) return 'the numbers are drawn as pen strokes, so no independent check could read them.';
-  if (!finding.trust_level) return 'the checks have not run yet.';
-  return 'one AI reading backs this; nothing independent confirmed it yet.';
+  if (finding.trust_level === 'confirmed') return 'Code found the values printed on the drawing (or worked them out), and an AI reading agrees.';
+  if (finding.trust_level === 'likely') return 'Two separate AI readings agree; no code check could read it.';
+  if (checks?.second_read === 'disagrees' || checks?.critic === 'objects') return 'A second AI look disagreed, so check the pictures yourself.';
+  if (strokes) return 'The numbers are drawn as pen strokes, so no independent check could read them.';
+  if (!finding.trust_level) return 'The checks have not run yet.';
+  return 'One AI reading backs this; nothing independent confirmed it yet.';
 }
 
 /**

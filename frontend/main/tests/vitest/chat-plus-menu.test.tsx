@@ -23,6 +23,8 @@ import {
   blankSegments,
   effortFor,
   firstBlank,
+  FULL_CHECK_MINUTES,
+  fullCheckEstimate,
   knownAreas,
   lastFindings,
   nextBlank,
@@ -34,7 +36,7 @@ import {
 } from '@/lib/chat-plus-actions';
 import type { ChatChoice } from '@/lib/chat-settings';
 import { ChatPage } from '@/pages/ChatPage';
-import { chatOut, fakeChatApi, finding, OPUS, QUESTION, SONNET } from './fixtures/chat';
+import { chatOut, fakeChatApi, finding, modelsOut, OPUS, QUESTION, SONNET } from './fixtures/chat';
 
 // The two downloads are stubbed (jsdom cannot save files); the plain-words helper stays real.
 vi.mock('@/lib/chat-exports', async (original) => ({ ...(await original<typeof import('@/lib/chat-exports')>()), downloadFile: vi.fn(), downloadFindingsCsv: vi.fn() }));
@@ -92,6 +94,12 @@ describe('the + menu’s rules, without React', () => {
       if (action.run.kind === 'prompt') expect(action.run.text.length).toBeGreaterThan(40);
     }
     expect(areaPrompt('Pantry')).toMatch(/^Compare the Pantry on the vendor’s shop drawing/);
+  });
+
+  it('says the full check’s time from one constant, and the cap it is given', () => {
+    expect(FULL_CHECK_MINUTES).toBe(15);
+    expect(fullCheckEstimate('$15')).toBe('~15 min · up to $15');
+    expect(fullCheckEstimate(null)).toBe('~15 min');
   });
 
   it('remembers the three most recent options, newest first', () => {
@@ -460,6 +468,24 @@ describe('the + menu on the chat page', () => {
     await user.click(plusButton());
     await user.click(opt('cloud'));
     expect(api.markup).toHaveBeenCalledWith('c-1', 'a-1');
+  });
+
+  it('shows the per-answer cap the server states, in the words’ face (no monospace)', async () => {
+    const user = userEvent.setup();
+    const api = fakeChatApi({
+      models: vi.fn(async () => modelsOut({ message_cap_usd: '15.00' })) as never,
+      get: vi.fn(async (id: string) => chatOut(id, [QUESTION, ANSWER], { product_type: 'countertop' })) as never,
+    });
+    renderPage(api);
+    await screen.findByText('Two items differ.');
+    await user.click(plusButton());
+    const estimate = opt('full_check').querySelector('[data-slot=chat-plus-estimate]');
+    expect(estimate?.textContent).toBe('~15 min · up to $15');
+    expect(opt('check_page').querySelector('[data-slot=chat-plus-estimate]')?.textContent).toBe('~2 min · ~$0.50');
+    for (const hint of document.querySelectorAll('[data-slot=chat-plus-estimate], [data-slot=chat-plus-estimate] *')) {
+      expect(hint.className).not.toMatch(/\b(num|font-mono)\b/);
+    }
+    expect(estimate?.querySelector('.tabular-nums')).toBeTruthy();
   });
 
   it('runs the full check through the page’s own send, after the confirm', async () => {

@@ -6,7 +6,7 @@ import { RoundChip } from '@/components/chat/chat-trust';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import type { ChatFinding } from '@/lib/chat-api';
 import { architectPage, pageWords, reviewerWords, sideLabels, vendorPage } from '@/lib/chat-findings';
-import { plainChecks, sumWords } from '@/lib/chat-trust';
+import { plainChecks, sumWords, TRUST_WORDS, trustLevelOf } from '@/lib/chat-trust';
 import { useReducedMotion } from '@/lib/chat-motion';
 import { cn } from '@/lib/utils';
 
@@ -154,7 +154,7 @@ function ViewerWords({ finding }: { finding: ChatFinding }) {
         <span className="text-muted-foreground">{words.whyLabel}: </span>{words.why}
       </DialogDescription>
       {words.tell && <p data-slot="chat-evidence-tell" className="text-sm font-medium break-words">{words.tell}</p>}
-      <p className="text-xs text-muted-foreground">How sure: {words.sure}</p>
+      <p className="text-xs text-muted-foreground">How sure: {trustLevelOf(finding) ? `${TRUST_WORDS[trustLevelOf(finding)!]}. ` : ''}{words.sure}</p>
     </>
   );
 }

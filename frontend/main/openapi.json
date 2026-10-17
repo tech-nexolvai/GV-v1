@@ -5386,6 +5386,19 @@
         "additionalProperties": false,
         "description": "One message from the reviewer, with the model, effort and thinking they picked.\n\n`mode: full_check` (CONTRACT4) runs the app's own fixed whole-set check instead of a typed\nquestion (`text` is then not needed: the question shown is \"Full check \u00b7 Countertops \u00b7 High\neffort\"). `products`: the products picked in the composer (default: the set's own).",
         "properties": {
+          "continue_from": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Continue (#1514): the id of the answer a server restart interrupted. The answer goes on from its saved work; a full check keeps its findings and checks only the pages not yet done (`mode` and `products` are then the interrupted answer's).",
+            "title": "Continue From"
+          },
           "effort": {
             "enum": [
               "low",
@@ -5477,6 +5490,7 @@
                       "finding": "#/components/schemas/ChatFindingBlock",
                       "finding_dropped": "#/components/schemas/ChatFindingDroppedBlock",
                       "progress": "#/components/schemas/ChatProgressBlock",
+                      "resume": "#/components/schemas/ChatResumeBlock",
                       "scope": "#/components/schemas/ChatScopeBlock",
                       "step": "#/components/schemas/ChatStepBlock",
                       "text": "#/components/schemas/ChatTextBlock",
@@ -5522,6 +5536,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ChatProgressBlock"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChatResumeBlock"
                     }
                   ]
                 },
@@ -5670,6 +5687,17 @@
             ],
             "description": "The products the message was about; null on older messages.",
             "title": "Products"
+          },
+          "resume": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatResumeOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With `stopped: interrupted`: how Continue picks up (its `resume` block)."
           },
           "role": {
             "enum": [
@@ -6069,6 +6097,79 @@
         "title": "ChatRecordedResultsOut",
         "type": "object"
       },
+      "ChatResumeBlock": {
+        "properties": {
+          "resume": {
+            "$ref": "#/components/schemas/ChatResumeOut"
+          },
+          "type": {
+            "const": "resume",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "resume"
+        ],
+        "title": "ChatResumeBlock",
+        "type": "object"
+      },
+      "ChatResumeOut": {
+        "description": "How an answer a server restart interrupted can be continued (#1514), in plain words.",
+        "properties": {
+          "findings": {
+            "description": "Findings already made: kept, not made again.",
+            "title": "Findings",
+            "type": "integer"
+          },
+          "mode": {
+            "description": "How the interrupted answer was asked: Continue asks the same way.",
+            "enum": [
+              "chat",
+              "full_check"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "pages_done": {
+            "description": "Pages already accounted for: not opened again.",
+            "title": "Pages Done",
+            "type": "integer"
+          },
+          "products": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "countertop",
+                    "cabinet"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Products"
+          },
+          "redo": {
+            "description": "What Continue will do again, in one or two plain sentences.",
+            "title": "Redo",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "findings",
+          "pages_done",
+          "redo"
+        ],
+        "title": "ChatResumeOut",
+        "type": "object"
+      },
       "ChatRoundPairOut": {
         "description": "One round pair compared by code (compare_rounds).",
         "properties": {
@@ -6451,7 +6552,8 @@
           "cost_cap",
           "cancelled",
           "error",
-          "turn_limit"
+          "turn_limit",
+          "interrupted"
         ],
         "type": "string"
       },
@@ -6598,6 +6700,129 @@
           "seconds"
         ],
         "title": "ChatThinkingBlock",
+        "type": "object"
+      },
+      "ChatTimingHelperOut": {
+        "description": "One helper of an answer: its pages (a full check's, planned by code), calls, time, cost.",
+        "properties": {
+          "calls": {
+            "title": "Calls",
+            "type": "integer"
+          },
+          "cost_usd": {
+            "title": "Cost Usd",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "number": {
+            "title": "Number",
+            "type": "integer"
+          },
+          "pages": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Pages",
+            "type": "array"
+          },
+          "seconds": {
+            "title": "Seconds",
+            "type": "number"
+          },
+          "stopped": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stopped"
+          }
+        },
+        "required": [
+          "number",
+          "description",
+          "pages",
+          "calls",
+          "seconds",
+          "cost_usd"
+        ],
+        "title": "ChatTimingHelperOut",
+        "type": "object"
+      },
+      "ChatTimingPhaseOut": {
+        "description": "One phase of an answer: its wall-clock seconds and what its model calls cost (#1512).",
+        "properties": {
+          "calls": {
+            "title": "Calls",
+            "type": "integer"
+          },
+          "cost_usd": {
+            "title": "Cost Usd",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "phase": {
+            "description": "seeding, set_pack, planning, prewarm, lead, helpers, lead_verification, second_reads, third_reads, critic, finish_checks, cloud_drawing, report",
+            "title": "Phase",
+            "type": "string"
+          },
+          "seconds": {
+            "title": "Seconds",
+            "type": "number"
+          }
+        },
+        "required": [
+          "phase",
+          "label",
+          "seconds",
+          "cost_usd",
+          "calls"
+        ],
+        "title": "ChatTimingPhaseOut",
+        "type": "object"
+      },
+      "ChatTimingsOut": {
+        "description": "Where an answer's time and money went, phase by phase (#1512).",
+        "properties": {
+          "cost_usd": {
+            "title": "Cost Usd",
+            "type": "string"
+          },
+          "helpers": {
+            "items": {
+              "$ref": "#/components/schemas/ChatTimingHelperOut"
+            },
+            "title": "Helpers",
+            "type": "array"
+          },
+          "phases": {
+            "items": {
+              "$ref": "#/components/schemas/ChatTimingPhaseOut"
+            },
+            "title": "Phases",
+            "type": "array"
+          },
+          "total_seconds": {
+            "title": "Total Seconds",
+            "type": "number"
+          }
+        },
+        "required": [
+          "total_seconds",
+          "cost_usd",
+          "phases",
+          "helpers"
+        ],
+        "title": "ChatTimingsOut",
         "type": "object"
       },
       "ChatTrustBlock": {
@@ -6843,6 +7068,16 @@
               }
             ],
             "description": "What the counts above cover (null on older answers)."
+          },
+          "timings": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatTimingsOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "unknowns": {
             "anyOf": [
@@ -19509,10 +19744,10 @@
             "description": "`message_running`: a message is being answered in this chat."
           },
           "422": {
-            "description": "`choice_refused`: a model, effort and thinking the API refuses."
+            "description": "`choice_refused`: a model, effort and thinking the API refuses; `invalid_request`: a body (or a `continue_from`) that is not right."
           },
           "503": {
-            "description": "No AI provider key is set (the reason: GET /assistant/models)."
+            "description": "No AI provider key is set (the reason: GET /assistant/models), or the server is restarting."
           }
         },
         "summary": "Send a message and stream the answer",

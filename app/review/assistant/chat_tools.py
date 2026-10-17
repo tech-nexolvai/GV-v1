@@ -90,10 +90,10 @@ __all__ = [
 
 _log = logging.getLogger(__name__)
 
-#: Helpers run at once by default (`GV_ASSISTANT_MAX_PARALLEL_AGENTS`, at most 8).
-MAX_AGENTS: Final = 6
-#: Crops one `zoom` call draws.
-MAX_ZOOM_CROPS: Final = 4
+#: Helpers run at once by default (`GV_ASSISTANT_MAX_PARALLEL_AGENTS`, at most 12).
+MAX_AGENTS: Final = 8
+#: Crops one `zoom` call draws (both sides of four findings).
+MAX_ZOOM_CROPS: Final = 8
 #: Sandbox commands one message runs at the same time (helpers' parallel tools included).
 MAX_PARALLEL_COMMANDS: Final = 6
 #: Tools that only read (or only add a record): the ones of one reply run at the same time.
@@ -139,7 +139,7 @@ drawings-only PDFs, page pictures. Use it; never rebuild it.
 
 Your tools: bash_tool runs a command (poppler, and Python with pypdf, pdfplumber, pypdfium2, \
 Pillow, reportlab, matplotlib and openpyxl); view shows you a picture, a text file or a folder; \
-zoom crops up to 4 areas of pages at once, sharp, GV's markup hidden; \
+zoom crops up to {MAX_ZOOM_CROPS} areas of pages at once, sharp, GV's markup hidden; \
 create_file and str_replace write files in {SCRATCH} or {OUTPUTS}; present_files hands files to \
 the reviewer; TaskCreate and TaskUpdate keep a task list the reviewer sees; Agent starts a helper \
 with the same reading tools (several run at once: give each its pages, and check what a helper \
@@ -1118,9 +1118,16 @@ def _page_line(entry: Mapping[str, Any]) -> str:
     )
 
 
-def helper_footer(prompt: str, workspace: ChatWorkspace) -> str:
-    """What the app adds to every helper's brief: its pages from the page map (when the lead
-    named pages), where the pictures are, the zoom tool, its budget and what to return."""
+def helper_footer(
+    prompt: str,
+    workspace: ChatWorkspace,
+    *,
+    pages: Sequence[int] | None = None,
+    report_words: int = 300,
+) -> str:
+    """What the app adds to every helper's brief: its pages from the page map (`pages`, else the
+    pages the lead's brief names), where the pictures are, the zoom tool, its budget and what to
+    return (a report of at most `report_words` words)."""
     folder = workspace.set_folder
     try:
         status = json.loads((folder / "status.json").read_text(encoding="utf-8"))
@@ -1128,7 +1135,7 @@ def helper_footer(prompt: str, workspace: ChatWorkspace) -> str:
         status = {}
     state = status.get("state") if isinstance(status, dict) else None
     lines = [HELPER_FOOTER_MARK + " (every helper gets this):"]
-    pages = named_pages(prompt)
+    pages = list(pages) if pages is not None else named_pages(prompt)
     entries: list[Mapping[str, Any]] = []
     if pages:
         try:
@@ -1160,14 +1167,14 @@ def helper_footer(prompt: str, workspace: ChatWorkspace) -> str:
         )
     lines += [
         (
-            "- To read numbers, use zoom: up to 4 crops in one call, sharp, GV's markup hidden. "
-            "Ask for all the crops you need in one call."
+            f"- To read numbers, use zoom: up to {MAX_ZOOM_CROPS} crops in one call, sharp, GV's "
+            "markup hidden. Ask for all the crops you need in one call."
         ),
         f"- Budget: about {HELPER_CALL_BUDGET} tool calls; report before then.",
         (
             "- Return: each difference with report_finding (both values as printed, with boxes), "
-            "set_coverage for your pages, then a report of at most 300 words that names the "
-            "pages you did not reach."
+            f"set_coverage for your pages, then a report of at most {report_words} words that "
+            "names the pages you did not reach."
         ),
     ]
     return "\n".join(lines)

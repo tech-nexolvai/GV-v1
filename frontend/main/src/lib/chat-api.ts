@@ -99,7 +99,24 @@ export interface Chat {
 }
 
 /** Why a message stopped before it finished; null or absent when it finished. */
-export type ChatStopped = 'cost_cap' | 'cancelled' | 'error' | 'turn_limit';
+export type ChatStopped = 'cost_cap' | 'cancelled' | 'error' | 'turn_limit' | 'interrupted';
+
+/**
+ * With `stopped: "interrupted"` (#1514): a server restart cut the answer off. How Continue picks it
+ * up, and what it will do again, in plain words.
+ */
+export interface ChatResume {
+  mode: ChatMode;
+  products?: ChatProduct[] | null;
+  /** Findings already made: kept, not made again. */
+  findings: number;
+  /** Pages already accounted for: not opened again. */
+  pages_done: number;
+  redo: string;
+}
+
+/** The follow-up Continue sends (the server hands the interrupted work over with it). */
+export const CONTINUE_TEXT = 'Continue from where you stopped';
 
 /** A message as stored and as returned. */
 export interface ChatMessage {
@@ -132,6 +149,8 @@ export interface ChatMessage {
   accuracy?: ChatAccuracy | null;
   /** #1522: what the answer covers (server, when it sends it): the whole set, or a few pages / an area. */
   scope?: ChatScope | null;
+  /** With `stopped: "interrupted"`: how Continue picks up (#1514). */
+  resume?: ChatResume | null;
 }
 
 /** A full check's progress, by code (#1524): the last one is stored as a block. */
@@ -179,7 +198,8 @@ export type ChatBlock =
   | { type: 'trust'; trust: ChatTrust }
   | { type: 'cite'; cite: ChatCite }
   | { type: 'accuracy'; accuracy: ChatAccuracy }
-  | { type: 'unknowns'; unknowns: ChatUnknown[] };
+  | { type: 'unknowns'; unknowns: ChatUnknown[] }
+  | { type: 'resume'; resume: ChatResume };
 
 // ── Chat v2 (CONTRACT2-findings): findings with evidence, and page coverage ──
 
@@ -435,6 +455,35 @@ export interface ChatTrust {
     /** The line code wrote for it. */
     line?: string | null;
   } | null;
+  /** Where the answer's time and money went, phase by phase (#1512); older answers have none. */
+  timings?: ChatTimings | null;
+}
+
+/** One phase of an answer: wall-clock seconds and what its model calls cost. */
+export interface ChatTimingPhase {
+  phase: string;
+  label: string;
+  seconds: number;
+  cost_usd: string;
+  calls: number;
+}
+
+/** One helper of an answer: its pages (a full check's, planned by code), calls, time and cost. */
+export interface ChatTimingHelper {
+  number: number;
+  description: string;
+  pages: number[];
+  calls: number;
+  seconds: number;
+  cost_usd: string;
+  stopped?: string | null;
+}
+
+export interface ChatTimings {
+  total_seconds: number;
+  cost_usd: string;
+  phases: ChatTimingPhase[];
+  helpers: ChatTimingHelper[];
 }
 
 /** A result GV Review recorded (a code FAIL, or an evaluator-checked AI page review difference). */
@@ -599,6 +648,8 @@ export interface SendMessageBody {
   mode?: ChatMode;
   /** Chat v4: the products to focus on; absent means the set's own product type. */
   products?: ChatProduct[];
+  /** Continue (#1514): the interrupted answer to go on from; the server then asks the same way. */
+  continue_from?: string;
 }
 
 /** The stream's events, in the contract's words. `index` is the block's place in `blocks`. */

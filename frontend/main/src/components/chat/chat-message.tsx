@@ -1,5 +1,5 @@
 import { useEffect, useId, useState } from 'react';
-import { ChevronRight, CircleAlert, Download, FileDown, Sheet, FileImage, FileSpreadsheet, FileText, File as FileIcon, RotateCw, ScanSearch } from 'lucide-react';
+import { ChevronRight, CircleAlert, Download, FileDown, Sheet, FileImage, FileSpreadsheet, FileText, File as FileIcon, Play, RotateCw, ScanSearch } from 'lucide-react';
 
 import { AccuracyBadge, CiteChips } from '@/components/chat/chat-accuracy';
 import { ActivityRow, TaskChecklist } from '@/components/chat/chat-activity';
@@ -241,6 +241,11 @@ export interface AssistantMessageProps {
    * it can send (`previousQuestion` in `chat-messages` finds the question).
    */
   onRetry?: () => void;
+  /**
+   * #1514: go on from an answer a server restart interrupted ("Continue from where you stopped").
+   * The page passes it on the newest interrupted answer when it can send.
+   */
+  onContinue?: () => void;
   /** The newest answer: its Copy and Retry stay shown; on older answers they appear on hover. */
   latest?: boolean;
   /**
@@ -265,7 +270,7 @@ export interface AssistantMessageProps {
   remakeCloud?: (messageId: string) => Promise<ChatFile>;
 }
 
-export function AssistantMessage({ message, chatId, models, onReload, onRetry, latest = false, makeMarkupPdf, fullPageHref, fullCheck = false, decide, decisionReady, remakeCloud }: AssistantMessageProps) {
+export function AssistantMessage({ message, chatId, models, onReload, onRetry, onContinue, latest = false, makeMarkupPdf, fullPageHref, fullCheck = false, decide, decisionReady, remakeCloud }: AssistantMessageProps) {
   const running = message.status === 'running';
   const reduced = useReducedMotion();
   const pictureUrl = (pictureId: string) => chatPaths.picture(chatId, pictureId);
@@ -430,7 +435,8 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, l
   ) : null;
   const hasResult = fullCheck && (findings.length > 0 || coverage !== null || made.cloud !== null || made.report !== null);
   // A full check stopped by the reviewer says so once, quietly, in its summary (not as a floating "Stopped").
-  const stopNote = message.stopped === 'cancelled' ? 'You stopped this check before the end, so some items may be missing.' : stopped;
+  // An interrupted answer says so (with Continue) under the answer, not here as well.
+  const stopNote = message.stopped === 'cancelled' ? 'You stopped this check before the end, so some items may be missing.' : message.stopped === 'interrupted' ? null : stopped;
   const textItems = items.filter((item) => item.kind === 'text');
 
   return (
@@ -514,7 +520,30 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, l
 
       <FileCards files={files} chatId={chatId} />
 
-      {stopped && message.stopped !== 'error' && !(hasResult && !running) && (
+      {stopped && message.stopped === 'interrupted' && (
+        <div data-slot="chat-stopped" data-stopped="interrupted" className="grid min-w-0 gap-2 text-sm">
+          <span className="inline-flex min-w-0 items-start gap-2 font-medium">
+            <CircleAlert className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+            <span>{stopped}</span>
+          </span>
+          {message.resume?.redo && <p data-slot="chat-resume-redo" className="text-muted-foreground">{message.resume.redo}</p>}
+          {!running && onContinue && (
+            <div>
+              <button
+                type="button"
+                data-slot="chat-continue"
+                onClick={onContinue}
+                className="inline-flex min-h-8 items-center gap-1.5 rounded-lg border bg-background px-3 text-sm font-medium hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+              >
+                <Play className="size-3.5" aria-hidden="true" />
+                Continue
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {stopped && message.stopped !== 'error' && message.stopped !== 'interrupted' && !(hasResult && !running) && (
         <p data-slot="chat-stopped" data-stopped={message.stopped ?? undefined} className="text-sm text-muted-foreground">{stopped}</p>
       )}
 
