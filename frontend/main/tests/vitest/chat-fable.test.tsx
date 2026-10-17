@@ -20,7 +20,7 @@ const SWITCH = { from_model: 'claude-fable-5-1', to_model: 'claude-opus-4-8' };
 describe('Claude Fable 5.1 in the picker', () => {
   it('says its price honestly and keeps Opus the default', () => {
     expect(modelBlurb(FABLE)).toBe('Hardest tasks · about 2.5× Opus cost');
-    expect(modelBlurb(OPUS)).toBe('Most capable for complex work');
+    expect(modelBlurb(OPUS)).toBe('Best for most review work');
     expect(resolveChoice(MODELS, null)?.model).toBe('claude-opus-5-5');
   });
 
