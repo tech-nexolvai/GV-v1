@@ -32,9 +32,11 @@ __all__ = [
     "ChatCreatedOut",
     "ChatFileOut",
     "ChatFindingBlock",
+    "ChatFindingDecisionHelpOut",
     "ChatFindingDecisionIn",
     "ChatFindingDecisionOut",
     "ChatFindingDroppedBlock",
+    "ChatFindingEstimateOut",
     "ChatFindingOut",
     "ChatListOut",
     "ChatMessageIn",
@@ -73,6 +75,7 @@ type ChatStepTool = Literal[
     "review_results",
     "compare_rounds",
     "verify_value",
+    "measure_on_drawing",
 ]
 type ChatStopped = Literal["cost_cap", "cancelled", "error", "turn_limit", "interrupted"]
 type ChatCapHit = Literal["message", "package"]
@@ -349,6 +352,27 @@ class ChatFindingDecisionOut(BaseModel):
     at: datetime
 
 
+class ChatFindingEstimateOut(BaseModel):
+    """The AI's best estimate for a "Your decision" item, with how it got it (#1545)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    value_in: float
+    plus_minus_in: float
+    method: str
+
+
+class ChatFindingDecisionHelpOut(BaseModel):
+    """A "Your decision" item's reasoning for the reviewer (#1545), in plain words."""
+
+    model_config = ConfigDict(frozen=True)
+
+    measures: str = Field(description="What the dimension measures, from where to where.")
+    estimate: ChatFindingEstimateOut | None = None
+    likely: Literal["probably fine", "probably wrong", "can't tell"]
+    confirm: str = Field(description="What the reviewer should confirm, and with whom.")
+
+
 class ChatFindingOut(BaseModel):
     """One difference the assistant reported, with code-made evidence and checks."""
 
@@ -444,6 +468,19 @@ class ChatFindingOut(BaseModel):
     decision: ChatFindingDecisionOut | None = Field(
         default=None,
         description="The reviewer's latest decision on this finding (#1521); null: not decided.",
+    )
+    decision_help: ChatFindingDecisionHelpOut | None = Field(
+        default=None,
+        description="Status check (Your decision): what it measures, the best estimate, how "
+        "likely it is fine, what to confirm (#1545).",
+    )
+    check_reason: (
+        Literal["different_extent", "which_governs", "pairing_not_certain", "scaled", "site_verify"]
+        | None
+    ) = Field(
+        default=None,
+        description="Why two printed values that differ still need a person (#1545); without "
+        "one, code makes such a finding Wrong.",
     )
 
 

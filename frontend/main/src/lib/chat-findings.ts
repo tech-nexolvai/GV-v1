@@ -519,6 +519,36 @@ export function reviewerWords(original: ChatFinding): ReviewerWords {
   };
 }
 
+/** One line of a "Your decision" item's reasoning on the card (#1545). */
+export interface DecisionHelpRow {
+  label: 'What it measures' | 'Our best estimate' | 'Likely' | 'What to confirm';
+  text: string;
+}
+
+/**
+ * A "Your decision" item's reasoning, in the reviewer's words (#1545): what the dimension measures,
+ * our best estimate with its method ("none" when there is no estimate), how likely it is fine, and
+ * what to confirm. Empty when the finding has no decision help.
+ */
+export function decisionHelpRows(finding: Pick<ChatFinding, 'decision_help'>): DecisionHelpRow[] {
+  const help = finding.decision_help;
+  if (!help) return [];
+  const rows: DecisionHelpRow[] = [];
+  if (help.measures?.trim()) rows.push({ label: 'What it measures', text: help.measures.trim() });
+  const estimate = help.estimate;
+  if (estimate && Number.isFinite(estimate.value_in)) {
+    const sixteenth = (value: number) => inchWords(Math.round(value * 16) / 16);
+    const plusMinus = estimate.plus_minus_in > 0 ? ` (± ${sixteenth(estimate.plus_minus_in)} in)` : '';
+    const method = estimate.method?.trim() ? `: ${estimate.method.trim()}` : '';
+    rows.push({ label: 'Our best estimate', text: `About ${sixteenth(estimate.value_in)} in${plusMinus}${method}` });
+  } else {
+    rows.push({ label: 'Our best estimate', text: 'None: nothing to measure it against.' });
+  }
+  if (help.likely) rows.push({ label: 'Likely', text: help.likely.charAt(0).toUpperCase() + help.likely.slice(1) });
+  if (help.confirm?.trim()) rows.push({ label: 'What to confirm', text: help.confirm.trim() });
+  return rows;
+}
+
 /** How sure, in one plain line: what backs it, never a check's name. */
 export function sureWords(finding: Pick<ChatFinding, 'trust_level' | 'checks'>): string {
   const checks = finding.checks;

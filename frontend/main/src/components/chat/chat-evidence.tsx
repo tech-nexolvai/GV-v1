@@ -5,7 +5,7 @@ import { Confidence, StatusMark } from '@/components/chat/chat-findings';
 import { RoundChip } from '@/components/chat/chat-trust';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import type { ChatFinding } from '@/lib/chat-api';
-import { architectPage, pageWords, reviewerWords, sideLabels, vendorPage } from '@/lib/chat-findings';
+import { architectPage, decisionHelpRows, pageWords, reviewerWords, sideLabels, vendorPage } from '@/lib/chat-findings';
 import { plainChecks, sumWords, TRUST_WORDS, trustLevelOf } from '@/lib/chat-trust';
 import { useReducedMotion } from '@/lib/chat-motion';
 import { cn } from '@/lib/utils';
@@ -144,6 +144,7 @@ function Side({ side, page, src, finding }: { side: 'architect' | 'vendor'; page
 /** The viewer's words: what each side shows, why, and what to tell the vendor (the card's words). */
 function ViewerWords({ finding }: { finding: ChatFinding }) {
   const words = reviewerWords(finding);
+  const help = decisionHelpRows(finding);
   return (
     <>
       <dl className="grid gap-x-6 gap-y-1.5 text-sm sm:grid-cols-2">
@@ -153,6 +154,13 @@ function ViewerWords({ finding }: { finding: ChatFinding }) {
       <DialogDescription className="break-words text-foreground">
         <span className="text-muted-foreground">{words.whyLabel}: </span>{words.why}
       </DialogDescription>
+      {help.length > 0 && (
+        <dl data-slot="chat-evidence-decision-help" className="grid gap-1 text-sm">
+          {help.map((row) => (
+            <div key={row.label} className="min-w-0"><dt className="inline text-muted-foreground">{row.label}: </dt><dd className="inline break-words">{row.text}</dd></div>
+          ))}
+        </dl>
+      )}
       {words.tell && <p data-slot="chat-evidence-tell" className="text-sm font-medium break-words">{words.tell}</p>}
       <p className="text-xs text-muted-foreground">How sure: {trustLevelOf(finding) ? `${TRUST_WORDS[trustLevelOf(finding)!]}. ` : ''}{words.sure}</p>
     </>

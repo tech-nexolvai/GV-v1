@@ -5,10 +5,10 @@ description: How GV reviews a vendor's shop drawings (millwork and furnishings; 
 
 # GV review: the vendor's shop drawing against the architect's drawing
 
-GV gets **shop drawings** from its vendors (the makers of countertops, cabinets, lighting, furniture
-and other products) before anything is built. A GV reviewer checks them against the **architect's drawings** (the design) and GV's own
-rules, and marks up what is wrong. You do that same review, as an AI helper: you find
-and explain differences; a GV reviewer decides. You cannot change the review or record a result.
+GV gets **shop drawings** from its vendors (countertops, cabinets, lighting, furniture and more). A
+GV reviewer checks them against the **architect's drawings** (the design) and GV's rules, and marks
+up what is wrong. You do that review as an AI helper: you find and explain differences; a GV
+reviewer decides.
 
 Files in this folder (read-only):
 - `SKILL.md`: this file. How to work.
@@ -54,8 +54,7 @@ each under its own heading. An "ARCH SET" or "ID SET" drawing beside a "BRAND PR
 the same page is the architect's: compare the vendor with it; the prototype is only a reference.
 Never call a whole page "prototype" because one half is.
 
-`pdfinfo F.pdf` gives pages and page size; `pdftotext -f 3 -l 3 -layout F.pdf -` one page's words
-(text inside stamps too).
+`pdfinfo F.pdf` gives pages; `pdftotext -f 3 -l 3 -layout F.pdf -` a page's words (stamps too).
 Every annotation (page, kind, author `/T`, text, box) is in `/mnt/user-data/set/annotations.json`;
 headings and GV's notes are FreeText (pypdf reads each page's `/Annots` if you need more).
 **The page map is made for you:** read `/mnt/user-data/set/page_map.json` first (per page and per
@@ -70,8 +69,7 @@ the pack is ready; until it is, use the uploads (and `zoom`, which works at once
 - Separate files: match by room or area name, the item's name (vanity, kitchenette, coffee
   station, reception desk...), the elevation or detail callout (the vendor usually quotes the
   architect's sheet and detail number), the plan location and the overall shape.
-- Never pair two drawings only because a number matches. If you are not sure it is the same wall
-  or piece, say "pairing not certain" and why.
+- Never pair two drawings only because a number matches; unsure: "pairing not certain", and why.
 
 ## 4. Read the numbers
 
@@ -81,9 +79,8 @@ the pack is ready; until it is, use the uploads (and `zoom`, which works at once
 - Fractions are usually to 1/16"; a stacked one (1 over a bar over 2) is easy to misread: zoom.
 - On some sets the numbers are drawn as lines (pen strokes), not text: `pdftotext` returns few or no
   numbers. Then read them from a picture: `zoom` on the area (300 dpi for a small one) and look.
-- Abbreviations: EQ (equal), TYP (typical), U.N.O. (unless noted otherwise), VIF (verify in field),
-  CL / ℄ (centre line), AFF (above finished floor), CLR (clear), O.C. (on centre), NIC (not in
-  contract), BY OTHERS.
+- EQ (equal), TYP (typical), U.N.O. (unless noted otherwise), VIF (verify in field), CL / ℄ (centre
+  line), AFF (above finished floor), CLR (clear), O.C. (on centre), NIC (not in contract), BY OTHERS.
 - Check a dimension string adds up to its overall. A string that does not add up is a finding on
   that drawing, whichever side it is on (the architect's drawing can be wrong too: say so).
 - **Never invent a number.** If you cannot read it, say "unreadable" and which page and spot.
@@ -150,13 +147,18 @@ numbers ("pull-out drawers", "by others"): a note the vendor does not follow is 
   sink on its centre line, cabinet over fridge); one that hits a neighbour or misses its opening.
 - **Extent and count**: a section the architect draws that the vendor omits, extra vendor pieces;
   how many doors, drawers, bins, fronts and how arranged; which way an island faces (front/rear).
-- **Notes and scope**: "by others", "VIF", "NIC", edge profile, seams, anything the architect notes
-  that the vendor dropped or changed.
+- **Notes and scope**: "by others", VIF, NIC, edge profile, seams, any architect note the vendor
+  dropped or changed.
 - **Construction notes** the vendor contradicts, on the architect's or brand sheet ("toe kick
   integrated with door", "door to the floor", "pull-out drawers for bins", "metal lining").
 - **ID set vs brand prototype** conflicts: status `check`, "Your decision: which governs".
-- **Scaled values**: where the architect prints no size, a value measured against one of its own
-  printed dimensions is only "about X (scaled, ±1/2")": status `check`, never `different` (Wrong).
+- **Scaled values**: where the architect prints no size, `measure_on_drawing` (two printed dimensions
+  of the same view) gives "about X (±T)": status `check`, never `different` (Wrong).
+- **Extent first**: before a height or width is Wrong, check what the architect's dimension spans
+  (`measure_on_drawing` with `dimension`). Floor to the top of a box, soffit or blocking beyond the
+  unit is not the unit: status `check`, `check_reason: different_extent`.
+- **Printed vs printed is Wrong**: a vendor value PRINTED unlike the architect's PRINTED value for the
+  same span (counter height 34" vs 2'-9") is `different`, not `check`, unless a `check_reason` holds.
 - **GV's standards that are not on the drawing**: each product's file names the kinds; the values
   are in `rules.md`. A product with no published rule yet: report what the vendor shows, status
   `check`.
@@ -164,13 +166,11 @@ numbers ("pull-out drawers", "by others"): a note the vendor does not follow is 
 ## 8. How much work: scale it to the question
 
 - **A one-line fact** (a page count, one value): 1-3 tool calls, no helpers.
-- **One item or one page pair** ("is the sink on pages 27-28 the architect's?"): you alone, no
-  helpers. Open only the pages asked (page map, then one `zoom` with every crop you need), report
-  1-3 findings for the items asked (not the rest of the page), cite, answer, in a few turns.
+- **One item or one page pair** ("is the sink on pages 27-28 the architect's?"): you alone. Open
+  only the pages asked (page map, then one `zoom` with every crop you need), 1-3 findings for the
+  items asked (not the rest of the page), cite, answer, in a few turns.
 - **The whole set** ("what did the vendor get wrong?", a full check): helpers, by page pair.
-
-**Batch.** Tool calls of one reply run at the same time: ask for everything you need at once (up to
-8 crops in one `zoom`; several commands in one reply). Never one crop per turn.
+- **Batch**: the tool calls of one reply run at once; ask for all you need (8 crops per `zoom`).
 
 ## 8a. Working the whole set
 
@@ -208,6 +208,10 @@ In a full check the app has done steps 1-3 (split, helpers, checklist): start at
   what the architect shows and what the vendor shows **as printed** (inches), status, source, and
   boxes where each value is printed (section 10). The app crops the evidence at the boxes, checks
   the printed values and draws the table: never write the findings again as a markdown table.
+- **Every `check` (Your decision) has `decision_help`**, short plain words: what it measures (where
+  its extension lines end); your best estimate and method (a string added up, an overall less its
+  fillers, `measure_on_drawing`, a brand prototype string that sums to the vendor's value) or null;
+  `likely`; what to confirm. Mention bigger context (a section the vendor left out) in `why`.
 - `source`: `architect`; `brand_prototype` (section 1); `rules` with `rule_check_id` (the check's
   id in `review_results`); `vendor_arithmetic` with `parts` and `printed_total` (a dimension string
   that does not add up). `verified: true` only when you read both values on the drawing yourself.
@@ -233,10 +237,9 @@ In a full check the app has done steps 1-3 (split, helpers, checklist): start at
   findings. If code says a string does not add up, re-read it once, record it again (`replaces`).
 - Sets in rounds (a first and a later submittal): give each finding its `round` (1, 2, ...) and
   name the same item the same way in every round, so the app can link them.
-- Match the question: yes/no or a number, one line; "summarize", one or two lines; a list, a short
-  list; a comparison, the findings plus at most two plain lines. No preamble, no disclaimer, no
-  restating the question. One line on what you did not check when it matters. Unclear: ask back.
-- Never write pass, fail, approved or signed off yourself: GV's code records, a GV reviewer decides.
+- Match the question (yes/no: one line; a comparison: the findings plus two plain lines at most).
+  No preamble, no disclaimer. One line on what you did not check when it matters. Unclear: ask.
+- Never write pass, fail, approved or signed off: GV's code records, a GV reviewer decides.
 
 ## 10. Boxes, and the marked-up PDF
 
