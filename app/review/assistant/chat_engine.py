@@ -154,6 +154,11 @@ from app.review.assistant.chat_trust import (
     with_second_read,
 )
 from app.review.assistant.chat_unknowns import refused_from_diff, unknown_records
+from app.review.assistant.full_check_brief import (
+    checklist_gaps,
+    checklist_send_back,
+    helper_brief,
+)
 from app.review.assistant.full_check_plan import (
     FanOutPlan,
     HelperJob,
@@ -163,7 +168,7 @@ from app.review.assistant.full_check_plan import (
     wait_for_page_map,
 )
 from app.review.assistant.ledger import LEDGER_TOOL_NAMES, ReadingLedger, recorded_results_check
-from app.review.assistant.sandbox import SET_PACK, SKILLS, SandboxRefused
+from app.review.assistant.sandbox import SET_PACK, SKILLS, UPLOADS, SandboxRefused
 from app.runs.rates import ModelRates, call_cost_micros
 
 __all__ = [
@@ -197,6 +202,8 @@ CHECK_WORKERS: Final = 8
 #: A full check's helpers (#1512): their reading tool calls (zoom, view, commands; recording a
 #: finding or a reading does not count), their output allowance and their report's length.
 FULL_CHECK_HELPER_CALLS: Final = 12
+#: More reading calls for a helper sent back once to finish its per-page checklist.
+FULL_CHECK_SEND_BACK_CALLS: Final = 4
 FULL_CHECK_HELPER_MAX_TOKENS: Final = 12000
 FULL_CHECK_REPORT_WORDS: Final = 200
 #: The lead's output allowance when it only verifies a code-planned full check.
@@ -262,8 +269,9 @@ FULL_CHECK_INSTRUCTION: Final = """Full check of this drawing set (the reviewer 
 Review the WHOLE set: GV's rules for the picked products first, then compare everything on the vendor's drawings with the architect's (brand prototype differences as their own group). Report EVERY item you compare with report_finding, the right ones too (status same), with boxes. Check each finding the app made from GV Review's recorded results. Brief helpers to report findings and set_coverage, and on every page to record every dimension string with record_string and every value they read with record_reading (both sides; name an item the same way on every page and view), so code adds them up and compares the views. Record every page with set_coverage. Verify leads. End with 2-4 short lines of notes, no tables: the app draws the cloud drawing, the report and the lists."""
 
 #: What the lead is told instead when code planned and ran the helpers (#1512).
-FULL_CHECK_LEAD_INSTRUCTION: Final = """Full check of this drawing set (the reviewer pressed Run full check). The app has already split the set by area and run one helper per part, made a finding for each difference GV Review recorded, and read the helpers' findings a second time. Their reports and every finding follow. You verify and sum up; you do not plan:
-- Verify only the findings listed under "To verify": zoom on both sides of four findings per zoom call (8 crops) and put several zoom calls in one reply; then, in one reply, update_finding for each (verified true, or the values as printed) or drop_finding with your reason. Findings under "Backed" need no re-check.
+FULL_CHECK_LEAD_INSTRUCTION: Final = """Full check of this drawing set (the reviewer pressed Run full check). The app has already split the set by area and run one helper per part with GV's per-page checklist, made a finding for each difference GV Review recorded, and read the helpers' findings a second time. Their reports and every finding follow. You verify and sum up; you do not plan. In this order, since a cap can stop you before the end:
+- First the "Checklist gaps" and each "not compared" line in the helper reports: zoom and compare what was left (report_finding for each item), or say why it cannot be compared.
+- Then the findings listed under "To verify": zoom on both sides of four findings per zoom call (8 crops) and put several zoom calls in one reply; then, in one reply, update_finding for each (verified true, or the values as printed) or drop_finding with your reason. Findings under "Backed" need no re-check.
 - Each finding the app made from GV Review's recorded results that is still without boxes: check it on the drawing (update_finding with boxes) or drop_finding with your reason.
 - Pages listed as not accounted for: set_coverage, or compare them yourself (a helper only for several pages).
 End with 2-4 short lines of notes, no tables: the app draws the cloud drawing, the report and the lists."""
@@ -626,6 +634,8 @@ class ChatEngine:
         self._read_share = _Share(limit=settings.message_cap_micros)
         self._markup_base: Future[Any] | None = None
         self._trust_index: int | None = None
+        #: A code-planned helper's checklist pages still open after its report (#1515).
+        self._checklist_gaps: dict[int, dict[int, str]] = {}
 
     # ---- the screen ------------------------------------------------------------------------------
 
@@ -1403,20 +1413,12 @@ class ChatEngine:
         live = book.live()
         coverage = book.coverage_map() if book.coverage_used else None
         reported_sums = {
-            (f.get("page"), str(f.get("printed_total") or "").strip())
+            (f.get("page"), str(f.get("printed_total") or "").strip()): f
             for f in live
             if f.get("source") == "vendor_arithmetic"
         }
         for extra in self.reading_ledger.ledger_findings(live, coverage):
-            if (
-                extra.get("source") == "vendor_arithmetic"
-                and (
-                    extra.get("page"),
-                    str(extra.get("printed_total") or "").strip(),
-                )
-                in reported_sums
-            ):
-                continue  # the lead already reported this string
+            entry = None
             if extra.get("source") == "vendor_arithmetic":
                 entry = next(
                     (e for e in self.reading_ledger.strings if e.id in extra.get("ledger_ids", [])),
@@ -1424,6 +1426,20 @@ class ChatEngine:
                 )
                 if entry is not None:
                     extra = {**extra, "sum_text": entry.sum_text()}
+                key = (extra.get("page"), str(extra.get("printed_total") or "").strip())
+                reported = reported_sums.get(key)
+                if reported is not None:
+                    # Already reported: code's sum goes on that finding instead (#1515).
+                    if entry is not None and not reported.get("sum_text"):
+                        backed = {
+                            **reported,
+                            "sum_text": extra["sum_text"],
+                            "ledger_ids": list(reported.get("ledger_ids") or [])
+                            or [str(i) for i in extra.get("ledger_ids") or []],
+                        }
+                        if book.replace(backed):
+                            self._show_finding(backed)
+                    continue
             added = book.add_code_finding(extra)
             if added is not None:
                 self._show_finding(added)
@@ -1711,6 +1727,33 @@ class ChatEngine:
                     self._show_finding(backed)
         skipped = self._post_checks()
         with self.timings.phase("finish_checks"):
+            self._finish_trust(skipped)
+
+    def _code_finish(self) -> None:
+        """A stopped full check's finish, by code only: no model call."""
+        self._close_checks()  # second reads started before the stop end at once (cancelled)
+        book = self.book
+        with self.timings.phase("finish_checks"):
+            try:
+                self._ledger_findings()
+            except Exception:  # noqa: BLE001 - the answer goes on without the ledger's findings
+                _log.exception("assistant chat ledger findings failed")
+            if self._ledger_used():
+                ledger = self.reading_ledger.as_dict()
+                for finding in book.live():
+                    backed = with_ledger(finding, ledger)
+                    if backed != finding and book.replace(backed):
+                        self._show_finding(backed)
+            if not book.live() and not book.coverage_used and not self._ledger_used():
+                return
+            with_pictures = [
+                f for f in book.live() if f.get("arch_picture_id") or f.get("vendor_picture_id")
+            ]
+            skipped = sum(
+                1
+                for f in with_pictures
+                if (f.get("checks") or {}).get("second_read") in (None, "not_run")
+            )
             self._finish_trust(skipped)
 
     def _finish_trust(self, skipped: int) -> None:
@@ -2158,25 +2201,28 @@ class ChatEngine:
             return ""
         return rules_summary(text)
 
-    def _job_brief(self, job: HelperJob, rules: str, helpers: int, pictures_made: bool) -> str:
-        """A code-planned helper's brief, in the four parts (the app's footer follows)."""
+    def _job_brief(
+        self,
+        job: HelperJob,
+        rules: str,
+        helpers: int,
+        pictures_made: bool,
+        page_map: Mapping[str, Any] | None,
+    ) -> str:
+        """A code-planned helper's brief: the recall brief (`full_check_brief.helper_brief`: its
+        pages with their areas, GV's recorded results and leads on them, the per-page checklist),
+        then where to start, the products, pages to look at and the rules summary (the app's
+        footer follows)."""
         products = products_words(self.settings.products).lower()
-        pages = page_ranges(job.pages)
         stem = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(job.file).stem).strip("._") or "file"
         pictures = ", ".join(f"{SET_PACK}/pages/{stem}/p-{page:03d}.png" for page in job.pages)
-        areas = f" ({'; '.join(job.areas)})" if job.areas else ""
-        objective = (
-            f"Objective: compare the vendor's shop drawings on pages {pages} of {job.file}{areas} "
-            f"with the architect's drawings, for {products}; a brand prototype's differences are "
-            f"their own group. You are one of {helpers} helpers; the others have the other pages."
-        )
-        output = (
-            "Output: report_finding for EVERY item you compare, the right ones too (status same), "
-            "each with both values as printed and its boxes; set_coverage for each of your pages; "
-            "record_string for every dimension string and record_reading for every value you "
-            "read (both sides; name an item the same way on every page and view). Then a report "
-            f"of at most {FULL_CHECK_REPORT_WORDS} words: what differs, what you could not read, "
-            "pages you did not reach."
+        with self._lock:
+            document = self._recorded_document
+        brief = helper_brief(
+            job.pages,
+            file_name=f"{UPLOADS}/{job.file}",
+            page_map=page_map,
+            review_document=document,
         )
         overview = (
             f"view your pages' overview pictures, all in one reply ({pictures})"
@@ -2184,31 +2230,17 @@ class ChatEngine:
             else "zoom on each of your whole pages at 72 dpi, all in one call (the page pictures "
             "are still being made)"
         )
-        sources = (
-            f"Tools and sources: first {overview}; then zoom only to read values, every crop you "
-            "need in one call."
-        )
-        boundaries = (
-            "Boundaries: only your pages; never guess a number you cannot read; GV's markup "
-            "(coloured notes, clouds) is GV's, never the vendor's or the architect's numbers."
-        )
-        lines = [objective, output, sources, boundaries]
+        lines = [
+            brief,
+            (
+                f"START: you are one of {helpers} helpers; the others have the other pages. "
+                f"First {overview}; then zoom only to read values, every crop you need in one call."
+            ),
+            f"PRODUCTS: {products}; a brand prototype's differences are their own group.",
+        ]
         if job.reference:
             looked = "; ".join(f"{name} p.{number}" for name, number in job.reference)
-            lines.append(f"Look at, to compare with (another helper or file has them): {looked}.")
-        wanted = set(job.pages)
-        recorded = [
-            f"- p.{f['page']}: {f['item']}: architect {f['architect']}; vendor {f['vendor']} "
-            f"(record_id {f['record_id']})"
-            for f in self.book.by("gv_review")
-            if f.get("page") in wanted and f.get("record_id")
-        ]
-        if recorded:
-            lines.append(
-                "GV Review recorded these differences on your pages. For each, read both values "
-                "at its spot and report_finding with its record_id (status as you find it):\n"
-                + "\n".join(recorded)
-            )
+            lines.append(f"LOOK AT, to compare with (another helper or file has them): {looked}.")
         if rules:
             lines.append(
                 f"GV's rules for {products} (summary; all of them in {SKILLS}/rules.md):\n{rules}"
@@ -2294,7 +2326,7 @@ class ChatEngine:
             _Agent(
                 f"plan-{job.number}",
                 job.description,
-                self._job_brief(job, rules, len(plan.jobs), pictures),
+                self._job_brief(job, rules, len(plan.jobs), pictures, page_map),
                 model,
                 pages=job.pages,
             )
@@ -2306,6 +2338,11 @@ class ChatEngine:
         self._wait_checks()
         self._lead_message(agents, entries)
         return True
+
+    def _note_coverage(self, page: int, note: str) -> None:
+        coverage = self.book.note_coverage(page, note)
+        if coverage is not None:
+            self._show_coverage(coverage)
 
     def _lead_message(self, agents: Sequence[_Agent], entries: Sequence[Mapping[str, Any]]) -> None:
         """The lead's first message of a code-planned full check: the verify-only instruction,
@@ -2320,6 +2357,17 @@ class ChatEngine:
             )
             report = str(entry.get("report") or "")[:_MAX_HELPER_REPORT_CHARS]
             parts.append(f"### Helper {agent.number} \u00b7 {agent.description}{state}\n{report}")
+        gap_lines: list[str] = []
+        with self._lock:
+            open_gaps = {number: dict(gaps) for number, gaps in self._checklist_gaps.items()}
+        for agent in agents:
+            for page, why in sorted(open_gaps.get(agent.number, {}).items()):
+                gap_lines.append(f"- p{page} (helper {agent.number}): {why}")
+                self._note_coverage(page, f"checklist: {why}")
+        if gap_lines:
+            parts.append(
+                f"Checklist gaps, verify these first ({len(gap_lines)}):\n" + "\n".join(gap_lines)
+            )
         main = self.book.main_file
         backed: list[str] = []
         verify: list[str] = []
@@ -2435,6 +2483,8 @@ class ChatEngine:
             {"role": "user", "content": [{"type": "text", "text": agent.prompt + footer}]}
         ]
         turns = reading = 0
+        budget = FULL_CHECK_HELPER_CALLS
+        sent_back = False
         wrap: str | None = None
         cached = previous = 0
         while True:
@@ -2461,7 +2511,7 @@ class ChatEngine:
                 estimate = self._estimate(model, body, cached, previous)
                 if turns >= self.settings.helper_max_turns:
                     wrap, why = "turn_limit", "you have used all your tool turns"
-                elif full_check and reading >= FULL_CHECK_HELPER_CALLS:
+                elif full_check and reading >= budget:
                     wrap, why = "turn_limit", "you have used your tool calls"
                 elif not self._fits(estimate):
                     wrap, why = "cost_cap", "this message is near its money cap"
@@ -2534,6 +2584,23 @@ class ChatEngine:
             if not report:
                 report = _report_from_steps(entry["steps"], "it gave no written report")
                 return report, False, wrap or "error"
+            if agent.pages:
+                # A code-planned helper's checklist (#1515): sent back once to finish it while it
+                # has turns left; what is still open goes to the lead.
+                gaps = checklist_gaps(report, agent.pages)
+                note = checklist_send_back(gaps)
+                if (
+                    note is not None
+                    and not sent_back
+                    and wrap is None
+                    and turns < self.settings.helper_max_turns
+                ):
+                    sent_back = True
+                    budget += FULL_CHECK_SEND_BACK_CALLS
+                    messages.append({"role": "user", "content": [{"type": "text", "text": note}]})
+                    continue
+                with self._lock:
+                    self._checklist_gaps[agent.number] = gaps
             return report, True, wrap
 
     # ---- the lead --------------------------------------------------------------------------------
@@ -2774,8 +2841,17 @@ class ChatEngine:
                 self._trust_phase()
             except Exception:  # noqa: BLE001 - the answer is stored without its trust report
                 _log.exception("assistant chat trust report failed")
-            if settings.mode == "full_check" and not self.cancel.is_set():
+            if settings.mode == "full_check":
                 self._full_check_files()
+        elif settings.mode == "full_check":
+            # A stopped full check still gets code's $0 finish (#1515): the ledger's findings and
+            # sums, the trust report with the recorded results, and the two files. The AI checks
+            # (second and third reads, the critic) are left out.
+            try:
+                self._code_finish()
+            except Exception:  # noqa: BLE001 - the answer is stored without its trust report
+                _log.exception("assistant chat stopped finish failed")
+            self._full_check_files()
         self._close_checks()
         try:
             self._accuracy()

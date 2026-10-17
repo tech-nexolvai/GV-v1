@@ -964,6 +964,17 @@ class FindingBook:
             self.coverage_used = True
         return self.coverage_map()
 
+    def note_coverage(self, page: int, note: str) -> dict[str, Any] | None:
+        """Code's note added to a page's recorded coverage (e.g. a helper's checklist gap); `None`
+        when the page has no coverage recorded (it stays not opened)."""
+        with self._lock:
+            entry = self.coverage.get(page)
+            if entry is None:
+                return None
+            joined = "; ".join(part for part in (entry.get("note"), note) if part)
+            self.coverage[page] = {**entry, "note": joined[:_MAX_NOTE]}
+        return self.coverage_map()
+
     def coverage_map(self) -> dict[str, Any]:
         """Every page of the vendor's file (a page never recorded: not opened), and the counts."""
         with self._lock:

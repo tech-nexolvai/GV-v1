@@ -242,12 +242,6 @@ class _Gate:
         return opened
 
 
-def _pages(words: str) -> list[int]:
-    """ "2-5" or "6" as page numbers."""
-    low, _, high = words.partition("-")
-    return list(range(int(low), int(high or low) + 1))
-
-
 def _first_text(params: Mapping[str, Any]) -> str:
     return "\n".join(
         block["text"] for block in params["messages"][0]["content"] if block["type"] == "text"
@@ -303,7 +297,7 @@ class _Script:
         return self.read(params, asked)
 
     def helper(self, params: Mapping[str, Any], brief: str) -> list[dict[str, Any]]:
-        pages = _pages(brief.split("on pages ", 1)[1].split(" of ", 1)[0])
+        pages = [int(n) for n in brief.split("on pages ", 1)[1].split(" of ", 1)[0].split(", ")]
         page = pages[0]
         step = _steps(params)
         with self.lock:
@@ -333,7 +327,11 @@ class _Script:
                 model=SONNET,
             )
             return [self.start_gate.arrive(), *events]
-        events = reply(text(f"Pages from {page}: the top differs."), model=SONNET)
+        checklist = "\n".join(
+            f"CHECKLIST p{p}: architect 1/1; notes 0/0; strings 1/1; not compared: none"
+            for p in pages
+        )
+        events = reply(text(f"Pages from {page}: the top differs.\n{checklist}"), model=SONNET)
         gate = self.gates.get(f"helper-end:{page}")
         return [gate.arrive(), *events] if gate is not None else events
 
@@ -448,7 +446,8 @@ def test_a_full_check_starts_every_job_at_once_and_the_lead_only_verifies(
         assert brief["output_config"] == {"effort": "low"}
         assert brief["max_tokens"] == FULL_CHECK_HELPER_MAX_TOKENS
         words = brief["messages"][0]["content"][0]["text"]
-        assert words.startswith("Objective: compare the vendor's shop drawings on pages ")
+        assert words.startswith("OBJECTIVE: a full GV review of the vendor's drawings on pages ")
+        assert "CHECKLIST, for every page:" in words and "START: you are one of 4 helpers" in words
         assert HELPER_FOOTER_MARK in words and "at most 200 words" in words
         assert "Your pages: " in words and "/mnt/user-data/set/pages/Vendor_set/p-0" in words
     # Divider pages: not comparable, by code.
@@ -591,6 +590,134 @@ def test_a_full_check_helper_wraps_up_after_its_reading_calls(tmp_path: Path) ->
     assert calls == [0, 1, 2, 3]
     step = next(b["step"] for b in outcome.blocks if b["type"] == "step")
     assert step["agents"][0]["stopped"] == "turn_limit"
+
+
+def _one_job(tmp_path: Path, answer: Any, lead: list[Any]) -> Harness:
+    """A full check of one area on pages 1-3 (one helper), every non-lead call from `answer`."""
+    workspace_with_pdf(tmp_path, pages=3)
+    provider = ScriptedProvider(lead=lead, helper_answer=answer)
+    harness = Harness(tmp_path, provider, question=FULL_CHECK_INSTRUCTION)
+    engine = harness.engine
+    folder = _pack(tmp_path, {"files": [FILE], "pages": [_paired(p, "1. A") for p in (1, 2, 3)]})
+    engine.tools.workspace = dataclasses.replace(harness.workspace, set_pack=folder)
+    engine.tools.uploads = [{"name": FILE, "pages": 3, "kind": "the vendor's shop drawings"}]
+    engine.settings = dataclasses.replace(engine.settings, mode="full_check")
+    return harness
+
+
+def test_a_helper_is_sent_back_once_to_finish_its_checklist_then_the_lead_gets_the_gaps(
+    tmp_path: Path,
+) -> None:
+    sent: list[str] = []
+
+    def answer(params: Mapping[str, Any]) -> list[dict[str, Any]]:
+        if _first_text(params) == "Reply with OK.":
+            return reply(text("OK"), model=SONNET)
+        if params["system"][0]["text"] != HELPER_SYSTEM_PROMPT:
+            return reply(text('{"architect": null, "vendor": null, "sure": false}'), model=HAIKU)
+        last = params["messages"][-1]["content"][-1].get("text", "")
+        sent.append(last)
+        if _steps(params) == 0:
+            covered = {"pages": [{"page": p, "status": "same"} for p in (1, 2, 3)]}
+            return reply(tool("c1", "set_coverage", covered), stop="tool_use", model=SONNET)
+        # Never a CHECKLIST line for page 3; page 2 short with "none" left.
+        return reply(
+            text(
+                "All the same.\n"
+                "CHECKLIST p1: architect 2/2; notes 1/1; strings 1/1; not compared: none\n"
+                "CHECKLIST p2: architect 1/3; notes 0/0; strings 1/1; not compared: none"
+            ),
+            model=SONNET,
+        )
+
+    harness = _one_job(tmp_path, answer, [reply(text("Done."))])
+
+    outcome = harness.run()
+
+    backs = [words for words in sent if words.startswith("Your checklist is not finished")]
+    assert len(backs) == 1  # once, never twice
+    assert "- p2: architect not all done" in backs[0] and "- p3: no CHECKLIST line" in backs[0]
+    report = _lead_first(harness.provider)[-1]["text"]
+    gaps = report.split("Checklist gaps, verify these first (2):\n", 1)[1].split("\n\n", 1)[0]
+    assert gaps.splitlines() == [
+        "- p2 (helper 1): architect not all done, and 'not compared' says none",
+        "- p3 (helper 1): no CHECKLIST line",
+    ]
+    assert report.index("Checklist gaps") < report.index("To verify (")
+    coverage = {e["page"]: e for e in _blocks(outcome, "coverage")[-1]["pages"]}
+    assert coverage[3]["note"] == "checklist: no CHECKLIST line" and coverage[1]["note"] is None
+
+
+def test_a_stopped_full_check_still_gets_codes_finish_and_its_files(tmp_path: Path) -> None:
+    calls: list[str] = []
+    string = {
+        "page": 2,
+        "view": "elevation",
+        "side": "vendor",
+        "parts": ['10"', '20"'],
+        "printed_total": '31"',
+        "box": {"page": 2, "x0": 100, "y0": 200, "x1": 220, "y1": 215},
+    }
+    other = {**string, "page": 3, "printed_total": '41"', "parts": ['20"', '20"']}
+    reported = {
+        "page": 3,
+        "item": "Overall run",
+        "category": "countertop",
+        "architect": '40"',
+        "vendor": '41"',
+        "status": "different",
+        "verified": False,
+        "source": "vendor_arithmetic",
+        "printed_total": '41"',
+        "vendor_box": {"page": 3, "x0": 100, "y0": 200, "x1": 220, "y1": 215},
+    }
+
+    def answer(params: Mapping[str, Any]) -> list[dict[str, Any]]:
+        calls.append(params["model"])
+        if _first_text(params) == "Reply with OK.":
+            return reply(text("OK"), model=SONNET)
+        if params["model"] == HAIKU:  # the helper's difference, read again before the lead
+            return reply(text('{"architect": null, "vendor": "41\\"", "sure": true}'), model=HAIKU)
+        if params["system"][0]["text"] != HELPER_SYSTEM_PROMPT:
+            raise AssertionError("no third read or critic runs on a stopped full check")
+        if _steps(params) == 0:
+            return reply(
+                tool("s1", "record_string", string),
+                tool("s2", "record_string", other),
+                tool("r1", "report_finding", reported),
+                stop="tool_use",
+                model=SONNET,
+            )
+        return reply(
+            text("CHECKLIST p1: architect 0/0; notes 0/0; strings 0/0; not compared: none\n"
+                 "CHECKLIST p2: architect 0/0; notes 0/0; strings 1/1; not compared: none\n"
+                 "CHECKLIST p3: architect 0/0; notes 0/0; strings 1/1; not compared: none"),
+            model=SONNET,
+        )
+
+    # The reviewer presses Stop while the lead is writing.
+    lead = [reply(text("Checking the leads"), cancel_after=4)]
+    harness = _one_job(tmp_path, answer, lead)
+    harness.engine.tools.results = lambda page: RECORDS
+
+    outcome = harness.run()
+
+    assert outcome.stopped == "cancelled"
+    # The warm-up, the helper's two calls and the second read made before the stop; no critic.
+    assert calls.count(SONNET) == 3 and calls.count(HAIKU) <= 1
+    findings = _blocks(outcome, "finding")
+    sums = [f for f in findings if f["created_by"] == "ledger"]
+    assert len(sums) == 1 and sums[0]["page"] == 2 and sums[0]["vendor"] == '31"'
+    assert sums[0]["sum_text"] and "30" in sums[0]["sum_text"]
+    # The helper's own finding of page 3's string carries code's sum (no second finding for it).
+    run = next(f for f in findings if f["item"] == "Overall run")
+    assert run["sum_text"] and "40" in run["sum_text"]
+    trust = _blocks(outcome, "trust")[-1]
+    assert trust["recorded_results"] is not None and trust["timings"]["phases"]
+    assert [f["name"] for f in harness.files] == [
+        "Vendor set - AI cloud drawing.pdf",
+        "Vendor set - AI check report.pdf",
+    ]
 
 
 def test_without_a_page_map_the_lead_plans_as_before(tmp_path: Path) -> None:
