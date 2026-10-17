@@ -5639,6 +5639,11 @@ export interface components {
              * @description What it cost ("0.0003").
              */
             cost_usd: string;
+            /**
+             * Hint
+             * @description A short hint for the lead (an unclear question, or an order only a person carries out). Code never answers for Claude.
+             */
+            hint?: string | null;
             intent: components["schemas"]["ChatIntent"];
             /**
              * Label
@@ -5656,7 +5661,7 @@ export interface components {
             products?: string[];
             /**
              * Question Back
-             * @description With intent `clarify`: the one question the app asked back.
+             * @description With intent `clarify`: a question back the lead may ask (the lead answers).
              */
             question_back?: string | null;
             scope: components["schemas"]["ChatUnderstoodScopeOut"];

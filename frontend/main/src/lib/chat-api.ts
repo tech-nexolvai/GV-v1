@@ -197,8 +197,10 @@ export interface ChatUnderstood {
   checks_to_run?: string[] | null;
   output_shape: ChatOutputShape;
   assumptions?: string[] | null;
-  /** With intent `clarify`: the one question the app asked back. */
+  /** With intent `clarify`: a question back the lead may ask (the lead always answers). */
   question_back?: string | null;
+  /** A short hint for the lead (an unclear question, or an order only a person carries out). */
+  hint?: string | null;
   /** "Compare outlet heights (architect vs vendor) · page 4 · short answer". */
   label: string;
   /** Code rules ($0), the cheap model, or the reviewer's own correction. */

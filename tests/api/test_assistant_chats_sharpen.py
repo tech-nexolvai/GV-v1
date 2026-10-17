@@ -1,7 +1,7 @@
 """The sharpen step through the chat API (#1551), against Postgres with scripted models ($0).
 
-- "Is it ok?" streams an `understood` event and one question back, runs no model, and keeps the
-  exchange in the chat's history: the next message is read with it, files listing included.
+- "Is it ok?" streams an `understood` event and still goes to the lead (code never answers for
+  Claude), with a hint in the lead's note; the next message keeps the exchange in its history.
 - The reviewer's corrected spec (Edit, `task` in the body) is used as given, with no model call.
 - With the model path on, the sharpen call is Haiku at low effort, recorded with the chat's calls,
   and the stored message carries `understood`.
@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from app.api.assistant_chats import chat_runtime
-from app.review.assistant.sharpen import DEFAULT_QUESTION_BACK, SHARPEN_SYSTEM
+from app.review.assistant.sharpen import DEFAULT_QUESTION_BACK, HINT_CLARIFY, SHARPEN_SYSTEM
 from tests.api.test_assistant_chats import DEFAULT, _events, _named, _world
 from tests.review.assistant.chat_fakes import ScriptedProvider, reply, strip_cache_control, text
 
@@ -31,29 +31,32 @@ def _first_user_texts(raw: str) -> list[list[str]]:
     ]
 
 
-def test_is_it_ok_asks_back_and_the_next_message_keeps_the_exchange(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
-    provider = ScriptedProvider(lead=[reply(text("The vendor prints 24 in."))])
+def test_is_it_ok_goes_to_the_lead_with_a_hint_and_the_next_message_keeps_it(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    provider = ScriptedProvider(
+        lead=[reply(text("What should I check?")), reply(text("The vendor prints 24 in."))]
+    )
     with _world(postgres_engine, tmp_path, provider=provider) as world:
         chat_id = world.chat()
 
         status, events = world.ask(chat_id, "Is it ok?")
 
-        assert status == 200 and provider.calls == []
+        assert status == 200 and len(provider.lead_calls) == 1
         names = [name for name, _ in events]
-        assert names[:3] == ["message_start", "understood", "text_delta"]
+        assert names[:2] == ["message_start", "understood"]
         assert names[-1] == "message_end"
         understood = _named(events, "understood")[0]["understood"]
         assert understood["intent"] == "clarify" and understood["path"] == "code"
+        assert understood["hint"] == HINT_CLARIFY
+        first = _first_user_texts(provider.lead_calls[0])[0]
+        assert first[-1] == "Is it ok?" and f"Hint: {HINT_CLARIFY}." in first[-2]
         stored = events[-1][1]["message"]
-        assert stored["text"] == DEFAULT_QUESTION_BACK
+        assert stored["text"] == "What should I check?"  # the lead's words, not code's
         assert stored["understood"]["question_back"] == DEFAULT_QUESTION_BACK
-        assert stored["stopped"] is None and stored["cost_usd"] == "0.00"
 
         status, events = world.ask(chat_id, "What's the countertop depth on page 7?")
 
         assert status == 200
-        turns = _first_user_texts(provider.lead_calls[0])
-        # The earlier exchange (with the files listed in it) is replayed before the new question.
+        turns = _first_user_texts(provider.lead_calls[1])
         assert any(t.startswith("<uploaded_files>") for t in turns[0])
         assert turns[0][-1] == "Is it ok?"
         # The note just before the reviewer's own words (the app's scope note follows them).

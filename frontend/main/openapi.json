@@ -7438,6 +7438,18 @@
             "title": "Cost Usd",
             "type": "string"
           },
+          "hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A short hint for the lead (an unclear question, or an order only a person carries out). Code never answers for Claude.",
+            "title": "Hint"
+          },
           "intent": {
             "$ref": "#/components/schemas/ChatIntent"
           },
@@ -7475,7 +7487,7 @@
                 "type": "null"
               }
             ],
-            "description": "With intent `clarify`: the one question the app asked back.",
+            "description": "With intent `clarify`: a question back the lead may ask (the lead answers).",
             "title": "Question Back"
           },
           "scope": {

@@ -6,7 +6,8 @@
   win; a model's pages must be in the set and an area one of the set's; products must be known.
 - The spec reaches the lead as a note beside the reviewer's words (never instead of them), every
   helper's brief, and the screen (`understood` block and event).
-- "Is it ok?" asks one question back; "Approve this set." answers plainly; neither runs a tool.
+- Code never answers for Claude: "Is it ok?" and "Approve this set." still go to the lead, with a
+  short hint in its note.
 - The eval kit's 27 questions (reworded here without client values) as a table.
 """
 
@@ -25,6 +26,8 @@ from app.review.assistant.chat_request import BY_SHORT
 from app.review.assistant.sharpen import (
     CHECKS,
     DEFAULT_QUESTION_BACK,
+    HINT_ACTION,
+    HINT_CLARIFY,
     SHARPEN_MAX_TOKENS,
     SHARPEN_SYSTEM,
     SharpenContext,
@@ -387,9 +390,7 @@ def test_code_path_the_lead_gets_the_note_beside_the_question(tmp_path: Path) ->
     provider = ScriptedProvider(lead=[reply(text("The vendor prints 24 in."))])
     harness = Harness(tmp_path, provider, question="What's the countertop depth on page 7?")
 
-    assert (
-        apply_sharpen(harness.engine, history=[], products=("countertop",), use_model=False) is None
-    )
+    apply_sharpen(harness.engine, history=[], products=("countertop",), use_model=False)
     outcome = harness.run()
 
     texts = _first_user_texts(provider)
@@ -422,7 +423,7 @@ def test_model_path_charged_recorded_and_its_lines_reach_every_helper(tmp_path: 
     )
     harness = Harness(tmp_path, provider, question="is the outlet height ok on page 4?")
 
-    assert apply_sharpen(harness.engine, history=[], products=None, use_model=True) is None
+    apply_sharpen(harness.engine, history=[], products=None, use_model=True)
     outcome = harness.run()
 
     sharpen_calls = [
@@ -451,42 +452,40 @@ def test_model_path_charged_recorded_and_its_lines_reach_every_helper(tmp_path: 
     assert "is the outlet height ok on page 4?" in _first_user_texts(provider)
 
 
-def test_is_it_ok_asks_one_question_back_and_runs_nothing(tmp_path: Path) -> None:
-    provider = ScriptedProvider()
-    harness = Harness(tmp_path, provider, question="Is it ok?")
+@pytest.mark.parametrize(
+    ("question", "intent", "hint"),
+    [
+        ("Is it ok?", "clarify", HINT_CLARIFY),
+        ("Approve this set.", "refuse_action", HINT_ACTION),
+        ("Sign it off and send it to the vendor.", "refuse_action", HINT_ACTION),
+    ],
+)
+def test_code_never_answers_for_claude_it_only_adds_a_hint(
+    tmp_path: Path, question: str, intent: str, hint: str
+) -> None:
+    """Orchestrator, 2026-10-17: no pre-model answers. The lead answers; the spec carries a hint."""
+    provider = ScriptedProvider(lead=[reply(text("The lead's own answer."))])
+    harness = Harness(tmp_path, provider, question=question)
 
-    outcome = apply_sharpen(harness.engine, history=[], products=None, use_model=True)
+    apply_sharpen(harness.engine, history=[], products=None, use_model=True)
+    outcome = harness.run()
 
-    assert outcome is not None and provider.calls == []
-    assert outcome.text == DEFAULT_QUESTION_BACK
-    assert [block["type"] for block in outcome.blocks] == ["understood", "text"]
-    assert outcome.blocks[0]["understood"]["question_back"] == DEFAULT_QUESTION_BACK
-    assert outcome.api_content[-1] == {
-        "role": "assistant",
-        "content": [{"type": "text", "text": DEFAULT_QUESTION_BACK}],
-    }
-    assert outcome.api_content[0]["content"][-1]["text"] == "Is it ok?"
-    assert outcome.cost_micros == 0 and outcome.stopped is None
-    assert events_named(harness.events, "text_delta") == [{"index": 1, "text": outcome.text}]
-
-
-def test_approve_this_set_answers_plainly_and_runs_nothing(tmp_path: Path) -> None:
-    provider = ScriptedProvider()
-    harness = Harness(tmp_path, provider, question="Approve this set.")
-
-    outcome = apply_sharpen(harness.engine, history=[], products=None, use_model=True)
-
-    assert outcome is not None and provider.calls == []
-    assert "sign-off" in outcome.text and "review screen" in outcome.text
-    assert "I approved" not in outcome.text
-    assert outcome.blocks[0]["understood"]["intent"] == "refuse_action"
+    assert len(provider.lead_calls) == 1 and outcome.text == "The lead's own answer."
+    understood = outcome.blocks[0]["understood"]
+    assert understood["intent"] == intent and understood["hint"] == hint
+    assert understood["path"] == "code"  # no sharpen model call either
+    assert all(json.loads(raw)["system"][0]["text"] != SHARPEN_SYSTEM for raw in provider.calls)
+    texts = _first_user_texts(provider)
+    asked = texts.index(question)
+    assert f"Hint: {hint}." in texts[asked - 1]
+    assert [b["type"] for b in outcome.blocks if b["type"] == "text"] == ["text"]
 
 
 def test_a_failing_sharpen_leaves_the_message_as_it_was(tmp_path: Path) -> None:
     provider = ScriptedProvider(lead=[reply(text("Fine."))], helper_answer=_sharpen_answer({}))
     harness = Harness(tmp_path, provider, question="check page 4")
 
-    assert apply_sharpen(harness.engine, history=[], products=None, use_model=True) is None
+    apply_sharpen(harness.engine, history=[], products=None, use_model=True)
     outcome = harness.run()
 
     assert all(block["type"] != "understood" for block in outcome.blocks)

@@ -775,7 +775,7 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             _log.exception("assistant chat could not carry over the interrupted findings")
     if job.mode == "chat" and job.continue_from is None:
         # #1551: the question sharpened into a task spec before any tool or helper runs.
-        answered = apply_sharpen(
+        apply_sharpen(
             engine,
             history=replay,
             products=job.products,
@@ -783,9 +783,6 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             edit=job.task_edit,
             deadline_seconds=job.sharpen_deadline_seconds,
         )
-        if answered is not None:
-            finish(answered)
-            return
     if run.cancel.is_set():
         stop_with("", "cancelled")
         return

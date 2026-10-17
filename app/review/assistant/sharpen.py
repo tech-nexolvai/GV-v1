@@ -32,10 +32,10 @@ Where the spec goes:
   "checks" lines (`helper_lines`, added by the engine before the app's footer);
 - the screen gets an `understood` block and SSE event: "Understood as: Compare outlet heights
   (architect vs vendor) · page 4 · short answer · Edit";
-- with `question_back` (the question cannot be acted on, e.g. "Is it ok?" with nothing before it)
-  the app asks that one question instead of running tools; with `refuse_action` (an explicit
-  request to approve, sign off, send or change GV's review) it answers plainly where a person
-  does that. Both are answered by code, with no tools, and kept in the chat's history.
+- code never answers for Claude (orchestrator, 2026-10-17): every message still goes to the lead.
+  An unclear question ("Is it ok?" with nothing before it, intent `clarify`) or an order only a
+  person carries out (approve, sign off, send, change GV's review: `refuse_action`) only adds a
+  short `hint` to the lead's note (`HINT_CLARIFY`, `HINT_ACTION`).
 
 Verification: `tests/review/assistant/test_sharpen.py`, `tests/api/test_assistant_chats_sharpen.py`.
 """
@@ -57,10 +57,12 @@ from app.review.assistant.chat_findings import page_ranges, products_words
 from app.review.assistant.chat_scope import area_pages, load_page_map, question_scope
 
 if TYPE_CHECKING:
-    from app.review.assistant.chat_engine import ChatEngine, MessageOutcome
+    from app.review.assistant.chat_engine import ChatEngine
 
 __all__ = [
     "CHECKS",
+    "HINT_ACTION",
+    "HINT_CLARIFY",
     "INTENTS",
     "OUTPUT_SHAPES",
     "SHARPEN_MAX_TOKENS",
@@ -295,35 +297,17 @@ _SUMMARY: Final = re.compile(
     re.IGNORECASE,
 )
 
-#: The one question the app asks back when a question cannot be acted on.
+#: The question back the lead may use (or improve) when a question cannot be acted on.
 DEFAULT_QUESTION_BACK: Final = (
     'What should I check, and where? For example: "Do the countertop depths on page 7 match the '
     'architect?" or "Run a full check of the whole set."'
 )
 
 
-def _action_answer(question: str) -> str:
-    """The plain answer to a request for an action only a person takes."""
-    words = question.lower()
-    parts: list[str] = []
-    if re.search(r"\b(?:approve|reject|sign)", words):
-        parts.append(
-            "I can't approve, reject or sign off a drawing set: a GV reviewer does that on the "
-            "review screen (Review list, then sign-off)."
-        )
-    if re.search(r"\bsend\b", words):
-        parts.append(
-            "I can't send anything to the vendor: download the cloud drawing or the report here "
-            "and send it yourself."
-        )
-    if re.search(r"\b(?:change|edit|set|mark|update|fix|overwrite)\b", words):
-        parts.append(
-            "I can't change GV's review or its values: a reviewer does that on the review screen."
-        )
-    if not parts:
-        parts.append("I can't take that action: a GV reviewer does it on the review screen.")
-    parts.append("I can check the drawings for you and make a draft cloud drawing, if that helps.")
-    return " ".join(parts)
+#: The lead's hint for a question that cannot be acted on as asked (no answer is written by code).
+HINT_CLARIFY: Final = "ambiguous: ask one question back about what to check"
+#: The lead's hint for an order only a person carries out.
+HINT_ACTION: Final = "a GV reviewer approves on the review screen; say so and offer what you can do"
 
 
 def _spec(
@@ -534,6 +518,11 @@ def validate(
         "output_shape": shape,
         "assumptions": _strings(raw.get("assumptions"), _MAX_ASSUMPTIONS, _MAX_ASSUMPTION),
         "question_back": question_back,
+        "hint": (
+            HINT_CLARIFY
+            if intent == "clarify"
+            else HINT_ACTION if intent == "refuse_action" else None
+        ),
     }
     spec["label"] = understood_label(spec)
     return spec
@@ -571,7 +560,7 @@ def understood_label(spec: Mapping[str, Any]) -> str:
     if spec["intent"] == "clarify":
         return "Not clear enough to check yet: one question back to you"
     if spec["intent"] == "refuse_action":
-        return "An action a person takes on the review screen"
+        return "An action a GV reviewer takes on the review screen"
     return " · ".join(
         (str(spec["task"]), str(spec["scope"]["label"]), _SHAPE_WORDS[str(spec["output_shape"])])
     )
@@ -616,6 +605,10 @@ def lead_note(spec: Mapping[str, Any]) -> str:
     lines.append(f"Output: {_SHAPE_WORDS[shape]} ({_SHAPE_GUIDE[shape]}).")
     if spec.get("assumptions"):
         lines.append(f"Assumed: {' '.join(spec['assumptions'])}")
+    if spec.get("hint"):
+        lines.append(f"Hint: {spec['hint']}.")
+    if spec.get("question_back"):
+        lines.append(f"A question back you could ask: {spec['question_back']}")
     return "\n".join(lines)
 
 
@@ -781,16 +774,14 @@ def apply_sharpen(
     use_model: bool,
     edit: Mapping[str, Any] | None = None,
     deadline_seconds: float = 1.5,
-) -> MessageOutcome | None:
+) -> None:
     """The sharpen step on a running message, before `engine.run()`: the spec's block and event,
-    the lead's note and the helpers' lines. Returns the finished answer when the app answers
-    itself (a question back, or an action only a person takes), else None (run the engine).
-    Never raises: a failure leaves the message as it was."""
+    the lead's note and the helpers' lines. The message always goes on to the lead. Never raises:
+    a failure leaves the message as it was."""
     try:
-        return _apply(engine, history, products, use_model, edit, deadline_seconds)
+        _apply(engine, history, products, use_model, edit, deadline_seconds)
     except Exception:  # noqa: BLE001 - the chat goes on as before this step
         _log.exception("assistant chat sharpen step failed")
-        return None
 
 
 def _apply(
@@ -800,8 +791,7 @@ def _apply(
     use_model: bool,
     edit: Mapping[str, Any] | None,
     deadline_seconds: float,
-) -> MessageOutcome | None:
-    from app.review.assistant.chat_engine import MessageOutcome
+) -> None:
     from app.review.assistant.chat_scope import question_of
 
     question = question_of(engine.user_content)
@@ -827,7 +817,7 @@ def _apply(
     )
     spec = made.spec
     if spec is None:
-        return None
+        return
     understood = {
         **spec,
         "path": made.path,
@@ -837,34 +827,12 @@ def _apply(
     index = engine._add_block({"type": "understood", "understood": understood})
     engine.emit("understood", {"index": index, "understood": json.loads(json.dumps(understood))})
     engine.task_spec = spec
-    answer = None
-    if spec["intent"] == "clarify":
-        answer = str(spec["question_back"])
-    elif spec["intent"] == "refuse_action":
-        answer = _action_answer(question)
-    if answer is None:
-        # The note goes just before the reviewer's words: the question stays the last text block
-        # (the scope and the guards read it there).
-        content = list(engine.user_content)
-        at = max(
-            (n for n, block in enumerate(content) if block.get("type") == "text"),
-            default=len(content),
-        )
-        content.insert(at, {"type": "text", "text": lead_note(spec)})
-        engine.user_content = content
-        return None
-    # Answered by the app, with no tools: the exchange is kept in the chat's history, so the
-    # reviewer's next message is read with it (and the files listed in it are not lost).
-    engine._add_text(answer)
-    turn = [
-        {"role": "user", "content": list(engine.user_content)},
-        {"role": "assistant", "content": [{"type": "text", "text": answer}]},
-    ]
-    return MessageOutcome(
-        text=answer,
-        blocks=engine.stored_blocks(),
-        api_content=json.loads(json.dumps(turn)),
-        cost_micros=engine.spent,
-        stopped=None,
-        error=None,
+    # The note goes just before the reviewer's words: the question stays the last text block (the
+    # scope and the guards read it there).
+    content = list(engine.user_content)
+    at = max(
+        (n for n, block in enumerate(content) if block.get("type") == "text"),
+        default=len(content),
     )
+    content.insert(at, {"type": "text", "text": lead_note(spec)})
+    engine.user_content = content

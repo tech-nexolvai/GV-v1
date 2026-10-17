@@ -1046,7 +1046,13 @@ class ChatUnderstoodOut(BaseModel):
     output_shape: ChatOutputShape
     assumptions: list[str] = Field(default_factory=list)
     question_back: str | None = Field(
-        default=None, description="With intent `clarify`: the one question the app asked back."
+        default=None,
+        description="With intent `clarify`: a question back the lead may ask (the lead answers).",
+    )
+    hint: str | None = Field(
+        default=None,
+        description="A short hint for the lead (an unclear question, or an order only a person "
+        "carries out). Code never answers for Claude.",
     )
     label: str = Field(description='"Compare outlet heights (architect vs vendor) · page 4 · …".')
     path: Literal["code", "model", "edited"] = Field(
