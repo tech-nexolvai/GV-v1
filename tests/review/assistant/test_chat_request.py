@@ -30,6 +30,7 @@ from app.review.assistant.chat_provider import (
 )
 from app.review.assistant.chat_request import (
     BINDING_BETA,
+    BY_SHORT,
     EFFORTS,
     FALLBACK_BETA,
     HELPER_MAX_EFFORT,
@@ -42,6 +43,7 @@ from app.review.assistant.chat_request import (
     helper_thinking,
     inline_pictures,
     rates_key_for,
+    schema_note,
     thinking_config,
 )
 from app.review.assistant.chat_tools import HELPER_SYSTEM_PROMPT, LEAD_SYSTEM_PROMPT, LEAD_TOOLS
@@ -747,3 +749,44 @@ def test_tool_search_blocks_are_kept_as_received_and_never_run() -> None:
     assert accumulated.content[0]["input"] == search_input
     assert accumulated.content[1] == found
     assert [call["name"] for call in accumulated.tool_uses()] == ["verify_value"]
+
+
+# ---- structured outputs (prompts design W5) --------------------------------------------------------
+
+_SHAPE = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["ok"],
+    "properties": {"ok": {"type": "boolean", "description": "Whether it is"}},
+}
+
+
+def test_a_reply_shape_goes_in_output_config_on_anthropic_and_in_the_prompt_on_openrouter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.review.assistant import chat_request
+
+    monkeypatch.setattr(chat_request, "_openrouter_routing", lambda: {"only": ["x"]})
+    model = BY_SHORT["haiku"]
+    common = {
+        "model": model,
+        "effort": "low",
+        "thinking": {"type": "disabled"},
+        "system": "Read the values.",
+        "tools": (),
+        "messages": [{"role": "user", "content": [{"type": "text", "text": "Go"}]}],
+        "final": False,
+        "max_tokens": 100,
+    }
+    anthropic = call_params(provider="anthropic", output_format=_SHAPE, **common)
+    assert anthropic["output_config"] == {
+        "effort": "low",
+        "format": {"type": "json_schema", "schema": _SHAPE},
+    }
+    assert anthropic["system"][0]["text"] == "Read the values."
+    openrouter = call_params(provider="openrouter", output_format=_SHAPE, **common)
+    assert openrouter["output_config"] == {"effort": "low"}
+    assert openrouter["system"][0]["text"] == f"Read the values.\n\n{schema_note(_SHAPE)}"
+    assert '"required":["ok"]' in schema_note(_SHAPE)
+    # Without a shape nothing changes.
+    assert call_params(provider="anthropic", **common)["output_config"] == {"effort": "low"}

@@ -647,20 +647,71 @@ def _label_reads(label: ink_labels.Label, engines: Sequence[Any]) -> list[Any]:
         read = vv._InkRead(f"drawn label, {reader.name}", reader.name, 1)
         for turn in ink_labels.turns(label):
             for row in ink_labels.rows(label, turn):
-                mark = getattr(reader, "reads_inch_marks", True) or not (
-                    ink_labels.inch_mark_at_end(row, turn)
+                layout = _layout(row)
+                marked = bool(ink_labels.inch_mark_at_end(row, turn))
+                # An engine that reads `"` as `99` reads the row without its inch mark; one that
+                # knows the mark reads it both ways (Tesseract reads `3/4"` as `349` at times).
+                marks = (
+                    (True, False)
+                    if marked and getattr(reader, "reads_inch_marks", True)
+                    else (not marked or getattr(reader, "reads_inch_marks", True),)
                 )
-                for height in ink_labels.HEIGHTS_PX:
-                    picture = ink_labels.row_picture(row, turn, height, inch_mark=mark)
-                    if picture is None:
-                        continue
-                    line = " ".join(reader(picture, single_line=True)).strip()
-                    read.add(reader, picture, [line] if line else [], True)
-                    whole = vv._row_value(line, inch_mark=mark)
-                    if whole is not None:
-                        read.whole.add(whole)
+                for mark in marks:
+                    for height in ink_labels.HEIGHTS_PX:
+                        picture = ink_labels.row_picture(row, turn, height, inch_mark=mark)
+                        if picture is None:
+                            continue
+                        line = " ".join(reader(picture, single_line=True)).strip()
+                        read.add(reader, picture, [line] if line else [], True)
+                        whole = (
+                            _laid_out(line, layout)
+                            if layout is not None
+                            else vv._row_value(line, inch_mark=mark)
+                        )
+                        if whole is not None:
+                            read.whole.add(whole)
         reads.append(read)
     return reads
+
+
+type _Layout = tuple[int, int, int]
+
+
+def _layout(row: Sequence[ink_labels.Token]) -> _Layout | None:
+    """How many characters the row's vectors draw for its whole number, its stacked fraction's
+    numerator and its denominator (`(2, 1, 8)` is never: `(2, 1, 1)` is `13 1/8"`), or `None`
+    when the row is not one number with at most one stacked fraction at its end."""
+    whole = numerator = denominator = 0
+    for token in row:
+        if token.kind == "mark":
+            continue
+        if numerator:  # a character after the fraction: not one plain dimension
+            return None
+        if token.kind == "fraction":
+            numerator, denominator = len(token.glyphs), len(token.below)
+        else:
+            whole += 1
+    if not whole and not numerator:
+        return None
+    return whole, numerator, denominator
+
+
+def _laid_out(line: str, layout: _Layout) -> Decimal | None:
+    """The value an OCR line gives when its digits are laid out as the vectors draw them: the
+    engine need only read the digits right, never the spaces or the slash (`11/2` drawn as a 1
+    and a stacked 1 over 2 is 1 1/2"). Any other count of digits, a numerator not below its
+    denominator or a denominator a drawing never uses: `None`."""
+    whole, numerator, denominator = layout
+    digits = "".join(ch for ch in vv._plain(line) if ch.isdigit())
+    if len(digits) != whole + numerator + denominator or not digits:
+        return None
+    value = Decimal(int(digits[:whole])) if whole else Decimal(0)
+    if numerator:
+        top, bottom = int(digits[whole : whole + numerator]), int(digits[whole + numerator :])
+        if bottom not in vv._DENOMINATORS or not 0 < top < bottom:
+            return None
+        value += Decimal(top) / Decimal(bottom)
+    return value
 
 
 def _inch_marked(label: ink_labels.Label) -> bool:
@@ -674,11 +725,28 @@ def _inch_marked(label: ink_labels.Label) -> bool:
     )
 
 
+def _line_work(path: Any, turn: ink_labels.Turn) -> bool:
+    """Whether a path is a dimension's own line work, never a character beside the label: a
+    filled arrowhead or dot, or one straight stroke across the reading direction or slanted (an
+    extension line, a tick). A straight stroke along it is a dash (`4'-6"`) and still counts."""
+    glyph = ink_labels.Glyph((path,), path.box)
+    if ink_labels._arrowhead(glyph):
+        return True
+    ends = ink_labels._ends(glyph)
+    if ends is None:
+        return False
+    (x0, y0), (x1, y1) = ends
+    length = math.hypot(x1 - x0, y1 - y0) or 1.0
+    along = abs(x1 - x0) / length if turn == 0 else abs(y1 - y0) / length
+    return along < 0.9
+
+
 def _crowded(page: Any, label: ink_labels.Label) -> bool:
     """Whether other character-sized ink sits in line with the label, closer than 1.2 times its
     height (a word space), in a direction it may read: a word or a number the label belongs to
     (`WD-` before `02`, `SCALE :` before `1"`, `2'-` before `10"`). Such a label is not read: what
-    it is part of decides its value."""
+    it is part of decides its value. The dimension's own ticks, arrowheads and extension lines do
+    not count (`_line_work`)."""
     own = {id(path) for glyph in label.glyphs for path in glyph.paths}
     near = [path for path in vv._ink_paths_near(page, label.box) if id(path) not in own]
     for turn in ink_labels.turns(label):
@@ -687,6 +755,8 @@ def _crowded(page: Any, label: ink_labels.Label) -> bool:
         for path in near:
             other = ink_labels._frame(path.box, turn)
             if other[3] - other[1] < 0.15 * tall:  # a piece of the dimension line it sits on
+                continue
+            if _line_work(path, turn):
                 continue
             across = min(frame[3], other[3]) - max(frame[1], other[1])
             gap = max(other[0] - frame[2], frame[0] - other[2])

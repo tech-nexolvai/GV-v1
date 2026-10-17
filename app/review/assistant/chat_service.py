@@ -666,6 +666,12 @@ class MessageJob:
     """Continue (#1514): the interrupted answer whose work this message goes on from."""
     drawn_helpers: bool = False
     """A full check's drawn-things helper per page group (#1569)."""
+    roster: bool = False
+    """A full check as a fixed-price roster of specialists, no lead (`full_check_roster`)."""
+    full_check_cap_micros: int | None = None
+    """The roster full check's fixed price (its whole cap); `None`: the message cap."""
+    pairing_proof: str = "ai_pair_plus_code"
+    """What proves a pairing for a red cloud (`full_check_roster`)."""
     plan_answers: Mapping[str, str] | None = None
     """The reviewer's answers to the plan check (#1569), kept with the set pack before the run."""
     sharpen_model: bool = False
@@ -953,12 +959,18 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             lead_max_turns=job.lead_max_turns,
             helper_max_turns=job.helper_max_turns,
             max_parallel_agents=job.max_parallel_agents,
-            message_cap_micros=job.message_cap_micros,
+            message_cap_micros=(
+                job.full_check_cap_micros
+                if job.mode == "full_check" and job.roster and job.full_check_cap_micros
+                else job.message_cap_micros
+            ),
             package_cap_micros=job.package_cap_micros,
             rates=job.rates,
             mode=job.mode,
             products=job.products or (),
             drawn_helpers=job.drawn_helpers,
+            roster=job.roster,
+            pairing_proof=job.pairing_proof,
         ),
         provider=job.provider,
         tools=ChatTools(
