@@ -42,7 +42,8 @@ by two engines, no label anywhere in the box reads as a near-miss of it, and a `
 one.** A box holding more than `ink_labels.MAX_LABELS` labels (a whole view) is not read this way.
 The labels also watch the four reads above: a match there is refused when a label's whole row
 reads the same whole number with a fraction (an engine on the whole box that lost a stacked
-fraction reads `63` for `63 1/2"`).
+fraction reads `63` for `63 1/2"`), and so is any drawn match when the box's own text prints a
+near-miss of the value.
 
 **What it never does.** It never calls a model, never reads GV's coloured markup as a value, and
 never says `mismatch` from OCR alone: only when the box's text was read, none of it is the value,
@@ -1499,6 +1500,13 @@ def _drawn(
         return Verified(
             "cannot_read", "none", None, text_reads, "no OCR engine is installed here", value
         )
+    # The box's own text is exact: when it prints a near-miss of the value (`63 1/2"` when `63"`
+    # is claimed), no OCR read of the ink may confirm it (an engine loses a stacked fraction).
+    in_text = sorted(v for v in text.values if near_miss(wanted, v))
+    if in_text:
+        near = ", ".join(_inches_text(v) for v in in_text[:3])
+        reason = f"the drawing's text here prints a near-miss of it ({near})"
+        return Verified("cannot_read", "text", None, text_reads, reason, value)
     reads = _drawn_reads(page, spot, engines)
     all_reads = text_reads + tuple(
         f"{read.name}: {' | '.join(line.strip() for line in read.lines)}"

@@ -521,6 +521,24 @@ def test_a_lost_fraction_never_confirms_the_whole_number(tmp_path: Path) -> None
     assert vv.verify_value(pdf, 1, box, '63 1/2"', readers=readers).result == "match"
 
 
+def test_text_printing_a_near_miss_refuses_any_drawn_match(tmp_path: Path) -> None:
+    # The box prints 71 1/2" as text (stacked) beside some drawn ink; engines that lose the
+    # stacked fraction read 71 on every picture. 71" must not be confirmed.
+    stamp = (
+        _text(20, 140, "71", 10)
+        + _text(33, 145, "1", 5)
+        + _text(33, 137, "2", 5)
+        + _text(37, 140, '"', 10)
+        + _outlines("8", 50, 136)
+    )
+    pdf = _write(tmp_path, _pdf(stamp=stamp))
+    box = _around(20, 140, 40)
+    readers = [_Scripted("Tesseract", ["71"]), _Scripted("RapidOCR", ["71"])]
+    found = vv.verify_value(pdf, 1, box, '71"', readers=readers)
+    assert found.result == "cannot_read" and "near-miss" in found.reason
+    assert vv.verify_value(pdf, 1, box, '71 1/2"', readers=readers).result == "match"
+
+
 def test_a_label_votes_only_when_its_whole_row_is_one_dimension() -> None:
     assert vv._row_value('63 1/2"', inch_mark=True) == Decimal("63.5")
     assert vv._row_value("63 1 1//'", inch_mark=True) is None  # a lost fraction: no 63"
