@@ -300,6 +300,10 @@ export interface ChatFinding {
   critic?: FindingCritic | null;
   /** #1522: the reviewer's latest Agree / Not a problem on it, when the server sends it. */
   decision?: FindingDecision | null;
+  /** #1545: a "Your decision" item's reasoning: what it measures, the estimate, likely, what to confirm. */
+  decision_help?: FindingDecisionHelp | null;
+  /** #1545: why two printed values that differ still need a person (else code calls it Wrong). */
+  check_reason?: CheckReason | null;
   /** #1554: set when GV Review settled this item (which was Your decision) by itself, and how. */
   settled?: FindingSettled | null;
   /** #1554, status `check`: the one question a person answers, written by code. */
@@ -308,6 +312,17 @@ export interface ChatFinding {
   keep_reason?: KeepReason | null;
   /** #1554: the same item on other pages or rounds, folded into this one. */
   also_on?: FindingAlsoOn[] | null;
+}
+
+export type CheckReason = 'different_extent' | 'which_governs' | 'pairing_not_certain' | 'scaled' | 'site_verify';
+
+/** #1545: the reviewer's reasoning on a "Your decision" item, in plain words. */
+export interface FindingDecisionHelp {
+  measures: string;
+  /** The AI's best estimate in inches, how far off it may be, and how it got it; null: none. */
+  estimate?: { value_in: number; plus_minus_in: number; method: string } | null;
+  likely: 'probably fine' | 'probably wrong' | 'can\'t tell';
+  confirm: string;
 }
 
 /** #1554: how an item that was Your decision ended when code settled it. */
@@ -670,7 +685,8 @@ export type ChatTool =
   | 'Agent'
   | 'review_results'
   | 'compare_rounds'
-  | 'verify_value';
+  | 'verify_value'
+  | 'measure_on_drawing';
 
 /** One tool the assistant used. `step_start` sends it without its output; `step_end` sends it whole. */
 export interface ChatStep {

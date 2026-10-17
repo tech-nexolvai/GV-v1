@@ -33,6 +33,8 @@ import re
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from decimal import Decimal
+from fractions import Fraction
 from importlib import import_module
 from pathlib import Path
 from typing import Any, Final
@@ -41,9 +43,11 @@ from uuid import uuid4
 from app.review.assistant.sandbox import UPLOADS, ChatWorkspace, SandboxRefused
 
 __all__ = [
+    "CHECK_REASONS",
     "CITE",
     "CODE_SOURCES",
     "COVERAGE_CHECK_PREFIX",
+    "DECISION_LIKELY",
     "DISMISS_RECORDED",
     "DROP_FINDING",
     "FINDING_TOOL_NAMES",
@@ -56,6 +60,9 @@ __all__ = [
     "boxless_findings",
     "boxless_note",
     "coverage_note",
+    "decision_help_lines",
+    "decision_help_note",
+    "helpless_decisions",
     "live_findings",
     "main_upload",
     "make_markup_file",
@@ -64,6 +71,7 @@ __all__ = [
     "markup_name",
     "page_ranges",
     "place_findings",
+    "printed_conflict",
     "products_words",
     "read_listing",
 ]
@@ -82,6 +90,20 @@ _MAX_VALUE: Final = 200
 _MAX_WHY: Final = 600
 _MAX_NOTE: Final = 300
 _MAX_COVERAGE_PAGES: Final = 2000
+_MAX_HELP: Final = 300
+#: How likely a "Your decision" item is to be fine, in the reviewer's words (`decision_help`).
+DECISION_LIKELY: Final = ("probably fine", "probably wrong", "can't tell")
+#: Why a person must decide an item whose two printed values differ (`check_reason`): without one,
+#: two printed values that differ are Wrong, not "Your decision" (`printed_conflict`).
+#: `different_extent`: the architect's printed dimension spans more than the unit (a box, soffit,
+#: blocking or wall beyond it: `measure.py`'s extent check), so it measures something else.
+CHECK_REASONS: Final = (
+    "different_extent",
+    "which_governs",
+    "pairing_not_certain",
+    "scaled",
+    "site_verify",
+)
 #: How the engine's "pages missing from coverage" note starts (so a test server can tell it apart
 #: from a reviewer's question).
 COVERAGE_CHECK_PREFIX: Final = "Coverage check:"
@@ -105,6 +127,41 @@ _BOX_SCHEMA: Final[Mapping[str, Any]] = {
         "Where the item is: PDF points of the original upload page as shown, origin top-left "
         "(as pdftotext -bbox prints; points = pixels x 72 / dpi). The app crops the evidence here."
     ),
+}
+_DECISION_HELP_SCHEMA: Final[Mapping[str, Any]] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["measures", "estimate", "likely", "confirm"],
+    "properties": {
+        "measures": {
+            "type": "string",
+            "description": "What the dimension measures, from where to where (e.g. 'from the "
+            "wall to the end of the 6\" blocking, not to the counter's end')",
+        },
+        "estimate": {
+            "type": ["object", "null"],
+            "additionalProperties": False,
+            "required": ["value_in", "plus_minus_in", "method"],
+            "properties": {
+                "value_in": {"type": "number", "description": "Your best estimate, inches"},
+                "plus_minus_in": {"type": "number", "description": "How far off it may be"},
+                "method": {
+                    "type": "string",
+                    "description": "How you got it (a string added up, measure_on_drawing's "
+                    "answer, an overall less its fillers)",
+                },
+            },
+            "description": "Your best estimate with its method, or null when there is none",
+        },
+        "likely": {"type": "string", "enum": list(DECISION_LIKELY)},
+        "confirm": {
+            "type": "string",
+            "description": "What the reviewer should confirm, and with whom (e.g. 'confirm on "
+            "site', 'ask the architect which governs')",
+        },
+    },
+    "description": "For a 'check' (Your decision) item, required: the reviewer's reasoning in "
+    "short plain words.",
 }
 _FINDING_FIELDS: Final[Mapping[str, Any]] = {
     "page": {"type": "integer", "minimum": 1, "description": "The vendor's page"},
@@ -149,6 +206,15 @@ _FINDING_FIELDS: Final[Mapping[str, Any]] = {
         "minimum": 1,
         "description": "Which round of the set (1 = first submittal) when the set has rounds; "
         "name the same item the same way in every round",
+    },
+    "decision_help": _DECISION_HELP_SCHEMA,
+    "check_reason": {
+        "type": "string",
+        "enum": list(CHECK_REASONS),
+        "description": "status check with two PRINTED values that differ: why a person must "
+        "decide (else code makes it different: printed against printed is Wrong). "
+        "different_extent: measure_on_drawing showed the architect's dimension spans more than "
+        "the unit",
     },
 }
 _REQUIRED: Final = frozenset(
@@ -391,6 +457,225 @@ def coverage_note(gaps: Sequence[int], file_name: str | None) -> str:
     )
 
 
+# ---- "Your decision" items -------------------------------------------------------------------------
+
+#: Findings code made itself (GV Review's records, the reading ledger): their words are code's, so
+#: the lead is never sent back for their decision help.
+_CODE_MADE: Final = ("gv_review", "ledger")
+
+
+def helpless_decisions(findings: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The model's "Your decision" findings (status check) with no `decision_help`: each
+    `{id, page, item}`."""
+    return [
+        {"id": f.get("id"), "page": f.get("page"), "item": f.get("item")}
+        for f in findings
+        if f.get("status") == "check"
+        and f.get("created_by") not in _CODE_MADE
+        and not f.get("decision_help")
+    ]
+
+
+def decision_help_note(items: Sequence[Mapping[str, Any]], *, prefixed: bool = True) -> str:
+    """The send-back line naming each "Your decision" finding with no decision help."""
+    listed = "; ".join(
+        f"{item['id']} (page {item.get('page')}: {item.get('item')})" for item in items[:30]
+    )
+    more = f" and {len(items) - 30} more" if len(items) > 30 else ""
+    lead = f"{COVERAGE_CHECK_PREFIX} " if prefixed else ""
+    return (
+        f"{lead}help the reviewer decide: these Your-decision findings have no decision_help: "
+        f"{listed}{more}. For each, update_finding with decision_help (what it measures; your "
+        "best estimate with its method, e.g. a string added up or measure_on_drawing, or null; "
+        "likely probably fine / probably wrong / can't tell; what to confirm), in short plain "
+        "words."
+    )
+
+
+def _inches_text(value: float) -> str:
+    """185.5 as "185 1/2", to the nearest 1/16 inch."""
+    sixteenths = round(value * 16)
+    whole, rest = divmod(sixteenths, 16)
+    if not rest:
+        return str(whole)
+    fraction = Fraction(rest, 16)
+    part = f"{fraction.numerator}/{fraction.denominator}"
+    return f"{whole} {part}" if whole else part
+
+
+def decision_help_lines(finding: Mapping[str, Any]) -> list[str]:
+    """A finding's decision help in the reviewer's words, one line each (notes pages, report):
+    What it measures / Our best estimate / Likely / What to confirm. None when it has none."""
+    help_ = finding.get("decision_help")
+    if not isinstance(help_, Mapping):
+        return []
+    lines: list[str] = []
+    if help_.get("measures"):
+        lines.append(f"What it measures: {help_['measures']}")
+    estimate = help_.get("estimate")
+    if isinstance(estimate, Mapping) and isinstance(estimate.get("value_in"), int | float):
+        line = f'Our best estimate: about {_inches_text(float(estimate["value_in"]))}"'
+        plus_minus = estimate.get("plus_minus_in")
+        if isinstance(plus_minus, int | float) and plus_minus > 0:
+            line += f' (\u00b1{_inches_text(float(plus_minus))}")'
+        if estimate.get("method"):
+            line += f": {estimate['method']}"
+        lines.append(line)
+    elif help_.get("measures") or help_.get("likely"):
+        lines.append("Our best estimate: none")
+    if help_.get("likely"):
+        lines.append(f"Likely: {help_['likely']}")
+    if help_.get("confirm"):
+        lines.append(f"What to confirm: {help_['confirm']}")
+    return lines
+
+
+#: Words that say a value was measured off the drawing, not printed: such a value never makes a
+#: finding Wrong by itself.
+_SCALED: Final = re.compile(
+    r"scal(?:e|ed|es|ing)\b|\babout\b|approx|\best(?:imate|\.)|~|\u2248|\bnot (?:printed|"
+    r"dimensioned|shown)\b|\bnone\b|\bno (?:size|dimension)\b",
+    re.IGNORECASE,
+)
+
+
+def _printed_inches(text: object) -> Decimal | None:
+    """The one printed value a finding's side states, in inches (code's parser); `None` when it
+    is scaled, not one value, or not a value."""
+    if not isinstance(text, str) or not text.strip() or _SCALED.search(text):
+        return None
+    checks = import_module("app.review.assistant.finding_checks")
+    exact = checks.to_inches(text)
+    if exact is None:
+        tokens = checks.dimension_tokens(text)
+        exact = checks.to_inches(tokens[0]) if len(tokens) == 1 else None
+    return exact if isinstance(exact, Decimal) else None
+
+
+def printed_conflict(finding: Mapping[str, Any]) -> tuple[Decimal, Decimal] | None:
+    """(vendor, architect) inches when a "Your decision" finding is really Wrong: the model's
+    finding against the architect, status check with no `check_reason`, both sides one printed
+    value (not scaled) that code reads, and the two differ. `None` otherwise."""
+    if (
+        finding.get("status") != "check"
+        or finding.get("check_reason")
+        or finding.get("source", "architect") != "architect"
+        or finding.get("created_by") in _CODE_MADE
+    ):
+        return None
+    vendor = _printed_inches(finding.get("vendor"))
+    architect = _printed_inches(finding.get("architect"))
+    if vendor is None or architect is None or vendor == architect:
+        return None
+    return vendor, architect
+
+
+def _wrong_when_printed(fields: dict[str, Any]) -> str | None:
+    """Printed against printed is Wrong: a finding `printed_conflict` names becomes status
+    different, and the lead is told why (and how to keep it a decision)."""
+    conflict = printed_conflict(fields)
+    if conflict is None:
+        return None
+    vendor, architect = conflict
+    fields["status"] = "different"
+    if not fields.get("why"):
+        fields["why"] = "Both values are printed on the drawings and they differ."
+    return (
+        f"code made it status different (Wrong): the vendor prints {fields.get('vendor')} "
+        f"({vendor} in) and the architect prints {fields.get('architect')} ({architect} in), both "
+        "printed, so they differ. Keep it a decision only with check_reason (which_governs, "
+        "different_extent, pairing_not_certain, scaled or site_verify) via update_finding"
+    )
+
+
+def _extent_for(
+    finding: Mapping[str, Any], extents: Sequence[Mapping[str, Any]]
+) -> Mapping[str, Any] | None:
+    """The newest extent check (`measure_on_drawing` with a `dimension`) that showed the finding's
+    architect value, on its page (or the architect's page), spans more than the unit."""
+    architect = _printed_inches(finding.get("architect"))
+    if architect is None:
+        return None
+    pages = {finding.get("page"), finding.get("vs_page")} - {None}
+    box = finding.get("arch_box")
+    box_file = box.get("file") if isinstance(box, Mapping) else None
+    for extent in reversed(extents):
+        if not extent.get("covers_more") or extent.get("page") not in pages:
+            continue
+        if box_file and extent.get("file") not in (None, box_file):
+            continue
+        if Decimal(str(extent.get("printed_in"))) == architect:
+            found: Mapping[str, Any] = extent
+            return found
+    return None
+
+
+def _decision_when_wider(
+    fields: dict[str, Any], extents: Sequence[Mapping[str, Any]]
+) -> str | None:
+    """The extent check: an architect dimension measured as spanning more than the unit (a box or
+    soffit above it, blocking, a wall) measures something else, so a vendor value that differs from
+    it is Your decision (check_reason different_extent), never Wrong. Code fills the decision help
+    from the measurement when the finding has none."""
+    if (
+        fields.get("status") == "same"
+        or fields.get("source", "architect") != "architect"
+        or fields.get("created_by") in _CODE_MADE
+        or (fields.get("status") == "check" and fields.get("check_reason") == "different_extent")
+    ):
+        return None
+    extent = _extent_for(fields, extents)
+    if extent is None:
+        return None
+    was_wrong = fields.get("status") == "different"
+    fields["status"] = "check"
+    fields["check_reason"] = "different_extent"
+    if not fields.get("decision_help"):
+        unit = extent.get("unit_in")
+        vendor = _printed_inches(fields.get("vendor"))
+        plus_minus = float(extent.get("plus_minus_in") or 0)
+        likely = "can't tell"
+        if isinstance(unit, int | float) and vendor is not None:
+            likely = (
+                "probably fine" if abs(float(vendor) - unit) <= plus_minus else "probably wrong"
+            )
+        fields["decision_help"] = {
+            "measures": str(extent.get("measures") or "more than the unit itself")[:_MAX_HELP],
+            "estimate": (
+                {
+                    "value_in": round(float(unit), 4),
+                    "plus_minus_in": plus_minus,
+                    "method": "the unit itself, scaled by code against the printed dimensions",
+                }
+                if isinstance(unit, int | float)
+                else None
+            ),
+            "likely": likely,
+            "confirm": "what the extra part is (e.g. is the box above by others?) and the unit's "
+            "own size",
+        }
+    if not was_wrong:
+        return (
+            "code set check_reason different_extent (the architect's dimension spans more "
+            "than the unit)"
+        )
+    return (
+        "code made it status check (Your decision), not Wrong: your measure_on_drawing showed the "
+        f"architect's {fields.get('architect')} spans more than the unit ({extent.get('words')}). "
+        "Its decision_help says what it measures and the unit's scaled size"
+    )
+
+
+def _status_rules(fields: dict[str, Any], extents: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Code's status rules on a model finding, in order: the extent check first (a dimension that
+    measures more than the unit is Your decision), then printed against printed is Wrong."""
+    return [
+        note
+        for note in (_decision_when_wider(fields, extents), _wrong_when_printed(fields))
+        if note
+    ]
+
+
 # ---- validation ----------------------------------------------------------------------------------
 
 
@@ -412,10 +697,66 @@ def _whole(value: object, name: str) -> int:
     return value
 
 
+def _with_page(raw: object, fields: Mapping[str, Any], *, architect: bool) -> object:
+    """A box with no `page` takes the finding's own page: the vendor box the finding's `page`, the
+    architect box its `vs_page` (else `page`). The model left it out on a real run (2026-10-17)
+    and the whole finding was refused for it."""
+    if not isinstance(raw, Mapping) or "page" in raw:
+        return raw
+    page = (fields.get("vs_page") if architect else None) or fields.get("page")
+    return raw if page is None else {**raw, "page": page}
+
+
 def _choice(value: object, name: str, allowed: Sequence[str]) -> str:
     if value not in allowed:
         raise SandboxRefused(f"{name} must be one of {', '.join(allowed)}")
     return str(value)
+
+
+def _help_text(given: Mapping[str, Any], name: str) -> str:
+    return _text(given, name, _MAX_HELP).rstrip()
+
+
+def _decision_help(raw: object) -> dict[str, Any] | None:
+    """A "Your decision" item's help, checked: what it measures, the best estimate (or null),
+    how likely it is fine, what to confirm."""
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise SandboxRefused("decision_help must be an object")
+    unknown = set(raw) - {"measures", "estimate", "likely", "confirm"}
+    if unknown:
+        raise SandboxRefused(f"decision_help: unknown field {min(unknown)!r}")
+    for name in ("measures", "likely", "confirm"):
+        if name not in raw:
+            raise SandboxRefused(f"decision_help needs {name!r}")
+    help_: dict[str, Any] = {
+        "measures": _help_text(raw, "measures"),
+        "estimate": None,
+        "likely": _choice(raw.get("likely"), "decision_help.likely", DECISION_LIKELY),
+        "confirm": _help_text(raw, "confirm"),
+    }
+    estimate = raw.get("estimate")
+    if estimate is not None:
+        if not isinstance(estimate, Mapping):
+            raise SandboxRefused("decision_help.estimate must be an object or null")
+        extra = set(estimate) - {"value_in", "plus_minus_in", "method"}
+        if extra:
+            raise SandboxRefused(f"decision_help.estimate: unknown field {min(extra)!r}")
+        numbers: list[float] = []
+        for name in ("value_in", "plus_minus_in"):
+            value = estimate.get(name)
+            if isinstance(value, bool) or not isinstance(value, int | float):
+                raise SandboxRefused(f"decision_help.estimate.{name} must be a number (inches)")
+            if not math.isfinite(value) or value < 0 or value > 100_000:
+                raise SandboxRefused(f"decision_help.estimate.{name} is not a length in inches")
+            numbers.append(round(float(value), 4))
+        help_["estimate"] = {
+            "value_in": numbers[0],
+            "plus_minus_in": numbers[1],
+            "method": _help_text(estimate, "method"),
+        }
+    return help_
 
 
 def _stated_count(value: str) -> int | None:
@@ -445,6 +786,9 @@ class FindingBook:
     dismissed: dict[str, str] = field(default_factory=dict)
     """Recorded differences the lead set aside: record id -> its reason."""
     record_ids: frozenset[str] = frozenset()
+    extents: Sequence[Mapping[str, Any]] = ()
+    """This message's extent checks (`measure_on_drawing` with a `dimension`, `ChatTools.extents`):
+    each `{file, page, printed_in, covers_more, unit_in, plus_minus_in, measures, words}`."""
     cites: list[dict[str, Any]] = field(default_factory=list)
     _cites: int = 0
     """The recorded differences this answer must account for (set by the engine)."""
@@ -559,7 +903,9 @@ class FindingBook:
             out["source"] = _choice(given["source"], "source", sources)
         for name, architect in (("arch_box", True), ("vendor_box", False)):
             if name in present:
-                out[name] = self._box(given[name], name, architect=architect)
+                out[name] = self._box(
+                    _with_page(given[name], out, architect=architect), name, architect=architect
+                )
         if "parts" in present:
             parts = given["parts"]
             if parts is None:
@@ -573,6 +919,13 @@ class FindingBook:
                 out[name] = None if given[name] is None else _text(given, name, _MAX_VALUE)
         if "round" in present:
             out["round"] = None if given["round"] is None else _whole(given["round"], "round")
+        if "decision_help" in present:
+            out["decision_help"] = _decision_help(given["decision_help"])
+        if "check_reason" in present:
+            reason = given["check_reason"]
+            out["check_reason"] = (
+                None if reason is None else _choice(reason, "check_reason", CHECK_REASONS)
+            )
         return out
 
     def report(self, raw: object, created_by: str) -> tuple[dict[str, Any], list[str]]:
@@ -585,6 +938,8 @@ class FindingBook:
         fields = self._fields(raw, partial=False)
         if created_by != "lead":
             fields["verified"] = False
+        fields["created_by"] = created_by
+        changed = _status_rules(fields, list(self.extents))
         with self._lock:
             if len(self.findings) >= MAX_FINDINGS:
                 raise SandboxRefused(f"at most {MAX_FINDINGS} findings in one answer")
@@ -614,6 +969,8 @@ class FindingBook:
             "arch_picture_id": arch_picture,
             "vendor_picture_id": vendor_picture,
             "created_by": created_by,
+            "decision_help": fields.get("decision_help"),
+            "check_reason": fields.get("check_reason"),
         }
         if self.checker is not None:
             finding = self.checker(finding)
@@ -627,6 +984,7 @@ class FindingBook:
             )
             if given is not None and why is not None
         ]
+        notes.extend(changed)
         return dict(finding), notes
 
     def add_code_finding(self, given: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -741,6 +1099,7 @@ class FindingBook:
                     notes.append(f"{side} box: no picture ({why})")
         with self._lock:
             finding = {**self.findings[finding_id], **changes}
+        notes.extend(_status_rules(finding, list(self.extents)))
         if self.checker is not None:
             finding = self.checker(finding)
         with self._lock:

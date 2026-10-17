@@ -25,6 +25,7 @@ from PIL import Image
 from app.review.assistant.chat_engine import (
     COST_CAP_NOTE,
     HELPER_SHARE_PERCENT,
+    MAX_AGENTS_PER_TURN,
     TURN_LIMIT_NOTE,
     ChatEngine,
     EngineSettings,
@@ -244,7 +245,7 @@ def test_a_tool_turn_runs_the_tool_and_sends_the_reply_back_unchanged(tmp_path: 
     ]
     assert len(harness.ledger.rows) == 2
     assert {row["prompt_id"] for row in harness.ledger.rows} == {
-        "review-assistant-chat-anthropic-chat-v10"
+        "review-assistant-chat-anthropic-chat-v11"
     }
 
 
@@ -439,6 +440,7 @@ def test_helpers_run_together_and_their_reports_go_back_to_the_lead(tmp_path: Pa
         "record_string",
         "record_reading",
         "verify_value",
+        "measure_on_drawing",
     ]
 
 
@@ -521,20 +523,41 @@ def test_a_helper_whose_final_call_fails_still_reports_from_its_steps(tmp_path: 
     assert result["is_error"] is True and "pdfinfo a.pdf" in result["content"][0]["text"]
 
 
-def test_an_agent_past_the_limit_is_refused_until_the_next_turn(tmp_path: Path) -> None:
-    """Eight helpers run at once by default (`GV_ASSISTANT_MAX_PARALLEL_AGENTS`)."""
+def test_agents_past_the_parallel_limit_wait_in_the_same_turn(tmp_path: Path) -> None:
+    """Eight helpers run at once by default (`GV_ASSISTANT_MAX_PARALLEL_AGENTS`); a ninth waits
+    for a free place in the same turn instead of being refused (which cost the lead a turn)."""
     tasks = [f"Task {n}" for n in range(9)]
     provider = ScriptedProvider(
         lead=[_agents(*tasks), reply(text("Done."))],
-        helpers={task: [reply(text(f"{task} report"), model=SONNET)] for task in tasks[:8]},
+        helpers={task: [reply(text(f"{task} report"), model=SONNET)] for task in tasks},
     )
     harness = Harness(tmp_path, provider)
     harness.run()
 
     results = _sent(provider.lead_calls[1])["messages"][-1]["content"]
     assert len(results) == 9
-    assert not any(result.get("is_error") for result in results[:8])
-    assert results[8]["is_error"] is True and "at most 8 agents" in results[8]["content"][0]["text"]
+    assert not any(result.get("is_error") for result in results)
+    assert "Task 8 report" in results[8]["content"][0]["text"]
+    assert len(provider.lead_calls) == 2
+
+
+def test_an_agent_past_the_per_turn_limit_is_refused(tmp_path: Path) -> None:
+    tasks = [f"Task {n}" for n in range(MAX_AGENTS_PER_TURN + 1)]
+    provider = ScriptedProvider(
+        lead=[_agents(*tasks), reply(text("Done."))],
+        helpers={task: [reply(text(f"{task} report"), model=SONNET)] for task in tasks},
+    )
+    harness = Harness(tmp_path, provider)
+    harness.run()
+
+    results = _sent(provider.lead_calls[1])["messages"][-1]["content"]
+    assert len(results) == MAX_AGENTS_PER_TURN + 1
+    assert not any(result.get("is_error") for result in results[:-1])
+    refused = results[-1]
+    assert refused["is_error"] is True
+    assert (
+        f"at most {MAX_AGENTS_PER_TURN} agents start in one turn" in refused["content"][0]["text"]
+    )
 
 
 @pytest.mark.parametrize(

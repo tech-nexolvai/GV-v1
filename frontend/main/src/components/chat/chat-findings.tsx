@@ -9,6 +9,7 @@ import {
   architectPage,
   CATEGORY_WORDS,
   categoriesPresent,
+  decisionHelpRows,
   findingLine,
   FINDINGS_NARROW,
   groupByArea,
@@ -279,6 +280,7 @@ export function FindingCard({ finding, pictureUrl, onOpen, fullPageHref }: {
   const checks = plainChecks(finding);
   const tag = sourceTag(finding);
   const sum = sumWords(finding);
+  const help = decisionHelpRows(finding);
   return (
     <div data-slot="chat-finding-card" className="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.3fr)]">
       <div className="grid min-w-0 content-start gap-3.5">
@@ -291,8 +293,15 @@ export function FindingCard({ finding, pictureUrl, onOpen, fullPageHref }: {
           <div><dt className="text-xs font-medium text-muted-foreground">{words.vendorLabel}</dt><dd className="break-words">{words.vendor}</dd></div>
           {sum && <div><dt className="text-xs font-medium text-muted-foreground">Code’s sum</dt><dd data-slot="chat-finding-sum" className="break-words tabular-nums">{sum}</dd></div>}
           <div><dt className="text-xs font-medium text-muted-foreground">{words.whyLabel}</dt><dd data-slot="chat-finding-why" className="break-words">{words.why}</dd></div>
+          {finding.status === 'check' && finding.question && finding.question !== finding.decision_help?.confirm?.trim() && <div><dt className="text-xs font-medium text-muted-foreground">Your call</dt><dd data-slot="chat-finding-card-question" className="font-medium break-words">{finding.question}</dd></div>}
+          {help.length > 0 && (
+            <div data-slot="chat-finding-decision-help" className="grid gap-2 border-l-2 border-border pl-3">
+              {help.map((row) => (
+                <div key={row.label}><dt className="text-xs font-medium text-muted-foreground">{row.label}</dt><dd className="break-words">{row.text}</dd></div>
+              ))}
+            </div>
+          )}
           {words.tell && <div><dt className="text-xs font-medium text-muted-foreground">What to tell the vendor</dt><dd data-slot="chat-finding-tell" className="font-medium break-words">{words.tell}</dd></div>}
-          {finding.status === 'check' && finding.question && <div><dt className="text-xs font-medium text-muted-foreground">Your call</dt><dd data-slot="chat-finding-card-question" className="font-medium break-words">{finding.question}</dd></div>}
           {finding.settled?.how && <div><dt className="text-xs font-medium text-muted-foreground">Settled by GV Review</dt><dd data-slot="chat-finding-card-settled" className="break-words">{finding.settled.how}</dd></div>}
           {(finding.also_on?.length ?? 0) > 0 && (
             <div>
