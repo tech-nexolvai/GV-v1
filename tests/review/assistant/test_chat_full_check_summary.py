@@ -93,8 +93,9 @@ def test_top_issues_are_wrong_first_then_the_bigger_difference_then_the_more_tru
         "wrong big likely",
         "wrong small",
         "wrong no number",
-        "check big",
+        # Wrong (its status), but only an AI reading: after the checked Wrong ones (#1541).
         "to-check difference",
+        "check big",
     ]
     assert len(top_issues(findings)) == 5
 

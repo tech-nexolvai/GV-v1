@@ -865,13 +865,14 @@ def trust_report(
 
 
 def cloud_kind(finding: Mapping[str, Any]) -> str | None:
-    """`wrong` (red: a difference its checks do not put in doubt), `check` (amber: needs your
-    decision), or `None` (right: never clouded)."""
-    if finding.get("status") == "same":
+    """`wrong` (red), `check` (amber: needs your decision), or `None` (right: never clouded): the
+    finding's status, as the screen counts it (status `different` is Wrong whatever its trust; the
+    cloud drawing's note then carries the trust words, #1541). The same count everywhere: screen,
+    progress line, summary, cloud drawing and check report."""
+    status = finding.get("status")
+    if status == "same":
         return None
-    if finding.get("status") == "different" and finding.get("trust_level") != "to_check":
-        return "wrong"
-    return "check"
+    return "wrong" if status == "different" else "check"
 
 
 def needs_text(finding: Mapping[str, Any]) -> str:
