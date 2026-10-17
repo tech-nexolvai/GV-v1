@@ -53,6 +53,7 @@ describe('one page header (#1125)', () => {
   // The real app at each address, so the h1, the breadcrumb and the tab title all come from App.
   const pages: [string, string][] = [
     ['#/documents', 'Documents'],
+    ['#/tracker', 'Tracker'],
     ['#/rulebook', 'Rulebook'],
     ['#/settings', 'Company settings'],
     ['#/usage', 'Usage'],
