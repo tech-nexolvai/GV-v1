@@ -80,6 +80,13 @@ from app.review.assistant.agent import (
     estimate_micros,
     prompt_tokens_upper,
 )
+from app.review.assistant.chat_context import (
+    NEAR_SHARE,
+    context_edits,
+    context_keep_turns,
+    context_tokens,
+    history_summary,
+)
 from app.review.assistant.chat_findings import (
     COVERAGE_CHECK_PREFIX,
     FINDING_TOOL_NAMES,
@@ -218,9 +225,10 @@ _log = logging.getLogger(__name__)
 #: check_reason, #1545. chat-v12: read_under_markup for the lead and the helpers, and its prompt
 #: lines, #1548. chat-v13: the prompt and tool audit, #1559: one vocabulary, every tool says when
 #: to use it, what it returns and one example, every schema field described, the box units said
-#: one way, the lead prompt without its tool catalogue.) Only the request's prefix changes; a
-#: chat's stored messages replay unchanged.
-HARNESS_ID: Final = "chat-v13"
+#: one way, the lead prompt without its tool catalogue. chat-v14: remember, the corrections of an
+#: earlier answer's finding, and server-side clearing of old tool results, #1548.) Only the
+#: request's prefix changes; a chat's stored messages replay unchanged.
+HARNESS_ID: Final = "chat-v14"
 #: Helpers that may run at once, at most, whatever the setting says.
 MAX_PARALLEL_AGENTS_LIMIT: Final = 12
 #: Helpers one lead turn may start. More than run at once wait for a free place in the same turn:
@@ -372,6 +380,10 @@ class EngineSettings:
     """`chat`, or `full_check` (CONTRACT4): GV's recorded differences are made findings at the
     start, and code makes the cloud drawing and the check report at the end."""
     products: tuple[str, ...] = ()
+    context_tokens: int = field(default_factory=context_tokens)
+    """The prompt size at which old tool results are cleared (`chat_context`, #1548)."""
+    context_keep_turns: int = field(default_factory=context_keep_turns)
+    """The turns kept whole when clearing (this question and the ones before it)."""
 
 
 @dataclass(slots=True)
@@ -688,6 +700,12 @@ class ChatEngine:
         self._trust_index: int | None = None
         #: A code-planned helper's checklist pages still open after its report (#1515).
         self._checklist_gaps: dict[int, dict[int, str]] = {}
+        # A long chat (#1548): clearing old thinking too, once the prompt neared the threshold;
+        # and whether the history was replaced by code's summary (no context editing).
+        self._context_near = False
+        self.summarised = False
+        #: This answer's number in its chat (#1548): a correction of an earlier finding names it.
+        self.answer_number = 1
         #: The question's task spec (`sharpen`, #1551), set before `run()`; its lines go into every
         #: helper's brief.
         self.task_spec: dict[str, Any] | None = None
@@ -868,6 +886,7 @@ class ChatEngine:
         max_tokens: int,
         prompt_id: str,
         display: Callable[[], _Display] | None,
+        context_management: Mapping[str, Any] | None = None,
     ) -> _Reply:
         """One call, streamed, asked once more after a provider failure worth retrying. Raises
         `ProviderFailure` or `_Cancelled`."""
@@ -892,6 +911,7 @@ class ChatEngine:
                 messages=inlined,
                 final=final,
                 max_tokens=max_tokens,
+                context_management=context_management,
             )
             started = monotonic_ns()
             shown = display() if display is not None else None
@@ -1086,6 +1106,8 @@ class ChatEngine:
         if name == "read_under_markup":
             return tools.read_under_markup(raw, step, by)
         if not helper:
+            if name == "remember":
+                return tools.remember(raw, step)
             if name == "present_files":
                 return tools.present_files(raw, step)
             if name == "TaskCreate":
@@ -1256,6 +1278,38 @@ class ChatEngine:
             checked.setdefault(key, None)
         return checked
 
+    def _checked_earlier(self, ref: str, finding: dict[str, Any]) -> dict[str, Any]:
+        """A new version of an earlier answer's finding with code's checks (#1548). Its second
+        read is kept while what it read is unchanged; no new AI read is made for it."""
+        before = self.book.earlier[ref]["finding"]
+        kept = (before.get("checks") or {}).get("second_read") or "not_run"
+        same = _read_key(before) == _read_key(finding)
+        recorded = self._recorded_checks() if finding.get("source") == "rules" else None
+        checked = apply_checks(
+            finding,
+            self.book.pdf_paths(),
+            recorded,
+            second_read=kept if same else "not_run",
+        )
+        if not same:
+            checked["second_read_values"] = None
+        return checked
+
+    def _show_correction(self, update: dict[str, Any]) -> None:
+        """A correction of an earlier answer's finding: its block (replaced in place when the same
+        finding is corrected again) and the `finding_update` event."""
+        key = f"update:{update['ref']}"
+        block = {"type": "finding_update", "update": update}
+        with self._lock:
+            index = self._positions.get(key)
+            if index is None:
+                self.blocks.append(block)
+                index = len(self.blocks) - 1
+                self._positions[key] = index
+            else:
+                self.blocks[index] = block
+        self.emit("finding_update", {"index": index, "update": json.loads(json.dumps(update))})
+
     def _show_finding(self, finding: dict[str, Any]) -> None:
         """A new or changed finding: its block (replaced in place) and the `finding` event."""
         with self._lock:
@@ -1303,6 +1357,22 @@ class ChatEngine:
                 finding, notes = book.report(raw, by)
                 self._show_finding(finding)
                 text = f"Finding {finding['id']} recorded."
+            elif name == "update_finding" and (ref := book.earlier_ref(raw)) is not None:
+                ref, changed, notes = book.correct(raw)
+                update = book.store_correction(
+                    ref, self._checked_earlier(ref, changed), None, self.answer_number
+                )
+                self._show_correction(update)
+                text = (
+                    f"Finding {ref} updated: version {update['version']}, shown in answer "
+                    f"{update['answer']} as updated in a later message."
+                )
+            elif name == "drop_finding" and (ref := book.earlier_ref(raw)) is not None:
+                ref, reason = book.drop_earlier(raw)
+                notes = []
+                update = book.store_correction(ref, None, reason, self.answer_number)
+                self._show_correction(update)
+                text = f"Finding {ref} dropped from answer {update['answer']}."
             elif name == "update_finding":
                 finding, notes = book.update(raw)
                 self._show_finding(finding)
@@ -2913,6 +2983,54 @@ class ChatEngine:
             self.blocks[index] = {"type": "trust", "trust": trust}
         self.emit("trust", {"index": index, "trust": json.loads(json.dumps(trust))})
 
+    # ---- room in a long chat (#1548) ---------------------------------------------------------------
+
+    @property
+    def clears_context(self) -> bool:
+        """Whether the provider clears old tool results server-side (Anthropic's context editing);
+        OpenRouter's route sends no beta."""
+        return self.provider.name == "anthropic"
+
+    def _context_for(
+        self, messages: Sequence[Mapping[str, Any]], prompt_tokens: int
+    ) -> dict[str, Any] | None:
+        """The lead call's `context_management` (`chat_context.context_edits`): clearing old tool
+        results past the threshold, and old thinking too once the prompt is near it (from then on,
+        for the rest of the answer, so the request stays the same call to call)."""
+        if not self.clears_context:
+            return None
+        threshold = self.settings.context_tokens
+        if prompt_tokens >= threshold * NEAR_SHARE:
+            self._context_near = True
+        return context_edits(
+            messages,
+            threshold=threshold,
+            keep_turns=self.settings.context_keep_turns,
+            near=self._context_near,
+        )
+
+    def _room_for_history(self) -> None:
+        """Where the provider cannot clear old turns, a history that alone would pass the
+        threshold is replaced by code's summary of it (simple compaction: nothing older is
+        replayed, so no thinking is sent outside the conversation that made it)."""
+        if self.clears_context or not self.history:
+            return
+        body = self._body(
+            model=self.settings.model,
+            thinking=thinking_config(self.settings.model, self.settings.thinking),
+            system=LEAD_SYSTEM_PROMPT,
+            tools=LEAD_TOOLS,
+            messages=self.history,
+            final=False,
+            max_tokens=self._lead_max_tokens,
+        )
+        if prompt_tokens_upper(body, picture_sizes(self.history)) < self.settings.context_tokens:
+            return
+        summary = history_summary(self.history)
+        self.history = []
+        self.summarised = True
+        self.user_content = [{"type": "text", "text": summary}, *self.user_content]
+
     def _run(self) -> MessageOutcome:
         settings = self.settings
         model = settings.model
@@ -2927,6 +3045,7 @@ class ChatEngine:
         cap_hit: str | None = None
         text = ""
         guard_sent = False
+        self._room_for_history()
         if settings.mode == "full_check":
             self._start_full_check()
         # The scope as asked, at once (the screen hides the whole-set panels for a narrow one).
@@ -2978,6 +3097,7 @@ class ChatEngine:
                         max_tokens=max_tokens,
                         prompt_id=self.lead_prompt_id,
                         display=self._new_attempt,
+                        context_management=self._context_for(messages, cached or upper),
                     )
             except _Cancelled:
                 stopped = "cancelled"

@@ -456,6 +456,7 @@ def test_the_system_prompt_is_short_and_names_the_skill_and_the_three_facts() ->
         "verify_value",
         "measure_on_drawing",
         "read_under_markup",
+        "remember",
     ]
     # The reviewer's words, once, in the lead's prompt.
     for words in ("Wrong, Your decision or Right", "Not compared", "AI reading only"):

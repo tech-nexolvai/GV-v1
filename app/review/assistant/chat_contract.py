@@ -35,7 +35,10 @@ __all__ = [
     "ChatFindingDecisionOut",
     "ChatFindingDroppedBlock",
     "ChatFindingEstimateOut",
+    "ChatFindingLaterOut",
     "ChatFindingOut",
+    "ChatFindingUpdateBlock",
+    "ChatFindingUpdateOut",
     "ChatListOut",
     "ChatMessageIn",
     "ChatMessageOut",
@@ -80,6 +83,7 @@ type ChatStepTool = Literal[
     "measure_on_drawing",
     "zoom",
     "read_under_markup",
+    "remember",
 ]
 type ChatIntent = Literal[
     "fact",
@@ -403,6 +407,16 @@ class ChatFindingDecisionHelpOut(BaseModel):
     confirm: str = Field(description="What the reviewer should confirm, and with whom.")
 
 
+class ChatFindingLaterOut(BaseModel):
+    """The later answer of the same chat that corrected a finding (#1548)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    message_id: str
+    answer: int | None = Field(default=None, description="That answer's number in the chat.")
+    version: int = Field(description="The finding's version: 1 is the original, 2 the first fix.")
+
+
 class ChatFindingOut(BaseModel):
     """One difference the assistant reported, with code-made evidence and checks."""
 
@@ -509,6 +523,11 @@ class ChatFindingOut(BaseModel):
         description="Why two printed values that differ still need a person (#1545); without "
         "one, code makes such a finding Wrong.",
     )
+    updated_in: ChatFindingLaterOut | None = Field(
+        default=None,
+        description="Set when a later message of the chat corrected this finding (#1548): the "
+        'finding shown is its newest version ("updated in a later message").',
+    )
 
 
 class ChatFindingBlock(BaseModel):
@@ -526,6 +545,32 @@ class ChatFindingDroppedBlock(BaseModel):
     type: Literal["finding_dropped"]
     finding_id: str
     reason: str
+    dropped_in: ChatFindingLaterOut | None = Field(
+        default=None, description="Set when a later message of the chat dropped it (#1548)."
+    )
+
+
+class ChatFindingUpdateOut(BaseModel):
+    """A later message's correction of an earlier answer's finding (#1548), stored in the later
+    answer; the earlier answer is read with its newest version."""
+
+    model_config = ConfigDict(frozen=True)
+
+    ref: str = Field(description='"A1-F5": the chat\'s first answer, finding F5.')
+    message_id: str = Field(description="The earlier answer the finding belongs to.")
+    finding_id: str
+    answer: int = Field(description="The earlier answer's number in the chat.")
+    by_answer: int | None = Field(default=None, description="This answer's number in the chat.")
+    version: int
+    finding: ChatFindingOut = Field(description="The new version (the last one, when dropped).")
+    dropped: str | None = Field(default=None, description="Why it was dropped; null: updated.")
+
+
+class ChatFindingUpdateBlock(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["finding_update"]
+    update: ChatFindingUpdateOut
 
 
 class ChatCoveragePageOut(BaseModel):
@@ -1082,6 +1127,7 @@ ChatBlock = Annotated[
     | ChatStepBlock
     | ChatFindingBlock
     | ChatFindingDroppedBlock
+    | ChatFindingUpdateBlock
     | ChatCoverageBlock
     | ChatTrustBlock
     | ChatCiteBlock

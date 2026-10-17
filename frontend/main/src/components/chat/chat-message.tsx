@@ -11,7 +11,7 @@ import { FullCheckFiles, FullCheckProgress, ResultNumbers, type CloudReview } fr
 import { ConfidenceLine, HowChecked } from '@/components/chat/chat-trust';
 import { ChatMarkdown } from '@/components/chat/chat-markdown';
 import { Collapse, CopyButton, GVSpark, Shimmer, Spark, Spinner, type SparkState } from '@/components/chat/chat-motion';
-import { chatPaths, type ChatEffort, type ChatFile, type ChatFinding, type ChatModel, type FindingDecision, type FindingDecisionValue } from '@/lib/chat-api';
+import { chatPaths, type ChatEffort, type ChatFile, type ChatFinding, type ChatFindingUpdate, type ChatModel, type FindingDecision, type FindingDecisionValue } from '@/lib/chat-api';
 import { coverageCounts, findingCounts, isNarrowAnswer, isShortAnswer, NO_FILTER, sectionOrder, type FindingFilter } from '@/lib/chat-findings';
 import { fullCheckBubble, fullCheckFiles, previewPage, productsWords, withoutCodeNote } from '@/lib/chat-full-check';
 import { useReducedMotion } from '@/lib/chat-motion';
@@ -199,6 +199,30 @@ const EXPORT_BUTTON =
   'inline-flex h-8 items-center gap-1.5 rounded-lg border bg-background px-3 text-sm font-medium transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none motion-reduce:transition-none';
 
 // ── The answer ──────────────────────────────────────────────
+
+/** #1548: the earlier answers' findings this answer corrected, one plain line each. */
+function Corrections({ corrections }: { corrections: readonly ChatFindingUpdate[] }) {
+  return (
+    <div data-slot="chat-corrections" className="grid gap-1 rounded-lg border bg-muted/30 px-4 py-3 text-sm">
+      <span className="text-xs font-medium text-muted-foreground">Corrections to earlier answers</span>
+      <ul className="grid gap-1">
+        {corrections.map((update) => (
+          <li key={update.ref} data-ref={update.ref} className="min-w-0">
+            <span className="font-medium tabular-nums">Answer {update.answer}, p.{update.finding.page}</span>{' '}
+            {update.finding.item}:{' '}
+            {update.dropped ? (
+              <span>dropped ({update.dropped})</span>
+            ) : (
+              <span>
+                vendor {update.finding.vendor}, architect {update.finding.architect}
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 function RetryButton({ onRetry, withWords = false }: { onRetry: () => void; withWords?: boolean }) {
   return (
@@ -583,6 +607,8 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
           )}
         </div>
       )}
+
+      {(message.corrections?.length ?? 0) > 0 && <Corrections corrections={message.corrections ?? []} />}
 
       {running && <Spark label={message.id ? 'Working' : 'Sending your message'} state={sparkState(blocks, streaming)} className="chat-fade-in" />}
 
