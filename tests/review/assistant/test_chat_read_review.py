@@ -68,7 +68,7 @@ def test_a_whole_set_answer_gets_the_critic_and_its_no_makes_the_finding_to_chec
     def answer(params: Mapping[str, Any]) -> Any:
         if params["model"] == HAIKU:
             return reply(text(json.dumps(sure)), model=HAIKU)
-        assert '"vendor_ink"' in _asked(params)  # the critic; no third read is needed
+        assert "vendor_ink:" in _asked(params)  # the critic; no third read is needed
         critic = {
             "findings": [
                 _critic_entry("F1", vendor_ink="no", note="The vendor value is GV's red note."),
@@ -114,7 +114,8 @@ def test_a_whole_set_answer_gets_the_critic_and_its_no_makes_the_finding_to_chec
         for raw in raws
         if json.loads(raw)["model"] == SONNET
     ]
-    assert len(critic_calls) == 1 and critic_calls[0]["output_config"] == {"effort": "low"}
+    assert len(critic_calls) == 1 and critic_calls[0]["output_config"]["effort"] == "low"
+    assert critic_calls[0]["output_config"]["format"]["schema"]["required"] == ["findings"]
     prompt_ids = [row["prompt_id"] for row in harness.ledger.rows]
     assert prompt_ids.count("review-assistant-chat-critic-anthropic-chat-v15") == 1
     assert outcome.cost_micros == sum(_cost(row) for row in harness.ledger.rows)

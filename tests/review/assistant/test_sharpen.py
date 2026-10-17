@@ -24,6 +24,7 @@ import pytest
 
 from app.review.assistant.chat_request import BY_SHORT
 from app.review.assistant.sharpen import (
+    SPEC_SCHEMA,
     CHECKS,
     DEFAULT_QUESTION_BACK,
     HINT_ACTION,
@@ -426,7 +427,12 @@ def test_model_path_charged_recorded_and_its_lines_reach_every_helper(tmp_path: 
     assert len(sharpen_calls) == 1
     call = sharpen_calls[0]
     assert call["model"] == HAIKU and call["max_tokens"] == SHARPEN_MAX_TOKENS
-    assert call["output_config"] == {"effort": "low"}
+    # Structured outputs (prompts design W5): the reply's shape is the API's job, not the prompt's.
+    assert call["output_config"] == {
+        "effort": "low",
+        "format": {"type": "json_schema", "schema": json.loads(json.dumps(SPEC_SCHEMA))},
+    }
+    assert "JSON" not in call["system"][0]["text"]
     assert call["thinking"] == {"type": "disabled"}
     assert "tools" not in call
     # The sharpen call came before the lead's first call.
