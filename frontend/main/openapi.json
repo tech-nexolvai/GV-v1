@@ -4584,11 +4584,7 @@
             "type": "string"
           },
           "category": {
-            "enum": [
-              "countertop",
-              "cabinet",
-              "other"
-            ],
+            "description": "The product the item belongs to (a product id from `GET /products`), or `other`.",
             "title": "Category",
             "type": "string"
           },
@@ -5654,7 +5650,7 @@
       },
       "ChatMessageIn": {
         "additionalProperties": false,
-        "description": "One message from the reviewer, with the model, effort and thinking they picked.\n\n`mode: full_check` (CONTRACT4) runs the app's own fixed whole-set check instead of a typed\nquestion (`text` is then not needed: the question shown is \"Full check \u00b7 Countertops \u00b7 High\neffort\"). `products`: the products picked in the composer (default: the set's own).",
+        "description": "One message from the reviewer, with the model, effort and thinking they picked.\n\n`mode: full_check` (CONTRACT4) runs the app's own fixed whole-set check instead of a typed\nquestion (`text` is then not needed: the question shown is \"Full check \u00b7 Countertops \u00b7 High\neffort\"). `products`: the products picked in the composer (default: the set's own), each an\nACTIVE product id of the product registry (`GET /products`, #1547).",
         "properties": {
           "continue_from": {
             "anyOf": [
@@ -5699,13 +5695,11 @@
             "anyOf": [
               {
                 "items": {
-                  "enum": [
-                    "countertop",
-                    "cabinet"
-                  ],
+                  "maxLength": 32,
+                  "minLength": 1,
                   "type": "string"
                 },
-                "maxItems": 2,
+                "maxItems": 32,
                 "minItems": 1,
                 "type": "array"
               },
@@ -5713,6 +5707,7 @@
                 "type": "null"
               }
             ],
+            "description": "Active product ids from `GET /products` (e.g. countertop, cabinet).",
             "title": "Products"
           },
           "task": {
@@ -5962,10 +5957,6 @@
             "anyOf": [
               {
                 "items": {
-                  "enum": [
-                    "countertop",
-                    "cabinet"
-                  ],
                   "type": "string"
                 },
                 "type": "array"
@@ -5974,7 +5965,7 @@
                 "type": "null"
               }
             ],
-            "description": "The products the message was about; null on older messages.",
+            "description": "The products the message was about (product ids); null on older messages.",
             "title": "Products"
           },
           "resume": {
@@ -6450,10 +6441,6 @@
             "anyOf": [
               {
                 "items": {
-                  "enum": [
-                    "countertop",
-                    "cabinet"
-                  ],
                   "type": "string"
                 },
                 "type": "array"
@@ -12549,8 +12536,11 @@
         "description": "A new reviewable drawing package.",
         "properties": {
           "product_type": {
-            "$ref": "#/components/schemas/ProductType",
-            "description": "What product this drawing set is for, chosen by the reviewer (#994). Only the published checks for this product are run, and the readers are told it. Must be one of the values `GET /product-types` lists: a product with no published check is refused, because a set checked against nothing would look exactly like a clean one."
+            "description": "What product this drawing set is for, chosen by the reviewer (#994): an active product id from `GET /products` (the product registry, #1547). Only the published checks for this product are run, and the readers are told it. A product with no published check is refused, because a set checked against nothing would look exactly like a clean one.",
+            "maxLength": 32,
+            "minLength": 1,
+            "title": "Product Type",
+            "type": "string"
           },
           "vendor": {
             "anyOf": [
@@ -12631,12 +12621,13 @@
           "product_type": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/ProductType"
+                "type": "string"
               },
               {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Product Type"
           },
           "project_id": {
             "format": "uuid",
@@ -13838,14 +13829,93 @@
         "title": "PresignedUpload",
         "type": "object"
       },
-      "ProductType": {
-        "description": "What kind of thing a rule checks \u2014 the client's checklist, in one word.\n\nA controlled vocabulary rather than a free string (ADR-0007). The applicability resolver\nmatches this exactly and case-sensitively, so a free string would let ``\"Countertop\"`` or a\ntypo publish cleanly and then match nothing: a rule that exists, looks authored, and never\nfires. Validation at publish turns that into a loud authoring error instead.\n\nAdding a product type is a one-line change here, which is the point of keeping the\nvocabulary in one module.",
-        "enum": [
-          "countertop",
-          "cabinet"
+      "ProductChecklistItemOut": {
+        "description": "One thing to compare on every page for a product (#1547).",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "text"
         ],
-        "title": "ProductType",
-        "type": "string"
+        "title": "ProductChecklistItemOut",
+        "type": "object"
+      },
+      "ProductOut": {
+        "description": "One product of the product registry (#1547), as the screens offer it.\n\nThe chat's product chips and \"+\" menu, the findings' grouping and the upload picker are built\nfrom this list, never from a list in the frontend. An inactive product is shown greyed (\"coming\nlater\") and cannot be picked; an active one with no published check cannot start an upload\n(nothing would check it) but can still be the focus of a chat.",
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "category_label": {
+            "title": "Category Label",
+            "type": "string"
+          },
+          "check_kinds": {
+            "items": {
+              "enum": [
+                "dimension_match",
+                "global_rules"
+              ],
+              "type": "string"
+            },
+            "title": "Check Kinds",
+            "type": "array"
+          },
+          "checklist": {
+            "items": {
+              "$ref": "#/components/schemas/ProductChecklistItemOut"
+            },
+            "title": "Checklist",
+            "type": "array"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "draft": {
+            "title": "Draft",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "plural": {
+            "title": "Plural",
+            "type": "string"
+          },
+          "published_checks": {
+            "title": "Published Checks",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "plural",
+          "description",
+          "active",
+          "draft",
+          "check_kinds",
+          "category_label",
+          "checklist",
+          "published_checks"
+        ],
+        "title": "ProductOut",
+        "type": "object"
       },
       "ProductTypeChoice": {
         "description": "One product a drawing set may be for, as the upload screen offers it (#994).\n\nListed from the published rulebook rather than typed into the UI, so a product appears only\nonce there is at least one check for it.",
@@ -13859,7 +13929,8 @@
             "type": "integer"
           },
           "value": {
-            "$ref": "#/components/schemas/ProductType"
+            "title": "Value",
+            "type": "string"
           }
         },
         "required": [
@@ -20977,7 +21048,7 @@
     },
     "/api/v1/product-types": {
       "get": {
-        "description": "Every product the published rulebook has at least one check for, in vocabulary order (#994).\n\nThe upload screen's dropdown is filled from this, so it never offers a product that would be\nchecked against nothing, and a product appears the day its first rule is published. Empty when\nnothing is published \u2014 a real answer, and the upload screen says so.",
+        "description": "Every active product the published rulebook has at least one check for, in the product\nregistry's order (#994, #1547).\n\nKept for older screens: the upload screen now reads `GET /products`, which lists every product\n(inactive ones too, greyed). Empty when nothing is published \u2014 a real answer.",
         "operationId": "list_product_types_api_v1_product_types_get",
         "responses": {
           "200": {
@@ -20996,6 +21067,32 @@
           }
         },
         "summary": "The products a drawing set may be for",
+        "tags": [
+          "packages"
+        ]
+      }
+    },
+    "/api/v1/products": {
+      "get": {
+        "description": "Every product of the product registry (`vocabulary/products.yaml`, #1547), in its order,\nwith whether it can be picked now and how many published checks it has.\n\nThe single list the screens build their product choices from: the chat's chips and \"+\" menu,\nthe findings' groups, the upload picker. Adding a product to the registry adds it here with no\ncode change.",
+        "operationId": "list_products_api_v1_products_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ProductOut"
+                  },
+                  "title": "Response List Products Api V1 Products Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Every product GV Review knows (the product registry)",
         "tags": [
           "packages"
         ]

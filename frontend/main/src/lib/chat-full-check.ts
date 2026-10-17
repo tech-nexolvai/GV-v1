@@ -7,21 +7,24 @@
  * product." So the composer carries Countertop / Cabinet chips (remembered per drawing set), a
  * "Run full check" button sends `mode: "full_check"`, and a full-check answer leads with the cloud
  * drawing and the check report, then What's wrong / To check / What's right.
+ *
+ * Products are data (#1547): the chips are the product registry's active products (`GET /products`,
+ * `@/lib/products`), never a list here; a product added to the registry gets its chip with no change.
  */
 
 import type { ChatFile, ChatFinding, ChatProduct, FindingSource } from '@/lib/chat-api';
 import type { ViewMessage } from '@/lib/chat-messages';
+import { activeProducts, inRegistryOrder, productCatalog, productPlural, type ProductCatalog } from '@/lib/products';
 
-export const PRODUCTS: readonly ChatProduct[] = ['countertop', 'cabinet'];
+/** The products a chip can pick now: the registry's active ones, in its order. */
+export function pickable(catalog: ProductCatalog = productCatalog()): ChatProduct[] {
+  return activeProducts(catalog).map((product) => product.id);
+}
 
-/** A chip's word. */
-export const PRODUCT_WORDS: Record<ChatProduct, string> = { countertop: 'Countertop', cabinet: 'Cabinet' };
-
-/** Products as a heading says them: "Countertops", "Countertops + Cabinets". */
-export function productsWords(products: readonly ChatProduct[] | null | undefined): string | null {
-  const known = PRODUCTS.filter((product) => products?.includes(product));
-  if (!known.length) return null;
-  return known.map((product) => `${PRODUCT_WORDS[product]}s`).join(' + ');
+/** Products as a heading says them: "Countertops", "Countertops + Cabinets" (registry words). */
+export function productsWords(products: readonly ChatProduct[] | null | undefined, catalog: ProductCatalog = productCatalog()): string | null {
+  if (!products?.length) return null;
+  return inRegistryOrder(products, catalog).map((product) => productPlural(product, catalog)).join(' + ');
 }
 
 /** The text a full check is sent with (the server runs the app's own instruction for `full_check`). */
@@ -31,15 +34,19 @@ export const FULL_CHECK_TEXT = 'Full check';
 
 const PRODUCTS_KEY = 'gv-chat-products:';
 
-/** The products picked for this drawing set before, or null when none were (or storage is blocked). */
-export function readProducts(storage: Pick<Storage, 'getItem'> | null, packageId: string): ChatProduct[] | null {
+/**
+ * The products picked for this drawing set before, or null when none were (or storage is blocked).
+ * Once the products have loaded, one that cannot be picked any more is left out.
+ */
+export function readProducts(storage: Pick<Storage, 'getItem'> | null, packageId: string, catalog: ProductCatalog = productCatalog()): ChatProduct[] | null {
   try {
     const raw = storage?.getItem(PRODUCTS_KEY + packageId);
     if (!raw) return null;
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return null;
-    const products = PRODUCTS.filter((product) => parsed.includes(product));
-    return products.length ? products : null;
+    const allowed = catalog.length ? pickable(catalog) : null;
+    const products = parsed.filter((product): product is string => typeof product === 'string' && (allowed === null || allowed.includes(product)));
+    return products.length ? inRegistryOrder(products, catalog) : null;
   } catch {
     return null;
   }
@@ -61,16 +68,18 @@ export function effectiveProducts(
   picked: readonly ChatProduct[] | null,
   remembered: readonly ChatProduct[] | null,
   productType: ChatProduct | null | undefined,
+  catalog: ProductCatalog = productCatalog(),
 ): ChatProduct[] | null {
   if (picked?.length) return [...picked];
   if (remembered?.length) return [...remembered];
-  return productType && PRODUCTS.includes(productType) ? [productType] : null;
+  // The set's own product, when it can be picked (an inactive or retired one is left to the server).
+  return productType && (!catalog.length || pickable(catalog).includes(productType)) ? [productType] : null;
 }
 
 /** A chip pressed: on or off, but never the last one off (at least one product stays picked). */
-export function toggleProduct(current: readonly ChatProduct[] | null, product: ChatProduct): ChatProduct[] {
+export function toggleProduct(current: readonly ChatProduct[] | null, product: ChatProduct, catalog: ProductCatalog = productCatalog()): ChatProduct[] {
   const now = current ?? [];
-  if (!now.includes(product)) return PRODUCTS.filter((each) => each === product || now.includes(each));
+  if (!now.includes(product)) return inRegistryOrder([...now, product], catalog);
   const next = now.filter((each) => each !== product);
   return next.length ? next : [...now];
 }

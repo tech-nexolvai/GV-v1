@@ -29,6 +29,8 @@ import {
   lastFindings,
   nextBlank,
   PLUS_ACTIONS,
+  plusAction,
+  plusActions,
   readRecent,
   rememberRecent,
   sameProducts,
@@ -84,12 +86,18 @@ describe('the + menu’s rules, without React', () => {
   });
 
   it('holds the must-have options, each with words a reviewer can send', () => {
-    const ids = PLUS_ACTIONS.map((action) => action.id);
+    const ids = plusActions().map((action) => action.id);
+    // #1547: the products' Focus options are the registry's: each active one, both, then the ones
+    // not ready yet ("coming later").
     expect(ids).toEqual([
       'full_check', 'check_page', 'compare_area', 'gv_rules', 'strings', 'missing', 'rounds',
       'cloud', 'csv', 'letter', 'rfi', 'summary',
-      'countertops', 'cabinets', 'both', 'quick', 'thorough',
+      'product:countertop', 'product:cabinet', 'all_products',
+      'product:lighting', 'product:seating', 'product:case_goods', 'product:mirrors', 'product:accessories', 'product:artwork',
+      'quick', 'thorough',
     ]);
+    expect(plusAction('all_products')?.label).toBe('Countertops and cabinets');
+    expect(plusAction('product:lighting')?.run).toEqual({ kind: 'products', products: ['lighting'], comingLater: true });
     for (const action of PLUS_ACTIONS) {
       if (action.run.kind === 'prompt') expect(action.run.text.length).toBeGreaterThan(40);
     }
@@ -206,13 +214,16 @@ describe('the + menu', () => {
     expect(within(menu).getByText('Checks')).toBeTruthy();
     expect(within(menu).getByText('Outputs')).toBeTruthy();
     expect(within(menu).getByText('Focus')).toBeTruthy();
-    expect(within(menu).getAllByRole('option')).toHaveLength(PLUS_ACTIONS.length);
+    expect(within(menu).getAllByRole('option')).toHaveLength(plusActions().length);
+    // The products not ready yet are listed, greyed: "Coming later".
+    expect(opt('product:lighting').getAttribute('aria-disabled')).toBe('true');
+    expect(opt('product:lighting').textContent).toContain('Coming later');
     const full = opt('full_check');
     expect(full.textContent).toContain('~15 min · up to $5');
     expect(opt('check_page').textContent).toContain('~2 min · ~$0.50');
     expect(opt('cloud').textContent).toContain('$0');
     // The products already picked are marked.
-    expect(within(opt('countertops')).getByLabelText('Current')).toBeTruthy();
+    expect(within(opt('product:countertop')).getByLabelText('Current')).toBeTruthy();
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(document.activeElement).toBe(plusButton());
@@ -289,7 +300,7 @@ describe('the + menu', () => {
   });
 
   it.each([
-    ['Check GV rules', /fillers, sink cut-outs, field cuts and overhangs/],
+    ['Check GV rules', /GV’s rules for the selected products\. For each rule/],
     ['Do the dimension strings add up?', /^Add up every dimension string on the vendor’s pages/],
     ['What’s missing on either side?', /^What is missing on either side\?/],
     ['What changed between rounds?', /^What changed between round 1 and round 2\?/],
@@ -345,10 +356,10 @@ describe('the + menu', () => {
     render(<Harness />);
     expect(screen.getByTestId('chips').textContent).toContain('countertop');
     await user.click(plusButton());
-    await user.click(opt('cabinets'));
+    await user.click(opt('product:cabinet'));
     expect(screen.getByTestId('chips').textContent).toMatch(/^cabinet$/);
     await user.click(plusButton());
-    await user.click(opt('both'));
+    await user.click(opt('all_products'));
     expect(screen.getByTestId('chips').textContent).toContain('countertop+cabinet');
 
     await user.click(plusButton());
@@ -456,7 +467,7 @@ describe('the + menu on the chat page', () => {
     await waitFor(() => expect(within(chips).getByRole('button', { name: 'Countertop' }).getAttribute('aria-pressed')).toBe('true'));
 
     await user.click(plusButton());
-    await user.click(opt('cabinets'));
+    await user.click(opt('product:cabinet'));
     expect(within(chips).getByRole('button', { name: 'Cabinet' }).getAttribute('aria-pressed')).toBe('true');
     expect(within(chips).getByRole('button', { name: 'Countertop' }).getAttribute('aria-pressed')).toBe('false');
     expect(window.localStorage.getItem('gv-chat-products:pkg-1')).toBe('["cabinet"]');

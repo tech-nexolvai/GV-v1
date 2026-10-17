@@ -43,6 +43,7 @@ from app.review.assistant.sharpen import (
     validate,
 )
 from app.runs.rates import call_cost_micros, load_model_rates
+from tests.dummy_products import DUMMY, use_dummy_registry
 from tests.review.assistant.chat_fakes import (
     ScriptedProvider,
     events_named,
@@ -289,18 +290,9 @@ def test_products_default_to_the_chips_picked() -> None:
     assert spec is not None and spec["products"] == ["cabinet"]
 
 
-def test_a_registry_decides_the_known_products(tmp_path: Path) -> None:
-    registry = tmp_path / "registry.yaml"
-    registry.write_text(
-        "products:\n"
-        "  - id: countertop\n    label: Countertop\n    active: true\n"
-        "  - id: cabinet\n    active: true\n"
-        "  - id: lighting\n    label: Lighting\n    active: false\n"
-        "  - id: seating\n",
-        encoding="utf-8",
-    )
-    assert known_products(registry) == ("countertop", "cabinet", "seating")
-    assert known_products(tmp_path / "missing.yaml") == ("countertop", "cabinet")
+def test_the_registry_decides_the_known_products(use_dummy_registry: Path) -> None:
+    """#1547: the product registry's active ids, a product added only to the registry included."""
+    assert known_products() == ("countertop", "cabinet", DUMMY)
 
 
 def test_question_back_only_with_clarify() -> None:
@@ -854,3 +846,6 @@ def test_the_local_eval_kits_questions_all_get_a_spec() -> None:
             assert made.path == "code" and made.spec["intent"] == "refuse_action", qid
         if item["kind"] == "ambiguous":
             assert made.path == "code" and made.spec["question_back"], qid
+
+
+__all__ = ["use_dummy_registry"]  # the fixture, imported so pytest finds it

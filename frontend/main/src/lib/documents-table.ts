@@ -1,6 +1,7 @@
 import type { PackageSummary } from '@/api/client';
 import { OUTCOME_LABELS } from '@/data/outcomeLabels';
 import type { Outcome } from '@/data/types';
+import { productLabel } from '@/lib/products';
 
 /**
  * The Documents table's arithmetic (#1064), kept out of React so it can be tested on its own.
@@ -47,10 +48,10 @@ export function outcomeSentence(outcomes: SummaryOutcomes): string {
   return `${total} recorded ${total === 1 ? 'result' : 'results'}: ${parts.join(', ')}`;
 }
 
-/** What the drawing set is for, in words; the API sends the vocabulary value. */
+/** What the drawing set is for, in the product registry's words (#1547); the API sends its id. */
 export function productWord(product: string | null): string {
   if (!product) return 'Not set';
-  return product.charAt(0).toUpperCase() + product.slice(1);
+  return productLabel(product);
 }
 
 /** A case-insensitive match on the vendor or the product, after trimming the query. */
