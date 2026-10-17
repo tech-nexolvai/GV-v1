@@ -478,8 +478,14 @@ def test_the_words_match_the_vocabulary() -> None:
     assert chain == 'Outlet height: vendor 46"; architect 1\'-0", 1\'-6" wall to wall'
     decision = note_text(2, _finding(status="check", trust_level="to_check"))
     assert decision.startswith("Your decision: Outlet height") and "Check" not in decision
-    # An AI "different" that no independent check confirmed needs your decision, not a cloud.
-    assert note_text(3, _finding(trust_level="to_check")).startswith("Your decision:")
+    # An AI "different" that no independent check confirmed is still Wrong (the screen's count);
+    # its note ends with the grey trust words.
+    unconfirmed = _finding(trust_level="to_check")
+    assert note_text(3, unconfirmed).startswith('Outlet height: vendor 46", make it 37"')
+    assert chat_drawing.trust_tag(unconfirmed) == "AI reading only"
+    assert chat_drawing.trust_tag(_finding(trust_level="likely")) == "Likely"
+    assert chat_drawing.trust_tag(_finding()) == ""
+    assert chat_drawing.trust_tag(_finding(status="check", trust_level="to_check")) == ""
 
 
 @pytest.mark.parametrize("rotate", [180, 270])
@@ -491,3 +497,37 @@ def test_other_rotations_keep_the_stamp_and_notes_on_the_page(tmp_path: Path, ro
     picture = _render(out)
     assert _red(picture, (box[2] + 2, box[1] - 4, box[2] + 14, box[3] + 4)) > 5
     assert _red(picture, (20, 10, 300, 40)) > 50  # the stamp, top left as the page is shown
+
+
+def test_every_wrong_status_is_a_red_cloud_with_its_trust_words(tmp_path: Path) -> None:
+    """The drawing's Wrong count is the screen's (#1541): status "different" is a red cloud
+    whatever its trust; a note not Confirmed ends with the grey trust words."""
+    sheet = _sheet(tmp_path / "sheet.pdf", ink=False)
+    boxes = [
+        (300.0, 300.0, 340.0, 316.0),
+        (600.0, 150.0, 640.0, 166.0),
+        (700.0, 450.0, 740.0, 466.0),
+    ]
+    findings = [
+        _finding(item="Confirmed one", vendor='99"', vendor_box=_box(*boxes[0])),
+        _finding(
+            item="Read only", vendor='98"', trust_level="to_check", vendor_box=_box(*boxes[1])
+        ),
+        _finding(item="Likely one", vendor='97"', trust_level="likely", vendor_box=_box(*boxes[2])),
+        _finding(item="Bay sizes", status="check", trust_level="to_check", vendor_box=None),
+    ]
+    out = tmp_path / "out.pdf"
+    markup_pdf(sheet, _placed(findings), out)
+    picture = _render(out)
+    for box in boxes:
+        assert _red(picture, (box[2] + 2, box[1] - 4, box[2] + 14, box[3] + 4)) > 5
+    reader = PdfReader(str(out))
+    page = " ".join(reader.pages[0].extract_text().split())
+    assert "AI reading only" in page and "Likely" in page
+    assert page.count('make it 37"') == 3
+    notes = " ".join("".join(p.extract_text() for p in reader.pages[1:]).split())
+    assert (
+        "4 items: 3 wrong (red clouds; 1 AI reading only, 1 Likely), "
+        "1 your decision (amber numbers, not clouded), 0 right (listed, not marked)."
+    ) in notes
+    assert "On the drawing (3)" in notes

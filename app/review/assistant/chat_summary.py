@@ -41,12 +41,14 @@ def _size(finding: Mapping[str, Any]) -> Decimal:
 def top_issues(
     findings: Sequence[Mapping[str, Any]], limit: int = TOP_ISSUES
 ) -> list[Mapping[str, Any]]:
-    """The issues by impact: wrong before to-check, then the bigger difference, then the more
-    trusted; right items never."""
+    """The issues by impact: wrong before your decision; among the wrong ones, those a check
+    confirmed (Confirmed, Likely) before an AI reading only; then the bigger difference, then the
+    more trusted; right items never."""
     issues = [f for f in findings if cloud_kind(f) is not None]
     issues.sort(
         key=lambda f: (
             0 if cloud_kind(f) == "wrong" else 1,
+            0 if f.get("trust_level") in ("confirmed", "likely") else 1,
             -_size(f),
             _TRUST_ORDER.get(str(f.get("trust_level")), 3),
             int(f.get("page") or 0),

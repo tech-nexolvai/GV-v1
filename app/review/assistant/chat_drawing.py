@@ -53,6 +53,7 @@ from reportlab.platypus import (  # type: ignore[import-untyped]
 from app.review.assistant.chat_trust import CLOUD_WORDS, TRUST_WORDS, cloud_kind, needs_text
 from app.review.assistant.cloud_layout import (
     MAX_CLOUD_PT,
+    NOTE_LINES,
     NOTE_WIDTH_PT,
     InkMap,
     capped,
@@ -87,6 +88,7 @@ __all__ = [
     "needs_text",
     "note_text",
     "page_sizes",
+    "trust_tag",
 ]
 
 _log = logging.getLogger(__name__)
@@ -172,6 +174,7 @@ _GREY: Final = Color(0.55, 0.55, 0.55)
 _NOTE_FONT: Final = "Helvetica"
 _NOTE_BOLD: Final = "Helvetica-Bold"
 _NOTE_SIZE: Final = 8.5
+_TAG_SIZE: Final = 7.5
 _NOTE_LEADING: Final = 10.5
 _NOTE_PAD: Final = 4.0
 _NOTE_BAR: Final = 3.0
@@ -217,14 +220,16 @@ _OVERLAY_NAME: Final = "/GVCloudDrawing"
 CLEAN_WORDS: Final = "Drawn on a copy without earlier review markup"
 LEGEND: Final = (
     "Red cloud, red numbered circle and note: Wrong. The vendor's value is wrong; the note says "
-    "what it needs to be. Amber numbered circle (no cloud): needs your decision; its entry below "
+    'what it needs to be, and ends in grey with "AI reading only" or "Likely" when no '
+    "independent check confirmed it. Amber numbered circle (no cloud): needs your decision; its entry below "
     "says what to decide. Right items are not marked; they are listed at the end."
 )
 LEGEND_CLOUDED: Final = (
     "Red cloud, red numbered circle and note: Wrong. The vendor's value is wrong; the note says "
-    "what it needs to be. Amber cloud and amber numbered circle: needs your decision (the AI cannot "
-    "call it right or wrong, or no independent check confirmed its reading). Right items are not "
-    "marked; they are listed at the end."
+    'what it needs to be, and ends in grey with "AI reading only" or "Likely" when no '
+    "independent check confirmed it. Amber cloud and amber numbered circle: needs your decision "
+    "(the AI cannot call it right or wrong). Right items are not marked; they are listed at the "
+    "end."
 )
 
 
@@ -309,6 +314,10 @@ class _Placed:
     marker: tuple[float, float] = (0.0, 0.0)
     note: Box | None = None
     lines: tuple[str, ...] = ()
+    tag: str = ""
+    """The grey trust words at the note's end ("AI reading only", "Likely"); "" when Confirmed."""
+    tag_inline: bool = True
+    """The tag ends the last line; else it has a line of its own."""
 
 
 class _Budget:
@@ -396,15 +405,37 @@ def _prefix(mark: Mark) -> str:
     return f"{_sign(mark.kind)} {mark.number}"
 
 
-def _note_lines(mark: Mark) -> tuple[tuple[str, ...], float, float]:
-    """A note's wrapped lines and its size (points)."""
+def trust_tag(finding: Mapping[str, Any]) -> str:
+    """The grey words a Wrong note ends with when no independent check confirmed it: the trust
+    level's words ("AI reading only", "Likely"); "" for Confirmed and for other items."""
+    if cloud_kind(finding) != "wrong":
+        return ""
+    level = str(finding.get("trust_level") or "")
+    return "" if level in ("", "confirmed") else TRUST_WORDS.get(level, level)
+
+
+def _note_lines(mark: Mark) -> tuple[tuple[str, ...], str, bool, float, float]:
+    """A note's wrapped lines, its trust tag and whether the tag fits on the last line, and its
+    size (points)."""
     lead = _measure(_prefix(mark) + "  ", _NOTE_BOLD)
     room = NOTE_WIDTH_PT - 2 * _NOTE_PAD - _NOTE_BAR - lead
-    lines = tuple(wrap(note_text(mark.number, mark.finding), room, _measure))
-    width = lead + max((_measure(line) for line in lines), default=0.0)
-    width += 2 * _NOTE_PAD + _NOTE_BAR
-    height = len(lines) * _NOTE_LEADING + 2 * _NOTE_PAD - (_NOTE_LEADING - _NOTE_SIZE)
-    return lines, width, height
+    text = note_text(mark.number, mark.finding)
+    tag = trust_tag(mark.finding)
+    lines = tuple(wrap(text, room, _measure))
+    inline = True
+    widths = [_measure(line) for line in lines]
+    if tag:
+        spaced = _measure("  " + tag, _NOTE_FONT, _TAG_SIZE)
+        if widths and widths[-1] + spaced <= room:
+            widths[-1] += spaced
+        else:
+            inline = False
+            lines = tuple(wrap(text, room, _measure, lines=NOTE_LINES - 1))
+            widths = [_measure(line) for line in lines] + [_measure(tag, _NOTE_FONT, _TAG_SIZE)]
+    rows = len(lines) + (0 if inline else 1)
+    width = lead + max(widths, default=0.0) + 2 * _NOTE_PAD + _NOTE_BAR
+    height = rows * _NOTE_LEADING + 2 * _NOTE_PAD - (_NOTE_LEADING - _NOTE_SIZE)
+    return lines, tag, inline, width, height
 
 
 def _ink(document: Any, index: int) -> InkMap | None:
@@ -492,8 +523,8 @@ def _layout(
     wanted.sort(key=lambda item: (item.mark.kind != "wrong", item.mark.number))
     sizes = []
     for item in wanted:
-        lines, width, height = _note_lines(item.mark)
-        item.lines = lines
+        lines, tag, inline, width, height = _note_lines(item.mark)
+        item.lines, item.tag, item.tag_inline = lines, tag, inline
         sizes.append((item.spot, width, height))
     for item, box in zip(wanted, place_notes(size, sizes, ink, blocked), strict=True):
         item.note = box
@@ -555,6 +586,17 @@ def _draw_page(c: canvas.Canvas, height: float, placed: Sequence[_Placed]) -> No
             c.setFont(_NOTE_FONT, _NOTE_SIZE)
             for n, line in enumerate(item.lines):
                 c.drawString(tx + lead, up(ty + n * _NOTE_LEADING), line)
+            if item.tag:
+                # The trust words, small and grey, after the note's last words or on their own line.
+                last = len(item.lines) - 1
+                if item.tag_inline and item.lines:
+                    x = tx + lead + _measure(item.lines[last] + "  ")
+                    row = last
+                else:
+                    x, row = tx + lead, len(item.lines)
+                c.setFillColor(_GREY)
+                c.setFont(_NOTE_FONT, _TAG_SIZE)
+                c.drawString(x, up(ty + row * _NOTE_LEADING), item.tag)
     # The numbered markers last, on top of the clouds and leaders.
     for item in placed:
         mx, my = item.marker
@@ -854,8 +896,13 @@ def entry_lines(finding: Mapping[str, Any]) -> list[str]:
 def counts_line(findings: Sequence[Mapping[str, Any]], *, clouded_decisions: bool) -> str:
     kinds = [cloud_kind(finding) for finding in findings]
     decision = "amber clouds" if clouded_decisions else "amber numbers, not clouded"
+    tags = [trust_tag(finding) for finding in findings if cloud_kind(finding) == "wrong"]
+    unconfirmed = ", ".join(
+        f"{tags.count(words)} {words}" for words in dict.fromkeys(t for t in tags if t)
+    )
     return (
-        f"{len(kinds)} items: {kinds.count('wrong')} wrong (red clouds), "
+        f"{len(kinds)} items: {kinds.count('wrong')} wrong (red clouds"
+        f"{'; ' + unconfirmed if unconfirmed else ''}), "
         f"{kinds.count('check')} your decision ({decision}), "
         f"{kinds.count(None)} right (listed, not marked)."
     )
