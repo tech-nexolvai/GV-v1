@@ -36,6 +36,7 @@ __all__ = [
     "PDFIUM_LOCK",
     "REPORT_TITLE",
     "check_report_pdf",
+    "clone_pdf",
     "cloud_kind",
     "crop_png",
     "markup_pdf",
@@ -257,16 +258,24 @@ LEGEND: Final = (
 )
 
 
+def clone_pdf(source: Path) -> PdfWriter:
+    """A writable copy of `source`: the slow part of the cloud drawing (about 12 s for a 60-page
+    set), which needs no finding, so a full check makes it while the checks run (#1512)."""
+    return PdfWriter(clone_from=PdfReader(str(source)))
+
+
 def markup_pdf(
     source: Path,
     findings: Sequence[tuple[int, Mapping[str, Any], int | None, Box | None, str]],
     out: Path,
+    writer: PdfWriter | None = None,
 ) -> None:
     """A copy of `source` with a cloud and a short note at each placed finding that is not right
     (red: wrong, amber: needs your decision), the draft stamp on page 1, and a legend and notes page listing
     every finding. `findings`: (number, finding, page, box, where) with `page`/`box` `None` when
-    the finding cannot be placed on this file (`where` says why, for the notes page)."""
-    writer = PdfWriter(clone_from=PdfReader(str(source)))
+    the finding cannot be placed on this file (`where` says why, for the notes page). `writer`: a
+    fresh `clone_pdf(source)` made earlier (used once), else the copy is made here."""
+    writer = writer if writer is not None else clone_pdf(source)
     by_page: dict[int, list[tuple[int, Mapping[str, Any], Box]]] = {}
     listed: list[tuple[int, Mapping[str, Any], str]] = []
     for number, finding, page_number, box, where in findings:

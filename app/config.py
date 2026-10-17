@@ -138,8 +138,9 @@ class Settings(BaseSettings):
     # Tool turns: the lead's per message, and each helper's.
     assistant_lead_max_turns: int = Field(default=40, ge=1, le=100)
     assistant_helper_max_turns: int = Field(default=20, ge=1, le=50)
-    # Helpers one turn of the lead runs at the same time (#1497): Claude-style fan-out by page pair.
-    assistant_max_parallel_agents: int = Field(default=6, ge=1, le=8)
+    # Helpers run at the same time (#1497): one lead turn's, or a full check's jobs planned by
+    # code (#1512).
+    assistant_max_parallel_agents: int = Field(default=8, ge=1, le=12)
     # One sandbox command's time limit, and which sandbox runs it (`auto`: the Docker image
     # `gv-assistant-sandbox` when built and Docker answers, else macOS `sandbox-exec`).
     assistant_command_timeout_seconds: int = Field(default=120, ge=5, le=900)

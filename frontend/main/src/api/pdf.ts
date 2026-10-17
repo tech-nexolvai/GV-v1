@@ -53,3 +53,26 @@ export async function countPdfPages(file: File): Promise<number> {
     );
   }
 }
+
+/**
+ * One page of a PDF drawn to a picture (a data URL), `width` pixels wide: the cloud drawing card's
+ * preview (#1522). It asks the server for byte ranges only (`disableAutoFetch`), so a large file is
+ * not downloaded whole to draw one page. Throws when the file cannot be read; the card then keeps
+ * its plain icon.
+ */
+export async function renderPdfPage(url: string, pageNumber: number, width: number): Promise<string> {
+  const task = pdfjs.getDocument({ url, disableAutoFetch: true, disableStream: true, rangeChunkSize: 1 << 20 });
+  const document = await task.promise;
+  try {
+    const page = await document.getPage(Math.min(Math.max(1, Math.round(pageNumber)), document.numPages));
+    const base = page.getViewport({ scale: 1 });
+    const viewport = page.getViewport({ scale: width / base.width });
+    const canvas = window.document.createElement('canvas');
+    canvas.width = Math.round(viewport.width);
+    canvas.height = Math.round(viewport.height);
+    await page.render({ canvas, viewport }).promise;
+    return canvas.toDataURL('image/png');
+  } finally {
+    await task.destroy();
+  }
+}

@@ -18,6 +18,15 @@ stream starts. Only Stop (`POST /chats/{id}/cancel`) cancels: it sets the messag
 kills the sandbox commands running for it. A screen going away changes nothing (#1479): the
 message's events go into its `MessageFeed`, which any screen can follow again, and it is stored when
 it ends, like claude.ai.
+
+**A server restart (#1514).** While a message runs, its blocks so far are saved to the chat folder's
+`checkpoint.json` (replaced whole, atomically, a few times a second at most). A question left with no
+reply and no message running for it in this process (the API restarted, or was killed) gets a reply
+stored as `stopped: interrupted` with the checkpoint's blocks and what its calls cost
+(`recover_interrupted`, at start-up and whenever the chat is read). On SIGTERM the registry stops
+taking messages, gives running ones a short wait, then stores each one still running as interrupted
+and stops it (`shutdown_chats`). Continue (`MessageJob.continue_from`) hands the interrupted work to
+the next answer: a full check keeps its findings and covered pages and checks the rest.
 """
 
 from __future__ import annotations
@@ -34,12 +43,15 @@ from importlib import import_module
 from pathlib import Path
 from time import monotonic, monotonic_ns
 from typing import Any, Final
-from uuid import UUID
+from uuid import UUID, uuid4
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.models import AssistantChatMessage
 from app.review.assistant.chat_contract import ChatMessageOut
 from app.review.assistant.chat_engine import (
+    FULL_CHECK_INSTRUCTION,
     ChatEngine,
     EngineSettings,
     MessageOutcome,
@@ -47,13 +59,15 @@ from app.review.assistant.chat_engine import (
     cost_text,
 )
 from app.review.assistant.chat_feed import MessageFeed
-from app.review.assistant.chat_findings import products_words
+from app.review.assistant.chat_findings import live_findings, page_ranges, products_words
 from app.review.assistant.chat_provider import ChatProvider
 from app.review.assistant.chat_request import ChatModel
 from app.review.assistant.chat_store import (
     add_assistant_message,
     add_file,
+    add_interrupted_message,
     add_user_message,
+    chat_cost_since,
     file_url,
     files_of,
     history,
@@ -61,6 +75,7 @@ from app.review.assistant.chat_store import (
     messages_of,
     recorded_chat_spend,
     stored_chat_spend,
+    unanswered_questions,
 )
 from app.review.assistant.chat_tools import MAX_AGENTS, ChatTools, ResultsLoader
 from app.review.assistant.chat_unknowns import asks_for_the_rest, last_unknowns, work_list_note
@@ -68,6 +83,8 @@ from app.review.assistant.sandbox import UPLOADS, ChatWorkspace, Sandbox, safe_f
 from app.runs.rates import ModelRates
 
 __all__ = [
+    "CHECKPOINT_FILE",
+    "CONTINUE_TEXT",
     "FULL_CHECK_INSTRUCTION",
     "ChatRegistry",
     "MessageJob",
@@ -75,8 +92,12 @@ __all__ = [
     "SessionChatLedger",
     "UploadSource",
     "package_spent_micros",
+    "recover_interrupted",
+    "resume_of",
     "run_message",
+    "shutdown_chats",
     "sync_uploads",
+    "write_checkpoint",
 ]
 
 _log = logging.getLogger(__name__)
@@ -126,6 +147,22 @@ class RunningMessage:
     sandbox: Sandbox | None = None
     feed: MessageFeed = field(default_factory=MessageFeed)
     """Its events so far, for the screens following it (the sender's, a reload's, another tab's)."""
+    question_id: UUID | None = None
+    """The stored question, once stored."""
+    checkpoint: Path | None = None
+    """Where its work so far is saved (`write_checkpoint`), once the question is stored."""
+    resume: dict[str, Any] | None = None
+    """What the checkpoint keeps besides the blocks: model, effort, thinking, mode, products."""
+    factory: sessionmaker[Session] | None = None
+    checkpointed_at: float = 0.0
+    save_due: bool = False
+    """A save was put off by the rate limit: a timer makes it, so a pause loses nothing."""
+    store_lock: threading.Lock = field(default_factory=threading.Lock)
+    """Held while its answer is stored: the answer, or (at shutdown) its interrupted reply."""
+    finished: bool = False
+    """Its answer is being (or was) stored the ordinary way."""
+    abandoned: bool = False
+    """Stored as interrupted at shutdown: its own answer is then never stored."""
 
     def spent(self) -> int:
         engine = self.engine
@@ -151,10 +188,30 @@ class ChatRegistry:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._runs: dict[UUID, RunningMessage] = {}
+        self._closing = False
+
+    @property
+    def closing(self) -> bool:
+        """The server is stopping: no new message is taken."""
+        with self._lock:
+            return self._closing
+
+    def close(self) -> list[RunningMessage]:
+        """Take no new message from now on; the messages running now."""
+        with self._lock:
+            self._closing = True
+            return list(self._runs.values())
+
+    def runs(self) -> list[RunningMessage]:
+        with self._lock:
+            return list(self._runs.values())
 
     def claim(self, chat_id: UUID, package_id: UUID, message_id: UUID) -> RunningMessage | None:
-        """The chat's slot for a new message, or `None` when one is being answered."""
+        """The chat's slot for a new message, or `None` when one is being answered (or the server
+        is stopping)."""
         with self._lock:
+            if self._closing:
+                return None
             current = self._runs.get(chat_id)
             if current is not None and (
                 current.started or monotonic() - current.claimed_at < _STALE_CLAIM_SECONDS
@@ -397,20 +454,6 @@ def prepare_skill(
     _readable(skill)
 
 
-#: The full check's own instruction (CONTRACT4): the reviewer presses a button, never types it.
-FULL_CHECK_INSTRUCTION: Final = """Full check of this drawing set (the reviewer pressed Run full check). Read /mnt/skills/gv-review/SKILL.md and rules.md first, and call review_results for the whole set.
-
-Review the WHOLE set: GV's rules for the picked products first, then compare everything on the vendor's drawings with the architect's (brand prototype differences as their own group). Report EVERY item you compare with report_finding, the right ones too (status same), with boxes. Check each finding the app made from GV Review's recorded results. Brief helpers to report findings and set_coverage, and on every page to record every dimension string with record_string and every value they read with record_reading (both sides; name an item the same way on every page and view), so code adds them up and compares the views. Record every page with set_coverage. Verify leads.
-
-End with a 5-6 line plain-English summary for the reviewer (no tables, no disclaimers: the app draws the cloud drawing, the report and the lists):
-1. What was checked: pages, products, rounds.
-2. The overall verdict in one line (how many items look wrong, need the reviewer's decision, match).
-3. The top 3-5 issues by impact, each with its page, item, and architect vs vendor value.
-4. What needs the reviewer's decision.
-5. The next step (e.g. "send the cloud drawing to the vendor; confirm the 3 items that need your decision").
-If you are told to stop early, still write this summary from what you have."""
-
-
 def full_check_label(products: Sequence[str], effort: str) -> str:
     """The question a full check shows: "Full check · Countertops · High effort"."""
     return f"Full check \u00b7 {products_words(products)} \u00b7 {effort.capitalize()} effort"
@@ -463,6 +506,8 @@ class MessageJob:
     mode: str = "chat"
     products: tuple[str, ...] | None = None
     """The products picked in the composer, else the set's own (`None`: not stated)."""
+    continue_from: UUID | None = None
+    """Continue (#1514): the interrupted answer whose work this message goes on from."""
 
 
 _NO_SANDBOX: Final = (
@@ -495,6 +540,7 @@ def run_message(job: MessageJob, run: RunningMessage, emit: Emit | None = None) 
         feed.publish(event, data)
         if emit is not None:
             emit(event, data)
+        _maybe_checkpoint(run, event)
 
     try:
         _run_message(job, run, publish)
@@ -529,8 +575,10 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             if job.mode == "full_check"
             else job.text
         )
+        if job.mode == "full_check" and job.continue_from is not None:
+            shown = f"Continue the full check \u00b7 {shown.split(' \u00b7 ', 1)[-1]}"
         with job.factory() as session:
-            add_user_message(
+            asked = add_user_message(
                 session,
                 chat_id=job.chat_id,
                 created_by=job.created_by,
@@ -539,10 +587,22 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
                 products=job.products,
             )
             session.commit()
+            run.question_id = asked.id
     except Exception:  # noqa: BLE001 - told plainly; nothing was sent
         _log.exception("assistant chat could not store the question")
         _safe(emit, "error", {"message": _NOT_SAVED})
         return
+    # From here a server restart keeps the work so far (#1514).
+    run.factory = job.factory
+    run.resume = {
+        "model": job.model.id,
+        "effort": job.effort,
+        "thinking": job.thinking,
+        "mode": job.mode,
+        "products": None if job.products is None else list(job.products),
+    }
+    run.checkpoint = job.chat_root / str(job.chat_id) / CHECKPOINT_FILE
+    _maybe_checkpoint(run, "message_start", force=True)
     _safe(
         emit,
         "message_start",
@@ -608,6 +668,12 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
                     if message.role == "assistant"
                 )
             )
+        # Continue (#1514): the work of the answer a server restart cut off.
+        earlier = (
+            None
+            if job.continue_from is None
+            else _interrupted(session, job.chat_id, job.continue_from)
+        )
     user_content: list[dict[str, Any]] = []
     # The files are listed in the first message the model sees (an earlier message that got no
     # answer is not in its history), and again when the set's PDFs changed.
@@ -627,6 +693,8 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
         user_content.append({"type": "text", "text": focus})
     if work_list is not None:
         user_content.append({"type": "text", "text": work_list})
+    if earlier is not None:
+        user_content.append({"type": "text", "text": continue_note(*earlier, mode=job.mode)})
     question = FULL_CHECK_INSTRUCTION if job.mode == "full_check" else job.text
     user_content.append({"type": "text", "text": question})
 
@@ -688,6 +756,16 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
         cancel=run.cancel,
     )
     run.engine = engine
+    if earlier is not None and job.mode == "full_check":
+        _blocks, _question = earlier
+        coverage = _last_coverage(_blocks)
+        # GV Review's recorded differences are seeded again by the check itself.
+        try:
+            engine.carry_over(
+                [f for f in live_findings(_blocks) if not f.get("record_id")], coverage
+            )
+        except Exception:  # noqa: BLE001 - the check goes on; it just redoes more
+            _log.exception("assistant chat could not carry over the interrupted findings")
     if run.cancel.is_set():
         stop_with("", "cancelled")
         return
@@ -698,7 +776,18 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
 
 
 def _finish(job: MessageJob, run: RunningMessage, emit: Emit, outcome: MessageOutcome) -> None:
-    """The answer stored, then `error` (if any) and `message_end` with the stored message."""
+    """The answer stored, then `error` (if any) and `message_end` with the stored message. Not
+    when shutdown already stored it as interrupted (#1514): a question never gets two replies."""
+    with run.store_lock:
+        if run.abandoned:
+            return
+        run.finished = True
+        _store_answer(job, run, emit, outcome)
+
+
+def _store_answer(
+    job: MessageJob, run: RunningMessage, emit: Emit, outcome: MessageOutcome
+) -> None:
     stored: ChatMessageOut | None = None
     started = monotonic_ns()
     try:
@@ -725,6 +814,7 @@ def _finish(job: MessageJob, run: RunningMessage, emit: Emit, outcome: MessageOu
             )
             session.commit()
             stored = message_out(message, files_of(session, job.chat_id))
+        _drop_checkpoint(run)
     except Exception:  # noqa: BLE001 - told plainly
         _log.exception("assistant chat could not store the answer")
         _safe(
@@ -745,3 +835,371 @@ def _finish(job: MessageJob, run: RunningMessage, emit: Emit, outcome: MessageOu
     if stored is None:
         return
     _safe(emit, "message_end", {"message": stored.model_dump(mode="json")})
+
+
+# ---- a server restart (#1514) -------------------------------------------------------------------
+
+#: The running message's work so far, in its chat's folder (one message runs per chat at most).
+CHECKPOINT_FILE: Final = "checkpoint.json"
+#: The follow-up the screen's Continue sends.
+CONTINUE_TEXT: Final = "Continue from where you stopped"
+#: Saved at most this often while words stream, and at most this often after a step or finding.
+_CHECKPOINT_EVERY: Final = 2.0
+_CHECKPOINT_SOON: Final = 0.5
+_CHECKPOINT_EVENTS: Final = frozenset(
+    {"step_end", "finding", "finding_dropped", "coverage", "agent_end", "thinking_end", "file"}
+)
+_SAVE_LOCK: Final = threading.Lock()
+#: How long a stopping server waits for running answers to end by themselves.
+SHUTDOWN_WAIT_SECONDS: Final = 10.0
+#: How much of the interrupted answer's words a Continue hands over.
+_CARRIED_TEXT: Final = 6000
+_CARRIED_LINES: Final = 60
+
+
+def write_checkpoint(run: RunningMessage) -> None:
+    """The message's blocks so far and what it spent, replacing the last save in one step (a
+    crash mid-write leaves the previous save whole)."""
+    path, resume, question = run.checkpoint, run.resume, run.question_id
+    if path is None or resume is None or question is None:
+        return
+    engine = run.engine
+    data = {
+        **resume,
+        "message_id": str(run.message_id),
+        "question_id": str(question),
+        "blocks": [] if engine is None else engine.stored_blocks(),
+        "cost_micros": run.spent(),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{threading.get_ident()}.tmp")
+    temporary.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    os.replace(temporary, path)
+    run.checkpointed_at = monotonic()
+
+
+def _maybe_checkpoint(run: RunningMessage, event: str, *, force: bool = False) -> None:
+    """Saved now, or (rate-limited) once the wait is over: what happened is never left unsaved
+    for longer than `_CHECKPOINT_EVERY`, even when the answer then pauses (a slow call)."""
+    if run.checkpoint is None or run.abandoned:
+        return
+    wait = (_CHECKPOINT_SOON if event in _CHECKPOINT_EVENTS else _CHECKPOINT_EVERY) - (
+        monotonic() - run.checkpointed_at
+    )
+    if not force and wait > 0:
+        with _SAVE_LOCK:
+            if run.save_due:
+                return
+            run.save_due = True
+        timer = threading.Timer(wait, _due_checkpoint, args=(run,))
+        timer.daemon = True
+        timer.start()
+        return
+    _save(run)
+
+
+def _due_checkpoint(run: RunningMessage) -> None:
+    with _SAVE_LOCK:
+        run.save_due = False
+    if run.checkpoint is None or run.abandoned or run.finished:
+        return
+    _save(run)
+
+
+def _save(run: RunningMessage) -> None:
+    try:
+        write_checkpoint(run)
+    except Exception:  # noqa: BLE001 - a save that fails never stops the answer
+        _log.warning("assistant chat could not save its checkpoint", exc_info=True)
+
+
+def _drop_checkpoint(run: RunningMessage) -> None:
+    if run.checkpoint is not None:
+        run.checkpoint.unlink(missing_ok=True)
+
+
+def _read_checkpoint(path: Path) -> dict[str, Any] | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _last_coverage(blocks: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+    for block in reversed(blocks):
+        if block.get("type") == "coverage" and isinstance(block.get("coverage"), Mapping):
+            return dict(block["coverage"])
+    return None
+
+
+def _done_pages(coverage: Mapping[str, Any] | None) -> tuple[list[int], list[int]]:
+    """The pages accounted for, and the ones not (never opened, no note)."""
+    done: list[int] = []
+    left: list[int] = []
+    for entry in (coverage or {}).get("pages") or []:
+        page = entry.get("page")
+        if not isinstance(page, int):
+            continue
+        (left if entry.get("status") == "not_opened" and not entry.get("note") else done).append(
+            page
+        )
+    return done, left
+
+
+def resume_of(
+    blocks: Sequence[Mapping[str, Any]], *, mode: str, products: Sequence[str] | None
+) -> dict[str, Any]:
+    """How Continue picks up an interrupted answer, and what it will do again, in plain words."""
+    findings = [f for f in live_findings(blocks) if not f.get("record_id")]
+    done, left = _done_pages(_last_coverage(blocks))
+    steps = sum(1 for block in blocks if block.get("type") == "step")
+    if mode == "full_check":
+        one = len(findings) == 1
+        kept = (
+            f"The {len(findings)} finding{'' if one else 's'} already made "
+            f"{'is' if one else 'are'} kept"
+            if findings
+            else "No finding was made yet"
+        )
+        if done:
+            them = (
+                f"the page already done (page {done[0]}) is"
+                if len(done) == 1
+                else f"the {len(done)} pages already done are"
+            )
+            pages = f"; {them} not opened again" + (
+                f", and page{'' if len(left) == 1 else 's'} {page_ranges(left)} "
+                f"{'is' if len(left) == 1 else 'are'} checked now."
+                if left
+                else "."
+            )
+        else:
+            pages = "; no page was recorded as done yet, so every page is checked."
+        redo = (
+            f"Continue runs the full check again from where it stopped. {kept}{pages} GV Review's "
+            "recorded differences are checked again, and so is the step that was running when "
+            "the server restarted."
+        )
+    else:
+        redo = (
+            "Continue asks Claude to go on from what it had written and the "
+            f"{steps} step{'' if steps == 1 else 's'} it had done; only the step that was "
+            "running when the server restarted (and what came after it) is done again."
+        )
+    return {
+        "mode": "full_check" if mode == "full_check" else "chat",
+        "products": None if products is None else list(products),
+        "findings": len(findings),
+        "pages_done": len(done),
+        "redo": redo,
+    }
+
+
+def _settled(blocks: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The saved blocks as a stopped answer shows them: a step or helper still running when the
+    server stopped is shown as not finished."""
+    out: list[dict[str, Any]] = []
+    for block in blocks:
+        block = json.loads(json.dumps(block))
+        step = block.get("step") if block.get("type") == "step" else None
+        if isinstance(step, dict):
+            if step.get("ok") is None:
+                step["ok"] = False
+            for agent in step.get("agents") or []:
+                if isinstance(agent, dict) and agent.get("ok") is None:
+                    agent["ok"] = False
+        out.append(block)
+    return out
+
+
+def _store_interrupted(
+    session: Session,
+    question: AssistantChatMessage,
+    saved: Mapping[str, Any] | None,
+) -> AssistantChatMessage | None:
+    """The interrupted reply to `question` (None when its place is taken: a reply exists)."""
+    blocks = _settled(saved.get("blocks") or []) if saved else []
+    # The question keeps how it was asked (#1513); the checkpoint says it too.
+    mode = str((saved or {}).get("mode") or question.mode or "chat")
+    products = (saved or {}).get("products") if saved else question.products
+    recorded = chat_cost_since(session, question.chat_id, question.created_at)
+    cost = max(recorded, int(saved.get("cost_micros") or 0) if saved else 0)
+    message_id = uuid4()
+    if saved and saved.get("message_id"):
+        try:
+            message_id = UUID(str(saved["message_id"]))
+        except ValueError:
+            pass
+    try:
+        with session.begin_nested():
+            message = add_interrupted_message(
+                session,
+                message_id=message_id,
+                question=question,
+                model=str(saved["model"]) if saved and saved.get("model") else None,
+                effort=str(saved["effort"]) if saved and saved.get("effort") else None,
+                thinking=bool(saved["thinking"]) if saved and "thinking" in saved else None,
+                blocks=[
+                    *blocks,
+                    {"type": "resume", "resume": resume_of(blocks, mode=mode, products=products)},
+                ],
+                cost_micros=cost,
+                mode=mode,
+                products=products,
+            )
+    except IntegrityError:
+        return None
+    return message
+
+
+def recover_interrupted(
+    factory: sessionmaker[Session],
+    registry: ChatRegistry,
+    chat_root: Path,
+    chat_ids: Sequence[UUID] | None = None,
+) -> int:
+    """Every question left with no reply and no message running for it in this process gets its
+    interrupted reply (with the chat's checkpoint when it was for that question). Returns how
+    many were stored. Safe to run any time: a running message is skipped, and a reply that is
+    stored meanwhile takes the place first (the row is then refused, not doubled)."""
+    stored = 0
+    with factory() as session:
+        for question in unanswered_questions(session, chat_ids):
+            if registry.get(question.chat_id) is not None:
+                continue
+            path = chat_root / str(question.chat_id) / CHECKPOINT_FILE
+            saved = _read_checkpoint(path)
+            if saved is not None and saved.get("question_id") != str(question.id):
+                saved = None
+            if _store_interrupted(session, question, saved) is None:
+                continue
+            session.commit()
+            stored += 1
+            if saved is not None:
+                path.unlink(missing_ok=True)
+            _log.info("assistant chat answer stored as interrupted by a restart")
+    return stored
+
+
+def _abandon(run: RunningMessage) -> None:
+    """At shutdown: a message still running is stored as interrupted, its screens get that
+    message, and it is stopped (no more calls are paid for)."""
+    with run.store_lock:
+        if run.finished or run.abandoned:
+            return
+        run.abandoned = True
+        factory, question_id = run.factory, run.question_id
+        stored: ChatMessageOut | None = None
+        if factory is not None and question_id is not None:
+            try:
+                write_checkpoint(run)
+            except Exception:  # noqa: BLE001 - the last save stands
+                _log.warning("assistant chat could not save its last checkpoint", exc_info=True)
+            saved = None if run.checkpoint is None else _read_checkpoint(run.checkpoint)
+            try:
+                with factory() as session:
+                    question = session.get(AssistantChatMessage, question_id)
+                    message = (
+                        None if question is None else _store_interrupted(session, question, saved)
+                    )
+                    if message is not None:
+                        session.commit()
+                        stored = message_out(message, files_of(session, run.chat_id))
+                        _drop_checkpoint(run)
+            except Exception:  # noqa: BLE001 - the next start stores it from the checkpoint
+                _log.exception("assistant chat could not store an interrupted answer")
+        if stored is not None:
+            run.feed.publish("message_end", {"message": stored.model_dump(mode="json")})
+    run.feed.close()
+    run.stop()
+
+
+def shutdown_chats(registry: ChatRegistry, *, wait_seconds: float = SHUTDOWN_WAIT_SECONDS) -> int:
+    """SIGTERM: take no new message, save each running one, give them `wait_seconds` to end by
+    themselves, then store each one still running as interrupted and stop it. Returns how many
+    were stored as interrupted."""
+    running = registry.close()
+    for run in running:
+        _maybe_checkpoint(run, "shutdown", force=True)
+    deadline = monotonic() + max(0.0, wait_seconds)
+    while monotonic() < deadline and any(registry.get(run.chat_id) is run for run in running):
+        threading.Event().wait(0.1)
+    left = [run for run in running if registry.get(run.chat_id) is run]
+    for run in left:
+        _abandon(run)
+    return sum(1 for run in left if run.abandoned)
+
+
+def _interrupted(
+    session: Session, chat_id: UUID, message_id: UUID
+) -> tuple[list[dict[str, Any]], str] | None:
+    """The interrupted answer's blocks and the question it was answering."""
+    messages = messages_of(session, chat_id)
+    for at, message in enumerate(messages):
+        if message.id == message_id and message.stopped == "interrupted":
+            question = next((m.text for m in reversed(messages[:at]) if m.role == "user"), "")
+            return [dict(b) for b in message.blocks or [] if isinstance(b, Mapping)], question
+    return None
+
+
+def continue_note(blocks: Sequence[Mapping[str, Any]], question: str, *, mode: str) -> str:
+    """The interrupted answer's work, handed to the lead in words (it is not in the history)."""
+    findings = [f for f in live_findings(blocks) if not f.get("record_id")]
+    if mode == "full_check":
+        done, left = _done_pages(_last_coverage(blocks))
+        lines = [
+            (
+                "GV Review note (by code): a server restart interrupted the last full check. The "
+                f"{len(findings)} findings it made are already in this check (shown above; check "
+                "any you doubt, but do not report them again)."
+            )
+        ]
+        if done:
+            lines.append(
+                f"Pages already accounted for (recorded in coverage; do not open them again): "
+                f"{page_ranges(done)}."
+            )
+        if left:
+            lines.append(
+                f"Work list: pages {page_ranges(left)} were not done yet. Check these, report "
+                "their findings and record their coverage."
+            )
+        elif not done:
+            lines.append("No page was recorded as done yet: check the whole set.")
+        return "\n".join(lines)
+    words = "\n\n".join(
+        str(block.get("text") or "").strip()
+        for block in blocks
+        if block.get("type") == "text" and str(block.get("text") or "").strip()
+    )
+    if len(words) > _CARRIED_TEXT:
+        words = words[:_CARRIED_TEXT] + " \u2026"
+    steps = [
+        f"- {block['step'].get('label') or block['step'].get('tool')}"
+        for block in blocks
+        if block.get("type") == "step" and isinstance(block.get("step"), Mapping)
+    ][:_CARRIED_LINES]
+    found = [
+        f"- {f.get('id')} page {f.get('page')}: {f.get('item')}: architect {f.get('architect')}; "
+        f"vendor {f.get('vendor')} ({f.get('status')})"
+        for f in findings[:_CARRIED_LINES]
+    ]
+    parts = [
+        (
+            "GV Review note (by code): a server restart interrupted your last answer before it "
+            "finished, so it is not in your history. Continue from where it stopped: do not redo "
+            "the work listed here; finish the answer."
+        ),
+        f"The question was: {question}",
+    ]
+    if steps:
+        parts.append(
+            "Steps it had done (files it made in /home/claude are still there):\n"
+            + "\n".join(steps)
+        )
+    if found:
+        parts.append("Findings it had reported:\n" + "\n".join(found))
+    if words:
+        parts.append("What it had written so far:\n" + words)
+    return "\n\n".join(parts)

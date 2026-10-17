@@ -8,7 +8,7 @@
  * does arithmetic on the AI's numbers: the inches and the difference are code's (`finding.inches`).
  */
 
-import type { ChatCoverage, ChatFinding, ChatTrust, ChatUnknown, EvidenceKind, FindingCategory, FindingRead, LedgerReport, PrintedResult, RoundStatus, TrustLeftOut, TrustLevel, UnknownWhy } from '@/lib/chat-api';
+import type { ChatCoverage, ChatFinding, ChatTimings, ChatTrust, ChatUnknown, EvidenceKind, FindingCategory, FindingRead, LedgerReport, PrintedResult, RoundStatus, TrustLeftOut, TrustLevel, UnknownWhy } from '@/lib/chat-api';
 import { categoryOf, CATEGORY_WORDS, pageWords, sourceTag, STATUS_WORDS, verifiedWords } from '@/lib/chat-findings';
 
 // ── Levels ──────────────────────────────────────────────────
@@ -18,14 +18,14 @@ export const TRUST_ORDER: readonly TrustLevel[] = ['confirmed', 'likely', 'to_ch
 export const TRUST_WORDS: Record<TrustLevel, string> = {
   confirmed: 'Confirmed',
   likely: 'Likely',
-  to_check: 'To check',
+  to_check: 'AI reading only',
 };
 
 /** What each level means, for its chip's tooltip. */
 export const TRUST_MEANING: Record<TrustLevel, string> = {
   confirmed: 'A check that is not AI backs it (printed on the drawing, or worked out by code) and an AI reading agrees',
   likely: 'Two AI readings agree (second or third read, the lead’s check, the critic), or a non-AI check backs it alone',
-  to_check: 'Fewer checks passed, or one disagreed: a person should look',
+  to_check: 'Only an AI reading backs it, or a check disagreed: look at the pictures yourself',
 };
 
 // ── Evidence kind ───────────────────────────────────────────
@@ -337,6 +337,44 @@ export function criticCheck(finding: Pick<ChatFinding, 'checks' | 'critic'>): Ch
   return null;
 }
 
+/**
+ * The checks in the reviewer's words (#1522, owner: "never show internal check names"): what was
+ * looked at and what it said, one plain sentence each. Checks that did not run are left out, and a
+ * value that is words (not a length) is never called "not a number".
+ */
+export function plainChecks(finding: ChatFinding): string[] {
+  const checks = finding.checks;
+  const lines: string[] = [];
+  const printed = (['architect', 'vendor'] as const).map((side) => [side, printedOf(finding, side)] as const);
+  if (printed.every(([, result]) => result === 'match')) lines.push('Code found both values printed at their spots on the drawings.');
+  else {
+    for (const [side, result] of printed) {
+      const whose = side === 'architect' ? 'architect’s' : 'vendor’s';
+      if (result === 'match') lines.push(`Code found the ${whose} value printed at its spot.`);
+      if (result === 'not_found') lines.push(`Code could not find the ${whose} value printed at its spot.`);
+      if (result === 'no_text') lines.push(`The ${whose} numbers are drawn as pen strokes, so code could not read them.`);
+    }
+  }
+  const second = finding.reads?.find((read) => read.role === 'second');
+  const third = finding.reads?.find((read) => read.role === 'third');
+  const seen = (read: FindingRead | undefined) => (read ? `: it read ${readValue(read)}` : '');
+  if (checks?.second_read === 'agrees') lines.push('A second, separate AI reading agrees.');
+  if (checks?.second_read === 'disagrees') lines.push(`A second, separate AI reading disagrees${seen(second)}.`);
+  if (checks?.second_read === 'unsure') lines.push('A second, separate AI reading was unsure.');
+  if (checks?.adjudication === 'agrees_after_adjudication') lines.push(`A third, sharper reading settled it in favour${seen(third)}.`);
+  if (checks?.adjudication === 'disagrees') lines.push(`A third, sharper reading also disagrees${seen(third)}.`);
+  if (checks?.adjudication === 'unsure') lines.push('A third, sharper reading could not settle it.');
+  lines.push(leadChecked(finding) ? 'The AI looked at the spot on the drawing itself.' : 'A helper AI found this; it was not looked at again on the drawing.');
+  if (checks?.rule === 'agrees') lines.push('GV Review’s own rule check agrees.');
+  if (checks?.rule === 'disagrees') lines.push('GV Review’s own rule check disagrees.');
+  if (checks?.arithmetic === 'adds_up') lines.push('Code added up the vendor’s parts: they match the printed total.');
+  if (checks?.arithmetic === 'does_not_add_up') lines.push('Code added up the vendor’s parts: they do not match the printed total.');
+  if (checks?.critic === 'passed') lines.push('A critic confirmed it is the same item, the right dimension and the vendor’s own ink.');
+  if (checks?.critic === 'objects') lines.push(`A critic objected${finding.critic?.note?.trim() ? `: ${finding.critic.note.trim().replace(/[.!?]$/, '')}` : ''}.`);
+  if (checks?.critic === 'unsure') lines.push('A critic was unsure.');
+  return lines;
+}
+
 /** Every check in words, for the evidence viewer: the four, then the critic when it looked. */
 export function allChecks(finding: ChatFinding): CheckResult[] {
   const critic = criticCheck(finding);
@@ -344,7 +382,7 @@ export function allChecks(finding: ChatFinding): CheckResult[] {
 }
 
 /**
- * Why a finding is To check, in code's words: the checks that disagreed ("Second read disagrees"),
+ * Why a finding is AI reading only, in code's words: the checks that disagreed ("Second read disagrees"),
  * else how many checks passed; null when it is not To check and nothing disagreed.
  */
 export function trustReason(finding: ChatFinding): string | null {
@@ -441,6 +479,53 @@ export function checkLines(counts: CheckCounts): string[] {
   lines.push(counts.rules.length ? `GV rules applied by code: ${counts.rules.join(', ')}` : 'GV rules applied by code: none for these findings');
   if (counts.arithmetic) lines.push(`Vendor’s arithmetic added up by code: ${counts.arithmetic.agrees} of ${counts.arithmetic.checked} match`);
   return lines;
+}
+
+// ── Timings (#1512) ─────────────────────────────────────────
+
+/** Wall-clock seconds in words: "0.4 s", "38 s", "4 min 12 s". */
+export function secondsWords(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return '—';
+  if (seconds < 10) return `${Math.round(seconds * 10) / 10} s`;
+  const whole = Math.round(seconds);
+  if (whole < 60) return `${whole} s`;
+  const minutes = Math.floor(whole / 60);
+  const rest = whole % 60;
+  return rest ? `${minutes} min ${rest} s` : `${minutes} min`;
+}
+
+export interface TimingRow {
+  key: string;
+  label: string;
+  time: string;
+  cost: string;
+  calls: number | null;
+}
+
+/** The "How this was checked" timings table: each phase that ran, in order, then the total; null
+ *  on an answer from before timings were recorded. */
+export function timingRows(timings: ChatTimings | null | undefined): TimingRow[] | null {
+  if (!timings || !Array.isArray(timings.phases)) return null;
+  const rows: TimingRow[] = timings.phases.map((phase) => ({
+    key: phase.phase,
+    label: phase.label,
+    time: secondsWords(phase.seconds),
+    cost: `$${phase.cost_usd}`,
+    calls: phase.calls,
+  }));
+  rows.push({ key: 'total', label: 'Whole answer', time: secondsWords(timings.total_seconds), cost: `$${timings.cost_usd}`, calls: null });
+  return rows;
+}
+
+/** One helper's row: "p.3-7 · 1. Connection Centre", its time, cost, calls and why it stopped. */
+export function helperTimingRows(timings: ChatTimings | null | undefined): TimingRow[] {
+  return (timings?.helpers ?? []).map((helper) => ({
+    key: `helper-${helper.number}`,
+    label: `Helper ${helper.number}: ${helper.description}${helper.stopped ? ` (stopped: ${helper.stopped.replace(/_/g, ' ')})` : ''}`,
+    time: secondsWords(helper.seconds),
+    cost: `$${helper.cost_usd}`,
+    calls: helper.calls,
+  }));
 }
 
 // ── Rounds ──────────────────────────────────────────────────

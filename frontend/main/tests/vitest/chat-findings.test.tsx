@@ -34,7 +34,7 @@ const FINDINGS: ChatFinding[] = [
   finding('f4', { category: 'other', page: 2, item: 'Sink model', status: 'same' }),
 ];
 
-/** Opens a row's detail, then the evidence viewer from it (#1508: a row click opens the detail in place). */
+/** Opens a row's card, then the evidence viewer from it (a row click opens the card in place). */
 async function openViewer(user: ReturnType<typeof userEvent.setup>, node: HTMLElement, item: string) {
   await user.click(within(node).getByRole('button', { name: item }));
   await user.click(within(node).getByRole('button', { name: 'Open viewer' }));
@@ -63,67 +63,167 @@ beforeEach(() => {
   vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) { clicks.push(`${this.download}|${this.getAttribute('href')}`); });
 });
 
-describe('the findings table', () => {
-  it('is one table grouped by area (else page), wrong first, with a count line, ticks, source tags and thumbnails', () => {
+describe('the findings (#1522 redesign)', () => {
+  it('shows What’s wrong, then Your decision, then Right folded, each grouped by area, one plain line per item', async () => {
+    const user = userEvent.setup();
     const { node } = show(answer({ findings: FINDINGS }));
-    const table = within(node).getByRole('table');
-    expect(node.querySelectorAll('[data-slot="chat-findings-table"]')).toHaveLength(1);
+    expect(node.querySelectorAll('[data-slot="chat-findings"]')).toHaveLength(1);
     // Not inside the work fold: a direct part of the answer.
     expect(node.querySelector('[data-slot="chat-activity"] [data-slot="chat-findings"]')).toBeNull();
-    expect(within(node).getByText('2 differences · 1 to check')).toBeTruthy();
-    expect(within(table).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual(['Page', 'Item', 'Architect → Vendor', 'Difference', 'Status', 'Trust', 'Evidence']);
-    // "Vanity top depth" names an area; the others name none, so they are grouped by page. Wrong first.
-    expect([...node.querySelectorAll('[data-slot="chat-findings-group-toggle"]')].map((toggle) => toggle.textContent)).toEqual(['Vanity· p3·1 wrong', 'Page 7·1 wrong', 'Page 9·1 to check']);
-    // Same rows are hidden until the filter asks.
+    expect(within(node).getByRole('heading', { name: /^What’s wrong\s*2$/ })).toBeTruthy();
+    expect(within(node).getByRole('heading', { name: /^Your decision\s*1$/ })).toBeTruthy();
+    // "Vanity top depth" names an area; "Base cabinet B3 width" names none, so it is grouped by page.
+    const wrong = node.querySelector<HTMLElement>('[data-slot="chat-findings-different"]')!;
+    expect([...wrong.querySelectorAll('[data-slot="chat-findings-group-toggle"]')].map((toggle) => toggle.textContent)).toEqual(['Vanityp.31', 'Page 71']);
+    // Right is folded until asked.
     expect(rows(node)).toEqual(['f3', 'f1', 'f2']);
+    await user.click(within(node).getByRole('button', { name: /^Right\s*1/ }));
+    expect(rows(node)).toEqual(['f3', 'f1', 'f2', 'f4']);
 
     const vanity = node.querySelector<HTMLElement>('[data-id="f3"]')!;
-    expect(within(vanity).getByText('22"')).toBeTruthy();
-    expect(within(vanity).getByText('21 1/2"')).toBeTruthy();
-    expect(within(vanity).getByText('vs brand prototype')).toBeTruthy();
+    // The area is not repeated in the row; the full item stays the button's name.
+    expect(within(vanity).getByRole('button', { name: 'Vanity top depth' }).textContent).toContain('Top depth');
+    expect(vanity.querySelector('[data-slot="chat-finding-line"]')?.textContent).toBe('Vendor drew 21 1/2" · , brand prototype shows 22"');
+    expect(within(vanity).getByText('Compared with the brand prototype')).toBeTruthy();
     expect(within(vanity).getByRole('img', { name: 'Architect evidence' }).getAttribute('src')).toBe('/api/v1/chats/c-1/pictures/arch-f3');
     expect(within(vanity).getByText('Vendor: no evidence picture')).toBeTruthy();
-
-    const helper = node.querySelector<HTMLElement>('[data-id="f2"] [data-check="verified"]')!;
-    expect(helper.getAttribute('title')).toBe('Helper lead, not checked');
-    expect(node.querySelector('[data-id="f1"] [data-check="verified"]')?.getAttribute('title')).toBe('Checked on the drawing');
+    // The question to answer, on a "Your decision" row.
+    expect(node.querySelector('[data-id="f2"] [data-slot="chat-finding-line"]')?.textContent).toContain('architect shows');
   });
 
-  it('filters by status and category, and shows Same only when asked', async () => {
+  it('uses one vocabulary: never "To check", one coverage display and one accuracy badge', async () => {
+    const user = userEvent.setup();
+    const coverage: ChatCoverage = { pages: [{ page: 2, status: 'same' }, { page: 3, status: 'different' }, { page: 7, status: 'different' }, { page: 9, status: 'not_comparable' }] };
+    const trusted = FINDINGS.map((each, at) => ({ ...each, trust_level: (['confirmed', 'likely', 'to_check', 'to_check'] as const)[at] }));
+    const { node } = show(answer({ findings: trusted, coverage, trust: { levels: { confirmed: 1, likely: 1, to_check: 2 } }, accuracy: { score: 82, claims: 4, breakdown: [] } }));
+    await user.click(within(node).getByRole('button', { name: /^Right\s*1/ }));
+    await user.click(within(node).getByRole('button', { name: 'How this was checked' }));
+    const words = node.textContent ?? '';
+    expect(words).not.toMatch(/To check|\bDifferent\b|\bSame\b|Trust\b/);
+    expect(words).toContain('AI reading only');
+    expect(node.querySelectorAll('[data-slot="chat-coverage"]')).toHaveLength(1);
+    expect(node.querySelectorAll('[data-slot="chat-accuracy"]')).toHaveLength(1);
+    // No check icons on a row: confidence is a quiet meter with its word.
+    expect(node.querySelector('[data-slot="chat-checks"], [data-slot="chat-check-legend"], [data-slot="chat-trust-level"]')).toBeNull();
+    expect([...node.querySelectorAll('[data-slot="chat-finding-row"] [data-slot="chat-confidence"]')].map((meter) => meter.textContent)).toEqual(['Confidence: AI reading only', 'Confidence: Confirmed', 'Confidence: Likely', 'Confidence: AI reading only']);
+  });
+
+  it('filters by product, keeping the sections', async () => {
     const user = userEvent.setup();
     const { node } = show(answer({ findings: FINDINGS }));
     const chips = within(node).getByRole('group', { name: 'Filter findings' });
-    await user.click(within(chips).getByRole('button', { name: /^Different/ }));
-    expect(rows(node)).toEqual(['f3', 'f1']);
-    await user.click(within(chips).getByRole('button', { name: /^Check/ }));
-    expect(rows(node)).toEqual(['f2']);
-    await user.click(within(chips).getByRole('button', { name: /^Same/ }));
-    expect(rows(node)).toEqual(['f4']);
-    await user.click(within(chips).getByRole('button', { name: /^All/ }));
     await user.click(within(chips).getByRole('button', { name: 'Cabinets' }));
     expect(rows(node)).toEqual(['f1']);
     expect(within(chips).getByRole('button', { name: 'Cabinets' }).getAttribute('aria-pressed')).toBe('true');
+    await user.click(within(chips).getByRole('button', { name: 'All' }));
+    expect(rows(node)).toEqual(['f3', 'f1', 'f2']);
   });
 
   it('replaces an updated finding in place and fades a dropped one out', async () => {
     const { node, rerender } = show(answer({ findings: FINDINGS }));
     const updated = FINDINGS.map((item) => (item.id === 'f1' ? { ...item, vendor: '34"' } : item));
     rerender(<AssistantMessage message={answer({ findings: updated })} chatId="c-1" models={[OPUS]} />);
-    expect(within(node.querySelector<HTMLElement>('[data-id="f1"]')!).getByText('34"')).toBeTruthy();
+    expect(node.querySelector('[data-id="f1"] [data-slot="chat-finding-line"]')?.textContent).toContain('34"');
 
-    rerender(<AssistantMessage message={answer({ findings: updated.filter((item) => item.id !== 'f2') })} chatId="c-1" models={[OPUS]} />);
-    expect(node.querySelector('[data-id="f2"]')?.getAttribute('data-leaving')).toBe('true');
-    expect(within(node).getByText('2 differences')).toBeTruthy();
-    await waitFor(() => expect(node.querySelector('[data-id="f2"]')).toBeNull());
+    rerender(<AssistantMessage message={answer({ findings: updated.filter((item) => item.id !== 'f1') })} chatId="c-1" models={[OPUS]} />);
+    expect(node.querySelector('[data-id="f1"]')?.getAttribute('data-leaving')).toBe('true');
+    expect(within(node).getByRole('heading', { name: /^What’s wrong\s*1$/ })).toBeTruthy();
+    await waitFor(() => expect(node.querySelector('[data-id="f1"]')).toBeNull());
   });
 
-  it('becomes stacked cards at phone width', () => {
+  it('keeps every row on a phone, without the product filter', () => {
     mediaMatching((query) => query.includes('max-width: 639px'));
     const { node } = show(answer({ findings: FINDINGS }));
-    expect(within(node).queryByRole('table')).toBeNull();
-    const cards = node.querySelector('[data-slot="chat-findings-cards"]')!;
-    expect(within(cards as HTMLElement).getAllByRole('button', { name: /show the details/ })).toHaveLength(3);
-    expect(within(cards as HTMLElement).getByText('Vanity top depth')).toBeTruthy();
+    expect(within(node).queryByRole('group', { name: 'Filter findings' })).toBeNull();
+    expect(rows(node)).toEqual(['f3', 'f1', 'f2']);
+  });
+});
+
+describe('the item card', () => {
+  const sink = finding('c1', {
+    item: 'Sink base width', architect: '3\'-1"', vendor: '46"', inches: { architect: '37', vendor: '46', difference: '9' }, round_status: 'still_wrong',
+    trust_level: 'confirmed', checks: { printed_architect: 'match', printed_vendor: 'match', second_read: 'agrees' },
+    arch_box: { page: 3, x0: 0, y0: 0, x1: 52, y1: 52 },
+  });
+  const filler = finding('c2', {
+    item: 'Filler', category: 'cabinet', status: 'check', verified: false, inches: { architect: '2', vendor: null, difference: null }, vendor: 'TBD',
+    why: 'The architect gives no filler: confirm the 3" filler', trust_level: 'to_check', checks: { second_read: 'disagrees', printed_architect: 'not_a_number', printed_vendor: 'no_text' },
+  });
+
+  it('says a wrong item in the reviewer’s words: what each side shows, why, what to tell the vendor, how sure', async () => {
+    const user = userEvent.setup();
+    const { node } = show(answer({ findings: [sink, filler, finding('x', { page: 9 }), finding('y', { page: 12 })] }));
+    const row = node.querySelector<HTMLElement>('[data-id="c1"]')!;
+    expect(row.querySelector('[data-slot="chat-finding-line"]')?.textContent).toBe('Vendor drew 46 in · , needs 37 in (architect 3\'-1")+9 in');
+    expect(within(row).getByText('Still wrong')).toBeTruthy();
+    const toggle = within(row).getByRole('button', { name: 'Sink base width' });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    await user.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    const card = node.querySelector<HTMLElement>('[data-slot="chat-finding-detail"][data-id="c1"]')!;
+    const terms = [...card.querySelectorAll('dt')].map((term) => term.textContent);
+    expect(terms).toEqual(['Architect shows', 'Vendor drew', 'Why it’s wrong', 'What to tell the vendor']);
+    expect(within(card).getByText('37 in (printed 3\'-1")')).toBeTruthy();
+    expect(card.querySelector('[data-slot="chat-finding-tell"]')?.textContent).toBe('Change it to 37 in to match the architect (now 46 in).');
+    expect(card.querySelector('[data-slot="chat-finding-sure"]')?.textContent).toContain('How sure: Confirmed.');
+    expect(within(card).getByText('Code found both values printed at their spots on the drawings.')).toBeTruthy();
+    expect(within(card).getByRole('img', { name: 'Architect drawing, page 3' }).getAttribute('src')).toBe('/api/v1/chats/c-1/pictures/arch-c1');
+  });
+
+  it('asks the question on a "Your decision" item, never shows internal check names, and opens the viewer', async () => {
+    const user = userEvent.setup();
+    const { node } = show(answer({ findings: [sink, filler, finding('x', { page: 9 }), finding('y', { page: 12 })] }));
+    const row = node.querySelector<HTMLElement>('[data-id="c2"]')!;
+    expect(row.querySelector('[data-slot="chat-finding-question"]')?.textContent).toBe('Your call: The architect gives no filler: confirm the 3" filler');
+    await user.click(within(row).getByRole('button', { name: 'Filler' }));
+    const card = node.querySelector<HTMLElement>('[data-slot="chat-finding-detail"][data-id="c2"]')!;
+    expect([...card.querySelectorAll('dt')].map((term) => term.textContent)).toEqual(['Architect shows', 'Vendor drew', 'What you need to decide']);
+    expect(card.textContent).not.toMatch(/not a number|2nd read|Helper lead|Printed at this spot/);
+    expect(within(card).getByText('A second, separate AI reading disagrees.')).toBeTruthy();
+    expect(within(card).getByText('The vendor’s numbers are drawn as pen strokes, so code could not read them.')).toBeTruthy();
+    await user.click(within(card).getByRole('button', { name: 'Open viewer' }));
+    expect(within(await screen.findByRole('dialog')).getByRole('heading', { name: /^Filler\s*· page 3$/ })).toBeTruthy();
+  });
+
+  it('offers Agree / Not a problem only once the server has the route, and records the answer', async () => {
+    const user = userEvent.setup();
+    const decide = vi.fn(async () => ({}));
+    const ready = vi.fn(async () => true);
+    const { node } = show(answer({ findings: FINDINGS }), { decide, decisionReady: ready });
+    await waitFor(() => expect(node.querySelectorAll('[data-slot="chat-finding-decision"]')).toHaveLength(3));
+    expect(ready).toHaveBeenCalledWith('msg-1', 'f1');
+    const vanity = node.querySelector<HTMLElement>('[data-id="f3"]')!;
+    await user.click(within(vanity).getByRole('button', { name: 'Agree' }));
+    expect(decide).toHaveBeenCalledWith('msg-1', 'f3', 'agree');
+    await waitFor(() => expect(within(vanity).getByRole('button', { name: 'Agree' }).getAttribute('aria-pressed')).toBe('true'));
+    // Keyboard: Tab to "Not a problem", Space presses it.
+    within(vanity).getByRole('button', { name: 'Agree' }).focus();
+    await user.tab();
+    await user.keyboard(' ');
+    expect(decide).toHaveBeenLastCalledWith('msg-1', 'f3', 'not_a_problem');
+  });
+
+  it('hides the buttons while the route is missing (404)', async () => {
+    const ready = vi.fn(async () => false);
+    const { node } = show(answer({ findings: FINDINGS }), { decide: vi.fn(), decisionReady: ready });
+    await waitFor(() => expect(ready).toHaveBeenCalled());
+    expect(node.querySelector('[data-slot="chat-finding-decision"]')).toBeNull();
+  });
+});
+
+describe('a narrow answer (a few pages)', () => {
+  it('shows only its words, its findings with their cards open, and one confidence line: no whole-set panels', () => {
+    const few = [
+      finding('n1', { page: 8, item: 'Bussing station filler width', status: 'check', trust_level: 'to_check' }),
+      finding('n2', { page: 8, item: 'Bussing station door count', status: 'same', trust_level: 'likely' }),
+    ];
+    const coverage: ChatCoverage = { pages: [{ page: 8, status: 'different' }, { page: 9, status: 'not_opened' }] };
+    const { node } = show(answer({ findings: few, coverage, trust: { levels: { confirmed: 0, likely: 1, to_check: 1 }, gv_checks: { matched: 11, total: 13, left_out: [] } } }));
+    expect(node.getAttribute('data-narrow')).toBe('true');
+    expect(node.querySelector('[data-slot="chat-trust"], [data-slot="chat-coverage"], [data-slot="chat-coverage-grid"]')).toBeNull();
+    expect(node.textContent).not.toMatch(/Matches GV Review|pages compared|Read and checked by code/);
+    expect(node.querySelector('[data-slot="chat-confidence-line"]')?.textContent).toBe('How sure: 1 likely · 1 AI reading only');
+    expect(node.querySelector('[data-slot="chat-finding-detail"][data-id="n1"]')).toBeTruthy();
   });
 });
 
@@ -133,20 +233,22 @@ describe('the evidence viewer', () => {
     const { node } = show(answer({ findings: FINDINGS }), { fullPageHref: '#/review/pkg-1' });
     await openViewer(user, node, 'Vanity top depth');
     const viewer = await screen.findByRole('dialog');
-    expect(within(viewer).getByRole('heading', { name: 'Vanity top depth' })).toBeTruthy();
+    expect(within(viewer).getByRole('heading', { name: /^Vanity top depth\s*· page 3$/ })).toBeTruthy();
     expect(within(viewer).getByRole('img', { name: 'Architect, page 3' }).getAttribute('src')).toBe('/api/v1/chats/c-1/pictures/arch-f3');
     expect(within(viewer).getByText('No evidence picture')).toBeTruthy();
-    expect(within(viewer).getByText('1 of 3')).toBeTruthy();
+    expect(within(viewer).getByText('1 of 4')).toBeTruthy();
     expect(within(viewer).getByRole('link', { name: 'Open in review screen' }).getAttribute('href')).toBe('#/review/pkg-1');
 
-    // The arrows follow the table's order: by area, wrong first.
+    // The arrows follow the screen's order: Wrong by area, then Your decision, then Right.
     await user.keyboard('{ArrowRight}');
-    expect(within(screen.getByRole('dialog')).getByRole('heading', { name: 'Base cabinet B3 width' })).toBeTruthy();
+    expect(within(screen.getByRole('dialog')).getByRole('heading', { name: /^Base cabinet B3 width\s*· page 7$/ })).toBeTruthy();
     await user.keyboard('{ArrowRight}');
-    expect(within(screen.getByRole('dialog')).getByRole('heading', { name: 'Island top depth' })).toBeTruthy();
+    expect(within(screen.getByRole('dialog')).getByRole('heading', { name: /^Island top depth\s*· page 9$/ })).toBeTruthy();
+    await user.keyboard('{ArrowRight}');
     expect((within(screen.getByRole('dialog')).getByRole('button', { name: 'Next finding' }) as HTMLButtonElement).disabled).toBe(true);
     await user.keyboard('{ArrowLeft}');
-    expect(within(screen.getByRole('dialog')).getByRole('heading', { name: 'Base cabinet B3 width' })).toBeTruthy();
+    await user.keyboard('{ArrowLeft}');
+    expect(within(screen.getByRole('dialog')).getByRole('heading', { name: /^Base cabinet B3 width\s*· page 7$/ })).toBeTruthy();
 
     // Zoom works on the large crop.
     const dialog = screen.getByRole('dialog');
@@ -157,61 +259,41 @@ describe('the evidence viewer', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 
-  it('shows the check results under the crops', async () => {
+  it('says the item in the reviewer’s words, with how we know folded', async () => {
     const user = userEvent.setup();
     const checked = finding('t', {
       item: 'Sink base width', architect: '3\'-1"', vendor: '46"', inches: { architect: '37', vendor: '46', difference: '9' },
       trust_level: 'confirmed', checks: { printed_architect: 'match', printed_vendor: 'match', second_read: 'agrees' },
     });
     const { node } = show(answer({ findings: [checked] }));
-    await openViewer(user, node, 'Sink base width');
+    // A one-item answer is narrow: its card is already open.
+    await user.click(within(node).getByRole('button', { name: 'Open viewer' }));
     const viewer = await screen.findByRole('dialog');
-    const printed = [...viewer.querySelectorAll('[data-slot="chat-evidence-printed"]')].map((line) => line.textContent);
-    expect(printed).toEqual(['✓Printed at this spot: 3\'-1"', '✓Printed at this spot: 46"']);
-    expect(within(viewer).getByText('Second read agrees')).toBeTruthy();
-    expect(within(viewer).getByText('+9 in')).toBeTruthy();
+    expect(within(viewer).getByText('37 in (printed 3\'-1")')).toBeTruthy();
+    expect(within(viewer).getByText('Change it to 37 in to match the architect (now 46 in).')).toBeTruthy();
+    expect(within(viewer).getByText('A second, separate AI reading agrees.')).toBeTruthy();
+    expect(viewer.textContent).not.toMatch(/Printed at this spot|not a number/);
   });
 });
 
-describe('the coverage strip', () => {
+describe('how this was checked (whole-set answers)', () => {
   const coverage: ChatCoverage = {
     pages: [
       { page: 1, status: 'same' }, { page: 2, status: 'same' }, { page: 3, status: 'different', note: 'Vanity depth' },
       { page: 7, status: 'different' }, { page: 8, status: 'not_comparable', note: 'Schedule only' }, { page: 9, status: 'not_opened' },
     ],
   };
-
-  it('says how many pages were compared, opens to a page grid, and a different page filters the findings', async () => {
-    const user = userEvent.setup();
-    const { node } = show(answer({ findings: FINDINGS, coverage }));
-    const strip = node.querySelector<HTMLElement>('[data-slot="chat-coverage"]')!;
-    const toggle = within(strip).getByRole('button', { name: /pages compared/ });
-    expect(toggle.textContent).toContain('4 of 6 pages compared · 1 not comparable · 1 not opened');
-    expect(strip.querySelectorAll('[data-slot="chat-coverage-bar"] [data-status]')).toHaveLength(4);
-
-    await user.click(toggle);
-    expect(toggle.getAttribute('aria-expanded')).toBe('true');
-    const squares = strip.querySelectorAll('[data-slot="chat-coverage-page"]');
-    expect(squares).toHaveLength(6);
-    expect(within(strip).getByRole('img', { name: 'Page 8: Not comparable. Schedule only' }).getAttribute('title')).toBe('Page 8: Not comparable. Schedule only');
-
-    await user.click(within(strip).getByRole('button', { name: 'Page 7: Different. Show its findings' }));
-    expect(rows(node)).toEqual(['f1']);
-    await user.click(within(node).getByRole('button', { name: 'Showing page 7 only. Show all pages' }));
-    expect(rows(node)).toEqual(['f3', 'f1', 'f2']);
-  });
-});
-
-describe('trust', () => {
   const trusted: ChatFinding[] = [
     finding('c1', {
-      item: 'Sink base width', architect: '3\'-1"', vendor: '46"', inches: { architect: '37', vendor: '46', difference: '9' }, round_status: 'still_wrong',
+      item: 'Sink base width', page: 2, architect: '3\'-1"', vendor: '46"', inches: { architect: '37', vendor: '46', difference: '9' }, round_status: 'still_wrong',
       trust_level: 'confirmed', checks: { printed_architect: 'match', printed_vendor: 'match', second_read: 'agrees' },
     }),
     finding('c2', {
-      item: 'Filler', category: 'cabinet', status: 'check', verified: false, inches: { architect: '2', vendor: null, difference: null }, vendor: 'TBD', round_status: 'fixed_in_later_round',
+      item: 'Filler', page: 5, category: 'cabinet', status: 'check', verified: false, inches: { architect: '2', vendor: null, difference: null }, vendor: 'TBD', round_status: 'fixed_in_later_round',
       trust_level: 'to_check', checks: { second_read: 'disagrees' },
     }),
+    finding('c3', { page: 7, item: 'Island depth' }),
+    finding('c4', { page: 11, item: 'Desk width' }),
   ];
   const report: ChatTrust = {
     levels: { confirmed: 1, likely: 0, to_check: 1 },
@@ -219,64 +301,32 @@ describe('trust', () => {
     not_checked: ['numbers drawn as pen strokes on page 4'],
   };
 
-  it('sums it up above the table: levels, coverage, GV Review’s own checks and how it was checked', async () => {
+  it('is one folded section after the findings: how sure, pages (the only coverage), GV Review’s own checks and the checks', async () => {
     const user = userEvent.setup();
-    const { node } = show(answer({ findings: trusted, trust: report, coverage: { pages: [{ page: 1, status: 'same' }, { page: 2, status: 'not_opened' }] } }));
-    const summary = within(node).getByRole('region', { name: 'Why this can be trusted' });
-    // Above the findings table.
-    expect(summary.compareDocumentPosition(node.querySelector('[data-slot="chat-findings"]')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect([...summary.querySelectorAll('[data-slot="chat-trust-levels"] li')].map((item) => item.textContent)).toEqual(['Confirmed1', 'Likely0', 'To check1']);
-    expect(summary.querySelectorAll('[data-slot="chat-trust-bar"] [data-level]')).toHaveLength(2);
-    expect(within(summary).getByText('1 of 2 pages compared · 0 not comparable · 1 not opened')).toBeTruthy();
-    expect(within(summary).getByText('Vendor fixed 1 of 2 round-1 items · 1 still wrong')).toBeTruthy();
-
-    const gv = within(summary).getByRole('button', { name: /Matches GV Review’s own checks: 8 of 9/ });
-    await user.click(gv);
-    expect(within(summary).getByText('Upper cabinet height')).toBeTruthy();
-
-    await user.click(within(summary).getByRole('button', { name: 'How this was checked' }));
-    const lines = [...summary.querySelectorAll('[data-slot="chat-trust-checks"] li')].map((line) => line.textContent);
+    const { node } = show(answer({ findings: trusted, trust: report, coverage }));
+    const how = within(node).getByRole('region', { name: 'How this was checked' });
+    expect(node.querySelector('[data-slot="chat-findings"]')!.compareDocumentPosition(how) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(how.querySelector('[data-slot="chat-trust-levels"]')).toBeNull();
+    await user.click(within(how).getByRole('button', { name: 'How this was checked' }));
+    expect([...how.querySelectorAll('[data-slot="chat-trust-levels"] li')].map((item) => item.textContent)).toEqual(['Confirmed1', 'Likely0', 'AI reading only1']);
+    expect(within(how).getByText('Vendor fixed 1 of 2 round-1 items · 1 still wrong')).toBeTruthy();
+    await user.click(within(how).getByRole('button', { name: /Matches GV Review’s own checks: 8 of 9/ }));
+    expect(within(how).getByText('Upper cabinet height')).toBeTruthy();
+    const lines = [...how.querySelectorAll('[data-slot="chat-trust-checks"] li')].map((line) => line.textContent);
     expect(lines).toContain('Printed at the spot: 2 of 2 values found');
-    expect(lines).toContain('Second independent read: 1 agree · 1 disagree · 0 unsure');
     expect(lines).toContain('Not checked: numbers drawn as pen strokes on page 4');
-    expect(lines).toContain('Not checked: page 2 (not opened)');
-  });
+    expect(lines).toContain('Not checked: page 9 (not opened)');
 
-  it('gives each row a Trust chip, check icons, code’s numbers and a round chip', () => {
-    const { node } = show(answer({ findings: trusted, trust: report }));
-    const table = within(node).getByRole('table');
-    // Code's difference sits under the vendor's value: "37 in → 46 in · +9 in".
-    expect(within(table).getAllByRole('columnheader')).toHaveLength(7);
-    const sink = node.querySelector<HTMLElement>('[data-id="c1"]')!;
-    expect(sink.querySelector('[data-slot="chat-trust-level"]')?.textContent).toBe('Confirmed');
-    expect(within(sink).getByText('37 in').getAttribute('title')).toBe('As printed: 3\'-1"');
-    expect(within(sink).getByText('+9 in')).toBeTruthy();
-    expect(within(sink).getByText('Still wrong')).toBeTruthy();
-    expect([...sink.querySelectorAll('[data-slot="chat-check"]')].map((icon) => `${icon.getAttribute('data-check')}:${icon.getAttribute('data-state')}`))
-      .toEqual(['printed:pass', 'second_read:pass', 'verified:pass', 'rule:not_run']);
-
-    const filler = node.querySelector<HTMLElement>('[data-id="c2"]')!;
-    expect(filler.querySelector('[data-slot="chat-trust-level"]')?.getAttribute('title')).toBe('To check: Second read disagrees');
-    expect(filler.querySelector('[data-check="second_read"]')?.getAttribute('title')).toBe('Second read disagrees');
-    // A row no longer says "not a number" under its value (#1508): the detail does, as a quiet pill.
-    expect(within(filler).queryByText('not a number')).toBeNull();
-    expect(within(filler).getByText('TBD')).toBeTruthy();
-  });
-
-  it('opens a row’s detail in place: full values, why, checks, large crops and Open viewer', async () => {
-    const user = userEvent.setup();
-    const { node } = show(answer({ findings: trusted, trust: report }));
-    const filler = node.querySelector<HTMLElement>('[data-id="c2"]')!;
-    const toggle = within(filler).getByRole('button', { name: 'Filler' });
-    expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    await user.click(filler);
-    expect(toggle.getAttribute('aria-expanded')).toBe('true');
-    const detail = node.querySelector<HTMLElement>('[data-slot="chat-finding-detail"][data-id="c2"]')!;
-    expect(within(detail).getByText('not a number')).toBeTruthy();
-    expect(within(detail).getByText('Second read disagrees')).toBeTruthy();
-    expect(within(detail).getByRole('img', { name: 'Architect evidence' }).getAttribute('src')).toBe('/api/v1/chats/c-1/pictures/arch-c2');
-    await user.click(within(detail).getByRole('button', { name: 'Open viewer' }));
-    expect(within(await screen.findByRole('dialog')).getByRole('heading', { name: 'Filler' })).toBeTruthy();
+    // The page grid: a different page narrows the findings.
+    const strip = how.querySelector<HTMLElement>('[data-slot="chat-coverage"]')!;
+    const toggle = within(strip).getByRole('button', { name: /pages compared/ });
+    expect(toggle.textContent).toContain('4 of 6 pages compared · 1 not comparable · 1 not opened');
+    await user.click(toggle);
+    expect(strip.querySelectorAll('[data-slot="chat-coverage-page"]')).toHaveLength(6);
+    await user.click(within(strip).getByRole('button', { name: 'Page 7: Different. Show its findings' }));
+    expect(rows(node)).toEqual(['c3']);
+    await user.click(within(node).getByRole('button', { name: 'Showing page 7 only. Show all pages' }));
+    expect(rows(node)).toEqual(['c1', 'c3', 'c4', 'c2']);
   });
 
   it('downloads the findings as a CSV with the trust columns', async () => {

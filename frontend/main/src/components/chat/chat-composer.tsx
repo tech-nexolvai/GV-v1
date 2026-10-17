@@ -170,7 +170,7 @@ export function ChatComposer({
       </div>
       {blank && (
         <p id={`${fieldId}-blank`} data-slot="chat-composer-blank-hint" className="px-4 pt-0.5 text-xs text-muted-foreground">
-          Fill in {blank} to send · <kbd className="num">Tab</kbd> moves to the next blank
+          Fill in {blank} to send · <kbd className="font-sans">Tab</kbd> moves to the next blank
         </p>
       )}
       <div className="flex min-w-0 items-center gap-1 px-2.5 pt-1 pb-2.5">

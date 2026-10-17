@@ -149,9 +149,19 @@ export function plusAction(id: string): PlusAction | null {
   return PLUS_ACTIONS.find((action) => action.id === id) ?? null;
 }
 
-/** The full check's estimate: about 15 minutes, up to the per-answer cap. */
+/**
+ * How long a full check takes, in minutes: measured at about 15 on a 60-page set (2026-10-17).
+ * The one place to change it when the full check gets faster.
+ */
+export const FULL_CHECK_MINUTES = 15;
+
+/**
+ * The full check's estimate: its time, and up to the per-answer cap the server states
+ * (`message_cap_usd` from GET /assistant/models, e.g. "$15").
+ */
 export function fullCheckEstimate(cap: string | null): string {
-  return cap ? `~15 min · up to ${cap}` : '~15 min';
+  const time = `~${FULL_CHECK_MINUTES} min`;
+  return cap ? `${time} · up to ${cap}` : time;
 }
 
 // ── Focus ───────────────────────────────────────────────────

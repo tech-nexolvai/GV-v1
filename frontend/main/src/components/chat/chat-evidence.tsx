@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, ExternalLink, ImageOff, Minus, Plus, RotateCcw } from 'lucide-react';
 
-import { FindingDifference, FindingValue, SourceTag, StatusChip } from '@/components/chat/chat-findings';
-import { CheckList, RoundChip, TrustChip } from '@/components/chat/chat-trust';
+import { Confidence, StatusMark } from '@/components/chat/chat-findings';
+import { RoundChip } from '@/components/chat/chat-trust';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import type { ChatFinding } from '@/lib/chat-api';
-import { architectPage, sideLabels, vendorPage } from '@/lib/chat-findings';
-import { printedSideWords, sumWords } from '@/lib/chat-trust';
+import { architectPage, pageWords, reviewerWords, sideLabels, vendorPage } from '@/lib/chat-findings';
+import { plainChecks, sumWords, TRUST_WORDS, trustLevelOf } from '@/lib/chat-trust';
 import { useReducedMotion } from '@/lib/chat-motion';
 import { cn } from '@/lib/utils';
 
@@ -130,23 +130,32 @@ export function NoPicture() {
 function Side({ side, page, src, finding }: { side: 'architect' | 'vendor'; page: number; src: string | null; finding: ChatFinding }) {
   const who = sideLabels(finding)[side];
   const label = `${who}, page ${page}`;
-  const printed = printedSideWords(finding, side);
   return (
     <figure data-slot="chat-evidence-side" data-side={side} className="grid min-w-0 content-start gap-1.5">
       <figcaption className="flex items-baseline gap-1.5 text-xs font-medium text-muted-foreground">
         <span className="text-foreground">{who}</span>
-        <span className="num">page {page}</span>
+        <span className="tabular-nums">page {page}</span>
       </figcaption>
       {src ? <ZoomPane key={src} src={src} label={label} /> : <NoPicture />}
-      {printed && (
-        <p data-slot="chat-evidence-printed" data-state={printed.state} className="flex min-w-0 items-start gap-1.5 text-[13px]">
-          <span aria-hidden="true" className={cn('num w-3 shrink-0 text-center font-semibold', printed.state === 'pass' ? 'text-foreground' : printed.state === 'fail' ? 'text-outcome-fail-fg' : 'text-outcome-review-fg')}>
-            {printed.state === 'pass' ? '✓' : printed.state === 'fail' ? '✗' : '?'}
-          </span>
-          <span className="min-w-0 break-words tabular-nums">{printed.words}</span>
-        </p>
-      )}
     </figure>
+  );
+}
+
+/** The viewer's words: what each side shows, why, and what to tell the vendor (the card's words). */
+function ViewerWords({ finding }: { finding: ChatFinding }) {
+  const words = reviewerWords(finding);
+  return (
+    <>
+      <dl className="grid gap-x-6 gap-y-1.5 text-sm sm:grid-cols-2">
+        <div className="min-w-0"><dt className="text-xs font-medium text-muted-foreground">{words.referenceLabel}</dt><dd className="break-words">{words.reference}</dd></div>
+        <div className="min-w-0"><dt className="text-xs font-medium text-muted-foreground">{words.vendorLabel}</dt><dd className="break-words">{words.vendor}</dd></div>
+      </dl>
+      <DialogDescription className="break-words text-foreground">
+        <span className="text-muted-foreground">{words.whyLabel}: </span>{words.why}
+      </DialogDescription>
+      {words.tell && <p data-slot="chat-evidence-tell" className="text-sm font-medium break-words">{words.tell}</p>}
+      <p className="text-xs text-muted-foreground">How sure: {trustLevelOf(finding) ? `${TRUST_WORDS[trustLevelOf(finding)!]}. ` : ''}{words.sure}</p>
+    </>
   );
 }
 
@@ -178,39 +187,23 @@ export function EvidenceViewer({ findings, openId, onOpen, pictureUrl, fullPageH
           }}
           className="max-h-[94vh] w-[min(96vw,1240px)] max-w-none gap-3 overflow-y-auto p-4 sm:max-w-none sm:p-5"
         >
-          <div className="grid min-w-0 gap-1.5 pr-8">
-            <div className="flex min-w-0 flex-wrap items-center gap-2">
-              <DialogTitle className="text-base leading-snug font-semibold break-words">{finding.item}</DialogTitle>
-              <StatusChip status={finding.status} />
-              <TrustChip finding={finding} />
+          <div className="grid min-w-0 gap-2 pr-8">
+            <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+              <DialogTitle className="text-base leading-snug font-semibold break-words">
+                {finding.item}
+                <span className="font-normal text-muted-foreground tabular-nums"> · page {pageWords(finding)}</span>
+              </DialogTitle>
+              <StatusMark finding={finding} />
+              <Confidence finding={finding} />
               <RoundChip finding={finding} />
             </div>
-            <dl className="flex flex-wrap items-baseline gap-x-5 gap-y-1 text-sm">
-              <div className="flex items-baseline gap-1.5">
-                <dt className="text-muted-foreground">{sideLabels(finding).architect}</dt>
-                <dd className="font-medium"><FindingValue finding={finding} side="architect" /></dd>
-                <dd><SourceTag finding={finding} /></dd>
-              </div>
-              <div className="flex items-baseline gap-1.5">
-                <dt className="text-muted-foreground">{sideLabels(finding).vendor}</dt>
-                <dd className="font-medium"><FindingValue finding={finding} side="vendor" /></dd>
-              </div>
-              {finding.inches && (
-                <div className="flex items-baseline gap-1.5">
-                  <dt className="text-muted-foreground">Difference</dt>
-                  <dd className="font-medium"><FindingDifference finding={finding} /></dd>
-                </div>
-              )}
-            </dl>
+            <ViewerWords finding={finding} />
             {sumWords(finding) && (
               <p data-slot="chat-evidence-sum" className="text-sm tabular-nums">
                 <span className="text-muted-foreground">Code’s sum: </span>
-                <span className="num">{sumWords(finding)}</span>
+                {sumWords(finding)}
               </p>
             )}
-            {finding.why?.trim()
-              ? <DialogDescription className="break-words">{finding.why}</DialogDescription>
-              : <DialogDescription className="sr-only">The architect's and the vendor's drawings at this spot, side by side.</DialogDescription>}
           </div>
 
           <div className="grid min-w-0 gap-3 md:grid-cols-2">
@@ -218,10 +211,17 @@ export function EvidenceViewer({ findings, openId, onOpen, pictureUrl, fullPageH
             <Side side="vendor" page={vendorPage(finding)} src={finding.vendor_picture_id ? pictureUrl(finding.vendor_picture_id) : null} finding={finding} />
           </div>
 
-          <div data-slot="chat-evidence-checks" className="grid gap-1 rounded-lg border bg-muted/30 px-3 py-2">
-            <p className="text-xs font-medium text-muted-foreground">Checks</p>
-            <CheckList finding={finding} only={printedSideWords(finding, 'architect') || printedSideWords(finding, 'vendor') ? ['second_read', 'verified', 'rule', 'critic'] : undefined} />
-          </div>
+          {plainChecks(finding).length > 0 && (
+            <details data-slot="chat-evidence-checks" className="group/how rounded-lg border bg-muted/30 px-3 py-2 text-[13px]">
+              <summary className="inline-flex cursor-pointer list-none items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden">
+                <ChevronRight aria-hidden="true" className="size-3.5 transition-transform duration-150 group-open/how:rotate-90 motion-reduce:transition-none" />
+                How we know
+              </summary>
+              <ul className="mt-1.5 grid gap-1">
+                {plainChecks(finding).map((line) => <li key={line}>{line}</li>)}
+              </ul>
+            </details>
+          )}
 
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-1">
@@ -234,7 +234,7 @@ export function EvidenceViewer({ findings, openId, onOpen, pictureUrl, fullPageH
               >
                 <ChevronLeft className="size-4" aria-hidden="true" />
               </button>
-              <span data-slot="chat-evidence-position" className="num px-1.5 text-xs text-muted-foreground">{at + 1} of {findings.length}</span>
+              <span data-slot="chat-evidence-position" className="px-1.5 tabular-nums text-xs text-muted-foreground">{at + 1} of {findings.length}</span>
               <button
                 type="button"
                 aria-label="Next finding"

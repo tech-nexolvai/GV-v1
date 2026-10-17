@@ -171,10 +171,11 @@ remark in a width finding. Read the architect's **notes and callouts** as closel
 - **The whole set** ("what did the vendor get wrong?", a full check): helpers, by page pair.
 
 **Batch.** Tool calls of one reply run at the same time: ask for everything you need at once (up to
-4 crops in one `zoom`; several commands in one reply). Never one crop per turn.
+8 crops in one `zoom`; several commands in one reply). Never one crop per turn.
 
 ## 8a. Working the whole set
 
+In a full check the app has done steps 1-3 (split, helpers, checklist): start at step 4.
 1. Read `page_map.json` and look at the contact sheets (`/mnt/user-data/set/contact/`): the set
    at a glance. `TaskCreate` a short plan.
 2. Split the page pairs across helpers (`Agent`), **3-5 pages per helper, all started in one turn**,
@@ -193,7 +194,7 @@ remark in a width finding. Read the architect's **notes and callouts** as closel
    or "not on the architect"; where nothing is printed, counts and layout are compared; a round-2
    page is compared with the architect and with round 1. A line with a gap is work left, not done.
 4. **Verify every lead yourself, in batches** (a helper's finding is a lead): one `zoom` call of
-   up to 4 crops checks about 4 findings; then `update_finding` with `verified: true` (or correct it), or
+   up to 8 crops checks 4 findings (both sides); then `update_finding` with `verified: true` (or correct it), or
    `drop_finding` when it is wrong. A finding whose second read agrees and whose ledger adds up
    needs no re-check from you. One you had no time to check stays unverified. **First** the gaps:
    each "not compared" line and checklist gap in the helper reports and each re-check you planned;

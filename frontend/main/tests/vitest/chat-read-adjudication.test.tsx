@@ -77,21 +77,22 @@ describe('the critic in words', () => {
 });
 
 describe('the evidence viewer', () => {
-  it('shows the reads and the critic under the crops', async () => {
+  it('says the reads and the critic in plain words, under "How we know"', async () => {
     const user = userEvent.setup();
     render(<AssistantMessage message={answer([settled, objected])} chatId="c-1" models={[OPUS]} messageCapUsd="5.00" />);
     const node = screen.getByRole('article', { name: 'Answer' });
 
-    await user.click(within(node).getByRole('button', { name: 'Sink base width' }));
-    await user.click(within(node).getByRole('button', { name: 'Open viewer' }));
-    let viewer = await screen.findByRole('dialog');
-    expect(within(viewer).getByText('Second read: 40" · Third read (Sonnet, 300 dpi): 46" → agrees')).toBeTruthy();
-    expect(viewer.querySelector('[data-check="critic"]')).toBeNull();
+    // A narrow answer: the cards are open at first, so each has its own "Open viewer".
+    await user.click(within(node).getAllByRole('button', { name: 'Open viewer' })[0]);
+    await screen.findByRole('dialog');
+    const how = () => [...screen.getByRole('dialog').querySelectorAll('[data-slot="chat-evidence-checks"] li')].map((line) => line.textContent);
+    expect(how()).toContain('A second, separate AI reading disagrees: it read 40".');
+    expect(how()).toContain('A third, sharper reading settled it in favour: it read 46".');
+    expect(how().some((line) => line?.startsWith('A critic'))).toBe(false);
 
     await user.keyboard('{ArrowRight}');
-    viewer = screen.getByRole('dialog');
-    const critic = viewer.querySelector<HTMLElement>('[data-slot="chat-evidence-checks"] [data-check="critic"]');
-    expect(critic?.dataset.state).toBe('fail');
-    expect(critic?.textContent).toContain('Critic: The vendor value is GV\'s red note.');
+    const viewer = screen.getByRole('dialog');
+    expect(viewer.textContent).toContain('Upper outlet height');
+    expect(how()).toContain('A critic objected: The vendor value is GV\'s red note.');
   });
 });

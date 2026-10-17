@@ -1,263 +1,332 @@
 import { useEffect, useId, useState } from 'react';
-import { ArrowRight, ChevronRight, ChevronsDownUp, ChevronsUpDown, ExternalLink, ImageOff, X } from 'lucide-react';
+import { Check, ChevronRight, ExternalLink, ImageOff, Maximize2, X } from 'lucide-react';
 
-import { CheckIcons, CheckLegend, CheckList, EvidenceTag, RoundChip, TrustChip } from '@/components/chat/chat-trust';
-import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
+import { RoundChip } from '@/components/chat/chat-trust';
 import { useMediaQuery } from '@/hooks/use-media-query';
-import type { ChatFinding, FindingCategory, FindingSource, FindingStatus } from '@/lib/chat-api';
+import type { ChatFinding, FindingCategory, FindingDecisionValue, FindingStatus } from '@/lib/chat-api';
 import {
   architectPage,
   CATEGORY_WORDS,
   categoriesPresent,
-  countWords,
-  FEW_ROWS,
-  findingCounts,
+  findingLine,
   FINDINGS_NARROW,
   groupByArea,
-  groupCountWords,
-  OPEN_GROUPS,
+  itemTitle,
   pagesWords,
   pageWords,
-  rowValue,
+  reviewerWords,
   sourceTag,
+  spotInsets,
   STATUS_WORDS,
   type AreaGroup,
   type FindingFilter,
-  type RowValue,
-  type StatusFilter,
-  sideLabels,
   vendorPage,
 } from '@/lib/chat-findings';
 import { useReducedMotion } from '@/lib/chat-motion';
-import { matchesWords } from '@/lib/chat-full-check';
-import { differenceOf, differenceWords, NOT_COMPARED_WORDS, notCompared, sideValue, sumWords } from '@/lib/chat-trust';
+import { plainChecks, sumWords, TRUST_WORDS, trustLevelOf } from '@/lib/chat-trust';
 import { cn } from '@/lib/utils';
 
 /**
- * The findings of an answer (#1483, reworked in #1508 after the owner's "clean but still weak").
- * (A full check opens with a summary strip first: `FindingsKpis` in chat-full-check.) The findings are grouped by AREA (the area the item names, else its page), the groups
- * with the most wrong items first, each folding. Every finding is ONE line: page · item · architect
- * → vendor in inches · the difference · status · trust · two evidence crops that are always shown.
- * A value that is a sentence shows a short pill; clicking the row opens its detail in place (full
- * text, why, checks, large crops, "Open viewer"). On a phone the rows become cards.
- * Read-only: nothing here changes the review.
+ * The findings of an answer, redesigned in #1522 after the owner's "very bad: needs professional,
+ * very cool and classy" and "make it so everyone can understand, from the reviewer's perspective".
+ * The reviewer's path (PATH.md step 4): What's wrong, then Your decision, then Right (folded), each
+ * grouped by area under a sticky header. A row is one plain line ("Vendor drew 46 in · needs 37 in
+ * (architect 3' - 1")"), a quiet confidence meter, a readable A / V picture pair and Agree / Not a
+ * problem. A click opens the item's card in place: what each side shows, why, what to tell the
+ * vendor, how sure, and the two pictures large with the spot boxed.
+ * One vocabulary: Wrong · Your decision · Right · Not compared. Read-only, except the reviewer's own
+ * Agree / Not a problem, shown only when the server offers the route.
  */
 
 const DROP_MS = 220;
 
-// ── Small parts ─────────────────────────────────────────────
+type RowStatus = FindingStatus | 'not_compared';
 
-const STATUS_OUTCOME = { different: 'FAIL', check: 'REVIEW_REQUIRED', same: 'PASS' } as const;
+const statusOf = (finding: ChatFinding): RowStatus => (finding.status === 'same' && finding.compared === false ? 'not_compared' : finding.status);
 
-const STATUS_CLASS: Record<FindingStatus, string> = {
-  // Filled: the drawings disagree. Solid edge: a person should look. Light: they agree.
-  different: 'border-outcome-fail-fg bg-outcome-fail-fg text-background',
-  check: 'border-outcome-review-fg/60 bg-outcome-review-bg text-outcome-review-fg',
-  same: 'border-outcome-pass-fg/30 bg-outcome-pass-bg text-outcome-pass-fg',
+const DOT: Record<RowStatus, string> = {
+  different: 'bg-outcome-fail',
+  check: 'bg-outcome-review',
+  same: 'bg-outcome-pass',
+  not_compared: 'bg-transparent ring-[1.5px] ring-inset ring-outcome-missing',
 };
 
-const CHIP = 'inline-flex w-fit shrink-0 items-center gap-1 rounded-full border px-2 py-px text-xs font-medium whitespace-nowrap';
+/** A small coloured dot: colour is never the only signal, the word beside it always says it. */
+export function StatusDot({ status, className }: { status: RowStatus; className?: string }) {
+  return <span aria-hidden="true" className={cn('inline-block size-2 shrink-0 rounded-full', DOT[status], className)} />;
+}
 
-/** Different / Check / Same, with its glyph (colour is only the second signal). */
-export function StatusChip({ status, className }: { status: FindingStatus; className?: string }) {
+const STATUS_TEXT: Record<RowStatus, string> = {
+  different: 'text-outcome-fail-fg font-medium',
+  check: 'text-foreground font-medium',
+  same: 'text-muted-foreground',
+  not_compared: 'text-muted-foreground',
+};
+
+/** Wrong / Your decision / Right / Not compared, as a dot and a word (no filled chip). */
+export function StatusMark({ finding, className }: { finding: ChatFinding; className?: string }) {
+  const status = statusOf(finding);
   return (
-    <span data-slot="chat-finding-status" data-status={status} className={cn(CHIP, STATUS_CLASS[status] ?? STATUS_CLASS.check, className)}>
-      <OutcomeIcon outcome={STATUS_OUTCOME[status] ?? 'REVIEW_REQUIRED'} size={12} />
-      {STATUS_WORDS[status] ?? status}
+    <span data-slot="chat-finding-status" data-status={status} className={cn('inline-flex items-center gap-1.5 text-[13px] whitespace-nowrap', STATUS_TEXT[status], className)}>
+      <StatusDot status={status} />
+      {status === 'not_compared' ? 'Not compared' : STATUS_WORDS[finding.status]}
     </span>
   );
 }
 
-/** A row's status: a "Same" item that was never really compared says "Not compared" (not seen is not right). */
-function RowStatus({ finding }: { finding: ChatFinding }) {
-  if (finding.status === 'same' && notCompared(finding)) {
-    const why = finding.not_compared_why ? NOT_COMPARED_WORDS[finding.not_compared_why] : null;
-    return (
-      <span data-slot="chat-finding-status" data-status="not_compared" title={why ? `Not compared: ${why}` : 'Not compared'} className={cn(CHIP, 'border-dashed text-muted-foreground')}>
-        <OutcomeIcon outcome="NOT_FOUND" size={12} />
-        Not compared
+const LEVEL_STEPS = { confirmed: 3, likely: 2, to_check: 1 } as const;
+
+/**
+ * How sure, quietly: a 3-step meter (Confirmed 3 · Likely 2 · AI reading only 1) and its word.
+ * Grey, never amber: confidence is not a status.
+ */
+export function Confidence({ finding, className }: { finding: ChatFinding; className?: string }) {
+  const level = trustLevelOf(finding);
+  if (!level) return null;
+  const steps = LEVEL_STEPS[level];
+  return (
+    <span data-slot="chat-confidence" data-level={level} className={cn('inline-flex items-center gap-1.5 text-xs whitespace-nowrap text-muted-foreground', className)}>
+      <span aria-hidden="true" className="inline-flex items-end gap-[2px]">
+        {[5, 8, 11].map((height, at) => (
+          <span key={height} className={cn('block w-[3px] rounded-[1px]', at < steps ? 'bg-muted-foreground' : 'bg-border')} style={{ height }} />
+        ))}
       </span>
-    );
-  }
-  return <StatusChip status={finding.status} />;
-}
-
-/** A row's short form of the source tag; the full words are on hover. */
-const SOURCE_SHORT: Partial<Record<FindingSource, string>> = {
-  brand_prototype: 'prototype',
-  rules: 'GV rule',
-  vendor_arithmetic: 'own string',
-  cross_view: 'other view',
-  completeness: 'one side',
-};
-
-/**
- * The source tag ("vs brand prototype") when the vendor was not compared with the architect. In a
- * row (`inline`) it is the short form ("prototype") with the full words on hover.
- */
-export function SourceTag({ finding, inline = false }: { finding: Pick<ChatFinding, 'source'>; inline?: boolean }) {
-  const tag = sourceTag(finding);
-  if (!tag) return null;
-  const short = inline ? SOURCE_SHORT[finding.source] ?? tag : tag;
-  return (
-    <span
-      data-slot="chat-finding-source"
-      title={short !== tag ? tag : undefined}
-      className={cn('w-fit shrink-0 rounded border border-dashed px-1 text-xs leading-4 whitespace-nowrap text-muted-foreground', inline ? 'inline-block' : 'mt-0.5 block')}
-    >
-      <span aria-hidden={short !== tag || undefined}>{short}</span>
-      {short !== tag && <span className="sr-only">{tag}</span>}
+      <span><span className="sr-only">Confidence: </span>{TRUST_WORDS[level]}</span>
     </span>
   );
 }
 
-/**
- * One side's value in full (the row's detail and the evidence viewer): code's inches ("37 in") with
- * the printed form on hover, or the printed words as written, with a quiet "not a number" pill when
- * code could not read a length there.
- */
-export function FindingValue({ finding, side }: { finding: ChatFinding; side: 'architect' | 'vendor' }) {
-  const value = sideValue(finding, side);
-  // A vendor string's sum, written out by code, on the vendor value's tooltip.
-  const sum = side === 'vendor' ? sumWords(finding) : null;
-  const title = [value.printed ? `As printed: ${value.printed}` : null, sum ? `Code’s sum: ${sum}` : null].filter(Boolean).join('\n');
+/** The row's one line: "Vendor drew 46 in · needs 37 in (architect 3' - 1") +9 in". */
+export function FindingLineText({ finding }: { finding: ChatFinding }) {
+  const line = findingLine(finding);
+  const value = (part: { text: string; inches: boolean }) => <span className="font-semibold text-foreground tabular-nums">{part.text}</span>;
   return (
-    <span data-slot="chat-finding-value" data-side={side} className="inline-flex flex-wrap items-baseline gap-x-1.5">
-      <span className={cn('break-words', value.printed ? 'tabular-nums' : null)} title={title || undefined}>{value.shown}</span>
-      {value.printed && <span className="text-xs text-muted-foreground">printed {value.printed}</span>}
-      {sum && <span className="sr-only">(code’s sum: {sum})</span>}
-      {value.notANumber && <span data-slot="chat-not-a-number" className="rounded-full border px-1.5 text-xs leading-4 text-muted-foreground">not a number</span>}
-    </span>
-  );
-}
-
-/**
- * A cross-view finding compares two views of the same side's drawings: its cells say so
- * ("Reference view" / "This view") under the table's Architect / Vendor headings.
- */
-export function SideLabel({ finding, side }: { finding: ChatFinding; side: 'architect' | 'vendor' }) {
-  if (finding.source !== 'cross_view') return null;
-  return <span data-slot="chat-side-label" className="block text-xs text-muted-foreground">{sideLabels(finding)[side]}</span>;
-}
-
-/** Code's difference as a chip, "+9 in" (red when the drawings disagree); a quiet dash when code has none. */
-export function FindingDifference({ finding }: { finding: ChatFinding }) {
-  const difference = differenceOf(finding);
-  if (difference === null) return <span data-slot="chat-finding-difference" className="text-muted-foreground/60">—</span>;
-  return (
-    <span
-      data-slot="chat-finding-difference"
-      className={cn(
-        'inline-flex w-fit items-center rounded-md px-1.5 py-px text-xs font-semibold whitespace-nowrap tabular-nums',
-        difference === 0 ? 'bg-muted text-muted-foreground'
-          : finding.status === 'different' ? 'bg-outcome-fail-bg text-outcome-fail-fg'
-          : 'bg-outcome-review-bg text-outcome-review-fg',
+    <span data-slot="chat-finding-line" className="line-clamp-2 text-[13px] leading-[1.45] text-muted-foreground">
+      {line.verb === 'both' ? <>Both {value(line.vendor)}</> : (
+        <>
+          Vendor drew {value(line.vendor)}
+          <span aria-hidden="true"> · </span>
+          <span className="sr-only">, </span>
+          {line.verb} {line.reference && value(line.reference)}
+          {line.printed && <> ({line.printed})</>}
+        </>
       )}
-    >
-      {differenceWords(difference)}
+      {line.difference && (
+        <span
+          data-slot="chat-finding-difference"
+          className={cn(
+            'ml-1.5 inline-flex h-[18px] items-center rounded-[5px] px-1.5 align-[1px] text-xs font-semibold tabular-nums',
+            finding.status === 'different' ? 'bg-outcome-fail-bg text-outcome-fail-fg' : 'bg-muted text-muted-foreground',
+          )}
+        >
+          {line.difference}
+        </span>
+      )}
     </span>
   );
 }
 
-/** One side's value in a ROW: inches, a short printed value, or a pill for a sentence (full text on hover). */
-function RowValueCell({ value, side, sum }: { value: RowValue; side: 'architect' | 'vendor'; sum: string | null }) {
-  if (value.kind === 'none') return <span data-slot="chat-finding-value" data-side={side} className="text-muted-foreground/60">—</span>;
-  if (value.kind === 'pill') {
-    return (
-      <span data-slot="chat-finding-value" data-side={side} data-pill={value.pill} title={value.text} className="inline-flex w-fit max-w-full rounded-full border bg-background px-1.5 text-xs leading-[18px] text-muted-foreground">
-        <span aria-hidden="true">{value.pill}</span>
-        <span className="sr-only">{value.text}</span>
-      </span>
-    );
-  }
-  const title = [value.kind === 'inches' && value.printed ? `As printed: ${value.printed}` : null, sum ? `Code’s sum: ${sum}` : null].filter(Boolean).join('\n');
-  return (
-    <span data-slot="chat-finding-value" data-side={side} title={title || (value.kind === 'short' ? value.text : undefined)} className="block min-w-0 truncate tabular-nums">
-      {value.text}
-      {value.kind === 'inches' && value.printed && <span className="sr-only"> (printed {value.printed})</span>}
-    </span>
-  );
-}
+// ── Pictures ────────────────────────────────────────────────
 
-/** Architect → vendor, the arrow lined up from row to row. */
-function RowValues({ finding }: { finding: ChatFinding }) {
-  const sum = sumWords(finding);
-  return (
-    <span className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-1.5">
-      <RowValueCell value={rowValue(finding, 'architect')} side="architect" sum={null} />
-      <ArrowRight aria-hidden="true" className="size-3 text-muted-foreground/70" />
-      <RowValueCell value={rowValue(finding, 'vendor')} side="vendor" sum={sum} />
-    </span>
-  );
-}
-
-/** A small evidence crop, or a quiet placeholder when there is none (or it fails to load). */
-export function EvidenceThumb({ src, label, size = 'row' }: { src: string | null; label: string; size?: 'row' | 'large' }) {
+/** An evidence picture, or a calm placeholder when there is none (or it fails to load). */
+export function EvidenceThumb({ src, label, className }: { src: string | null; label: string; className?: string }) {
   const [broken, setBroken] = useState<string | null>(null);
-  const box = size === 'large' ? 'h-44 w-full' : 'h-10 w-14';
   if (!src || broken === src) {
     return (
-      <span
-        data-slot="chat-evidence-thumb"
-        data-missing="true"
-        title={`${label}: no evidence picture`}
-        className={cn('grid shrink-0 place-items-center rounded-md border border-dashed text-muted-foreground/70', box)}
-      >
-        <ImageOff aria-hidden="true" className="size-3.5" />
-        <span className="sr-only">{label}: no evidence picture</span>
+      <span data-slot="chat-evidence-thumb" data-missing="true" className={cn('grid place-items-center rounded-md border border-dashed bg-muted/40 px-2 text-center text-xs text-muted-foreground', className)}>
+        <ImageOff aria-hidden="true" className="mb-0.5 size-3.5" />
+        <span>{label}: no evidence picture</span>
       </span>
     );
   }
-  return (
-    <img
-      data-slot="chat-evidence-thumb"
-      src={src}
-      alt={`${label} evidence`}
-      loading="lazy"
-      onError={() => setBroken(src)}
-      className={cn('shrink-0 rounded-md border bg-white', box, size === 'large' ? 'object-contain' : 'object-cover')}
-    />
-  );
+  return <img data-slot="chat-evidence-thumb" src={src} alt={`${label} evidence`} loading="lazy" onError={() => setBroken(src)} className={cn('object-contain', className)} />;
 }
 
-/** The two crops of a row. With `onOpen` each opens the evidence viewer. */
-function Thumbs({ finding, pictureUrl, onOpen }: { finding: ChatFinding; pictureUrl: (pictureId: string) => string; onOpen?: () => void }) {
-  const labels = sideLabels(finding);
-  const sides = [
-    { key: 'architect', label: labels.architect, src: finding.arch_picture_id ? pictureUrl(finding.arch_picture_id) : null },
-    { key: 'vendor', label: labels.vendor, src: finding.vendor_picture_id ? pictureUrl(finding.vendor_picture_id) : null },
-  ];
-  return (
-    <span data-slot="chat-finding-thumbs" className="flex shrink-0 items-center gap-1">
-      {sides.map((side) => (onOpen && side.src ? (
-        <button
-          key={side.key}
-          type="button"
-          onClick={(event) => { event.stopPropagation(); onOpen(); }}
-          title={`Open the evidence: ${side.label}`}
-          className="rounded-md transition-[filter] hover:brightness-95 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none motion-reduce:transition-none dark:hover:brightness-110"
-        >
-          <EvidenceThumb src={side.src} label={side.label} />
-        </button>
-      ) : <EvidenceThumb key={side.key} src={side.src} label={side.label} />))}
-    </span>
-  );
-}
-
-function Chip({ pressed, onClick, children, count }: { pressed: boolean; onClick: () => void; children: React.ReactNode; count?: number }) {
+/** One side of a row's pair: 96 px tall, labelled A or V, larger on hover or focus; a click opens the viewer. */
+function PairSide({ src, side, label, onOpen }: { src: string | null; side: 'A' | 'V'; label: string; onOpen: () => void }) {
+  const reduced = useReducedMotion();
+  if (!src) return <EvidenceThumb src={null} label={label} className="h-24" />;
   return (
     <button
       type="button"
-      aria-pressed={pressed}
-      onClick={onClick}
-      className={cn(
-        'inline-flex h-7 items-center gap-1 rounded-full border px-2.5 text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none motion-reduce:transition-none',
-        pressed ? 'border-foreground bg-foreground text-background' : 'bg-background text-muted-foreground hover:bg-accent hover:text-foreground',
-      )}
+      data-slot="chat-evidence-side"
+      data-side={side}
+      onClick={(event) => { event.stopPropagation(); onOpen(); }}
+      aria-label={`Open the pictures large: ${label}`}
+      className="group/pic relative block h-24 min-w-0 rounded-md border bg-white focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none"
     >
-      {children}
-      {count !== undefined && <span className="tabular-nums opacity-80">{count}</span>}
+      <EvidenceThumb src={src} label={label} className="size-full rounded-[5px] p-[3px]" />
+      <span aria-hidden="true" className="absolute top-1 left-1 rounded-[4px] bg-black/70 px-1 py-0.5 text-xs leading-none font-semibold text-white">{side}</span>
+      {/* Hover / focus zoom: a larger copy beside the pair, never covering the row's words. */}
+      <span
+        aria-hidden="true"
+        className={cn(
+          'pointer-events-none absolute top-1/2 z-30 hidden w-[26rem] -translate-y-1/2 rounded-xl bg-white p-1.5 opacity-0 shadow-[0_16px_40px_rgb(0_0_0/0.18),0_0_0_1px_rgb(0_0_0/0.06)] lg:block',
+          side === 'A' ? 'right-[calc(200%+1.125rem)]' : 'right-[calc(100%+0.625rem)]',
+          'group-hover/pic:opacity-100 group-focus-visible/pic:opacity-100',
+          !reduced && 'scale-[0.97] transition-[opacity,transform] duration-200 ease-out group-hover/pic:scale-100 group-focus-visible/pic:scale-100',
+        )}
+      >
+        <img src={src} alt="" className="max-h-80 w-full object-contain" />
+      </span>
     </button>
+  );
+}
+
+function EvidencePair({ finding, pictureUrl, onOpen }: { finding: ChatFinding; pictureUrl: (pictureId: string) => string; onOpen: () => void }) {
+  return (
+    <span data-slot="chat-finding-thumbs" className="grid w-full max-w-80 grid-cols-2 gap-2 lg:w-64">
+      <PairSide side="A" label="Architect" src={finding.arch_picture_id ? pictureUrl(finding.arch_picture_id) : null} onOpen={onOpen} />
+      <PairSide side="V" label="Vendor" src={finding.vendor_picture_id ? pictureUrl(finding.vendor_picture_id) : null} onOpen={onOpen} />
+    </span>
+  );
+}
+
+/** A large picture in the card, with the spot boxed when code knows where it is; a click zooms (viewer). */
+function LargePicture({ src, label, page, box, tone, onOpen }: {
+  src: string | null;
+  label: string;
+  page: number;
+  box: ChatFinding['arch_box'];
+  tone: RowStatus;
+  onOpen: () => void;
+}) {
+  const [size, setSize] = useState<{ width: number; height: number } | null>(null);
+  const insets = size ? spotInsets(box, size) : null;
+  return (
+    <figure className="grid min-w-0 gap-1.5">
+      <figcaption className="flex items-baseline gap-1.5 text-xs text-muted-foreground">
+        <span className="font-medium text-foreground">{label}</span>
+        <span className="tabular-nums">page {page}</span>
+      </figcaption>
+      {src ? (
+        <button
+          type="button"
+          onClick={onOpen}
+          aria-label={`Zoom: ${label}, page ${page}`}
+          className="relative block h-60 cursor-zoom-in overflow-hidden rounded-lg border bg-white focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        >
+          <img
+            src={src}
+            alt={`${label} drawing, page ${page}`}
+            onLoad={(event) => setSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
+            className="size-full object-contain"
+          />
+          {insets && (
+            <span
+              data-slot="chat-finding-spot"
+              aria-hidden="true"
+              style={insets}
+              className={cn('pointer-events-none absolute rounded-[3px] border-2', tone === 'different' ? 'border-outcome-fail shadow-[0_0_0_3px_rgb(220_38_38/0.15)]' : 'border-outcome-review shadow-[0_0_0_3px_rgb(217_119_6/0.15)]')}
+            />
+          )}
+        </button>
+      ) : <EvidenceThumb src={null} label={label} className="h-60 rounded-lg" />}
+    </figure>
+  );
+}
+
+// ── The reviewer's answer per item (PATH step 5) ────────────
+
+export interface DecisionProps {
+  /** The reviewer's answer on this finding (saved, or just given). */
+  decision: FindingDecisionValue | null;
+  onDecide: (decision: FindingDecisionValue) => void;
+  busy?: boolean;
+}
+
+/** ✓ Agree / ✗ Not a problem: one click each, real buttons (keyboard: Tab, Enter or Space). */
+function DecisionButtons({ decision, onDecide, busy }: DecisionProps) {
+  const base = 'inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-[12.5px] font-medium whitespace-nowrap transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-60 motion-reduce:transition-none';
+  return (
+    <span role="group" aria-label="Your answer" data-slot="chat-finding-decision" data-decision={decision ?? undefined} className="flex flex-wrap gap-1.5" onClick={(event) => event.stopPropagation()}>
+      <button
+        type="button"
+        aria-pressed={decision === 'agree'}
+        disabled={busy}
+        onClick={() => onDecide('agree')}
+        className={cn(base, decision === 'agree' ? 'border-foreground bg-foreground text-background' : 'bg-background text-muted-foreground hover:border-foreground/25 hover:text-foreground')}
+      >
+        <Check aria-hidden="true" className="size-3.5" />
+        Agree
+      </button>
+      <button
+        type="button"
+        aria-pressed={decision === 'not_a_problem'}
+        disabled={busy}
+        onClick={() => onDecide('not_a_problem')}
+        className={cn(base, decision === 'not_a_problem' ? 'border-foreground bg-foreground text-background' : 'bg-background text-muted-foreground hover:border-foreground/25 hover:text-foreground')}
+      >
+        <X aria-hidden="true" className="size-3.5" />
+        Not a problem
+      </button>
+    </span>
+  );
+}
+
+// ── The item's card (owner: "from the reviewer's perspective") ─
+
+/** Everything about one finding, in the reviewer's words, with the two pictures large. */
+export function FindingCard({ finding, pictureUrl, onOpen, fullPageHref }: {
+  finding: ChatFinding;
+  pictureUrl: (pictureId: string) => string;
+  onOpen: () => void;
+  fullPageHref?: string | null;
+}) {
+  const words = reviewerWords(finding);
+  const status = statusOf(finding);
+  const checks = plainChecks(finding);
+  const tag = sourceTag(finding);
+  const sum = sumWords(finding);
+  return (
+    <div data-slot="chat-finding-card" className="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.3fr)]">
+      <div className="grid min-w-0 content-start gap-3.5">
+        <p className="text-[15px] leading-snug font-semibold break-words">
+          {finding.item}
+          <span className="font-normal text-muted-foreground tabular-nums"> · page {pageWords(finding)}</span>
+        </p>
+        <dl className="grid gap-3 text-[13.5px] leading-relaxed">
+          <div><dt className="text-xs font-medium text-muted-foreground">{words.referenceLabel}</dt><dd className="break-words">{words.reference}</dd></div>
+          <div><dt className="text-xs font-medium text-muted-foreground">{words.vendorLabel}</dt><dd className="break-words">{words.vendor}</dd></div>
+          {sum && <div><dt className="text-xs font-medium text-muted-foreground">Code’s sum</dt><dd data-slot="chat-finding-sum" className="break-words tabular-nums">{sum}</dd></div>}
+          <div><dt className="text-xs font-medium text-muted-foreground">{words.whyLabel}</dt><dd data-slot="chat-finding-why" className="break-words">{words.why}</dd></div>
+          {words.tell && <div><dt className="text-xs font-medium text-muted-foreground">What to tell the vendor</dt><dd data-slot="chat-finding-tell" className="font-medium break-words">{words.tell}</dd></div>}
+        </dl>
+        <p data-slot="chat-finding-sure" className="flex items-baseline gap-2 text-[12.5px] leading-relaxed text-muted-foreground">
+          <span><span className="font-medium text-foreground">How sure: {trustLevelOf(finding) ? TRUST_WORDS[trustLevelOf(finding)!] : 'not rated yet'}.</span> {words.sure}</span>
+        </p>
+        {(checks.length > 0 || tag) && (
+          <details data-slot="chat-finding-how" className="group/how text-[12.5px] text-muted-foreground">
+            <summary className="inline-flex cursor-pointer list-none items-center gap-1 rounded-sm hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none [&::-webkit-details-marker]:hidden">
+              <ChevronRight aria-hidden="true" className="size-3.5 transition-transform duration-150 group-open/how:rotate-90 motion-reduce:transition-none" />
+              How we know
+            </summary>
+            <ul className="mt-1.5 grid gap-1 pl-[18px]">
+              {tag && <li>Compared {tag.replace(/^vs /, 'with the ')}.</li>}
+              {checks.map((line) => <li key={line}>{line}</li>)}
+            </ul>
+          </details>
+        )}
+      </div>
+      <div className="grid min-w-0 content-start gap-3">
+        <div className="grid min-w-0 gap-3 sm:grid-cols-2">
+          <LargePicture src={finding.arch_picture_id ? pictureUrl(finding.arch_picture_id) : null} label={finding.source === 'cross_view' ? 'Reference view' : 'Architect'} page={architectPage(finding)} box={finding.arch_box} tone={status} onOpen={onOpen} />
+          <LargePicture src={finding.vendor_picture_id ? pictureUrl(finding.vendor_picture_id) : null} label={finding.source === 'cross_view' ? 'This view' : 'Vendor'} page={vendorPage(finding)} box={finding.vendor_box} tone={status} onOpen={onOpen} />
+        </div>
+        <div className="flex flex-wrap justify-end gap-2">
+          <button type="button" onClick={onOpen} className="inline-flex h-8 items-center gap-1.5 rounded-lg border bg-background px-3 text-[13px] font-medium hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
+            <Maximize2 aria-hidden="true" className="size-3.5" />
+            Open viewer
+          </button>
+          {fullPageHref && (
+            <a href={fullPageHref} className="inline-flex h-8 items-center gap-1.5 rounded-lg border bg-background px-3 text-[13px] font-medium hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
+              <ExternalLink aria-hidden="true" className="size-3.5" />
+              Open full page
+            </a>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -286,397 +355,312 @@ function useLeaving(findings: readonly ChatFinding[]): ChatFinding[] {
   return leaving;
 }
 
-// ── A row's detail ──────────────────────────────────────────
+// ── One row ─────────────────────────────────────────────────
 
-/** Under a right finding's vendor value: what it matched ("matches architect"), or why it was not compared. */
-function Matches({ finding }: { finding: ChatFinding }) {
-  if (finding.status !== 'same') return null;
-  if (notCompared(finding)) {
-    const why = finding.not_compared_why ? NOT_COMPARED_WORDS[finding.not_compared_why] : null;
-    return <span data-slot="chat-finding-not-compared" className="mt-0.5 block text-xs text-muted-foreground">{why ? `not compared: ${why}` : 'not compared'}</span>;
-  }
-  return <span data-slot="chat-finding-matches" className="mt-0.5 block text-xs text-outcome-pass-fg">{matchesWords(finding.source)}</span>;
+interface RowProps {
+  finding: ChatFinding;
+  area: string | null;
+  open: boolean;
+  leaving: boolean;
+  onToggle: () => void;
+  onOpen: () => void;
+  pictureUrl: (pictureId: string) => string;
+  fullPageHref?: string | null;
+  decision?: DecisionProps | null;
 }
 
-/** Everything about one finding, in place: full values, why, checks, large crops and "Open viewer". */
-function FindingDetail({ finding, pictureUrl, onOpen, title = true }: { finding: ChatFinding; pictureUrl: (pictureId: string) => string; onOpen: () => void; title?: boolean }) {
-  const labels = sideLabels(finding);
-  const sum = sumWords(finding);
-  const crops = [
-    { key: 'architect', label: labels.architect, page: architectPage(finding), src: finding.arch_picture_id ? pictureUrl(finding.arch_picture_id) : null },
-    { key: 'vendor', label: labels.vendor, page: vendorPage(finding), src: finding.vendor_picture_id ? pictureUrl(finding.vendor_picture_id) : null },
-  ];
+function FindingRow({ finding, area, open, leaving, onToggle, onOpen, pictureUrl, fullPageHref, decision }: RowProps) {
+  const detailId = useId();
+  const tag = sourceTag(finding);
+  const title = itemTitle(finding.item, area);
   return (
-    <div data-slot="chat-finding-detail-body" className="grid min-w-0 gap-4 text-[13px] leading-relaxed md:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
-      <div className="grid min-w-0 content-start gap-3">
-        {/* A card already shows the whole item; a row cuts it short. */}
-        {title && <p className="text-sm font-medium break-words">{finding.item}</p>}
-        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5">
-          <dt className="text-muted-foreground">{labels.architect}</dt>
-          <dd className="min-w-0"><FindingValue finding={finding} side="architect" /><SourceTag finding={finding} /></dd>
-          <dt className="text-muted-foreground">{labels.vendor}</dt>
-          <dd className="min-w-0"><FindingValue finding={finding} side="vendor" /><Matches finding={finding} /></dd>
-          {differenceOf(finding) !== null && <><dt className="text-muted-foreground">Difference</dt><dd><FindingDifference finding={finding} /></dd></>}
-          {sum && <><dt className="text-muted-foreground">Code’s sum</dt><dd className="tabular-nums break-words">{sum}</dd></>}
-          <dt className="text-muted-foreground">Page</dt>
-          <dd className="tabular-nums">{pageWords(finding)}</dd>
-          {finding.evidence_kind && <><dt className="text-muted-foreground">Evidence</dt><dd><EvidenceTag finding={finding} /></dd></>}
-        </dl>
-        {finding.why?.trim() && <p data-slot="chat-finding-why" className="break-words text-foreground/90">{finding.why}</p>}
-        <div className="grid gap-1">
-          <p className="text-xs font-medium text-muted-foreground">Checks</p>
-          <CheckList finding={finding} />
-        </div>
+    <li
+      data-slot="chat-finding-row"
+      data-id={finding.id}
+      data-status={statusOf(finding)}
+      data-open={open ? 'true' : undefined}
+      data-leaving={leaving ? 'true' : undefined}
+      className={cn('border-b border-border/70 last:border-b-0', leaving && 'chat-leave pointer-events-none')}
+    >
+      <div
+        onClick={leaving ? undefined : onToggle}
+        className={cn(
+          'grid cursor-pointer gap-3 px-4 py-3.5 transition-colors hover:bg-muted/40 motion-reduce:transition-none lg:grid-cols-[2.5rem_minmax(0,1fr)_16rem_auto] lg:items-center lg:gap-4',
+          open && 'bg-muted/40',
+        )}
+      >
+        <span className="hidden text-[12.5px] font-medium text-muted-foreground tabular-nums lg:block">p.{finding.page}</span>
+        <span className="grid min-w-0 gap-1">
+          <span className="flex min-w-0 items-baseline gap-2">
+            <button
+              type="button"
+              aria-expanded={open}
+              aria-controls={detailId}
+              onClick={(event) => { event.stopPropagation(); onToggle(); }}
+              title={finding.item}
+              className="min-w-0 truncate rounded-sm text-left text-[13.5px] font-medium focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+            >
+              <span className="sr-only">{finding.item}</span>
+              <span aria-hidden="true">{title}</span>
+            </button>
+            <span className="shrink-0 text-xs text-muted-foreground tabular-nums lg:hidden">p.{pageWords(finding)}</span>
+          </span>
+          <FindingLineText finding={finding} />
+          {finding.status === 'check' && finding.why?.trim() && (
+            <span data-slot="chat-finding-question" className="line-clamp-2 text-[13px] leading-[1.45]">
+              <span className="font-medium text-outcome-review-fg">Your call: </span>
+              {finding.why}
+            </span>
+          )}
+          <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            {statusOf(finding) === 'not_compared' && <StatusMark finding={finding} />}
+            <Confidence finding={finding} />
+            <RoundChip finding={finding} />
+            {tag && <span data-slot="chat-finding-source" className="text-xs text-muted-foreground">{tag.replace(/^vs /, 'Compared with the ')}</span>}
+            {finding.vs_page != null && finding.vs_page !== finding.page && <span className="hidden text-xs text-muted-foreground tabular-nums lg:inline">vs page {finding.vs_page}</span>}
+          </span>
+        </span>
+        <EvidencePair finding={finding} pictureUrl={pictureUrl} onOpen={onOpen} />
+        <span className="flex lg:justify-end">{decision && <DecisionButtons {...decision} />}</span>
       </div>
-      <div className="grid min-w-0 content-start gap-2">
-        <div className="grid grid-cols-2 gap-2">
-          {crops.map((crop) => (
-            <figure key={crop.key} className="grid min-w-0 gap-1">
-              <figcaption className="flex items-baseline gap-1.5 text-xs text-muted-foreground">
-                <span className="font-medium text-foreground">{crop.label}</span>
-                <span className="tabular-nums">page {crop.page}</span>
-              </figcaption>
-              {crop.src ? (
-                <button type="button" onClick={onOpen} title="Open in the viewer" className="rounded-md focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
-                  <EvidenceThumb src={crop.src} label={crop.label} size="large" />
-                </button>
-              ) : <EvidenceThumb src={null} label={crop.label} size="large" />}
-            </figure>
-          ))}
+      {open && !leaving && (
+        <div id={detailId} data-slot="chat-finding-detail" data-id={finding.id} className="border-t border-border/70 bg-muted/30 px-4 py-5 lg:pl-[4.5rem]">
+          <FindingCard finding={finding} pictureUrl={pictureUrl} onOpen={onOpen} fullPageHref={fullPageHref} />
         </div>
-        <button
-          type="button"
-          onClick={onOpen}
-          className="inline-flex h-8 w-fit items-center gap-1.5 justify-self-end rounded-lg border bg-background px-3 text-sm font-medium hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-        >
-          <ExternalLink className="size-3.5" aria-hidden="true" />
-          Open viewer
-        </button>
-      </div>
+      )}
+    </li>
+  );
+}
+
+// ── A list of findings, grouped by area ─────────────────────
+
+export interface FindingsListProps {
+  findings: readonly ChatFinding[];
+  /** Which groups start open: all of them, or the first few. */
+  openGroups?: 'all' | number;
+  /** Rows whose card starts open (a narrow answer's few items). */
+  openRowsAtFirst?: boolean;
+  onOpen: (finding: ChatFinding) => void;
+  pictureUrl: (pictureId: string) => string;
+  fullPageHref?: string | null;
+  /** The reviewer's answer on each finding; null hides the buttons (no route yet, or a Right list). */
+  decisionFor?: ((finding: ChatFinding) => DecisionProps) | null;
+  /** What the list is, for screen readers ("What’s wrong"). */
+  label: string;
+}
+
+export function FindingsList({ findings, openGroups = 'all', openRowsAtFirst = false, onOpen, pictureUrl, fullPageHref, decisionFor, label }: FindingsListProps) {
+  const baseId = useId();
+  const leaving = useLeaving(findings);
+  const leavingIds = new Set(leaving.map((finding) => finding.id));
+  const groups = groupByArea([...findings, ...leaving], { status: 'any', category: null, page: null });
+  const [closed, setClosed] = useState<ReadonlySet<string>>(() => new Set());
+  const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set());
+  const [rows, setRows] = useState<ReadonlySet<string>>(() => (openRowsAtFirst ? new Set(findings.map((finding) => finding.id)) : new Set()));
+  const isOpen = (group: AreaGroup, index: number) => !closed.has(group.key) && (opened.has(group.key) || openGroups === 'all' || index < openGroups);
+  const toggleGroup = (group: AreaGroup, index: number) => {
+    const open = isOpen(group, index);
+    setClosed((now) => { const next = new Set(now); if (open) next.add(group.key); else next.delete(group.key); return next; });
+    setOpened((now) => { const next = new Set(now); if (open) next.delete(group.key); else next.add(group.key); return next; });
+  };
+  const toggleRow = (id: string) => setRows((now) => { const next = new Set(now); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+
+  return (
+    <div data-slot="chat-findings-list" aria-label={label} role="region" className="rounded-xl border bg-card shadow-[0_1px_2px_rgb(0_0_0/0.04)]">
+      {groups.map((group, index) => {
+        const open = isOpen(group, index);
+        const listId = `${baseId}-group-${index}`;
+        const pages = group.byPage ? null : pagesWords(group.pages).replace(/^p/, 'p.');
+        return (
+          <section key={group.key} data-slot="chat-findings-group" data-area={group.key} data-open={open ? 'true' : 'false'} aria-label={group.name} className="border-t first:border-t-0">
+            <button
+              type="button"
+              aria-expanded={open}
+              aria-controls={listId}
+              onClick={() => toggleGroup(group, index)}
+              data-slot="chat-findings-group-toggle"
+              className={cn(
+                'sticky top-0 z-20 flex w-full min-w-0 items-center gap-2.5 border-b border-border/70 bg-muted/90 px-4 py-2.5 text-left text-[13px] backdrop-blur-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset supports-[backdrop-filter]:bg-muted/75',
+                index === 0 && 'rounded-t-xl',
+                !open && index === groups.length - 1 && 'rounded-b-xl border-b-0',
+              )}
+            >
+              <ChevronRight aria-hidden="true" className={cn('size-3.5 shrink-0 text-muted-foreground transition-transform duration-150 ease-out motion-reduce:transition-none', open && 'rotate-90')} />
+              <span className="min-w-0 truncate font-semibold text-foreground" title={group.name}>{group.name}</span>
+              {pages && <span className="shrink-0 text-muted-foreground tabular-nums">{pages}</span>}
+              <span className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums">{group.findings.length}</span>
+            </button>
+            {open && (
+              <ul id={listId} className="grid">
+                {group.findings.map((finding) => (
+                  <FindingRow
+                    key={finding.id}
+                    finding={finding}
+                    area={group.byPage ? null : group.name}
+                    open={rows.has(finding.id)}
+                    leaving={leavingIds.has(finding.id)}
+                    onToggle={() => toggleRow(finding.id)}
+                    onOpen={() => onOpen(finding)}
+                    pictureUrl={pictureUrl}
+                    fullPageHref={fullPageHref}
+                    decision={decisionFor && finding.status !== 'same' ? decisionFor(finding) : null}
+                  />
+                ))}
+              </ul>
+            )}
+          </section>
+        );
+      })}
     </div>
   );
 }
 
-// ── The table ───────────────────────────────────────────────
+// ── The sections (PATH step 4.4 to 4.6) ─────────────────────
 
-export interface FindingsTableProps {
+export interface FindingsSectionsProps {
   findings: readonly ChatFinding[];
   filter: FindingFilter;
   onFilter: (filter: FindingFilter) => void;
-  /** Open the evidence viewer on this finding. */
   onOpen: (finding: ChatFinding) => void;
   pictureUrl: (pictureId: string) => string;
-  /**
-   * Chat v4 full check: the status chips become three tabs, What's wrong · To check · What's right
-   * (the parent picks the opening tab, never "all").
-   */
-  tabs?: boolean;
+  fullPageHref?: string | null;
+  decisionFor?: ((finding: ChatFinding) => DecisionProps) | null;
+  /** A narrow answer (a few pages): its few cards start open. */
+  narrow?: boolean;
+  /** Anchors for the summary's numbers. */
+  ids?: Partial<Record<'different' | 'check' | 'same', string>>;
 }
 
-const TABS = [
-  { status: 'different', words: 'What’s wrong' },
-  { status: 'check', words: 'To check' },
-  { status: 'same', words: 'What’s right' },
-  { status: 'not_compared', words: 'Not compared' },
+const SECTIONS = [
+  { status: 'different', words: 'What’s wrong', hint: null },
+  { status: 'check', words: 'Your decision', hint: 'The AI could not settle these on its own.' },
 ] as const;
 
-/** Which groups are open: the default (the first three, or all when there are few rows), all, or a picked set. */
-type OpenGroups = 'default' | 'all' | ReadonlySet<string>;
-
-function GroupHeader({ group, open, onToggle, controls }: { group: AreaGroup; open: boolean; onToggle: () => void; controls: string }) {
-  const counts = groupCountWords(group.counts);
-  const pages = group.byPage ? null : pagesWords(group.pages);
+function SectionHead({ status, words, count, hint, children, id }: { status: RowStatus; words: string; count: number; hint?: string | null; children?: React.ReactNode; id?: string }) {
   return (
-    <button
-      type="button"
-      aria-expanded={open}
-      aria-controls={controls}
-      onClick={onToggle}
-      data-slot="chat-findings-group-toggle"
-      className="flex w-full min-w-0 items-center gap-2 px-3 py-2 text-left text-xs focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset"
-    >
-      <ChevronRight aria-hidden="true" className={cn('size-3.5 shrink-0 text-muted-foreground transition-transform duration-150 ease-out motion-reduce:transition-none', open && 'rotate-90')} />
-      <span className="min-w-0 truncate text-[13px] font-semibold text-foreground" title={group.name}>{group.name}</span>
-      {pages && <span className="shrink-0 text-muted-foreground tabular-nums">· {pages}</span>}
-      {counts && (
-        <span className="flex min-w-0 shrink-0 items-center gap-1.5 tabular-nums">
-          <span aria-hidden="true" className="text-muted-foreground">·</span>
-          {group.counts.different > 0 && <span className="font-medium text-outcome-fail-fg">{group.counts.different} wrong</span>}
-          {group.counts.check > 0 && <span className="text-outcome-review-fg">{group.counts.check} to check</span>}
-          {group.counts.same > 0 && <span className="text-outcome-pass-fg">{group.counts.same} right</span>}
-          {group.counts.not_compared > 0 && <span className="text-muted-foreground">{group.counts.not_compared} not compared</span>}
-        </span>
-      )}
-    </button>
+    <div className="mb-3 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+      <h3 id={id} className="flex items-center gap-2 text-base font-semibold tracking-[-0.01em]">
+        <StatusDot status={status} />
+        {words}
+        <span className="font-medium text-muted-foreground tabular-nums">{count}</span>
+      </h3>
+      {hint && <span className="text-[13px] text-muted-foreground">{hint}</span>}
+      {children}
+    </div>
   );
 }
 
-export function FindingsTable({ findings, filter, onFilter, onOpen, pictureUrl, tabs = false }: FindingsTableProps) {
-  const narrow = useMediaQuery(FINDINGS_NARROW);
-  const baseId = useId();
-  const leaving = useLeaving(findings);
-  const [openGroups, setOpenGroups] = useState<OpenGroups>('default');
-  const [openRows, setOpenRows] = useState<ReadonlySet<string>>(() => new Set());
-  const counts = findingCounts(findings);
-  const summary = countWords(counts);
-  // Only cross-view findings shown: the column headings name the views themselves.
-  const allCrossView = findings.length > 0 && findings.every((finding) => finding.source === 'cross_view');
-  const leavingIds = new Set(leaving.map((finding) => finding.id));
-  const groups = groupByArea([...findings, ...leaving], filter);
-  const shownRows = groups.reduce((total, group) => total + group.findings.length, 0);
+function Folded({ status, words, hint, count, children, id }: { status: RowStatus; words: string; hint: string; count: number; children: React.ReactNode; id?: string }) {
+  const [open, setOpen] = useState(false);
+  const bodyId = useId();
+  return (
+    <section data-slot={`chat-findings-${status}`} aria-labelledby={id} className="min-w-0">
+      <button
+        type="button"
+        id={id}
+        aria-expanded={open}
+        aria-controls={bodyId}
+        onClick={() => setOpen(!open)}
+        className="flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1 rounded-md py-1 text-left focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+      >
+        <ChevronRight aria-hidden="true" className={cn('size-4 shrink-0 text-muted-foreground transition-transform duration-150 motion-reduce:transition-none', open && 'rotate-90')} />
+        <StatusDot status={status} />
+        <span className="text-base font-semibold">{words}</span>
+        <span className="font-medium text-muted-foreground tabular-nums">{count}</span>
+        <span className="text-[13px] text-muted-foreground">{hint}</span>
+      </button>
+      {open && <div id={bodyId} className="mt-3">{children}</div>}
+    </section>
+  );
+}
+
+/** What's wrong · Your decision · Right (folded) · Not compared (folded), each grouped by area. */
+export function FindingsSections({ findings, filter, onFilter, onOpen, pictureUrl, fullPageHref, decisionFor, narrow = false, ids }: FindingsSectionsProps) {
+  const isNarrowScreen = useMediaQuery(FINDINGS_NARROW);
   const categories = categoriesPresent(findings);
-  const issues = counts.different + counts.check;
+  const shown = findings.filter((finding) => (filter.category === null || (finding.category ?? 'other') === filter.category) && (filter.page === null || finding.page === filter.page || finding.vs_page === filter.page));
+  const of = (status: RowStatus) => shown.filter((finding) => statusOf(finding) === status);
+  const setCategory = (category: FindingCategory | null) => onFilter({ ...filter, category });
+  const firstHead = SECTIONS.find((section) => of(section.status).length > 0)?.status ?? null;
+  const filters = (categories.length > 1 || filter.page !== null) && !isNarrowScreen ? (
+    <div className="ml-auto flex flex-wrap items-center gap-2">
+      {filter.page !== null && (
+        <button
+          type="button"
+          data-slot="chat-findings-page-filter"
+          onClick={() => onFilter({ ...filter, page: null })}
+          aria-label={`Showing page ${filter.page} only. Show all pages`}
+          className="inline-flex h-7 items-center gap-1 rounded-full border border-foreground px-2.5 text-xs font-medium focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        >
+          <span className="tabular-nums">Page {filter.page}</span>
+          <X aria-hidden="true" className="size-3.5" />
+        </button>
+      )}
+      {categories.length > 1 && (
+        <div role="group" aria-label="Filter findings" className="inline-flex rounded-lg border bg-muted/50 p-0.5">
+          {[null, ...categories].map((category) => (
+            <button
+              key={category ?? 'all'}
+              type="button"
+              aria-pressed={filter.category === category}
+              onClick={() => setCategory(category)}
+              className={cn(
+                'h-[26px] rounded-md px-2.5 text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none motion-reduce:transition-none',
+                filter.category === category ? 'bg-card text-foreground shadow-[0_1px_2px_rgb(0_0_0/0.08),0_0_0_1px_var(--border)]' : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {category ? CATEGORY_WORDS[category] : 'All'}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  ) : null;
 
-  // The first three groups open, or all when there are few rows or one page is picked.
-  const openByDefault = (index: number) => shownRows <= FEW_ROWS || filter.page !== null || index < OPEN_GROUPS;
-  const isOpen = (group: AreaGroup, index: number) => (openGroups === 'all' ? true : openGroups === 'default' ? openByDefault(index) : openGroups.has(group.key));
-  const allOpen = groups.every((group, index) => isOpen(group, index));
-  const toggleGroup = (group: AreaGroup) => {
-    const now = new Set(groups.filter((each, index) => isOpen(each, index)).map((each) => each.key));
-    if (now.has(group.key)) now.delete(group.key);
-    else now.add(group.key);
-    setOpenGroups(now);
-  };
-  const toggleRow = (id: string) => setOpenRows((now) => {
-    const next = new Set(now);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    return next;
-  });
-
-  const setStatus = (status: StatusFilter) => onFilter({ ...filter, status });
-  // "Not compared" shows only when an answer has such items (not seen is not right).
-  const tabsShown = TABS.filter((tab) => tab.status !== 'not_compared' || counts.not_compared > 0 || filter.status === 'not_compared');
-  const setCategory = (category: FindingCategory) => onFilter({ ...filter, category: filter.category === category ? null : category });
-  const columns = 7;
+  const right = of('same');
+  const unseen = of('not_compared');
+  const nothing = SECTIONS.every((section) => of(section.status).length === 0);
 
   return (
-    <section data-slot="chat-findings" aria-label="Findings" className="chat-rise grid min-w-0 gap-2">
-      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
-        {tabs ? (
-          <div
-            role="tablist"
-            aria-label="Findings"
-            data-slot="chat-findings-tabs"
-            className="flex max-w-full min-w-0 flex-wrap gap-1 rounded-xl bg-muted p-1"
-            onKeyDown={(event) => {
-              if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return;
-              const at = tabsShown.findIndex((tab) => tab.status === filter.status);
-              const next = tabsShown[(at + (event.key === 'ArrowRight' ? 1 : tabsShown.length - 1)) % tabsShown.length];
-              setStatus(next.status);
-              event.currentTarget.querySelector<HTMLElement>(`[data-tab="${next.status}"]`)?.focus();
-            }}
-          >
-            {tabsShown.map((tab) => {
-              const selected = filter.status === tab.status;
-              return (
-                <button
-                  key={tab.status}
-                  type="button"
-                  role="tab"
-                  data-tab={tab.status}
-                  aria-selected={selected}
-                  tabIndex={selected ? 0 : -1}
-                  onClick={() => setStatus(tab.status)}
-                  className={cn(
-                    'inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none motion-reduce:transition-none',
-                    selected ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
-                  )}
-                >
-                  {tab.words}
-                  <span className="tabular-nums opacity-80">({counts[tab.status]})</span>
-                </button>
-              );
-            })}
-          </div>
-        ) : (
-          <p data-slot="chat-findings-count" aria-live="polite" className="text-sm font-medium text-foreground tabular-nums">{summary}</p>
-        )}
-        <div role="group" aria-label="Filter findings" className="flex flex-wrap items-center gap-1.5">
-          {!tabs && <Chip pressed={filter.status === 'all'} onClick={() => setStatus('all')} count={issues}>All</Chip>}
-          {!tabs && <Chip pressed={filter.status === 'different'} onClick={() => setStatus('different')} count={counts.different}>Different</Chip>}
-          {!tabs && <Chip pressed={filter.status === 'check'} onClick={() => setStatus('check')} count={counts.check}>Check</Chip>}
-          {!tabs && counts.same > 0 && <Chip pressed={filter.status === 'same'} onClick={() => setStatus('same')} count={counts.same}>Same</Chip>}
-          {!tabs && counts.not_compared > 0 && <Chip pressed={filter.status === 'not_compared'} onClick={() => setStatus('not_compared')} count={counts.not_compared}>Not compared</Chip>}
-          {!tabs && categories.length > 1 && <span aria-hidden="true" className="mx-0.5 h-4 w-px bg-border" />}
-          {categories.length > 1 && categories.map((category) => (
-            <Chip key={category} pressed={filter.category === category} onClick={() => setCategory(category)}>{CATEGORY_WORDS[category]}</Chip>
-          ))}
-          {filter.page !== null && (
-            <button
-              type="button"
-              data-slot="chat-findings-page-filter"
-              onClick={() => onFilter({ ...filter, page: null })}
-              aria-label={`Showing page ${filter.page} only. Show all pages`}
-              className="inline-flex h-7 items-center gap-1 rounded-full border border-foreground px-2.5 text-xs font-medium focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-            >
-              <span className="tabular-nums">Page {filter.page}</span>
-              <X aria-hidden="true" className="size-3.5" />
-            </button>
-          )}
+    <section data-slot="chat-findings" aria-label="Findings" className="chat-rise grid min-w-0 gap-7">
+      {nothing && (
+        <div className="grid gap-3">
+          {filters && <div className="flex">{filters}</div>}
+          <p data-slot="chat-findings-empty" className="rounded-xl border border-dashed px-4 py-5 text-center text-sm text-muted-foreground">
+            {findings.length === 0 ? 'No findings yet.' : shown.length === 0 ? 'No findings match this filter.' : 'Nothing wrong and nothing to decide.'}
+          </p>
         </div>
-        {groups.length > 1 && (
-          <button
-            type="button"
-            data-slot="chat-findings-expand"
-            onClick={() => setOpenGroups(allOpen ? new Set() : 'all')}
-            className="ml-auto inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-          >
-            {allOpen ? <ChevronsDownUp aria-hidden="true" className="size-3.5" /> : <ChevronsUpDown aria-hidden="true" className="size-3.5" />}
-            {allOpen ? 'Collapse all' : 'Expand all'}
-          </button>
-        )}
-      </div>
-
-      {groups.length === 0 ? (
-        <p data-slot="chat-findings-empty" className="rounded-lg border border-dashed px-3 py-2.5 text-sm text-muted-foreground">
-          {findings.length ? 'No findings match this filter.' : 'No findings yet.'}
-        </p>
-      ) : narrow ? (
-        <div data-slot="chat-findings-cards" className="grid gap-2">
-          {groups.map((group, index) => {
-            const open = isOpen(group, index);
-            const listId = `${baseId}-group-${index}`;
-            return (
-              <section key={group.key} data-slot="chat-findings-group" data-area={group.key} data-open={open ? 'true' : 'false'} aria-label={group.name} className="grid gap-1.5 rounded-xl border bg-muted/20">
-                <GroupHeader group={group} open={open} onToggle={() => toggleGroup(group)} controls={listId} />
-                {open && (
-                  <ul id={listId} className="grid gap-1.5 px-1.5 pb-1.5">
-                    {group.findings.map((finding) => {
-                      const expanded = openRows.has(finding.id);
-                      const detailId = `${baseId}-detail-${finding.id}`;
-                      return (
-                        <li key={finding.id} data-slot="chat-finding-row" data-id={finding.id} data-leaving={leavingIds.has(finding.id) ? 'true' : undefined} className={cn('rounded-lg border bg-card', leavingIds.has(finding.id) && 'chat-leave')}>
-                          <button
-                            type="button"
-                            aria-expanded={expanded}
-                            aria-controls={detailId}
-                            onClick={() => toggleRow(finding.id)}
-                            aria-label={`${finding.item}: show the details`}
-                            className="flex w-full min-w-0 items-start gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-                          >
-                            <span className="grid min-w-0 flex-1 gap-1">
-                              <span className="flex min-w-0 items-center gap-1.5">
-                                <RowStatus finding={finding} />
-                                <span className="text-xs text-muted-foreground tabular-nums">p.{pageWords(finding)}</span>
-                              </span>
-                              <span className="line-clamp-2 font-medium break-words">{finding.item}</span>
-                              <span className="flex min-w-0 items-center gap-2 text-[13px]">
-                                <span className="min-w-0 flex-1"><RowValues finding={finding} /></span>
-                                <FindingDifference finding={finding} />
-                              </span>
-                              <span className="flex flex-wrap items-center gap-2"><TrustChip finding={finding} /><CheckIcons finding={finding} /><RoundChip finding={finding} /></span>
-                            </span>
-                            <Thumbs finding={finding} pictureUrl={pictureUrl} />
-                          </button>
-                          {expanded && (
-                            <div id={detailId} data-slot="chat-finding-detail" className="border-t px-2.5 py-3">
-                              <FindingDetail finding={finding} pictureUrl={pictureUrl} onOpen={() => onOpen(finding)} title={false} />
-                            </div>
-                          )}
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-              </section>
-            );
-          })}
-          <CheckLegend />
-        </div>
-      ) : (
-        <div className="grid gap-2 rounded-xl border bg-card shadow-[0_1px_2px_rgb(0_0_0/0.03)]">
-          <div className="max-w-full overflow-x-auto rounded-t-xl">
-            <table data-slot="chat-findings-table" className="w-full min-w-[54rem] table-fixed border-collapse text-[13px] leading-snug">
-              <caption className="sr-only">Findings: {summary}</caption>
-              <colgroup>
-                <col className="w-[4.25rem]" />
-                <col />
-                <col className="w-[12.5rem]" />
-                <col className="w-[5.5rem]" />
-                <col className="w-[6.75rem]" />
-                <col className="w-[7.75rem]" />
-                <col className="w-[8rem]" />
-              </colgroup>
-              <thead className="bg-muted/50 text-xs text-muted-foreground">
-                <tr>
-                  <th scope="col" className="px-3 py-2 text-left font-medium">Page</th>
-                  <th scope="col" className="px-2 py-2 text-left font-medium">Item</th>
-                  <th scope="col" className="px-2 py-2 text-left font-medium">{allCrossView ? 'Reference view → This view' : 'Architect → Vendor'}</th>
-                  <th scope="col" className="px-2 py-2 text-left font-medium">Difference</th>
-                  <th scope="col" className="px-2 py-2 text-left font-medium">Status</th>
-                  <th scope="col" className="px-2 py-2 text-left font-medium">Trust</th>
-                  <th scope="col" className="px-3 py-2 text-left font-medium">Evidence</th>
-                </tr>
-              </thead>
-              {groups.map((group, index) => {
-                const open = isOpen(group, index);
-                const bodyId = `${baseId}-group-${index}`;
-                return (
-                  <tbody key={group.key} id={bodyId} data-slot="chat-findings-group" data-area={group.key} data-open={open ? 'true' : 'false'}>
-                    <tr>
-                      <th scope="rowgroup" colSpan={columns} className="border-t bg-muted/30 p-0 text-left font-normal">
-                        <GroupHeader group={group} open={open} onToggle={() => toggleGroup(group)} controls={bodyId} />
-                      </th>
-                    </tr>
-                    {open && group.findings.map((finding) => {
-                      const gone = leavingIds.has(finding.id);
-                      const expanded = openRows.has(finding.id);
-                      const detailId = `${baseId}-detail-${finding.id}`;
-                      return [
-                        <tr
-                          key={finding.id}
-                          data-slot="chat-finding-row"
-                          data-id={finding.id}
-                          data-status={finding.status}
-                          data-leaving={gone ? 'true' : undefined}
-                          data-open={expanded ? 'true' : undefined}
-                          onClick={gone ? undefined : () => toggleRow(finding.id)}
-                          className={cn(
-                            'h-[3.25rem] cursor-pointer border-t align-middle transition-colors hover:bg-muted/40 motion-reduce:transition-none',
-                            expanded && 'bg-muted/30',
-                            gone && 'chat-leave pointer-events-none',
-                          )}
-                        >
-                          <td className="px-3 py-1.5 whitespace-nowrap text-muted-foreground tabular-nums">{pageWords(finding)}</td>
-                          <th scope="row" className="px-2 py-1.5 text-left font-normal">
-                            <span className="flex min-w-0 items-center gap-1.5">
-                              <button
-                                type="button"
-                                aria-expanded={expanded}
-                                aria-controls={detailId}
-                                onClick={(event) => { event.stopPropagation(); toggleRow(finding.id); }}
-                                title={finding.item}
-                                className="min-w-0 truncate rounded-sm text-left font-medium focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-                              >
-                                {finding.item}
-                              </button>
-                              <SourceTag finding={finding} inline />
-                              <RoundChip finding={finding} />
-                            </span>
-                          </th>
-                          <td className="px-2 py-1.5"><RowValues finding={finding} /></td>
-                          <td className="px-2 py-1.5"><FindingDifference finding={finding} /></td>
-                          <td className="px-2 py-1.5"><RowStatus finding={finding} /></td>
-                          <td className="px-2 py-1.5"><span className="grid justify-items-start gap-1"><TrustChip finding={finding} /><CheckIcons finding={finding} /></span></td>
-                          <td className="px-3 py-1.5"><Thumbs finding={finding} pictureUrl={pictureUrl} onOpen={() => onOpen(finding)} /></td>
-                        </tr>,
-                        expanded && !gone ? (
-                          <tr key={`${finding.id}-detail`} id={detailId} data-slot="chat-finding-detail" data-id={finding.id} className="bg-muted/20">
-                            <td colSpan={columns} className="px-3 pt-2 pb-4">
-                              <FindingDetail finding={finding} pictureUrl={pictureUrl} onOpen={() => onOpen(finding)} />
-                            </td>
-                          </tr>
-                        ) : null,
-                      ];
-                    })}
-                  </tbody>
-                );
-              })}
-            </table>
-          </div>
-          <div className="border-t px-3 py-2"><CheckLegend /></div>
-        </div>
+      )}
+      {SECTIONS.map((section) => {
+        const list = of(section.status);
+        if (!list.length) return null;
+        return (
+          <section key={section.status} data-slot={`chat-findings-${section.status}`} aria-labelledby={ids?.[section.status]} className="min-w-0 scroll-mt-4">
+            <SectionHead status={section.status} words={section.words} count={list.length} hint={section.hint} id={ids?.[section.status]}>
+              {section.status === firstHead && filters}
+            </SectionHead>
+            <FindingsList
+              findings={list}
+              label={section.words}
+              openGroups={section.status === 'different' ? 'all' : 3}
+              openRowsAtFirst={narrow && of('different').length + of('check').length <= 3}
+              onOpen={onOpen}
+              pictureUrl={pictureUrl}
+              fullPageHref={fullPageHref}
+              decisionFor={decisionFor}
+            />
+          </section>
+        );
+      })}
+      {right.length > 0 && (
+        <Folded status="same" words="Right" count={right.length} hint="Matches the architect, the prototype or GV’s rules" id={ids?.same}>
+          <FindingsList findings={right} label="Right" onOpen={onOpen} pictureUrl={pictureUrl} fullPageHref={fullPageHref} />
+        </Folded>
+      )}
+      {unseen.length > 0 && (
+        <Folded status="not_compared" words="Not compared" count={unseen.length} hint="Not looked at on both sides, so not counted as right">
+          <FindingsList findings={unseen} label="Not compared" onOpen={onOpen} pictureUrl={pictureUrl} fullPageHref={fullPageHref} />
+        </Folded>
       )}
     </section>
   );

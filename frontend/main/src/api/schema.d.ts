@@ -4900,6 +4900,11 @@ export interface components {
          */
         ChatMessageIn: {
             /**
+             * Continue From
+             * @description Continue (#1514): the id of the answer a server restart interrupted. The answer goes on from its saved work; a full check keeps its findings and checks only the pages not yet done (`mode` and `products` are then the interrupted answer's).
+             */
+            continue_from?: string | null;
+            /**
              * Effort
              * @enum {string}
              */
@@ -4930,7 +4935,7 @@ export interface components {
             /** @description The answer's accuracy by code (its `accuracy` block, scored again with today's calibration: see `rescored`); null on older answers. */
             accuracy?: components["schemas"]["ChatAccuracyOut"] | null;
             /** Blocks */
-            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"] | components["schemas"]["ChatScopeBlock"] | components["schemas"]["ChatProgressBlock"])[] | null;
+            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"] | components["schemas"]["ChatScopeBlock"] | components["schemas"]["ChatProgressBlock"] | components["schemas"]["ChatResumeBlock"])[] | null;
             /** @description With `stopped: cost_cap`: `message` (this answer's cap) or `package` (the drawing set's budget ran out). */
             cap_hit?: components["schemas"]["ChatCapHit"] | null;
             /** Cost Usd */
@@ -4973,6 +4978,8 @@ export interface components {
              * @description The products the message was about; null on older messages.
              */
             products?: ("countertop" | "cabinet")[] | null;
+            /** @description With `stopped: interrupted`: how Continue picks up (its `resume` block). */
+            resume?: components["schemas"]["ChatResumeOut"] | null;
             /**
              * Role
              * @enum {string}
@@ -5134,6 +5141,44 @@ export interface components {
             /** Recorded */
             recorded: number;
         };
+        /** ChatResumeBlock */
+        ChatResumeBlock: {
+            resume: components["schemas"]["ChatResumeOut"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "resume";
+        };
+        /**
+         * ChatResumeOut
+         * @description How an answer a server restart interrupted can be continued (#1514), in plain words.
+         */
+        ChatResumeOut: {
+            /**
+             * Findings
+             * @description Findings already made: kept, not made again.
+             */
+            findings: number;
+            /**
+             * Mode
+             * @description How the interrupted answer was asked: Continue asks the same way.
+             * @enum {string}
+             */
+            mode: "chat" | "full_check";
+            /**
+             * Pages Done
+             * @description Pages already accounted for: not opened again.
+             */
+            pages_done: number;
+            /** Products */
+            products?: ("countertop" | "cabinet")[] | null;
+            /**
+             * Redo
+             * @description What Continue will do again, in one or two plain sentences.
+             */
+            redo: string;
+        };
         /**
          * ChatRoundPairOut
          * @description One round pair compared by code (compare_rounds).
@@ -5279,7 +5324,7 @@ export interface components {
         /** @enum {string} */
         ChatStepTool: "bash_tool" | "view" | "create_file" | "str_replace" | "present_files" | "TaskCreate" | "TaskUpdate" | "Agent" | "review_results" | "compare_rounds" | "verify_value";
         /** @enum {string} */
-        ChatStopped: "cost_cap" | "cancelled" | "error" | "turn_limit";
+        ChatStopped: "cost_cap" | "cancelled" | "error" | "turn_limit" | "interrupted";
         /** ChatSummaryOut */
         ChatSummaryOut: {
             /**
@@ -5339,6 +5384,59 @@ export interface components {
              * @enum {string}
              */
             type: "thinking";
+        };
+        /**
+         * ChatTimingHelperOut
+         * @description One helper of an answer: its pages (a full check's, planned by code), calls, time, cost.
+         */
+        ChatTimingHelperOut: {
+            /** Calls */
+            calls: number;
+            /** Cost Usd */
+            cost_usd: string;
+            /** Description */
+            description: string;
+            /** Number */
+            number: number;
+            /** Pages */
+            pages: number[];
+            /** Seconds */
+            seconds: number;
+            /** Stopped */
+            stopped?: string | null;
+        };
+        /**
+         * ChatTimingPhaseOut
+         * @description One phase of an answer: its wall-clock seconds and what its model calls cost (#1512).
+         */
+        ChatTimingPhaseOut: {
+            /** Calls */
+            calls: number;
+            /** Cost Usd */
+            cost_usd: string;
+            /** Label */
+            label: string;
+            /**
+             * Phase
+             * @description seeding, set_pack, planning, prewarm, lead, helpers, lead_verification, second_reads, third_reads, critic, finish_checks, cloud_drawing, report
+             */
+            phase: string;
+            /** Seconds */
+            seconds: number;
+        };
+        /**
+         * ChatTimingsOut
+         * @description Where an answer's time and money went, phase by phase (#1512).
+         */
+        ChatTimingsOut: {
+            /** Cost Usd */
+            cost_usd: string;
+            /** Helpers */
+            helpers: components["schemas"]["ChatTimingHelperOut"][];
+            /** Phases */
+            phases: components["schemas"]["ChatTimingPhaseOut"][];
+            /** Total Seconds */
+            total_seconds: number;
         };
         /** ChatTrustBlock */
         ChatTrustBlock: {
@@ -5426,6 +5524,7 @@ export interface components {
             rounds?: components["schemas"]["ChatRoundsOut"] | null;
             /** @description What the counts above cover (null on older answers). */
             scope?: components["schemas"]["ChatScopeOut"] | null;
+            timings?: components["schemas"]["ChatTimingsOut"] | null;
             unknowns?: components["schemas"]["ChatTrustUnknownsOut"] | null;
         };
         /** ChatTrustRuleOut */
@@ -11459,14 +11558,14 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description `choice_refused`: a model, effort and thinking the API refuses. */
+            /** @description `choice_refused`: a model, effort and thinking the API refuses; `invalid_request`: a body (or a `continue_from`) that is not right. */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description No AI provider key is set (the reason: GET /assistant/models). */
+            /** @description No AI provider key is set (the reason: GET /assistant/models), or the server is restarting. */
             503: {
                 headers: {
                     [name: string]: unknown;

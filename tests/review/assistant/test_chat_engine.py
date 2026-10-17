@@ -244,7 +244,7 @@ def test_a_tool_turn_runs_the_tool_and_sends_the_reply_back_unchanged(tmp_path: 
     ]
     assert len(harness.ledger.rows) == 2
     assert {row["prompt_id"] for row in harness.ledger.rows} == {
-        "review-assistant-chat-anthropic-chat-v9"
+        "review-assistant-chat-anthropic-chat-v10"
     }
 
 
@@ -522,19 +522,19 @@ def test_a_helper_whose_final_call_fails_still_reports_from_its_steps(tmp_path: 
 
 
 def test_an_agent_past_the_limit_is_refused_until_the_next_turn(tmp_path: Path) -> None:
-    """Six helpers run at once by default (`GV_ASSISTANT_MAX_PARALLEL_AGENTS`)."""
-    tasks = [f"Task {n}" for n in range(7)]
+    """Eight helpers run at once by default (`GV_ASSISTANT_MAX_PARALLEL_AGENTS`)."""
+    tasks = [f"Task {n}" for n in range(9)]
     provider = ScriptedProvider(
         lead=[_agents(*tasks), reply(text("Done."))],
-        helpers={task: [reply(text(f"{task} report"), model=SONNET)] for task in tasks[:6]},
+        helpers={task: [reply(text(f"{task} report"), model=SONNET)] for task in tasks[:8]},
     )
     harness = Harness(tmp_path, provider)
     harness.run()
 
     results = _sent(provider.lead_calls[1])["messages"][-1]["content"]
-    assert len(results) == 7
-    assert not any(result.get("is_error") for result in results[:6])
-    assert results[6]["is_error"] is True and "at most 6 agents" in results[6]["content"][0]["text"]
+    assert len(results) == 9
+    assert not any(result.get("is_error") for result in results[:8])
+    assert results[8]["is_error"] is True and "at most 8 agents" in results[8]["content"][0]["text"]
 
 
 @pytest.mark.parametrize(

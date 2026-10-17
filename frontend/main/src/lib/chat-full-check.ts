@@ -9,7 +9,7 @@
  * drawing and the check report, then What's wrong / To check / What's right.
  */
 
-import type { ChatFile, ChatProduct, FindingSource } from '@/lib/chat-api';
+import type { ChatFile, ChatFinding, ChatProduct, FindingSource } from '@/lib/chat-api';
 import type { ViewMessage } from '@/lib/chat-messages';
 
 export const PRODUCTS: readonly ChatProduct[] = ['countertop', 'cabinet'];
@@ -94,7 +94,8 @@ export function confirmWords(products: readonly ChatProduct[] | null, model: str
  */
 export function isFullCheck(message: Pick<ViewMessage, 'mode'>, question?: Pick<ViewMessage, 'mode'> & { text?: string | null } | null): boolean {
   if (message.mode === 'full_check' || question?.mode === 'full_check') return true;
-  return question?.mode == null && /^Full check(?: · [^\n]*)?$/.test(question?.text?.trim() ?? '');
+  // "Continue the full check · …" is a full check that goes on after a server restart (#1514).
+  return question?.mode == null && /^(?:Full|Continue the full) check(?: · [^\n]*)?$/.test(question?.text?.trim() ?? '');
 }
 
 /** What a right finding matched, under its value: "matches architect". */
@@ -122,10 +123,66 @@ export function matchesWords(source: FindingSource): string {
 export function fullCheckFiles(files: readonly ChatFile[]): { cloud: ChatFile | null; report: ChatFile | null; rest: ChatFile[] } {
   const pdf = (file: ChatFile) => file.mime === 'application/pdf' || /\.pdf$/i.test(file.name);
   // A file sent before kinds: "cloud" in its name, else the full check's "… - AI markup.pdf".
-  const cloud = files.find((file) => file.kind === 'cloud_drawing')
-    ?? files.find((file) => !file.kind && pdf(file) && /cloud/i.test(file.name))
-    ?? files.find((file) => !file.kind && pdf(file) && /\bAI markup\b/i.test(file.name)) ?? null;
-  const report = files.find((file) => file.kind === 'check_report' && file !== cloud)
-    ?? files.find((file) => !file.kind && file !== cloud && pdf(file) && /report/i.test(file.name)) ?? null;
-  return { cloud, report, rest: files.filter((file) => file !== cloud && file !== report) };
+  // The NEWEST of each (#1525: "Update cloud drawing" adds a new drawing and report; older ones are kept).
+  const last = (test: (file: ChatFile) => boolean) => [...files].reverse().find(test) ?? null;
+  const clouds = files.filter((file) => file.kind === 'cloud_drawing' || (!file.kind && pdf(file) && (/cloud/i.test(file.name) || /\bAI markup\b/i.test(file.name))));
+  const reports = files.filter((file) => !clouds.includes(file) && (file.kind === 'check_report' || (!file.kind && pdf(file) && /report/i.test(file.name))));
+  const cloud = last((file) => file.kind === 'cloud_drawing' && clouds.includes(file)) ?? last((file) => clouds.includes(file));
+  const report = last((file) => reports.includes(file));
+  // Older drawings and reports are kept on the server but not shown again as plain file cards.
+  return { cloud, report, rest: files.filter((file) => !clouds.includes(file) && !reports.includes(file)) };
+}
+
+// ── Live progress while a full check runs (PATH step 3, #1522) ─
+
+/**
+ * One calm line while a full check runs, from what has streamed so far: "Checking page 12 of 60 ·
+ * 8 wrong so far · about 6 min left". The page count comes from the coverage map (pages the AI has
+ * accounted for); the time left is the time per page so far times the pages left, shown only once
+ * three pages are done and the total is known. Without coverage yet: "Starting the full check…".
+ */
+export function progressWords(
+  message: Pick<ViewMessage, 'created_at' | 'findings' | 'coverage' | 'progress'>,
+  now: number = Date.now(),
+): string {
+  // #1524: the server's own progress when it sends it.
+  const live = message.progress;
+  if (live) {
+    if (live.phase === 'reading' && !live.pages_done) return 'Reading the drawings…';
+    if (live.phase === 'writing') return `Writing the summary and the cloud drawing · ${live.wrong_so_far} wrong · ${live.decision_so_far} to decide`;
+    const at = live.pages_total ? `Checking page ${Math.min(live.pages_done + 1, live.pages_total)} of ${live.pages_total}` : `Checking · ${live.pages_done} pages done`;
+    const left = live.eta_seconds == null ? null : live.eta_seconds < 60 ? 'under a minute left' : `about ${Math.ceil(live.eta_seconds / 60)} min left`;
+    return [at, `${live.wrong_so_far} wrong so far`, left].filter(Boolean).join(' · ');
+  }
+  const pages = message.coverage?.pages ?? [];
+  const done = new Set(pages.filter((page) => page.status !== 'not_opened').map((page) => page.page)).size;
+  const total = message.coverage?.counts?.total ?? null;
+  const wrong = (message.findings ?? []).filter((finding) => finding.status === 'different').length;
+  if (!done && !wrong) return 'Starting the full check…';
+  const parts = [total ? `Checking page ${Math.min(done + 1, total)} of ${total}` : `Checking · ${done} ${done === 1 ? 'page' : 'pages'} done`];
+  parts.push(`${wrong} wrong so far`);
+  const started = Date.parse(message.created_at);
+  if (total && done >= 3 && done < total && Number.isFinite(started) && now > started) {
+    const minutes = (((now - started) / done) * (total - done)) / 60000;
+    parts.push(minutes < 1 ? 'under a minute left' : `about ${Math.ceil(minutes)} min left`);
+  }
+  return parts.join(' · ');
+}
+
+/** The page the cloud drawing's preview shows: the first wrong item's vendor page, else the first item's, else 1. */
+export function previewPage(findings: readonly Pick<ChatFinding, 'status' | 'page' | 'vendor_box'>[]): number {
+  const first = findings.find((finding) => finding.status === 'different') ?? findings.find((finding) => finding.status === 'check') ?? findings[0];
+  return first ? first.vendor_box?.page ?? first.page : 1;
+}
+
+/**
+ * A summary GV Review wrote itself (`by: "code"`, #1524) ends with an italic line saying so. The
+ * screen shows that once, as a quiet note under the summary, so the line is taken off the words.
+ */
+export function withoutCodeNote(text: string): { text: string; note: string | null } {
+  const lines = text.trimEnd().split('\n');
+  const last = lines[lines.length - 1]?.trim() ?? '';
+  const match = /^[*_](Summary written by GV Review[^*_]*)[*_]$/.exec(last);
+  if (!match) return { text, note: null };
+  return { text: lines.slice(0, -1).join('\n').trimEnd(), note: match[1].trim() };
 }

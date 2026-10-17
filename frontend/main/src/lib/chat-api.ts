@@ -99,7 +99,24 @@ export interface Chat {
 }
 
 /** Why a message stopped before it finished; null or absent when it finished. */
-export type ChatStopped = 'cost_cap' | 'cancelled' | 'error' | 'turn_limit';
+export type ChatStopped = 'cost_cap' | 'cancelled' | 'error' | 'turn_limit' | 'interrupted';
+
+/**
+ * With `stopped: "interrupted"` (#1514): a server restart cut the answer off. How Continue picks it
+ * up, and what it will do again, in plain words.
+ */
+export interface ChatResume {
+  mode: ChatMode;
+  products?: ChatProduct[] | null;
+  /** Findings already made: kept, not made again. */
+  findings: number;
+  /** Pages already accounted for: not opened again. */
+  pages_done: number;
+  redo: string;
+}
+
+/** The follow-up Continue sends (the server hands the interrupted work over with it). */
+export const CONTINUE_TEXT = 'Continue from where you stopped';
 
 /** A message as stored and as returned. */
 export interface ChatMessage {
@@ -130,18 +147,59 @@ export interface ChatMessage {
   products?: ChatProduct[] | null;
   /** Chat v5: code's accuracy score for the answer; absent on older answers. */
   accuracy?: ChatAccuracy | null;
+  /** #1522: what the answer covers (server, when it sends it): the whole set, or a few pages / an area. */
+  scope?: ChatScope | null;
+  /** With `stopped: "interrupted"`: how Continue picks up (#1514). */
+  resume?: ChatResume | null;
+}
+
+/** A full check's progress, by code (#1524): the last one is stored as a block. */
+export interface ChatProgress {
+  phase: 'reading' | 'checking' | 'writing';
+  pages_done: number;
+  pages_total: number;
+  wrong_so_far: number;
+  decision_so_far: number;
+  right_so_far: number;
+  /** Time left at the pace so far; null before any page is done. */
+  eta_seconds: number | null;
+}
+
+/**
+ * What an answer covers (#1528), worked out by code: the whole drawing set, or some pages, or one
+ * area (a narrow question). `label` says it in words ("page 8", "pages 27-28", "the whole set").
+ */
+export interface ChatScope {
+  kind: 'whole_set' | 'pages' | 'area';
+  pages?: number[] | null;
+  area?: string | null;
+  why?: string | null;
+  label?: string | null;
+}
+
+/** The reviewer's answer on one finding (PATH step 5), recorded append-only by the server. */
+export type FindingDecisionValue = 'agree' | 'not_a_problem';
+
+export interface FindingDecision {
+  decision: FindingDecisionValue;
+  note?: string | null;
+  by?: string | null;
+  at?: string | null;
 }
 
 export type ChatBlock =
   | { type: 'thinking'; text: string; seconds: number | null }
-  | { type: 'text'; text: string }
+  | { type: 'text'; text: string; by?: 'code' | null }
   | { type: 'step'; step: ChatStep }
   | { type: 'finding'; finding: ChatFinding }
   | { type: 'coverage'; coverage: ChatCoverage }
+  | { type: 'progress'; progress: ChatProgress }
+  | { type: 'scope'; scope: ChatScope }
   | { type: 'trust'; trust: ChatTrust }
   | { type: 'cite'; cite: ChatCite }
   | { type: 'accuracy'; accuracy: ChatAccuracy }
-  | { type: 'unknowns'; unknowns: ChatUnknown[] };
+  | { type: 'unknowns'; unknowns: ChatUnknown[] }
+  | { type: 'resume'; resume: ChatResume };
 
 // ── Chat v2 (CONTRACT2-findings): findings with evidence, and page coverage ──
 
@@ -239,6 +297,8 @@ export interface ChatFinding {
   reads?: FindingRead[] | null;
   /** #1498: the critic's look at it (whole-set answers). */
   critic?: FindingCritic | null;
+  /** #1522: the reviewer's latest Agree / Not a problem on it, when the server sends it. */
+  decision?: FindingDecision | null;
 }
 
 export type EvidenceKind = 'observed' | 'derived' | 'inferred';
@@ -414,6 +474,35 @@ export interface ChatTrust {
     /** The line code wrote for it. */
     line?: string | null;
   } | null;
+  /** Where the answer's time and money went, phase by phase (#1512); older answers have none. */
+  timings?: ChatTimings | null;
+}
+
+/** One phase of an answer: wall-clock seconds and what its model calls cost. */
+export interface ChatTimingPhase {
+  phase: string;
+  label: string;
+  seconds: number;
+  cost_usd: string;
+  calls: number;
+}
+
+/** One helper of an answer: its pages (a full check's, planned by code), calls, time and cost. */
+export interface ChatTimingHelper {
+  number: number;
+  description: string;
+  pages: number[];
+  calls: number;
+  seconds: number;
+  cost_usd: string;
+  stopped?: string | null;
+}
+
+export interface ChatTimings {
+  total_seconds: number;
+  cost_usd: string;
+  phases: ChatTimingPhase[];
+  helpers: ChatTimingHelper[];
 }
 
 /** A result GV Review recorded (a code FAIL, or an evaluator-checked AI page review difference). */
@@ -579,6 +668,8 @@ export interface SendMessageBody {
   mode?: ChatMode;
   /** Chat v4: the products to focus on; absent means the set's own product type. */
   products?: ChatProduct[];
+  /** Continue (#1514): the interrupted answer to go on from; the server then asks the same way. */
+  continue_from?: string;
 }
 
 /** The stream's events, in the contract's words. `index` is the block's place in `blocks`. */
@@ -601,6 +692,8 @@ export type ChatEvent =
   | { event: 'finding'; data: { finding: ChatFinding } }
   | { event: 'finding_dropped'; data: { finding_id: string } }
   | { event: 'coverage'; data: { coverage: ChatCoverage } }
+  | { event: 'progress'; data: { index?: number; progress: ChatProgress } }
+  | { event: 'scope'; data: { index?: number | null; scope: ChatScope } }
   | { event: 'trust'; data: { trust: ChatTrust } }
   | { event: 'cite'; data: { cite: ChatCite } }
   | { event: 'accuracy'; data: { accuracy: ChatAccuracy } }
@@ -611,7 +704,7 @@ export type ChatEventName = ChatEvent['event'];
 const EVENT_NAMES: ReadonlySet<string> = new Set<ChatEventName>([
   'message_start', 'thinking_start', 'thinking_delta', 'thinking_end', 'text_delta', 'step_start', 'step_end',
   'tasks', 'agent_start', 'agent_step', 'agent_end', 'file', 'usage', 'message_end', 'error',
-  'finding', 'finding_dropped', 'coverage', 'trust', 'cite', 'accuracy', 'unknowns',
+  'finding', 'finding_dropped', 'coverage', 'progress', 'scope', 'trust', 'cite', 'accuracy', 'unknowns',
 ]);
 
 /**
@@ -644,7 +737,31 @@ export const chatPaths = {
   picture: (chatId: string, pictureId: string) => `${BASE}/chats/${id(chatId)}/pictures/${id(pictureId)}`,
   /** Chat v2: code draws the message's findings on a copy of the upload and returns it as a file. */
   markupPdf: (chatId: string, messageId: string) => `${BASE}/chats/${id(chatId)}/messages/${id(messageId)}/markup-pdf`,
+  /** #1525: the cloud drawing and report made again from the reviewer's decisions (POST). */
+  cloudDrawing: (chatId: string, messageId: string) => `${BASE}/chats/${id(chatId)}/messages/${id(messageId)}/cloud-drawing`,
+  /** #1522: the reviewer's Agree / Not a problem on one finding (POST). */
+  decision: (chatId: string, messageId: string, findingId: string) =>
+    `${BASE}/chats/${id(chatId)}/messages/${id(messageId)}/findings/${id(findingId)}/decision`,
 };
+
+/**
+ * Whether the server has the decision route yet, without changing anything: a GET on a POST-only
+ * route answers 405 when it exists and 404 when it does not. Anything else (no network, an error)
+ * counts as "not yet", so the buttons stay hidden.
+ */
+export async function decisionRouteReady(chatId: string, messageId: string, findingId: string): Promise<boolean> {
+  try {
+    const response = await fetch(chatPaths.decision(chatId, messageId, findingId), { method: 'GET', headers: { Accept: 'application/json' } });
+    return response.status === 405 || response.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** Record the reviewer's Agree / Not a problem on one finding; the server answers with who and when. */
+export function decideFinding(chatId: string, messageId: string, findingId: string, decision: FindingDecisionValue, note?: string): Promise<FindingDecision> {
+  return json<FindingDecision>(chatPaths.decision(chatId, messageId, findingId), { method: 'POST', body: JSON.stringify(note ? { decision, note } : { decision }) });
+}
 
 // ── Requests ────────────────────────────────────────────────
 
@@ -697,6 +814,11 @@ export function cancelChat(chatId: string): Promise<{ cancelled: boolean }> {
 /** Make the marked-up PDF of a finished message's findings (code only, no AI call); returns the file. */
 export function makeMarkupPdf(chatId: string, messageId: string): Promise<ChatFile> {
   return json<ChatFile>(chatPaths.markupPdf(chatId, messageId), { method: 'POST', body: '{}' });
+}
+
+/** #1525: make the cloud drawing (and report) again from the reviewer's decisions; returns the new drawing. */
+export function remakeCloudDrawing(chatId: string, messageId: string): Promise<ChatFile> {
+  return json<ChatFile>(chatPaths.cloudDrawing(chatId, messageId), { method: 'POST', body: '{}' });
 }
 
 /**
@@ -814,6 +936,10 @@ export interface ChatApi {
   follow: typeof followChatMessage;
   cancel: typeof cancelChat;
   markup: typeof makeMarkupPdf;
+  /** #1522: Agree / Not a problem per finding; optional so a fake API can leave it out. */
+  decide?: typeof decideFinding;
+  decisionReady?: typeof decisionRouteReady;
+  remakeCloud?: typeof remakeCloudDrawing;
 }
 
 export const LIVE_CHAT_API: ChatApi = {
@@ -825,4 +951,7 @@ export const LIVE_CHAT_API: ChatApi = {
   follow: followChatMessage,
   cancel: cancelChat,
   markup: makeMarkupPdf,
+  decide: decideFinding,
+  decisionReady: decisionRouteReady,
+  remakeCloud: remakeCloudDrawing,
 };

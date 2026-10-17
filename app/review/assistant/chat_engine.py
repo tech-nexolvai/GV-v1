@@ -37,6 +37,22 @@ its partial output is never stored or replayed. Cancel (or the client going away
 steps and in the middle of a stream, kills the running sandbox commands and stops the helpers; the
 message is still stored, `stopped: cancelled`.
 
+**A full check plans by code (#1512).** Once the set pack's page map is there (waited for, about
+15 s on a new upload), code splits the set into helper jobs (`full_check_plan.py`: an area's pages
+together, 3-5 pages a job, divider pages recorded as not comparable) and starts them all at once,
+up to `max_parallel_agents`, at low effort, each with a code-written brief: its pages, GV Review's
+recorded differences on them and the picked products' rules. A tiny call warms the helpers' prompt
+cache first. As each helper returns, its findings get their second reads. The lead's first call
+comes after: it gets the helpers' reports and every finding, split into those a second read or a
+code check already backs and those it should verify, in batches; it only verifies and writes the
+notes. Without a page map the lead plans the helpers itself, as in a chat. After the answer, the
+second reads still to make, the third reads (each started as its second read comes back) and the
+critic run in one bounded pool; the cloud drawing's slow copy of the PDF is made in a thread from
+the start, and the drawing and the report are written together at the end.
+
+**Timings.** Every phase's seconds and cost (`chat_timings.py`) go in the trust block's `timings`
+and the log.
+
 **The history stays valid and append-only.** A reply whose tools did not run (cancelled, or a final
 call that asked for tools anyway) is followed by one tool result per call saying so. An answer that
 got no reply at all stores no API messages, so an unanswered question never enters the history.
@@ -49,7 +65,7 @@ import logging
 import re
 import threading
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
@@ -76,19 +92,27 @@ from app.review.assistant.chat_findings import (
     main_upload,
     make_markup_file,
     make_report_file,
+    markup_base,
     page_ranges,
     products_words,
     read_listing,
 )
 from app.review.assistant.chat_progress import FullCheckProgress
 from app.review.assistant.chat_provider import ChatProvider, ProviderFailure, failure_from
-from app.review.assistant.chat_read_review import review_reads
+from app.review.assistant.chat_read_review import (
+    Budget,
+    critic_jobs,
+    needs_third_read,
+    third_read_job,
+    third_read_limit,
+)
 from app.review.assistant.chat_request import (
     BY_SHORT,
     HELPER_MAX_TOKENS,
     LEAD_MAX_TOKENS,
     ChatModel,
     call_params,
+    full_check_helper_effort,
     helper_effort,
     helper_thinking,
     inline_pictures,
@@ -107,6 +131,7 @@ from app.review.assistant.chat_scope import (
     widened,
 )
 from app.review.assistant.chat_summary import code_summary, needs_code_summary
+from app.review.assistant.chat_timings import Timings
 from app.review.assistant.chat_tools import (
     HELPER_SYSTEM_PROMPT,
     HELPER_TOOLS,
@@ -137,17 +162,33 @@ from app.review.assistant.chat_trust import (
     recorded_missing,
     round_statuses,
     states_drawing_values,
+    trust_level,
     trust_report,
     with_drawn_ink,
     with_ledger,
     with_second_read,
 )
 from app.review.assistant.chat_unknowns import refused_from_diff, unknown_records
+from app.review.assistant.full_check_brief import (
+    checklist_gaps,
+    checklist_send_back,
+    helper_brief,
+)
+from app.review.assistant.full_check_plan import (
+    FanOutPlan,
+    HelperJob,
+    pack_ready,
+    plan_jobs,
+    rules_summary,
+    wait_for_page_map,
+)
 from app.review.assistant.ledger import LEDGER_TOOL_NAMES, ReadingLedger, recorded_results_check
-from app.review.assistant.sandbox import SandboxRefused
+from app.review.assistant.sandbox import SET_PACK, SKILLS, UPLOADS, SandboxRefused
 from app.runs.rates import ModelRates, call_cost_micros
 
 __all__ = [
+    "FULL_CHECK_INSTRUCTION",
+    "FULL_CHECK_LEAD_INSTRUCTION",
     "HARNESS_ID",
     "ChatEngine",
     "EngineSettings",
@@ -166,11 +207,29 @@ _log = logging.getLogger(__name__)
 #: helpers, and their prompt lines; compare_rounds (the revision diff) for the lead. chat-v7: the
 #: zoom tool, the set pack, parallel tools, the helper footer, the four-part Agent brief and the
 #: effort lines. chat-v8: "never cite internal ticket numbers", and a page or area question's
-#: scope note. chat-v9: the verify_value tool and its prompt lines, #1531.) Only the request's
-#: prefix changes; a chat's stored messages replay unchanged.
-HARNESS_ID: Final = "chat-v9"
-#: Helpers one turn may start, at most, whatever the setting says.
-MAX_PARALLEL_AGENTS_LIMIT: Final = 8
+#: scope note. chat-v9: zoom takes up to 8 crops; a full check's helpers are planned by code, with
+#: the recall brief, and the lead gets their reports with a verify-only instruction. chat-v10: the
+#: verify_value tool and its prompt lines, #1531.) Only the request's prefix changes; a chat's
+#: stored messages replay unchanged.
+HARNESS_ID: Final = "chat-v10"
+#: Helpers that may run at once, at most, whatever the setting says.
+MAX_PARALLEL_AGENTS_LIMIT: Final = 12
+#: The second reads, third reads and critic calls of one message that run at once.
+CHECK_WORKERS: Final = 8
+#: A full check's helpers (#1512): their reading tool calls (zoom, view, commands; recording a
+#: finding or a reading does not count), their output allowance and their report's length.
+FULL_CHECK_HELPER_CALLS: Final = 12
+#: More reading calls for a helper sent back once to finish its per-page checklist.
+FULL_CHECK_SEND_BACK_CALLS: Final = 4
+FULL_CHECK_HELPER_MAX_TOKENS: Final = 12000
+FULL_CHECK_REPORT_WORDS: Final = 200
+#: The lead's output allowance when it only verifies a code-planned full check.
+FULL_CHECK_LEAD_MAX_TOKENS: Final = 32000
+#: The prompt-cache warm-up call before a full check's helpers start: the helpers' exact system
+#: prompt and tools, one word asked, a few tokens back.
+PREWARM_MAX_TOKENS: Final = 16
+#: Reading tools a full check's helper's call budget counts.
+_READING_TOOLS: Final = frozenset({"bash_tool", "view", "zoom", "create_file", "str_replace"})
 #: The lead's tools that run at the same time within one reply (its finding and ledger tools stay
 #: in order, so the findings table and the ledger keep the order they were recorded in).
 LEAD_PARALLEL_TOOLS: Final = frozenset({"bash_tool", "view", "zoom", "review_results"})
@@ -219,6 +278,34 @@ WRAP_UP_NOTE: Final = (
     "Wrap up now ({why}). Do not use any more tools: report what you found, and which pages or "
     "parts you did not get to."
 )
+
+#: The full check's own instruction (CONTRACT4): the reviewer presses a button, never types it.
+#: The lead follows it when it plans the helpers itself (no page map).
+FULL_CHECK_INSTRUCTION: Final = """Full check of this drawing set (the reviewer pressed Run full check). Read /mnt/skills/gv-review/SKILL.md and rules.md first, and call review_results for the whole set.
+
+Review the WHOLE set: GV's rules for the picked products first, then compare everything on the vendor's drawings with the architect's (brand prototype differences as their own group). Report EVERY item you compare with report_finding, the right ones too (status same), with boxes. Check each finding the app made from GV Review's recorded results. Brief helpers to report findings and set_coverage, and on every page to record every dimension string with record_string and every value they read with record_reading (both sides; name an item the same way on every page and view), so code adds them up and compares the views. Record every page with set_coverage. Verify leads.
+
+End with a 5-6 line plain-English summary for the reviewer (no tables, no disclaimers: the app draws the cloud drawing, the report and the lists):
+1. What was checked: pages, products, rounds.
+2. The overall verdict in one line (how many items look wrong, need the reviewer's decision, match).
+3. The top 3-5 issues by impact, each with its page, item, and architect vs vendor value.
+4. What needs the reviewer's decision.
+5. The next step (e.g. "send the cloud drawing to the vendor; confirm the 3 items that need your decision").
+If you are told to stop early, still write this summary from what you have."""
+
+#: What the lead is told instead when code planned and ran the helpers (#1512).
+FULL_CHECK_LEAD_INSTRUCTION: Final = """Full check of this drawing set (the reviewer pressed Run full check). The app has already split the set by area and run one helper per part with GV's per-page checklist, made a finding for each difference GV Review recorded, and read the helpers' findings a second time. Their reports and every finding follow. You verify and sum up; you do not plan. In this order, since a cap can stop you before the end:
+- First the "Checklist gaps" and each "not compared" line in the helper reports: zoom and compare what was left (report_finding for each item), or say why it cannot be compared.
+- Then the findings listed under "To verify": zoom on both sides of four findings per zoom call (8 crops) and put several zoom calls in one reply; then, in one reply, update_finding for each (verified true, or the values as printed) or drop_finding with your reason. Findings under "Backed" need no re-check.
+- Each finding the app made from GV Review's recorded results that is still without boxes: check it on the drawing (update_finding with boxes) or drop_finding with your reason.
+- Pages listed as not accounted for: set_coverage, or compare them yourself (a helper only for several pages).
+End with a 5-6 line plain-English summary for the reviewer (no tables, no disclaimers: the app draws the cloud drawing, the report and the lists):
+1. What was checked: pages, products, rounds.
+2. The overall verdict in one line (how many items look wrong, need the reviewer's decision, match).
+3. The top 3-5 issues by impact, each with its page, item, and architect vs vendor value.
+4. What needs the reviewer's decision.
+5. The next step (e.g. "send the cloud drawing to the vendor; confirm the 3 items that need your decision").
+If you are told to stop early, still write this summary from what you have."""
 
 
 def prompt_ids(provider: str) -> tuple[str, str]:
@@ -484,6 +571,8 @@ class _Agent:
     prompt: str
     model: ChatModel
     number: int = 0
+    pages: tuple[int, ...] | None = None
+    """A code-planned helper's pages (#1512): its footer lists them from the page map."""
 
 
 @dataclass(slots=True)
@@ -571,6 +660,25 @@ class ChatEngine:
         self._diff_pairs: dict[tuple[str, int, str, int], dict[str, Any]] = {}
         # One reading ledger per message, shared by the lead and its helpers (thread-safe).
         self.reading_ledger = ReadingLedger(page_count=self.book.page_count or None)
+        self.timings = Timings()
+        #: Every code change to a finding's checks (second, third read, critic) reads it again
+        #: and stores it under this lock, so two checks finishing at once never lose one.
+        self.finding_lock = threading.RLock()
+        # Second reads (#1512): each finding's read, kept while what it read is unchanged (the
+        # lead marking a finding verified keeps it), the findings queued, and the checks running.
+        self._reads: dict[str, tuple[tuple[Any, ...], str, dict[str, Any]]] = {}
+        self._read_queued: set[tuple[str, tuple[Any, ...]]] = set()
+        self._third_queued: set[str] = set()
+        self._third_reads_open = False
+        self._checks_pool: ThreadPoolExecutor | None = None
+        self._checks: list[Future[None]] = []
+        self._checks_budget: Budget | None = None
+        self._plan: FanOutPlan | None = None
+        self._read_share = _Share(limit=settings.message_cap_micros)
+        self._markup_base: Future[Any] | None = None
+        self._trust_index: int | None = None
+        #: A code-planned helper's checklist pages still open after its report (#1515).
+        self._checklist_gaps: dict[int, dict[int, str]] = {}
 
     # ---- the screen ------------------------------------------------------------------------------
 
@@ -589,6 +697,35 @@ class ChatEngine:
         """A text block written by the app (a stop note), streamed like the model's."""
         index = self._add_block({"type": "text", "text": text})
         self.emit("text_delta", {"index": index, "text": text})
+
+    def carry_over(
+        self, findings: Sequence[Mapping[str, Any]], coverage: Mapping[str, Any] | None
+    ) -> int:
+        """Continue (#1514): the findings and page coverage an answer a server restart cut off had
+        already made, kept as this answer's own (shown at once; code checks each again). Returns
+        how many findings were kept."""
+        kept = 0
+        for given in findings:
+            finding = self.book.add_code_finding(given)
+            if finding is None:
+                continue
+            finding = {
+                **finding,
+                "created_by": str(given.get("created_by") or "lead"),
+                "verified": bool(given.get("verified")),
+            }
+            self.book.replace(finding)
+            self._show_finding(finding)
+            kept += 1
+        pages = [
+            {key: entry[key] for key in ("page", "pair_page", "status", "note") if key in entry}
+            for entry in (coverage or {}).get("pages") or []
+            if isinstance(entry, Mapping)
+            and (entry.get("status") != "not_opened" or entry.get("note"))
+        ]
+        if pages:
+            self._show_coverage(self.book.set_coverage({"pages": pages}, "earlier"))
+        return kept
 
     # ---- money -----------------------------------------------------------------------------------
 
@@ -680,6 +817,7 @@ class ChatEngine:
         with self._lock:
             self._spent += cost
             total = self._spent
+        self.timings.charge(cost)
         self.emit("usage", {"cost_usd": cost_text(total)})
 
     # ---- one call --------------------------------------------------------------------------------
@@ -1016,12 +1154,13 @@ class ChatEngine:
 
             return work
 
-        results = self._in_turns(
-            [call for call in calls if call.get("name") != "Agent"],
-            lambda call: call.get("name") in LEAD_PARALLEL_TOOLS
-            and id(call) not in reply.bad_inputs,
-            prepare,
-        )
+        with self.timings.phase(self._lead_phase()):
+            results = self._in_turns(
+                [call for call in calls if call.get("name") != "Agent"],
+                lambda call: call.get("name") in LEAD_PARALLEL_TOOLS
+                and id(call) not in reply.bad_inputs,
+                prepare,
+            )
         if agents:
             results.update(self._run_agents(agents))
         return [results[id(call)] for call in calls]
@@ -1083,11 +1222,20 @@ class ChatEngine:
         return recorded
 
     def _checked(self, finding: dict[str, Any]) -> dict[str, Any]:
-        """A finding with code's checks (its second read starts again: its values may be new)."""
+        """A finding with code's checks. Its second read is kept while what it read (the item,
+        both values and both crops) is unchanged, else it starts again (#1512)."""
         recorded = self._recorded_checks() if finding.get("source") == "rules" else None
-        checked = apply_checks(finding, self.book.pdf_paths(), recorded)
+        kept = self._reads.get(str(finding.get("id")))
+        if kept is not None and kept[0] != _read_key(finding):
+            kept = None
+        checked = apply_checks(
+            finding,
+            self.book.pdf_paths(),
+            recorded,
+            second_read=kept[1] if kept is not None else "not_run",
+        )
         checked.setdefault("round_status", None)
-        checked.setdefault("second_read_values", None)
+        checked["second_read_values"] = dict(kept[2]) if kept is not None else None
         for key in ("ledger_ids", "reference_side", "sum_text"):
             checked.setdefault(key, None)
         return checked
@@ -1163,12 +1311,7 @@ class ChatEngine:
             elif name == "drop_finding":
                 finding_id, reason = book.drop(raw)
                 notes = []
-                with self._lock:
-                    dropped_at = self._positions.get(finding_id)
-                    block = {"type": "finding_dropped", "finding_id": finding_id, "reason": reason}
-                    if dropped_at is not None:
-                        self.blocks[dropped_at] = block
-                self.emit("finding_dropped", {"index": dropped_at, **block})
+                self._show_dropped(finding_id, reason)
                 text = f"Finding {finding_id} dropped."
             else:
                 coverage = book.set_coverage(raw, by)
@@ -1394,20 +1537,12 @@ class ChatEngine:
         live = book.live()
         coverage = book.coverage_map() if book.coverage_used else None
         reported_sums = {
-            (f.get("page"), str(f.get("printed_total") or "").strip())
+            (f.get("page"), str(f.get("printed_total") or "").strip()): f
             for f in live
             if f.get("source") == "vendor_arithmetic"
         }
         for extra in self.reading_ledger.ledger_findings(live, coverage):
-            if (
-                extra.get("source") == "vendor_arithmetic"
-                and (
-                    extra.get("page"),
-                    str(extra.get("printed_total") or "").strip(),
-                )
-                in reported_sums
-            ):
-                continue  # the lead already reported this string
+            entry = None
             if extra.get("source") == "vendor_arithmetic":
                 entry = next(
                     (e for e in self.reading_ledger.strings if e.id in extra.get("ledger_ids", [])),
@@ -1415,6 +1550,20 @@ class ChatEngine:
                 )
                 if entry is not None:
                     extra = {**extra, "sum_text": entry.sum_text()}
+                key = (extra.get("page"), str(extra.get("printed_total") or "").strip())
+                reported = reported_sums.get(key)
+                if reported is not None:
+                    # Already reported: code's sum goes on that finding instead (#1515).
+                    if entry is not None and not reported.get("sum_text"):
+                        backed = {
+                            **reported,
+                            "sum_text": extra["sum_text"],
+                            "ledger_ids": list(reported.get("ledger_ids") or [])
+                            or [str(i) for i in extra.get("ledger_ids") or []],
+                        }
+                        if book.replace(backed):
+                            self._show_finding(backed)
+                    continue
             added = book.add_code_finding(extra)
             if added is not None:
                 self._show_finding(added)
@@ -1513,61 +1662,161 @@ class ChatEngine:
             raise ProviderFailure("declined", status=None, retryable=False)
         return reply.text()
 
-    def _second_reads(self) -> int:
-        """Second reads of the findings with evidence pictures, in parallel (at most
-        `SECOND_READ_LIMIT`); returns how many findings were left without one."""
-        module = load_module(SECOND_READ_MODULE)
-        findings = [
-            f for f in self.book.live() if f.get("arch_picture_id") or f.get("vendor_picture_id")
-        ]
-        if module is None or not findings:
-            return len(findings) if module is None else 0
-        # Differences first: they are what a reviewer acts on.
-        findings.sort(key=lambda f: {"different": 0, "check": 1}.get(str(f.get("status")), 2))
-        chosen, skipped = findings[:SECOND_READ_LIMIT], len(findings) - SECOND_READ_LIMIT
-        share = _Share(limit=self.settings.message_cap_micros)
-        left = [max(0, skipped)]
+    # ---- the checks of findings: one bounded pool (#1512) ------------------------------------------
 
-        def one(finding: dict[str, Any]) -> None:
-            if self.cancel.is_set():
-                left[0] += 1
-                return
-            crops: dict[str, bytes] = {}
-            for side, key in (("architect", "arch_picture_id"), ("vendor", "vendor_picture_id")):
-                if finding.get(key):
-                    try:
-                        crops[side] = self.read_picture(str(finding[key]))
-                    except OSError:
-                        continue
-            try:
-                read = module.second_read(
-                    crops,
-                    str(finding.get("item") or ""),
-                    lambda content: self._second_read_call(content, share),
+    def _submit_check(self, phase: str, job: Callable[[], None]) -> None:
+        """Runs `job` in the message's checks pool (`CHECK_WORKERS` at once), timed as `phase`."""
+
+        def run() -> None:
+            with self.timings.phase(phase):
+                try:
+                    job()
+                except Exception as failed:  # noqa: BLE001 - one check failing never stops others
+                    _log.warning("assistant chat %s failed: %s", phase, type(failed).__name__)
+
+        with self._lock:
+            if self._checks_pool is None:
+                self._checks_pool = ThreadPoolExecutor(
+                    max_workers=CHECK_WORKERS, thread_name_prefix="gv-chat-check"
                 )
-                read = module.compare_read(read, finding)
-                result = str(read.result)
-                values = {"architect": read.architect, "vendor": read.vendor}
-            except (_NoRoom, _Cancelled, ProviderFailure):
-                left[0] += 1
+            self._checks.append(self._checks_pool.submit(run))
+
+    def _wait_checks(self) -> None:
+        """Waits for every check started so far, and for the ones they start in turn."""
+        while True:
+            with self._lock:
+                pending = [future for future in self._checks if not future.done()]
+            if not pending:
                 return
-            except Exception as failed:  # noqa: BLE001 - a failed read is "not run"
-                _log.warning("assistant chat second read failed: %s", type(failed).__name__)
-                left[0] += 1
-                return
-            if result not in ("agrees", "disagrees", "unsure"):
-                result = "unsure"
-            current = next((f for f in self.book.live() if f["id"] == finding["id"]), None)
+            wait(pending, return_when=FIRST_COMPLETED)
+
+    def _close_checks(self) -> None:
+        self._wait_checks()
+        with self._lock:
+            pool, self._checks_pool = self._checks_pool, None
+            self._checks = []
+        if pool is not None:
+            pool.shutdown(wait=True)
+
+    def _check_budget(self) -> Budget:
+        with self._lock:
+            if self._checks_budget is None:
+                self._checks_budget = Budget(self)
+            return self._checks_budget
+
+    def _update_finding(
+        self, finding_id: str, change: Callable[[dict[str, Any]], dict[str, Any]]
+    ) -> None:
+        """A check's result on a finding: read again, changed and stored under the finding lock,
+        its trust level worked out again from its checks."""
+        with self.finding_lock:
+            current = next((f for f in self.book.live() if f["id"] == finding_id), None)
             if current is None:
                 return
-            updated = {**with_second_read(current, result), "second_read_values": values}
+            updated = change(dict(current))
+            updated["trust_level"] = trust_level(updated["checks"], updated.get("status"))
             if self.book.replace(updated):
                 self._show_finding(updated)
 
-        with ThreadPoolExecutor(max_workers=MAX_AGENTS) as pool:
-            for future in [pool.submit(one, finding) for finding in chosen]:
-                future.result()
-        return left[0]
+    def _queue_second_reads(self, findings: Sequence[Mapping[str, Any]]) -> None:
+        """Starts the second reads of these findings that have evidence pictures and no read yet,
+        differences first, up to `SECOND_READ_LIMIT` reads for the message."""
+        module = load_module(SECOND_READ_MODULE)
+        if module is None:
+            return
+        chosen = [
+            f
+            for f in findings
+            if (f.get("arch_picture_id") or f.get("vendor_picture_id"))
+            and (f.get("checks") or {}).get("second_read", "not_run") in (None, "not_run")
+        ]
+        chosen.sort(key=_differences_first)
+        for finding in chosen:
+            key = (str(finding["id"]), _read_key(finding))
+            with self._lock:
+                if key in self._read_queued or len(self._read_queued) >= SECOND_READ_LIMIT:
+                    continue
+                self._read_queued.add(key)
+            self._submit_check("second_reads", _bound(self._second_read_one, module, finding))
+
+    def _second_read_one(self, module: Any, finding: Mapping[str, Any]) -> None:
+        """One finding's second read; kept only when the finding still shows what was read. A
+        read that disagrees or is unsure starts its third read once those are open."""
+        if self.cancel.is_set():
+            return
+        crops: dict[str, bytes] = {}
+        for side, picture in (("architect", "arch_picture_id"), ("vendor", "vendor_picture_id")):
+            if finding.get(picture):
+                try:
+                    crops[side] = self.read_picture(str(finding[picture]))
+                except OSError:
+                    continue
+        try:
+            read = module.second_read(
+                crops,
+                str(finding.get("item") or ""),
+                lambda content: self._second_read_call(content, self._read_share),
+            )
+            read = module.compare_read(read, finding)
+        except (_NoRoom, _Cancelled, ProviderFailure):
+            return
+        except Exception as failed:  # noqa: BLE001 - a failed read is "not run"
+            _log.warning("assistant chat second read failed: %s", type(failed).__name__)
+            return
+        result = str(read.result)
+        if result not in ("agrees", "disagrees", "unsure"):
+            result = "unsure"
+        values = {"architect": read.architect, "vendor": read.vendor}
+        key = _read_key(finding)
+        with self.finding_lock:
+            current = next((f for f in self.book.live() if f["id"] == finding["id"]), None)
+            if current is None or _read_key(current) != key:
+                return  # changed (or dropped) while it was read: read again later
+            self._reads[str(current["id"])] = (key, result, values)
+            updated = {**with_second_read(current, result), "second_read_values": values}
+            if not self.book.replace(updated):
+                return
+            self._show_finding(updated)
+        if result in ("disagrees", "unsure") and self._third_reads_open:
+            self._queue_third_read(updated)
+
+    def _queue_third_read(self, finding: Mapping[str, Any]) -> None:
+        """Starts one finding's third read (at most `third_read_limit()` per message)."""
+        finding_id = str(finding["id"])
+        with self._lock:
+            if finding_id in self._third_queued or len(self._third_queued) >= third_read_limit():
+                return
+            job = third_read_job(self, finding, self._check_budget(), self._update_finding)
+            if job is None:
+                return
+            self._third_queued.add(finding_id)
+        self._submit_check("third_reads", job)
+
+    def _post_checks(self) -> int:
+        """After the lead's answer: the second reads still to make, the third reads (each one
+        started as its second read comes back) and the critic, all in one bounded pool. Returns
+        how many findings with evidence pictures were left without a second read."""
+        book = self.book
+        findings = book.live()
+        if findings:
+            self._third_reads_open = True
+            for job in critic_jobs(self, findings, self._check_budget(), self._update_finding):
+                self._submit_check("critic", job)
+            for finding in sorted(findings, key=_differences_first):
+                if needs_third_read(finding):
+                    self._queue_third_read(finding)
+            self._queue_second_reads(findings)
+        self._close_checks()
+        with_pictures = [
+            f for f in book.live() if f.get("arch_picture_id") or f.get("vendor_picture_id")
+        ]
+        if load_module(SECOND_READ_MODULE) is None:
+            return len(with_pictures)
+        return sum(
+            1
+            for f in with_pictures
+            if (f.get("checks") or {}).get("second_read") in (None, "not_run")
+        )
 
     def _accuracy(self) -> None:
         """The answer's accuracy, by code (CONTRACT5): a block and the `accuracy` event."""
@@ -1583,15 +1832,17 @@ class ChatEngine:
         self.emit("accuracy", {"index": index, "accuracy": json.loads(json.dumps(score))})
 
     def _trust_phase(self) -> None:
-        """After the lead's answer: second reads, round links, then the trust report."""
+        """After the lead's answer: the checks of the findings, round links, then the trust report."""
         book = self.book
         if self._progress is not None:
             self._progress.phase("checking")
-        try:
-            self._ledger_findings()
-        except Exception:  # noqa: BLE001 - the answer goes on without the ledger's findings
-            _log.exception("assistant chat ledger findings failed")
+        with self.timings.phase("finish_checks"):
+            try:
+                self._ledger_findings()
+            except Exception:  # noqa: BLE001 - the answer goes on without the ledger's findings
+                _log.exception("assistant chat ledger findings failed")
         if not book.live() and not book.coverage_used and not self._ledger_used():
+            self._close_checks()
             return
         if self._ledger_used():
             # The reading ledger as a non-AI witness for the lead's own findings.
@@ -1600,16 +1851,48 @@ class ChatEngine:
                 backed = with_ledger(finding, ledger)
                 if backed != finding and book.replace(backed):
                     self._show_finding(backed)
-        # The drawn-ink reads (#1531, $0 OCR) run while the second reads wait on the model.
+        # The drawn-ink reads (#1531, $0 OCR) run while the model checks run.
         with ThreadPoolExecutor(max_workers=1) as ink:
             drawn = ink.submit(
                 drawn_ink_checks, book.live(), book.pdf_paths(), stop=self.cancel.is_set
             )
-            skipped = self._second_reads()
-        for inked in with_drawn_ink(book.live(), drawn.result()):
-            if book.replace(inked):
-                self._show_finding(inked)
-        review_reads(self)  # third reads and the critic (#1498)
+            skipped = self._post_checks()
+        with self.finding_lock:
+            for inked in with_drawn_ink(book.live(), drawn.result()):
+                if book.replace(inked):
+                    self._show_finding(inked)
+        with self.timings.phase("finish_checks"):
+            self._finish_trust(skipped)
+
+    def _code_finish(self) -> None:
+        """A stopped full check's finish, by code only: no model call."""
+        self._close_checks()  # second reads started before the stop end at once (cancelled)
+        book = self.book
+        with self.timings.phase("finish_checks"):
+            try:
+                self._ledger_findings()
+            except Exception:  # noqa: BLE001 - the answer goes on without the ledger's findings
+                _log.exception("assistant chat ledger findings failed")
+            if self._ledger_used():
+                ledger = self.reading_ledger.as_dict()
+                for finding in book.live():
+                    backed = with_ledger(finding, ledger)
+                    if backed != finding and book.replace(backed):
+                        self._show_finding(backed)
+            if not book.live() and not book.coverage_used and not self._ledger_used():
+                return
+            with_pictures = [
+                f for f in book.live() if f.get("arch_picture_id") or f.get("vendor_picture_id")
+            ]
+            skipped = sum(
+                1
+                for f in with_pictures
+                if (f.get("checks") or {}).get("second_read") in (None, "not_run")
+            )
+            self._finish_trust(skipped)
+
+    def _finish_trust(self, skipped: int) -> None:
+        book = self.book
         statuses = round_statuses(book.live())
         with self._lock:
             statuses.update(self._diff_status)
@@ -1656,6 +1939,7 @@ class ChatEngine:
         self._ledger_trust(report)
         self._diff_rounds(report)
         index = self._add_block({"type": "trust", "trust": report})
+        self._trust_index = index
         self.emit("trust", {"index": index, "trust": json.loads(json.dumps(report))})
 
     def _recorded_missing(self) -> list[dict[str, Any]]:
@@ -1719,12 +2003,12 @@ class ChatEngine:
             )
         return " ".join(parts) or None
 
-    def _seed_recorded(self) -> None:
+    def _seed_recorded(self) -> list[str]:
         """Full check: each difference GV Review recorded becomes a finding at once, so none is
-        lost; the lead is told which, to check each (or drop it with a reason)."""
+        lost. Returns the lines that tell the lead which (to check each, or drop it)."""
         recorded = self._recorded_checks()
         if not recorded.readable:
-            return
+            return []
         self.book.record_ids = frozenset(item["record_id"] for item in recorded.differences)
         seeded = []
         for item in recorded.differences:
@@ -1736,21 +2020,26 @@ class ChatEngine:
                 f"- {finding['id']} page {finding['page']}: {finding['item']}: architect "
                 f"{finding['architect']}; vendor {finding['vendor']} ({item['record_id']})"
             )
-        if seeded:
-            self.user_content = [
-                *self.user_content,
-                {
-                    "type": "text",
-                    "text": "GV Review already recorded these differences; the app made a "
-                    "finding for each. Check each on the drawing: update_finding (boxes, values "
-                    "as printed, verified true) or drop_finding with your reason. Never leave "
-                    "one out.\n" + "\n".join(seeded),
-                },
-            ]
+        return seeded
+
+    def _start_markup_base(self) -> None:
+        """Full check: the cloud drawing's copy of the vendor's PDF, made now in a thread (the
+        slow part, about 12 s for 60 pages; it needs no finding)."""
+        if self.tools.register_file is None:
+            return
+        workspace = self.tools.workspace
+
+        def make() -> Any:
+            return markup_base(workspace)
+
+        pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gv-chat-markup")
+        self._markup_base = pool.submit(make)
+        pool.shutdown(wait=False)
 
     def _full_check_files(self) -> list[str]:
         """Full check: the cloud drawing and the check report, made by code, as chat files (the
-        names of those made)."""
+        names of those made). The two are written at the same time; the drawing on the copy made
+        at the start."""
         register: Callable[[str, str, int, str, str], dict[str, Any]] | None = (
             self.tools.register_file
         )
@@ -1790,29 +2079,49 @@ class ChatEngine:
                 f"GV Review's recorded difference {item.get('record_id')} (page {item.get('page')}: "
                 f"{item.get('what')}) is not in this answer."
             )
+        made_base = self._markup_base
 
         def drawing(out: Path) -> MarkupFile:
-            return make_markup_file(workspace, findings, out, "AI cloud drawing")
+            base = None
+            if made_base is not None:
+                try:
+                    base = made_base.result()
+                except Exception as failed:  # noqa: BLE001 - the copy is made again below
+                    _log.warning("assistant chat markup copy failed: %s", type(failed).__name__)
+            return make_markup_file(workspace, findings, out, "AI cloud drawing", base)
 
         def checked(out: Path) -> MarkupFile:
             return make_report_file(workspace, summary, findings, not_checked, out)
 
-        makers: tuple[tuple[str, Callable[[Path], MarkupFile]], ...] = (
-            ("cloud drawing", drawing),
-            ("check report", checked),
+        makers: tuple[tuple[str, str, Callable[[Path], MarkupFile]], ...] = (
+            ("cloud drawing", "cloud_drawing", drawing),
+            ("check report", "report", checked),
         )
+
+        def make(phase: str, maker: Callable[[Path], MarkupFile]) -> tuple[str, MarkupFile]:
+            with self.timings.phase(phase):
+                file_id = str(uuid4())
+                out = workspace.files / file_id
+                try:
+                    return file_id, maker(out)
+                except BaseException:
+                    out.unlink(missing_ok=True)
+                    raise
+
         names: list[str] = []
-        for what, make in makers:
-            file_id = str(uuid4())
-            out = workspace.files / file_id
-            try:
-                made = make(out)
-                register(file_id, made.name, made.size, "application/pdf", made.sha256)
-                names.append(made.name)
-            except Exception as failed:  # noqa: BLE001 - told plainly in the answer
-                _log.warning("assistant chat %s failed: %s", what, type(failed).__name__)
-                out.unlink(missing_ok=True)
-                self._add_text(f"*The {what} could not be made for this answer.*")
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="gv-chat-files") as pool:
+            futures = [(what, pool.submit(make, phase, maker)) for what, phase, maker in makers]
+            for what, future in futures:
+                file_id = None
+                try:
+                    file_id, made = future.result()
+                    register(file_id, made.name, made.size, "application/pdf", made.sha256)
+                    names.append(made.name)
+                except Exception as failed:  # noqa: BLE001 - told plainly in the answer
+                    _log.warning("assistant chat %s failed: %s", what, type(failed).__name__)
+                    if file_id is not None:
+                        (workspace.files / file_id).unlink(missing_ok=True)
+                    self._add_text(f"*The {what} could not be made for this answer.*")
         return names
 
     def _close_full_check(self, text: str, stopped: str | None, cap_hit: str | None) -> str:
@@ -1887,74 +2196,10 @@ class ChatEngine:
                     f"at most {self._max_agents} agents run at once; start it again next turn",
                 )
                 continue
-            with self._lock:
-                self._helpers_started += 1
-                agent.number = self._helpers_started
             accepted.append((call, agent))
         if not accepted:
             return results
-        with self._lock:
-            left = max(0, self.settings.message_cap_micros - self._spent)
-            share = _Share(limit=self._spent + left * HELPER_SHARE_PERCENT // 100)
-        first = accepted[0][1]
-        count = len(accepted)
-        entries: list[dict[str, Any]] = [
-            {
-                "id": agent.call_id,
-                "description": agent.description,
-                "model": agent.model.id,
-                "ok": None,
-                "report": None,
-                "steps": [],
-                "stopped": None,
-            }
-            for _call, agent in accepted
-        ]
-        step = {
-            **new_step(first.call_id, "Agent", {}),
-            "label": f"Running {count} agent{'s' if count > 1 else ''} · {first.description}",
-            "agents": entries,
-        }
-        index = self._add_block({"type": "step", "step": step})
-        self.emit("step_start", {"index": index, "step": json.loads(json.dumps(step))})
-        for entry in entries:
-            self.emit(
-                "agent_start",
-                {
-                    "step_index": index,
-                    "agent": {k: entry[k] for k in ("id", "description", "model")},
-                },
-            )
-        started = monotonic()
-
-        def run(position: int, agent: _Agent) -> None:
-            entry = entries[position]
-            try:
-                report, ok, stopped = self._helper(agent, index, entry, share)
-            except Exception as failed:  # noqa: BLE001 - one helper failing never stops the others
-                _log.warning("assistant chat helper failed: %s", type(failed).__name__)
-                report = _report_from_steps(entry["steps"], "it failed unexpectedly")
-                ok, stopped = False, "error"
-            with self._lock:
-                entry.update({"ok": ok, "report": report, "stopped": stopped})
-                summary = {
-                    k: entry[k] for k in ("id", "description", "model", "ok", "report", "stopped")
-                }
-            self.emit("agent_end", {"step_index": index, "agent": summary})
-
-        with ThreadPoolExecutor(max_workers=self._max_agents) as pool:
-            for future in [pool.submit(run, n, agent) for n, (_call, agent) in enumerate(accepted)]:
-                future.result()
-        with self._lock:
-            finished = {
-                **step,
-                "label": f"Ran {count} agent{'s' if count > 1 else ''} · {first.description}",
-                "ok": all(entry["ok"] for entry in entries),
-                "seconds": round(monotonic() - started, 1),
-                "agents": json.loads(json.dumps(entries)),
-            }
-            self.blocks[index] = {"type": "step", "step": finished}
-        self.emit("step_end", {"index": index, "step": finished})
+        entries = self._launch([agent for _call, agent in accepted])
         for (call, agent), entry in zip(accepted, entries, strict=True):
             reported = self.book.by(f"helper:{agent.number}")
             listed = "".join(
@@ -1980,6 +2225,371 @@ class ChatEngine:
                 result["is_error"] = True
             results[id(call)] = result
         return results
+
+    def _launch(
+        self,
+        agents: Sequence[_Agent],
+        on_done: Callable[[_Agent, dict[str, Any]], None] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Runs helpers, at most `max_parallel_agents` at once, shown as one step; each one's entry
+        (its report, ok, stopped, steps) in order. `on_done(agent, entry)` runs in the helper's
+        thread as soon as it has reported (a full check starts its second reads there)."""
+        with self._lock:
+            left = max(0, self.settings.message_cap_micros - self._spent)
+            share = _Share(limit=self._spent + left * HELPER_SHARE_PERCENT // 100)
+            for agent in agents:
+                self._helpers_started += 1
+                agent.number = self._helpers_started
+        first = agents[0]
+        count = len(agents)
+        entries: list[dict[str, Any]] = [
+            {
+                "id": agent.call_id,
+                "description": agent.description,
+                "model": agent.model.id,
+                "ok": None,
+                "report": None,
+                "steps": [],
+                "stopped": None,
+            }
+            for agent in agents
+        ]
+        step = {
+            **new_step(first.call_id, "Agent", {}),
+            "label": f"Running {count} agent{'s' if count > 1 else ''} · {first.description}",
+            "agents": entries,
+        }
+        index = self._add_block({"type": "step", "step": step})
+        self.emit("step_start", {"index": index, "step": json.loads(json.dumps(step))})
+        for entry in entries:
+            self.emit(
+                "agent_start",
+                {
+                    "step_index": index,
+                    "agent": {k: entry[k] for k in ("id", "description", "model")},
+                },
+            )
+        started = monotonic()
+
+        def run(position: int, agent: _Agent) -> None:
+            entry = entries[position]
+            pages = list(agent.pages or ())
+            self.timings.helper_started(agent.number, agent.description, pages)
+            with self.timings.phase("helpers", helper=agent.number):
+                try:
+                    report, ok, stopped = self._helper(agent, index, entry, share)
+                except Exception as failed:  # noqa: BLE001 - one helper failing never stops others
+                    _log.warning("assistant chat helper failed: %s", type(failed).__name__)
+                    report = _report_from_steps(entry["steps"], "it failed unexpectedly")
+                    ok, stopped = False, "error"
+            self.timings.helper_ended(agent.number, stopped)
+            with self._lock:
+                entry.update({"ok": ok, "report": report, "stopped": stopped})
+                summary = {
+                    k: entry[k] for k in ("id", "description", "model", "ok", "report", "stopped")
+                }
+            self.emit("agent_end", {"step_index": index, "agent": summary})
+            if on_done is not None:
+                try:
+                    on_done(agent, entry)
+                except Exception as failed:  # noqa: BLE001 - the helper's report still stands
+                    _log.warning(
+                        "assistant chat helper follow-up failed: %s", type(failed).__name__
+                    )
+
+        with ThreadPoolExecutor(max_workers=min(count, self._max_agents)) as pool:
+            for future in [pool.submit(run, n, agent) for n, agent in enumerate(agents)]:
+                future.result()
+        with self._lock:
+            finished = {
+                **step,
+                "label": f"Ran {count} agent{'s' if count > 1 else ''} · {first.description}",
+                "ok": all(entry["ok"] for entry in entries),
+                "seconds": round(monotonic() - started, 1),
+                "agents": json.loads(json.dumps(entries)),
+            }
+            self.blocks[index] = {"type": "step", "step": finished}
+        self.emit("step_end", {"index": index, "step": finished})
+        return entries
+
+    # ---- a full check's fan-out, planned by code (#1512) ------------------------------------------
+
+    def _lead_phase(self) -> str:
+        return "lead_verification" if self._plan is not None or self._helpers_started else "lead"
+
+    def _show_dropped(self, finding_id: str, reason: str) -> None:
+        with self._lock:
+            dropped_at = self._positions.get(finding_id)
+            block = {"type": "finding_dropped", "finding_id": finding_id, "reason": reason}
+            if dropped_at is not None:
+                self.blocks[dropped_at] = block
+        self.emit("finding_dropped", {"index": dropped_at, **block})
+
+    def _helper_model(self) -> ChatModel:
+        return BY_SHORT[HELPER_DEFAULT_MODEL[self.settings.model.short]]
+
+    def _prewarm(self) -> None:
+        """One tiny call with the helpers' exact system prompt and tools, so the helpers that
+        start together read that prefix from the prompt cache instead of each writing it. Only on
+        Anthropic's own API; a failure is only logged."""
+        if self.provider.name != "anthropic" or self.cancel.is_set():
+            return
+        model = self._helper_model()
+        effort = full_check_helper_effort(self.settings.effort)
+        thinking = helper_thinking(model, effort, self.settings.thinking)
+        messages = [{"role": "user", "content": [{"type": "text", "text": "Reply with OK."}]}]
+        body = self._body(
+            model=model,
+            thinking=thinking,
+            system=HELPER_SYSTEM_PROMPT,
+            tools=HELPER_TOOLS,
+            messages=messages,
+            final=False,
+            max_tokens=PREWARM_MAX_TOKENS,
+        )
+        if not self._fits(self._estimate(model, body, 0, 0)):
+            return
+        with self.timings.phase("prewarm"):
+            try:
+                self._call(
+                    model=model,
+                    effort=effort,
+                    thinking=thinking,
+                    system=HELPER_SYSTEM_PROMPT,
+                    tools=HELPER_TOOLS,
+                    messages=messages,
+                    final=False,
+                    max_tokens=PREWARM_MAX_TOKENS,
+                    prompt_id=self.helper_prompt_id,
+                    display=None,
+                )
+            except (_Cancelled, ProviderFailure) as failed:
+                _log.info("assistant chat prompt cache not warmed: %s", type(failed).__name__)
+
+    def _rules_summary(self) -> str:
+        try:
+            text = (self.tools.workspace.skills / "rules.md").read_text(encoding="utf-8")
+        except OSError:
+            return ""
+        return rules_summary(text)
+
+    def _job_brief(
+        self,
+        job: HelperJob,
+        rules: str,
+        helpers: int,
+        pictures_made: bool,
+        page_map: Mapping[str, Any] | None,
+    ) -> str:
+        """A code-planned helper's brief: the recall brief (`full_check_brief.helper_brief`: its
+        pages with their areas, GV's recorded results and leads on them, the per-page checklist),
+        then where to start, the products, pages to look at and the rules summary (the app's
+        footer follows)."""
+        products = products_words(self.settings.products).lower()
+        stem = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(job.file).stem).strip("._") or "file"
+        pictures = ", ".join(f"{SET_PACK}/pages/{stem}/p-{page:03d}.png" for page in job.pages)
+        with self._lock:
+            document = self._recorded_document
+        brief = helper_brief(
+            job.pages,
+            file_name=f"{UPLOADS}/{job.file}",
+            page_map=page_map,
+            review_document=document,
+        )
+        overview = (
+            f"view your pages' overview pictures, all in one reply ({pictures})"
+            if pictures_made
+            else "zoom on each of your whole pages at 72 dpi, all in one call (the page pictures "
+            "are still being made)"
+        )
+        lines = [
+            brief,
+            (
+                f"START: you are one of {helpers} helpers; the others have the other pages. "
+                f"First {overview}; then zoom only to read values, every crop you need in one call."
+            ),
+            f"PRODUCTS: {products}; a brand prototype's differences are their own group.",
+        ]
+        if job.reference:
+            looked = "; ".join(f"{name} p.{number}" for name, number in job.reference)
+            lines.append(f"LOOK AT, to compare with (another helper or file has them): {looked}.")
+        if rules:
+            lines.append(
+                f"GV's rules for {products} (summary; all of them in {SKILLS}/rules.md):\n{rules}"
+            )
+        return "\n\n".join(lines)
+
+    def _merge_seeds(self, by: str) -> None:
+        """A helper's finding for a difference GV Review recorded (same `record_id`) fills in the
+        finding the app made for it (values as printed, status, boxes) and is folded into it."""
+        seeds = {
+            str(f["record_id"]): f
+            for f in self.book.by("gv_review")
+            if f.get("record_id") and not (f.get("arch_box") or f.get("vendor_box"))
+        }
+        for found in self.book.by(by):
+            seed = seeds.pop(str(found.get("record_id") or ""), None)
+            if seed is None:
+                continue
+            merged = {
+                **seed,
+                **{key: found.get(key) for key in _MERGED_FIELDS},
+                "why": found.get("why") or seed.get("why"),
+            }
+            merged = self._checked(merged)
+            with self.finding_lock:
+                if not self.book.absorb(str(found["id"])):
+                    continue
+                if not self.book.replace(merged):
+                    continue
+            self._show_dropped(
+                str(found["id"]),
+                f"Folded into {seed['id']}: the helper's reading of GV Review's recorded "
+                "difference.",
+            )
+            self._show_finding(merged)
+
+    def _helper_done(self, agent: _Agent, entry: Mapping[str, Any]) -> None:
+        """As each code-planned helper reports: its readings of recorded differences folded in,
+        and the second reads of the differences found so far started."""
+        del entry
+        self._merge_seeds(f"helper:{agent.number}")
+        self._queue_second_reads(
+            [f for f in self.book.live() if f.get("status") in ("different", "check")]
+        )
+
+    def _fan_out(self) -> bool:
+        """A full check's helpers, planned by code from the set pack's page map and run at once;
+        then the lead's first message gets their reports and the findings to verify. False when
+        there is no page map to plan from (the lead plans, as in a chat)."""
+        workspace = self.tools.workspace
+        warm_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gv-chat-warm")
+        try:
+            warm = warm_pool.submit(self._prewarm) if workspace.set_pack is not None else None
+            with self.timings.phase("set_pack"):
+                page_map = wait_for_page_map(workspace.set_pack, self.cancel)
+            with self.timings.phase("planning"):
+                plan = plan_jobs(page_map, self.book.main_file, self._max_agents)
+                rules = self._rules_summary() if plan is not None else ""
+                pictures = pack_ready(workspace.set_pack)
+            if warm is not None:
+                warm.result()
+        finally:
+            warm_pool.shutdown(wait=True)
+        if plan is None or self.cancel.is_set():
+            return False
+        self._plan = plan
+        if plan.skipped:
+            try:
+                coverage = self.book.set_coverage(
+                    {
+                        "pages": [
+                            {"page": page, "status": "not_comparable", "note": why}
+                            for page, why in plan.skipped
+                        ]
+                    },
+                    "code",
+                )
+                self._show_coverage(coverage)
+            except SandboxRefused as refused:
+                _log.warning("assistant chat could not record the divider pages: %s", refused)
+        model = self._helper_model()
+        agents = [
+            _Agent(
+                f"plan-{job.number}",
+                job.description,
+                self._job_brief(job, rules, len(plan.jobs), pictures, page_map),
+                model,
+                pages=job.pages,
+            )
+            for job in plan.jobs
+        ]
+        entries = self._launch(agents, on_done=self._helper_done)
+        # The rest of the helpers' findings (the right items too), now every helper is done.
+        self._queue_second_reads(self.book.live())
+        self._wait_checks()
+        self._lead_message(agents, entries)
+        return True
+
+    def _note_coverage(self, page: int, note: str) -> None:
+        coverage = self.book.note_coverage(page, note)
+        if coverage is not None:
+            self._show_coverage(coverage)
+
+    def _lead_message(self, agents: Sequence[_Agent], entries: Sequence[Mapping[str, Any]]) -> None:
+        """The lead's first message of a code-planned full check: the verify-only instruction,
+        the helpers' reports, and the findings split into backed, to verify, and GV Review's
+        recorded differences still without boxes."""
+        parts = [f"Helpers (planned by code, {len(agents)}):"]
+        for agent, entry in zip(agents, entries, strict=True):
+            state = (
+                ""
+                if entry.get("ok") and not entry.get("stopped")
+                else (f" (stopped: {entry.get('stopped') or 'error'})")
+            )
+            report = str(entry.get("report") or "")[:_MAX_HELPER_REPORT_CHARS]
+            parts.append(f"### Helper {agent.number} \u00b7 {agent.description}{state}\n{report}")
+        gap_lines: list[str] = []
+        with self._lock:
+            open_gaps = {number: dict(gaps) for number, gaps in self._checklist_gaps.items()}
+        for agent in agents:
+            for page, why in sorted(open_gaps.get(agent.number, {}).items()):
+                gap_lines.append(f"- p{page} (helper {agent.number}): {why}")
+                self._note_coverage(page, f"checklist: {why}")
+        if gap_lines:
+            parts.append(
+                f"Checklist gaps, verify these first ({len(gap_lines)}):\n" + "\n".join(gap_lines)
+            )
+        main = self.book.main_file
+        backed: list[str] = []
+        verify: list[str] = []
+        unboxed: list[str] = []
+        others: list[str] = []
+        findings = self.book.live()
+        for finding in findings:
+            boxed = finding.get("arch_box") or finding.get("vendor_box")
+            if finding.get("created_by") == "gv_review" and not boxed:
+                unboxed.append(
+                    f"- {finding['id']} page {finding['page']}: {finding['item']}: architect "
+                    f"{finding['architect']}; vendor {finding['vendor']} "
+                    f"({finding.get('record_id')})"
+                )
+            elif _needs_lead_check(finding):
+                verify.append(_verify_line(finding, main))
+            elif _backed(finding):
+                backed.append(str(finding["id"]))
+            else:
+                others.append(str(finding["id"]))
+        parts.append(
+            f"Findings ({len(findings)}). Backed by a second read that agrees or a code check, no "
+            f"re-check needed ({len(backed)}): {', '.join(backed) or 'none'}."
+        )
+        if others:
+            parts.append(
+                f"Read once, nothing disagrees (right items and the like), no re-check needed "
+                f"({len(others)}): {', '.join(others)}."
+            )
+        parts.append(f"To verify ({len(verify)}):\n" + ("\n".join(verify) if verify else "none"))
+        if unboxed:
+            parts.append(
+                f"GV Review's recorded differences still without boxes ({len(unboxed)}):\n"
+                + "\n".join(unboxed)
+            )
+        gaps = self.book.coverage_gaps()
+        if gaps:
+            parts.append(f"Pages not accounted for yet: {page_ranges(gaps)}.")
+        text = "\n\n".join(parts)
+        if len(text) > _MAX_REPORT_CHARS:
+            text = text[: _MAX_REPORT_CHARS - 40] + "\n[cut: too long to list in full]"
+        content = [
+            (
+                {"type": "text", "text": FULL_CHECK_LEAD_INSTRUCTION}
+                if block.get("type") == "text" and block.get("text") == FULL_CHECK_INSTRUCTION
+                else block
+            )
+            for block in self.user_content
+        ]
+        self.user_content = [*content, {"type": "text", "text": text}]
 
     def _helper_tool(
         self,
@@ -2019,19 +2629,34 @@ class ChatEngine:
     def _helper(
         self, agent: _Agent, step_index: int, entry: dict[str, Any], share: _Share
     ) -> tuple[str, bool, str | None]:
-        """One helper's loop. Always returns a report: (report, ok, stopped)."""
+        """One helper's loop. Always returns a report: (report, ok, stopped). In a full check
+        (#1512) it runs at low effort with a smaller output allowance, and wraps up after
+        `FULL_CHECK_HELPER_CALLS` reading tool calls."""
         model = agent.model
-        effort = helper_effort(self.settings.effort)
+        full_check = self.settings.mode == "full_check"
+        effort = (
+            full_check_helper_effort(self.settings.effort)
+            if full_check
+            else helper_effort(self.settings.effort)
+        )
         thinking = helper_thinking(model, effort, self.settings.thinking)
+        allowance = FULL_CHECK_HELPER_MAX_TOKENS if full_check else HELPER_MAX_TOKENS
         try:
-            footer = helper_footer(agent.prompt, self.tools.workspace)
+            footer = helper_footer(
+                agent.prompt,
+                self.tools.workspace,
+                pages=agent.pages,
+                report_words=FULL_CHECK_REPORT_WORDS if full_check else 300,
+            )
         except Exception:  # noqa: BLE001 - the helper still gets its brief
             _log.warning("assistant chat helper footer could not be made")
             footer = ""
         messages: list[dict[str, Any]] = [
             {"role": "user", "content": [{"type": "text", "text": agent.prompt + footer}]}
         ]
-        turns = 0
+        turns = reading = 0
+        budget = FULL_CHECK_HELPER_CALLS
+        sent_back = False
         wrap: str | None = None
         cached = previous = 0
         while True:
@@ -2042,7 +2667,7 @@ class ChatEngine:
                     "cancelled",
                 )
             final = wrap is not None
-            max_tokens = WRAP_UP_MAX_TOKENS if final else HELPER_MAX_TOKENS
+            max_tokens = WRAP_UP_MAX_TOKENS if final else allowance
             body = self._body(
                 model=model,
                 thinking=thinking,
@@ -2058,6 +2683,8 @@ class ChatEngine:
                 estimate = self._estimate(model, body, cached, previous)
                 if turns >= self.settings.helper_max_turns:
                     wrap, why = "turn_limit", "you have used all your tool turns"
+                elif full_check and reading >= budget:
+                    wrap, why = "turn_limit", "you have used your tool calls"
                 elif not self._fits(estimate):
                     wrap, why = "cost_cap", "this message is near its money cap"
                 elif not self._hold(share, estimate):
@@ -2123,11 +2750,29 @@ class ChatEngine:
                 results = [done[id(call)] for call in calls]
                 messages.append({"role": "user", "content": results})
                 turns += 1
+                reading += sum(1 for call in calls if call.get("name") in _READING_TOOLS)
                 continue
             report = reply.text()
             if not report:
                 report = _report_from_steps(entry["steps"], "it gave no written report")
                 return report, False, wrap or "error"
+            if agent.pages:
+                # A code-planned helper's checklist (#1515): sent back once to finish it while it
+                # has turns left; what is still open goes to the lead.
+                gaps = checklist_gaps(report, agent.pages)
+                note = checklist_send_back(gaps)
+                if (
+                    note is not None
+                    and not sent_back
+                    and wrap is None
+                    and turns < self.settings.helper_max_turns
+                ):
+                    sent_back = True
+                    budget += FULL_CHECK_SEND_BACK_CALLS
+                    messages.append({"role": "user", "content": [{"type": "text", "text": note}]})
+                    continue
+                with self._lock:
+                    self._checklist_gaps[agent.number] = gaps
             return report, True, wrap
 
     # ---- the lead --------------------------------------------------------------------------------
@@ -2157,8 +2802,16 @@ class ChatEngine:
         except Exception as failed:  # noqa: BLE001 - the message is still stored, plainly
             _log.exception("assistant chat message failed: %s", type(failed).__name__)
             self.tools.sandbox.kill_all()
+            try:
+                self._close_checks()
+            except Exception:  # noqa: BLE001 - best effort
+                _log.debug("assistant chat checks did not close")
             text = ""
             if self.settings.mode == "full_check":
+                try:
+                    self._code_finish()
+                except Exception:  # noqa: BLE001 - the files and summary still come
+                    _log.exception("assistant chat stopped finish failed")
                 try:
                     text = self._close_full_check("", "error", None)
                 except Exception:  # noqa: BLE001 - stored without the summary
@@ -2172,6 +2825,67 @@ class ChatEngine:
                 error="Something went wrong in the assistant, so this answer stopped. Please ask "
                 "again.",
             )
+
+    @property
+    def _lead_max_tokens(self) -> int:
+        """The lead's output allowance: smaller when it only verifies a code-planned full check
+        (the estimate held for each call is smaller, so the caps leave the checks their room)."""
+        return FULL_CHECK_LEAD_MAX_TOKENS if self._plan is not None else LEAD_MAX_TOKENS
+
+    def _start_full_check(self) -> None:
+        """Full check: GV Review's recorded differences made findings, the cloud drawing's copy
+        started, and the helpers planned by code and run (else the lead is told the seeded
+        findings and plans the helpers itself)."""
+        seeded: list[str] = []
+        with self.timings.phase("seeding"):
+            try:
+                seeded = self._seed_recorded()
+            except Exception:  # noqa: BLE001 - the check goes on; the trust report says it
+                _log.exception("assistant chat could not seed the recorded differences")
+        try:
+            self._start_markup_base()
+        except Exception:  # noqa: BLE001 - the drawing makes its own copy at the end
+            _log.warning("assistant chat could not start the markup copy")
+        planned = False
+        try:
+            planned = self._fan_out()
+        except Exception:  # noqa: BLE001 - the lead plans the helpers instead
+            _log.exception("assistant chat full check fan-out failed")
+        if not planned and seeded:
+            self.user_content = [
+                *self.user_content,
+                {
+                    "type": "text",
+                    "text": "GV Review already recorded these differences; the app made a "
+                    "finding for each. Check each on the drawing: update_finding (boxes, values "
+                    "as printed, verified true) or drop_finding with your reason. Never leave "
+                    "one out.\n" + "\n".join(seeded),
+                },
+            ]
+
+    def _finish_timings(self) -> None:
+        """The message's timings: logged, and kept in its trust block (shown under "How this was
+        checked")."""
+        try:
+            timings = self.timings.as_dict(self.spent)
+        except Exception:  # noqa: BLE001 - the answer is stored without its timings
+            _log.exception("assistant chat timings failed")
+            return
+        # A warning so it reaches the API's log (the server shows warnings and above): one line per
+        # answer that says where its time and money went.
+        _log.warning(
+            "assistant chat timings (%s): %s", self.settings.mode, Timings.log_line(timings)
+        )
+        index = self._trust_index
+        if index is None:
+            return
+        with self._lock:
+            block = self.blocks[index]
+            if block.get("type") != "trust":
+                return
+            trust = {**block["trust"], "timings": timings}
+            self.blocks[index] = {"type": "trust", "trust": trust}
+        self.emit("trust", {"index": index, "trust": json.loads(json.dumps(trust))})
 
     def _run(self) -> MessageOutcome:
         settings = self.settings
@@ -2188,10 +2902,7 @@ class ChatEngine:
         text = ""
         guard_sent = False
         if settings.mode == "full_check":
-            try:
-                self._seed_recorded()
-            except Exception:  # noqa: BLE001 - the check goes on; the trust report says it
-                _log.exception("assistant chat could not seed the recorded differences")
+            self._start_full_check()
         # The scope as asked, at once (the screen hides the whole-set panels for a narrow one).
         self._started_scope = self.scope()
         self.emit("scope", {"index": None, "scope": json.loads(json.dumps(self._started_scope))})
@@ -2206,7 +2917,7 @@ class ChatEngine:
             if tool_turns >= settings.lead_max_turns and forced is None:
                 forced = "turn_limit"
             final = forced is not None
-            max_tokens = FINAL_MAX_TOKENS if forced == "cost_cap" else LEAD_MAX_TOKENS
+            max_tokens = FINAL_MAX_TOKENS if forced == "cost_cap" else self._lead_max_tokens
             messages = [*self.history, *turn]
             body = self._body(
                 model=model,
@@ -2229,18 +2940,19 @@ class ChatEngine:
                 break
             upper = prompt_tokens_upper(body, picture_sizes(messages))
             try:
-                reply = self._call(
-                    model=model,
-                    effort=settings.effort,
-                    thinking=thinking,
-                    system=LEAD_SYSTEM_PROMPT,
-                    tools=LEAD_TOOLS,
-                    messages=messages,
-                    final=final,
-                    max_tokens=max_tokens,
-                    prompt_id=self.lead_prompt_id,
-                    display=self._new_attempt,
-                )
+                with self.timings.phase(self._lead_phase()):
+                    reply = self._call(
+                        model=model,
+                        effort=settings.effort,
+                        thinking=thinking,
+                        system=LEAD_SYSTEM_PROMPT,
+                        tools=LEAD_TOOLS,
+                        messages=messages,
+                        final=final,
+                        max_tokens=max_tokens,
+                        prompt_id=self.lead_prompt_id,
+                        display=self._new_attempt,
+                    )
             except _Cancelled:
                 stopped = "cancelled"
                 break
@@ -2289,7 +3001,7 @@ class ChatEngine:
                         tools=LEAD_TOOLS,
                         messages=[*self.history, *probe],
                         final=False,
-                        max_tokens=LEAD_MAX_TOKENS,
+                        max_tokens=self._lead_max_tokens,
                     ),
                     cached,
                     previous,
@@ -2339,12 +3051,22 @@ class ChatEngine:
                 self._trust_phase()
             except Exception:  # noqa: BLE001 - the answer is stored without its trust report
                 _log.exception("assistant chat trust report failed")
+        elif settings.mode == "full_check":
+            # A stopped full check still gets code's $0 finish (#1515): the ledger's findings and
+            # sums and the trust report with the recorded results, before the files and the
+            # summary. The AI checks (second and third reads, the critic) are left out.
+            try:
+                self._code_finish()
+            except Exception:  # noqa: BLE001 - the answer is stored without its trust report
+                _log.exception("assistant chat stopped finish failed")
+        self._close_checks()
         if settings.mode == "full_check":
             text = self._close_full_check(text, stopped, cap_hit)
         try:
             self._accuracy()
         except Exception:  # noqa: BLE001 - the answer is stored without its score
             _log.exception("assistant chat accuracy failed")
+        self._finish_timings()
         if not answered:
             api_content: list[dict[str, Any]] = []
         else:
@@ -2398,6 +3120,90 @@ def _close_open_calls(turn: list[dict[str, Any]]) -> None:
                 ],
             }
         )
+
+
+#: What a helper's reading of a recorded difference gives the finding the app made for it.
+_MERGED_FIELDS: Final = (
+    "architect",
+    "vendor",
+    "status",
+    "arch_box",
+    "vendor_box",
+    "arch_picture_id",
+    "vendor_picture_id",
+    "vs_page",
+    "round",
+    "parts",
+    "printed_total",
+)
+_MAX_HELPER_REPORT_CHARS: Final = 2_500
+
+
+def _backed(finding: Mapping[str, Any]) -> bool:
+    """A second read that agrees, or a check by code (printed at its spot, a GV rule, the
+    vendor's arithmetic, the reading ledger): the lead need not look again."""
+    checks = finding.get("checks") or {}
+    return checks.get("second_read") == "agrees" or finding.get("evidence_kind") in (
+        "observed",
+        "derived",
+    )
+
+
+def _needs_lead_check(finding: Mapping[str, Any]) -> bool:
+    """The lead verifies only a finding a second read disagrees with or is unsure of, and a
+    difference nothing but one AI reading backs."""
+    if _backed(finding):
+        return False
+    if (finding.get("checks") or {}).get("second_read") in ("disagrees", "unsure"):
+        return True
+    return finding.get("status") in ("different", "check")
+
+
+def _box_words(box: object, main: str | None) -> str | None:
+    if not isinstance(box, Mapping):
+        return None
+    where = "" if box.get("file") in (None, main) else f" of {box.get('file')}"
+    coords = ",".join(f"{float(box[key]):g}" for key in ("x0", "y0", "x1", "y1"))
+    return f"p.{box.get('page')}{where} [{coords}]"
+
+
+def _verify_line(finding: Mapping[str, Any], main: str | None) -> str:
+    checks = finding.get("checks") or {}
+    line = (
+        f"- {finding['id']} page {finding['page']}: {finding['item']}: architect "
+        f"{finding['architect']}; vendor {finding['vendor']} ({finding.get('status')})"
+    )
+    read = checks.get("second_read")
+    if read in ("disagrees", "unsure"):
+        values = finding.get("second_read_values") or {}
+        seen = " / ".join(str(values.get(side) or "-") for side in ("architect", "vendor"))
+        line += f" \u00b7 second read {read} (read {seen})"
+    boxes = [
+        f"{side} {words}"
+        for side, key in (("architect", "arch_box"), ("vendor", "vendor_box"))
+        if (words := _box_words(finding.get(key), main)) is not None
+    ]
+    if boxes:
+        line += " \u00b7 " + "; ".join(boxes)
+    return line
+
+
+def _bound(work: Callable[..., None], *given: Any) -> Callable[[], None]:
+    """`work(*given)` as a job to run later."""
+    return lambda: work(*given)
+
+
+def _differences_first(finding: Mapping[str, Any]) -> int:
+    """Differences first: they are what a reviewer acts on."""
+    return {"different": 0, "check": 1}.get(str(finding.get("status")), 2)
+
+
+def _read_key(finding: Mapping[str, Any]) -> tuple[Any, ...]:
+    """What a second read read: the item, both values and both crops."""
+    return tuple(
+        finding.get(key)
+        for key in ("item", "architect", "vendor", "arch_picture_id", "vendor_picture_id")
+    )
 
 
 def _report_from_steps(steps: Sequence[Mapping[str, Any]], why: str) -> str:
