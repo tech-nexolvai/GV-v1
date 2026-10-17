@@ -28,6 +28,7 @@ from app.review.assistant.chat_engine import (
 )
 from app.review.assistant.chat_findings import boxless_note, coverage_note, decision_help_note
 from app.review.assistant.chat_tools import (
+    FABLE_NOTE,
     HELPER_SYSTEM_PROMPT,
     HELPER_TOOL_NAMES,
     HELPER_TOOLS,
@@ -148,6 +149,7 @@ def _prompts() -> dict[str, str]:
                 decision_help_note([{"id": "F2", "page": 3, "item": "x"}]),
             ]
         ),
+        "Fable note": FABLE_NOTE,
         "tools": json.dumps([tool["description"] for tool in ALL_TOOLS.values()]),
         "SKILL.md": SKILL.read_text(encoding="utf-8"),
     }
@@ -210,12 +212,13 @@ def test_the_prompts_stay_within_their_budgets() -> None:
         "helper system prompt": 1400,
         "full check": 1600,
         "full check, code-planned": 1900,
+        "Fable note": 400,
         "SKILL.md": 20000,
     }
     prompts = _prompts()
     for where, most in budgets.items():
         assert len(prompts[where]) <= most, (where, len(prompts[where]))
-    # chat-v15 (#1558): the numbered dimension labels' fields (zoom marks and guides,
+    # chat-v16 (#1558): the numbered dimension labels' fields (zoom marks and guides,
     # architect_dim / vendor_dim on report and update, cite's dim) took about 900 characters.
     assert len(json.dumps(list(LEAD_TOOLS))) <= 45_000
     assert len(json.dumps(list(HELPER_TOOLS))) <= 29_000

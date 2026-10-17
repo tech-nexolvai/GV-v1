@@ -43,9 +43,13 @@ export function alwaysThinksWords(model: Pick<ChatModel, 'label'>): string {
   return `${shortModelLabel(model)} always thinks`;
 }
 
-/** The one line under each model in the model menu, in claude.ai's words. */
+/**
+ * The one line under each model in the model menu, in claude.ai's words. Fable 5.1 says its price
+ * honestly (#1577): $10 / $50 per million tokens against Opus 5.5's $4 / $20.
+ */
 export function modelBlurb(model: Pick<ChatModel, 'id' | 'label'>): string {
   const name = `${model.id} ${model.label}`.toLowerCase();
+  if (name.includes('fable')) return 'Hardest tasks · about 2.5× Opus cost';
   if (name.includes('opus')) return 'Most capable for complex work';
   if (name.includes('sonnet')) return 'Smart, efficient model for everyday use';
   if (name.includes('haiku')) return 'Fastest model for daily tasks';
