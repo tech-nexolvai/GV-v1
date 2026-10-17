@@ -22,6 +22,10 @@ the printed values. This module feeds it from the set pack and compares what it 
 A `different` pair with both values printed as text is a code-proved Wrong: red = the vendor's
 value, green = the architect's. Everything code cannot pair is said with `pairing.py`'s reason.
 
+`pairs.json` holds `pairs` (the one-to-one pairs, in the shape the full check reads:
+`full_check_advocate.code_pairs`, where a pair code made is proof by itself) and `pages` (every
+pair and every reason, per page).
+
 Pure: no PDF, no model. Verification: `tests/review/assistant/test_dim_pairs.py`.
 """
 
@@ -43,7 +47,7 @@ from extraction.architect.pairing import (
     pair_rows,
 )
 
-__all__ = ["PAIRS_FILE", "SETTINGS", "page_pairs", "pairs_on", "set_pairs"]
+__all__ = ["PAIRS_FILE", "SETTINGS", "flat_pairs", "page_pairs", "pairs_on", "set_pairs"]
 
 PAIRS_FILE: Final = "pairs.json"
 #: Labels whose dimension lines are this close (points, across the line) are on one row.
@@ -289,7 +293,35 @@ def set_pairs(dims: Mapping[str, Any], scales: Mapping[str, Any]) -> dict[str, A
             continue
         result = page_pairs(key[1], labels, measured, found.get("labels") or [])
         pages.append({"file": key[0], **result})
-    return {"version": 1, "pages": pages}
+    return {"version": 1, "pairs": flat_pairs(pages), "pages": pages}
+
+
+def flat_pairs(pages: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The one-to-one pairs as the full check reads them (`full_check_advocate.code_pairs`):
+    `{"vendor": "p23.D30 254 [10]", "architect": "p23.D10 8\"", "status": "same" | "different"}`.
+    A pair of one architect dimension with several vendor pieces stays in its page's list only:
+    no one vendor label stands for it."""
+    out: list[dict[str, Any]] = []
+    for entry in pages:
+        for pair in entry.get("pairs") or []:
+            vendor = pair.get("vendor") or []
+            if len(vendor) != 1:
+                continue
+            page, arch = pair.get("page"), pair.get("architect") or {}
+            out.append(
+                {
+                    "vendor": f"p{page}.{vendor[0].get('id')} {vendor[0].get('text')}",
+                    "architect": f"p{page}.{arch.get('id')} {arch.get('text')}",
+                    "status": pair.get("status"),
+                    "file": entry.get("file"),
+                    "page": page,
+                    "architect_in": pair.get("architect_in"),
+                    "vendor_in": pair.get("vendor_in"),
+                    "printed_both": pair.get("printed_both"),
+                    "how": pair.get("how"),
+                }
+            )
+    return out
 
 
 def pairs_on(folder: Path | None, file: str, page: int) -> dict[str, Any] | None:
