@@ -454,7 +454,15 @@ def prepare_skill(
 #: The full check's own instruction (CONTRACT4): the reviewer presses a button, never types it.
 FULL_CHECK_INSTRUCTION: Final = """Full check of this drawing set (the reviewer pressed Run full check). Read /mnt/skills/gv-review/SKILL.md and rules.md first, and call review_results for the whole set.
 
-Review the WHOLE set: GV's rules for the picked products first, then compare everything on the vendor's drawings with the architect's (brand prototype differences as their own group). Report EVERY item you compare with report_finding, the right ones too (status same), with boxes. Check each finding the app made from GV Review's recorded results. Brief helpers to report findings and set_coverage, and on every page to record every dimension string with record_string and every value they read with record_reading (both sides; name an item the same way on every page and view), so code adds them up and compares the views. Record every page with set_coverage. Verify leads. End with 2-4 short lines of notes, no tables: the app draws the cloud drawing, the report and the lists."""
+Review the WHOLE set: GV's rules for the picked products first, then compare everything on the vendor's drawings with the architect's (brand prototype differences as their own group). Report EVERY item you compare with report_finding, the right ones too (status same), with boxes. Check each finding the app made from GV Review's recorded results. Brief helpers to report findings and set_coverage, and on every page to record every dimension string with record_string and every value they read with record_reading (both sides; name an item the same way on every page and view), so code adds them up and compares the views. Record every page with set_coverage. Verify leads.
+
+End with a 5-6 line plain-English summary for the reviewer (no tables, no disclaimers: the app draws the cloud drawing, the report and the lists):
+1. What was checked: pages, products, rounds.
+2. The overall verdict in one line (how many items look wrong, need the reviewer's decision, match).
+3. The top 3-5 issues by impact, each with its page, item, and architect vs vendor value.
+4. What needs the reviewer's decision.
+5. The next step (e.g. "send the cloud drawing to the vendor; confirm the 3 items that need your decision").
+If you are told to stop early, still write this summary from what you have."""
 
 
 def full_check_label(products: Sequence[str], effort: str) -> str:
@@ -582,7 +590,12 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             shown = f"Continue the full check \u00b7 {shown.split(' \u00b7 ', 1)[-1]}"
         with job.factory() as session:
             asked = add_user_message(
-                session, chat_id=job.chat_id, created_by=job.created_by, text=shown
+                session,
+                chat_id=job.chat_id,
+                created_by=job.created_by,
+                text=shown,
+                mode=job.mode,
+                products=job.products,
             )
             session.commit()
             run.question_id = asked.id
@@ -807,6 +820,8 @@ def _store_answer(
                 message_cap_micros=job.message_cap_micros,
                 package_cap_micros=job.package_cap_micros,
                 cap_hit=outcome.cap_hit if outcome.stopped == "cost_cap" else None,
+                mode=job.mode,
+                products=job.products,
             )
             session.commit()
             stored = message_out(message, files_of(session, job.chat_id))
@@ -994,8 +1009,9 @@ def _store_interrupted(
 ) -> AssistantChatMessage | None:
     """The interrupted reply to `question` (None when its place is taken: a reply exists)."""
     blocks = _settled(saved.get("blocks") or []) if saved else []
-    mode = str(saved.get("mode") or "chat") if saved else "chat"
-    products = saved.get("products") if saved else None
+    # The question keeps how it was asked (#1513); the checkpoint says it too.
+    mode = str((saved or {}).get("mode") or question.mode or "chat")
+    products = (saved or {}).get("products") if saved else question.products
     recorded = chat_cost_since(session, question.chat_id, question.created_at)
     cost = max(recorded, int(saved.get("cost_micros") or 0) if saved else 0)
     message_id = uuid4()
@@ -1018,6 +1034,8 @@ def _store_interrupted(
                     {"type": "resume", "resume": resume_of(blocks, mode=mode, products=products)},
                 ],
                 cost_micros=cost,
+                mode=mode,
+                products=products,
             )
     except IntegrityError:
         return None

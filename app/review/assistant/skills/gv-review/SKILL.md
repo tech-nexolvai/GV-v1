@@ -52,21 +52,10 @@ each under its own heading. An "ARCH SET" or "ID SET" drawing beside a "BRAND PR
 the same page is the architect's: compare the vendor with it; the prototype is only a reference.
 Never call a whole page "prototype" because one half is.
 
-```bash
-pdfinfo F.pdf                                              # pages, page size
-pdftotext -f 3 -l 3 -layout F.pdf - 2>/dev/null | head -60 # one page's words (also text inside stamps)
-```
-```python
-# Every annotation: page, kind, author, text. Headings and GV's notes are FreeText.
-import logging; logging.disable(logging.WARNING)
-from pypdf import PdfReader
-r = PdfReader("/mnt/user-data/uploads/F.pdf")
-for n, page in enumerate(r.pages, 1):
-    for a in page.get("/Annots") or []:
-        a = a.get_object()
-        print(n, a.get("/Subtype"), a.get("/T"), repr(str(a.get("/Contents") or ""))[:80],
-              [round(float(v)) for v in a.get("/Rect")])
-```
+`pdfinfo F.pdf` gives pages and page size; `pdftotext -f 3 -l 3 -layout F.pdf -` one page's words
+(text inside stamps too).
+Every annotation (page, kind, author `/T`, text, box) is in `/mnt/user-data/set/annotations.json`;
+headings and GV's notes are FreeText (pypdf reads each page's `/Annots` if you need more).
 **The page map is made for you:** read `/mnt/user-data/set/page_map.json` first (per page and per
 drawing on it: role architect / vendor / brand_prototype / general from GV's typed headings, round,
 area, sheet numbers; boxes in PDF points, origin top-left). It is code's reading of GV's labels: if
@@ -116,21 +105,14 @@ usually have no GV markup at all.
 **Compare on pictures with GV's markup hidden.** The drawings themselves are `/Stamp` annotations,
 so `pdftoppm -hide-annotations` gives a blank page. The set pack has a copy that keeps only the
 stamps (`/mnt/user-data/set/<file>_drawings_only.pdf`, its pages and `zoom` use it; its
-`annotations.json` keeps the headings and GV's notes). Made like this, if you ever need it:
-```python
-import logging; logging.disable(logging.WARNING)
-from pypdf import PdfWriter
-from pypdf.generic import ArrayObject, NameObject
-w = PdfWriter(clone_from="/mnt/user-data/uploads/F.pdf")
-for page in w.pages:
-    if "/Annots" in page:
-        keep = [a for a in page["/Annots"] if a.get_object().get("/Subtype") == "/Stamp"]
-        page[NameObject("/Annots")] = ArrayObject(keep)
-w.write("/home/claude/F_drawings_only.pdf")
-```
+`annotations.json` keeps the headings and GV's notes; pypdf makes one by keeping only `/Stamp`).
 A page with no stamps is ordinary page content: render it as it is. Coloured ink inside a stamp
-stays in the copy; treat it as GV's. A vendor number under a yellow box may still be in the text
-(`pdftotext` of the drawings-only copy) even when the picture hides it.
+stays in the copy; treat it as GV's.
+
+**A vendor number under GV's markup** (a yellow box, a cloud, a red note over it) is still the
+vendor's number to find, not "unreadable" at first sight: look in the drawings-only copy's text
+(`pdftotext -bbox`), `zoom` that spot at 300 dpi, and check its millimetres against its inches
+(`610 [24]`: 610 / 25.4 = 24). Only when all three fail: "unreadable", with the page and spot.
 
 ## 6. GV's rules first, then everything else against the architect
 
@@ -141,6 +123,8 @@ stays in the copy; treat it as GV's. A vendor number under a yellow box may stil
    missing, never assume one.
 2. `review_results` gives what GV's code already recorded for this set. Quote it as recorded; never
    contradict it or restate a result in your own words. Much of a set is not checked by code.
+   Its AI page review rows marked `unsure` or `not_shown` are leads, not results: settle each on
+   the drawing (a finding, or a reading that shows it matches).
 3. Then compare **everything else** on the vendor's drawing with the architect's.
 
 ## 7. What to compare (not only overall widths)
@@ -150,6 +134,13 @@ millwork without dimensions; then compare what is drawn: how many bays, doors, d
 shelves, door vs drawer, uppers present and where they start and stop, splashes, the sink and its
 position, appliances, collars and holes, tags and notes. Scale only to say "about", and say so. Do
 this on **every** paired page, including the second round (revision) pages.
+
+**Every architect dimension is its own item.** Compare a chain segment by segment (wall to outlet,
+outlet to outlet, floor to a J-box), never only its total. A dimension that locates a thing (an
+outlet, a sink or faucet centre line) is that thing's position: when the vendor does not show the
+thing, that is its own finding ("not shown on the vendor", with the architect's values), never a
+remark in a width finding. Read the architect's **notes and callouts** as closely as its numbers
+("pull-out drawers", "by others"): a note the vendor does not follow is a difference.
 
 - **Sizes**: overall length, each piece and cabinet width, **depth** (countertop depth = cabinet
   depth + overhang), **heights** (counter height above floor, upper cabinets' bottom and top,
@@ -190,12 +181,24 @@ this on **every** paired page, including the second round (revision) pages.
    each with both drawings of its pages. Brief each in four parts: objective (its pages, what to
    compare), output (findings with boxes, `set_coverage`), sources (files, skill sections 4, 5, 7,
    9, 10), boundaries (only its pages, never guess). The app adds the page map of its pages, the
-   pictures, `zoom` and a budget. Mention non-dimension differences and brand prototypes.
-3. **Verify every lead yourself, in batches** (a helper's finding is a lead): one `zoom` call of
+   pictures, `zoom` and a budget. Mention non-dimension differences and brand prototypes. Give it
+   GV's recorded results on its pages as "already recorded: do not report them again, but still
+   compare everything around them, the strings that build them too": a recorded item never closes
+   its area.
+3. **The per-page checklist.** Each helper ends its report with one line per page,
+   `CHECKLIST p<N>: architect a/b; notes a/b; strings a/b; not compared: <what and why, or none>`:
+   every architect dimension (each segment) has the vendor's value at that spot or "not shown on
+   the vendor"; every architect note, callout and tag has what the vendor shows; every vendor
+   dimension string is recorded with `record_string` and every vendor value has an architect value
+   or "not on the architect"; where nothing is printed, counts and layout are compared; a round-2
+   page is compared with the architect and with round 1. A line with a gap is work left, not done.
+4. **Verify every lead yourself, in batches** (a helper's finding is a lead): one `zoom` call of
    up to 4 crops checks about 4 findings; then `update_finding` with `verified: true` (or correct it), or
    `drop_finding` when it is wrong. A finding whose second read agrees and whose ledger adds up
-   needs no re-check from you. One you had no time to check stays unverified.
-4. **Whole-set questions cover every page pair** (section 7). Record every page with
+   needs no re-check from you. One you had no time to check stays unverified. **First** the gaps:
+   each "not compared" line and checklist gap in the helper reports and each re-check you planned;
+   a money or time cap can stop you before the end.
+5. **Whole-set questions cover every page pair** (section 7). Record every page with
    `set_coverage`: same, different, not_comparable (note why) or not_opened (note why). The app
    sends you back once if a page is not accounted for.
 
@@ -224,7 +227,8 @@ this on **every** paired page, including the second round (revision) pages.
 - **The reading ledger.** Record every dimension string you read with `record_string` (its
   printed parts and printed overall) and every value you read with `record_reading` (page, view,
   side, item, what it is, the value as printed), on both sides. Name an item the same way on every
-  page and view ('#2' for the second typical unit). Never add up yourself: code adds each string,
+  page and view, starting with its area from the page map ("Coffee station: counter height";
+  '#2' for the second typical unit). Never add up yourself: code adds each string,
   compares each item across views, and reports what does not add up, disagrees or is missing as
   findings. When code says a string does not add up, re-read it once and record it again with
   `replaces`.

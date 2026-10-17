@@ -36,6 +36,8 @@ __all__ = [
     "ChatMessageIn",
     "ChatMessageOut",
     "ChatOut",
+    "ChatProgressBlock",
+    "ChatProgressOut",
     "ChatResumeBlock",
     "ChatResumeOut",
     "ChatStepBlock",
@@ -161,6 +163,11 @@ class ChatTextBlock(BaseModel):
 
     type: Literal["text"]
     text: str
+    by: Literal["code"] | None = Field(
+        default=None,
+        description='"code": written by GV Review, not the AI (the full check\'s summary when the '
+        "AI did not finish its own).",
+    )
 
 
 class ChatStepBlock(BaseModel):
@@ -726,6 +733,11 @@ class ChatAccuracyOut(BaseModel):
         default=None, description='"What\'s right" items not compared: not scored.'
     )
     unknowns: int | None = Field(default=None, description="What the answer did not check.")
+    rescored: bool | None = Field(
+        default=None,
+        description="True when this score was worked out again from the stored findings with "
+        "today's calibration and differs from the score stored with the answer (#1513).",
+    )
 
 
 class ChatAccuracyBlock(BaseModel):
@@ -755,6 +767,30 @@ class ChatUnknownsBlock(BaseModel):
 
     type: Literal["unknowns"]
     unknowns: list[ChatUnknownOut]
+
+
+class ChatProgressOut(BaseModel):
+    """A full check's progress, by code: "Checking page 12 of 60 · 8 wrong so far · about 6 min
+    left". Sent as `progress` events while it runs; the last one is stored."""
+
+    model_config = ConfigDict(frozen=True)
+
+    phase: Literal["reading", "checking", "writing"]
+    pages_done: int
+    pages_total: int
+    wrong_so_far: int
+    decision_so_far: int
+    right_so_far: int
+    eta_seconds: int | None = Field(
+        default=None, description="Time left at the pace so far; null before any page is done."
+    )
+
+
+class ChatProgressBlock(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["progress"]
+    progress: ChatProgressOut
 
 
 class ChatResumeOut(BaseModel):
@@ -789,6 +825,7 @@ ChatBlock = Annotated[
     | ChatCiteBlock
     | ChatAccuracyBlock
     | ChatUnknownsBlock
+    | ChatProgressBlock
     | ChatResumeBlock,
     Field(discriminator="type"),
 ]
@@ -834,7 +871,16 @@ class ChatMessageOut(BaseModel):
     )
     accuracy: ChatAccuracyOut | None = Field(
         default=None,
-        description="The answer's accuracy by code (its `accuracy` block); null on older answers.",
+        description="The answer's accuracy by code (its `accuracy` block, scored again with "
+        "today's calibration: see `rescored`); null on older answers.",
+    )
+    mode: Literal["chat", "full_check"] | None = Field(
+        default=None,
+        description="A typed question (`chat`) or the one-click full check; null on messages "
+        "stored before it was kept (#1513).",
+    )
+    products: list[Literal["countertop", "cabinet"]] | None = Field(
+        default=None, description="The products the message was about; null on older messages."
     )
     resume: ChatResumeOut | None = Field(
         default=None,

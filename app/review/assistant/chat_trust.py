@@ -20,6 +20,11 @@ Every finding carries `checks`, run by code (and one cheap independent AI read t
 `inches` are code's numbers (`to_inches`), with the difference (vendor minus architect); the screen
 never shows the AI's arithmetic. `trust_level`: `confirmed` / `likely` / `to_check`.
 
+**Words (#1513).** The API values stay; people read `TRUST_WORDS` and `STATUS_WORDS`. The trust
+level `to_check` reads "AI reading only" (no independent check confirmed the reading), and the
+status `check` reads "Needs your decision" (the AI cannot call it right or wrong; a person decides),
+so the two never share the words "To check".
+
 The checks themselves live in `finding_checks.py` and `second_read.py` (another builder's modules,
 signatures agreed in CONTRACT3-trust.md "## Backend changes"). They read PDFs, so they are loaded by
 name (`tests/api/test_no_heavy_work.py`); until they exist the checks are recorded as `not_run`.
@@ -45,7 +50,7 @@ from types import ModuleType
 from typing import Any, Final
 
 from app.review.assistant import witness
-from app.review.assistant.chat_findings import page_ranges
+from app.review.assistant.chat_findings import live_findings, page_ranges
 
 __all__ = [
     "ACCURACY_CALIBRATION_LINE",
@@ -53,8 +58,11 @@ __all__ = [
     "ACCURACY_POINTS",
     "CHECKS_MODULE",
     "CITE_POINTS",
+    "CLOUD_WORDS",
     "MIN_SEEN_DPI",
     "SECOND_READ_MODULE",
+    "STATUS_WORDS",
+    "TRUST_WORDS",
     "Recorded",
     "accuracy",
     "apply_checks",
@@ -69,6 +77,7 @@ __all__ = [
     "read_result",
     "recorded_from",
     "recorded_missing",
+    "rescored",
     "round_statuses",
     "states_drawing_values",
     "trust_level",
@@ -87,6 +96,24 @@ _PASS_WORDS: Final = frozenset({"Looks right"})
 #: A code check that could not run because a job value is missing (`NOT_FOUND`).
 _WAITING_WORDS: Final = frozenset({"Waiting on a value"})
 LEVELS: Final = ("confirmed", "likely", "to_check")
+#: What people read for each trust level (#1513); the API values above stay.
+TRUST_WORDS: Final[Mapping[str, str]] = {
+    "confirmed": "Confirmed",
+    "likely": "Likely",
+    "to_check": "AI reading only",
+}
+#: What people read for each finding status (#1513): `check` is a person's decision.
+STATUS_WORDS: Final[Mapping[str, str]] = {
+    "different": "Wrong",
+    "check": "Needs your decision",
+    "same": "Right",
+}
+#: The cloud drawing's and check report's words for each `cloud_kind`.
+CLOUD_WORDS: Final[Mapping[str | None, str]] = {
+    "wrong": "Wrong",
+    "check": "Your decision",
+    None: "Right",
+}
 
 
 def load_module(name: str) -> ModuleType | None:
@@ -747,8 +774,8 @@ def trust_report(
 
 
 def cloud_kind(finding: Mapping[str, Any]) -> str | None:
-    """`wrong` (red: a difference its checks do not put in doubt), `check` (amber: to check), or
-    `None` (right: never clouded)."""
+    """`wrong` (red: a difference its checks do not put in doubt), `check` (amber: needs your
+    decision), or `None` (right: never clouded)."""
     if finding.get("status") == "same":
         return None
     if finding.get("status") == "different" and finding.get("trust_level") != "to_check":
@@ -779,7 +806,7 @@ ACCURACY_POINTS: Final[Mapping[str, Mapping[str, float]]] = {
     "to_check": {"observed": 0.9, "derived": 0.9, "inferred": 0.9},
 }
 ACCURACY_DISAGREES: Final = 0.0
-#: Points per cited value, by the printed-at-spot check (pen strokes: like a finding to check).
+#: Points per cited value, by the printed-at-spot check (pen strokes: like an AI reading only).
 CITE_POINTS: Final[Mapping[str, float]] = {
     "match": 1.0,
     "no_text": 0.9,
@@ -789,7 +816,7 @@ _CITE_OTHER: Final = 0.3
 #: How the points were calibrated (the click-through says it).
 ACCURACY_CALIBRATION_LINE: Final = (
     "Points are the share of such claims expected to be right: in a full check on GV's test sets, "
-    "Confirmed 6 of 6, Likely 4 of 4 and To check 43 of 45 checkable findings were right."
+    "Confirmed 6 of 6, Likely 4 of 4 and AI reading only 43 of 45 checkable findings were right."
 )
 
 _KIND_WORDS: Final = {
@@ -805,7 +832,9 @@ def _how(finding: Mapping[str, Any], level: str, kind: str) -> str:
         for w in finding.get("witnesses") or []
         if w in witness.WITNESS_WORDS
     ]
-    words = f"{level.replace('_', ' ')}, {_KIND_WORDS.get(kind, kind)}"
+    level_words = TRUST_WORDS.get(level, level.replace("_", " "))
+    kind_words = _KIND_WORDS.get(kind, kind)
+    words = level_words if kind_words == level_words else f"{level_words}, {kind_words}"
     return f"{words} ({'; '.join(found)})" if found else words
 
 
@@ -926,6 +955,50 @@ def accuracy(
     }
 
 
+def rescored(
+    stored: Mapping[str, Any] | None, blocks: Sequence[Mapping[str, Any]] | None
+) -> dict[str, Any] | None:
+    """An answer's stored accuracy, scored again from its stored findings with today's points
+    table (#1513): answers made before a recalibration otherwise keep their old badge. Nothing is
+    written (the tables are append-only); `rescored: true` when the score changed. The claims'
+    words are today's either way.
+
+    The findings, cited values, page coverage and unknowns come from the answer's blocks. A whole
+    set answer whose page coverage was never recorded keeps its stored coverage factor (the page
+    count is not in the blocks). `None` stays `None`; an answer that cannot be scored again keeps
+    its stored score."""
+    if not isinstance(stored, Mapping):
+        return None
+    out = dict(stored)
+    blocks = [b for b in blocks or [] if isinstance(b, Mapping)]
+    try:
+        findings = live_findings(blocks)
+        cites = [dict(b["cite"]) for b in blocks if b.get("type") == "cite" and b.get("cite")]
+        coverage = next(
+            (dict(b["coverage"]) for b in reversed(blocks) if b.get("type") == "coverage"), None
+        )
+        unknowns = next(
+            (list(b["unknowns"]) for b in reversed(blocks) if b.get("type") == "unknowns"), []
+        )
+        factor = stored.get("coverage_factor")
+        if coverage is None and factor is not None:
+            fresh = accuracy(findings, cites, None)
+            if fresh["score"] is not None:
+                mean = sum(item["points"] for item in fresh["breakdown"]) / fresh["claims"]
+                fresh["score"] = round(mean * float(factor) * 100)
+                score = fresh["score"]
+                fresh["level"] = "green" if score >= 80 else "orange" if score >= 60 else "yellow"
+                fresh["coverage_factor"] = factor
+            fresh["unknowns"] = stored.get("unknowns", fresh["unknowns"])
+        else:
+            fresh = accuracy(findings, cites, coverage, unknowns)
+    except Exception:  # noqa: BLE001 - an old answer the scoring cannot read keeps its score
+        _log.exception("assistant chat accuracy could not be scored again")
+        return out
+    # Today's words and claims either way; `rescored` only when the number itself moved.
+    return {**fresh, "rescored": fresh["score"] != stored.get("score")}
+
+
 #: A drawing value stated in words: inches or feet-and-inches (37", 3'-1", 25 1/2 in).
 _STATED_VALUE: Final = re.compile(
     r"\d+\s*'\s*-?\s*\d+(?:\s+\d+/\d+)?\s*\"|\d+(?:\s+\d+/\d+|\.\d+)?\s*(?:\"|\u201d|in\b|inches\b)"
@@ -996,8 +1069,8 @@ def findings_csv(findings: Sequence[Mapping[str, Any]]) -> str:
                 inches.get("architect") or "",
                 inches.get("vendor") or "",
                 inches.get("difference") or "",
-                finding.get("status"),
-                finding.get("trust_level") or "",
+                STATUS_WORDS.get(str(finding.get("status")), finding.get("status") or ""),
+                TRUST_WORDS.get(str(finding.get("trust_level")), ""),
                 _KIND_WORDS.get(str(finding.get("evidence_kind")), ""),
                 checks.get("printed_architect") or "",
                 checks.get("printed_vendor") or "",

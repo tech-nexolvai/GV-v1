@@ -1,7 +1,7 @@
 """An assistant answer can be stored as interrupted by a server restart (#1514).
 
-Revision ID: 0107_assistant_chat_interrupted
-Revises: 0106_assistant_chat_caps
+Revision ID: 0108_assistant_chat_interrupted
+Revises: 0107_assistant_chat_mode
 
 **Why.** When the API restarts while an answer runs (we restart to deploy), the answer used to be
 lost: its question stayed without a reply. Now the next start stores an assistant row with
@@ -16,8 +16,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0107_assistant_chat_interrupted"
-down_revision: str | None = "0106_assistant_chat_caps"
+revision: str = "0108_assistant_chat_interrupted"
+down_revision: str | None = "0107_assistant_chat_mode"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
