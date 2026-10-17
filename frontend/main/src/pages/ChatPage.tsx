@@ -34,10 +34,12 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { ChatComposer } from '@/components/chat/chat-composer';
 import { FullCheckButton, ProductChips } from '@/components/chat/chat-full-check';
 import { ChatList, type ChatListState } from '@/components/chat/chat-list';
+import { PlusMenu } from '@/components/chat/chat-plus-menu';
 import { AssistantMessage, UserMessage } from '@/components/chat/chat-message';
 import { ApiError } from '@/api/client';
-import { chatFailureWords, isAbort, LIVE_CHAT_API, type Chat, type ChatApi, type ChatEvent, type ChatMessage, type ChatMode, type ChatModels, type ChatProduct } from '@/lib/chat-api';
+import { chatFailureWords, chatPaths, isAbort, LIVE_CHAT_API, type Chat, type ChatApi, type ChatEvent, type ChatMessage, type ChatMode, type ChatModels, type ChatProduct } from '@/lib/chat-api';
 import { confirmWords, effectiveProducts, FULL_CHECK_TEXT, isFullCheck, readProducts, saveProducts, toggleProduct } from '@/lib/chat-full-check';
+import { knownAreas, lastFindings, withPrompt } from '@/lib/chat-plus-actions';
 import { applyChatEvent, CHAT_STARTERS, chatTitle, dollars, followedAnswer, fromSaved, localAnswer, localQuestion, previousQuestion, settle, type ViewMessage } from '@/lib/chat-messages';
 import { browserStorage, EFFORT_WORDS, readChoice, resolveChoice, saveChoice, shortModelLabel, type ChatChoice } from '@/lib/chat-settings';
 import { cn } from '@/lib/utils';
@@ -212,11 +214,11 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
     rememberedProducts.packageId === packageId ? rememberedProducts.products : readProducts(browserStorage(), packageId),
     chat?.product_type ?? listProduct,
   );
-  function toggle(product: ChatProduct) {
-    const next = toggleProduct(products, product);
+  function setProducts(next: ChatProduct[]) {
     setPickedProducts({ packageId, products: next });
     saveProducts(browserStorage(), packageId, next);
   }
+  const toggle = (product: ChatProduct) => setProducts(toggleProduct(products, product));
 
   useEffect(() => {
     if (name) onNameChange?.(name);
@@ -629,6 +631,25 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                 menuFootnote={footnote}
                 textareaRef={textareaRef}
                 leading={<ProductChips products={products} onToggle={toggle} disabled={running} />}
+                plus={
+                  <PlusMenu
+                    onPrompt={(text) => setDraft((now) => withPrompt(now, text))}
+                    textareaRef={textareaRef}
+                    fullCheck={{ summary: fullCheckSummary, blocked: fullCheckBlocked, onRun: runFullCheck }}
+                    lastFindings={lastFindings(messages)}
+                    makeMarkupPdf={chatId ? (messageId) => api.markup(chatId, messageId) : null}
+                    fileHref={(file) => file.url || (chatId ? chatPaths.file(chatId, file.id) : '')}
+                    products={products}
+                    onProducts={setProducts}
+                    models={modelList}
+                    choice={choice}
+                    onChoice={changeChoice}
+                    messageCap={money(cap)}
+                    areas={knownAreas(messages)}
+                    onNotice={setNotice}
+                    running={running}
+                  />
+                }
               />
             </div>
             {centred && <Starters disabled={Boolean(blocked)} onAsk={(question) => void send(question)} />}
