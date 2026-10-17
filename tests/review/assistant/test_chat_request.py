@@ -533,7 +533,8 @@ def test_usage_rows_name_the_route_and_the_purpose() -> None:
 def test_the_system_prompt_is_short_and_names_the_skill_and_the_three_facts() -> None:
     # Short like claude.ai's. chat-v13 (the prompt audit) took out the tool catalogue: each tool's
     # own description says what it does and when to use it.
-    assert len(LEAD_SYSTEM_PROMPT) < 2600
+    # Tool search (#1606) added one line about deferred tools.
+    assert len(LEAD_SYSTEM_PROMPT) < 2700
     for words in (
         "/mnt/skills/gv-review/SKILL.md",
         "inches",
@@ -567,6 +568,7 @@ def test_the_system_prompt_is_short_and_names_the_skill_and_the_three_facts() ->
         "measure_on_drawing",
         "read_under_markup",
         "remember",
+        "drawing_facts",
     ]
     # The reviewer's words, once, in the lead's prompt.
     for words in ("Wrong, Your decision or Right", "Not compared", "AI reading only"):
@@ -652,6 +654,101 @@ def test_closing_a_stream_from_another_thread_stops_its_read_at_once(
         _QuietHandler.release.set()
         server.shutdown()
         server.server_close()
+
+
+def _lead_params(provider: str, tools: Any = LEAD_TOOLS) -> dict[str, Any]:
+    chosen = check_choice("claude-opus-5-5", "high", True)
+    return call_params(
+        provider=provider,  # type: ignore[arg-type]
+        model=chosen,
+        effort="high",
+        thinking=thinking_config(chosen, True),
+        system="SYSTEM",
+        tools=tools,
+        messages=MESSAGES,
+        final=False,
+        max_tokens=64000,
+    )
+
+
+def test_anthropic_gets_tool_search_first_and_the_cache_mark_on_the_last_loaded_tool() -> None:
+    sent = _lead_params("anthropic")["tools"]
+    assert sent[0] == {"type": "tool_search_tool_regex_20251119", "name": "tool_search_tool_regex"}
+    marked = [tool["name"] for tool in sent if "cache_control" in tool]
+    loaded = [tool["name"] for tool in sent[1:] if not tool.get("defer_loading")]
+    assert marked == [loaded[-1]]
+    # A deferred tool never carries the cache mark (the API refuses it).
+    assert not any("cache_control" in tool for tool in sent if tool.get("defer_loading"))
+    assert {tool["name"] for tool in sent[1:] if tool.get("defer_loading")} == {
+        str(tool["name"]) for tool in LEAD_TOOLS if tool.get("defer_loading")
+    }
+
+
+def test_openrouter_gets_every_tool_loaded_and_no_tool_search() -> None:
+    sent = _lead_params("openrouter")["tools"]
+    assert [tool["name"] for tool in sent] == [tool["name"] for tool in LEAD_TOOLS]
+    assert not any("defer_loading" in tool for tool in sent)
+    assert "cache_control" in sent[-1]
+    # The chat's stored tool list is not changed by the request built from it.
+    assert any(tool.get("defer_loading") for tool in LEAD_TOOLS)
+
+
+def test_tools_without_deferred_ones_go_as_before() -> None:
+    sent = _lead_params(
+        "anthropic", [{"name": "a", "input_schema": {}}, {"name": "b", "input_schema": {}}]
+    )
+    assert [tool["name"] for tool in sent["tools"]] == ["a", "b"]
+    assert "cache_control" in sent["tools"][-1]
+
+
+def test_tool_search_blocks_are_kept_as_received_and_never_run() -> None:
+    search_input = {"query": "verify"}
+    found = {
+        "type": "tool_search_tool_result",
+        "tool_use_id": "srv_1",
+        "content": {
+            "type": "tool_search_tool_search_result",
+            "tool_references": [{"type": "tool_reference", "tool_name": "verify_value"}],
+        },
+    }
+    raw = json.dumps(search_input)
+    events: list[dict[str, Any]] = [
+        {"type": "message_start", "message": {"model": "claude-opus-5-5", "usage": {}}},
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+                "type": "server_tool_use",
+                "id": "srv_1",
+                "name": "tool_search_tool_regex",
+                "input": {},
+            },
+        },
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "input_json_delta", "partial_json": raw[:5]},
+        },
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "input_json_delta", "partial_json": raw[5:]},
+        },
+        {"type": "content_block_stop", "index": 0},
+        {"type": "content_block_start", "index": 1, "content_block": found},
+        {"type": "content_block_stop", "index": 1},
+        *reply(tool("t1", "verify_value", {"page": 1}), stop="tool_use")[1:],
+    ]
+    for event in events[7:]:
+        if "index" in event:
+            event["index"] += 2
+    accumulated = _accumulate(events, None, lambda: False, {})
+    kinds = [block["type"] for block in accumulated.history_content()]
+    assert kinds == ["server_tool_use", "tool_search_tool_result", "tool_use"]
+    # The search's input is replayed exactly as it streamed; only our own tool is run.
+    assert accumulated.content[0]["input"] == search_input
+    assert accumulated.content[1] == found
+    assert [call["name"] for call in accumulated.tool_uses()] == ["verify_value"]
 
 
 # ---- structured outputs (prompts design W5) --------------------------------------------------------
