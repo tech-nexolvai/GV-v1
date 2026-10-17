@@ -7027,7 +7027,9 @@
           "review_results",
           "compare_rounds",
           "verify_value",
-          "measure_on_drawing"
+          "measure_on_drawing",
+          "zoom",
+          "read_under_markup"
         ],
         "type": "string"
       },
