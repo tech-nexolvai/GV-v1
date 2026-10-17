@@ -34,14 +34,14 @@ not a match.
 **Route 2b: label by label (#1561).** When those four reads do not settle it, the vendor's ink
 near the box is split into labels from its vector paths (`ink_labels`: one path is one stroke, so
 a stacked fraction's numerator, bar and denominator are known), and every label is redrawn upright
-on one line with its fraction moved onto the line, then read alone by each engine at two sizes
-(and once without a trailing inch mark, which RapidOCR reads as `99`). A label counts for the value
-only when a **whole row** reads as exactly that one dimension (`63 1 1//` never counts for `63"`).
-**`match` only when one label is read so by two engines, no label anywhere in the box reads as a
-near-miss of it, and a `1` is shaped as one.** A box holding more than `ink_labels.MAX_LABELS`
-labels (a whole view) is not read this way. The labels also watch the four reads above: a match
-there is refused when a label reads a near-miss of it (an engine on the whole box that lost a
-stacked fraction reads `63` for `63 1/2"`).
+on one line with its fraction moved onto the line, then read alone by each engine at two sizes. A
+row ending in an inch mark is drawn without it and read as inches (RapidOCR reads `"` as `99`); a
+foot mark is always kept. A label counts for the value only when a **whole row** reads as exactly
+that one dimension (`63 1 1//` never counts for `63"`). **`match` only when one label is read so
+by two engines, no label anywhere in the box reads as a near-miss of it, and a `1` is shaped as
+one.** A box holding more than `ink_labels.MAX_LABELS` labels (a whole view) is not read this way.
+The labels also watch the four reads above: a match there is refused when a label reads a
+near-miss of it (an engine on the whole box that lost a stacked fraction reads `63` for `63 1/2"`).
 
 **What it never does.** It never calls a model, never reads GV's coloured markup as a value, and
 never says `mismatch` from OCR alone: only when the box's text was read, none of it is the value,
@@ -1211,10 +1211,10 @@ def _label_reads(
                 read = _InkRead(f"vendor ink label {number}, {reader.name}", reader.name, number)
                 for turn in ink_labels.turns(label):
                     for row in ink_labels.rows(label, turn):
-                        passes = [(height, True) for height in ink_labels.HEIGHTS_PX]
-                        if ink_labels.inch_mark_at_end(row):
-                            passes.append((ink_labels.HEIGHTS_PX[0], False))
-                        for height, mark in passes:
+                        # An inch mark carries no digit, and RapidOCR reads it as `99` (`34 99`,
+                        # a near-miss of 34"): a row ending in one is read without it, as inches.
+                        mark = not ink_labels.inch_mark_at_end(row)
+                        for height in ink_labels.HEIGHTS_PX:
                             picture = ink_labels.row_picture(row, turn, height, inch_mark=mark)
                             if picture is None:
                                 continue
