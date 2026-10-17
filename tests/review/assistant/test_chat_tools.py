@@ -179,6 +179,30 @@ def test_present_files_refuses_anything_but_outputs_and_home(
     assert result.is_error and handed == []
 
 
+def test_present_files_refuses_more_than_its_total_and_the_chats_total(
+    workspace: ChatWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Handed-over files are copies on the host's disk: one call may hand over 200 MB together,
+    and a chat 1 GB in all (security audit 2026-10-18). Measured with small made-up limits."""
+    from app.review.assistant import chat_tools
+
+    monkeypatch.setattr(chat_tools, "_MAX_PRESENTED_TOTAL_BYTES", 1_500)
+    tools, handed = _tools(workspace)
+    for name in ("a.csv", "b.csv"):
+        (workspace.outputs / name).write_text("x" * 1_000)
+    raw = {"filepaths": ["/mnt/user-data/outputs/a.csv", "/mnt/user-data/outputs/b.csv"]}
+    result = tools.present_files(raw, new_step("s", "present_files", raw))
+    assert "larger than 0 MB together" in str(result.content)
+    assert [item["name"] for item in handed] == ["a.csv"]  # the first one went over before
+
+    monkeypatch.setattr(chat_tools, "_MAX_PRESENTED_TOTAL_BYTES", 10_000_000)
+    monkeypatch.setattr(chat_tools, "MAX_FOLDER_BYTES", 1)
+    raw = {"filepaths": ["/mnt/user-data/outputs/b.csv"]}
+    result = tools.present_files(raw, new_step("s", "present_files", raw))
+    assert result.is_error and "handed over" in str(result.content)
+    assert len(handed) == 1
+
+
 def test_view_reads_the_skill_and_refuses_other_paths(workspace: ChatWorkspace) -> None:
     tools, _ = _tools(workspace)
     raw = {"path": "/mnt/skills/gv-review/SKILL.md", "description": "Read the skill"}
