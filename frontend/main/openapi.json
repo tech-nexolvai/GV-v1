@@ -19380,6 +19380,16 @@
         "title": "SpendTotalsOut",
         "type": "object"
       },
+      "StateFilter": {
+        "enum": [
+          "open",
+          "fixed",
+          "not_a_problem",
+          "right_later",
+          "all"
+        ],
+        "type": "string"
+      },
       "StoredList": {
         "description": "One many-valued input as stored, in layout order.",
         "properties": {
@@ -19701,6 +19711,845 @@
           "source"
         ],
         "title": "TracedOperandOut",
+        "type": "object"
+      },
+      "TrackerCheckKind": {
+        "enum": [
+          "full_check",
+          "question"
+        ],
+        "type": "string"
+      },
+      "TrackerCheckOut": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "title": "At",
+            "type": "string"
+          },
+          "chat_id": {
+            "title": "Chat Id",
+            "type": "string"
+          },
+          "decision": {
+            "title": "Decision",
+            "type": "integer"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/TrackerCheckKind"
+          },
+          "message_id": {
+            "title": "Message Id",
+            "type": "string"
+          },
+          "right": {
+            "title": "Right",
+            "type": "integer"
+          },
+          "rounds": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Rounds",
+            "type": "array"
+          },
+          "stopped": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stopped"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "wrong": {
+            "title": "Wrong",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "chat_id",
+          "message_id",
+          "at",
+          "kind",
+          "title",
+          "stopped",
+          "rounds",
+          "wrong",
+          "decision",
+          "right"
+        ],
+        "title": "TrackerCheckOut",
+        "type": "object"
+      },
+      "TrackerItemLinkOut": {
+        "additionalProperties": false,
+        "properties": {
+          "chat_id": {
+            "title": "Chat Id",
+            "type": "string"
+          },
+          "finding_id": {
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "message_id": {
+            "title": "Message Id",
+            "type": "string"
+          },
+          "package_id": {
+            "title": "Package Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "package_id",
+          "chat_id",
+          "message_id",
+          "finding_id"
+        ],
+        "title": "TrackerItemLinkOut",
+        "type": "object"
+      },
+      "TrackerItemOut": {
+        "additionalProperties": false,
+        "description": "One item found, across its checks and rounds.",
+        "properties": {
+          "architect_value": {
+            "title": "Architect Value",
+            "type": "string"
+          },
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "category_label": {
+            "title": "Category Label",
+            "type": "string"
+          },
+          "check": {
+            "title": "Check",
+            "type": "string"
+          },
+          "check_label": {
+            "title": "Check Label",
+            "type": "string"
+          },
+          "checks_seen": {
+            "title": "Checks Seen",
+            "type": "integer"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "decided_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided By"
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision"
+          },
+          "ever_wrong": {
+            "title": "Ever Wrong",
+            "type": "boolean"
+          },
+          "first_round": {
+            "title": "First Round",
+            "type": "integer"
+          },
+          "first_seen_at": {
+            "title": "First Seen At",
+            "type": "string"
+          },
+          "fixed_round": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fixed Round"
+          },
+          "history": {
+            "items": {
+              "$ref": "#/components/schemas/TrackerSightingOut"
+            },
+            "title": "History",
+            "type": "array"
+          },
+          "impact": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Open items: how much it matters (#1569), 0-100.",
+            "title": "Impact"
+          },
+          "item": {
+            "title": "Item",
+            "type": "string"
+          },
+          "key": {
+            "description": "Stable id: from the first check that found it.",
+            "title": "Key",
+            "type": "string"
+          },
+          "kind": {
+            "description": "What it touches, by code (\"Overall size\", \"Height\").",
+            "title": "Kind",
+            "type": "string"
+          },
+          "last_seen_at": {
+            "title": "Last Seen At",
+            "type": "string"
+          },
+          "link": {
+            "$ref": "#/components/schemas/TrackerItemLinkOut"
+          },
+          "open_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "wrong",
+                  "decision"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Open Kind"
+          },
+          "package_id": {
+            "title": "Package Id",
+            "type": "string"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "round_now": {
+            "title": "Round Now",
+            "type": "integer"
+          },
+          "rounds": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Rounds",
+            "type": "array"
+          },
+          "set_name": {
+            "title": "Set Name",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/TrackerState"
+          },
+          "status_now": {
+            "title": "Status Now",
+            "type": "string"
+          },
+          "tags": {
+            "description": "\"New in round 2\", \"Still wrong\".",
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          },
+          "vendor_key": {
+            "title": "Vendor Key",
+            "type": "string"
+          },
+          "vendor_name": {
+            "title": "Vendor Name",
+            "type": "string"
+          },
+          "vendor_value": {
+            "title": "Vendor Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "package_id",
+          "set_name",
+          "vendor_name",
+          "vendor_key",
+          "item",
+          "page",
+          "vendor_value",
+          "architect_value",
+          "category",
+          "category_label",
+          "kind",
+          "check",
+          "check_label",
+          "state",
+          "open_kind",
+          "status_now",
+          "ever_wrong",
+          "fixed_round",
+          "tags",
+          "first_round",
+          "round_now",
+          "rounds",
+          "first_seen_at",
+          "last_seen_at",
+          "checks_seen",
+          "impact",
+          "decision",
+          "decided_by",
+          "decided_at",
+          "link",
+          "history"
+        ],
+        "title": "TrackerItemOut",
+        "type": "object"
+      },
+      "TrackerOut": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TrackerItemOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "made_at": {
+            "title": "Made At",
+            "type": "string"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "sets": {
+            "items": {
+              "$ref": "#/components/schemas/TrackerSetOut"
+            },
+            "title": "Sets",
+            "type": "array"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/TrackerTotalsOut"
+          },
+          "vendors": {
+            "items": {
+              "$ref": "#/components/schemas/TrackerVendorOut"
+            },
+            "title": "Vendors",
+            "type": "array"
+          }
+        },
+        "required": [
+          "project_id",
+          "made_at",
+          "totals",
+          "sets",
+          "items",
+          "vendors"
+        ],
+        "title": "TrackerOut",
+        "type": "object"
+      },
+      "TrackerRankOut": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "share": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Percent of the vendor's mistakes, whole number.",
+            "title": "Share"
+          }
+        },
+        "required": [
+          "label",
+          "count",
+          "share"
+        ],
+        "title": "TrackerRankOut",
+        "type": "object"
+      },
+      "TrackerRoundOut": {
+        "additionalProperties": false,
+        "properties": {
+          "decision": {
+            "title": "Decision",
+            "type": "integer"
+          },
+          "fixed": {
+            "description": "Items this round fixed (Wrong before, right here).",
+            "title": "Fixed",
+            "type": "integer"
+          },
+          "items": {
+            "title": "Items",
+            "type": "integer"
+          },
+          "open": {
+            "title": "Open",
+            "type": "integer"
+          },
+          "round": {
+            "title": "Round",
+            "type": "integer"
+          },
+          "wrong": {
+            "title": "Wrong",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "round",
+          "items",
+          "open",
+          "wrong",
+          "decision",
+          "fixed"
+        ],
+        "title": "TrackerRoundOut",
+        "type": "object"
+      },
+      "TrackerRoundStatus": {
+        "enum": [
+          "fixed",
+          "still_wrong",
+          "new",
+          "not_in_later_round",
+          "single_round"
+        ],
+        "type": "string"
+      },
+      "TrackerSetOut": {
+        "additionalProperties": false,
+        "properties": {
+          "checks": {
+            "items": {
+              "$ref": "#/components/schemas/TrackerCheckOut"
+            },
+            "title": "Checks",
+            "type": "array"
+          },
+          "fixed": {
+            "title": "Fixed",
+            "type": "integer"
+          },
+          "items": {
+            "title": "Items",
+            "type": "integer"
+          },
+          "last_checked_at": {
+            "title": "Last Checked At",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "not_a_problem": {
+            "title": "Not A Problem",
+            "type": "integer"
+          },
+          "open": {
+            "title": "Open",
+            "type": "integer"
+          },
+          "package_id": {
+            "title": "Package Id",
+            "type": "string"
+          },
+          "product": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Product"
+          },
+          "rounds": {
+            "items": {
+              "$ref": "#/components/schemas/TrackerRoundOut"
+            },
+            "title": "Rounds",
+            "type": "array"
+          },
+          "vendor_key": {
+            "title": "Vendor Key",
+            "type": "string"
+          },
+          "vendor_name": {
+            "title": "Vendor Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "package_id",
+          "name",
+          "vendor_name",
+          "vendor_key",
+          "product",
+          "items",
+          "open",
+          "fixed",
+          "not_a_problem",
+          "rounds",
+          "last_checked_at",
+          "checks"
+        ],
+        "title": "TrackerSetOut",
+        "type": "object"
+      },
+      "TrackerSightingOut": {
+        "additionalProperties": false,
+        "description": "One check that saw the item: when, which round and page, and what it said.",
+        "properties": {
+          "architect": {
+            "title": "Architect",
+            "type": "string"
+          },
+          "at": {
+            "title": "At",
+            "type": "string"
+          },
+          "chat_id": {
+            "title": "Chat Id",
+            "type": "string"
+          },
+          "check": {
+            "$ref": "#/components/schemas/TrackerCheckKind"
+          },
+          "check_title": {
+            "title": "Check Title",
+            "type": "string"
+          },
+          "compared": {
+            "description": "False: a Right that was not compared, so no proof.",
+            "title": "Compared",
+            "type": "boolean"
+          },
+          "decided_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided By"
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision"
+          },
+          "finding_id": {
+            "description": "The live finding a click opens (the carrier of a fold).",
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "folded": {
+            "description": "A page the resolver folded into another finding (#1554).",
+            "title": "Folded",
+            "type": "boolean"
+          },
+          "message_id": {
+            "title": "Message Id",
+            "type": "string"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "round": {
+            "title": "Round",
+            "type": "integer"
+          },
+          "round_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TrackerRoundStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "description": "different (Wrong), check (Your decision) or same (Right).",
+            "title": "Status",
+            "type": "string"
+          },
+          "vendor": {
+            "title": "Vendor",
+            "type": "string"
+          }
+        },
+        "required": [
+          "at",
+          "check",
+          "check_title",
+          "chat_id",
+          "message_id",
+          "finding_id",
+          "round",
+          "page",
+          "status",
+          "compared",
+          "round_status",
+          "folded",
+          "vendor",
+          "architect",
+          "decision",
+          "decided_by"
+        ],
+        "title": "TrackerSightingOut",
+        "type": "object"
+      },
+      "TrackerState": {
+        "enum": [
+          "open",
+          "fixed",
+          "not_a_problem",
+          "right_later"
+        ],
+        "type": "string"
+      },
+      "TrackerTotalsOut": {
+        "additionalProperties": false,
+        "properties": {
+          "checks": {
+            "description": "Stored answers with findings (full checks and questions).",
+            "title": "Checks",
+            "type": "integer"
+          },
+          "fixed": {
+            "title": "Fixed",
+            "type": "integer"
+          },
+          "items": {
+            "title": "Items",
+            "type": "integer"
+          },
+          "not_a_problem": {
+            "title": "Not A Problem",
+            "type": "integer"
+          },
+          "open": {
+            "title": "Open",
+            "type": "integer"
+          },
+          "open_decision": {
+            "title": "Open Decision",
+            "type": "integer"
+          },
+          "open_wrong": {
+            "title": "Open Wrong",
+            "type": "integer"
+          },
+          "right_later": {
+            "title": "Right Later",
+            "type": "integer"
+          },
+          "sets": {
+            "description": "Drawing sets with at least one check that found items.",
+            "title": "Sets",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sets",
+          "checks",
+          "items",
+          "open",
+          "open_wrong",
+          "open_decision",
+          "fixed",
+          "not_a_problem",
+          "right_later"
+        ],
+        "title": "TrackerTotalsOut",
+        "type": "object"
+      },
+      "TrackerVendorOut": {
+        "additionalProperties": false,
+        "description": "The vendor scorecard: what it gets wrong most, and how it fixes.",
+        "properties": {
+          "average_open_per_round": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Average Open Per Round"
+          },
+          "by_check": {
+            "items": {
+              "$ref": "#/components/schemas/TrackerRankOut"
+            },
+            "title": "By Check",
+            "type": "array"
+          },
+          "by_kind": {
+            "items": {
+              "$ref": "#/components/schemas/TrackerRankOut"
+            },
+            "title": "By Kind",
+            "type": "array"
+          },
+          "by_product": {
+            "items": {
+              "$ref": "#/components/schemas/TrackerRankOut"
+            },
+            "title": "By Product",
+            "type": "array"
+          },
+          "fixed_next_of": {
+            "description": "Wrong items seen again in the next round.",
+            "title": "Fixed Next Of",
+            "type": "integer"
+          },
+          "fixed_next_round": {
+            "title": "Fixed Next Round",
+            "type": "integer"
+          },
+          "fixed_next_share": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fixed Next Share"
+          },
+          "items": {
+            "title": "Items",
+            "type": "integer"
+          },
+          "mistakes": {
+            "description": "Items Wrong at least once, minus Not a problem.",
+            "title": "Mistakes",
+            "type": "integer"
+          },
+          "open": {
+            "title": "Open",
+            "type": "integer"
+          },
+          "rounds": {
+            "title": "Rounds",
+            "type": "integer"
+          },
+          "sets": {
+            "title": "Sets",
+            "type": "integer"
+          },
+          "vendor_key": {
+            "title": "Vendor Key",
+            "type": "string"
+          },
+          "vendor_name": {
+            "title": "Vendor Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "vendor_key",
+          "vendor_name",
+          "sets",
+          "rounds",
+          "items",
+          "mistakes",
+          "open",
+          "fixed_next_round",
+          "fixed_next_of",
+          "fixed_next_share",
+          "average_open_per_round",
+          "by_product",
+          "by_kind",
+          "by_check"
+        ],
+        "title": "TrackerVendorOut",
         "type": "object"
       },
       "UnaccountedOut": {
@@ -27973,6 +28822,134 @@
         "summary": "Enter the project's sink; every sink check reads it once the checks run again",
         "tags": [
           "project sink"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/tracker": {
+      "get": {
+        "operationId": "read_tracker_api_v1_projects__project_id__tracker_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrackerOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Every item found across the project's drawing sets, rounds and checks",
+        "tags": [
+          "job tracker"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/tracker.xlsx": {
+      "get": {
+        "operationId": "export_tracker_api_v1_projects__project_id__tracker_xlsx_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Which items: all (default), open, fixed, not_a_problem, right_later.",
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/StateFilter",
+              "default": "all",
+              "description": "Which items: all (default), open, fixed, not_a_problem, right_later."
+            }
+          },
+          {
+            "description": "One drawing set only.",
+            "in": "query",
+            "name": "package_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "One drawing set only.",
+              "title": "Package Id"
+            }
+          },
+          {
+            "description": "One vendor only (its name, any case).",
+            "in": "query",
+            "name": "vendor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "One vendor only (its name, any case).",
+              "title": "Vendor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The tracker as a workbook (Items, Vendors, Checks); CSV of the items without openpyxl",
+        "tags": [
+          "job tracker"
         ]
       }
     },
