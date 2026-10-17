@@ -51,6 +51,7 @@ from app.review.assistant.chat_findings import (
     main_upload,
     page_ranges,
 )
+from app.review.assistant.internal_refs import without_ticket_refs
 from app.review.assistant.ledger import LEDGER_TOOLS
 from app.review.assistant.sandbox import (
     OUTPUTS,
@@ -164,7 +165,7 @@ How to answer: match the question. A yes/no or a number: one line. "Summarize": 
 A list: a short list. A comparison: report_finding for each item, then at most two plain lines; \
 never repeat the findings as a table. No preamble, no disclaimer, no restating the question. Say in \
 one line what you did not check when it matters. An unclear question: ask one short question \
-back. Write in markdown."""
+back. Never cite internal ticket numbers. Write in markdown."""
 
 HELPER_SYSTEM_PROMPT: Final = f"""\
 You are a helper agent working for Claude inside GV Review, on part of one drawing set of \
@@ -1035,8 +1036,11 @@ class ChatTools:
             return _refused(step, started, str(refused))
         except Exception:  # noqa: BLE001 - a failed read is told plainly, never a crash
             return _refused(step, started, "the recorded results could not be read just now")
+        # The checks' notes carry the team's ticket numbers; never handed to the agent (#1520).
         text, _ = cut_output(
-            json.dumps(document, ensure_ascii=False, default=str, separators=(",", ":")),
+            without_ticket_refs(
+                json.dumps(document, ensure_ascii=False, default=str, separators=(",", ":"))
+            ),
             _RESULTS_CHARS,
         )
         where = "the whole set" if page is None else f"page {page}"
