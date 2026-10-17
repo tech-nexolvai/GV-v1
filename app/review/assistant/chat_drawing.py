@@ -118,9 +118,16 @@ def page_sizes(pdf: Path) -> list[tuple[float, float]]:
             document.close()
 
 
-def crop_png(pdf: Path, page_number: int, box: Box) -> bytes | None:
+def crop_png(pdf: Path, page_number: int, box: Box, *, cache: Path | None = None) -> bytes | None:
     """The area `box` (x0, y0, x1, y1; points, origin top-left) of a page, padded, as a PNG; `None`
-    when the page does not exist or the box is outside it."""
+    when the page does not exist or the box is outside it.
+
+    With `cache` (the set pack's `hires/` folder, #1548) it is cut from the page's 300-dpi picture,
+    drawn once on first need (`page_cache`), instead of rendering the page again."""
+    if cache is not None:
+        cut = _cached_crop(pdf, page_number, box, cache)
+        if cut is not None:
+            return cut
     with _PDFIUM_LOCK:
         document = pdfium.PdfDocument(str(pdf))
         try:
@@ -154,6 +161,43 @@ def crop_png(pdf: Path, page_number: int, box: Box) -> bytes | None:
             document.close()
     out = io.BytesIO()
     picture.convert("RGB").save(out, format="PNG", optimize=True)
+    return out.getvalue()
+
+
+def _padded(box: Box, width: float, height: float) -> Box | None:
+    x0, y0, x1, y1 = box
+    if max(x0, x1) <= 0 or max(y0, y1) <= 0 or min(x0, x1) >= width or min(y0, y1) >= height:
+        return None
+    left = max(0.0, min(x0, x1) - CROP_PAD_PT)
+    top = max(0.0, min(y0, y1) - CROP_PAD_PT)
+    right = min(width, max(x0, x1) + CROP_PAD_PT)
+    bottom = min(height, max(y0, y1) + CROP_PAD_PT)
+    if right - left < 1 or bottom - top < 1:
+        return None
+    return left, top, right, bottom
+
+
+def _cached_crop(pdf: Path, page_number: int, box: Box, cache: Path) -> bytes | None:
+    """`crop_png` from the hi-res page cache; `None` when the cache cannot give it (the caller
+    renders it as before)."""
+    try:
+        page_cache = import_module("app.review.assistant.page_cache")
+        sizes = page_cache.page_sizes(cache, pdf)
+        if not 1 <= page_number <= len(sizes):
+            return None
+        size = sizes[page_number - 1]
+        area = _padded(box, size.width, size.height)
+        if area is None:
+            return None
+        scale = min(CROP_DPI / 72, CROP_MAX_PX / max(area[2] - area[0], area[3] - area[1]))
+        picture = page_cache.cut(cache, pdf, page_number, area, scale)
+    except Exception as failed:  # noqa: BLE001 - rendered directly instead
+        _log.warning("assistant evidence crop cache failed: %s", type(failed).__name__)
+        return None
+    if picture is None:
+        return None
+    out = io.BytesIO()
+    picture.save(out, format="PNG", compress_level=3)
     return out.getvalue()
 
 

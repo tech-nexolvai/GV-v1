@@ -632,7 +632,9 @@ export type ChatTool =
   | 'review_results'
   | 'compare_rounds'
   | 'verify_value'
-  | 'measure_on_drawing';
+  | 'measure_on_drawing'
+  | 'zoom'
+  | 'read_under_markup';
 
 /** One tool the assistant used. `step_start` sends it without its output; `step_end` sends it whole. */
 export interface ChatStep {

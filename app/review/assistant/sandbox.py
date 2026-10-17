@@ -45,7 +45,7 @@ import tempfile
 import threading
 import uuid
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Final, Protocol
 
@@ -71,6 +71,7 @@ __all__ = [
     "check_command",
     "cut_output",
     "open_sandbox",
+    "quiet_pdf_warnings",
     "safe_file_name",
     "view_path",
 ]
@@ -122,6 +123,45 @@ def cut_output(text: str, limit: int = MAX_OUTPUT_CHARS) -> tuple[str, bool]:
     return text[:limit] + _TRUNCATED.format(left=len(text) - limit), True
 
 
+#: A PDF reader's (poppler's) warning line: `Syntax Error (8309949): No font in show/space`.
+_PDF_WARNING: Final = re.compile(
+    r"^(?:Syntax Error|Syntax Warning|Internal Error)(?: \(\d+\))?: (?P<message>.*)$"
+)
+#: How many lines of one warning stay in the output; the repeats are counted on one line.
+_WARNING_REPEATS_KEPT: Final = 1
+
+
+def quiet_pdf_warnings(text: str) -> str:
+    """The output with poppler's repeated warnings folded: each distinct warning once, then one
+    line saying how many repeats were left out.
+
+    A drawing set with fonts the reader has no data for prints the same few warnings for every
+    text run (`Unknown font tag ...`, `No font in show/space`): on real runs (2026-10-17) they
+    crowded the output the model reads and the step the reviewer sees."""
+    if "Error" not in text and "Warning" not in text:
+        return text
+    seen: dict[str, int] = {}
+    kept: list[str] = []
+    hidden = 0
+    for line in text.split("\n"):
+        warning = _PDF_WARNING.match(line)
+        if warning is None:
+            kept.append(line)
+            continue
+        message = warning.group("message").strip()
+        seen[message] = seen.get(message, 0) + 1
+        if seen[message] <= _WARNING_REPEATS_KEPT:
+            kept.append(line)
+        else:
+            hidden += 1
+    if not hidden:
+        return text
+    note = f"[{hidden} repeated PDF reader warnings left out; they do not stop the command]"
+    while kept and not kept[-1]:
+        kept.pop()
+    return "\n".join(kept) + "\n" + note + ("\n" if text.endswith("\n") else "")
+
+
 _SAFE_NAME: Final = re.compile(r"[^A-Za-z0-9._ ()+-]")
 
 
@@ -166,8 +206,98 @@ def _resolve(mounts: Sequence[Mount], default: Path, path: str) -> Path:
     if candidate != real and real not in candidate.parents:
         raise SandboxRefused(f"only {allowed} can be viewed")
     if not candidate.exists():
-        raise SandboxRefused(f"there is no file or folder {text}")
+        near = _near_miss(candidate, real)
+        if near is None:
+            raise SandboxRefused(f"there is no file or folder {text}{_similar(candidate, real)}")
+        candidate = near
     return candidate
+
+
+#: A page picture's number at the end of its name: pdftoppm's `<prefix>-<page>.png` (padded to the
+#: digits of the PDF's last page) and the set pack's `p-NNN.png`.
+_PAGE_SUFFIX: Final = re.compile(r"^(?P<prefix>.*-)(?P<number>\d+)(?P<suffix>\.[A-Za-z0-9]+)$")
+#: Folder-name endings the model adds to a set pack's `pages/<file>` folder (the file's own name,
+#: or its drawings-only copy's): `pages/A.pdf/`, `pages/A_drawings_only/`.
+_FOLDER_ENDINGS: Final = (".pdf", "_drawings_only")
+
+
+def _near_miss(candidate: Path, root: Path) -> Path | None:
+    """The one existing file a missing path plainly means, or `None` (real runs, 2026-10-17: 11 of
+    the 23 refused tool calls were these):
+
+    - a set pack page folder written with the PDF's ending or as its drawings-only copy
+      (`pages/A.pdf/p-003.png`, `pages/A_drawings_only/p-003.png` for `pages/A/p-003.png`);
+    - a page picture whose number is padded differently (`zoom-046.png` for `zoom-46.png`);
+    - a pdftoppm picture whose page number was guessed (`v27-1.png` when only `v27-27.png` was
+      made): only when exactly one picture has that name before its number.
+
+    Never outside `root` and never a guess between two files."""
+    as_folder = _near_folder(candidate, root)
+    if as_folder is not None:
+        return as_folder
+    folder = candidate.parent
+    if not folder.is_dir():
+        folder = _near_folder(folder, root) or folder
+        if not folder.is_dir():
+            return None
+        moved = folder / candidate.name
+        if moved.exists():
+            return moved if root in moved.resolve().parents else None
+    shape = _PAGE_SUFFIX.match(candidate.name)
+    if shape is None:
+        return None
+    prefix, suffix = shape.group("prefix"), shape.group("suffix").lower()
+    try:
+        siblings = [
+            child
+            for child in folder.iterdir()
+            if child.is_file()
+            and child.name.startswith(prefix)
+            and child.suffix.lower() == suffix
+            and child.name[len(prefix) : -len(suffix)].isdigit()
+        ]
+    except OSError:
+        return None
+    number = int(shape.group("number"))
+    same_page = [c for c in siblings if int(c.name[len(prefix) : -len(suffix)]) == number]
+    chosen = same_page if same_page else siblings
+    if len(chosen) != 1:
+        return None
+    found = chosen[0].resolve()
+    return found if root in found.parents else None
+
+
+def _near_folder(folder: Path, root: Path) -> Path | None:
+    """`folder` with an ending the model added taken off, when that folder exists inside `root`."""
+    name = folder.name
+    for _ in _FOLDER_ENDINGS:
+        for ending in _FOLDER_ENDINGS:
+            if name.lower().endswith(ending.lower()):
+                name = name[: -len(ending)]
+    if not name or name == folder.name:
+        return None
+    found = (folder.parent / name).resolve()
+    return found if found.is_dir() and root in found.parents else None
+
+
+def _similar(candidate: Path, root: Path) -> str:
+    """`" (there: a.png, b.png)"`: what the nearest existing folder holds, so the next try is
+    right; empty when nothing useful is there."""
+    folder = candidate.parent
+    while not folder.is_dir() and folder != root and root in folder.parents:
+        folder = folder.parent
+    if not folder.is_dir() or (folder != root and root not in folder.parents):
+        return ""
+    try:
+        names = sorted(child.name for child in folder.iterdir() if not child.name.startswith("."))
+    except OSError:
+        return ""
+    stem = candidate.name.split("-")[0] if folder == candidate.parent else ""
+    close = [name for name in names if stem and name.startswith(stem)] or names
+    if not close:
+        return ""
+    more = f", and {len(close) - 8} more" if len(close) > 8 else ""
+    return f" (that folder holds: {', '.join(close[:8])}{more})"
 
 
 def _shown(mounts: Sequence[Mount], real: Path) -> str:
@@ -485,7 +615,9 @@ class DockerSandbox:
             )
         except subprocess.TimeoutExpired as expired:
             self._kill(name)
-            text, cut = cut_output(_decode(expired.stdout) + _decode(expired.stderr))
+            text, cut = cut_output(
+                quiet_pdf_warnings(_decode(expired.stdout) + _decode(expired.stderr))
+            )
             return SandboxResult(
                 output=text + f"\n[Stopped: the command ran over {self.timeout_seconds} s]",
                 exit_code=None,
@@ -495,7 +627,7 @@ class DockerSandbox:
         finally:
             with self._lock:
                 self._running.discard(name)
-        text, cut = cut_output(_decode(done.stdout) + _decode(done.stderr))
+        text, cut = cut_output(quiet_pdf_warnings(_decode(done.stdout) + _decode(done.stderr)))
         return SandboxResult(output=text, exit_code=done.returncode, truncated=cut)
 
 
@@ -636,7 +768,7 @@ class MacSandbox:
             except ProcessLookupError:
                 pass
             raw, _ = process.communicate()
-            text, cut = cut_output(self._to_shown(_decode(raw)))
+            text, cut = cut_output(quiet_pdf_warnings(self._to_shown(_decode(raw))))
             return SandboxResult(
                 output=text + f"\n[Stopped: the command ran over {self.timeout_seconds} s]",
                 exit_code=None,
@@ -647,7 +779,7 @@ class MacSandbox:
             with self._lock:
                 self._running.discard(process.pid)
             profile.unlink(missing_ok=True)
-        text, cut = cut_output(self._to_shown(_decode(raw)))
+        text, cut = cut_output(quiet_pdf_warnings(self._to_shown(_decode(raw))))
         return SandboxResult(output=text, exit_code=process.returncode, truncated=cut)
 
 
@@ -814,7 +946,13 @@ def view_path(
     real = workspace.resolve(path)
     shown = workspace.shown(real)
     if real.is_dir():
-        return _listing(real, workspace)
-    if real.suffix.lower() in _IMAGE_SUFFIXES:
-        return _picture(real, shown, max_edge or _MAX_EDGE_PX)
-    return _text(real, shown, view_range)
+        viewed = _listing(real, workspace)
+    elif real.suffix.lower() in _IMAGE_SUFFIXES:
+        viewed = _picture(real, shown, max_edge or _MAX_EDGE_PX)
+    else:
+        viewed = _text(real, shown, view_range)
+    asked = path.strip().rstrip("/")
+    if asked not in (shown, shown.removeprefix(SCRATCH + "/")):
+        # A near miss (`_near_miss`): say which file this is, so the next path is right.
+        viewed = replace(viewed, text=f"[There is no {asked}; this is {shown}.]\n{viewed.text}")
+    return viewed

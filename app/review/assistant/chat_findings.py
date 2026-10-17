@@ -698,6 +698,16 @@ def _whole(value: object, name: str) -> int:
     return value
 
 
+def _with_page(raw: object, fields: Mapping[str, Any], *, architect: bool) -> object:
+    """A box with no `page` takes the finding's own page: the vendor box the finding's `page`, the
+    architect box its `vs_page` (else `page`). The model left it out on a real run (2026-10-17)
+    and the whole finding was refused for it."""
+    if not isinstance(raw, Mapping) or "page" in raw:
+        return raw
+    page = (fields.get("vs_page") if architect else None) or fields.get("page")
+    return raw if page is None else {**raw, "page": page}
+
+
 def _choice(value: object, name: str, allowed: Sequence[str]) -> str:
     if value not in allowed:
         raise SandboxRefused(f"{name} must be one of {', '.join(allowed)}")
@@ -832,6 +842,11 @@ class FindingBook:
             "file": chosen,
         }
 
+    def _hires(self) -> Path | None:
+        """The set pack's hi-res page cache (#1548), when the chat has a pack."""
+        pack = self.workspace.set_pack
+        return None if pack is None else pack / "hires"
+
     def _picture(self, box: Mapping[str, Any] | None) -> tuple[str | None, str | None]:
         """A crop of the box's area as a chat picture: (picture id, why there is none)."""
         if box is None:
@@ -841,9 +856,12 @@ class FindingBook:
         pdf = self.workspace.uploads / str(box["file"])
         if not pdf.is_file():
             return None, f"{box['file']} is not in the uploads"
-        crop = self.crop or _default_crop
+        area = (box["x0"], box["y0"], box["x1"], box["y1"])
         try:
-            png = crop(pdf, int(box["page"]), (box["x0"], box["y0"], box["x1"], box["y1"]))
+            if self.crop is not None:
+                png = self.crop(pdf, int(box["page"]), area)
+            else:
+                png = _default_crop(pdf, int(box["page"]), area, cache=self._hires())
         except Exception as failed:  # noqa: BLE001 - no picture, never an error to the reviewer
             _log.warning("assistant chat evidence crop failed: %s", type(failed).__name__)
             return None, "the page could not be drawn"
@@ -894,7 +912,9 @@ class FindingBook:
             out["source"] = _choice(given["source"], "source", sources)
         for name, architect in (("arch_box", True), ("vendor_box", False)):
             if name in present:
-                out[name] = self._box(given[name], name, architect=architect)
+                out[name] = self._box(
+                    _with_page(given[name], out, architect=architect), name, architect=architect
+                )
         if "parts" in present:
             parts = given["parts"]
             if parts is None:
@@ -1358,9 +1378,11 @@ class FindingBook:
         ]
 
 
-def _default_crop(pdf: Path, page: int, box: tuple[float, float, float, float]) -> bytes | None:
+def _default_crop(
+    pdf: Path, page: int, box: tuple[float, float, float, float], *, cache: Path | None = None
+) -> bytes | None:
     drawing = import_module("app.review.assistant.chat_drawing")
-    png: bytes | None = drawing.crop_png(pdf, page, box)
+    png: bytes | None = drawing.crop_png(pdf, page, box, cache=cache)
     return png
 
 
