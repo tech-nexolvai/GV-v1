@@ -567,7 +567,9 @@ def test_a_full_check_seeds_recorded_results_and_makes_the_cloud_drawing_and_rep
 
     workspace = harness.workspace
     drawing = PdfReader(str(workspace.files / harness.files[0]["id"]))
-    assert "Vendor: 3'-10\"" in drawing.pages[1].extract_text()
+    # The wrong item's note on its page, its entry on the notes pages.
+    assert "vendor 3'-10\"" in drawing.pages[1].extract_text()
+    assert "Vendor: 3'-10\"" in drawing.pages[-1].extract_text()
     assert "Right: not clouded." in drawing.pages[-1].extract_text()
     report = "".join(
         page.extract_text()

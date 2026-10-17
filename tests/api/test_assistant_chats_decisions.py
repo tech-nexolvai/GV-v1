@@ -163,7 +163,8 @@ def test_the_cloud_drawing_follows_the_decisions_and_keeps_older_files(postgres_
         assert len(pages) == 4
         # Only the agreed finding is clouded; F2 is not decided yet: draft stamp, listed only.
         assert "AI markup: draft, not GV's signed review" in pages[0]
-        assert '1 Vanity top length: Vendor: 3\'-10" — Needs: 37"' in pages[1]
+        assert "\u00d7 1" in pages[1]
+        assert 'Vanity top length: vendor 3\'-10", make it 37"' in pages[1]
         assert _red_near(pdf, 2, VENDOR_BOX) > 5
         assert _red_near(pdf, 3, PAGE3_BOX) == 0
         notes = pages[3]

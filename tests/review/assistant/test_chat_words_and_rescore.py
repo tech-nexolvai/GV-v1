@@ -102,10 +102,11 @@ def test_the_csv_says_the_words_people_read() -> None:
 
 
 def test_the_cloud_drawing_and_report_say_your_decision() -> None:
-    note = chat_drawing._note_text(1, _finding(status="check"))
-    assert note.startswith("AI 1 ? Your decision: Vanity top length")
-    assert "needs your decision" in chat_drawing.LEGEND
-    assert "to check" not in chat_drawing.LEGEND.casefold()
+    note = chat_drawing.note_text(1, _finding(status="check"))
+    assert note.startswith("Your decision: Vanity top length")
+    for legend in (chat_drawing.LEGEND, chat_drawing.LEGEND_CLOUDED):
+        assert "needs your decision" in legend
+        assert "to check" not in legend.casefold() and "check:" not in legend.casefold()
 
 
 # ---- re-scoring an old badge --------------------------------------------------------------------

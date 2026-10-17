@@ -583,7 +583,9 @@ def markup_pdf(
         return file_out(existing)
     scratch = workspace.files / f"{file_id}.partial"
     try:
-        made = make_markup_file(workspace, findings, scratch)
+        # A narrow answer's own marked-up PDF keeps amber clouds at the items needing a decision:
+        # they are often all it found (a full check's cloud drawing marks them with a number only).
+        made = make_markup_file(workspace, findings, scratch, cloud_decisions=True)
     except LookupError:
         raise CodedHTTPException(
             status.HTTP_409_CONFLICT,

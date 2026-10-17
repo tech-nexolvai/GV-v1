@@ -4,12 +4,14 @@ Step 5 of the reviewer's path: the reviewer agrees (✓) or dismisses (✗ Not a
 the AI called wrong or left for their decision. What goes to the vendor carries only the agreed
 items:
 
-- **Clouds** only at agreed findings: a red cloud, a drawn cross and "n Item: Vendor: X — Needs: Y
-  (architect Z)". Undecided, not-a-problem and right items are never clouded.
+- **Clouds** only at agreed findings, drawn as a reviewer would (#1537, `chat_drawing.draw_markup`):
+  a tight red cloud at the value, a red numbered circle and a note in clear space ("× 12 Item:
+  vendor X, make it Y (architect Z)"), on a copy without earlier review markup when the file has
+  some. Undecided, not-a-problem and right items are never marked.
 - **Stamp** on page 1 (and the notes pages' heading): "Reviewed by <name>" once every item needing
   a decision was decided, else the usual "AI markup: draft, not GV's signed review".
-- **Notes page** and **report**: the agreed items, then "Not yet decided", "Not a problem" and
-  "Right", each listed separately.
+- **Notes pages** and **report**: the agreed items (by page, each with a small picture of its
+  spot), then "Not yet decided", "Not a problem" and "Right", each listed separately.
 
 Each finding carries its latest decision under `decision` (`chat_decisions.with_decisions`).
 
@@ -23,22 +25,14 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final
 
-from pypdf import PdfReader, PdfWriter
-from reportlab.lib.colors import white  # type: ignore[import-untyped]
-from reportlab.pdfgen import canvas  # type: ignore[import-untyped]
-
 from app.review.assistant.chat_drawing import (
-    _CLOUD_PAD,
-    _NOTE_CHARS,
-    _NOTE_SIZE,
-    _RED,
     MARKUP_TITLE,
     REPORT_TITLE,
-    _cloud,
-    _notes_pages,
-    _overlay,
-    _shown_to_user,
-    _stamp,
+    Entry,
+    Mark,
+    Section,
+    draw_markup,
+    entry_lines,
 )
 from app.review.assistant.chat_trust import cloud_kind, needs_text
 
@@ -53,9 +47,9 @@ __all__ = [
 type Box = tuple[float, float, float, float]
 
 DECIDED_LEGEND: Final = (
-    "Red cloud with a cross: the reviewer agreed the vendor's value is wrong; the note says what "
-    "it needs to be. Items not yet decided, items marked not a problem and right items are not "
-    "clouded; they are listed below."
+    "Red cloud, red numbered circle and note: the reviewer agreed the vendor's value is wrong; the "
+    "note says what it needs to be. Items not yet decided, items marked not a problem and right "
+    "items are not marked; they are listed below."
 )
 #: What the AI called an item, for the "Not yet decided" lists.
 _AI_SAYS: Final = {"wrong": "Wrong", "check": "Your decision"}
@@ -101,49 +95,6 @@ def _title(findings: Sequence[Mapping[str, Any]], draft: str) -> str:
     return draft if names is None else f"Reviewed by {names}"
 
 
-def _note(number: int, finding: Mapping[str, Any]) -> str:
-    needs, architect = needs_text(finding), str(finding.get("architect"))
-    text = f"{number} {finding.get('item')}: Vendor: {finding.get('vendor')} — Needs: {needs}"
-    if needs != architect:
-        text += f" (architect {architect})"
-    return text if len(text) <= _NOTE_CHARS else text[: _NOTE_CHARS - 1] + "…"
-
-
-def _draw_agreed(
-    c: canvas.Canvas, page: Any, marks: Sequence[tuple[int, Mapping[str, Any], Box]]
-) -> None:
-    rotation = int(page.get("/Rotate", 0) or 0) % 360
-    for number, finding, (x0, y0, x1, y1) in marks:
-        ax, ay = _shown_to_user(page, min(x0, x1), min(y0, y1))
-        bx, by = _shown_to_user(page, max(x0, x1), max(y0, y1))
-        c.setStrokeColor(_RED)
-        c.setLineWidth(1.2)
-        _cloud(
-            c,
-            min(ax, bx) - _CLOUD_PAD,
-            min(ay, by) - _CLOUD_PAD,
-            max(ax, bx) + _CLOUD_PAD,
-            max(ay, by) + _CLOUD_PAD,
-        )
-        note = _note(number, finding)
-        nx, ny = _shown_to_user(page, max(x0, x1) + _CLOUD_PAD + 8, min(y0, y1) - _CLOUD_PAD)
-        c.saveState()
-        c.translate(nx, ny)
-        c.rotate(rotation)
-        c.setFont("Helvetica-Bold", _NOTE_SIZE)
-        lead = _NOTE_SIZE + 2
-        width = c.stringWidth(note, "Helvetica-Bold", _NOTE_SIZE) + lead
-        c.setFillColor(white)
-        c.rect(-2, -_NOTE_SIZE - 2, width + 4, _NOTE_SIZE + 4, stroke=0, fill=1)
-        c.setFillColor(_RED)
-        # The cross is drawn: the standard fonts have no such sign.
-        c.setLineWidth(1.4)
-        c.line(0, -_NOTE_SIZE + 1, _NOTE_SIZE - 2, -1)
-        c.line(0, -1, _NOTE_SIZE - 2, -_NOTE_SIZE + 1)
-        c.drawString(lead, -_NOTE_SIZE + 1, note)
-        c.restoreState()
-
-
 def _decision_words(finding: Mapping[str, Any]) -> str:
     decision = finding.get("decision")
     if not isinstance(decision, Mapping):
@@ -157,83 +108,65 @@ def _decision_words(finding: Mapping[str, Any]) -> str:
     return words
 
 
+def _agreed(finding: Mapping[str, Any]) -> dict[str, Any]:
+    """An agreed finding as the drawing shows it: wrong, whatever the AI called it."""
+    return {**finding, "status": "different", "trust_level": "confirmed"}
+
+
 def decided_markup_pdf(
     source: Path,
     findings: Sequence[tuple[int, Mapping[str, Any], int | None, Box | None, str]],
     out: Path,
 ) -> None:
-    """A copy of `source` with a red cloud and note at each agreed finding that can be placed, the
-    stamp on page 1, and notes pages: agreed, not yet decided, not a problem, right.
-    `findings`: (number, finding, page, box, where), as `chat_findings.place_findings` makes them.
-    """
-    writer = PdfWriter(clone_from=PdfReader(str(source)))
+    """A copy of `source` with a tight red cloud, a numbered marker and a note at each agreed
+    finding that can be placed (on a clean copy when the file carries earlier review markup), the
+    stamp on page 1, and notes pages: agreed (by page, with a picture of each spot), not yet
+    decided, not a problem, right. `findings`: (number, finding, page, box, where), as
+    `chat_findings.place_findings` makes them."""
     plain = [finding for _n, finding, _p, _b, _w in findings]
     title = _title(plain, MARKUP_TITLE)
     grouped = groups(plain)
-    agreed = set(grouped["agreed"])
-    by_page: dict[int, list[tuple[int, Mapping[str, Any], Box]]] = {}
-    where_of: dict[int, str] = {}
-    for n, (number, finding, page_number, box, where) in enumerate(findings):
-        where_of[n] = where
-        if n not in agreed:
-            continue
-        if page_number is not None and box is not None:
-            if 1 <= page_number <= len(writer.pages):
-                by_page.setdefault(page_number, []).append((number, finding, box))
-            else:
-                where_of[n] = f"Not marked: the file has no page {page_number}."
-    for page_number, page in enumerate(writer.pages, start=1):
-        marks = by_page.get(page_number, [])
-        if not marks and page_number != 1:
-            continue
-        media = page.mediabox
-
-        def draw(
-            c: canvas.Canvas, page: Any = page, marks: Any = marks, n: int = page_number
-        ) -> None:
-            if marks:
-                _draw_agreed(c, page, marks)
-            if n == 1:
-                _stamp(c, page, title)
-
-        page.merge_page(_overlay(float(media.right), float(media.top), draw))
-    first = writer.pages[0]
-    width, height = float(first.cropbox.width), float(first.cropbox.height)
-    if int(first.get("/Rotate", 0) or 0) % 180 == 90:
-        width, height = height, width
-    lines: list[tuple[str, bool]] = [(DECIDED_LEGEND, False)]
-    sections = (
-        ("agreed", "Agreed: needs correction"),
-        ("undecided", "Not yet decided"),
-        ("dismissed", "Not a problem (not clouded)"),
-        ("right", "Right (not clouded)"),
-    )
-    for key, heading in sections:
-        lines.append((f"{heading} ({len(grouped[key])})", True))
-        for n in grouped[key]:
-            number, finding = findings[n][0], findings[n][1]
-            vs = f" (architect page {finding['vs_page']})" if finding.get("vs_page") else ""
-            head = f"{number}  page {finding.get('page')}{vs}  {finding.get('item')}"
-            if key == "undecided":
-                head += f"  [AI says: {_AI_SAYS[str(cloud_kind(finding))]}]"
-            lines.append((head, True))
-            lines.append(
-                (f"Architect: {finding.get('architect')}   Vendor: {finding.get('vendor')}", False)
-            )
+    marks: list[Mark] = []
+    entries: dict[str, list[Entry]] = {key: [] for key in grouped}
+    for key, positions in grouped.items():
+        for n in positions:
+            number, finding, page_number, box, where = findings[n]
             if key == "agreed":
-                lines.append((f"Needs: {needs_text(finding)}", False))
-                lines.append((where_of[n], False))
-            if key in ("agreed", "dismissed"):
-                lines.append((_decision_words(finding), False))
-            elif key == "undecided" and finding.get("why"):
-                lines.append((f"Why: {finding['why']}", False))
-        if not grouped[key]:
-            lines.append(("None.", False))
-    for page in _notes_pages(width, height, lines, title):
-        writer.add_page(page)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    with out.open("wb") as handle:
-        writer.write(handle)
+                shown = _agreed(finding)
+                lines = [*entry_lines(shown), where, _decision_words(finding)]
+                if page_number is not None and box is not None:
+                    value = (
+                        str(finding.get("vendor") or "")
+                        if isinstance(finding.get("vendor_box"), Mapping)
+                        else str(finding.get("architect") or "")
+                    )
+                    marks.append(Mark(number, shown, page_number, box, "wrong", True, value))
+                entries[key].append(Entry(number, shown, "wrong", lines, picture=True))
+                continue
+            lines = [f"Architect: {finding.get('architect')}   Vendor: {finding.get('vendor')}"]
+            if key == "undecided":
+                lines.append(f"AI says: {_AI_SAYS[str(cloud_kind(finding))]}")
+                if finding.get("why"):
+                    lines.append(f"Why: {finding['why']}")
+            elif key == "dismissed":
+                lines.append(_decision_words(finding))
+            kind = cloud_kind(finding) if key == "undecided" else None
+            entries[key].append(Entry(number, finding, kind, lines))
+    for listed in entries.values():
+        listed.sort(key=lambda e: (int(e.finding.get("page") or 0), e.number))
+    counts = (
+        f"{len(plain)} items: {len(grouped['agreed'])} agreed (red clouds), "
+        f"{len(grouped['undecided'])} not yet decided, {len(grouped['dismissed'])} not a problem, "
+        f"{len(grouped['right'])} right (none of these is marked)."
+    )
+    front = [counts, DECIDED_LEGEND]
+    sections = (
+        Section("Agreed: needs correction", entries["agreed"]),
+        Section("Not yet decided", entries["undecided"]),
+        Section("Not a problem (not clouded)", entries["dismissed"]),
+        Section("Right (not clouded)", entries["right"]),
+    )
+    draw_markup(source, marks, out, title=title, front=front, sections=sections)
 
 
 def decided_report_pdf(
