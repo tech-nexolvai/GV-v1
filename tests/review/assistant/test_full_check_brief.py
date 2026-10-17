@@ -331,7 +331,10 @@ NEW_ITEMS: dict[str, tuple[str, ...]] = {
     "position": ("centred on or aligned with", "collides with a neighbour", "its own opening"),
     "extent": ("vendor omits", "extra pieces", "doors, drawers, bins and fronts", "island faces"),
     "brand": ("ID set vs brand prototype", "Your decision: which governs"),
-    "scaled": ('about X (scaled, ±1/2")', "only ever status check", "never different (Wrong)"),
+    "scaled": ("measure_on_drawing", "only ever status check", "never different (Wrong)"),
+    # #1545: what a dimension spans, and the reasoning on every Your-decision item.
+    "span": ("measure_on_drawing with `dimension`", "box, soffit", "different_extent", "PRINTED"),
+    "decision": ("decision_help", "what it measures", "best estimate", "what to confirm"),
 }
 
 #: Shapes of client values (the same as `test_skills_export.py`): a drawing or sheet number, the
@@ -380,7 +383,10 @@ def test_skill_md_says_what_to_compare_beyond_dimensions() -> None:
         "**ID set vs brand prototype**",
         '"Your decision: which governs"',
         "**Scaled values**",
-        '"about X (scaled, ±1/2")": status `check`, never `different` (Wrong)',
+        '"about X (±T)": status `check`, never `different` (Wrong)',
+        "**Extent first**",
+        "`check_reason: different_extent`",
+        "**Printed vs printed is Wrong**",
     ):
         assert words in section, words
     for shape in CLIENT_VALUE_SHAPES:

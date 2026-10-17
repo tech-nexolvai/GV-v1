@@ -89,6 +89,8 @@ from app.review.assistant.chat_findings import (
     boxless_findings,
     boxless_note,
     coverage_note,
+    decision_help_note,
+    helpless_decisions,
     main_upload,
     make_markup_file,
     make_report_file,
@@ -209,10 +211,10 @@ _log = logging.getLogger(__name__)
 #: effort lines. chat-v8: "never cite internal ticket numbers", and a page or area question's
 #: scope note. chat-v9: zoom takes up to 8 crops; a full check's helpers are planned by code, with
 #: the recall brief, and the lead gets their reports with a verify-only instruction. chat-v10: the
-#: verify_value tool and its prompt lines, #1531. chat-v11: read_under_markup for the lead and the
-#: helpers, and its prompt lines, #1548.) Only the request's prefix changes; a chat's stored
-#: messages replay unchanged.
-HARNESS_ID: Final = "chat-v11"
+#: verify_value tool and its prompt lines, #1531. chat-v11: measure_on_drawing, decision_help and
+#: check_reason, #1545. chat-v12: read_under_markup for the lead and the helpers, and its prompt
+#: lines, #1548.) Only the request's prefix changes; a chat's stored messages replay unchanged.
+HARNESS_ID: Final = "chat-v12"
 #: Helpers that may run at once, at most, whatever the setting says.
 MAX_PARALLEL_AGENTS_LIMIT: Final = 12
 #: The second reads, third reads and critic calls of one message that run at once.
@@ -635,6 +637,7 @@ class ChatEngine:
             listing=listing,
             page_count=int(main.get("pages") or 0) if main is not None else tools.page_count,
             checker=self._checked,
+            extents=tools.extents,
         )
         self._positions: dict[str, int] = {}
         self._coverage_index: int | None = None
@@ -1072,6 +1075,8 @@ class ChatEngine:
             return tools.str_replace(raw, step)
         if name == "verify_value":
             return tools.verify_value(raw, step)
+        if name == "measure_on_drawing":
+            return tools.measure_on_drawing(raw, step)
         if name == "read_under_markup":
             return tools.read_under_markup(raw, step, by)
         if not helper:
@@ -1977,6 +1982,10 @@ class ChatEngine:
                 "the drawings with no evidence. Back each with report_finding (a comparison) or "
                 "cite (a value), with boxes; then give your answer."
             )
+        helpless = helpless_decisions(self.book.live())
+        if helpless:
+            # Every "Your decision" item carries the reviewer's reasoning (#1545).
+            parts.append(decision_help_note(helpless, prefixed=not parts))
         if self.book.coverage_used and self._whole_set_work():
             gaps = self.book.coverage_gaps()
             if gaps:

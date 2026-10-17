@@ -421,9 +421,10 @@ def test_usage_rows_name_the_route_and_the_purpose() -> None:
 
 
 def test_the_system_prompt_is_short_and_names_the_skill_and_the_three_facts() -> None:
-    # Short like claude.ai's (chat-v6 added the ledger line; chat-v7 the set pack, zoom, effort;
-    # chat-v11 read_under_markup).
-    assert len(LEAD_SYSTEM_PROMPT) < 3250
+    # Short like claude.ai's (chat-v6 added the ledger line; chat-v7 the set pack, zoom, effort).
+    assert (
+        len(LEAD_SYSTEM_PROMPT) < 3300
+    )  # chat-v11: measure_on_drawing; chat-v12 read_under_markup
     for words in (
         "/mnt/skills/gv-review/SKILL.md",
         "inches",
@@ -454,10 +455,11 @@ def test_the_system_prompt_is_short_and_names_the_skill_and_the_three_facts() ->
         "record_reading",
         "compare_rounds",
         "verify_value",
+        "measure_on_drawing",
         "read_under_markup",
     ]
     assert "record_string" in LEAD_SYSTEM_PROMPT and "record_reading" in LEAD_SYSTEM_PROMPT
-    assert "verify_value" in LEAD_SYSTEM_PROMPT
+    assert "verify_value" in LEAD_SYSTEM_PROMPT and "measure_on_drawing" in LEAD_SYSTEM_PROMPT
 
 
 def test_the_system_prompt_carries_the_answer_style_rules() -> None:

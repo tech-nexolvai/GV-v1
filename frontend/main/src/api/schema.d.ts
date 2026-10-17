@@ -4515,6 +4515,28 @@ export interface components {
             result: "passed" | "objects" | "unsure";
         };
         /**
+         * ChatFindingDecisionHelpOut
+         * @description A "Your decision" item's reasoning for the reviewer (#1545), in plain words.
+         */
+        ChatFindingDecisionHelpOut: {
+            /**
+             * Confirm
+             * @description What the reviewer should confirm, and with whom.
+             */
+            confirm: string;
+            estimate?: components["schemas"]["ChatFindingEstimateOut"] | null;
+            /**
+             * Likely
+             * @enum {string}
+             */
+            likely: "probably fine" | "probably wrong" | "can't tell";
+            /**
+             * Measures
+             * @description What the dimension measures, from where to where.
+             */
+            measures: string;
+        };
+        /**
          * ChatFindingDecisionIn
          * @description The reviewer's ✓ Agree / ✗ Not a problem on one finding (#1521).
          */
@@ -4555,6 +4577,18 @@ export interface components {
             type: "finding_dropped";
         };
         /**
+         * ChatFindingEstimateOut
+         * @description The AI's best estimate for a "Your decision" item, with how it got it (#1545).
+         */
+        ChatFindingEstimateOut: {
+            /** Method */
+            method: string;
+            /** Plus Minus In */
+            plus_minus_in: number;
+            /** Value In */
+            value_in: number;
+        };
+        /**
          * ChatFindingInchesOut
          * @description Code's numbers (decimal strings, inches): never the AI's arithmetic.
          */
@@ -4587,6 +4621,11 @@ export interface components {
              * @enum {string}
              */
             category: "countertop" | "cabinet" | "other";
+            /**
+             * Check Reason
+             * @description Why two printed values that differ still need a person (#1545); without one, code makes such a finding Wrong.
+             */
+            check_reason?: ("different_extent" | "which_governs" | "pairing_not_certain" | "scaled" | "site_verify") | null;
             checks?: components["schemas"]["ChatFindingChecksOut"] | null;
             /**
              * Compared
@@ -4601,6 +4640,8 @@ export interface components {
             critic?: components["schemas"]["ChatFindingCriticOut"] | null;
             /** @description The reviewer's latest decision on this finding (#1521); null: not decided. */
             decision?: components["schemas"]["ChatFindingDecisionOut"] | null;
+            /** @description Status check (Your decision): what it measures, the best estimate, how likely it is fine, what to confirm (#1545). */
+            decision_help?: components["schemas"]["ChatFindingDecisionHelpOut"] | null;
             /**
              * Evidence Kind
              * @description observed: printed on the drawing at its spots (text layer); derived: worked out by code (rule, arithmetic, ledger, mm/inch); inferred: AI reading only.
@@ -5322,7 +5363,7 @@ export interface components {
             tool: components["schemas"]["ChatStepTool"];
         };
         /** @enum {string} */
-        ChatStepTool: "bash_tool" | "view" | "create_file" | "str_replace" | "present_files" | "TaskCreate" | "TaskUpdate" | "Agent" | "review_results" | "compare_rounds" | "verify_value" | "zoom" | "read_under_markup";
+        ChatStepTool: "bash_tool" | "view" | "create_file" | "str_replace" | "present_files" | "TaskCreate" | "TaskUpdate" | "Agent" | "review_results" | "compare_rounds" | "verify_value" | "measure_on_drawing" | "zoom" | "read_under_markup";
         /** @enum {string} */
         ChatStopped: "cost_cap" | "cancelled" | "error" | "turn_limit" | "interrupted";
         /** ChatSummaryOut */
