@@ -4670,6 +4670,60 @@
         "title": "ChatFindingDroppedBlock",
         "type": "object"
       },
+      "ChatFindingEscalationOut": {
+        "description": "What the full check's escalation did with an item code could not settle at first (#1619).",
+        "properties": {
+          "outcome": {
+            "enum": [
+              "wrong",
+              "right",
+              "folded",
+              "undecided"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/ChatFindingEscalationStepOut"
+            },
+            "title": "Steps",
+            "type": "array"
+          }
+        },
+        "required": [
+          "outcome"
+        ],
+        "title": "ChatFindingEscalationOut",
+        "type": "object"
+      },
+      "ChatFindingEscalationStepOut": {
+        "description": "One free code step the escalation tried on an undecided item (#1619).",
+        "properties": {
+          "how": {
+            "description": "What code did and found, in one plain line.",
+            "title": "How",
+            "type": "string"
+          },
+          "outcome": {
+            "description": "read, proved, folded or no_change.",
+            "title": "Outcome",
+            "type": "string"
+          },
+          "step": {
+            "description": "labels, under_markup, same_item, vendor_sums, notes or pairs (cheapest first).",
+            "title": "Step",
+            "type": "string"
+          }
+        },
+        "required": [
+          "step",
+          "outcome",
+          "how"
+        ],
+        "title": "ChatFindingEscalationStepOut",
+        "type": "object"
+      },
       "ChatFindingEstimateOut": {
         "description": "The AI's best estimate for a \"Your decision\" item, with how it got it (#1545).",
         "properties": {
@@ -4944,6 +4998,17 @@
             ],
             "description": "The numbered dimension label each side was built from (#1558), by side (architect, vendor); code filled that side's value and box from it.",
             "title": "Dims"
+          },
+          "escalation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatFindingEscalationOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A full check (#1619): the free code steps tried on this item when code could not settle it at first, and how it ended."
           },
           "evidence_kind": {
             "anyOf": [
@@ -5348,12 +5413,12 @@
         "description": "Where the zero-click cloud drawing puts a finding (#1581), worked out by code on read\n(`proof.proof_of`): only Wrong items code proved are clouded; the reviewer's Agree / Not a\nproblem override.",
         "properties": {
           "group": {
-            "description": "clouded: Wrong, proved by code (red cloud); not_verified: Wrong that only AI readings back (grey, check before sending); could_not_compare: Your decision (grey, with the reason); right; not_compared; dismissed: the reviewer marked it not a problem.",
+            "description": "clouded: Wrong, proved by code (red cloud); vendor_confirm: what code could not settle (#1619), one question to the vendor (amber marker, no cloud); right; info: undecided with nothing to ask (not applicable / no information); not_compared; dismissed: the reviewer marked it not a problem.",
             "enum": [
               "clouded",
-              "not_verified",
-              "could_not_compare",
+              "vendor_confirm",
               "right",
+              "info",
               "not_compared",
               "dismissed"
             ],
@@ -5371,6 +5436,18 @@
             ],
             "description": "Clouded items: the check that proved it, in plain words.",
             "title": "Proof"
+          },
+          "question": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "vendor_confirm: the one question to the vendor, written by code (shown after \"Confirm: \"): plain, cites the page and the values, never accuses, never says AI.",
+            "title": "Question"
           },
           "reason": {
             "anyOf": [
@@ -5500,7 +5577,7 @@
             "type": "string"
           },
           "method": {
-            "description": "The rule or tool: same_item, gv_limits, vendor_sum, printed_vs_printed, newest_round, prototype_prints_it, legend, sharper_read, other_trades_tags, out_of_scope.",
+            "description": "The rule or tool: same_item, gv_limits, vendor_sum, printed_vs_printed, newest_round, prototype_prints_it, legend, sharper_read, other_trades_tags, out_of_scope; escalation_<step> when the full check's escalation settled it (#1619).",
             "title": "Method",
             "type": "string"
           },
@@ -5508,8 +5585,12 @@
             "$ref": "#/components/schemas/ChatSettledOutcome"
           },
           "was": {
-            "const": "check",
             "default": "check",
+            "description": "check: it was Your decision; different: a Wrong code could not prove, settled Right by the escalation (#1619).",
+            "enum": [
+              "check",
+              "different"
+            ],
             "title": "Was",
             "type": "string"
           }

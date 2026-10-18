@@ -1,19 +1,20 @@
 /**
- * #1581: the zero-click cloud drawing's rule, as the screen counts it. A full check ends with a
- * cloud drawing made by code with no clicks: only the Wrong items code proved are clouded (red:
- * the vendor's value, green: what it should be); Wrong items only AI readings back are listed in
- * grey ("not verified by code"); "Your decision" items are listed as "could not compare". The
- * reviewer's Agree / Not a problem are optional overrides: agreed = clouded, not a problem = left
- * out.
+ * #1581, #1619: the zero-click cloud drawing's rule, as the screen counts it. A full check ends with
+ * a cloud drawing made by code with no clicks: only the Wrong items code proved are clouded (red:
+ * the vendor's value, green: what it should be). What code could not settle, after its escalation,
+ * becomes ONE question to the vendor ("Vendor to confirm", amber: a marker and a "Confirm: …" note,
+ * never a cloud); an item with nothing to ask is "Not applicable / no information". The reviewer's
+ * Agree / Not a problem / Make it Wrong are optional overrides: agreed = clouded, not a problem =
+ * left out.
  *
  * The server sends each stored finding's group (`finding.proof`, worked out by `proof.py`); this
  * file only lays the reviewer's newest click over it, and mirrors the rule for a finding still
  * streaming (no `proof` yet), so the card's numbers match the drawing's cover.
  */
 
-import type { ChatFinding, FindingDecision, ProofGroup } from '@/lib/chat-api';
+import type { ChatFinding, FindingDecision, FindingStatus, ProofGroup } from '@/lib/chat-api';
 
-export const PROOF_GROUPS: readonly ProofGroup[] = ['clouded', 'not_verified', 'could_not_compare', 'right', 'not_compared', 'dismissed'];
+export const PROOF_GROUPS: readonly ProofGroup[] = ['clouded', 'vendor_confirm', 'right', 'info', 'not_compared', 'dismissed'];
 
 export type ProofCounts = Record<ProofGroup, number>;
 
@@ -44,9 +45,27 @@ export function proofGroup(finding: ChatFinding, decision: FindingDecision | nul
   }
   // With no click to lay over, the server's group stands.
   if (finding.proof?.group) return finding.proof.group;
-  if (finding.status === 'different') return codeProved(finding) ? 'clouded' : 'not_verified';
-  if (finding.status === 'check') return 'could_not_compare';
+  if (finding.status === 'different' && codeProved(finding)) return 'clouded';
+  // Undecided: a question to the vendor (the server writes it; a streaming item has none yet).
+  if (finding.status === 'different' || finding.status === 'check') return 'vendor_confirm';
   return finding.compared === false ? 'not_compared' : 'right';
+}
+
+/**
+ * A full check's finding as its result screen shows it (#1619): in the section of its place on the
+ * cloud drawing, with the reviewer's newest click laid over: clouded = Wrong, a question to the
+ * vendor (or nothing to ask) = Vendor to confirm, Right. What the reviewer marked not a problem
+ * keeps its own status (its row shows the click).
+ */
+export function asShown(finding: ChatFinding, decision: FindingDecision | null = finding.decision ?? null): ChatFinding {
+  const group = proofGroup(finding, decision);
+  const status: FindingStatus | null = group === 'clouded' ? 'different' : group === 'vendor_confirm' || group === 'info' ? 'check' : group === 'right' || group === 'not_compared' ? 'same' : null;
+  return status === null || status === finding.status ? finding : { ...finding, status };
+}
+
+/** The question to the vendor for an amber item, from the server; null when it has none. */
+export function vendorQuestion(finding: ChatFinding): string | null {
+  return finding.proof?.group === 'vendor_confirm' ? finding.proof.question?.trim() || null : null;
 }
 
 /** How many items each group has (the drawing's cover counts the same final list). */
@@ -58,9 +77,9 @@ export function proofCounts(findings: readonly ChatFinding[], decisionOf?: (find
 
 export const PROOF_WORDS: Record<ProofGroup, string> = {
   clouded: 'Wrong, proved by code (clouded)',
-  not_verified: 'Not verified by code: check before sending',
-  could_not_compare: 'Could not be compared',
+  vendor_confirm: 'Vendor to confirm',
   right: 'Right',
+  info: 'Not applicable / no information',
   not_compared: 'Not compared',
   dismissed: 'Not a problem (reviewer)',
 };

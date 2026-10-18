@@ -172,7 +172,7 @@ function CloudPreview({ href, page, total }: { href: string; page: number; total
  * on the left, Open and Download on the right; the check report as a quiet line inside it.
  */
 export interface CloudReview {
-  /** Items the reviewer has answered, of those needing an answer (Wrong + Your decision). */
+  /** Items the reviewer has overridden, of those it could (Wrong + Vendor to confirm). */
   decided: number;
   total: number;
   /** Who answered, once every item is answered: "Reviewed by <name>". */
@@ -191,7 +191,7 @@ export function FullCheckFiles({ cloud, report, chatId, page = 1, totalPages = n
   page?: number;
   totalPages?: number | null;
   counts?: Pick<FindingCounts, 'different' | 'check'> | null;
-  /** #1581: the drawing's own groups (clouded / not verified / could not compare), as its cover counts them. */
+  /** #1581, #1619: the drawing's own groups (clouded / vendor to confirm / right), as its cover counts them. */
   proof?: ProofCounts | null;
   /** #1525: the reviewer's answers so far, and "Update cloud drawing" (optional overrides since #1581). */
   review?: CloudReview | null;
@@ -220,13 +220,13 @@ export function FullCheckFiles({ cloud, report, chatId, page = 1, totalPages = n
           <p className="text-xs font-medium text-muted-foreground">Main output</p>
           <p className="text-[17px] font-semibold tracking-[-0.01em]">Cloud drawing</p>
           <p className="text-[13.5px] text-muted-foreground">
-            Ready to send: a red cloud at each wrong value code proved, with what it should be in green and the proof for each. The rest is listed in grey to check.
+            Ready to send: a red cloud at each wrong value code proved, with what it should be in green and the proof for each, and an amber question at each item the vendor needs to confirm.
           </p>
           {proof ? (
             <p data-slot="chat-cloud-counts" className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground tabular-nums">
               <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="size-2 rounded-full bg-outcome-fail" /><span className="font-medium text-foreground">{proof.clouded}</span> clouded, proved by code</span>
-              {proof.not_verified > 0 && <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="size-2 rounded-full bg-muted-foreground/50" />{proof.not_verified} not verified by code</span>}
-              {proof.could_not_compare > 0 && <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="size-2 rounded-full bg-muted-foreground/50" />{proof.could_not_compare} could not compare</span>}
+              {proof.vendor_confirm > 0 && <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="size-2 rotate-45 rounded-[1px] bg-outcome-review" /><span className="font-medium text-foreground">{proof.vendor_confirm}</span> for the vendor to confirm</span>}
+              {proof.info + proof.not_compared > 0 && <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="size-2 rounded-full ring-[1.5px] ring-inset ring-muted-foreground/50" />{proof.info + proof.not_compared} not applicable</span>}
             </p>
           ) : counts && (counts.different > 0 || counts.check > 0) && (
             <p className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground tabular-nums">
@@ -267,7 +267,7 @@ export function FullCheckFiles({ cloud, report, chatId, page = 1, totalPages = n
         </div>
         {review && review.total > 0 && (
           <p data-slot="chat-cloud-review" className="text-xs text-muted-foreground tabular-nums">
-            {review.decided} of {review.total} decided{review.reviewedBy ? ` · reviewed by ${review.reviewedBy}` : ''} · optional: Agree or Not a problem below overrides the drawing
+            {review.decided} of {review.total} overridden{review.reviewedBy ? ` · reviewed by ${review.reviewedBy}` : ''} · optional: Agree, Make it Wrong or Not a problem below changes the drawing
           </p>
         )}
         {review?.failed && <p role="alert" className="text-sm text-muted-foreground">The cloud drawing could not be made again right now. Try again.</p>}
@@ -280,9 +280,9 @@ export function FullCheckFiles({ cloud, report, chatId, page = 1, totalPages = n
 // ── The three numbers (PATH step 4.2) ───────────────────────
 
 const NUMBERS = [
-  { status: 'different', words: 'Wrong', hint: 'Send back to the vendor', dot: 'bg-outcome-fail' },
-  { status: 'check', words: 'Your decision', hint: 'Listed with the reason', dot: 'bg-outcome-review' },
-  { status: 'same', words: 'Right', hint: 'Matches the drawings', dot: 'bg-outcome-pass' },
+  { status: 'different', words: 'Wrong', hint: 'Proved by code, clouded red', dot: 'rounded-full bg-outcome-fail' },
+  { status: 'check', words: 'Vendor to confirm', hint: 'One question each, in amber', dot: 'rotate-45 rounded-[1px] bg-outcome-review' },
+  { status: 'same', words: 'Right', hint: 'Matches the drawings', dot: 'rounded-full bg-outcome-pass' },
 ] as const;
 
 export interface ResultNumbersProps {
@@ -294,8 +294,8 @@ export interface ResultNumbersProps {
 }
 
 /**
- * Wrong · Your decision · Right, plus pages checked and the Accuracy % (each shown once on the
- * screen). A number jumps to its section below.
+ * Wrong · Vendor to confirm · Right (#1619: as the cloud drawing counts them), plus pages checked
+ * and the Accuracy % (each shown once on the screen). A number jumps to its section below.
  */
 export function ResultNumbers({ counts, coverage, accuracy, onPick }: ResultNumbersProps) {
   const pages = coverage ? coverageCounts(coverage) : null;
@@ -313,10 +313,10 @@ export function ResultNumbers({ counts, coverage, accuracy, onPick }: ResultNumb
             aria-label={`${number.words}: ${count}. Go to them`}
             className="grid min-w-0 gap-1 rounded-xl bg-muted/50 p-3 text-left transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:cursor-default disabled:hover:bg-muted/50 motion-reduce:transition-none sm:p-4"
           >
-            {/* The label wraps instead of cutting "Your decision" short on a phone; two lines are kept
+            {/* The label wraps instead of cutting "Vendor to confirm" short on a phone; two lines are kept
                 for every card there, so the three numbers stay on one level. */}
             <span data-slot="chat-kpi-label" className="flex min-h-[2.5em] min-w-0 items-start gap-1.5 text-[13px] leading-[1.25] font-medium text-muted-foreground sm:min-h-0 sm:items-center">
-              <span aria-hidden="true" className={cn('mt-[0.3em] size-2 shrink-0 rounded-full sm:mt-0', number.dot)} />
+              <span aria-hidden="true" className={cn('mt-[0.3em] size-2 shrink-0 sm:mt-0', number.dot)} />
               <span className="min-w-0 break-words">{number.words}</span>
             </span>
             <span className={cn('text-2xl leading-8 font-semibold tracking-[-0.03em] tabular-nums sm:text-[30px] sm:leading-9', count === 0 && 'text-muted-foreground')}>{count}</span>

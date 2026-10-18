@@ -705,7 +705,8 @@ export const CSV_HEADER = [
 function proofCells(finding: ChatFinding): [string, string] {
   const group = proofGroup(finding);
   const sent = finding.proof?.group === group ? finding.proof : null;
-  const detail = sent?.proof ?? sent?.reason ?? null;
+  // #1619: an amber item says the question that goes to the vendor.
+  const detail = sent?.proof ?? (sent?.question ? `Confirm: ${sent.question}` : null) ?? sent?.reason ?? null;
   return [finding.proof?.should_be ?? '', detail ? `${PROOF_WORDS[group]}: ${detail}` : PROOF_WORDS[group]];
 }
 

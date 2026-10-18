@@ -64,13 +64,13 @@ def _item(**changes: Any) -> dict[str, Any]:
         (
             _item(
                 keep_reason="which_governs",
-                architect="brand prototype 2'-6\" (30\")",
+                architect='brand prototype 2\'-6" (30")',
                 vendor='36"',
                 inches={"architect": "30", "vendor": "36"},
                 vs_page=13,
                 item="Storage bay width",
             ),
-            "The brand prototype shows 2'-6\" (30\") on page 13; page 12 shows 36\" for the "
+            'The brand prototype shows 2\'-6" (30") on page 13; page 12 shows 36" for the '
             "storage bay width. Confirm with the designer which governs.",
         ),
         (
@@ -85,8 +85,8 @@ def _item(**changes: Any) -> dict[str, Any]:
                 inches={"architect": "38", "vendor": "38"},
                 item="Counter height",
             ),
-            "Confirm what the counter height measures: the architect prints 3'-2\" (38\"), page "
-            '12 shows 38" including a 4" band. Confirm both run between the same points, and the '
+            'What does the counter height measure? The architect prints 3\'-2" (38"); page 12 '
+            'shows 38" including a 4" band. Confirm both run between the same points, and the '
             "finished size.",
         ),
         (
@@ -127,7 +127,7 @@ def _item(**changes: Any) -> dict[str, Any]:
                 vs_page=13,
             ),
             "Page 12 shows 46\" for the outlet height; the architect's drawing on page 13 prints "
-            "3'-1\" (37\"). Confirm which size is intended.",
+            '3\'-1" (37"). Confirm which size is intended.',
         ),
         # Millimetres with inches in brackets: the inches.
         (
@@ -147,6 +147,8 @@ def _item(**changes: Any) -> dict[str, Any]:
 def test_each_reason_gets_its_own_specific_question(finding: dict[str, Any], question: str) -> None:
     assert question_of(finding) == question
     assert writes_well(question)
+    # Shown after "Confirm: ", so it never starts with "Confirm" itself.
+    assert not question.startswith("Confirm")
 
 
 def test_the_writing_rule_never_accuses_and_never_names_the_ai() -> None:
@@ -164,7 +166,7 @@ def test_the_writing_rule_never_accuses_and_never_names_the_ai() -> None:
     noisy = _item(
         status="different",
         keep_reason=None,
-        vendor='46" (AI reading, partly under GV\'s yellow box)',
+        vendor="46\" (AI reading, partly under GV's yellow box)",
         architect="3'-1\" (wrong per the helper)",
         inches={"architect": "37", "vendor": "46"},
         item="Outlet height (error?)",
@@ -193,10 +195,10 @@ def test_the_finding_s_own_confirm_line_is_used_when_it_is_already_a_clean_quest
             "measures": "x",
             "estimate": None,
             "likely": "can't tell",
-            "confirm": "Is the 4\" band on page 12 a splash or the top build-up?",
+            "confirm": 'Is the 4" band on page 12 a splash or the top build-up?',
         }
     )
-    assert question_of(helped) == "Is the 4\" band on page 12 a splash or the top build-up?"
+    assert question_of(helped) == 'Is the 4" band on page 12 a splash or the top build-up?'
     # Written for the reviewer, or naming GV: the plain form instead.
     for confirm in ("Reviewer: confirm the width on page 12?", "Ask GV about page 12?"):
         other = _item(decision_help={**helped["decision_help"], "confirm": confirm})

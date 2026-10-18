@@ -4786,6 +4786,40 @@ export interface components {
             type: "finding_dropped";
         };
         /**
+         * ChatFindingEscalationOut
+         * @description What the full check's escalation did with an item code could not settle at first (#1619).
+         */
+        ChatFindingEscalationOut: {
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "wrong" | "right" | "folded" | "undecided";
+            /** Steps */
+            steps?: components["schemas"]["ChatFindingEscalationStepOut"][];
+        };
+        /**
+         * ChatFindingEscalationStepOut
+         * @description One free code step the escalation tried on an undecided item (#1619).
+         */
+        ChatFindingEscalationStepOut: {
+            /**
+             * How
+             * @description What code did and found, in one plain line.
+             */
+            how: string;
+            /**
+             * Outcome
+             * @description read, proved, folded or no_change.
+             */
+            outcome: string;
+            /**
+             * Step
+             * @description labels, under_markup, same_item, vendor_sums, notes or pairs (cheapest first).
+             */
+            step: string;
+        };
+        /**
          * ChatFindingEstimateOut
          * @description The AI's best estimate for a "Your decision" item, with how it got it (#1545).
          */
@@ -4902,6 +4936,8 @@ export interface components {
             dims?: {
                 [key: string]: components["schemas"]["ChatFindingDimOut"];
             } | null;
+            /** @description A full check (#1619): the free code steps tried on this item when code could not settle it at first, and how it ended. */
+            escalation?: components["schemas"]["ChatFindingEscalationOut"] | null;
             /**
              * Evidence Kind
              * @description observed: printed on the drawing at its spots (text layer); derived: worked out by code (rule, arithmetic, ledger, mm/inch); inferred: AI reading only.
@@ -5011,15 +5047,20 @@ export interface components {
         ChatFindingProofOut: {
             /**
              * Group
-             * @description clouded: Wrong, proved by code (red cloud); not_verified: Wrong that only AI readings back (grey, check before sending); could_not_compare: Your decision (grey, with the reason); right; not_compared; dismissed: the reviewer marked it not a problem.
+             * @description clouded: Wrong, proved by code (red cloud); vendor_confirm: what code could not settle (#1619), one question to the vendor (amber marker, no cloud); right; info: undecided with nothing to ask (not applicable / no information); not_compared; dismissed: the reviewer marked it not a problem.
              * @enum {string}
              */
-            group: "clouded" | "not_verified" | "could_not_compare" | "right" | "not_compared" | "dismissed";
+            group: "clouded" | "vendor_confirm" | "right" | "info" | "not_compared" | "dismissed";
             /**
              * Proof
              * @description Clouded items: the check that proved it, in plain words.
              */
             proof?: string | null;
+            /**
+             * Question
+             * @description vendor_confirm: the one question to the vendor, written by code (shown after "Confirm: "): plain, cites the page and the values, never accuses, never says AI.
+             */
+            question?: string | null;
             /**
              * Reason
              * @description The other groups: why it is not clouded, in one line.
@@ -5073,16 +5114,17 @@ export interface components {
             how: string;
             /**
              * Method
-             * @description The rule or tool: same_item, gv_limits, vendor_sum, printed_vs_printed, newest_round, prototype_prints_it, legend, sharper_read, other_trades_tags, out_of_scope.
+             * @description The rule or tool: same_item, gv_limits, vendor_sum, printed_vs_printed, newest_round, prototype_prints_it, legend, sharper_read, other_trades_tags, out_of_scope; escalation_<step> when the full check's escalation settled it (#1619).
              */
             method: string;
             outcome: components["schemas"]["ChatSettledOutcome"];
             /**
              * Was
+             * @description check: it was Your decision; different: a Wrong code could not prove, settled Right by the escalation (#1619).
              * @default check
-             * @constant
+             * @enum {string}
              */
-            was: "check";
+            was: "check" | "different";
         };
         /** ChatFindingUpdateBlock */
         ChatFindingUpdateBlock: {

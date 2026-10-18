@@ -90,14 +90,15 @@ describe('products and the full check, without React', () => {
 
 describe('a full-check answer', () => {
   const findings = [
-    finding('w1', { item: 'Sink base width', status: 'different', inches: { architect: '37', vendor: '46', difference: '9' }, architect: '3\'-1"', vendor: '46"' }),
-    finding('w2', { item: 'Filler', category: 'cabinet', status: 'different' }),
-    finding('k1', { item: 'Island overhang', status: 'check' }),
+    // #1619: the server's groups: two Wrongs code proved, one question to the vendor.
+    finding('w1', { item: 'Sink base width', status: 'different', inches: { architect: '37', vendor: '46', difference: '9' }, architect: '3\'-1"', vendor: '46"', proof: { group: 'clouded' } }),
+    finding('w2', { item: 'Filler', category: 'cabinet', status: 'different', proof: { group: 'clouded' } }),
+    finding('k1', { item: 'Island overhang', status: 'check', proof: { group: 'vendor_confirm', question: 'The architect prints no size for the island overhang. Confirm 1" on page 3 fits the space on site.' } }),
     finding('r1', { item: 'Vanity top depth', status: 'same', architect: '22"', vendor: '22"' }),
     finding('r2', { item: 'Sink model', category: 'other', status: 'same', source: 'brand_prototype', architect: 'K-1', vendor: 'K-1' }),
   ];
 
-  it('follows the reviewer’s path: summary, the numbers, the cloud drawing, What’s wrong, Your decision, Right (folded), How this was checked', async () => {
+  it('follows the reviewer’s path: summary, the numbers, the cloud drawing, What’s wrong, Vendor to confirm, Right (folded), How this was checked', async () => {
     const user = userEvent.setup();
     render(
       <AssistantMessage
@@ -116,14 +117,14 @@ describe('a full-check answer', () => {
     }
     // 1. The summary: a code headline over the answer's own words.
     const summary = within(node).getByRole('region', { name: 'Summary' });
-    expect(summary.querySelector('[data-slot="chat-summary-headline"]')?.textContent).toBe('2 wrong on the vendor’s drawings, 1 needs your decision.');
+    expect(summary.querySelector('[data-slot="chat-summary-headline"]')?.textContent).toBe('2 wrong on the vendor’s drawings, 1 for the vendor to confirm.');
     expect(within(summary).getByText('Two values are wrong; one to check.')).toBeTruthy();
     expect(within(summary).getByText('Full check · Countertops + Cabinets')).toBeTruthy();
 
     // 2. The three numbers, pages and accuracy: each once on the screen.
     const kpis = node.querySelector<HTMLElement>('[data-slot="chat-kpis"]')!;
     expect([...kpis.querySelectorAll<HTMLElement>('[data-kpi]')].map((tile) => `${tile.dataset.kpi}:${tile.textContent}`)).toEqual([
-      'different:Wrong2Send back to the vendor', 'check:Your decision1Listed with the reason', 'same:Right2Matches the drawings',
+      'different:Wrong2Proved by code, clouded red', 'check:Vendor to confirm1One question each, in amber', 'same:Right2Matches the drawings',
       'pages:Pages checked2/22 of 2 pages compared · 0 not comparable · 0 not opened', 'accuracy:Accuracy84%',
     ]);
     expect(node.querySelectorAll('[data-slot="chat-accuracy"]')).toHaveLength(1);
@@ -144,17 +145,21 @@ describe('a full-check answer', () => {
     expect(node.querySelector('[data-slot="chat-files"]')).toBeNull();
     expect(within(node).getByRole('button', { name: 'Download Excel (CSV)' })).toBeTruthy();
 
-    // 4-6. What's wrong and Your decision open; Right folded.
+    // 4-6. What's wrong and Vendor to confirm open; Right folded. The amber row shows the question
+    // that goes to the vendor, not a question for the reviewer.
     const ids = () => [...node.querySelectorAll<HTMLElement>('[data-slot="chat-finding-row"]')].map((row) => row.dataset.id);
     expect(ids()).toEqual(['w1', 'w2', 'k1']);
+    expect(node.querySelector('[data-slot="chat-findings-check"] h3')?.textContent).toBe('Vendor to confirm1');
+    expect(node.querySelector('[data-id="k1"] [data-slot="chat-finding-question"]')?.textContent).toBe('Confirm: The architect prints no size for the island overhang. Confirm 1" on page 3 fits the space on site.');
+    expect(node.textContent).not.toMatch(/Your call|your decision|check before sending/i);
     await user.click(within(node).getByRole('button', { name: /^Right\s*2/ }));
     expect(ids()).toEqual(['w1', 'w2', 'k1', 'r1', 'r2']);
 
     // A number jumps to its section.
     const scrolled: string[] = [];
     Element.prototype.scrollIntoView = function (this: Element) { scrolled.push(this.textContent ?? ''); } as typeof Element.prototype.scrollIntoView;
-    await user.click(within(kpis).getByRole('button', { name: 'Your decision: 1. Go to them' }));
-    expect(scrolled[0]).toMatch(/^Your decision/);
+    await user.click(within(kpis).getByRole('button', { name: 'Vendor to confirm: 1. Go to them' }));
+    expect(scrolled[0]).toMatch(/^Vendor to confirm/);
   });
 
   it('never labels the vendor’s own string or span “Architect” (#1581)', () => {
@@ -174,20 +179,24 @@ describe('a full-check answer', () => {
   it('leads with a drawing ready to download, counted by what code proved, decisions optional (#1581)', () => {
     const proved = [
       finding('w1', { item: 'Sink base width', status: 'different', proof: { group: 'clouded', should_be: '37" (architect)', proof: 'Printed at both spots, read by code' } }),
-      finding('w2', { item: 'Filler', status: 'different', proof: { group: 'not_verified', should_be: '2" (GV rule)', reason: 'Only AI readings back it.' } }),
-      finding('k1', { item: 'Island overhang', status: 'check', proof: { group: 'could_not_compare', reason: 'the architect prints no size here' } }),
+      finding('w2', { item: 'Filler', status: 'different', proof: { group: 'vendor_confirm', should_be: '2" (GV rule)', reason: 'Not clouded.', question: 'Page 2 shows 3" for the filler; GV’s standard gives 2". Confirm the size you will build.' } }),
+      finding('k1', { item: 'Island overhang', status: 'check', proof: { group: 'vendor_confirm', reason: 'the architect prints no size here', question: 'The architect prints no size for the island overhang. Confirm 1" on page 3 fits the space on site.' } }),
       finding('r1', { item: 'Vanity top depth', status: 'same', proof: { group: 'right' } }),
     ];
     render(<AssistantMessage message={answer({ findings: proved, files: [CLOUD, REPORT] })} chatId="c-1" models={[OPUS]} fullCheck decide={vi.fn()} />);
     const cloud = within(screen.getByRole('article', { name: 'Answer' })).getByRole('region', { name: 'Cloud drawing' });
     expect(cloud.textContent).not.toMatch(/draft|signed review/i);
-    expect(cloud.querySelector('[data-slot="chat-cloud-counts"]')?.textContent).toBe('1 clouded, proved by code1 not verified by code1 could not compare');
+    expect(cloud.querySelector('[data-slot="chat-cloud-counts"]')?.textContent).toBe('1 clouded, proved by code2 for the vendor to confirm');
+    // An amber item offers "Make it Wrong" (the Agree route) instead of Agree; a red one keeps Agree.
+    const node = screen.getByRole('article', { name: 'Answer' });
+    expect(within(node.querySelector<HTMLElement>('[data-id="k1"]')!).getByRole('button', { name: 'Make it Wrong' })).toBeTruthy();
+    expect(within(node.querySelector<HTMLElement>('[data-id="w1"]')!).getByRole('button', { name: 'Agree' })).toBeTruthy();
     // Download is the first and main action, before any decision.
     const actions = [...cloud.querySelectorAll<HTMLElement>('a, button')].map((el) => el.getAttribute('aria-label') ?? el.textContent);
     expect(actions[1]).toBe('Download vendor-clouded.pdf');
     expect(cloud.querySelector('[data-slot="chat-cloud-download"]')?.className).toContain('bg-primary');
     expect(cloud.querySelector('[data-slot="chat-cloud-update"]')).toBeNull();
-    expect(cloud.querySelector('[data-slot="chat-cloud-review"]')?.textContent).toContain('0 of 3 decided · optional');
+    expect(cloud.querySelector('[data-slot="chat-cloud-review"]')?.textContent).toContain('0 of 3 overridden · optional');
   });
 
   it('is still a full check after a reload, when the saved question has no mode (#1508)', () => {
@@ -201,10 +210,10 @@ describe('a full-check answer', () => {
     expect(fullCheckFiles([markup]).cloud).toBe(markup);
   });
 
-  it('says "Nothing wrong" and leads with Your decision when nothing is wrong', () => {
+  it('says "Nothing proved wrong" and leads with Vendor to confirm when nothing is wrong', () => {
     render(<AssistantMessage message={answer({ findings: findings.filter((item) => item.status !== 'different') })} chatId="c-1" models={[OPUS]} fullCheck />);
     const node = screen.getByRole('article', { name: 'Answer' });
-    expect(node.querySelector('[data-slot="chat-summary-headline"]')?.textContent).toBe('Nothing wrong on the vendor’s drawings, 1 needs your decision.');
+    expect(node.querySelector('[data-slot="chat-summary-headline"]')?.textContent).toBe('Nothing proved wrong on the vendor’s drawings, 1 for the vendor to confirm.');
     expect(node.querySelector('[data-slot="chat-findings-different"]')).toBeNull();
     expect(within(node).getByRole('button', { name: 'Wrong: 0. Go to them' }).hasAttribute('disabled')).toBe(true);
   });
@@ -244,11 +253,11 @@ describe('a full-check answer', () => {
     );
     const node = screen.getByRole('article', { name: 'Answer' });
     const review = await waitFor(() => { const found = node.querySelector<HTMLElement>('[data-slot="chat-cloud-review"]'); expect(found).toBeTruthy(); return found!; });
-    expect(review.textContent).toContain('1 of 3 decided');
+    expect(review.textContent).toContain('1 of 3 overridden');
     // Optimistic: the count moves at once.
     await user.click(within(node.querySelector<HTMLElement>('[data-id="w2"]')!).getByRole('button', { name: 'Agree' }));
     await user.click(within(node.querySelector<HTMLElement>('[data-id="k1"]')!).getByRole('button', { name: 'Not a problem' }));
-    await waitFor(() => expect(node.querySelector('[data-slot="chat-cloud-review"]')?.textContent).toContain('3 of 3 decided · reviewed by anant'));
+    await waitFor(() => expect(node.querySelector('[data-slot="chat-cloud-review"]')?.textContent).toContain('3 of 3 overridden · reviewed by anant'));
     expect(decide).toHaveBeenCalledWith('msg-1', 'k1', 'not_a_problem');
 
     await user.click(within(node).getByRole('button', { name: 'Update cloud drawing' }));
@@ -266,7 +275,7 @@ describe('a full-check answer', () => {
     await user.click(agree);
     await waitFor(() => expect(within(node).getByRole('alert').textContent).toBe('Your answer was not saved. Try again.'));
     expect(agree.getAttribute('aria-pressed')).toBe('false');
-    expect(node.querySelector('[data-slot="chat-cloud-review"]')?.textContent).toContain('0 of 3 decided');
+    expect(node.querySelector('[data-slot="chat-cloud-review"]')?.textContent).toContain('0 of 3 overridden');
   });
 
   it('the question’s bubble names the full check, its products and effort', () => {

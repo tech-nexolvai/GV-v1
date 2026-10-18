@@ -320,7 +320,7 @@ def _decision_question(finding: Mapping[str, Any]) -> str | None:
         )
     if reason == "measures_something_else":
         return (
-            f"Confirm what {thing} measures: the architect prints {architect}{where}, page {page} "
+            f"What does {thing} measure? The architect prints {architect}{where}; page {page} "
             f"shows {_short(finding.get('vendor'), 60)}. Confirm both run between the same "
             "points, and the finished size."
         )
@@ -359,15 +359,15 @@ def _decision_question(finding: Mapping[str, Any]) -> str | None:
                 f"{thing}; page {page} shows {shows or 'none'}. Confirm the layout."
             )
         return (
-            f"Confirm {thing} on page {page} follows the architect's drawing{where}: the "
-            f"architect shows {_short(finding.get('architect'), 60)}; page {page} shows "
-            f"{_short(finding.get('vendor'), 60)}."
+            f"The architect shows {_short(finding.get('architect'), 60)}{where} for {thing}; "
+            f"page {page} shows {_short(finding.get('vendor'), 60)}. Confirm the layout follows "
+            "the architect's drawing."
         )
     if not architect and not vendor:
         return None
     return (
-        f"Confirm {thing} on page {page}: page {page} shows {vendor or 'nothing'}; the architect's "
-        f"drawing{where} shows {architect or 'nothing'}."
+        f"Page {page} shows {vendor or 'nothing'} for {thing}; the architect's drawing{where} "
+        f"shows {architect or 'nothing'}. Confirm which is intended."
     )
 
 
@@ -459,6 +459,10 @@ def question_of(finding: Mapping[str, Any]) -> str | None:
         return asked
     page = _page(finding)
     plain = _clean(
-        f"Confirm {_thing(finding.get('item'))} on page {page}: print the size you will build."
+        f"Print the size of {_thing(finding.get('item'))} you will build on page {page}."
     )
-    return plain if writes_well(plain) else f"Confirm the item on page {page}."
+    return (
+        plain
+        if writes_well(plain)
+        else f"Print the size you will build for the item on page {page}."
+    )

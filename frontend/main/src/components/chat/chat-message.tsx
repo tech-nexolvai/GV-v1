@@ -15,7 +15,7 @@ import { chatPaths, type ChatEffort, type ChatFile, type ChatFinding, type ChatF
 import { coverageCounts, findingCounts, isNarrowAnswer, isShortAnswer, NO_FILTER, sectionOrder, type FindingFilter } from '@/lib/chat-findings';
 import { fullCheckBubble, fullCheckFiles, previewPage, productsWords, withoutCodeNote } from '@/lib/chat-full-check';
 import { useReducedMotion } from '@/lib/chat-motion';
-import { proofCounts } from '@/lib/chat-proof';
+import { asShown, proofCounts } from '@/lib/chat-proof';
 import { EFFORT_WORDS } from '@/lib/chat-settings';
 import { downloadFile, downloadFindingsCsv, markupFailureWords } from '@/lib/chat-exports';
 import { hasTrust, roundCounts } from '@/lib/chat-trust';
@@ -335,11 +335,8 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
   const blocks = shownBlocks(message);
   const { items: allItems } = answerItems(blocks, Boolean(message.tasks?.length));
   const items = short ? allItems.filter((item) => item.kind === 'text') : allItems;
-  const counts = findingCounts(findings);
   // #1522: a narrow answer (a few pages) shows no whole-set panels: no page grid, no coverage, no ledger.
   const narrow = isNarrowAnswer(message, fullCheck);
-  // The viewer's arrows step through the findings in the order the sections show them.
-  const ordered = sectionOrder(findings, filter);
   const allFiles = [...message.files, ...madeFiles.filter((made) => !message.files.some((file) => file.id === made.id))];
   const made = fullCheck ? fullCheckFiles(allFiles) : { cloud: null, report: null, rest: allFiles };
   const files = made.rest;
@@ -369,6 +366,13 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
   const [decideFailed, setDecideFailed] = useState<string | null>(null);
   const [decisionsOff, setDecisionsOff] = useState(false);
   const decisionOf = (finding: ChatFinding): FindingDecision | null => decisions[finding.id] ?? finding.decision ?? null;
+  // #1619: a finished full check shows each item where its cloud drawing puts it (Wrong = proved
+  // by code, Vendor to confirm = a question to the vendor, Right), the reviewer's newest click laid over.
+  const vendorView = fullCheck && !running;
+  const shown = vendorView ? findings.map((finding) => asShown(finding, decisionOf(finding))) : findings;
+  const counts = findingCounts(shown);
+  // The viewer's arrows step through the findings in the order the sections show them.
+  const ordered = sectionOrder(shown, filter);
   const decisionFor = finished && !decisionsOff && decide && messageId ? (finding: ChatFinding): DecisionProps => ({
     decision: decisionOf(finding)?.decision ?? null,
     onDecide: (decision) => {
@@ -459,7 +463,8 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
   };
   const sections = findings.length > 0 ? (
     <FindingsSections
-      findings={findings}
+      findings={shown}
+      vendorView={vendorView}
       filter={filter}
       onFilter={setFilter}
       onOpen={(finding) => setViewing(finding.id)}
@@ -504,8 +509,8 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
           <section data-slot="chat-summary" aria-label="Summary" className="grid max-w-3xl min-w-0 gap-2.5">
             <p className="flex items-center gap-2 text-xs font-medium text-muted-foreground"><GVSpark size={16} />{['Full check', productsWords(message.products)].filter(Boolean).join(' · ')}</p>
             <h2 data-slot="chat-summary-headline" className="text-xl leading-snug font-semibold tracking-[-0.015em]">
-              {counts.different > 0 ? <span className="text-outcome-fail-fg">{counts.different} wrong</span> : 'Nothing wrong'} on the vendor’s drawings
-              {counts.check > 0 ? `, ${counts.check} ${counts.check === 1 ? 'needs' : 'need'} your decision.` : '.'}
+              {counts.different > 0 ? <span className="text-outcome-fail-fg">{counts.different} wrong</span> : 'Nothing proved wrong'} on the vendor’s drawings
+              {counts.check > 0 ? <>, <span className="text-outcome-review-fg">{counts.check} for the vendor to confirm</span>.</> : '.'}
             </h2>
             {textItems.map((item) => {
               const block = blocks[item.index] as Extract<ViewBlock, { type: 'text' }>;
