@@ -64,6 +64,7 @@ from pathlib import Path
 from time import monotonic
 from typing import Any, Final, Literal
 
+from app.review.assistant.classification import missing_on_vendor
 from app.review.assistant.finding_checks import (
     arithmetic_off_by,
     claim_value,
@@ -885,6 +886,56 @@ def _merge_how(duplicate: Mapping[str, Any], primary: Mapping[str, Any]) -> str:
     return f"the same item as {primary['id']} on {where}; it is decided there once."
 
 
+#: Words that say where a thing is, not what it is ("outlet CL height AFF": the thing is
+#: "outlet").
+_PLACE_WORDS: Final = re.compile(
+    r"\b(?:cl|c/l|centre|center|centerline|centreline|height|aff|from|to|above|below|width|"
+    r"depth|distance|offset|spacing|left|right|edge|floor|end|top|bottom|location|position)\b",
+    re.IGNORECASE,
+)
+
+
+def _missing_thing(finding: Mapping[str, Any]) -> str:
+    """What a missing item is, without its area and the words that place it ("outlet")."""
+    item = str(finding.get("item") or "")
+    item = item.split(":", 1)[1] if ":" in item else item
+    found = _PLACE_WORDS.search(item)
+    thing = item[: found.start()] if found else item
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", thing.lower()).split())
+
+
+def _place_words(finding: Mapping[str, Any]) -> str:
+    """The words of a missing item that place it ("CL height AFF")."""
+    item = str(finding.get("item") or "")
+    item = item.split(":", 1)[1] if ":" in item else item
+    found = _PLACE_WORDS.search(item)
+    return " ".join(item[found.start() :].split()) if found else ""
+
+
+def missing_together(
+    primary: Mapping[str, Any], others: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
+    """The item that carries one missing thing: named by the thing, with every architect value
+    that places it ("1' - 6\" (CL height AFF); 1' - 2\" (CL from left edge))"."""
+    values = []
+    for finding in [primary, *others]:
+        where = _place_words(finding)
+        value = " ".join(str(finding.get("architect") or "").split())
+        values.append(f"{value} ({where})" if where else value)
+    area = (
+        str(primary.get("item") or "").split(":", 1)[0] if ":" in str(primary.get("item")) else ""
+    )
+    thing = _missing_thing(primary)
+    inches = primary.get("inches")
+    return {
+        **primary,
+        "item": f"{area}: {thing}" if area else thing,
+        "architect": "; ".join(dict.fromkeys(values)),
+        # Several values now: none of them alone is the architect's size.
+        "inches": {**inches, "architect": None} if isinstance(inches, Mapping) else inches,
+    }
+
+
 def _same_value(d: Mapping[str, Any], p: Mapping[str, Any]) -> bool:
     """`d` and `p` are about one size: the same main vendor value (at least 6") and no clash of
     kind (width against height). An item whose architect prints nothing also matches an item that
@@ -954,6 +1005,23 @@ def _merge(
         primary = _choose_primary([finding, *others])
         if primary is not finding:
             fold(finding, primary)
+
+    # 3. One thing the vendor does not show, reported once per dimension that places it (the
+    # architect's outlet at a height and at a distance from the end): one item (#1648).
+    missing: dict[tuple[Any, str, str], list[dict[str, Any]]] = {}
+    for finding in findings:
+        if finding.get("status") != "check" or finding.get("record_id"):
+            continue
+        if str(finding["id"]) in absorbed or not missing_on_vendor(finding):
+            continue
+        thing = _missing_thing(finding)
+        if thing:
+            missing.setdefault((finding.get("page"), _area(finding, areas), thing), []).append(
+                finding
+            )
+    for group in missing.values():
+        for finding in group[1:]:
+            fold(finding, group[0])
 
     # A primary that was itself folded hands its copies on, to the item that carries it.
     def carrier(finding_id: str) -> str:
@@ -1075,6 +1143,15 @@ def resolve(findings: Sequence[Mapping[str, Any]], ctx: ResolverContext) -> Reso
     for primary_id, entries_also in also.items():
         primary = changed.get(primary_id) or dict(by_id[primary_id])
         primary["also_on"] = [*(primary.get("also_on") or []), *entries_also]
+        together = [
+            by_id[str(e["finding_id"])]
+            for e in entries_also
+            if missing_on_vendor(by_id.get(str(e["finding_id"]), {}))
+            and missing_on_vendor(primary)
+            and _missing_thing(by_id[str(e["finding_id"])]) == _missing_thing(primary)
+        ]
+        if together:
+            primary = missing_together(primary, together)
         changed[primary_id] = primary
 
     kept: list[tuple[dict[str, Any], KeepReason, str | None]] = []
