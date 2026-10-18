@@ -166,6 +166,100 @@ def test_one_missing_thing_reported_per_dimension_is_one_item_with_a_clear_reaso
     assert "could not confirm the vendor's sheets leave it out" in (found.why or "")
 
 
+def _placed(fid: str, item: str, value: str, label: str, box: list[float], **more: Any) -> Any:
+    """A missing row with code's architect label and the vendor spot the reading points at."""
+    return finding(
+        fid,
+        item=item,
+        architect=value,
+        page=6,
+        keep_reason="other",
+        vendor_box={"page": 6, "x0": 400.0, "y0": 500.0, "x1": 600.0, "y1": 600.0},
+        dims={"architect": {"id": label, "page": 6, "text": value, "box": box}},
+        **more,
+    )
+
+
+def test_a_missing_thing_joins_whatever_the_reading_words_it() -> None:
+    """#1671: a paid run wrote "outlet not shown on the vendor" (not starting "not shown"), so the
+    join never fired. Absence is found anywhere in the vendor's words now."""
+    absent = {"vendor": "outlet not shown on the vendor", "page": 6, "keep_reason": "other"}
+    height = finding("F1", item="Lobby: duplex outlet height AFF", architect="1' - 4\"", **absent)
+    offset = finding(
+        "F2", item="Lobby: duplex outlet position from left edge", architect="1' - 1\"", **absent
+    )
+    result = resolve([height, offset], ResolverContext(areas=AREAS))
+    assert set(result.absorbed) == {"F2"}
+    carried = by_id(result)["F1"]
+    assert carried["item"] == "Lobby: duplex outlet"
+    assert carried["architect"] == "1' - 4\" (height AFF); 1' - 1\" (position from left edge)"
+
+
+def test_code_facts_join_one_missing_thing_named_two_ways() -> None:
+    """Two rows name one outlet differently; code's facts say it is one thing: the same vendor
+    spot, and the architect's height (written up the page) and offset (written across) sit close
+    together on the architect's drawing."""
+    vendor = {"vendor": "not drawn on the vendor's elevation"}
+    height = _placed(
+        "F1", "Lobby: duplex outlet height AFF", "1' - 4\"", "D2", [384, 188, 392, 208], **vendor
+    )
+    offset = _placed(
+        "F2", "Lobby: receptacle from left edge", "1' - 1\"", "D3", [405, 213, 425, 221], **vendor
+    )
+    result = resolve([height, offset], ResolverContext(areas=AREAS))
+    assert set(result.absorbed) == {"F2"}
+    carried = by_id(result)["F1"]
+    assert carried["architect"] == "1' - 4\" (height AFF); 1' - 1\" (from left edge)"
+    assert carried["inches"]["architect"] is None
+
+
+@pytest.mark.parametrize(
+    ("second_box", "second_label_box", "why"),
+    [
+        ({"x0": 50.0, "y0": 50.0, "x1": 90.0, "y1": 90.0}, [405, 213, 425, 221], "another spot"),
+        (None, [405, 188, 413, 208], "both dimensions written the same way"),
+        (None, [600, 213, 620, 221], "the architect's dimensions far apart"),
+    ],
+)
+def test_different_missing_things_stay_apart(
+    second_box: dict[str, float] | None, second_label_box: list[float], why: str
+) -> None:
+    vendor = {"vendor": "not shown on the vendor"}
+    first = _placed(
+        "F1", "Lobby: outlet height AFF", "1' - 4\"", "D2", [384, 188, 392, 208], **vendor
+    )
+    second = _placed(
+        "F2", "Lobby: shelf from left edge", "2' - 0\"", "D3", second_label_box, **vendor
+    )
+    if second_box is not None:
+        second["vendor_box"] = {"page": 6, **second_box}
+    result = resolve([first, second], ResolverContext(areas=AREAS))
+    assert not result.absorbed, why
+
+
+def test_the_vendor_says_it_is_not_there_anywhere_in_its_words() -> None:
+    from app.review.assistant.classification import vendor_absent
+
+    for words in (
+        "not shown on the vendor",
+        "outlet not shown on the vendor",
+        "GFI outlet not shown",
+        "no outlet drawn",
+        "not on the vendor's sheets",
+        "type and finish not noted",
+    ):
+        assert vendor_absent(words), words
+    for words in (
+        "not read",
+        "under GV's markup, not legible",
+        "EQ (no number)",
+        "not a vendor sheet; prototype only",
+        '36" shown; outlet not drawn',
+        '48 3/4"',
+    ):
+        assert not vendor_absent(words), words
+
+
 def test_different_areas_and_recorded_differences_are_never_folded() -> None:
     here = finding("F1", page=2)
     there = finding("F2", page=7)

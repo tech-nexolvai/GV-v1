@@ -157,11 +157,41 @@ VENDOR_ABSENT: Final = re.compile(
 )
 
 
+#: The vendor's side says the item is not there, anywhere in its words ("outlet not shown on the
+#: vendor", "no outlet drawn", "not on the vendor's sheets"), #1671.
+_ABSENT_WORDS: Final = re.compile(
+    r"\bnot\s+(?:shown|drawn|dimensioned|indicated|included|provided|found|seen|noted|located)\b"
+    r"|\bnot\s+on\s+(?:the\s+)?vendor|\b(?:missing|absent|omitted)\b"
+    r"|\bno\s+(?:[\w/-]+\s+){0,2}(?:shown|drawn|dimension(?:ed)?|indicated|noted?)\b",
+    re.IGNORECASE,
+)
+#: Words that say the vendor's value could not be read: no absence.
+_UNREAD_WORDS: Final = re.compile(
+    r"\b(?:unread\w*|illegible|unclear|blurr\w*|covered|cut\s+off)\b"
+    r"|\bnot\s+(?:read|legible|readable|clear)\b|\bcan(?:no|')?t\s+(?:be\s+)?read\b"
+    r"|\bunder\s+(?:gv|the|a)\b[^.;]*\bmark",
+    re.IGNORECASE,
+)
+
+
+def vendor_absent(text: object) -> bool:
+    """Whether the vendor's side says the item is not there: starting so (`VENDOR_ABSENT`), or
+    saying so anywhere with no number of its own and no words that it could not be read."""
+    words = _flat(text)
+    if VENDOR_ABSENT.match(words):
+        return True
+    return (
+        bool(_ABSENT_WORDS.search(words))
+        and not _UNREAD_WORDS.search(words)
+        and not re.search(r"\d", words)
+    )
+
+
 def missing_on_vendor(finding: Mapping[str, Any]) -> bool:
     """The architect shows something and the vendor's side says it is not there."""
     architect = _flat(finding.get("architect"))
     return (
-        bool(VENDOR_ABSENT.match(_flat(finding.get("vendor"))))
+        vendor_absent(finding.get("vendor"))
         and bool(architect)
         and not (VENDOR_ABSENT.match(architect))
     )
