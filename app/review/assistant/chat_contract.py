@@ -98,6 +98,7 @@ type ChatStepTool = Literal[
     "zoom",
     "read_under_markup",
     "remember",
+    "drawing_facts",
 ]
 type ChatIntent = Literal[
     "fact",

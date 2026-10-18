@@ -87,6 +87,7 @@ __all__ = [
     "HELPER_FOOTER_MARK",
     "HELPER_SYSTEM_PROMPT",
     "HELPER_TOOLS",
+    "LEAD_LOADED",
     "LEAD_SYSTEM_PROMPT",
     "LEAD_TOOLS",
     "MAX_AGENTS",
@@ -201,7 +202,8 @@ claim it yourself.
 
 Scale the work to the question: a fact, 1-3 tool calls; one item or one page pair, you alone, \
 only those pages; the whole set, helpers by page pair, and set_coverage for every page. The tool \
-calls of one reply run at the same time, so ask for everything you need together. A helper's \
+calls of one reply run at the same time, so ask for everything you need together. Other \
+tools load when your tool search finds them. A helper's \
 finding is a lead: verify it on the drawing before you state it (update_finding or \
 drop_finding), unless the app lists it as backed by a second read or a code check.
 
@@ -723,30 +725,91 @@ READ_UNDER_MARKUP: Final[Mapping[str, Any]] = {
         },
     },
 }
-#: The lead's tools, in a fixed order (the order is part of the cached, replayed prefix).
-LEAD_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
-    _BASH,
-    _VIEW,
-    _ZOOM,
-    _CREATE,
-    _REPLACE,
-    _PRESENT,
-    _TASK_CREATE,
-    _TASK_UPDATE,
-    _AGENT,
-    _RESULTS,
-    REPORT_FINDING,
-    UPDATE_FINDING,
-    DROP_FINDING,
-    SET_COVERAGE,
-    DISMISS_RECORDED,
-    CITE,
-    *LEDGER_TOOLS,
-    COMPARE_ROUNDS,
-    VERIFY_VALUE,
-    MEASURE_ON_DRAWING,
-    READ_UNDER_MARKUP,
-    REMEMBER,
+#: `drawing_facts`: code's facts about a page from the set pack, $0, no AI.
+DRAWING_FACTS: Final[Mapping[str, Any]] = {
+    "name": "drawing_facts",
+    "description": (
+        "Read code's facts about one page, computed by the set pack before you started ($0, no "
+        "AI): each drawing's scale measured from its own printed dimensions (printed scale notes "
+        "are often wrong on GV's resized drawings), the architect and vendor dimensions code "
+        "paired by drawn position (same or different, never paired by value), and the notes "
+        "and tags each drawing prints, with the architect's tags the vendor's drawing does not "
+        "print. Use it when you start on a page, to begin from what code already found, and to "
+        "check that no architect note or tag is missed. Returns plain lines per fact (or says "
+        "code has none for the page). "
+        'Example: {"page": 13, "facts": ["notes", "scale"]}'
+    ),
+    "input_schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["page"],
+        "properties": {
+            "page": {"type": "integer", "minimum": 1, "description": "Page (from 1)"},
+            "facts": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["scale", "pairs", "notes"]},
+                "minItems": 1,
+                "description": "Which facts (default all): scale, pairs, notes (and tags)",
+            },
+            "file": {
+                "type": "string",
+                "description": "The upload's file name, when the set has more than one",
+            },
+        },
+    },
+}
+#: The lead's tools that are always loaded (tool search, Anthropic's API only): the ones nearly
+#: every answer uses. Every other lead tool carries `defer_loading`: Anthropic sends it to the
+#: model only when the model's tool search finds it, so the lead's context holds about half the
+#: tool text and more tools fit. The OpenRouter route sends every tool loaded
+#: (`chat_request.call_params` drops the flag there).
+LEAD_LOADED: Final = frozenset(
+    {
+        "bash_tool",
+        "view",
+        "zoom",
+        "Agent",
+        "report_finding",
+        "update_finding",
+        "drop_finding",
+        "set_coverage",
+    }
+)
+
+
+def _deferred(tool: Mapping[str, Any]) -> Mapping[str, Any]:
+    return tool if tool["name"] in LEAD_LOADED else {**tool, "defer_loading": True}
+
+
+#: The lead's tools, in a fixed order (the order is part of the cached, replayed prefix; each
+#: chat keeps the list it started with, `chat_harness`).
+LEAD_TOOLS: Final[tuple[Mapping[str, Any], ...]] = tuple(
+    _deferred(tool)
+    for tool in (
+        _BASH,
+        _VIEW,
+        _ZOOM,
+        _CREATE,
+        _REPLACE,
+        _PRESENT,
+        _TASK_CREATE,
+        _TASK_UPDATE,
+        _AGENT,
+        _RESULTS,
+        REPORT_FINDING,
+        UPDATE_FINDING,
+        DROP_FINDING,
+        SET_COVERAGE,
+        DISMISS_RECORDED,
+        CITE,
+        *LEDGER_TOOLS,
+        COMPARE_ROUNDS,
+        VERIFY_VALUE,
+        MEASURE_ON_DRAWING,
+        READ_UNDER_MARKUP,
+        REMEMBER,
+        DRAWING_FACTS,
+    )
 )
 HELPER_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     _BASH,
@@ -776,6 +839,7 @@ _DEFAULT_LABELS: Final[Mapping[str, str]] = {
     "compare_rounds": "Compared two rounds",
     "verify_value": "Checked a printed value",
     "measure_on_drawing": "Measured on the drawing",
+    "drawing_facts": "Read code's facts",
     "read_under_markup": "Read under GV's markup",
     "remember": "Remembered for this drawing set",
 }
@@ -1237,6 +1301,40 @@ class ChatTools:
                 output=_shown("\n".join(lines)),
                 picture_id=ids[1],
                 seen=[seen],
+            ),
+        )
+
+    def drawing_facts(self, raw: object, step: dict[str, Any]) -> ToolResult:
+        """`drawing_facts {page, facts?, file?}`: code's facts from the set pack."""
+        started = monotonic()
+        try:
+            given = arguments(raw, frozenset({"page", "facts", "file"}), frozenset({"page"}))
+            facts = given.get("facts", ["scale", "pairs", "notes"])
+            if (
+                not isinstance(facts, list)
+                or not facts
+                or any(fact not in ("scale", "pairs", "notes") for fact in facts)
+            ):
+                raise SandboxRefused('facts must be a list of "scale", "pairs", "notes"')
+            name, page, _box, _label = self._crop_request(
+                {
+                    "page": given["page"],
+                    "box": {"x0": 0, "y0": 0, "x1": 1, "y1": 1},
+                    **({"file": given["file"]} if "file" in given else {}),
+                },
+                0,
+            )
+        except SandboxRefused as refused:
+            return _refused(step, started, str(refused).replace("crops[0].", ""))
+        module = import_module("app.review.assistant.drawing_facts")
+        text = module.page_facts(self.workspace.set_pack, name, page, facts)
+        # The facts quote the drawings' own text (values, notes, tags): fenced as data.
+        head, _, body = text.partition("\n")
+        fenced = f"{head}\n{fence(body, 'drawing_facts')}" if body else head
+        return ToolResult(
+            content=[{"type": "text", "text": fenced}],
+            step=_done(
+                step, started, ok=True, label=f"Read code's facts, page {page}", output=_shown(text)
             ),
         )
 

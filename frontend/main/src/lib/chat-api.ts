@@ -810,7 +810,8 @@ export type ChatTool =
   | 'measure_on_drawing'
   | 'zoom'
   | 'read_under_markup'
-  | 'remember';
+  | 'remember'
+  | 'drawing_facts';
 
 /** One tool the assistant used. `step_start` sends it without its output; `step_end` sends it whole. */
 export interface ChatStep {

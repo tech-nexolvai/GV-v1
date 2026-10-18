@@ -32,7 +32,13 @@ thinking on Anthropic's own API carries `block_binding: {prefix_mismatch_behavio
 (beta `thinking-binding-controls-2026-08-01`): a block that no longer matches is dropped instead of
 failing the whole call, and the reply's `input_transformations` say so (the engine logs them).
 
-**Prompt caching.** Three cache breakpoints: the last tool (so the tool list is cached), the system
+**Tool search (Anthropic's API).** The lead's rarer tools carry `defer_loading`
+(`chat_tools.LEAD_LOADED` are always loaded): the request starts its tools with Anthropic's tool
+search tool, and a deferred tool reaches the model only when its search finds it. The search runs
+inside Anthropic's API (its `server_tool_use` and `tool_search_tool_result` blocks are kept in the
+history as received). OpenRouter gets every tool loaded and no search tool.
+
+**Prompt caching.** Three cache breakpoints: the last loaded tool (so the tool list is cached), the system
 prompt, and the newest message's last block. Each turn re-sends the whole conversation unchanged,
 so everything before the newest message is read from the cache.
 
@@ -64,6 +70,7 @@ __all__ = [
     "LEAD_MAX_TOKENS",
     "MODELS",
     "OPENROUTER_BASE_URL",
+    "TOOL_SEARCH",
     "ChatModel",
     "ChoiceRefused",
     "Provider",
@@ -341,6 +348,14 @@ def _openrouter_routing() -> dict[str, object]:
     return routing()
 
 
+#: Anthropic's tool search (regex), sent first whenever a tool is deferred (`defer_loading`): the
+#: model finds a deferred tool by searching names and descriptions before it calls it.
+TOOL_SEARCH: Final[Mapping[str, str]] = {
+    "type": "tool_search_tool_regex_20251119",
+    "name": "tool_search_tool_regex",
+}
+
+
 def schema_note(schema: Mapping[str, Any]) -> str:
     """The system prompt's last line where the provider takes no `output_config.format`."""
     shape = json.dumps(schema, separators=(",", ":"), sort_keys=True)
@@ -369,8 +384,20 @@ def call_params(
     API it goes in `output_config.format`, so the reply is that JSON and nothing else; OpenRouter's
     route is not known to pass it through, so there the schema is added to the system prompt."""
     listed = [dict(tool) for tool in tools]
-    if listed:
-        listed[-1]["cache_control"] = dict(_EPHEMERAL)
+    if provider != "anthropic":
+        # Tool search is Anthropic's: every tool goes loaded elsewhere.
+        for tool in listed:
+            tool.pop("defer_loading", None)
+    elif any(tool.get("defer_loading") for tool in listed):
+        listed.insert(0, dict(TOOL_SEARCH))
+    # The tools' cache breakpoint: on the last tool always loaded (a deferred tool takes none).
+    loaded = [
+        n
+        for n, tool in enumerate(listed)
+        if "input_schema" in tool and not tool.get("defer_loading")
+    ]
+    if loaded:
+        listed[loaded[-1]]["cache_control"] = dict(_EPHEMERAL)
     if output_format is not None and provider != "anthropic":
         system = f"{system}\n\n{schema_note(output_format)}"
     params: dict[str, Any] = {
