@@ -42,6 +42,7 @@ from typing import Any, Final, Literal
 from app.review.assistant import classification, witness
 from app.review.assistant import full_check_advocate as advocate
 from app.review.assistant.chat_trust import inch_words
+from app.review.assistant.vendor_text import vendor_text
 
 __all__ = [
     "AI_ONLY_REASON",
@@ -49,6 +50,7 @@ __all__ = [
     "GROUP_WORDS",
     "KEEP_WORDS",
     "LEFT_CAPTIONS",
+    "NO_REQUIREMENT_REASON",
     "PAIRING_REASON",
     "RULE_LINE",
     "ProofGroup",
@@ -66,6 +68,7 @@ __all__ = [
     "scaled",
     "should_be",
     "should_be_value",
+    "stated_requirement",
     "unproved_reason",
     "vendor_own",
     "vendor_value",
@@ -93,6 +96,8 @@ _SCALED: Final = re.compile(
 )
 #: Why a Wrong item code read right is not clouded: nothing proves both numbers measure the same.
 PAIRING_REASON: Final = "Not clouded: code read both values, but what each measures is not proved."
+#: Why a GV rule result is not a comment to the vendor (#1622): no requirement it can act on.
+NO_REQUIREMENT_REASON: Final = "GV rule result without a stated requirement."
 #: Why a Wrong item only AI readings back is not clouded.
 AI_ONLY_REASON: Final = "Not clouded: code could not read both values at their spots."
 #: The full check's devil's advocate (`full_check_advocate`, #1611) signs its verdict so.
@@ -260,8 +265,23 @@ def code_proved(finding: Mapping[str, Any]) -> bool:
     return not needs_pairing(finding) or pairing_proved(finding)
 
 
+def stated_requirement(finding: Mapping[str, Any]) -> str | None:
+    """What the vendor's value should be, as the vendor may read it (#1622): the governing value
+    (`should_be_value`) when it holds a number and no internal words (`vendor_text`), else `None`
+    (a GV rule result with no stated requirement is never a numbered comment)."""
+    value = vendor_text(should_be_value(finding))
+    if not value:
+        return None
+    if any(ch.isdigit() for ch in value) or "text" in _witnesses(finding):
+        # A size, or a finish code read from the drawing's text (#1623).
+        return value
+    return None
+
+
 def unproved_reason(finding: Mapping[str, Any]) -> str:
     """Why a Wrong item is not clouded, in one plain line."""
+    if "rule" in _witnesses(finding) and stated_requirement(finding) is None:
+        return NO_REQUIREMENT_REASON
     verdict = _advocate(finding)
     if verdict is not None and verdict.get("result") == "objects" and verdict.get("note"):
         # The advocate's own reason ("Not proved: a blind second pick chose p23.D12, ...").
@@ -276,8 +296,12 @@ def _governing_known(finding: Mapping[str, Any], found: Sequence[str]) -> bool:
     the vendor's own parts, or code read the governing value as one size. A witness that backs
     only the vendor's side (millimetres and inches agreeing) is not enough on its own when the
     governing value is a sentence or a chain code cannot read as one size."""
-    if "rule" in found or _gv_limits(finding) is not None:
+    if _gv_limits(finding) is not None:
         return True
+    if "rule" in found:
+        # A GV rule result proves the vendor is wrong, but the vendor can act on it only when the
+        # requirement is stated (#1622): without one it is never a numbered comment.
+        return stated_requirement(finding) is not None
     if finding.get("source") == "vendor_arithmetic" and "arithmetic" in found:
         return True
     if "text" in found:
@@ -292,7 +316,9 @@ def proof_group(finding: Mapping[str, Any]) -> ProofGroup:
     status = finding.get("status")
     decided = _decided(finding)
     if status in ("different", "check"):
-        if decided == "agree":
+        # Agreed = clouded, when the vendor can be told what it should be (#1622: a comment with
+        # no stated requirement is never sent).
+        if decided == "agree" and stated_requirement(finding) is not None:
             return "clouded"
         if decided == "not_a_problem":
             return "dismissed"
@@ -490,6 +516,9 @@ def proof_of(finding: Mapping[str, Any]) -> dict[str, Any]:
     reason: str | None = None
     if not_compared:
         reason = found.why
+        if unproved_reason(finding) == NO_REQUIREMENT_REASON:
+            # A GV rule result with nothing the vendor can act on (#1622).
+            reason = NO_REQUIREMENT_REASON
     elif group == "dismissed":
         reason = "The reviewer marked it not a problem."
     return {

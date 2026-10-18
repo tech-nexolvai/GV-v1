@@ -31,6 +31,7 @@ FILES = [
     "Vendor set - AI check report.pdf",
     "Vendor set - Not compared.pdf",
     "Vendor set - Not compared.xlsx",
+    "Vendor set - GV review package.zip",
 ]
 
 

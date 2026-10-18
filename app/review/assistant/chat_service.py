@@ -95,6 +95,7 @@ from app.review.assistant.chat_tools import (
 )
 from app.review.assistant.chat_unknowns import asks_for_the_rest, last_unknowns, work_list_note
 from app.review.assistant.full_check_plan import read_page_map
+from app.review.assistant.package_store import numbering
 from app.review.assistant.plan_check import (
     MAX_DOUBTS,
     answer_note,
@@ -110,6 +111,7 @@ from app.review.assistant.product_scope import (
     scoped_loader,
 )
 from app.review.assistant.sandbox import UPLOADS, ChatWorkspace, Sandbox, safe_file_name
+from app.review.assistant.send_package import PackageIdentity
 from app.review.assistant.sharpen import apply_sharpen
 from app.runs.rates import ModelRates
 
@@ -700,6 +702,8 @@ class MessageJob:
     """#1551: the task spec the reviewer corrected on the screen ("Understood as … Edit")."""
     unruled: tuple[str, ...] = ()
     """The products in scope with no published GV rule yet: the answer says so plainly."""
+    identity: PackageIdentity = field(default_factory=PackageIdentity)
+    """Who and what the full check's send-ready package is about (#1622)."""
 
 
 _NO_SANDBOX: Final = (
@@ -991,6 +995,8 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             drawn_helpers=job.drawn_helpers,
             roster=job.roster,
             pairing_proof=job.pairing_proof,
+            identity=job.identity,
+            numbering=numbering(job.factory, job.package_id, job.chat_id, run.message_id),
         ),
         provider=job.provider,
         tools=ChatTools(

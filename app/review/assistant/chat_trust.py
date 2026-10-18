@@ -215,6 +215,13 @@ def recorded_from(document: Mapping[str, Any] | None) -> Recorded:
                         "architect": item.get("needed_overall"),
                         "vendor": item.get("printed_overall"),
                         "why": item.get("difference") and f"Difference {item['difference']}",
+                        # The width rule's own comparison, for its requirement in plain words
+                        # when no needed overall is recorded (#1622, `vendor_text`).
+                        "comparison": (
+                            (item.get("rule") or {}).get("comparison")
+                            if isinstance(item.get("rule"), Mapping)
+                            else None
+                        ),
                     }
                 )
         for item in records.get("other_checks") or []:
@@ -249,6 +256,7 @@ def recorded_from(document: Mapping[str, Any] | None) -> Recorded:
                         "architect": item.get("comparison"),
                         "vendor": "; ".join(values) or None,
                         "why": item.get("reason"),
+                        "comparison": item.get("comparison"),
                     }
                 )
     for sheet in document.get("ai_page_review") or []:

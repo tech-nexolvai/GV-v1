@@ -7,7 +7,7 @@ import { ActivityRow, TaskChecklist } from '@/components/chat/chat-activity';
 import { CoverageStrip } from '@/components/chat/chat-coverage';
 import { EvidenceViewer } from '@/components/chat/chat-evidence';
 import { FindingsSections, type DecisionProps } from '@/components/chat/chat-findings';
-import { FullCheckFiles, FullCheckProgress, ResultNumbers, type CloudReview } from '@/components/chat/chat-full-check';
+import { FullCheckFiles, FullCheckProgress, PackageCard, ResultNumbers, type CloudReview } from '@/components/chat/chat-full-check';
 import { ConfidenceLine, HowChecked } from '@/components/chat/chat-trust';
 import { ChatMarkdown } from '@/components/chat/chat-markdown';
 import { Collapse, CopyButton, GVSpark, Shimmer, Spark, Spinner, type SparkState } from '@/components/chat/chat-motion';
@@ -338,7 +338,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
   // #1522: a narrow answer (a few pages) shows no whole-set panels: no page grid, no coverage, no ledger.
   const narrow = isNarrowAnswer(message, fullCheck);
   const allFiles = [...message.files, ...madeFiles.filter((made) => !message.files.some((file) => file.id === made.id))];
-  const made = fullCheck ? fullCheckFiles(allFiles) : { cloud: null, report: null, notCompared: [], rest: allFiles };
+  const made = fullCheck ? fullCheckFiles(allFiles) : { cloud: null, report: null, notCompared: [], pkg: null, rest: allFiles };
   const files = made.rest;
   const messageId = message.id;
   const finished = !running && message.status === 'done' && findings.length > 0;
@@ -529,7 +529,9 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
           {/* PATH 4.2: the three numbers, pages and accuracy (each once). */}
           {(findings.length > 0 || coverage) && <ResultNumbers counts={counts} coverage={coverage} accuracy={message.accuracy} onPick={jumpTo} />}
           {/* PATH 4.3: the cloud drawing, the main output. */}
-          <FullCheckFiles cloud={made.cloud} report={made.report} notCompared={made.notCompared} chatId={chatId} page={previewPage(findings)} totalPages={coverage ? coverageCounts(coverage).total : null} counts={counts} proof={findings.length ? proofCounts(findings, decisionOf) : null} review={review} />
+          <FullCheckFiles cloud={made.cloud} report={made.report} notCompared={made.notCompared} chatId={chatId} page={previewPage(findings)} totalPages={coverage ? coverageCounts(coverage).total : null} counts={counts} proof={findings.length ? proofCounts(findings, decisionOf) : null} review={review} packaged={made.pkg !== null} />
+          {/* #1622: the send-ready package, right after the cloud drawing. */}
+          {made.pkg && <PackageCard pkg={made.pkg} chatId={chatId} action={message.review_action ?? null} hasReport={made.report !== null} hasNotCompared={made.notCompared.length > 0} />}
           {/* PATH 4.4 to 4.6: What's wrong, Right (folded), Nothing to compare (folded, #1619). */}
           {decideError}
           {sections}

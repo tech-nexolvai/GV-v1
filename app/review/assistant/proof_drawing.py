@@ -100,6 +100,7 @@ from app.review.assistant.proof import (
     vendor_own,
     vendor_value,
 )
+from app.review.assistant.vendor_text import vendor_text
 
 __all__ = [
     "GREEN",
@@ -109,9 +110,11 @@ __all__ = [
     "STAMP_WORDS",
     "ProofCounts",
     "contrast",
+    "item_words",
     "not_compared_pdf",
     "proof_markup_pdf",
     "stamp_line",
+    "tag",
 ]
 
 _log = logging.getLogger(__name__)
@@ -146,6 +149,15 @@ _SNAP_BUDGET_S: Final = 20.0
 _ROUND_KEY: Final = "_round_two"
 #: The small heading on each sheet with clouds.
 _SHEET_STAMP_SIZE: Final = 9.0
+#: The review result's colour on the cover (#1622): red to resubmit or rejected, dark amber as
+#: noted, green approved, grey when the check did not finish.
+_ACTION_COLOURS: Final[Mapping[str, Color]] = {
+    "revise_resubmit": _RED,
+    "rejected": _RED,
+    "approved_as_noted": Color(0.63, 0.29, 0.02),
+    "approved": Color(0.0, 0.47, 0.2),
+    "not_for_sending": Color(0.4, 0.4, 0.4),
+}
 _NOTE_ROWS: Final = 3
 
 
@@ -225,11 +237,11 @@ def note_lines(mark: Mark) -> list[list[_Run]]:
     "Fixed in round 2: was 46", now 37"" in green, "Still wrong in round 2: now 46"" in red, or
     the item headed "NEW" in red."""
     finding = mark.finding
-    vendor = vendor_value(finding)
-    value = should_be_value(finding)
-    source = governs(finding)
+    vendor = vendor_text(vendor_value(finding), "") or ""
+    value = vendor_text(should_be_value(finding), "") or ""
+    source = vendor_text(governs(finding), "") or ""
     room = NOTE_WIDTH_PT - 2 * _NOTE_PAD - _NOTE_BAR - _prefix_width(mark)
-    item = str(finding.get("item") or "Item")
+    item = item_words(finding)
     rounds = _round(mark)
     head: list[_Run] = [(item, _NOTE_BOLD, _DARK)]
     if rounds is not None and rounds.status == "fixed":
@@ -275,8 +287,28 @@ def note_lines(mark: Mark) -> list[list[_Run]]:
     ]
 
 
+def item_words(finding: Mapping[str, Any]) -> str:
+    """A clouded item's name as the vendor reads it (`vendor_text`: never a record id or internal
+    words), else "Item on page N"."""
+    fallback = f"Item on page {finding.get('page')}" if finding.get("page") else "Item"
+    return vendor_text(finding.get("item"), fallback) or fallback
+
+
+def tag(finding: Mapping[str, Any], number: int) -> str:
+    """What a clouded item is called on the drawing: its stable comment number ("C-07", #1622)
+    when it has one, else its place in the list."""
+    label = finding.get("comment_no")
+    return str(label) if label else str(number)
+
+
+def _marker_words(finding: Mapping[str, Any], number: int) -> str:
+    """The marker circle's words: the comment number's digits ("07"), else the place."""
+    words = tag(finding, number)
+    return words.removeprefix("C-")
+
+
 def _prefix_width(mark: Mark) -> float:
-    return _measure(f"{mark.number}  ", _NOTE_BOLD)
+    return _measure(f"{tag(mark.finding, mark.number)}  ", _NOTE_BOLD)
 
 
 def _note_size(mark: Mark, lines: Sequence[Sequence[_Run]]) -> tuple[float, float]:
@@ -378,7 +410,7 @@ def _draw_sheet(c: canvas.Canvas, height: float, placed: Sequence[_Placed]) -> N
         c.rect(n0, up(m1), n1 - n0, m1 - m0, stroke=1, fill=1)
         c.setFillColor(colour)
         c.rect(n0, up(m1), _NOTE_BAR, m1 - m0, stroke=0, fill=1)
-        prefix = f"{item.mark.number}"
+        prefix = tag(item.mark.finding, item.mark.number)
         lead = _prefix_width(item.mark)
         tx = n0 + _NOTE_BAR + _NOTE_PAD
         ty = m0 + _NOTE_PAD + _NOTE_SIZE * 0.8
@@ -408,7 +440,7 @@ def _draw_sheet(c: canvas.Canvas, height: float, placed: Sequence[_Placed]) -> N
             path.lineTo(mx + 0.5 * r, up(my) + 0.42 * r)
             c.drawPath(path, stroke=1, fill=0)
             continue
-        label = str(item.mark.number)
+        label = _marker_words(item.mark.finding, item.mark.number)
         size = 7.5 if len(label) < 3 else 6.0
         c.setFillColor(white)
         c.setFont(_NOTE_BOLD, size)
@@ -619,12 +651,28 @@ def _cover(
     clouded: Sequence[_ProofItem],
     assumptions: Sequence[str],
     width: float,
+    action: Any = None,
+    action_stamp: str | None = None,
 ) -> list[Any]:
     body, grey = styles["body"], styles["grey"]
     story: list[Any] = [
         Paragraph(escape(f"Cloud drawing: {set_name}"), styles["title"]),
         Paragraph(escape(stamp), styles["stamp"]),
     ]
+    if action is not None:
+        # The send-ready package's review result (#1622, `review_action`), as the letter says it,
+        # with the standard disclaimer.
+        colour = _ACTION_COLOURS.get(action.action, _DARK)
+        why = f"{action.reason} {action.note}" if action.note else action.reason
+        story += [
+            Paragraph(
+                f'<font color="{_hex(colour)}"><b>{escape(action_stamp or action.words)}</b></font>',
+                styles["head"],
+            ),
+            Paragraph(f"{escape(why)} Action required by: {escape(action.required_by)}.", body),
+            Paragraph(escape(action.disclaimer), styles["small"]),
+            Spacer(1, 8),
+        ]
     tiles = [
         ("Wrong", counts["clouded"], RED, "proved by code, clouded"),
         ("Right", counts["right"], GREEN, "matches the architect"),
@@ -681,11 +729,11 @@ def _cover(
         story.append(Paragraph("None: code proved no wrong value on this set.", grey))
     rows = [
         [
-            Paragraph(f"<b>{item.number}</b>", body),
+            Paragraph(f"<b>{escape(tag(item.finding, item.number))}</b>", body),
             Paragraph(escape(str(item.finding.get("page") or "")), body),
-            Paragraph(escape(str(item.finding.get("item") or "")), body),
-            Paragraph(_coloured("", vendor_value(item.finding), RED), body),
-            Paragraph(_coloured("", should_be(item.finding), GREEN), body),
+            Paragraph(escape(item_words(item.finding)), body),
+            Paragraph(_coloured("", vendor_text(vendor_value(item.finding), "") or "", RED), body),
+            Paragraph(_coloured("", vendor_text(should_be(item.finding), "") or "", GREEN), body),
         ]
         for item in clouded
     ]
@@ -697,7 +745,7 @@ def _cover(
         usable = width - 72
         table = Table(
             [head, *rows],
-            colWidths=[24, 36, usable * 0.34, usable * 0.22, usable * 0.44 - 60],
+            colWidths=[34, 32, usable * 0.34, usable * 0.22, usable * 0.44 - 66],
             repeatRows=1,
             hAlign="LEFT",
         )
@@ -728,7 +776,7 @@ _ROUND_WORDS: Final[Mapping[str, tuple[str, Color]]] = {
 def _round_section(
     styles: Mapping[str, ParagraphStyle],
     rounds: Any,
-    numbers: Mapping[str, int],
+    numbers: Mapping[str, str],
     width: float,
 ) -> list[Any]:
     """The cover's round-2 summary (#1603): one line, then each item code compared."""
@@ -813,8 +861,9 @@ def _proof_entries(
         box = _box_of(finding.get("arch_box"))
         architect_page = box[1] if box is not None else finding.get("vs_page")
         head = Paragraph(
-            f'<font color="{_hex(RED)}"><b>{item.number}</b></font>&nbsp;&nbsp;'
-            f"<b>{escape(str(finding.get('item') or ''))}</b>",
+            f'<font color="{_hex(RED)}"><b>{escape(tag(item.finding, item.number))}</b></font>'
+            "&nbsp;&nbsp;"
+            f"<b>{escape(item_words(finding))}</b>",
             styles["head"],
         )
         left: list[Any] = [Paragraph(_coloured("Governs: ", governs(finding), GREEN), small)]
@@ -882,7 +931,10 @@ def _proof_entries(
                 + _coloured("Should be: ", should_be(finding), GREEN),
                 body,
             ),
-            Paragraph(f"<b>Proved by:</b> {escape(proof_line(finding))}", body),
+            Paragraph(
+                f"<b>Proved by:</b> {escape(vendor_text(proof_line(finding), 'code') or 'code')}",
+                body,
+            ),
             Paragraph(escape(f"{pages}. {item.where}"), grey),
         ]
         story.append(KeepTogether([head, Spacer(1, 3), pair, Spacer(1, 3), *lines, Spacer(1, 12)]))
@@ -998,6 +1050,8 @@ def proof_markup_pdf(
     assumptions: Sequence[str] = (),
     settled: Sequence[Mapping[str, Any]] = (),
     rounds: Any = None,
+    action: Any = None,
+    action_stamp: str | None = None,
     not_compared: int | None = None,
 ) -> ProofCounts:
     """The zero-click cloud drawing of a full check (see the module's words) written to `out`.
@@ -1010,6 +1064,10 @@ def proof_markup_pdf(
     `rounds`: the automatic round-2 check (`round_check.RoundReport`, #1603): each round-1 item
     marked on its round-2 page (fixed: green check; still wrong: red cloud), new round-2 items
     headed "NEW", a summary on the cover and the items code could not compare in grey.
+    `action`: the review result (`review_action.ReviewAction`, #1622) and `action_stamp` its stamp
+    line, said under the stamp with the disclaimer. A finding's `comment_no` ("C-07", the
+    package's stable comment number) is printed on its cloud, note and entries instead of its
+    place in the list.
     `not_compared`: how many rows the Not-compared list has (its product scope), shown on the
     cover; else counted here. Returns the counts the cover shows."""
     base = base if base is not None else clone_pdf(source)
@@ -1207,8 +1265,10 @@ def proof_markup_pdf(
         clouded=proof_items,
         assumptions=assumptions,
         width=size[0],
+        action=action,
+        action_stamp=action_stamp,
     )
-    numbers = {str(item.finding.get("id")): item.number for item in proof_items}
+    numbers = {str(item.finding.get("id")): tag(item.finding, item.number) for item in proof_items}
     cover += _round_section(styles, rounds, numbers, size[0])
     parts = [("Cover", cover)]
     if proof_items:

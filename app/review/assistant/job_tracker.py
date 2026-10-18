@@ -52,7 +52,7 @@ from typing import Any, Final, Literal
 from uuid import UUID
 
 from app.review.assistant.chat_trust import round_item_key
-from app.review.assistant.impact import impact_of
+from app.review.assistant.impact import by_impact, impact_of
 from vocabulary.product_registry import registry
 
 __all__ = [
@@ -63,6 +63,8 @@ __all__ = [
     "TrackerAnswer",
     "TrackerSet",
     "build_tracker",
+    "comment_label",
+    "comment_numbers",
     "item_kind",
     "item_words",
     "vendor_key",
@@ -804,4 +806,57 @@ def _vendors_out(
             }
         )
     out.sort(key=lambda v: (-v["mistakes"], v["vendor_name"].lower()))
+    return out
+
+
+# ---- stable comment numbers (#1622) -------------------------------------------------------------
+
+
+def comment_label(number: int) -> str:
+    """ "C-01", "C-12", "C-104"."""
+    return f"C-{number:02d}"
+
+
+def comment_numbers(answers: Sequence[TrackerAnswer]) -> dict[tuple[str, str], str]:
+    """Stable comment numbers for one drawing set's checks (#1622): "C-01", "C-02", … one per
+    tracked item that was ever Wrong, the same item linked across checks and rounds exactly as the
+    tracker links it (`build_tracker`). Numbers go in the order each item was FIRST Wrong: the
+    oldest check first and, inside one check, biggest first (`impact.by_impact`); so a later check
+    never changes an earlier item's number, and a new item gets the next free one. The impact order
+    stays the order things are listed in, not the number. Keyed by (message id, finding id) of every
+    finding of the item, so any check's finding finds its number. A Wrong status is the finding's
+    own (never a reviewer's later click), so a decision never renumbers anything."""
+    ordered = sorted(answers, key=lambda a: (a.at, str(a.message_id)))
+    sightings = _sightings(ordered)
+    by_package: dict[UUID, list[_Sighting]] = {}
+    for sighting in sightings:
+        by_package.setdefault(sighting.answer.package_id, []).append(sighting)
+    for members in by_package.values():
+        _fill_rounds(members)
+    groups = _Groups(len(sightings))
+    _link_inside_answers(sightings, groups)
+    _link_across_answers(sightings, groups)
+    rank: dict[tuple[int, str], int] = {}
+    for answer_index, answer in enumerate(ordered):
+        for at, finding in enumerate(by_impact(answer.findings)):
+            rank.setdefault((answer_index, str(finding.get("id") or "")), at)
+    grouped: dict[int, list[_Sighting]] = {}
+    for sighting in sightings:
+        grouped.setdefault(groups.find(sighting.index), []).append(sighting)
+    firsts: list[tuple[tuple[int, int, int], list[_Sighting]]] = []
+    for members in grouped.values():
+        wrong = [s for s in members if s.status == "different" and not s.folded]
+        if not wrong:
+            continue
+        first = min(
+            (s.answer_index, rank.get((s.answer_index, s.carrier_id), 0), s.index) for s in wrong
+        )
+        firsts.append((first, members))
+    out: dict[tuple[str, str], str] = {}
+    for number, (_first, members) in enumerate(sorted(firsts, key=lambda pair: pair[0]), start=1):
+        for sighting in members:
+            if not sighting.folded:
+                out.setdefault(
+                    (str(sighting.answer.message_id), sighting.carrier_id), comment_label(number)
+                )
     return out

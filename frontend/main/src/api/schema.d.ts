@@ -132,8 +132,8 @@ export interface paths {
          * @description The zero-click cloud drawing made again with the reviewer's decisions as overrides (#1581):
          *     red clouds at the Wrong items code proved and at every agreed item, none at an item marked not
          *     a problem; the rest listed in grey; stamped "Checked automatically by GV Review: <date>, and
-         *     reviewed by <name>". A new cloud drawing and check report each time (older files are kept);
-         *     returns the cloud drawing.
+         *     reviewed by <name>". A new cloud drawing and check report each time (older files are kept),
+         *     and for a full check a new send-ready package (#1622); returns the cloud drawing.
          */
         post: operations["cloud_drawing_api_v1_chats__chat_id__messages__message_id__cloud_drawing_post"];
         delete?: never;
@@ -5459,7 +5459,7 @@ export interface components {
             /** @description The answer's accuracy by code (its `accuracy` block, scored again with today's calibration: see `rescored`); null on older answers. */
             accuracy?: components["schemas"]["ChatAccuracyOut"] | null;
             /** Blocks */
-            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatFindingUpdateBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"] | components["schemas"]["ChatScopeBlock"] | components["schemas"]["ChatProgressBlock"] | components["schemas"]["ChatResumeBlock"] | components["schemas"]["ChatResolverBlock"] | components["schemas"]["ChatUnderstoodBlock"] | components["schemas"]["ChatFallbackBlock"])[] | null;
+            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatFindingUpdateBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"] | components["schemas"]["ChatScopeBlock"] | components["schemas"]["ChatProgressBlock"] | components["schemas"]["ChatResumeBlock"] | components["schemas"]["ChatResolverBlock"] | components["schemas"]["ChatUnderstoodBlock"] | components["schemas"]["ChatFallbackBlock"] | components["schemas"]["ChatPackageBlock"])[] | null;
             /** @description With `stopped: cost_cap`: `message` (this answer's cap) or `package` (the drawing set's budget ran out). */
             cap_hit?: components["schemas"]["ChatCapHit"] | null;
             /** Cost Usd */
@@ -5504,6 +5504,8 @@ export interface components {
             products?: string[] | null;
             /** @description With `stopped: interrupted`: how Continue picks up (its `resume` block). */
             resume?: components["schemas"]["ChatResumeOut"] | null;
+            /** @description #1622: a full check's review result, worked out on read from its findings with the reviewer's latest decisions; null on other messages and before its package. */
+            review_action?: components["schemas"]["ChatReviewActionOut"] | null;
             /**
              * Role
              * @enum {string}
@@ -5579,6 +5581,71 @@ export interface components {
         };
         /** @enum {string} */
         ChatOutputShape: "one_line" | "short" | "findings" | "file";
+        /** ChatPackageBlock */
+        ChatPackageBlock: {
+            package: components["schemas"]["ChatPackageOut"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "package";
+        };
+        /**
+         * ChatPackageOut
+         * @description A full check's send-ready package (#1622): kept with the answer so the screen and a remade
+         *     package read the same state and comment numbers.
+         */
+        ChatPackageOut: {
+            /**
+             * Numbers
+             * @description Finding id -> stable comment number ("C-07").
+             */
+            numbers?: {
+                [key: string]: string;
+            };
+            /**
+             * Round
+             * @description The drawing set's round.
+             * @default 1
+             */
+            round: number;
+            state: components["schemas"]["ChatPackageStateOut"];
+            /**
+             * Submittal
+             * @description The submittal number ("25A"); "" unknown.
+             * @default
+             */
+            submittal: string;
+        };
+        /**
+         * ChatPackageStateOut
+         * @description What the review result needs beyond the findings (#1622, `review_action.CheckState`).
+         */
+        ChatPackageStateOut: {
+            /**
+             * Incomplete
+             * @description Why the check did not finish; null when it did.
+             */
+            incomplete?: string | null;
+            /**
+             * Missing Areas
+             * @description Areas the architect draws with no vendor sheet.
+             * @default 0
+             */
+            missing_areas: number;
+            /**
+             * Still Open
+             * @description Previous comments still wrong in this round.
+             * @default 0
+             */
+            still_open: number;
+            /**
+             * Wrong Product
+             * @description Code proved the vendor drew a different product.
+             * @default false
+             */
+            wrong_product: boolean;
+        };
         /**
          * ChatPlanAnswerIn
          * @description The reviewer's answer to one plan-check question (#1569).
@@ -5841,6 +5908,65 @@ export interface components {
              * @description What Continue will do again, in one or two plain sentences.
              */
             redo: string;
+        };
+        /**
+         * ChatReviewActionOut
+         * @description A full check's review result (#1622, `review_action.review_action`, rules S0 to S7),
+         *     decided by code on read from its findings with the reviewer's latest decisions and the state
+         *     kept with its package; the comment letter and the cloud drawing's cover say the same.
+         */
+        ChatReviewActionOut: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "approved" | "approved_as_noted" | "revise_resubmit" | "rejected" | "not_for_sending";
+            /**
+             * Corrections
+             * @description Comments sent (the clouds).
+             */
+            corrections: number;
+            /**
+             * Disclaimer
+             * @description The standard words printed under the result.
+             */
+            disclaimer: string;
+            /**
+             * Fabrication
+             * @description Of them, those that change fabrication.
+             */
+            fabrication: number;
+            /**
+             * Next Step
+             * @description What the vendor does next (the letter's closing line).
+             */
+            next_step: string;
+            /**
+             * Note
+             * @description S6: what was not reviewed.
+             */
+            note?: string | null;
+            /**
+             * Reason
+             * @description Why, in one line: "2 of 5 corrections change fabrication."
+             */
+            reason: string;
+            /**
+             * Required By
+             * @description Who must act now ("Vendor: revise and resubmit").
+             */
+            required_by: string;
+            /**
+             * Rule
+             * @description The rule that decided it (the first that matches wins).
+             * @enum {string}
+             */
+            rule: "S0" | "S1" | "S2" | "S3" | "S4" | "S5" | "S6" | "S7";
+            /**
+             * Words
+             * @description "Approved as noted", "Revise and resubmit", …
+             */
+            words: string;
         };
         /**
          * ChatRoundPairOut
@@ -6119,7 +6245,7 @@ export interface components {
             label: string;
             /**
              * Phase
-             * @description seeding, set_pack, planning, prewarm, lead, helpers, lead_verification, second_reads, third_reads, critic, finish_checks, cloud_drawing, report
+             * @description seeding, set_pack, planning, prewarm, lead, helpers, lead_verification, second_reads, third_reads, critic, finish_checks, cloud_drawing, report, package
              */
             phase: string;
             /** Seconds */

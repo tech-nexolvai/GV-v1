@@ -1147,7 +1147,7 @@ class ChatTimingPhaseOut(BaseModel):
 
     phase: str = Field(
         description="seeding, set_pack, planning, prewarm, lead, helpers, lead_verification, "
-        "second_reads, third_reads, critic, finish_checks, cloud_drawing, report"
+        "second_reads, third_reads, critic, finish_checks, cloud_drawing, report, package"
     )
     label: str
     seconds: float
@@ -1489,6 +1489,46 @@ class ChatFallbackBlock(BaseModel):
     fallback: ChatFallbackOut
 
 
+class ChatPackageStateOut(BaseModel):
+    """What the review result needs beyond the findings (#1622, `review_action.CheckState`)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    incomplete: str | None = Field(
+        default=None, description="Why the check did not finish; null when it did."
+    )
+    missing_areas: int = Field(
+        default=0, ge=0, description="Areas the architect draws with no vendor sheet."
+    )
+    wrong_product: bool = Field(
+        default=False, description="Code proved the vendor drew a different product."
+    )
+    still_open: int = Field(
+        default=0, ge=0, description="Previous comments still wrong in this round."
+    )
+
+
+class ChatPackageOut(BaseModel):
+    """A full check's send-ready package (#1622): kept with the answer so the screen and a remade
+    package read the same state and comment numbers."""
+
+    model_config = ConfigDict(frozen=True)
+
+    state: ChatPackageStateOut
+    numbers: dict[str, str] = Field(
+        default_factory=dict, description='Finding id -> stable comment number ("C-07").'
+    )
+    submittal: str = Field(default="", description='The submittal number ("25A"); "" unknown.')
+    round: int = Field(default=1, ge=1, description="The drawing set's round.")
+
+
+class ChatPackageBlock(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["package"]
+    package: ChatPackageOut
+
+
 ChatBlock = Annotated[
     ChatThinkingBlock
     | ChatTextBlock
@@ -1506,7 +1546,8 @@ ChatBlock = Annotated[
     | ChatResumeBlock
     | ChatResolverBlock
     | ChatUnderstoodBlock
-    | ChatFallbackBlock,
+    | ChatFallbackBlock
+    | ChatPackageBlock,
     Field(discriminator="type"),
 ]
 
@@ -1519,6 +1560,29 @@ class ChatFileOut(BaseModel):
     size: int
     mime: str
     url: str
+
+
+class ChatReviewActionOut(BaseModel):
+    """A full check's review result (#1622, `review_action.review_action`, rules S0 to S7),
+    decided by code on read from its findings with the reviewer's latest decisions and the state
+    kept with its package; the comment letter and the cloud drawing's cover say the same."""
+
+    model_config = ConfigDict(frozen=True)
+
+    action: Literal[
+        "approved", "approved_as_noted", "revise_resubmit", "rejected", "not_for_sending"
+    ]
+    rule: Literal["S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7"] = Field(
+        description="The rule that decided it (the first that matches wins)."
+    )
+    words: str = Field(description='"Approved as noted", "Revise and resubmit", …')
+    reason: str = Field(description='Why, in one line: "2 of 5 corrections change fabrication."')
+    corrections: int = Field(ge=0, description="Comments sent (the clouds).")
+    fabrication: int = Field(ge=0, description="Of them, those that change fabrication.")
+    note: str | None = Field(default=None, description="S6: what was not reviewed.")
+    next_step: str = Field(description="What the vendor does next (the letter's closing line).")
+    required_by: str = Field(description='Who must act now ("Vendor: revise and resubmit").')
+    disclaimer: str = Field(description="The standard words printed under the result.")
 
 
 class ChatMessageOut(BaseModel):
@@ -1576,6 +1640,11 @@ class ChatMessageOut(BaseModel):
         default=None,
         description="#1551: how the app understood the question before the work (its "
         "`understood` block); null when it made no task spec, and on older answers.",
+    )
+    review_action: ChatReviewActionOut | None = Field(
+        default=None,
+        description="#1622: a full check's review result, worked out on read from its findings "
+        "with the reviewer's latest decisions; null on other messages and before its package.",
     )
 
 

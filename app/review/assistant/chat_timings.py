@@ -43,6 +43,7 @@ PHASES: Final = (
     "finish_checks",
     "cloud_drawing",
     "report",
+    "package",
 )
 PHASE_LABELS: Final = {
     "seeding": "GV Review's recorded differences made findings",
@@ -58,6 +59,7 @@ PHASE_LABELS: Final = {
     "finish_checks": "Finish checks by code",
     "cloud_drawing": "Cloud drawing",
     "report": "Check report",
+    "package": "Send-ready package",
 }
 _MICROS: Final = Decimal(1_000_000)
 

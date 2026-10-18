@@ -391,6 +391,7 @@ def test_the_hook_adds_new_findings_gaps_and_a_summary_line(
     proven = {
         "page": 1,
         "item": "Galley: finish LA-043 missing",
+        "architect": "LA-43",
         "status": "different",
         "decision": {"decision": "agree", "by": "R"},
     }
