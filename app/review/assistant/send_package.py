@@ -543,13 +543,16 @@ def corrections_of(
     return out
 
 
-def _previous(rounds: Any, labels: Mapping[str, str]) -> list[Previous]:
-    """Each previous round's comment the round-2 check followed (not the new ones)."""
+def _previous(rounds: Any, labels: Mapping[str, str], clouded: set[str]) -> list[Previous]:
+    """Each previous round's comment the round-2 check followed (not the new ones), when it is a
+    cloud on this drawing (`clouded`: finding ids), so its number is the cloud's."""
     out: list[Previous] = []
     for item in sorted(
         getattr(rounds, "items", None) or [], key=lambda i: labels.get(i.finding_id, "~")
     ):
         if item.status not in ("fixed", "still_wrong", "not_compared"):
+            continue
+        if item.finding_id not in clouded:
             continue
         if item.status == "fixed":
             detail = f"now {item.now}" if item.now else ""
@@ -592,7 +595,17 @@ def letter_of(
         corrections=tuple(
             corrections_of(findings, context.labels, context.rounds, context.state.closed)
         ),
-        previous=tuple(_previous(context.rounds, context.labels)) if context.round_no >= 2 else (),
+        previous=(
+            tuple(
+                _previous(
+                    context.rounds,
+                    context.labels,
+                    {str(f.get("id")) for f in findings if proof_group(f) == "clouded"},
+                )
+            )
+            if context.round_no >= 2
+            else ()
+        ),
         not_compared=sum(
             1 for f in findings if register_status(f, context.state.closed) == "not_compared"
         ),

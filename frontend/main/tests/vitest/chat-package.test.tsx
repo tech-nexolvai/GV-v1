@@ -12,6 +12,7 @@ import { PackageCard } from '@/components/chat/chat-full-check';
 import { AssistantMessage } from '@/components/chat/chat-message';
 import type { ChatFile, ChatReviewAction } from '@/lib/chat-api';
 import { fullCheckFiles } from '@/lib/chat-full-check';
+import { proofGroup } from '@/lib/chat-proof';
 import type { ViewMessage } from '@/lib/chat-messages';
 import { finding, OPUS } from './fixtures/chat';
 
@@ -96,5 +97,12 @@ describe('the send-ready package', () => {
     expect(cloud.nextElementSibling).toBe(pkg);
     // The zip is not shown again as a plain file card.
     expect(node.querySelectorAll(`a[href="${PACKAGE.url}"]`)).toHaveLength(1);
+  });
+
+  it('never clouds an agreed item the vendor cannot be told the value of', () => {
+    const agreed = { decision: 'agree', by: 'R' } as never;
+    const unstated = finding('g1', { status: 'different', architect: "see GV Review's record", inches: null });
+    expect(proofGroup(unstated, agreed)).toBe('not_compared');
+    expect(proofGroup(finding('g2', { status: 'different', architect: '37"' }), agreed)).toBe('clouded');
   });
 });

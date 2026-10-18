@@ -20,13 +20,29 @@ const PROVED_LEVELS = new Set(['confirmed', 'likely']);
 const PAIRED_SOURCES = new Set(['architect', 'brand_prototype', 'gv_review']);
 const SCALED = /\bscal(?:e|es|ed|ing)\b|\bmeasured (?:off|on) the drawing\b/i;
 
+/** Internal words that never reach the vendor (#1622, `vendor_text.py`): "see GV Review's record". */
+const INTERNAL = /GV Review'?s record|recorded check/i;
+
+/**
+ * #1622 (`proof.stated_requirement`): the vendor can be told what the value should be: a size code
+ * read, or the governing value with a number and no internal words (or a finish code read from the
+ * drawing's text). A comment without one is never sent, whoever agreed it.
+ */
+function statedRequirement(finding: ChatFinding): boolean {
+  if (finding.inches?.architect != null || finding.settled?.method === 'gv_limits' || finding.source === 'vendor_arithmetic') return true;
+  const value = finding.architect ?? '';
+  if (!value || INTERNAL.test(value)) return false;
+  return /\d/.test(value) || (finding.witnesses ?? []).includes('text');
+}
+
 /** The rule for a finding with no `proof` from the server yet (a streaming answer). */
 function codeProved(finding: ChatFinding): boolean {
   if (finding.status !== 'different') return false;
   if (finding.check_reason === 'scaled' || SCALED.test(finding.architect ?? '') || SCALED.test(finding.vendor ?? '')) return false;
   const witnesses = finding.witnesses ?? [];
   if (!PROVED_LEVELS.has(finding.trust_level ?? '') || witnesses.length === 0) return false;
-  if (witnesses.includes('rule') || finding.settled?.method === 'gv_limits') return true;
+  if (finding.settled?.method === 'gv_limits') return true;
+  if (witnesses.includes('rule')) return statedRequirement(finding);
   if (finding.source === 'vendor_arithmetic' && witnesses.includes('arithmetic')) return true;
   // An architect comparison also needs proof that both numbers measure the same thing: the full
   // check's one signal (#1611): code paired the two itself, or its devil's advocate passed it.
@@ -38,7 +54,7 @@ function codeProved(finding: ChatFinding): boolean {
 /** Where the zero-click drawing puts a finding, with the reviewer's newest click laid over. */
 export function proofGroup(finding: ChatFinding, decision: FindingDecision | null = finding.decision ?? null): ProofGroup {
   if (finding.status === 'different' || finding.status === 'check') {
-    if (decision?.decision === 'agree') return 'clouded';
+    if (decision?.decision === 'agree' && statedRequirement(finding)) return 'clouded';
     if (decision?.decision === 'not_a_problem') return 'dismissed';
   }
   // With no click to lay over, the server's group stands.
