@@ -2511,7 +2511,7 @@ class ChatEngine:
             what = str(item.get("what") or "")
             if area and not what.lower().startswith(area.lower()):
                 # An AI page review row names only what it measures: its area goes first, as in
-                # every other item's name ("Buffet: Width, end to end of unit").
+                # every other item's name ("Pantry: Shelf depth, front to back").
                 item = {**item, "what": f"{area}: {what}"}
             finding = self.book.seed(item)
             if finding is None:
@@ -2524,7 +2524,7 @@ class ChatEngine:
         return seeded
 
     def _page_areas(self) -> dict[int, str]:
-        """Each vendor page's area name from the set pack's page map ("Buffet"), else nothing."""
+        """Each vendor page's area name from the set pack's page map ("Pantry"), else nothing."""
         folder = self.tools.workspace.set_pack
         main = self.book.main_file
         try:

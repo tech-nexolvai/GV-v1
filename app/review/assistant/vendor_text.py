@@ -54,7 +54,7 @@ def internal(text: object) -> bool:
     )
 
 
-#: A metric drawing's value with its inches in brackets, as printed: `1828 [72]`, `2735 [107 3/4]`.
+#: A metric drawing's value with its inches in brackets, as printed: `1219 [48]`, `2007 [79 1/32]`.
 _MM_INCHES: Final = re.compile(
     r"(?<![\w./\[])(\d{2,5}(?:\.\d+)?)\s*\[\s*(\d+(?:\s+\d+/\d+)?|\d+/\d+)\s*\](?![\"\w])"
 )
@@ -62,7 +62,7 @@ _MM_INCHES: Final = re.compile(
 
 def inches_first(text: object) -> str:
     """Every millimetre value printed with its inches in brackets, written inches first as the
-    vendor's reviewer reads them: `1828 [72]` -> `72" (1828 mm)` (#1634, letter and register)."""
+    vendor's reviewer reads them: `1219 [48]` -> `48" (1219 mm)` (#1634, letter and register)."""
     return _MM_INCHES.sub(lambda m: f'{m.group(2)}" ({m.group(1)} mm)', str(text or ""))
 
 
@@ -104,8 +104,8 @@ def _first_clause(text: object) -> str | None:
 
 def item_name(finding: object) -> str | None:
     """A finding's name as the vendor reads it, never a record id: its item; else the first
-    clause of its reason ("Width, end to end of unit"); else the vendor's printed dimension code
-    read ("Dimension 72\" (1828 mm)"). `None` when there are no words to name it by."""
+    clause of its reason ("Shelf depth, front to back"); else the vendor's printed dimension code
+    read ("Dimension 48\" (1219 mm)"). `None` when there are no words to name it by."""
     if not isinstance(finding, dict):
         return None
     item = " ".join(str(finding.get("item") or "").split())
