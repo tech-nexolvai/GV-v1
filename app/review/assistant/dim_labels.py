@@ -729,10 +729,10 @@ def _line_work(path: Any, turn: ink_labels.Turn) -> bool:
     ends = ink_labels._ends(glyph)
     if ends is None:
         return False
-    (x0, y0), (x1, y1) = ends
+    (x0, y0), (x1, y1) = (float(v) for v in ends[0]), (float(v) for v in ends[1])
     length = math.hypot(x1 - x0, y1 - y0) or 1.0
     along = abs(x1 - x0) / length if turn == 0 else abs(y1 - y0) / length
-    return along < 0.9
+    return bool(along < 0.9)
 
 
 def _crowded(page: Any, label: ink_labels.Label) -> bool:
