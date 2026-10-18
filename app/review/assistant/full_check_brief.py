@@ -74,6 +74,8 @@ __all__ = [
     "page_lines",
     "product_checklist",
     "recorded_on_pages",
+    "unreached_pages",
+    "unreached_send_back",
     "with_label_gaps",
 ]
 
@@ -471,6 +473,41 @@ _LEFT: Final = {
     "numbers": "each architect dimension segment by segment, each vendor string",
     "drawn": "each architect note and tag, each door, drawer, bin and shelf, each piece of hardware",
 }
+
+
+#: A checklist's "not compared" reason that says the page was never compared (not a reason the
+#: drawing gives: a prototype, nothing on the architect's side).
+_UNREACHED: Final = re.compile(
+    r"not reached|not opened|budget|ran out|out of (?:money|time)|did not (?:get|reach|open|zoom)",
+    re.IGNORECASE,
+)
+
+
+def unreached_pages(report: str, pages: Iterable[int]) -> list[int]:
+    """The pages whose CHECKLIST line (or none at all) says the helper never got to them."""
+    found: dict[int, str] = {}
+    for match in _LINE.finditer(report or ""):
+        found[int(match.group(1))] = match.group(2)
+    out = []
+    for page in sorted(set(pages)):
+        body = found.get(page)
+        said = _NOT_COMPARED.search(body) if body is not None else None
+        if body is None or (said is not None and _UNREACHED.search(said.group(1))):
+            out.append(page)
+    return out
+
+
+def unreached_send_back(pages: Sequence[int]) -> str | None:
+    """The message that sends a roster helper back to pages it stopped short of while its money
+    and tool calls were not used up (#1634: helpers stopped at a fifth of their money)."""
+    if not pages:
+        return None
+    listed = ", ".join(f"p{page}" for page in pages)
+    return (
+        f"You still have money and tool calls left for your pages: {listed} are not compared yet. "
+        "Compare them now, one page at a time (zoom the labels, record the findings and strings), "
+        "set_coverage for them, then report with an updated CHECKLIST line for every page."
+    )
 
 
 def checklist_send_back(gaps: Mapping[int, str], lens: str = "both") -> str | None:
