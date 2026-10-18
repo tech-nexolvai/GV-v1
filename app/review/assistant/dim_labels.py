@@ -28,14 +28,28 @@ places, the symbol font decoded. On top of that:
 
 **The drawn route** (the vendor's numbers drawn as lines, within a time budget,
 `drawn_budget_s`; the set pack runs it after every page's text): character-sized ink is grouped
-into clusters, each split into labels by its vectors (`ink_labels`, as `verify_value`'s label route
-does), each label gathered again until it is whole. A label is read only when it is on the
-vendor's drawing, ends in an inch mark, has no other ink in line with it a word space away, and
-sits beside a dimension line of its own. Each row is re-typeset on one line and read by two OCR
-engines (RapidOCR's recogniser alone, `LineReader`, then Tesseract), and the label is kept only
-when exactly one value is read as a whole row by both, no reading of it is a near-miss, a `1` in
-it is shaped as a 1, and no reading holds a word, a `+` or a leading zero. A label read this way is
-the drawn-ink witness, never more (#756 D2).
+into clusters (and a lone character-sized path seeds one too: a `2"` lettered wide), each split
+into labels by its vectors (`ink_labels`, as `verify_value`'s label route does), each label
+gathered again until it is whole and stripped of its dimension line's own pieces and ticks. A label
+is read only when it is on the vendor's drawing, sits beside a dimension line of its own, has no
+other ink in line with it a word space away, and is a dimension by its vectors: a row ending in an
+inch mark whose two ticks are twins (one the other moved along the row; never two pieces of a
+circle), read in the direction that mark gives; or one such row per dimension when a chain stacks
+two labels into one; or the value before its inch mark when only words follow (`48" (FIELD TRIM)`,
+the note read as words by RapidOCR); or millimetres over inches in brackets (`305` over `[12]`).
+Each row is re-typeset on one line and read by two OCR engines (RapidOCR's recogniser alone,
+`LineReader`, then Tesseract). A stacked fraction's digits are placed by the vectors (how many
+characters the whole number, the numerator and the denominator have), so a row with one is also
+read with no slash drawn, Tesseract only that way (a slash beside a `1` it reads as a `7`) and a
+fraction alone as a raw line with no inch mark (its line model reads that `3` as a `5`); an inch
+mark an engine reads as `9`s is put back where the vectors drew it. The label is kept only when
+exactly one value is read as a whole row by both, no reading of it is a near-miss, a `1` in it is
+shaped as a 1 (on its vectors when they lay out the value's digits), and no reading holds a word,
+a `+` or a leading zero; millimetres over inches need the bracketed inches and the millimetres each
+read the same by both engines, and the two agreeing (`units_check`). On this route a dimension line
+ends at its ticks (a centre line's dash or a letter's stroke does not cut it), a label stacked over
+a span narrower than itself (a `3/4"` of a chain) takes that span, and one line has one label (the
+one centred on it). A label read this way is the drawn-ink witness, never more (#756 D2).
 
 **Ids are stable:** text labels are numbered in reading order (top to bottom, left to right), then
 drawn labels after them, so a drawn label found or not never moves a text label's id.
@@ -54,6 +68,7 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
+from fractions import Fraction
 from importlib import import_module
 from itertools import pairwise
 from pathlib import Path
@@ -61,6 +76,7 @@ from time import monotonic
 from typing import Any, Final
 
 import cv2
+import numpy as np
 import pdfplumber
 from PIL import Image, ImageDraw, ImageFont
 
@@ -99,6 +115,9 @@ _CLUSTER_MIN_PT: Final = 4.0
 _CLUSTER_MAX_PT: Final = 60.0
 _CLUSTER_GAP_PT: Final = 1.5
 _MAX_CLUSTERS: Final = 300
+#: A lone path (no ink within the cluster gap) seeds a label when its longer side is between these.
+_LONE_MIN_PT: Final = 3.0
+_LONE_MAX_PT: Final = 12.0
 #: A label this far inside the edge of the ink gathered round its cluster is whole: a glyph that
 #: joins a label is at most 1.1 glyph sizes (a word space) away, within this for a drawn number.
 _WHOLE_INSIDE_PT: Final = 8.0
@@ -436,11 +455,21 @@ def _flip(point: Point) -> Point:
 
 
 def _boundaries(
-    y: float, lo: float, hi: float, segments: Sequence[Segment], font: float
+    y: float,
+    lo: float,
+    hi: float,
+    segments: Sequence[Segment],
+    font: float,
+    drawn: bool = False,
 ) -> list[float]:
     """Where the dimension line at height `y` is cut: extension lines that reach it, and the
-    ticks or arrows that cross it (a chain's segments share one line)."""
+    ticks or arrows that cross it (a chain's segments share one line). `drawn` (the drawn route,
+    where the characters are line work too): a tick cuts the line only where an upright crosses
+    it; a line with such ticks is cut at its ticks only, and on one without, a short upright piece
+    (a dash of a centre line) does not cut it."""
     out = [lo, hi]
+    uprights: list[tuple[float, float]] = []
+    ticks: list[float] = []
     for a, b in segments:
         dx, dy = b[0] - a[0], b[1] - a[1]
         length = math.hypot(dx, dy)
@@ -449,10 +478,22 @@ def _boundaries(
             continue
         if abs(dx) <= 0.05 * length:
             if min(a[1], b[1]) - 1.5 <= y <= max(a[1], b[1]) + 1.5:
-                out.append(mx)
+                uprights.append((mx, length))
         elif length <= 3 * font and 0.4 <= abs(dy / dx) <= 2.5 and abs(my - y) <= 1.5:
-            out.append(mx)
-    return sorted(out)
+            ticks.append(mx)
+    if drawn:
+        # A tick cuts the line where an extension line crosses it too: a character's slanted
+        # stroke beside the line is no tick, and a centre line's dash no extension line.
+        ticks = [t for t in ticks if any(abs(t - mx) <= 1.0 for mx, _ in uprights)]
+        if len(ticks) >= 2:
+            # A line drawn with ticks ends at its ticks: the drawing's own edges and shelves
+            # crossing it are no ends of it.
+            return sorted(out + ticks)
+    for mx, length in uprights:
+        if drawn and length < 1.5 * font and not any(abs(t - mx) <= 1.0 for t in ticks):
+            continue
+        out.append(mx)
+    return sorted(out + ticks)
 
 
 def _extension(x: float, y: float, segments: Sequence[Segment], font: float) -> list[Point] | None:
@@ -484,13 +525,65 @@ def _extension(x: float, y: float, segments: Sequence[Segment], font: float) -> 
     return [(x, far), (x, y)]
 
 
+def _span_at(
+    cuts: Sequence[float],
+    cx: float,
+    x0: float,
+    x1: float,
+    lo: float,
+    hi: float,
+    width: float,
+    drawn: bool,
+    taken: Sequence[tuple[float, float]],
+) -> tuple[float, float] | None:
+    """The span of a dimension line (between two cuts) a label at `x0..x1` (middle `cx`) sits on,
+    or `None`: the span under its middle, at least 0.8 of its width. On the drawn route also a
+    span between two inner cuts narrower than the label (down to 0.3 of it), under its middle or,
+    when that one is another label's (`taken`), one beside it at least half under the label (a
+    `3/4"` stacked over its ticks, its middle just past one of them), the nearest first."""
+    left = max((c for c in cuts if c <= cx), default=None)
+    right = min((c for c in cuts if c >= cx), default=None)
+    if left is None or right is None:
+        return None
+    spans = [(left, right)]
+    if drawn:
+        ordered = sorted(set(cuts))
+        beside = [
+            (a, b)
+            for a, b in pairwise(ordered)
+            if (a, b) != (left, right) and min(b, x1) - max(a, x0) >= 0.5 * (b - a)
+        ]
+        spans += sorted(beside, key=lambda s: abs((s[0] + s[1]) / 2 - cx))
+    for a, b in spans:
+        if any(abs(a - t[0]) <= 0.6 and abs(b - t[1]) <= 0.6 for t in taken):
+            continue
+        narrow = drawn and (a not in (lo, hi) or b not in (lo, hi))
+        if b - a < (0.3 if narrow else 0.8) * width:
+            continue
+        if (a, b) != (left, right) and not narrow:
+            continue
+        return a, b
+    return None
+
+
 def dimension_line(
-    box: Box, orientation: str, segments: Sequence[Segment], font: float
+    box: Box,
+    orientation: str,
+    segments: Sequence[Segment],
+    font: float,
+    *,
+    drawn: bool = False,
+    taken: Sequence[tuple[float, float, float]] = (),
 ) -> dict[str, Any] | None:
     """The dimension line a label sits on (or in a gap of), cut at the extension lines or ticks
     on each side of the label, and its two extension lines when code finds them: `{dim_line:
     [p, q], extension: [[far, near] | None, [far, near] | None], span_pt}`. Horizontal and
-    vertical labels only; `None` when no line with at least one extension line or tick is found."""
+    vertical labels only; `None` when no line with at least one extension line or tick is found.
+
+    `drawn` (the drawn route): a centre line's dashes do not cut a line (`_boundaries`), and a
+    span between two ticks narrower than the label (a `3/4"` of a chain, its label stacked over
+    its ticks) is its line when the label's middle is over it. `taken`: spans (`(across, start,
+    end)`, the frame of `orientation`) another label is centred on, never this one's."""
     if orientation not in ("h", "v"):
         return None
     flip = orientation == "v"
@@ -525,11 +618,13 @@ def dimension_line(
                 continue
             candidates.append((abs(y - cy), y, lo, hi))
     for _score, y, lo, hi in sorted(candidates):
-        cuts = _boundaries(y, lo, hi, segments, font)
-        left = max((c for c in cuts if c <= cx), default=None)
-        right = min((c for c in cuts if c >= cx), default=None)
-        if left is None or right is None or right - left < 0.8 * width:
+        cuts = _boundaries(y, lo, hi, segments, font, drawn)
+        found = _span_at(
+            cuts, cx, x0, x1, lo, hi, width, drawn, [t[1:] for t in taken if abs(y - t[0]) <= 0.6]
+        )
+        if found is None:
             continue
+        left, right = found
         ends = [_extension(x, y, segments, font) for x in (left, right)]
         inner = len(cuts) > 2 and (left != lo or right != hi)
         if not any(ends) and not inner:
@@ -551,8 +646,11 @@ def dimension_line(
 # ---- the drawn route -----------------------------------------------------------------------------
 
 
-def _clusters(paths: Sequence[Any], skip: Sequence[Box]) -> list[Box]:
-    """Character-sized ink grouped into clusters (a drawn number), outside the text labels."""
+def _clusters(paths: Sequence[Any], skip: Sequence[Box]) -> tuple[list[Box], list[Box]]:
+    """Character-sized ink grouped into clusters (a drawn number), outside the text labels; and
+    the lone paths, with no other ink within the clusters' gap. A lone character-sized path seeds
+    a label drawn with wide letter spacing (a `2"` whose inch mark is 1.8 points away, a large
+    `90"`): `ink_labels` gathers its label with a gap relative to the characters' size."""
     boxes = [p.box for p in paths if not any(_overlap(p.box, s) > 0.5 for s in skip)]
     parent = list(range(len(boxes)))
 
@@ -575,16 +673,24 @@ def _clusters(paths: Sequence[Any], skip: Sequence[Box]) -> list[Box]:
     for i, box in enumerate(boxes):
         groups.setdefault(root(i), []).append(box)
     out: list[Box] = []
+    lone: list[Box] = []
     for members in groups.values():
-        if len(members) < 2:
-            continue
         box = _union(members)
-        longer, shorter = max(box[2] - box[0], box[3] - box[1]), min(
-            box[2] - box[0], box[3] - box[1]
+        longer, shorter = (
+            max(box[2] - box[0], box[3] - box[1]),
+            min(box[2] - box[0], box[3] - box[1]),
         )
+        if len(members) < 2:
+            if _LONE_MIN_PT <= longer <= _LONE_MAX_PT:
+                lone.append(box)
+            continue
         if _CLUSTER_MIN_PT <= longer <= _CLUSTER_MAX_PT and 2.0 <= shorter <= 12.0:
             out.append(box)
-    return sorted(out, key=lambda b: (round(b[1] / 4), b[0]))[:_MAX_CLUSTERS]
+
+    def order_of(b: Box) -> tuple[int, float]:
+        return round(b[1] / 4), b[0]
+
+    return sorted(out, key=order_of)[:_MAX_CLUSTERS], sorted(lone, key=order_of)[:_MAX_CLUSTERS]
 
 
 class LineReader:
@@ -635,41 +741,106 @@ def drawn_readers() -> list[Any]:
         return list(_DRAWN_READERS)
 
 
-def _label_reads(label: ink_labels.Label, engines: Sequence[Any]) -> list[Any]:
+def _passes(
+    reader: Any, row: Sequence[ink_labels.Token], layout: _Layout | None, marked: bool
+) -> list[list[tuple[bool, bool, bool]]]:
+    """How an engine reads one row: `(inch mark drawn, fraction slash drawn, raw line)` per pass.
+
+    A row is read as `verify_value`'s label route reads it: the slash drawn between a stacked
+    fraction's parts, and an engine that reads `"` as `99` reads the row without its inch mark. A
+    row with a stacked fraction whose characters the vectors count (`_layout`) is also read with no
+    slash, the engine reading only the digits the layout places. Tesseract reads such a row only
+    that way (a slash beside a `1` it reads as a `7`: `17 1/8"` as `17 7/8"`, measured on a real set),
+    and a stacked fraction alone (no whole number) without its inch mark, as a raw line (its line
+    model reads that `3` as a `5` and the mark as a `9`). Each list after the first is read only
+    when the ones before it gave the row no value."""
+    fraction = layout is not None and any(t.kind == "fraction" for t in row)
+    reads_marks = getattr(reader, "reads_inch_marks", True)
+    mark = not marked or reads_marks
+    if fraction and reads_marks and layout is not None:
+        if not layout[0]:
+            return [[(not marked, False, True)]]
+        # When the digits alone give no reading, the row as `verify_value` reads it.
+        return [[(mark, False, False)], [(mark, True, False)]]
+    out = [(mark, True, False)]
+    if fraction:
+        out.append((mark, False, False))
+    return [out]
+
+
+def _mark_as_nines(line: str, layout: _Layout | None) -> str:
+    """The line with an inch mark read as `9`s put back as `"`: when the vectors drew the mark and
+    count the row's characters (`layout`), trailing `9`s beyond that count are the mark (`3/4"`
+    read `349`, `34"` read `3499`). Any other line is returned as read."""
+    if layout is None:
+        return line
+    wanted = sum(layout)
+    text = line.rstrip()
+    while text and text[-1] in "9\"' ":
+        if sum(ch.isdigit() for ch in text) == wanted:
+            break
+        text = text[:-1].rstrip()
+    stripped = line.rstrip()[len(text) :]
+    if text == line.rstrip() or set(stripped) - set('9" ') or not text[-1:].isdigit():
+        return line
+    if sum(ch.isdigit() for ch in text) != wanted:
+        return line
+    return text + '"'
+
+
+def _label_reads(
+    label: ink_labels.Label, engines: Sequence[Any], turn: ink_labels.Turn | None = None
+) -> list[Any]:
     """One drawn label read by each engine the way `verify_value`'s label route reads it: each
-    row re-typeset on one line (`ink_labels`), at two sizes, in each plausible reading direction.
-    An engine after the first runs only when an earlier one read a whole dimension: a label that
-    no engine reads as one can never have two engines agree."""
+    row re-typeset on one line (`ink_labels`), at two sizes, in each plausible reading direction,
+    in the passes `_passes` gives. An engine after the first runs only when an earlier one read a
+    whole dimension: a label that no engine reads as one can never have two engines agree."""
     reads: list[Any] = []
     for reader in engines:
         if reads and not any(read.whole for read in reads):
             break
         read = vv._InkRead(f"drawn label, {reader.name}", reader.name, 1)
-        for turn in ink_labels.turns(label):
-            for row in ink_labels.rows(label, turn):
-                layout = _layout(row)
-                marked = bool(ink_labels.inch_mark_at_end(row, turn))
-                # An engine that reads `"` as `99` reads the row without its inch mark.
-                for mark in (not marked or getattr(reader, "reads_inch_marks", True),):
-                    for height in ink_labels.HEIGHTS_PX:
-                        picture = ink_labels.row_picture(row, turn, height, inch_mark=mark)
-                        if picture is None:
-                            continue
-                        line = " ".join(reader(picture, single_line=True)).strip()
-                        read.add(reader, picture, [line] if line else [], True)
-                        # The digits laid out as the vectors draw them first: an engine that
-                        # loses a space (`11/2` for a 1 and a stacked 1 over 2) still reads the
-                        # value. When the digits do not match the drawing (a digit drawn in two
-                        # strokes counts twice), the line as read.
-                        whole = None if layout is None else _laid_out(line, layout)
-                        if whole is None:
-                            whole = vv._row_value(line, inch_mark=mark)
-                        if whole is not None:
-                            read.whole.add(whole)
-                            # This picture gave it (the `1` shape check reads it per picture).
-                            values, ones = read.passes[-1]
-                            read.passes[-1] = (values | {whole}, ones)
-                            read.values.add(whole)
+        for way in (_marked_turns(label) or ink_labels.turns(label)) if turn is None else (turn,):
+            for row in ink_labels.rows(label, way):
+                layout = _layout(row, way)
+                marked = bool(ink_labels.inch_mark_at_end(row, way))
+                gave = len(read.whole)
+                for group in _passes(reader, row, layout, marked):
+                    if len(read.whole) > gave:
+                        break
+                    for mark, slash, raw in group:
+                        for height in ink_labels.HEIGHTS_PX:
+                            picture = ink_labels.row_picture(
+                                row, way, height, inch_mark=mark, slash=slash
+                            )
+                            if picture is None:
+                                continue
+                            engine = getattr(reader, "raw_line", None) if raw else None
+                            found = engine(picture) if engine else reader(picture, single_line=True)
+                            line = " ".join(found).strip()
+                            if mark and marked:
+                                line = _mark_as_nines(line, layout)
+                            if not slash:
+                                # Read for its digits only: a line with any other count of digits
+                                # says nothing (it is no reading of another number either).
+                                whole = None if layout is None else _laid_out(line, layout)
+                                if whole is None and sum(ch.isdigit() for ch in line) != sum(
+                                    layout or (0,)
+                                ):
+                                    continue
+                            read.add(reader, picture, [line] if line else [], True)
+                            # The digits laid out as the vectors draw them first: an engine that
+                            # loses a space (`11/2` for a 1 and a stacked 1 over 2) still reads the
+                            # value. When the digits do not match the drawing, the line as read.
+                            whole = None if layout is None else _laid_out(line, layout)
+                            if whole is None and slash:
+                                whole = vv._row_value(line, inch_mark=mark)
+                            if whole is not None:
+                                read.whole.add(whole)
+                                # This picture gave it (the `1` shape check reads it per picture).
+                                values, ones = read.passes[-1]
+                                read.passes[-1] = (values | {whole}, ones)
+                                read.values.add(whole)
         reads.append(read)
     return reads
 
@@ -677,23 +848,64 @@ def _label_reads(label: ink_labels.Label, engines: Sequence[Any]) -> list[Any]:
 type _Layout = tuple[int, int, int]
 
 
-def _layout(row: Sequence[ink_labels.Token]) -> _Layout | None:
-    """How many glyphs the row's vectors draw for its whole number, its stacked fraction's
-    numerator and its denominator (`(2, 1, 1)` is `17 3/8"`), or `None` when the row is not one
-    number with at most one stacked fraction at its end. A digit drawn in two strokes that do not
-    touch counts twice, so a layout only ever confirms digits, never adds one."""
-    whole = numerator = denominator = 0
+type _Characters = tuple[list[list[ink_labels.Glyph]], ...]
+
+
+def _characters(
+    glyphs: Sequence[ink_labels.Glyph], turn: ink_labels.Turn
+) -> list[list[ink_labels.Glyph]]:
+    """Glyphs grouped into characters, in reading order: a glyph lying (four fifths or more) within
+    another's extent along the reading direction is part of the same character (a `4` drawn as
+    two strokes that do not touch). Characters side by side never overlap so far along the row."""
+    out: list[list[ink_labels.Glyph]] = []
+    extents: list[tuple[float, float]] = []
+    for glyph in sorted(glyphs, key=lambda g: ink_labels._frame(g.box, turn)[0]):
+        frame = ink_labels._frame(glyph.box, turn)
+        start, end = frame[0], frame[2]
+        if extents:
+            low, high = extents[-1]
+            shared = min(end, high) - max(start, low)
+            narrower = min(end - start, high - low)
+            if shared >= 0.8 * narrower:
+                out[-1].append(glyph)
+                extents[-1] = (min(low, start), max(high, end))
+                continue
+        out.append([glyph])
+        extents.append((start, end))
+    return out
+
+
+def _row_characters(row: Sequence[ink_labels.Token], turn: ink_labels.Turn) -> _Characters | None:
+    """The row's characters: its whole number's, its stacked fraction's numerator's and its
+    denominator's, or `None` when the row is not one number with at most one stacked fraction at
+    its end."""
+    whole: list[ink_labels.Glyph] = []
+    fraction: ink_labels.Token | None = None
     for token in row:
         if token.kind == "mark":
             continue
-        if numerator:  # a character after the fraction: not one plain dimension
+        if fraction is not None:  # a character after the fraction: not one plain dimension
             return None
         if token.kind == "fraction":
-            numerator, denominator = len(token.glyphs), len(token.below)
+            fraction = token
         else:
-            whole += 1
-    if not whole and not numerator:
+            whole.extend(token.glyphs)
+    if not whole and fraction is None:
         return None
+    upper = _characters(fraction.glyphs, turn) if fraction is not None else []
+    lower = _characters(fraction.below, turn) if fraction is not None else []
+    return _characters(whole, turn), upper, lower
+
+
+def _layout(row: Sequence[ink_labels.Token], turn: ink_labels.Turn = 0) -> _Layout | None:
+    """How many characters the row's vectors draw for its whole number, its stacked fraction's
+    numerator and its denominator (`(2, 1, 1)` is `17 3/8"`), or `None` when the row is not one
+    number with at most one stacked fraction at its end. Strokes of one character are counted
+    once (`_characters`), so a layout only ever confirms digits, never adds one."""
+    found = _row_characters(row, turn)
+    if found is None:
+        return None
+    whole, numerator, denominator = (len(part) for part in found)
     return whole, numerator, denominator
 
 
@@ -715,15 +927,61 @@ def _laid_out(line: str, layout: _Layout) -> Decimal | None:
     return value
 
 
+def _twin_ticks(row: Sequence[ink_labels.Token], turn: ink_labels.Turn) -> bool:
+    """Whether the row ends in an inch mark drawn as one: two strokes of the same size and shape,
+    side by side along the reading direction (one is the other moved along the row). Two pieces of
+    a broken circle or of a dashed line are not."""
+    count = ink_labels.inch_mark_at_end(row, turn)
+    if not count:
+        return False
+    strokes = [
+        [ink_labels._point(x, y, turn) for x, y in line]
+        for token in row[len(row) - count :]
+        for path in token.glyphs[0].paths
+        for line in path.polylines
+        if line
+    ]
+    if len(strokes) != 2:
+        return False
+    boxes = [
+        (min(x for x, _ in s), min(y for _, y in s), max(x for x, _ in s), max(y for _, y in s))
+        for s in strokes
+    ]
+    (a0, a1, a2, a3), (b0, b1, b2, b3) = boxes
+    size = max(a2 - a0, a3 - a1, b2 - b0, b3 - b1)
+    slack = 0.25 * size + 0.1
+    if abs((a2 - a0) - (b2 - b0)) > slack or abs((a3 - a1) - (b3 - b1)) > slack:
+        return False
+    if abs(a1 - b1) > slack or abs(a3 - b3) > slack:  # side by side, not one above the other
+        return False
+    if max(a0, b0) < min(a2, b2) - 0.1 * size:  # overlapping along the row: no pair of ticks
+        return False
+    dx, dy = b0 - a0, b1 - a1
+    moved = np.array([(x + dx, y + dy) for x, y in strokes[0]])
+    other = np.array(strokes[1])
+    if len(moved) < 2 or len(other) < 2:
+        return False
+    distance = np.sqrt(((moved[:, None, :] - other[None, :, :]) ** 2).sum(axis=2))
+    hausdorff = max(float(distance.min(axis=1).max()), float(distance.min(axis=0).max()))
+    return hausdorff <= slack
+
+
+def _marked_turns(label: ink_labels.Label) -> tuple[ink_labels.Turn, ...]:
+    """The reading directions in which a row of the label ends in an inch mark (two ticks): how a
+    drawn dimension is written, so the direction it reads in. A lone digit gives `ink_labels` no
+    neighbour to tell its direction by (a `4"` written up the page); its inch mark does."""
+    return tuple(
+        turn
+        for turn in (0, 90, 270)
+        if any(_twin_ticks(row, turn) for row in ink_labels.rows(label, turn))
+    )
+
+
 def _inch_marked(label: ink_labels.Label) -> bool:
     """Whether the label's own strokes end a row in an inch mark (two ticks), in some reading
     direction: how a drawn dimension is written. A bare drawn number (a tag, a count, a symbol
     an engine reads as a digit) is never a label: its vectors, not OCR, decide."""
-    return any(
-        ink_labels.inch_mark_at_end(row, turn)
-        for turn in ink_labels.turns(label)
-        for row in ink_labels.rows(label, turn)
-    )
+    return bool(_marked_turns(label))
 
 
 def _line_work(path: Any, turn: ink_labels.Turn) -> bool:
@@ -742,14 +1000,20 @@ def _line_work(path: Any, turn: ink_labels.Turn) -> bool:
     return bool(along < 0.9)
 
 
-def _crowded(page: Any, label: ink_labels.Label) -> bool:
+def _crowded(
+    page: Any,
+    label: ink_labels.Label,
+    also: Sequence[ink_labels.Glyph] = (),
+    turn: ink_labels.Turn | None = None,
+) -> bool:
     """Whether other character-sized ink sits in line with the label, closer than 1.2 times its
     height (a word space), in a direction it may read: a word or a number the label belongs to
     (`FN-` before `02`, `SCALE :` before `1"`, `2'-` before `10"`). Such a label is not read: what
     it is part of decides its value. The dimension's own ticks, arrowheads and extension lines do
-    not count (`_line_work`), nor the next dimension of a chain (a label with its own inch mark).
+    not count (`_line_work`), nor the next dimension of a chain (a label with its own inch mark, or
+    millimetres over inches). `also`: glyphs of the label's own note (`48" (FIELD TRIM)`).
     """
-    own = {id(path) for glyph in label.glyphs for path in glyph.paths}
+    own = {id(path) for glyph in (*label.glyphs, *also) for path in glyph.paths}
     near = [path for path in vv._ink_paths_near(page, label.box) if id(path) not in own]
     # The next dimension of a chain (its own number and inch mark) is no word round this one.
     x0, y0, x1, y1 = label.box
@@ -758,25 +1022,341 @@ def _crowded(page: Any, label: ink_labels.Label) -> bool:
     dimensions = {
         id(path)
         for other in ink_labels.labels(vv._ink_paths_near(page, around), around)
-        if _inch_marked(other)
+        if _inch_marked(other) or _mm_rows(other) is not None
         for glyph in other.glyphs
         for path in glyph.paths
     }
     near = [path for path in near if id(path) not in dimensions]
-    for turn in ink_labels.turns(label):
-        frame = ink_labels._frame(label.box, turn)
+    ways = (_marked_turns(label) or ink_labels.turns(label)) if turn is None else (turn,)
+    for way in ways:
+        frame = ink_labels._frame(label.box, way)
         tall = frame[3] - frame[1]
         for path in near:
-            other = ink_labels._frame(path.box, turn)
+            other = ink_labels._frame(path.box, way)
             if other[3] - other[1] < 0.15 * tall:  # a piece of the dimension line it sits on
                 continue
-            if _line_work(path, turn):
+            if _line_work(path, way):
                 continue
             across = min(frame[3], other[3]) - max(frame[1], other[1])
             gap = max(other[0] - frame[2], frame[0] - other[2])
             if across >= 0.5 * min(tall, other[3] - other[1]) and gap < 1.2 * tall:
                 return True
     return False
+
+
+def _line_ends(segments: Sequence[Segment]) -> np.ndarray:
+    """The page's line work as an array of `(x0, y0, x1, y1)` rows, for `_without_line_work`."""
+    if not segments:
+        return np.zeros((0, 4))
+    return np.array([(a[0], a[1], b[0], b[1]) for a, b in segments], dtype=float)
+
+
+def _between_glyphs(
+    label: ink_labels.Label,
+    stroke: ink_labels.Glyph,
+    start: np.ndarray,
+    unit: np.ndarray,
+    length: float,
+) -> bool:
+    """Whether a straight stroke has the label's glyphs on both sides of it, over its length: a
+    stacked fraction's bar (on a dimension line it may line up with it), never line work."""
+    sides = set()
+    for glyph in label.glyphs:
+        if glyph is stroke:
+            continue
+        centre = np.array(((glyph.box[0] + glyph.box[2]) / 2, (glyph.box[1] + glyph.box[3]) / 2))
+        along = float(np.dot(centre - start, unit))
+        if -0.1 * length <= along <= 1.1 * length:
+            side = ink_labels._cross(unit, centre - start)
+            if abs(side) > 0.3:
+                sides.add(side > 0)
+    return len(sides) == 2
+
+
+def _without_line_work(label: ink_labels.Label, lines: np.ndarray) -> ink_labels.Label | None:
+    """The label without the dimension line's own pieces and ticks, or `None` when nothing else
+    is left. A dimension line cut short by its ticks leaves pieces as small as a character, so they
+    join the label they pass beside: a straight stroke on a line that runs on past the label (the
+    line work continues it, touching or overlapping it) is line work, and so is a small mark
+    centred on such a line (a tick)."""
+    x0, y0, x1, y1 = label.box
+    if not len(lines):
+        return label
+    near = lines[
+        (np.maximum(lines[:, 0], lines[:, 2]) >= x0 - 8)
+        & (np.minimum(lines[:, 0], lines[:, 2]) <= x1 + 8)
+        & (np.maximum(lines[:, 1], lines[:, 3]) >= y0 - 8)
+        & (np.minimum(lines[:, 1], lines[:, 3]) <= y1 + 8)
+    ]
+    axes: list[tuple[np.ndarray, np.ndarray]] = []
+    dropped: set[int] = set()
+    for index, glyph in enumerate(label.glyphs):
+        ends = ink_labels._ends(glyph)
+        if ends is None:
+            continue
+        start, end = ends
+        length = float(np.linalg.norm(end - start))
+        if length < 0.5:
+            continue
+        unit = (end - start) / length
+        runs_on = False
+        for sx, sy, ex, ey in near:
+            a, b = np.array((sx, sy)), np.array((ex, ey))
+            if (
+                abs(ink_labels._cross(unit, a - start)) > 0.3
+                or abs(ink_labels._cross(unit, b - start)) > 0.3
+            ):
+                continue
+            ta, tb = float(np.dot(a - start, unit)), float(np.dot(b - start, unit))
+            low, high = min(ta, tb), max(ta, tb)
+            if high < -0.6 or low > length + 0.6:  # not touching the stroke
+                continue
+            reach = max(abs(ta), abs(tb), abs(ta - length), abs(tb - length))
+            outside = [start + unit * t for t in (low, high)]
+            if (
+                any(
+                    not (x0 - 1 <= float(p[0]) <= x1 + 1 and y0 - 1 <= float(p[1]) <= y1 + 1)
+                    for p in outside
+                )
+                and reach > length + 1.0
+            ):
+                runs_on = True
+                break
+        if runs_on and not _between_glyphs(label, glyph, start, unit, length):
+            dropped.add(index)
+            axes.append((start, unit))
+    if not dropped:
+        return label
+    for index, glyph in enumerate(label.glyphs):
+        if index in dropped or glyph.size > 4.0:
+            continue
+        centre = np.array(((glyph.box[0] + glyph.box[2]) / 2, (glyph.box[1] + glyph.box[3]) / 2))
+        if not any(abs(ink_labels._cross(unit, centre - start)) <= 0.6 for start, unit in axes):
+            continue
+        ends = ink_labels._ends(glyph)
+        if ends is not None:
+            length = float(np.linalg.norm(ends[1] - ends[0]))
+            if length > 0 and _between_glyphs(
+                label, glyph, ends[0], (ends[1] - ends[0]) / length, length
+            ):
+                continue  # a fraction's bar on the dimension line
+        dropped.add(index)
+    kept = [g for i, g in enumerate(label.glyphs) if i not in dropped]
+    if not kept:
+        return None
+    return ink_labels.Label(tuple(kept), ink_labels._union([g.box for g in kept]))
+
+
+@dataclass(frozen=True, slots=True)
+class _Part:
+    """One dimension to read in a drawn label: the label itself, one row of a label holding several
+    dimensions, the value before a note, or millimetres over inches."""
+
+    label: ink_labels.Label
+    kind: str = "inches"
+    """`inches` (a number with its inch mark) or `mm` (millimetres over inches in brackets)."""
+    note: tuple[ink_labels.Token, ...] = ()
+    """The note after the value's inch mark, as read (`(FIELD TRIM)`)."""
+    turn: ink_labels.Turn | None = None
+    """The reading direction the whole label was split in (`None`: the part's own)."""
+    also: tuple[ink_labels.Glyph, ...] = ()
+    """The note's glyphs: the label's own ink, never a crowding word."""
+    spot: Box | None = None
+    """Where the dimension line is looked for (`None`: round the part): the value with its note
+    (a note in brackets reaches lower than its value, nearer its line)."""
+
+
+def _row_label(
+    label: ink_labels.Label, row: Sequence[ink_labels.Token], turn: ink_labels.Turn
+) -> ink_labels.Label:
+    """One row of a label as a label of its own: the row's glyphs, and its stacked fractions'
+    bars (the label's glyphs no row holds, inside the row's box)."""
+    held = {
+        id(g) for line in ink_labels.rows(label, turn) for t in line for g in (*t.glyphs, *t.below)
+    }
+    glyphs = [g for t in row for g in (*t.glyphs, *t.below)]
+    frames = [ink_labels._frame(g.box, turn) for g in glyphs]
+    low, high = min(f[0] for f in frames), max(f[2] for f in frames)
+    top, bottom = min(f[1] for f in frames), max(f[3] for f in frames)
+    for g in label.glyphs:
+        if id(g) in held:
+            continue
+        f = ink_labels._frame(g.box, turn)
+        middle, centre = (f[0] + f[2]) / 2, (f[1] + f[3]) / 2
+        if low <= middle <= high and top <= centre <= bottom:
+            glyphs.append(g)
+    glyphs.sort(key=lambda g: (g.box[1], g.box[0]))
+    return ink_labels.Label(tuple(glyphs), ink_labels._union([g.box for g in glyphs]))
+
+
+def _mm_rows(label: ink_labels.Label) -> ink_labels.Turn | None:
+    """The reading direction in which the label is millimetres over inches in brackets (`305`
+    over `[12]`): exactly two rows, the upper all characters (two to five, no fraction, no inch
+    mark), the lower starting and ending in a tall narrow glyph (the brackets); else `None`."""
+    for turn in ink_labels.turns(label):
+        rows = ink_labels.rows(label, turn)
+        if len(rows) != 2 or any(ink_labels.inch_mark_at_end(row, turn) for row in rows):
+            continue
+        upper, lower = rows
+        if (
+            any(t.kind != "glyph" for t in upper)
+            or not 2 <= len(_characters([g for t in upper for g in t.glyphs], turn)) <= 5
+        ):
+            continue
+        mains = [t for t in lower if t.kind != "mark"]
+        if len(mains) < 3 or mains[0].kind != "glyph" or mains[-1].kind != "glyph":
+            continue
+        height = max(
+            ink_labels._frame(g.box, turn)[3] - ink_labels._frame(g.box, turn)[1]
+            for t in lower
+            for g in t.glyphs
+        )
+        ends = [ink_labels._frame(mains[i].glyphs[0].box, turn) for i in (0, -1)]
+        if all(f[3] - f[1] >= 0.8 * height and f[2] - f[0] <= 0.5 * (f[3] - f[1]) for f in ends):
+            return turn
+    return None
+
+
+def _inch_mark_inside(row: Sequence[ink_labels.Token], turn: ink_labels.Turn) -> int:
+    """Where a row's value ends when a note follows its inch mark (`48"(FIELD TRIM)`): the index
+    after the inch mark's second tick, or 0. At least one character before it, at least two
+    after it."""
+    for end in range(2, len(row) - 1):
+        head = row[:end]
+        if not _twin_ticks(head, turn) or row[end].kind == "mark":
+            continue
+        before = [t for t in head if t.kind != "mark"]
+        after = [t for t in row[end:] if t.kind == "glyph"]
+        if before and len(after) >= 2:
+            return end
+    return 0
+
+
+def _parts(label: ink_labels.Label) -> list[_Part]:
+    """The dimensions to read in a drawn label: millimetres over inches; one per row when two or
+    more rows each end in their own inch mark (labels a chain stacks closely); the value before
+    its note; or the label itself when it ends in an inch mark. Anything else: none."""
+    mm = _mm_rows(label)
+    if mm is not None:
+        return [_Part(label, "mm", turn=mm)]
+    for turn in _marked_turns(label):
+        rows = ink_labels.rows(label, turn)
+        marked = [row for row in rows if _twin_ticks(row, turn)]
+        if len(rows) >= 2 and len(marked) >= 2:
+            return [_Part(_row_label(label, row, turn), turn=turn) for row in marked]
+    if _inch_marked(label):
+        return [_Part(label)]
+    for turn in ink_labels.turns(label):
+        rows = ink_labels.rows(label, turn)
+        if len(rows) != 1:
+            continue
+        end = _inch_mark_inside(rows[0], turn)
+        if not end:
+            continue
+        head, tail = rows[0][:end], rows[0][end:]
+        value = _row_label(label, head, turn)
+        rest = tuple(g for g in label.glyphs if g not in value.glyphs)
+        return [_Part(value, note=tuple(tail), turn=turn, also=rest, spot=label.box)]
+    return []
+
+
+_NOTE_WORDS: Final = re.compile(r"[A-Za-z]{2,}")
+
+
+def _note_is_words(part: _Part, engines: Sequence[Any]) -> bool:
+    """Whether the note after a drawn value reads as words only, by the engine that knows letters
+    (RapidOCR): at least one word, no digit and no `+` (`3"+2" FILLER` is a sum, not a note)."""
+    for reader in engines:
+        if reader.name != "RapidOCR":
+            continue
+        lines = []
+        for height in ink_labels.HEIGHTS_PX:
+            picture = ink_labels.row_picture(part.note, part.turn or 0, height)
+            if picture is not None:
+                lines.append(" ".join(reader(picture, single_line=True)))
+        text = " ".join(lines)
+        return (
+            bool(lines)
+            and all(_NOTE_WORDS.search(line) and not re.search(r"[\d+]", line) for line in lines)
+            and bool(text)
+        )
+    return False
+
+
+_MM_LINE: Final = re.compile(r"\d{2,5}")
+_BRACKET_LINE: Final = re.compile(r"\[\s*(\d+(?:\s+\d+/\d+)?|\d+/\d+)\s*\]")
+
+
+def _mm_value(part: _Part, engines: Sequence[Any]) -> tuple[Decimal, str] | None:
+    """Millimetres over inches read on the drawn route, or `None`: the bracketed inches read the
+    same by two engines, with no near-miss among their reads, and the millimetres read the same by
+    two engines and agreeing with the inches (`units_check`, a free cross-check: a misread inch
+    is caught by the millimetres, and the other way round)."""
+    turn = part.turn or 0
+    rows = ink_labels.rows(part.label, turn)
+    if len(rows) != 2:
+        return None
+    mm_by: dict[str, set[str]] = {}
+    inch_by: dict[Decimal, set[str]] = {}
+    inch_lines: list[str] = []
+    for reader in engines:
+        for index, row in enumerate(rows):
+            for height in ink_labels.HEIGHTS_PX:
+                picture = ink_labels.row_picture(row, turn, height)
+                if picture is None:
+                    continue
+                line = " ".join(reader(picture, single_line=True)).strip()
+                if index == 0 and _MM_LINE.fullmatch(line):
+                    mm_by.setdefault(line, set()).add(reader.name)
+                elif index == 1:
+                    inch_lines.append(line)
+                    bracket = _BRACKET_LINE.fullmatch(line)
+                    value = None if bracket is None else to_inches(bracket.group(1) + '"')
+                    if value is not None:
+                        inch_by.setdefault(value, set()).add(reader.name)
+    inches = [v for v, names in inch_by.items() if len(names) >= 2]
+    millimetres = [m for m, names in mm_by.items() if len(names) >= 2]
+    if len(inches) != 1 or len(millimetres) != 1:
+        return None
+    value, mm = inches[0], millimetres[0]
+    if not 0 < value <= _BARE_MAX_IN or mm.startswith("0"):
+        return None
+    if any(vv.near_miss(value, other) for other in vv._ocr_values(inch_lines) | set(inch_by)):
+        return None
+    if units_check(f"{mm} [{vv._inches_text(value).rstrip(chr(34))}]") != "agrees":
+        return None
+    return value, mm
+
+
+def _vector_ones(
+    label: ink_labels.Label, value: Decimal, turn: ink_labels.Turn | None = None
+) -> bool | None:
+    """The `1` shape check on the vectors: for a row whose characters are laid out as the value's
+    digits, `True` when every `1` is a narrow stroke, `False` when one is as wide as a `7` (a
+    hand-lettered 7), `None` when no row lays out the value's digits (the engines' check then)."""
+    exact = Fraction(value)
+    whole = exact.numerator // exact.denominator
+    rest = exact - whole
+    parts = (
+        str(whole) if whole else "",
+        str(rest.numerator) if rest else "",
+        str(rest.denominator) if rest else "",
+    )
+    for way in (_marked_turns(label) or ink_labels.turns(label)) if turn is None else (turn,):
+        for row in ink_labels.rows(label, way):
+            found = _row_characters(row, way)
+            if found is None or tuple(len(p) for p in found) != tuple(len(p) for p in parts):
+                continue
+            for digits, characters in zip(parts, found, strict=True):
+                for digit, character in zip(digits, characters, strict=True):
+                    if digit != "1":
+                        continue
+                    frame = ink_labels._frame(ink_labels._union([g.box for g in character]), way)
+                    wide, tall = frame[2] - frame[0], frame[3] - frame[1]
+                    if tall <= 0 or wide / tall >= vv._ONE_MAX_WIDTH:
+                        return False
+            return True
+    return None
 
 
 def _whole_label(
@@ -814,7 +1394,9 @@ def _whole_label(
     return None
 
 
-def _drawn_value(reads: Sequence[Any]) -> Decimal | None:
+def _drawn_value(
+    reads: Sequence[Any], ones: Callable[[Decimal], bool | None] | None = None
+) -> Decimal | None:
     """The one value a drawn label reads as, or `None`: `verify_value`'s label rule with no value
     to expect. Exactly one value read as a whole row by two engines, no reading of the label a
     near-miss of it (one digit off, or inside a longer number), and a `1` in it shaped as a 1. A
@@ -848,7 +1430,12 @@ def _drawn_value(reads: Sequence[Any]) -> Decimal | None:
     } | set(engines)
     if any(vv.near_miss(value, other) for other in seen):
         return None
-    if vv._ones_unsure(list(reads), value) is not None:
+    # The `1` shape: on the vectors when a row lays out the value's digits (`ones`), else as the
+    # engines saw it.
+    shaped = None if ones is None else ones(value)
+    if shaped is False:
+        return None
+    if shaped is None and vv._ones_unsure(list(reads), value) is not None:
         return None
     return value
 
@@ -1053,6 +1640,166 @@ def _text_labels(parsed: _Parsed, halves: Sequence[Mapping[str, Any]]) -> list[d
     return [_label(r, line, _side(r.box, halves)) for r, line in kept[:MAX_LABELS]]
 
 
+type _Taken = tuple[str, float, float, float]
+"""A span another label is centred on: `(orientation, across, start, end)`."""
+
+
+def _line_of(
+    parsed: _Parsed, part: _Part, taken: Sequence[_Taken] = ()
+) -> tuple[dict[str, Any], str] | None:
+    """A drawn label's dimension line and its orientation (`dimension_line`, `drawn=True`), or
+    `None`. `taken`: spans another label is centred on."""
+    box = part.label.box
+    # A dimension's number reads along its line (upright on a horizontal line, up or down the
+    # page on a vertical one): that line is looked for first.
+    turns = (part.turn,) if part.turn is not None else _marked_turns(part.label)
+    ways: tuple[tuple[str, int], ...] = (("h", 3), ("v", 2))
+    if turns and all(t != 0 for t in turns):
+        ways = (("v", 2), ("h", 3))
+    segments: Sequence[Segment] = parsed.segments
+    if part.kind == "mm":
+        ways = ways[:1]
+        # The line runs between the millimetres and the inches, so the label's own strokes
+        # (the brackets, a digit's foot) touch it: they are left out, and the line is looked
+        # for along the reading direction only.
+        x0, y0, x1, y1 = box
+        segments = [
+            (a, b)
+            for a, b in parsed.segments
+            if not all(
+                x0 - 0.3 <= q[0] <= x1 + 0.3 and y0 - 0.3 <= q[1] <= y1 + 0.3 for q in (a, b)
+            )
+        ]
+    spot = part.spot or box
+    for orientation, axis in ways:
+        font = spot[axis] - spot[axis - 2]
+        found = dimension_line(
+            spot,
+            orientation,
+            segments,
+            font,
+            drawn=True,
+            taken=[(t[1], t[2], t[3]) for t in taken if t[0] == orientation],
+        )
+        if found is not None:
+            return found, orientation
+    return None
+
+
+def _span(label: Mapping[str, Any]) -> tuple[str, float, float, float, float] | None:
+    """A label's dimension line as `(orientation, across, start, end, how far its middle is from
+    the line's middle, as a share of half the line)`, or `None`."""
+    line, orientation = label.get("dim_line"), label.get("orientation")
+    if not line or orientation not in ("h", "v"):
+        return None
+    (x0, y0), (x1, y1) = line
+    box = label["box"]
+    if orientation == "h":
+        start, end, across, middle = min(x0, x1), max(x0, x1), (y0 + y1) / 2, (box[0] + box[2]) / 2
+    else:
+        start, end, across, middle = min(y0, y1), max(y0, y1), (x0 + x1) / 2, (box[1] + box[3]) / 2
+    half = max((end - start) / 2, 1e-6)
+    return orientation, across, start, end, abs(middle - (start + end) / 2) / half
+
+
+def _settle_lines(
+    parsed: _Parsed, found: list[tuple[dict[str, Any], _Part]], others: Sequence[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    """One dimension line, one label: when two labels found the same line, the one centred on it
+    keeps it and the other looks again past it (a chain's `3/4"` stacked over its ticks finds the
+    overall's line first). A drawn label left with no line of its own is dropped."""
+    for _round in range(3):
+        spans = [(_span(label), label) for label in [*others, *(f[0] for f in found)]]
+        moved = False
+        kept: list[tuple[dict[str, Any], _Part]] = []
+        for label, part in found:
+            mine = _span(label)
+            if mine is None:
+                continue
+            rivals = [
+                (span, other)
+                for span, other in spans
+                if span is not None
+                and other is not label
+                and span[0] == mine[0]
+                and abs(span[1] - mine[1]) <= 0.6
+                and abs(span[2] - mine[2]) <= 0.6
+                and abs(span[3] - mine[3]) <= 0.6
+                and span[4] < mine[4]
+            ]
+            if not rivals:
+                kept.append((label, part))
+                continue
+            taken: list[_Taken] = [(s[0], s[1], s[2], s[3]) for s, _ in rivals]
+            again = _line_of(parsed, part, taken)
+            moved = True
+            if again is None:
+                continue
+            line, orientation = again
+            label.update(
+                dim_line=line["dim_line"],
+                extension=line["extension"],
+                span_pt=line["span_pt"],
+                orientation=orientation,
+            )
+            kept.append((label, part))
+        found = kept
+        if not moved:
+            break
+    return [label for label, _part in found]
+
+
+def _drawn_label(
+    parsed: _Parsed, part: _Part, engines: Sequence[Any], side: str
+) -> dict[str, Any] | None:
+    """One part of a drawn label read as a label, or `None`: room round it (`_crowded`), a
+    dimension line of its own (`_line_of`), and its value read (`_drawn_value`, or `_mm_value`
+    for millimetres over inches; a note after the value must read as words only)."""
+    label = part.label
+    if _crowded(parsed.page, label, part.also, part.turn):
+        return None
+    line = _line_of(parsed, part)
+    if line is None:
+        return None
+    found, orientation = line
+    box = label.box
+    width, height = box[2] - box[0], box[3] - box[1]
+    mm: str | None = None
+    try:
+        if part.kind == "mm":
+            both = _mm_value(part, engines)
+            value = None if both is None else both[0]
+            mm = None if both is None else both[1]
+        else:
+            value = _drawn_value(
+                _label_reads(label, engines, part.turn),
+                lambda v: _vector_ones(label, v, part.turn),
+            )
+            if value is not None and part.note and not _note_is_words(part, engines):
+                value = None
+    except Exception as failed:  # noqa: BLE001 - an unread label is left out
+        _log.warning("dimension labels: drawn read failed: %s", type(failed).__name__)
+        return None
+    if value is None:
+        return None
+    text = vv._inches_text(value)
+    if mm is not None:
+        text = f"{mm} [{text.rstrip(chr(34))}]"
+    reading = _Reading(
+        text=text,
+        inches=value,
+        box=box,
+        along=(1.0, 0.0) if orientation == "h" else (0.0, 1.0),
+        font=min(width, height),
+        bare=False,
+        bracket=mm is not None,
+        mm=mm,
+        units=None if mm is None else units_check(text),
+        route="drawn",
+    )
+    return _label(reading, found, side)
+
+
 def _add_drawn(
     result: PageLabels,
     parsed: _Parsed,
@@ -1077,8 +1824,12 @@ def _add_drawn(
     labels = result.labels
     skip = [tuple(label["box"]) for label in labels]
     seen: list[Box] = []
-    drawn: list[dict[str, Any]] = []
-    for cluster in _clusters(parsed.page.paths, skip):
+    drawn: list[tuple[dict[str, Any], _Part]] = []
+    clusters, lone = _clusters(parsed.page.paths, skip)
+    lines = _line_ends(parsed.segments)
+    for cluster in [*clusters, *lone]:
+        if cluster in lone and any(_overlap(cluster, other) > 0.5 for other in seen):
+            continue  # a lone path already read as part of a label
         near = vv._ink_paths_near(parsed.page, cluster)
         if len(near) > _MAX_NEAR_PATHS:  # hatching or a dotted fill, not a written number
             continue
@@ -1097,37 +1848,20 @@ def _add_drawn(
                 continue
             seen.append(box)
             side = _side(box, halves)
-            if side != "vendor" or not _inch_marked(label) or _crowded(parsed.page, label):
+            if side != "vendor":
                 continue
-            width, height = box[2] - box[0], box[3] - box[1]
-            found = None
-            for orientation, font in (("h", height), ("v", width)):
-                found = dimension_line(box, orientation, parsed.segments, font)
-                if found is not None:
-                    break
-            if found is None:
+            bare = _without_line_work(label, lines)
+            if bare is None:
                 continue
-            try:
-                value = _drawn_value(_label_reads(label, engines))
-            except Exception as failed:  # noqa: BLE001 - an unread label is left out
-                _log.warning("dimension labels: drawn read failed: %s", type(failed).__name__)
-                continue
-            if value is None:
-                continue
-            reading = _Reading(
-                text=vv._inches_text(value),
-                inches=value,
-                box=box,
-                along=(1.0, 0.0) if orientation == "h" else (0.0, 1.0),
-                font=min(width, height),
-                bare=False,
-                route="drawn",
-            )
-            drawn.append(_label(reading, found, side))
+            for part in _parts(bare):
+                found_label = _drawn_label(parsed, part, engines, side)
+                if found_label is not None:
+                    drawn.append((found_label, part))
         if result.drawn == "partial" or len(labels) + len(drawn) >= MAX_LABELS:
             break
-    drawn.sort(key=lambda label: (round(label["box"][1] / 4), label["box"][0]))
-    labels += drawn
+    settled = _settle_lines(parsed, drawn, labels)
+    settled.sort(key=lambda label: (round(label["box"][1] / 4), label["box"][0]))
+    labels += settled
 
 
 def build_dims(

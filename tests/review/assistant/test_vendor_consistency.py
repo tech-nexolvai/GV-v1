@@ -234,6 +234,42 @@ def test_the_same_span_printed_twice_names_the_value_the_drawing_backs(tmp_path:
     assert finding["arch_box"]["page"] == finding["vendor_box"]["page"] == 1
 
 
+def test_a_part_detail_beside_an_elevation_is_never_the_same_span(tmp_path: Path) -> None:
+    """A side panel drawn beside the cabinet's elevation, its height line ending at the same two
+    heights as the cabinet's overall (by chance), printed smaller than drawn: the panel's own
+    extension lines stop at its own outline, so the two are not proved to be one view, and no
+    finding comes of it (a part detail is not a projection of the elevation)."""
+
+    def detail(x0: float, x1: float, y: float, text: str) -> bytes:
+        # The panel's dimension above its outline: its extension lines go up from the outline
+        # (y - 40 .. y + 3), never down across the elevation's line.
+        return (
+            _line(x0, y, x1, y)
+            + _line(x0, y - 40, x0, y + 3)
+            + _line(x1, y - 40, x1, y + 3)
+            + _line(x0 - 1.5, y - 1.5, x0 + 1.5, y + 1.5)
+            + _line(x1 - 1.5, y - 1.5, x1 + 1.5, y + 1.5)
+            + _text((x0 + x1) / 2 - 5, y + 2, text)
+        )
+
+    body = (
+        # The elevation's overall: extension lines come up to it from below (y 120 .. 213).
+        _line(300, 210, 420, 210)
+        + _line(300, 120, 300, 213)
+        + _line(420, 120, 420, 213)
+        + _line(298.5, 208.5, 301.5, 211.5)
+        + _line(418.5, 208.5, 421.5, 211.5)
+        + _text(355, 212, '60"')
+        # The panel detail above it, the same two ends, printed smaller than drawn.
+        + detail(300, 420, 300, '57"')
+        + _dim(300, 340, 120, '20"')
+        + _dim(450, 500, 150, '25"')
+    )
+    result = _check(tmp_path, body)
+    assert result.contradictions == 0
+    assert [f for f in result.findings if f["source"] == "cross_view"] == []
+
+
 def test_a_label_beside_the_end_of_a_line_is_not_that_lines_value(tmp_path: Path) -> None:
     """A small dimension's text placed at the end of a long line (as drafters do when it does not
     fit) is not a second value for the long line's span."""
