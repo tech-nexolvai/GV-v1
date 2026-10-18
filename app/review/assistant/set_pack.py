@@ -547,7 +547,7 @@ scales.json            each drawing's scale measured from its own printed dimens
                        that agree within 1%), its box, and the printed scale note beside it
                        (note_agrees false: GV resized the drawing; trust the measured scale).
                        Per label: drawn_in, off_by, drawn_to_value.
-notes.json             per drawing: the tags (WD-01, V-322-CUST) and notes it prints, and per
+notes.json             per drawing: the tags (FN-01, FX-101-CUST) and notes it prints, and per
                        page the architect's tags the vendor's drawing does not print.
 status.json            building / ready / failed.
 hires/                 code's 300-dpi tiles of the pages zoom has cut from (not for reading:
