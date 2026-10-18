@@ -138,6 +138,9 @@ class PageLabels:
     drawn: str = "not_run"
     """`not_run`, `done`, `partial` (the time budget ran out) or `no_engine`."""
     seconds: float = 0.0
+    scale_notes: list[dict[str, Any]] = field(default_factory=list)
+    """The printed scale notes (`1/2" = 1'-0"`): `{text, box}` (`view_scales` sets them beside
+    the scale measured from the dimensions)."""
 
 
 # ---- reading the page once -----------------------------------------------------------------------
@@ -922,7 +925,7 @@ def page_labels(
     installed ones)."""
     started = clock()
     parsed = _parse(Path(pdf), page - 1)
-    result = PageLabels(labels=_text_labels(parsed, halves))
+    result = PageLabels(labels=_text_labels(parsed, halves), scale_notes=_scale_notes(parsed))
     if drawn_budget_s > 0:
         _add_drawn(
             result,
@@ -961,6 +964,50 @@ def _number(labels: list[dict[str, Any]]) -> None:
     _scale_checks(labels)
     for number, label in enumerate(labels, start=1):
         label["id"] = f"D{number}"
+
+
+_SCALE_NOTE: Final = re.compile(
+    r"(\d+(?:\s+\d+/\d+)?|\d+/\d+)\s*\"\s*=\s*(\d+\s*'\s*-?\s*\d+(?:\s+\d+/\d+)?\s*\"?)"
+)
+
+
+def _scale_notes(parsed: _Parsed) -> list[dict[str, Any]]:
+    """The scale notes the page's text prints (`1/2" = 1'-0"`), each with its box."""
+    out: list[dict[str, Any]] = []
+    for group in vv._labels(list(parsed.page.chars)):
+        # One row per baseline and letter size: a title printed over a note is not one text.
+        rows: list[list[Any]] = []
+        for char in sorted(group, key=lambda c: (c.size, c.across)):
+            row = next(
+                (
+                    r
+                    for r in rows
+                    if abs(r[0].size - char.size) <= 0.1 * char.size
+                    and abs(r[0].across - char.across) <= 0.5 * char.size
+                ),
+                None,
+            )
+            if row is None:
+                rows.append([char])
+            else:
+                row.append(char)
+        for row in rows:
+            # Phrases: a gap wider than a letter ends one (`ID5.1` is not part of `1/4" = ...`).
+            phrases: list[list[Any]] = []
+            for char in sorted(row, key=lambda c: c.along):
+                last = phrases[-1][-1] if phrases else None
+                if last is not None and char.along - (last.along + last.length) <= char.size:
+                    phrases[-1].append(char)
+                else:
+                    phrases.append([char])
+            for phrase in phrases:
+                text = vv._plain(vv._row_text(phrase, max(c.size for c in phrase)))
+                found = _SCALE_NOTE.search(text)
+                if found is not None:
+                    note = f'{found.group(1)}" = {found.group(2).rstrip(chr(34)).strip()}"'
+                    box = _union([c.box for c in phrase])
+                    out.append({"text": note, "box": [round(v, 2) for v in box]})
+    return out
 
 
 def _text_labels(parsed: _Parsed, halves: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -1089,7 +1136,13 @@ def build_dims(
                 _log.warning("dimension labels: page failed: %s", type(failed).__name__)
                 found = PageLabels(drawn="failed")
             document["pages"].append(
-                {"file": name, "page": number, "drawn": found.drawn, "labels": found.labels}
+                {
+                    "file": name,
+                    "page": number,
+                    "drawn": found.drawn,
+                    "labels": found.labels,
+                    "scale_notes": found.scale_notes,
+                }
             )
             if on_page is not None:
                 on_page(document)
