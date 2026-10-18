@@ -18,9 +18,11 @@ and page map (`page_map.json`). Three checks, each built to report only what cod
    string's dimensions are not drawn to their own values, the labels may belong to other lines (or
    the view is not to scale), so it is not a finding (`doubt`). One that is off names the likely
    wrong number.
-2. **The same span printed twice.** Two of the vendor's dimension lines in one drawing (on the same
-   pasted drawing, e.g. a plan above its front view, which line up in projection) that end on
-   exactly the same two extension lines measure the same span; when they print different values,
+2. **The same span printed twice.** Two of the vendor's dimension lines in one view (on the same
+   pasted drawing, along the same axis, and proved to be in one projection: at each end one
+   extension line runs across both lines, `_one_view`) that end on exactly the same two extension
+   lines measure the same span (a part detail drawn beside an elevation may line up with it by
+   chance, and is never paired); when they print different values,
    one of them is wrong. Code names which one by the drawing's scale (the one drawn to its value is
    the reference, the "should be"); when the scale cannot tell, it is not a finding. Two drawings
    on different pages share no coordinates, so a contradiction across sheets is left to the reading
@@ -118,6 +120,8 @@ _CLEAN: Final = re.compile(
     r"\d{1,3}' ?-? ?\d{1,2}(?: \d{1,2}/\d{1,2})?\"|\d{1,3}'|"
     r"\d{2,5} \[\d{1,4}(?: \d{1,2}/\d{1,2})?\])$"
 )
+#: An extension line reaches a dimension line (or its end) when within this many points.
+_EXTENSION_PT: Final = 1.0
 #: A label belongs to a drawing on the page when within this of its box (points), as `dim_labels`.
 _HALF_PT: Final = 36.0
 #: The most findings and grey items one set gives (a 300-page set stays readable).
@@ -593,6 +597,41 @@ class Contradiction:
     odd_drawn: Fraction
 
 
+def _one_view(a: _Label, b: _Label) -> bool:
+    """Whether two parallel dimension lines are proved to be in one view (one projection): at each
+    end, one of their extension lines runs from one line to the other (a line drawn across both),
+    within `_EXTENSION_PT`. A part detail beside an elevation, whose own extension lines stop at
+    its own outline, lines up with it at most by chance, and is never proved."""
+    if a.orientation != b.orientation:
+        return False
+    low, high = sorted((a.across, b.across))
+    for index, at in ((0, a.start), (1, a.end)):
+        found = False
+        for member in (a, b):
+            ends = member.raw.get("extension")
+            if not isinstance(ends, Sequence) or len(ends) != 2:
+                continue
+            line = ends[index]
+            if not isinstance(line, Sequence) or len(line) != 2:
+                continue
+            try:
+                (fx, fy), (nx, ny) = ((float(p[0]), float(p[1])) for p in line)
+            except (TypeError, ValueError, IndexError):
+                continue
+            along = fx if member.orientation == "h" else fy
+            span = sorted((fy, ny) if member.orientation == "h" else (fx, nx))
+            if (
+                abs(along - at) <= _EXTENSION_PT
+                and span[0] - _EXTENSION_PT <= low
+                and high <= span[1] + _EXTENSION_PT
+            ):
+                found = True
+                break
+        if not found:
+            return False
+    return True
+
+
 def find_contradictions(
     labels: Sequence[_Label], segments: Segments | None = None
 ) -> tuple[list[Contradiction], int]:
@@ -634,7 +673,9 @@ def find_contradictions(
                 if pair in done:
                     continue
                 done.add(pair)  # type: ignore[arg-type]
-                if not (any(a.extensions) or any(b.extensions)):
+                if not _one_view(a, b):
+                    # Not proved to be one projection: a part detail drawn beside an elevation
+                    # can line up with it by chance (no false Wrong from that).
                     unsettled += 1
                     continue
                 scale = _scale([a, b], drawing)
@@ -710,7 +751,7 @@ def _string_finding(
     pieces = " + ".join(p.text for p in parts)
     total = format_inches(check.parts_sum)
     sum_text = (
-        f"{pieces} = {total} ≠ {overall.text} printed " f"(off {format_inches(abs(check.off_by))})"
+        f"{pieces} = {total} ≠ {overall.text} printed (off {format_inches(abs(check.off_by))})"
     )
     place = f"{area}: " if area else ""
     why = (
