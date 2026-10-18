@@ -672,7 +672,7 @@ type _Layout = tuple[int, int, int]
 
 def _layout(row: Sequence[ink_labels.Token]) -> _Layout | None:
     """How many glyphs the row's vectors draw for its whole number, its stacked fraction's
-    numerator and its denominator (`(2, 1, 1)` is `13 1/8"`), or `None` when the row is not one
+    numerator and its denominator (`(2, 1, 1)` is `17 3/8"`), or `None` when the row is not one
     number with at most one stacked fraction at its end. A digit drawn in two strokes that do not
     touch counts twice, so a layout only ever confirms digits, never adds one."""
     whole = numerator = denominator = 0
