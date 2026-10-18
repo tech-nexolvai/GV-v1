@@ -225,6 +225,12 @@ def _sharpest(box: Box) -> int:
     return fitting_dpi(Decimal(str(box[2] - box[0])), Decimal(str(box[3] - box[1])))
 
 
+def _tiling_score(sharp: int, count: int, min_dpi: int) -> tuple[bool, int, int]:
+    if sharp >= min_dpi:
+        return True, -count, sharp
+    return False, sharp, -count
+
+
 def plan_parts(box: Box, min_dpi: int = MIN_LEGIBLE_DPI, overview: bool = True) -> list[_Part]:
     """How one drawing's box is sent: whole when that is at least `min_dpi` sharp; else the fewest
     overlapping tiles that each are (at most `MAX_TILES`), plus a small overview of the whole."""
@@ -254,9 +260,11 @@ def plan_parts(box: Box, min_dpi: int = MIN_LEGIBLE_DPI, overview: bool = True) 
                 for c in range(columns)
             ]
             sharp = min(_sharpest(tile) for tile in tiles)
-            # The fewest tiles that reach `min_dpi`; among those, the sharpest.
-            score = (sharp >= min_dpi, -count, sharp)
-            if best is None or score > (best[0] >= min_dpi, -best[1], best[0]):
+            # The fewest tiles that reach `min_dpi` (the sharpest of those); while none does,
+            # the sharpest so far.
+            if best is None or _tiling_score(sharp, count, min_dpi) > _tiling_score(
+                best[0], best[1], min_dpi
+            ):
                 best = (sharp, count, columns, tiles)
         if best is not None and best[0] >= min_dpi:
             break

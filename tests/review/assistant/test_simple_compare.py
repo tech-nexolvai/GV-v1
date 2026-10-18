@@ -328,6 +328,10 @@ def test_a_small_drawing_goes_whole_and_a_big_one_in_sharp_tiles() -> None:
     assert min(t.box[1] for t in tiles) == 20.0 and max(t.box[3] for t in tiles) == 690.0
     width = int(1120 * big[0].dpi / 72) + 2, int(670 * big[0].dpi / 72) + 2
     assert image_tokens(*width) <= OVERVIEW_TOKENS
+    # Too big for any tiling to reach the mark: the sharpest arrangement, not the fewest tiles.
+    huge = plan_parts((0.0, 0.0, 3000.0, 2000.0))[1:]
+    assert len(huge) == compare.MAX_TILES
+    assert all(t.dpi == max(t.dpi for t in huge) for t in huge)
 
 
 def test_the_prompt_is_short_and_states_the_rules() -> None:
