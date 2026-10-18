@@ -22,7 +22,7 @@ from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 from typing import Final
 
-__all__ = ["internal", "rule_requirement", "vendor_text"]
+__all__ = ["inches_first", "internal", "item_name", "rule_requirement", "vendor_text"]
 
 #: Internal phrases, in any case.
 _PHRASES: Final = re.compile(
@@ -54,10 +54,23 @@ def internal(text: object) -> bool:
     )
 
 
+#: A metric drawing's value with its inches in brackets, as printed: `1219 [48]`, `2007 [79 1/32]`.
+_MM_INCHES: Final = re.compile(
+    r"(?<![\w./\[])(\d{2,5}(?:\.\d+)?)\s*\[\s*(\d+(?:\s+\d+/\d+)?|\d+/\d+)\s*\](?![\"\w])"
+)
+
+
+def inches_first(text: object) -> str:
+    """Every millimetre value printed with its inches in brackets, written inches first as the
+    vendor's reviewer reads them: `1219 [48]` -> `48" (1219 mm)` (#1634, letter and register)."""
+    return _MM_INCHES.sub(lambda m: f'{m.group(2)}" ({m.group(1)} mm)', str(text or ""))
+
+
 def vendor_text(text: object, fallback: str | None = None) -> str | None:
     """The words as the vendor may read them: record ids and "see GV Review's record" taken out,
-    spaces tidied; `fallback` when what is left is empty or still internal."""
-    words = " ".join(str(text or "").split())
+    millimetres written after the inches (`inches_first`), spaces tidied; `fallback` when what is
+    left is empty or still internal."""
+    words = " ".join(inches_first(text).split())
     if not internal(words):
         return words or fallback
     cleaned = _CHECK_ID.sub(r"\1", _SEE_RECORD.sub(" ", _RECORD_ID.sub(" ", words)))
@@ -65,6 +78,51 @@ def vendor_text(text: object, fallback: str | None = None) -> str | None:
     if cleaned and not internal(cleaned):
         return cleaned
     return fallback
+
+
+#: An item named only by a record id (`air:<uuid>`, `ai-review:p3:...`, a bare uuid).
+_ID_ONLY: Final = re.compile(
+    r"^(?:(?:air|ai-review)(?::[\w.-]+)+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$",
+    re.IGNORECASE,
+)
+#: Code's own sentences appended to a reason (a pairing's proof): never an item's name.
+_CODE_SENTENCE: Final = re.compile(r"^(?:Code |The architect prints|Both print|Vendor's parts)")
+_NAME_CHARS: Final = 90
+
+
+def _first_clause(text: object) -> str | None:
+    """A reason's first sentence (cut at `.`, `;` or `:` after a few words), capitalised."""
+    words = " ".join(str(text or "").split())
+    if not words or _CODE_SENTENCE.match(words):
+        return None
+    cut = re.split(r"[.;](?=\s|$)", words, maxsplit=1)[0].strip(" ,:-")
+    if not cut:
+        return None
+    cut = cut[:1].upper() + cut[1:]
+    return cut if len(cut) <= _NAME_CHARS else cut[: _NAME_CHARS - 1].rstrip() + "\u2026"
+
+
+def item_name(finding: object) -> str | None:
+    """A finding's name as the vendor reads it, never a record id: its item; else the first
+    clause of its reason ("Shelf depth, front to back"); else the vendor's printed dimension code
+    read ("Dimension 48\" (1219 mm)"). `None` when there are no words to name it by."""
+    if not isinstance(finding, dict):
+        return None
+    item = " ".join(str(finding.get("item") or "").split())
+    if item and not _ID_ONLY.match(item):
+        named = vendor_text(item)
+        if named:
+            return named
+    why = _first_clause(finding.get("why"))
+    if why:
+        named = vendor_text(why)
+        if named:
+            return named
+    dims = finding.get("dims")
+    label = dims.get("vendor") if isinstance(dims, dict) else None
+    if isinstance(label, dict) and label.get("text"):
+        return vendor_text(f"Dimension {label['text']}")
+    return None
 
 
 def inch_words(value: Decimal) -> str:

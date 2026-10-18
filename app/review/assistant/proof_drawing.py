@@ -100,7 +100,7 @@ from app.review.assistant.proof import (
     vendor_own,
     vendor_value,
 )
-from app.review.assistant.vendor_text import vendor_text
+from app.review.assistant.vendor_text import item_name, vendor_text
 
 __all__ = [
     "GREEN",
@@ -288,10 +288,10 @@ def note_lines(mark: Mark) -> list[list[_Run]]:
 
 
 def item_words(finding: Mapping[str, Any]) -> str:
-    """A clouded item's name as the vendor reads it (`vendor_text`: never a record id or internal
-    words), else "Item on page N"."""
+    """A clouded item's name as the vendor reads it (`vendor_text.item_name`: never a record id or
+    internal words), else "Item on page N" when there are no words to name it by."""
     fallback = f"Item on page {finding.get('page')}" if finding.get("page") else "Item"
-    return vendor_text(finding.get("item"), fallback) or fallback
+    return item_name(dict(finding)) or fallback
 
 
 def tag(finding: Mapping[str, Any], number: int) -> str:

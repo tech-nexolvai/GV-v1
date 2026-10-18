@@ -220,7 +220,7 @@ from app.review.assistant.full_check_brief import (
     unreached_send_back,
     with_label_gaps,
 )
-from app.review.assistant.full_check_lenses import Fold, lens_folds, same_wrongs
+from app.review.assistant.full_check_lenses import Fold, lens_folds, names_apart, same_wrongs
 from app.review.assistant.full_check_plan import (
     FanOutPlan,
     HelperJob,
@@ -2373,7 +2373,8 @@ class ChatEngine:
     def _fold_same_wrongs(self) -> None:
         """The same Wrong item reported more than once (two helpers, or a helper and a gap
         closer): kept once, before the resolver, the counts and the files (#1622,
-        `full_check_lenses.same_wrongs`), so no letter, register or cloud drawing repeats it."""
+        `full_check_lenses.same_wrongs`), so no letter, register or cloud drawing repeats it; then
+        different items left under one name are named apart (`names_apart`)."""
         try:
             folds = same_wrongs(self.book.live())
         except Exception:  # noqa: BLE001 - the answer keeps its findings as they were
@@ -2384,6 +2385,14 @@ class ChatEngine:
                 if not self.book.absorb(fold.drop):
                     continue
             self._show_dropped(fold.drop, fold.reason)
+        # Different items left under one name (two strings of one elevation): each named by its
+        # place on the page, so the letter and the register never show two identical lines.
+        with self.finding_lock:
+            live = {str(f["id"]): f for f in self.book.live()}
+            for finding_id, name in names_apart(list(live.values())).items():
+                renamed = {**live[finding_id], "item": name}
+                if self.book.replace(renamed):
+                    self._show_finding(renamed)
 
     def _resolve_decisions(self) -> None:
         """Whole-set work (#1554): code settles the "Your decision" items the drawings answer
@@ -2508,8 +2517,15 @@ class ChatEngine:
         if not recorded.readable:
             return []
         self.book.record_ids = frozenset(item["record_id"] for item in recorded.differences)
+        areas = self._page_areas()
         seeded = []
         for item in recorded.differences:
+            area = areas.get(item.get("page")) if item.get("source") == "ai_page_review" else None
+            what = str(item.get("what") or "")
+            if area and not what.lower().startswith(area.lower()):
+                # An AI page review row names only what it measures: its area goes first, as in
+                # every other item's name ("Pantry: Shelf depth, front to back").
+                item = {**item, "what": f"{area}: {what}"}
             finding = self.book.seed(item)
             if finding is None:
                 continue
@@ -2519,6 +2535,25 @@ class ChatEngine:
                 f"{finding['architect']}; vendor {finding['vendor']} ({item['record_id']})"
             )
         return seeded
+
+    def _page_areas(self) -> dict[int, str]:
+        """Each vendor page's area name from the set pack's page map ("Pantry"), else nothing."""
+        folder = self.tools.workspace.set_pack
+        main = self.book.main_file
+        try:
+            page_map = load_page_map(folder) if folder is not None else None
+        except Exception:  # noqa: BLE001 - names then go without their area
+            return {}
+        out: dict[int, str] = {}
+        for entry in (page_map or {}).get("pages") or []:
+            if not isinstance(entry, Mapping) or not isinstance(entry.get("page"), int):
+                continue
+            if main and entry.get("file") and entry.get("file") != main:
+                continue
+            name = re.sub(r"^\s*\d{1,3}\s*[.)]\s*", "", str(entry.get("area") or "")).strip()
+            if name:
+                out[entry["page"]] = name
+        return out
 
     def _start_markup_base(self) -> None:
         """Full check: the cloud drawing's copy of the vendor's PDF, made now in a thread (the
@@ -3179,6 +3214,14 @@ class ChatEngine:
                 if not self.book.absorb(fold.drop):
                     continue
             self._show_dropped(fold.drop, fold.reason)
+        # Different items left under one name (two strings of one elevation): each named by its
+        # place on the page, so the letter and the register never show two identical lines.
+        with self.finding_lock:
+            live = {str(f["id"]): f for f in self.book.live()}
+            for finding_id, name in names_apart(list(live.values())).items():
+                renamed = {**live[finding_id], "item": name}
+                if self.book.replace(renamed):
+                    self._show_finding(renamed)
             if fold.disagree:
                 with self._lock:
                     self._lens_disagree.append(fold)

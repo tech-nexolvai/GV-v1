@@ -20,7 +20,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
-__all__ = ["Fold", "SameWrong", "item_key", "lens_folds", "same_wrongs"]
+__all__ = ["Fold", "SameWrong", "item_key", "lens_folds", "names_apart", "same_wrongs"]
 
 _WORD: Final = re.compile(r"[a-z0-9]+(?:/[0-9]+)?")
 _FILLER: Final = frozenset({"the", "a", "an", "of", "on", "at", "in", "for", "to"})
@@ -219,3 +219,68 @@ def same_wrongs(findings: Sequence[Mapping[str, Any]]) -> list[SameWrong]:
             gone.add(str(other["id"]))
             folds.append(SameWrong(keep=str(keep["id"]), drop=str(other["id"])))
     return folds
+
+
+# ---- two items with one name (#1622) -------------------------------------------------------------
+
+_ACROSS: Final = {2: ("left", "right"), 3: ("left", "middle", "right")}
+_DOWN: Final = {2: ("upper", "lower"), 3: ("top", "middle", "bottom")}
+
+
+def _ordinal(n: int) -> str:
+    return f"{n}{'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
+
+
+def _with_place(item: str, place: str) -> str:
+    """`Dimension string (elevation)` + `left` -> `Dimension string (elevation, left)`."""
+    if item.endswith(")") and "(" in item:
+        return f"{item[:-1]}, {place})"
+    return f"{item} ({place})"
+
+
+def names_apart(findings: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    """New names for findings that would read as one line twice: the same page, item words, vendor
+    value and should-be value at vendor spots that do not overlap (two strings of one elevation, a
+    left and a right section). Each gets its place on the page, read from its spot: left / middle / right when they
+    sit side by side, else upper / lower; or its round when each is of another round
+    (`{finding id: new name}`). Items the same-Wrong fold
+    found to be one item are folded before this, so what is left here are really different."""
+    groups: dict[tuple[Any, ...], list[tuple[Mapping[str, Any], tuple[float, ...]]]] = {}
+    for finding in findings:
+        box = _vendor_box(finding)
+        name = " ".join(str(finding.get("item") or "").split())
+        if box is None or not name or not finding.get("id"):
+            continue
+        key = (
+            finding.get("page"),
+            item_key(name),
+            _value(finding, "vendor"),
+            _value(finding, "architect"),
+        )
+        groups.setdefault(key, []).append((finding, box))
+    out: dict[str, str] = {}
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        rounds = [f.get("round") for f, _b in members]
+        if all(isinstance(r, int) for r in rounds) and len(set(rounds)) == len(rounds):
+            for finding, _box in members:  # one per round: the round names them apart
+                name = " ".join(str(finding.get("item") or "").split())
+                out[str(finding["id"])] = _with_place(name, f"round {finding.get('round')}")
+            continue
+        centres = [((b[0] + b[2]) / 2, (b[1] + b[3]) / 2) for _f, b in members]
+        if len({(round(x), round(y)) for x, y in centres}) < len(centres):
+            continue  # two at one spot: the same item, not for names
+        xs, ys = [c[0] for c in centres], [c[1] for c in centres]
+        across = max(xs) - min(xs) >= max(ys) - min(ys)
+        order = sorted(range(len(members)), key=lambda i: centres[i][0 if across else 1])
+        words = (_ACROSS if across else _DOWN).get(len(members))
+        for rank, at in enumerate(order):
+            finding = members[at][0]
+            if words is not None:
+                place = words[rank]
+            else:
+                place = f"{_ordinal(rank + 1)} from the {'left' if across else 'top'}"
+            name = " ".join(str(finding.get("item") or "").split())
+            out[str(finding["id"])] = _with_place(name, place)
+    return out

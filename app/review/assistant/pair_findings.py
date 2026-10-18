@@ -45,6 +45,8 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any, Final
 
+from app.review.assistant.vendor_text import item_name
+
 __all__ = [
     "CREATED_BY",
     "TOLERANCE",
@@ -326,7 +328,7 @@ def same_item(
 def proved_changes(code: Mapping[str, Any], existing: Mapping[str, Any]) -> dict[str, Any]:
     """What an existing finding takes from code's pair of the same item: code's values, status,
     labels and pairing (code wins on proof; a summed chain makes it Not compared); its id, name and
-    pictures stay unless it has no architect spot."""
+    pictures stay unless it has no architect spot (or no name but a record id: then the pair's)."""
     changes: dict[str, Any] = {
         "architect": code["architect"],
         "vendor": code["vendor"],
@@ -335,6 +337,9 @@ def proved_changes(code: Mapping[str, Any], existing: Mapping[str, Any]) -> dict
         "paired_by": "code",
         "why": " ".join(f"{existing.get('why') or ''} {code['why']}".split())[:600],
     }
+    if item_name({"item": existing.get("item")}) in (None, "Recorded difference"):
+        # An item named only by its record id gets the pair's own name (what its ends land on).
+        changes["item"] = code["item"]
     if code.get("architect_parts"):
         # A summed chain: Not compared, whatever the answer's own reading said (never red).
         changes["architect_parts"] = dict(code["architect_parts"])

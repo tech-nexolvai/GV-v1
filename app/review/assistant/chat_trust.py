@@ -58,6 +58,7 @@ from typing import Any, Final
 from app.review.assistant import witness
 from app.review.assistant.chat_findings import finding_categories, live_findings, page_ranges
 from app.review.assistant.dim_findings import label_checks
+from app.review.assistant.vendor_text import item_name
 
 __all__ = [
     "ACCURACY_CALIBRATION_LINE",
@@ -175,6 +176,17 @@ def _evaluated(row: Mapping[str, Any]) -> bool:
     return any(bool(row.get(key)) for key in keys)
 
 
+def _row_name(row: Mapping[str, Any]) -> str:
+    """An AI page review row's item name: what it measures, else its key when that is words, else
+    its reason's first clause."""
+    measures = " ".join(str(row.get("measures") or "").split())
+    if measures:
+        return measures[:1].upper() + measures[1:]
+    # A readable key ("sink centre") names it too; a record id (`air:<id>`) never does.
+    named = item_name({"item": row.get("key"), "why": row.get("why")})
+    return named or "Recorded difference"
+
+
 def recorded_from(document: Mapping[str, Any] | None) -> Recorded:
     """`review_results`' whole-set document, read for what it recorded. Each recorded difference
     has a `record_id`: the code record's id, or `ai-review:p<page>:<key>` for an AI page review
@@ -271,7 +283,9 @@ def recorded_from(document: Mapping[str, Any] | None) -> Recorded:
                         "source": "ai_page_review",
                         "id": None,
                         "page": sheet.get("page"),
-                        "what": key,
+                        # A real name (#1634): what the dimension measures, else the first
+                        # clause of the review's reason; never the row's key (`air:<id>`).
+                        "what": _row_name(row),
                         "category": "other",
                         "architect": row.get("architect_text"),
                         "vendor": row.get("vendor_text"),
