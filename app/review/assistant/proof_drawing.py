@@ -1320,7 +1320,8 @@ def not_compared_pdf(
             Paragraph(
                 escape(f"{TRADE_WORDS.get(reason, words)} ({len(group)})")
                 + f'<font size="9" color="{_hex(_LIST_GREY)}">&nbsp;&nbsp;{escape(words)}</font>',
-                styles["section"],
+                # Not kept with its table: a long table starts on the same page and splits.
+                ParagraphStyle("list_section", parent=styles["section"], keepWithNext=0),
             )
         )
         table = Table([head, *group], colWidths=widths, repeatRows=1, hAlign="LEFT")

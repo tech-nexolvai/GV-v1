@@ -102,11 +102,12 @@ def test_the_csv_says_the_words_people_read() -> None:
     assert values["Status"] == "Right" and values["Trust"] == ""
 
 
-def test_the_cloud_drawing_and_report_say_your_decision() -> None:
+def test_the_cloud_drawing_and_report_say_not_compared() -> None:
+    # #1619: nothing goes to the reviewer's decision.
     note = chat_drawing.note_text(1, _finding(status="check"))
-    assert note.startswith("Your decision: Vanity top length")
+    assert note.startswith("Not compared: Vanity top length")
     for legend in (chat_drawing.LEGEND, chat_drawing.LEGEND_CLOUDED):
-        assert "needs your decision" in legend
+        assert "not compared" in legend and "your decision" not in legend
         assert "to check" not in legend.casefold() and "check:" not in legend.casefold()
 
 

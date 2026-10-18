@@ -232,7 +232,7 @@ def _unproved(finding: Mapping[str, Any]) -> Classified:
     if spans is not None:
         return _not(
             "different_reference",
-            f"not directly comparable: vendor dimensions to {spans[0]}, architect to {spans[1]}",
+            f"vendor dimensions to {spans[0]}, architect to {spans[1]}",
             "the printed offset between the two points (for example the top's thickness)",
         )
     if not _vendor_read(finding):
@@ -244,8 +244,8 @@ def _unproved(finding: Mapping[str, Any]) -> Classified:
     if _read_by_code(finding):
         return _not(
             "different_reference",
-            "not directly comparable: code read both values but could not prove both dimensions "
-            "run between the same points",
+            "code read both values but could not prove both dimensions run between the same "
+            "points",
             "a dimension of {thing} on both drawings between the same two points",
         )
     return _not(
@@ -303,7 +303,7 @@ def _check_item(finding: Mapping[str, Any]) -> Classified:
     if reason == "measures_something_else" or named == "different_extent":
         return _not(
             "different_reference",
-            "not directly comparable: the two dimensions run between different points",
+            "the two dimensions run between different points",
             "the printed offset between the two points (for example the top's thickness)",
         )
     if named == "scaled":

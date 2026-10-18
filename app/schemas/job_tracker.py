@@ -58,7 +58,9 @@ class TrackerSightingOut(_Out):
     finding_id: str = Field(description="The live finding a click opens (the carrier of a fold).")
     round: int
     page: int | None
-    status: str = Field(description="different (Wrong), check (Not compared, #1619) or same (Right).")
+    status: str = Field(
+        description="different (Wrong), check (Not compared, #1619) or same (Right)."
+    )
     compared: bool = Field(description="False: a Right that was not compared, so no proof.")
     round_status: TrackerRoundStatus | None
     folded: bool = Field(description="A page the resolver folded into another finding (#1554).")

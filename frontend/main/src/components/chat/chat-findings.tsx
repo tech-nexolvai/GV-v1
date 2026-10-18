@@ -58,7 +58,8 @@ const statusOf = (finding: ChatFinding): RowStatus => (finding.status === 'same'
 
 const DOT: Record<RowStatus, string> = {
   different: 'bg-outcome-fail',
-  check: 'bg-outcome-review',
+  // #1619: not compared is grey and outlined (never amber: nothing waits for a decision).
+  check: 'bg-transparent ring-[1.5px] ring-inset ring-muted-foreground/60',
   same: 'bg-outcome-pass',
   not_compared: 'bg-transparent ring-[1.5px] ring-inset ring-outcome-missing',
 };

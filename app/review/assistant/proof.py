@@ -418,7 +418,7 @@ def governs(finding: Mapping[str, Any]) -> str:
     if isinstance(box, Mapping) and box.get("page"):
         page = box.get("page")
     where = f", page {page}" if page and page != finding.get("page") else ""
-    if should_be_value(finding) == architect:
+    if should_be_value(finding) == architect or tags_proved(finding):
         return f"{words}{where}"
     return f"{words} {architect}{where}"
 
