@@ -77,7 +77,8 @@ def test_the_registry_holds_the_clients_products_two_active() -> None:
         # The strict product scope reads these: specific words, then broad hints, and
         # no word two active products share.
         assert product.words and product.hints, product.id
-    for one, two in ((a, b) for a in known.active() for b in known.active() if a.id < b.id):
+    # Every product's words are its own, the ones not active yet too (they re-file "other" items).
+    for one, two in ((a, b) for a in known.products for b in known.products if a.id < b.id):
         assert not set(one.words) & {*two.words, *two.hints}, (one.id, two.id)
         assert not set(two.words) & {*one.words, *one.hints}, (one.id, two.id)
     assert known.get("lighting") is not None and not known.get("lighting").active  # type: ignore[union-attr]

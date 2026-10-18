@@ -779,6 +779,8 @@ class ChatEngine:
         # finding of another product is never recorded.
         self.product_scope = ProductScope.of(settings.products)
         self.book.product_scope = self.product_scope
+        self._page_words: dict[int, str] | None = None
+        self.book.page_words = self.page_words
         self._positions: dict[str, int] = {}
         self._coverage_index: int | None = None
         # What this answer is about (#1520): the whole set, or the pages / area the question names.
@@ -3053,6 +3055,37 @@ class ChatEngine:
             outside=lambda pages: outside_unit(pages, texts, scope),
         )
         return scoped, plan.pages
+
+    def page_words(self, page: int) -> str:
+        """A vendor page's printed words and its area's title (the set pack's page map), read once
+        per message: what re-files an "other" item to a product (`product_scope.refiled`). Empty
+        when the pack has neither."""
+        with self._lock:
+            known = self._page_words
+        if known is None:
+            known = {}
+            folder = self.tools.workspace.set_pack
+            main = self.book.main_file
+            page_map = load_page_map(folder) if folder is not None else None
+            for entry in (page_map or {}).get("pages") or []:
+                if isinstance(entry, Mapping) and isinstance(entry.get("page"), int):
+                    if main and entry.get("file") and entry.get("file") != main:
+                        continue
+                    known[entry["page"]] = str(entry.get("area") or "")
+            files = [str(f) for f in (page_map or {}).get("files") or [] if f] or (
+                [main] if main else []
+            )
+            if folder is not None and main:
+                try:
+                    # The same file list as the planning reads, so the pack's cache is shared.
+                    for (name, number), text in page_texts(folder, files).items():
+                        if name == main:
+                            known[number] = f"{known.get(number, '')} {text}"
+                except Exception as failed:  # noqa: BLE001 - re-filed from its own words only
+                    _log.warning("assistant chat page words not read: %s", type(failed).__name__)
+            with self._lock:
+                self._page_words = known
+        return known.get(page, "")
 
     def _note_coverage(self, page: int, note: str) -> None:
         coverage = self.book.note_coverage(page, note)

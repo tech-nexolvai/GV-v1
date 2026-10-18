@@ -45,7 +45,7 @@ from app.review.assistant.chat_corrections import parse_ref
 from app.review.assistant.dim_findings import LabelRefused, fill_from_labels, label_for_cite
 from app.review.assistant.dim_index import DimLabels, labels_for
 from app.review.assistant.impact import by_impact
-from app.review.assistant.product_scope import ProductScope, category_for
+from app.review.assistant.product_scope import ProductScope, refiled
 from app.review.assistant.sandbox import UPLOADS, ChatWorkspace, SandboxRefused
 from app.review.assistant.tool_schema import box_schema
 from vocabulary.product_registry import registry
@@ -942,6 +942,9 @@ class FindingBook:
     recorded (the hard filter); `None`: every product (tests and older callers)."""
     out_of_scope: int = 0
     """The findings refused because their product is not in scope (kept in the trust block)."""
+    page_words: Callable[[int], str] | None = None
+    """A page's printed words and its area's title (the set pack), read to re-file an "other"
+    item to a product before the scope drops it (`product_scope.refiled`)."""
     _cites: int = 0
     """The recorded differences this answer must account for (set by the engine)."""
     _count: int = 0
@@ -1117,15 +1120,22 @@ class FindingBook:
             )
         return out
 
+    def _words_of(self, finding: Mapping[str, Any]) -> Callable[[], str]:
+        """Its page's words, read only when its own words name no product."""
+        page, words = finding.get("page"), self.page_words
+        return lambda: words(page) if words is not None and isinstance(page, int) else ""
+
     def _in_scope(self, fields: dict[str, Any], created_by: str) -> bool:
-        """Whether a finding's product is in this message's scope; a code-made "other" item named
-        with one product's words gets that product's category first (`category_for`). An
-        out-of-scope one is counted, never recorded."""
+        """Whether a finding's product is in this message's scope. An "other" or unknown item is
+        re-filed to a product first, from its own words, then its page's (`refiled`); a code-made
+        one gets its one product even under All (`category_for`). An out-of-scope one is counted,
+        never recorded."""
         scope = self.product_scope
         if scope is None:
             return True
-        fields["category"] = category_for({**fields, "created_by": created_by})
-        if scope.allows(fields["category"]):
+        category = refiled({**fields, "created_by": created_by}, scope, self._words_of(fields))
+        if category is not None:
+            fields["category"] = category
             return True
         with self._lock:
             self.out_of_scope += 1
@@ -1389,8 +1399,13 @@ class FindingBook:
         if not changes:
             raise SandboxRefused("give at least one field to change")
         scope = self.product_scope
-        if "category" in changes and scope is not None and not scope.allows(changes["category"]):
-            raise SandboxRefused(scope.refusal(changes["category"]))
+        if "category" in changes and scope is not None:
+            with self._lock:
+                merged = {**self.findings[finding_id], **changes}
+            category = refiled(merged, scope, self._words_of(merged))
+            if category is None:
+                raise SandboxRefused(scope.refusal(changes["category"]))
+            changes["category"] = category
         changes["dims"] = dims
         notes: list[str] = list(label_notes)
         for box, picture, side in (
@@ -1543,7 +1558,14 @@ class FindingBook:
             record.get("category") if record.get("category") in finding_categories() else "other"
         )
         shown = " ".join(str(record.get("what") or "Recorded difference").split())[:_MAX_ITEM]
-        named = {"category": category, "item": shown}
+        named = {
+            "category": category,
+            "item": shown,
+            "page": page,
+            "architect": record.get("architect"),
+            "vendor": record.get("vendor"),
+            "why": record.get("why"),
+        }
         if not self._in_scope(named, "gv_review"):
             return None
         with self._lock:

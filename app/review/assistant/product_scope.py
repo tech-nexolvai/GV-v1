@@ -17,6 +17,11 @@ ruled, counted and drawn, for a full check and for a typed question alike:
   (`record_products`, from the rulebook), the vendor consistency check, the tag reader and the
   drawn-things helpers by each item's category; a code-made item named "other" gets a product's
   category when its name uses only that product's words (`category_for`).
+- **Re-filed before dropped.** Under a pick that is not All, an "other" or unknown item (whoever
+  made it) is re-filed to a product by the registry's `words` and `hints` of every product, on its
+  name, then its other words, then its page's printed words and area title (`refiled`): a pull
+  size is a cabinet item, a pendant light is lighting (never picked while not active), a tag of
+  "counter / cabinets" stays in either pick.
 - **A hard filter** (`FindingBook` refuses an out-of-scope finding; `final_blocks` drops any that
   still reached the answer's blocks): a finding whose category is not in scope never reaches the
   answer, its counts, the cloud drawing, the report, the CSV, the tracker or the grey and amber
@@ -48,6 +53,7 @@ __all__ = [
     "named_products",
     "no_rules_note",
     "outside_unit",
+    "refiled",
     "scaled_price",
     "scoped_document",
     "scoped_loader",
@@ -128,14 +134,16 @@ def _uses(plain: str, words: Iterable[str]) -> bool:
     return False
 
 
-def named_products(text: object, *, hints: bool = False) -> set[str]:
+def named_products(text: object, *, hints: bool = False, every: bool = False) -> set[str]:
     """The active products whose registry `words` the text uses ("toe kick", "toekick" and "Toe-
-    kick" all count); with `hints`, their `hints` too ("sink": maybe a countertop). A product
+    kick" all count); with `hints`, their `hints` too ("sink": maybe a countertop); with `every`,
+    the products not active yet too (a pendant light is lighting, never a cabinet). A product
     with no words is never named."""
     plain = _plain(text)
+    known = registry()
     return {
         product.id
-        for product in registry().active()
+        for product in (known.products if every else known.active())
         if _uses(plain, product.words) or (hints and _uses(plain, product.hints))
     }
 
@@ -161,6 +169,53 @@ def no_rules_note(products: Sequence[str]) -> str | None:
     return f"No GV rules for {registry().words(products)} yet: compared against the architect only."
 
 
+# ---- re-filing an "other" item before it is dropped ----------------------------------------------
+
+#: The finding's other words read for its product: why, both values and the help it gives.
+_OWN_TEXT: Final = ("why", "architect", "vendor", "question", "check_reason")
+
+
+def _own_text(finding: Mapping[str, Any]) -> str:
+    parts = [str(finding.get(name) or "") for name in _OWN_TEXT]
+    helped = finding.get("decision_help")
+    if isinstance(helped, Mapping):
+        parts += [str(value) for value in helped.values() if isinstance(value, str)]
+    return " ".join(parts)
+
+
+def refiled(
+    finding: Mapping[str, Any], scope: ProductScope, page_text: str | Callable[[], str] = ""
+) -> str | None:
+    """The category a finding is kept under, or `None` when it is out of scope (dropped).
+
+    A finding of an active product is kept when that product is in scope. With every product in
+    scope nothing is dropped (a code-made "other" item still gets its one product: `category_for`).
+    Otherwise an "other" or unknown item is re-filed before it is dropped (orchestrator,
+    2026-10-18: a pull size or a finish tag the AI filed as "other" is a cabinet item). Code reads
+    the registry's `words` and `hints` of every product, in order, until something matches:
+
+    1. the item's name ("Pendant light count" is lighting, "Pull size" a cabinet item);
+    2. its other words (why, both values, the question and help it gives);
+    3. the words printed on its page and its area's title (`page_text`, read only then).
+
+    One product matched: filed there, kept only when it is in scope (a product not active yet never
+    is). Several matched: kept, under the first one in scope, when one is ("counter / cabinets
+    tags" stays in either pick). None: dropped (an item of no product is checked only under All)."""
+    category = str(finding.get("category") or OTHER_CATEGORY)
+    if category in registry().active_ids():
+        return category if scope.allows(category) else None
+    if scope.every:
+        return category_for(finding)
+    matched = named_products(finding.get("item"), hints=True, every=True)
+    if not matched:
+        matched = named_products(_own_text(finding), hints=True, every=True)
+    if not matched:
+        words = page_text() if callable(page_text) else page_text
+        matched = named_products(words, hints=True, every=True)
+    picked = [product for product in scope.products if product in matched]
+    return picked[0] if picked else None
+
+
 # ---- the final filter -----------------------------------------------------------------------------
 
 
@@ -175,7 +230,7 @@ def final_blocks(
     for block in blocks:
         if block.get("type") == "finding":
             finding = block.get("finding")
-            if isinstance(finding, Mapping) and not scope.allows(category_for(finding)):
+            if isinstance(finding, Mapping) and refiled(finding, scope) is None:
                 dropped += 1
                 continue
         kept.append(dict(block))
