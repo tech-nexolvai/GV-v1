@@ -931,7 +931,10 @@ def _proof_entries(
                 + _coloured("Should be: ", should_be(finding), GREEN),
                 body,
             ),
-            Paragraph(f"<b>Proved by:</b> {escape(proof_line(finding))}", body),
+            Paragraph(
+                f"<b>Proved by:</b> {escape(vendor_text(proof_line(finding), 'code') or 'code')}",
+                body,
+            ),
             Paragraph(escape(f"{pages}. {item.where}"), grey),
         ]
         story.append(KeepTogether([head, Spacer(1, 3), pair, Spacer(1, 3), *lines, Spacer(1, 12)]))

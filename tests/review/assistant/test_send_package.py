@@ -592,6 +592,7 @@ def test_a_gv_rule_states_its_requirement_from_its_own_comparison(tmp_path: Path
     assert vendor_text("air:0000aaaa-1111-2222 Buffet top", "x") == "Buffet top"
     assert vendor_text("AI reading only", "fallback") == "fallback"
     assert vendor_text("AI_Set_3 sheet") == "AI_Set_3 sheet"
+    assert vendor_text("GV's rule check C18 fails it") == "GV's rule check fails it"
 
     document = {
         "records": {

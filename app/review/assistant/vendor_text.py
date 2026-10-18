@@ -39,12 +39,19 @@ _RECORD_ID: Final = re.compile(
     re.IGNORECASE,
 )
 _SEE_RECORD: Final = re.compile(r"\(?\s*see GV Review'?s record\s*\)?", re.IGNORECASE)
+#: A check's id in the run's records ("rule check C18"): the words stay, the id goes.
+_CHECK_ID: Final = re.compile(r"\b(check)\s+[CF]\d+\b", re.IGNORECASE)
 
 
 def internal(text: object) -> bool:
     """Whether the words hold an internal phrase or id."""
     words = str(text or "")
-    return bool(_PHRASES.search(words) or _AI.search(words) or _RECORD_ID.search(words))
+    return bool(
+        _PHRASES.search(words)
+        or _AI.search(words)
+        or _RECORD_ID.search(words)
+        or _CHECK_ID.search(words)
+    )
 
 
 def vendor_text(text: object, fallback: str | None = None) -> str | None:
@@ -53,7 +60,7 @@ def vendor_text(text: object, fallback: str | None = None) -> str | None:
     words = " ".join(str(text or "").split())
     if not internal(words):
         return words or fallback
-    cleaned = _SEE_RECORD.sub(" ", _RECORD_ID.sub(" ", words))
+    cleaned = _CHECK_ID.sub(r"\1", _SEE_RECORD.sub(" ", _RECORD_ID.sub(" ", words)))
     cleaned = " ".join(cleaned.split()).strip(" :;,·-")
     if cleaned and not internal(cleaned):
         return cleaned
