@@ -952,7 +952,11 @@ def add_to_answer(engine: Any) -> ItemsResult | None:
     if getattr(engine.settings, "mode", None) != "full_check":
         return None
     workspace = engine.tools.workspace
-    products = getattr(engine.settings, "products", None)
+    # The message's strict product scope (`product_scope`): only its products are compared.
+    scope = getattr(engine, "product_scope", None)
+    products = (
+        list(scope.products) if scope is not None else getattr(engine.settings, "products", None)
+    )
     result = check_pack(workspace.set_pack, products=products)
     if result is None:
         return None

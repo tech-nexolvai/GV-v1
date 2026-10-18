@@ -407,6 +407,24 @@ def test_the_hook_runs_only_in_a_full_check(monkeypatch: pytest.MonkeyPatch) -> 
     assert engine.book.added == [] and engine.items_line is None
 
 
+def test_the_hook_compares_only_the_messages_product_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.review.assistant.product_scope import ProductScope
+
+    seen: dict[str, Any] = {}
+
+    def fake(folder: Path | None, *, products: Sequence[str] | None = None) -> ai.ItemsResult:
+        seen["products"] = products
+        return ai.ItemsResult()
+
+    monkeypatch.setattr(ai, "check_pack", fake)
+    engine = _Engine("full_check", [])
+    engine.product_scope = ProductScope.of(["countertop"])  # type: ignore[attr-defined]
+    ai.add_to_answer(engine)
+    assert seen["products"] == ["countertop"]
+
+
 def test_the_summary_line_says_what_was_compared() -> None:
     assert ai.summary_line(ai.ItemsResult()) == (
         "Architect's finishes (by code, $0): no area has both drawings to compare."

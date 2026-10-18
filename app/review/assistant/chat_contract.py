@@ -165,7 +165,9 @@ class ChatMessageIn(BaseModel):
         default=None,
         min_length=1,
         max_length=32,
-        description="Active product ids from `GET /products` (e.g. countertop, cabinet).",
+        description="Active product ids from `GET /products` (e.g. countertop, cabinet): a "
+        "strict scope, so only these products are checked, ruled, counted and drawn (every active "
+        "product = All). Not given: the drawing set's own product, else every active product.",
     )
     continue_from: str | None = Field(
         default=None,
@@ -825,6 +827,17 @@ class ChatScopeOut(BaseModel):
         "full_check", "whole_set_words", "nothing_named", "wide_work", "pages_named", "area_named"
     ]
     label: str = Field(description='In plain words: "page 4 (Pantry)", "the whole set".')
+    products: list[str] = Field(
+        default_factory=list,
+        description="The products checked (product ids, a strict scope: a finding of another "
+        "product is never kept); empty on older answers.",
+    )
+    all_products: bool = Field(
+        default=False, description="True when every active product was checked (All)."
+    )
+    products_label: str | None = Field(
+        default=None, description='The products in plain words: "Countertops".'
+    )
 
 
 class ChatScopeBlock(BaseModel):
@@ -1104,6 +1117,20 @@ class ChatTimingsOut(BaseModel):
     helpers: list[ChatTimingHelperOut]
 
 
+class ChatProductScopeOut(BaseModel):
+    """The strict product scope (Anant, 2026-10-18): the products checked, and the findings of
+    other products code refused or dropped, whoever reported them."""
+
+    model_config = ConfigDict(frozen=True)
+
+    products: list[str]
+    all_products: bool
+    products_label: str
+    dropped_out_of_scope: int = Field(
+        description="Findings of products not in scope that code did not keep."
+    )
+
+
 class ChatTrustOut(BaseModel):
     """Why the answer can be believed, built by code from its findings and coverage."""
 
@@ -1129,6 +1156,11 @@ class ChatTrustOut(BaseModel):
     timings: ChatTimingsOut | None = None
     scope: ChatScopeOut | None = Field(
         default=None, description="What the counts above cover (null on older answers)."
+    )
+    product_scope: ChatProductScopeOut | None = Field(
+        default=None,
+        description="The products checked and how many findings of other products code dropped "
+        "(for the record, not shown); null on older answers.",
     )
 
 

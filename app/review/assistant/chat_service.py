@@ -103,6 +103,12 @@ from app.review.assistant.plan_check import (
     read_answers,
     record_answers,
 )
+from app.review.assistant.product_scope import (
+    ProductScope,
+    final_blocks,
+    no_rules_note,
+    scoped_loader,
+)
 from app.review.assistant.sandbox import UPLOADS, ChatWorkspace, Sandbox, safe_file_name
 from app.review.assistant.sharpen import apply_sharpen
 from app.runs.rates import ModelRates
@@ -614,12 +620,24 @@ def full_check_label(products: Sequence[str], effort: str) -> str:
     return f"Full check \u00b7 {products_words(products)} \u00b7 {effort.capitalize()} effort"
 
 
-def focus_line(products: Sequence[str]) -> str:
-    words = products_words(products).lower()
+def focus_line(products: Sequence[str], unruled: Sequence[str] = ()) -> str:
+    """What the lead is told of the products (a strict scope, Anant 2026-10-18); `unruled`: the
+    products in scope with no published GV rule yet."""
+    scope = ProductScope.of(products)
+    words = scope.label.lower()
+    rules = (
+        f"GV's rules for them are in /mnt/skills/gv-review/rules.md; read "
+        f"/mnt/skills/gv-review/products/<id>.md for each ({', '.join(scope.products)})."
+    )
+    note = no_rules_note([p for p in scope.products if p in unruled])
+    if note is not None:
+        rules += f" {note} Say so in your answer."
+    if scope.every:
+        return f"Products checked in this chat: {words} (all of them). {rules}"
     return (
-        f"Focus for this chat: {words}. GV's rules for them come first in "
-        "/mnt/skills/gv-review/rules.md; read /mnt/skills/gv-review/products/<id>.md for each "
-        f"({', '.join(products)})."
+        f"Products checked in this chat: {words} only. Compare and report only {words}: an item "
+        "of another product, or of no product, is outside this check and code drops it (never "
+        f"report it, never mention it as a problem). {rules}"
     )
 
 
@@ -680,6 +698,8 @@ class MessageJob:
     sharpen_deadline_seconds: float = 1.5
     task_edit: Mapping[str, Any] | None = None
     """#1551: the task spec the reviewer corrected on the screen ("Understood as … Edit")."""
+    unruled: tuple[str, ...] = ()
+    """The products in scope with no published GV rule yet: the answer says so plainly."""
 
 
 _NO_SANDBOX: Final = (
@@ -891,7 +911,7 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
         wanted = json.dumps(list(job.products))
         before = marker.read_text(encoding="utf-8") if marker.exists() else None
         if before != wanted or not replay:
-            focus = focus_line(job.products)
+            focus = focus_line(job.products, job.unruled)
         marker.write_text(wanted, encoding="utf-8")
     if focus is not None:
         user_content.append({"type": "text", "text": focus})
@@ -977,7 +997,8 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             workspace=workspace,
             sandbox=sandbox,
             page_count=max((int(item.get("pages") or 0) for item in listing), default=0),
-            results=job.results,
+            # GV Review's recorded results cut to the products in scope (`product_scope`).
+            results=scoped_loader(job.results, ProductScope.of(job.products)),
             register_file=register_file,
             uploads=listing,
             remember_note=remember_note,
@@ -1021,6 +1042,21 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
     outcome = engine.run()
     if outcome.stopped == "cancelled":
         sandbox.kill_all()
+    # The hard filter's backstop: no out-of-scope finding is stored, whatever reached the blocks.
+    outcome.blocks, dropped = final_blocks(
+        outcome.blocks, engine.product_scope, engine.book.out_of_scope
+    )
+    if dropped:
+        _log.warning(
+            "assistant chat product scope (%s): %d out-of-scope findings dropped",
+            ",".join(engine.product_scope.products),
+            dropped,
+        )
+    # A product with no GV rule yet is said plainly, never checked against nothing in silence.
+    note = no_rules_note([p for p in engine.product_scope.products if p in job.unruled])
+    if note is not None and outcome.stopped not in ("cancelled", "error"):
+        outcome.blocks.append({"type": "text", "text": note})
+        outcome.text = f"{outcome.text}\n\n{note}" if outcome.text else note
     finish(outcome)
 
 

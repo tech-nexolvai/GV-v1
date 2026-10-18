@@ -321,25 +321,29 @@ def test_rules_md_names_no_internal_ticket_number(session: Session, local: Path)
     assert "the client has not yet confirmed which is right" in text
 
 
-def test_picked_products_come_first_and_the_others_follow(
+def test_only_the_picked_products_rules_are_listed(
     session: Session, local: Path, tmp_path: Path
 ) -> None:
-    """Chat v4: the products picked in the chat lead `rules.md`; the rest follow, labelled."""
+    """The pick is a strict scope (Anant, 2026-10-18): `rules.md` lists only the picked products'
+    checks, so another product's GV rules never reach the AI; both picked lists both."""
     _project, revision = _revision(session, product="countertop")
 
     text = rules_markdown(session, revision, ["cabinet"])
 
-    assert "Products picked for this chat: cabinet." in text
-    first_cabinet, other = text.index("### CAB-FILLER-001"), text.index("## Other products")
-    assert first_cabinet < other < text.index("### CT-WIDTH-001")
+    assert "Products picked for this chat: cabinet. Only their checks are listed" in text
+    assert "### CAB-FILLER-001" in text
+    assert "### CT-WIDTH-001" not in text and "Other products" not in text
     build_skill_folder(session, revision, tmp_path / "gv-review", products=["countertop"])
     rules = (tmp_path / "gv-review" / "rules.md").read_text(encoding="utf-8")
     assert "Products picked for this chat: countertop." in rules
-    assert rules.index("### CT-WIDTH-001") < rules.index("## Other products")
+    assert "### CT-WIDTH-001" in rules and "### CAB-FILLER-001" not in rules
+    assert "Filler width" not in rules  # a cabinet rule's setting is not in force here
     assert sorted(_files(tmp_path / "gv-review")) == sorted(
         ["SKILL.md", "checklists/countertop-checks.md", "products/countertop.md", "rules.md"]
         + list(KNOWLEDGE)
     )
+    both = rules_markdown(session, revision, ["countertop", "cabinet"])
+    assert "### CAB-FILLER-001" in both and "### CT-WIDTH-001" in both
 
 
 def test_each_product_in_focus_gets_its_file_and_a_set_with_none_gets_every_active_one(

@@ -35,7 +35,7 @@ import json
 import math
 import re
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
@@ -304,10 +304,15 @@ def _partition(sizes: Sequence[int], groups: int) -> list[int]:
 
 
 def plan_jobs(
-    page_map: Mapping[str, Any] | None, main_file: str | None, parallel: int
+    page_map: Mapping[str, Any] | None,
+    main_file: str | None,
+    parallel: int,
+    outside: Callable[[Sequence[int]], str | None] | None = None,
 ) -> FanOutPlan | None:
     """The full check's helper jobs (see the module's words); `None` when the page map gives no
-    drawing to compare (then the lead plans, as in a chat)."""
+    drawing to compare (then the lead plans, as in a chat). `outside` (a strict product scope,
+    `product_scope.outside_unit`): why an area's pages hold only products the check does not
+    cover; those pages are recorded as not compared, with that reason, and get no helper."""
     if not page_map:
         return None
     entries = _entries(page_map, main_file)
@@ -321,6 +326,15 @@ def plan_jobs(
         for e in entries
         if not e.get("halves") or e.get("skip")
     )
+    if outside is not None:
+        left: dict[int, str] = {}
+        for unit in _units(content):
+            why = outside(tuple(unit.pages))
+            if why is not None:
+                left.update(dict.fromkeys(unit.pages, why))
+        if left and len(left) < len(content):
+            content = [e for e in content if int(e["page"]) not in left]
+            skipped = tuple(sorted((*skipped, *left.items())))
     paired = {
         int(e["page"]): int(e["pair_page"]) for e in content if isinstance(e.get("pair_page"), int)
     }

@@ -68,6 +68,8 @@ _PRODUCT_FIELDS: Final = frozenset(
         "checklist",
         "global_rule_hints",
         "category_label",
+        "words",
+        "hints",
         "tag_families",
     }
 )
@@ -103,6 +105,13 @@ class Product:
     category_label: str
     skill_file: Path
     """`<skills_folder>/<id>.md`: how to review this product. May be missing for an inactive one."""
+    words: tuple[str, ...] = ()
+    """Words that, printed on a drawing or in an item's name, can only mean this product (lower
+    case, as typed: "countertop", "toe kick"). Code reads them to tell which products a page holds
+    and which product a code-made item belongs to (`product_scope`); none: never guessed."""
+    hints: tuple[str, ...] = ()
+    """Words that only suggest this product may be drawn ("sink", "stone"): a page printing one is
+    never left out of a check of this product (`product_scope.outside_unit`); never a category."""
     tag_families: tuple[str, ...] = ()
     """The tag families that name this product's finishes and materials (`QZ` for `QZ-12`): code
     compares the architect's and the vendor's codes of these families (`architect_items`) and
@@ -213,6 +222,10 @@ def _product(entry: object, skills_folder: Path, n: int) -> Product:
     hints = entry.get("global_rule_hints", [])
     if not isinstance(hints, list) or not all(isinstance(h, str) and h.strip() for h in hints):
         raise RegistryError(f"{where}: `global_rule_hints` must be a list of text")
+    words, maybe = entry.get("words", []), entry.get("hints", [])
+    for name, given in (("words", words), ("hints", maybe)):
+        if not isinstance(given, list) or not all(isinstance(w, str) and w.strip() for w in given):
+            raise RegistryError(f"{where}: `{name}` must be a list of text")
     families = entry.get("tag_families", [])
     if not isinstance(families, list) or not all(
         isinstance(f, str) and _FAMILY.match(f) for f in families
@@ -231,6 +244,8 @@ def _product(entry: object, skills_folder: Path, n: int) -> Product:
         global_rule_hints=tuple(" ".join(h.split()) for h in hints),
         category_label=_text(entry, "category_label", where, default=plural),
         skill_file=skills_folder / f"{pid}.md",
+        words=tuple(dict.fromkeys(" ".join(w.lower().split()) for w in words)),
+        hints=tuple(dict.fromkeys(" ".join(w.lower().split()) for w in maybe)),
         tag_families=tuple(dict.fromkeys(families)),
     )
     if product.active:

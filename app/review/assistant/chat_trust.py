@@ -56,7 +56,7 @@ from types import ModuleType
 from typing import Any, Final
 
 from app.review.assistant import witness
-from app.review.assistant.chat_findings import live_findings, page_ranges
+from app.review.assistant.chat_findings import finding_categories, live_findings, page_ranges
 from app.review.assistant.dim_findings import label_checks
 
 __all__ = [
@@ -176,6 +176,10 @@ def recorded_from(document: Mapping[str, Any] | None) -> Recorded:
     differences: list[dict[str, Any]] = []
     waiting: list[dict[str, Any]] = []
     results: dict[str, str] = {}
+    # Each GV check's product, by its rule (the API's `record_products`): a filler check is a
+    # cabinet item, never "other" (the strict product scope keeps it by its product).
+    named = document.get("record_products")
+    products = named if isinstance(named, Mapping) else {}
     records = document.get("records")
     if isinstance(records, Mapping):
         for item in records.get("countertops") or []:
@@ -188,6 +192,7 @@ def recorded_from(document: Mapping[str, Any] | None) -> Recorded:
                         "record_id": str(item["id"]),
                         "page": item.get("page"),
                         "what": str(item.get("label") or "countertop"),
+                        "category": "countertop",
                     }
                 )
             if item.get("outcome") in _FAIL_WORDS:
@@ -208,6 +213,10 @@ def recorded_from(document: Mapping[str, Any] | None) -> Recorded:
             if not isinstance(item, Mapping) or item.get("id") is None:
                 continue
             results[str(item["id"])] = str(item.get("outcome") or "")
+            product = products.get(str(item["id"]))
+            category = (
+                product if isinstance(product, str) and product in finding_categories() else "other"
+            )
             if item.get("outcome") in _WAITING_WORDS:
                 pages = [p for p in item.get("pages") or [] if isinstance(p, int)]
                 waiting.append(
@@ -215,6 +224,7 @@ def recorded_from(document: Mapping[str, Any] | None) -> Recorded:
                         "record_id": str(item["id"]),
                         "page": pages[0] if pages else None,
                         "what": str(item.get("check") or "GV check"),
+                        "category": category,
                     }
                 )
             if item.get("outcome") in _FAIL_WORDS:
@@ -227,7 +237,7 @@ def recorded_from(document: Mapping[str, Any] | None) -> Recorded:
                         "id": str(item["id"]),
                         "page": pages[0] if pages else None,
                         "what": str(item.get("check") or "GV check"),
-                        "category": "other",
+                        "category": category,
                         "architect": item.get("comparison"),
                         "vendor": "; ".join(values) or None,
                         "why": item.get("reason"),
