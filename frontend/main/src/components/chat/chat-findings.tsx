@@ -34,12 +34,12 @@ import { cn } from '@/lib/utils';
 /**
  * The findings of an answer, redesigned in #1522 after the owner's "very bad: needs professional,
  * very cool and classy" and "make it so everyone can understand, from the reviewer's perspective".
- * The reviewer's path (PATH.md step 4): What's wrong, then Your decision, then Right (folded), each
+ * The reviewer's path (PATH.md step 4): What's wrong, then Right (folded), then Nothing to compare, each
  * grouped by area under a sticky header. A row is one plain line ("Vendor drew 46 in · needs 37 in
  * (architect 3' - 1")"), a quiet confidence meter, a readable A / V picture pair and Agree / Not a
  * problem. A click opens the item's card in place: what each side shows, why, what to tell the
  * vendor, how sure, and the two pictures large with the spot boxed.
- * One vocabulary: Wrong · Your decision · Right · Not compared. Read-only, except the reviewer's own
+ * One vocabulary: Wrong · Right · Not compared. Read-only, except the reviewer's own
  * Agree / Not a problem, shown only when the server offers the route.
  *
  * #1619: the architect's drawings govern and nothing goes to the reviewer's decision. A finished full
@@ -76,7 +76,7 @@ const STATUS_TEXT: Record<RowStatus, string> = {
   not_compared: 'text-muted-foreground',
 };
 
-/** Wrong / Your decision / Right / Not compared, as a dot and a word (no filled chip). */
+/** Wrong / Not compared / Right / Not looked at, as a dot and a word (no filled chip). */
 export function StatusMark({ finding, className }: { finding: ChatFinding; className?: string }) {
   const status = statusOf(finding);
   return (
@@ -675,7 +675,7 @@ export interface FindingsSectionsProps {
   narrow?: boolean;
   /** Anchors for the summary's numbers. */
   ids?: Partial<Record<'different' | 'check' | 'same', string>>;
-  /** #1554: what GV Review settled by itself (a folded group after Your decision). */
+  /** #1554: what GV Review settled by itself (a folded group after the open items). */
   resolver?: ChatResolver | null;
   /** #1619: a finished full check: What's wrong (proved) · Right · Nothing to compare, the cloud drawing's words. */
   architectView?: boolean;

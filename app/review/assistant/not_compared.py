@@ -239,7 +239,7 @@ def _table(found: Sequence[Row]) -> list[list[str]]:
 def summary_rows(found: Sequence[Row]) -> list[list[str]]:
     """The Summary sheet: the counts by reason, then by product."""
     by_reason = Counter(row.reason for row in found)
-    by_product = Counter(row.product for row in found)
+    by_product = Counter(row.product or "the set as a whole" for row in found)
     out = [["By reason", TRADE_WORDS.get(r, r), str(by_reason[r])] for r in REASONS if by_reason[r]]
     out += [["By product", name, str(n)] for name, n in sorted(by_product.items())]
     items = sum(1 for row in found if row.level == "item")
