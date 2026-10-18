@@ -292,6 +292,41 @@ def test_a_ones_shape_is_checked_on_its_vectors() -> None:
     assert dl._vector_ones(narrow, Decimal("17.5"), 0) is None
 
 
+# ---- a fraction no drawing prints ------------------------------------------------------------------
+
+
+def _read(engine: str, lines: list[str], whole: set[Decimal]) -> Any:
+    read = dl.vv._InkRead(f"drawn label, {engine}", engine, 1)
+    read.lines, read.whole = list(lines), set(whole)
+    return read
+
+
+def test_a_fraction_no_drawing_prints_is_no_rival_value() -> None:
+    # A real `63 1/2"` (sideways, stacked fraction): both engines read it whole, and one Tesseract
+    # pass also reads 6317 (`63 1/7"`, which no drawing prints). That read is no rival: the label
+    # is kept.
+    half = Decimal("63.5")
+
+    def narrow_ones(value: Decimal) -> bool:  # the vectors show each `1` as a narrow stroke
+        return True
+
+    reads = [
+        _read("RapidOCR", ["6312", "63 1/2"], {half}),
+        _read("Tesseract", ["6317", "6312"], {half}),
+    ]
+    assert dl._drawn_value(reads, narrow_ones) == half
+    # A pass reading a fraction a drawing does print (`63 1/4"`) is a rival: no label.
+    reads[1] = _read("Tesseract", ["6314", "6312"], {half})
+    assert dl._drawn_value(reads, narrow_ones) is None
+    # So is one reading another whole number (`64 1/2"`).
+    reads[1] = _read("Tesseract", ["6412", "6312"], {half})
+    assert dl._drawn_value(reads, narrow_ones) is None
+    # The impossible fraction is never a value itself: both engines reading only 6317 give none.
+    odd = [_read("RapidOCR", ["6317"], set()), _read("Tesseract", ["6317"], set())]
+    assert dl._drawn_value(odd, narrow_ones) is None
+    assert dl._laid_out("6317", (2, 1, 1)) is None
+
+
 # ---- #1629: chains whose lines tile end to end ---------------------------------------------------
 
 
