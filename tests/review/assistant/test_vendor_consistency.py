@@ -288,7 +288,7 @@ def test_a_label_beside_the_end_of_a_line_is_not_that_lines_value(tmp_path: Path
 
 
 def _sheet_joint(*, gap: float, ticks: str = "one") -> bytes:
-    """A 60" overall over 20" + 39 1/2" (2 pt per inch), the joint between the parts drawn as a
+    """A 60" overall over 20" + 39 3/8" (2 pt per inch), the joint between the parts drawn as a
     doubled extension line `gap` points apart (at x 340 and 340 + gap). `ticks`: "one" slash across
     both lines (the drafter's one joint), "two" (one on each line: two places)."""
     y, right = 280, 340 + gap
@@ -304,7 +304,7 @@ def _sheet_joint(*, gap: float, ticks: str = "one") -> bytes:
         + _line(298.5, y - 1.5, 301.5, y + 1.5)
         + _line(418.5, y - 1.5, 421.5, y + 1.5)
         + _text(315, y + 2, '20"')
-        + _text(370, y + 2, '39 1/2"')
+        + _text(370, y + 2, '39 3/8"')
         + _dim(450, 500, 150, '25"')
     )
     middle = 340 + gap / 2
@@ -322,8 +322,8 @@ def test_a_joint_under_one_tick_on_a_doubled_line_is_one_point(tmp_path: Path) -
     result = _check(tmp_path, _sheet_joint(gap=1.2))
     assert result.strings["does_not_add_up"] == 1
     (finding,) = result.findings
-    assert finding["parts"] == ['20"', '39 1/2"']
-    assert finding["architect"] == '59 1/2"'  # code's sum
+    assert finding["parts"] == ['20"', '39 3/8"']
+    assert finding["architect"] == '59 3/8"'  # code's sum
     assert finding["vendor"] == '60"'
 
 
