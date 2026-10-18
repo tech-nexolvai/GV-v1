@@ -60,8 +60,14 @@ read otherwise counts for nothing; so does a `1` where the vectors show a hand-l
 label needs room round it and a dimension line of its own running the way it reads. The vendor's
 drawings keep the route above.
 
+**Equal parts** (#1668): an `EQ` mark on a dimension line is a part of a printed overall shared
+equally (`_equal_parts`: 36" wall to wall marked `EQ` / `EQ` is 18" each side). Code derives the
+part only when the chain's ends meet the overall's and every other part is printed, and lists it
+as a label with `derived` naming the overall. Derived labels never set a drawing's scale.
+
 **Ids are stable:** text labels are numbered in reading order (top to bottom, left to right), then
-drawn labels after them, so a drawn label found or not never moves a text label's id.
+drawn labels after them, then derived parts, so a drawn label found or not never moves a text
+label's id.
 
 Loaded by name (`set_pack`, `dim_index`), like `verify_value`: it parses PDFs and may run OCR.
 Verification: `tests/review/assistant/test_dim_labels.py` (synthetic PDFs).
@@ -1524,7 +1530,7 @@ def _scale_checks(labels: Sequence[dict[str, Any]]) -> None:
     by_side: dict[str, list[float]] = {}
     for label in labels:
         inches = float(label["inches"])
-        if label.get("span_pt") and inches >= 2:
+        if label.get("span_pt") and inches >= 2 and not label.get("derived"):
             by_side.setdefault(label["side"], []).append(label["span_pt"] / inches)
     for label in labels:
         label["scale_ok"] = None
@@ -1544,11 +1550,13 @@ def page_labels(
     drawn_budget_s: float = 0.0,
     readers: Sequence[Any] | None = None,
     clock: Callable[[], float] = monotonic,
+    equal_parts: bool = True,
 ) -> PageLabels:
     """The labels of page `page` (from 1) of `pdf`. `halves` are the page map's drawings on the
     page (`{box, role}`), for each label's side. The drawn route runs only while
     `drawn_budget_s` seconds last (0: not at all); `readers` are its OCR engines (default: the
-    installed ones)."""
+    installed ones). `equal_parts`: the `EQ` parts are added last (`build_dims` adds them once,
+    after its drawn pass, so no id is ever given to two labels)."""
     started = clock()
     parsed = _parse(Path(pdf), page - 1)
     phrases = _phrases(parsed)
@@ -1570,6 +1578,8 @@ def page_labels(
             clock=clock,
         )
     _number(result.labels)
+    if equal_parts:
+        _add_equal_parts(result, parsed, halves, phrases)
     result.seconds = round(clock() - started, 2)
     return result
 
@@ -1587,7 +1597,13 @@ def drawn_labels(
     """Page `page`'s text labels (as `page_labels` gave them) with its drawn labels added after
     them, read within `budget_s` seconds: the pack's second pass, after every page's text."""
     started = clock()
-    result = PageLabels(labels=[dict(label) for label in text_labels if label["route"] == "text"])
+    result = PageLabels(
+        labels=[
+            dict(label)
+            for label in text_labels
+            if label["route"] == "text" and not label.get("derived")
+        ]
+    )
     _add_drawn(result, _parse(Path(pdf), page - 1), halves, budget_s, readers, clock)
     _number(result.labels)
     result.seconds = round(clock() - started, 2)
@@ -2036,6 +2052,231 @@ def _add_lettered(
             drawn.append(found)
 
 
+# ---- equal parts (`EQ`) --------------------------------------------------------------------------
+
+#: A mark that the parts of a dimension it stands on are equal: `EQ`, `EQ.`, `(EQ)`, `EQUAL`.
+_EQUAL_MARK: Final = re.compile(r"^\(?EQ(?:UAL)?\.?\)?$", re.IGNORECASE)
+#: Two parts of a chain meet when their spans are at most this far apart (points): what a centre
+#: line marks (a faucet's stem) may be drawn across the line between them.
+_CHAIN_GAP_PT: Final = 3.0
+#: Equal parts are drawn equal within this share of the longest (a drawing is seldom exact).
+_EQUAL_DRAWN: Final = 0.25
+#: A derived part is a whole number of these parts of an inch (as a drawing prints).
+_PART_DENOMINATOR: Final = 64
+
+type _OnLine = tuple[dict[str, Any], tuple[str, float, float, float, float], bool]
+"""A mark or a label on a dimension line: itself, its span (`_span`), and whether it is a mark."""
+
+
+def _equal_marks(
+    parsed: _Parsed, halves: Sequence[Mapping[str, Any]], phrases: Sequence[tuple[str, Box]]
+) -> list[_OnLine]:
+    """Each `EQ` mark the page prints on a dimension line of its own, with that line's span."""
+    out: list[_OnLine] = []
+    for text, box in phrases:
+        if not _EQUAL_MARK.match(text.strip()):
+            continue
+        orientation = "h" if box[2] - box[0] >= box[3] - box[1] else "v"
+        font = min(box[2] - box[0], box[3] - box[1])
+        # An equal-parts line ends at its ticks: a grid or centre line crossing it cuts no part.
+        line = dimension_line(box, orientation, parsed.segments, font, drawn=True)
+        if line is None:
+            continue
+        mark: dict[str, Any] = {
+            "text": " ".join(text.split()),
+            "box": [round(v, 2) for v in box],
+            "side": _side(box, halves),
+            "orientation": orientation,
+            **line,
+        }
+        span = _span(mark)
+        if span is not None:
+            out.append((mark, span, True))
+    return out
+
+
+def _chain(items: Sequence[_OnLine], mark: dict[str, Any]) -> list[list[_OnLine]] | None:
+    """The run of parts on `mark`'s line that meet end to end and hold it, as spans (each the marks
+    or labels on it), or `None` when a span holds a mark and a label both."""
+    ordered = sorted(items, key=lambda item: (item[1][2], item[1][3]))
+    spans: list[list[_OnLine]] = []
+    for item in ordered:
+        first = spans[-1][0][1] if spans else None
+        if (
+            first is not None
+            and abs(item[1][2] - first[2]) <= 0.6
+            and abs(item[1][3] - first[3]) <= 0.6
+        ):
+            spans[-1].append(item)
+        else:
+            spans.append([item])
+    runs: list[list[list[_OnLine]]] = []
+    for span in spans:
+        last = runs[-1][-1][0][1][3] if runs else None
+        if last is not None and -0.6 <= span[0][1][2] - last <= _CHAIN_GAP_PT:
+            runs[-1].append(span)
+        else:
+            runs.append([span])
+    for run in runs:
+        if any(item[0] is mark for span in run for item in span):
+            if any(len({item[2] for item in span}) > 1 for span in run):
+                return None
+            return run
+    return None
+
+
+def _equal_parts(
+    parsed: _Parsed,
+    labels: Sequence[dict[str, Any]],
+    halves: Sequence[Mapping[str, Any]],
+    phrases: Sequence[tuple[str, Box]],
+) -> list[dict[str, Any]]:
+    """The parts `EQ` marks stand for, as derived labels (#1668): `EQ` / `EQ` on a dimension line
+    means the parts are equal, so each is the printed overall (less any printed parts of the same
+    chain) over the number of `EQ` parts: 36" wall to wall with the sink's centre line `EQ` / `EQ`
+    is 18" each side. Code derives one only when all of these hold:
+
+    - the marks sit on dimension lines of their own (`dimension_line`), on one drawing;
+    - their spans and the chain's printed parts meet end to end along one line;
+    - exactly one value is printed for the whole chain: a label of the same drawing and direction
+      whose line runs between the chain's two ends (on any line beside it);
+    - every other part of the chain has one printed value;
+    - the `EQ` parts are drawn equal (the shortest at least three quarters of the longest);
+    - the part is a whole number of 64ths of an inch.
+
+    A derived label keeps what the drawing prints as its `text` (`EQ`), its value in `inches`, and
+    `derived`: `{rule: "equal_parts", from: the overall's id, parts: how many, less: the other
+    parts' ids}`. It is numbered after every printed label."""
+    marks = _equal_marks(parsed, halves, phrases)
+    if not marks:
+        return []
+    printed: list[_OnLine] = []
+    for label in labels:
+        span = _span(label)
+        if span is not None and not label.get("derived"):
+            printed.append((label, span, False))
+    out: list[dict[str, Any]] = []
+    done: set[int] = set()
+    for mark, span, _is_mark in marks:
+        if id(mark) in done:
+            continue
+        side, orientation, across = mark["side"], span[0], span[1]
+        on_line = [
+            item
+            for item in (*marks, *printed)
+            if item[0]["side"] == side
+            and item[1][0] == orientation
+            and abs(item[1][1] - across) <= 0.6
+        ]
+        run = _chain(on_line, mark)
+        if run is None:
+            continue
+        equal = [span_items for span_items in run if span_items[0][2]]
+        done |= {id(item[0]) for span_items in equal for item in span_items}
+        found = _derived(run, printed, side, orientation)
+        if found is None:
+            continue
+        part, parent, less = found
+        lengths = [items[0][1][3] - items[0][1][2] for items in equal]
+        if min(lengths) < (1 - _EQUAL_DRAWN) * max(lengths):
+            continue
+        for items in equal:
+            for item, _span_of, _ in items:
+                out.append(
+                    {
+                        "id": "",
+                        "text": item["text"],
+                        "inches": format(part.normalize(), "f"),
+                        "box": item["box"],
+                        "side": side,
+                        "orientation": orientation,
+                        "route": "text",
+                        "mm": None,
+                        "units": None,
+                        "dim_line": item["dim_line"],
+                        "extension": item["extension"],
+                        "span_pt": item["span_pt"],
+                        "derived": {
+                            "rule": "equal_parts",
+                            "from": parent,
+                            "parts": len(equal),
+                            "less": less,
+                        },
+                    }
+                )
+    out.sort(key=lambda label: (round(label["box"][1] / 4), label["box"][0]))
+    return out
+
+
+def _derived(
+    run: Sequence[Sequence[_OnLine]],
+    printed: Sequence[_OnLine],
+    side: str,
+    orientation: str,
+) -> tuple[Decimal, str, list[str]] | None:
+    """An `EQ` part's value, the overall's id and the other parts' ids, or `None`."""
+    start, end = run[0][0][1][2], run[-1][0][1][3]
+    reach = max(1.0, 0.01 * (end - start))
+    inside = {id(item[0]) for items in run for item in items}
+    totals = {
+        Decimal(str(label["inches"]))
+        for label, span, _ in printed
+        if label["side"] == side
+        and span[0] == orientation
+        and id(label) not in inside
+        and abs(span[2] - start) <= reach
+        and abs(span[3] - end) <= reach
+    }
+    parents = [
+        str(label["id"])
+        for label, span, _ in printed
+        if label["side"] == side
+        and span[0] == orientation
+        and id(label) not in inside
+        and abs(span[2] - start) <= reach
+        and abs(span[3] - end) <= reach
+    ]
+    if len(totals) != 1:
+        return None
+    rest = Fraction(totals.pop())
+    less: list[str] = []
+    count = 0
+    for items in run:
+        if items[0][2]:
+            count += 1
+            continue
+        values = {Decimal(str(item[0]["inches"])) for item in items}
+        if len(values) != 1:
+            return None
+        rest -= Fraction(values.pop())
+        less.append(str(items[0][0]["id"]))
+    if not count:
+        return None
+    part = rest / count
+    if part <= 0 or (part * _PART_DENOMINATOR).denominator != 1:
+        return None
+    return Decimal(part.numerator) / Decimal(part.denominator), parents[0], less
+
+
+def _add_equal_parts(
+    result: PageLabels,
+    parsed: _Parsed,
+    halves: Sequence[Mapping[str, Any]],
+    phrases: Sequence[tuple[str, Box]] | None = None,
+) -> None:
+    """The page's `EQ` parts (`_equal_parts`) added after its numbered labels, numbered on."""
+    try:
+        parts = _equal_parts(
+            parsed, result.labels, halves, _phrases(parsed) if phrases is None else phrases
+        )
+    except Exception as failed:  # noqa: BLE001 - the page keeps its printed labels
+        _log.warning("dimension labels: equal parts failed: %s", type(failed).__name__)
+        return
+    if parts:
+        result.labels += parts[: max(0, MAX_LABELS - len(result.labels))]
+        _number(result.labels)
+
+
 def build_dims(
     pdfs: Mapping[str, Path],
     page_map: Mapping[str, Any] | None,
@@ -2062,7 +2303,7 @@ def build_dims(
                 count = len(opened.pages)
         for number in range(1, count + 1):
             try:
-                found = page_labels(pdf, number, halves.get((name, number), ()))
+                found = page_labels(pdf, number, halves.get((name, number), ()), equal_parts=False)
             except Exception as failed:  # noqa: BLE001 - a page code cannot read has no labels
                 _log.warning("dimension labels: page failed: %s", type(failed).__name__)
                 found = PageLabels(drawn="failed")
@@ -2101,6 +2342,22 @@ def build_dims(
         finally:
             left -= monotonic() - started
         entry["drawn"], entry["labels"] = found.drawn, found.labels
+        if on_page is not None:
+            on_page(document)
+    # The `EQ` parts last, after every printed label of the page (text and drawn).
+    for entry in document["pages"]:
+        phrases = [(str(p["text"]), tuple(p["box"])) for p in entry.get("phrases") or []]
+        if not any(_EQUAL_MARK.match(text.strip()) for text, _box in phrases):
+            continue
+        name, number = entry["file"], entry["page"]
+        try:
+            result = PageLabels(labels=list(entry["labels"]))
+            parsed = _parse(pdfs[name], number - 1)
+            _add_equal_parts(result, parsed, halves.get((name, number), ()), phrases)
+        except Exception as failed:  # noqa: BLE001 - the page keeps its printed labels
+            _log.warning("dimension labels: equal parts failed: %s", type(failed).__name__)
+            continue
+        entry["labels"] = result.labels
         if on_page is not None:
             on_page(document)
     return document
