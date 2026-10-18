@@ -144,6 +144,28 @@ def test_a_decision_never_joins_a_right_that_only_the_ai_calls_right() -> None:
     assert by_id(result)["F1"]["status"] == "check"
 
 
+def test_one_missing_thing_reported_per_dimension_is_one_item_with_a_clear_reason() -> None:
+    """#1648: the architect's outlet is placed by two dimensions and the vendor shows no outlet;
+    the readings made one item per dimension. They become one Not-compared item naming every
+    value, and its reason says the vendor's drawing does not show it (not "do not settle it")."""
+    from app.review.assistant.proof import classified, proof_group
+
+    absent = {"vendor": "not shown on the vendor", "page": 6, "keep_reason": "other"}
+    height = finding("F1", item="Lobby: outlet CL height AFF", architect="1' - 9\"", **absent)
+    offset = finding("F2", item="Lobby: outlet CL from left edge", architect="1' - 3\"", **absent)
+    other = finding("F3", item="Lobby: shelf height", architect="2' - 0\"", **absent)
+    result = resolve([height, offset, other], ResolverContext(areas=AREAS))
+    assert set(result.absorbed) == {"F2"}
+    carried = by_id(result)["F1"]
+    assert carried["item"] == "Lobby: outlet"
+    assert carried["architect"] == "1' - 9\" (CL height AFF); 1' - 3\" (CL from left edge)"
+    assert carried["inches"]["architect"] is None
+    found = classified(carried)
+    assert proof_group(carried) == "not_compared" and found.reason == "not_proved"
+    assert "the vendor's drawing does not" in (found.why or "")
+    assert "could not confirm the vendor's sheets leave it out" in (found.why or "")
+
+
 def test_different_areas_and_recorded_differences_are_never_folded() -> None:
     here = finding("F1", page=2)
     there = finding("F2", page=7)
@@ -677,7 +699,11 @@ def test_a_full_check_folds_the_same_decision_item_and_lists_it_in_the_report(
     assert resolver["before"]["decision"] == 2 and resolver["after"]["decision"] == 1
     assert [e["outcome"] for e in resolver["settled"]] == ["merged"]
     dropped = [b for b in outcome.blocks if b["type"] == "finding_dropped"]
-    assert len(dropped) == 1 and dropped[0]["reason"].startswith("Settled by GV Review:")
+    # The recorded difference with no value and no spot ("see GV Review's record" on both sides)
+    # is an internal note, never sent to the vendor (#1650); the same item is folded once.
+    notes = [b for b in dropped if b["reason"].startswith("Internal note, not for the vendor")]
+    folded = [b for b in dropped if b["reason"].startswith("Settled by GV Review:")]
+    assert len(notes) == 1 and len(folded) == 1 and len(dropped) == 2
     kept = [
         b["finding"]
         for b in outcome.blocks
@@ -812,17 +838,18 @@ def test_every_count_shown_comes_from_the_final_list(
     # A full check counts as its cloud drawing does (#1619): Wrong = proved by code (clouded),
     # Vendor to confirm (amber questions), Right.
     groups = proof_counts(live)
-    assert shown_counts(live)["decision"] == 1 and shown_counts(live)["wrong"] == 3
+    # The recorded difference with no value and no spot is an internal note (#1650), not counted.
+    assert shown_counts(live)["decision"] == 1 and shown_counts(live)["wrong"] == 2
     final = {
         "wrong": groups["clouded"],
         "decision": groups["not_compared"],
         "right": groups["right"],
     }
-    assert final == {"wrong": 2, "decision": 2, "right": 0}
+    assert final == {"wrong": 2, "decision": 1, "right": 0}
     # The AI's words.
     words = " ".join(b["text"] for b in outcome.blocks if b["type"] == "text")
-    assert "Two items are wrong and two need your decision" in words
-    assert outcome.text.startswith("Two items are wrong and two need your decision")
+    assert "Two items are wrong and one needs your decision" in words
+    assert outcome.text.startswith("Two items are wrong and one needs your decision")
     # The resolver block counts by status, as it settled them.
     resolver = next(b["resolver"] for b in outcome.blocks if b["type"] == "resolver")
     assert resolver["after"] == {k: shown_counts(live)[k] for k in ("wrong", "decision", "right")}

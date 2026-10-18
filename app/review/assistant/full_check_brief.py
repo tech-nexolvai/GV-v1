@@ -209,26 +209,102 @@ def _pages_of(page_map: Mapping[str, Any] | Sequence[Any] | None) -> dict[int, M
     return out
 
 
+def _role_word(half: Mapping[str, Any]) -> str:
+    role = str(half.get("role") or "unlabelled").replace("_", " ")
+    if role == "vendor" and isinstance(half.get("round"), int):
+        role = f"vendor round {half['round']}"
+    return role
+
+
+def _centre(box: object) -> tuple[float, float] | None:
+    if not isinstance(box, Sequence) or isinstance(box, str) or len(box) != 4:
+        return None
+    try:
+        x0, y0, x1, y1 = (float(v) for v in box)
+    except (TypeError, ValueError):
+        return None
+    return (x0 + x1) / 2, (y0 + y1) / 2
+
+
+def _places(entry: Mapping[str, Any]) -> dict[str, str]:
+    """Where each of a page's two kinds of drawing is ("top" / "bottom", "left" / "right"), so a
+    helper never takes one for the other (#1644: a page holding the architect's drawing over a
+    brand prototype was read as the prototype alone). Empty unless the page holds exactly two
+    kinds of drawing, each with its box."""
+    centres: dict[str, list[tuple[float, float]]] = {}
+    for half in entry.get("halves") or []:
+        if not isinstance(half, Mapping):
+            continue
+        centre = _centre(half.get("box"))
+        if centre is None:
+            return {}
+        centres.setdefault(_role_word(half), []).append(centre)
+    if len(centres) != 2:
+        return {}
+    (first, a), (second, b) = (
+        (role, (sum(x for x, _ in c) / len(c), sum(y for _, y in c) / len(c)))
+        for role, c in centres.items()
+    )
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    if abs(dy) >= abs(dx):
+        return {first: "top", second: "bottom"} if dy > 0 else {first: "bottom", second: "top"}
+    return {first: "left", second: "right"} if dx > 0 else {first: "right", second: "left"}
+
+
 def _drawings(entry: Mapping[str, Any]) -> str:
-    """`architect + vendor round 1 + brand prototype`, from the page's labelled drawings."""
+    """`architect (top) + brand prototype (bottom)`, from the page's labelled drawings."""
     words: list[str] = []
     for half in entry.get("halves") or []:
         if not isinstance(half, Mapping):
             continue
-        role = str(half.get("role") or "unlabelled").replace("_", " ")
-        if role == "vendor" and isinstance(half.get("round"), int):
-            role = f"vendor round {half['round']}"
+        role = _role_word(half)
         if role not in words:
             words.append(role)
-    return " + ".join(words) if words else str(entry.get("role") or "no labelled drawing")
+    if not words:
+        return str(entry.get("role") or "no labelled drawing")
+    places = _places(entry)
+    return " + ".join(f"{w} ({places[w]})" if w in places else w for w in words)
+
+
+def _has_architect(entry: Mapping[str, Any] | None) -> bool:
+    return any(
+        isinstance(h, Mapping) and h.get("role") == "architect"
+        for h in (entry or {}).get("halves") or []
+    )
+
+
+def _area_of(entry: Mapping[str, Any], known: Mapping[int, Mapping[str, Any]]) -> str | None:
+    """The page's area within its section: its own title, else the title of the page it takes its
+    area from (two sections may reuse an area's title)."""
+    owner: Mapping[str, Any] = entry
+    if not entry.get("area") and isinstance(entry.get("area_from_page"), int):
+        owner = known.get(entry["area_from_page"]) or {}
+    area = owner.get("area")
+    if not area:
+        return None
+    return " ".join(f"{owner.get('section') or ''} / {area}".split()).lower()
+
+
+def _pages_words(pages: Sequence[int]) -> str:
+    named = [f"p{p}" for p in pages]
+    return named[0] if len(named) == 1 else ", ".join(named[:-1]) + f" and {named[-1]}"
 
 
 def page_lines(
     pages: Iterable[int], page_map: Mapping[str, Any] | Sequence[Any] | None = None
 ) -> list[str]:
-    """One line per page: its area, whose drawings it holds, and where its architect drawing is
-    when it is on another page (`area_from_page`). A page the map does not know is still listed."""
+    """One line per page: its area, whose drawings it holds (and where each is, when two kinds
+    share the page), and where the area's architect drawings are. A page with no architect drawing
+    is pointed to the area's pages that have one (never just to the page its area title came from:
+    that page may hold only the vendor's drawing); a page with one is told of the area's other
+    architect drawings, since the larger scale or detail governs (R5). A page the map does not know
+    is still listed."""
     known = _pages_of(page_map)
+    architect_pages: dict[str, list[int]] = {}
+    for number, listed in sorted(known.items()):
+        key = _area_of(listed, known)
+        if key and _has_architect(listed):
+            architect_pages.setdefault(key, []).append(number)
     lines: list[str] = []
     for page in sorted(set(pages)):
         entry = known.get(page)
@@ -237,9 +313,19 @@ def page_lines(
             continue
         area = entry.get("area") or entry.get("section") or "area not named"
         line = f"- p{page}: {_short(area)}; {_drawings(entry)}"
-        pair = entry.get("pair_page") or entry.get("area_from_page")
+        key = _area_of(entry, known)
+        others = [p for p in architect_pages.get(key or "", []) if p != page]
+        pair = entry.get("pair_page")
         if isinstance(pair, int) and pair != page:
             line += f"; the architect's drawing is on p{pair}"
+        elif _has_architect(entry):
+            if others:
+                line += (
+                    f"; the area's other architect drawing is on {_pages_words(others)} (the "
+                    "larger scale or the detail governs)"
+                )
+        elif others:
+            line += f"; the architect's drawing is on {_pages_words(others)}"
         if entry.get("pair_page") or any(
             isinstance(h, Mapping) and h.get("heading_by") == "reviewer"
             for h in entry.get("halves") or []

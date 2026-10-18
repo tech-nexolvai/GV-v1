@@ -334,12 +334,10 @@ def test_the_ai_s_own_summary_is_kept_and_code_writes_none(
     outcome = harness.run()
 
     # Its words are kept; the count it states is the cloud drawing's (#1554, #1619): GV Review
-    # recorded two differences, code proved one. Code adds only the one line on what could not be
-    # compared (#1619), after the AI's own summary.
-    nothing = (
-        "1 item had nothing to compare (vendor's value could not be read: 1). See the "
-        "Not-compared list (PDF / Excel)."
-    )
+    # recorded two differences, code proved one; the other records no value and no spot, so it is
+    # an internal note, never sent to the vendor (#1650). Code adds only the one line on what could
+    # not be compared (#1619), after the AI's own summary.
+    nothing = "Every item could be compared."
     assert outcome.text == f"{own}\n\n{nothing}"
     assert [b["text"] for b in outcome.blocks if b["type"] == "text"] == [own, nothing]
     assert [b["text"] for b in outcome.blocks if b.get("by") == "code"] == [nothing]

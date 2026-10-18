@@ -173,7 +173,10 @@ def test_answers_are_kept_append_only_and_laid_over_the_page_map(tmp_path: Path)
     assert (FILE, 7) in holder.reference or 7 in holder.pages
     # The helper's brief and footer show the reviewer's word.
     assert page_lines([5, 9], read) == [
-        "- p5: 2. Coffee point; vendor round 1 + architect (the reviewer said so in the plan check)",
+        (
+            "- p5: 2. Coffee point; vendor round 1 (top) + architect (bottom) (the reviewer said "
+            "so in the plan check)"
+        ),
         "- p9: 4. Pantry; vendor round 1; the architect's drawing is on p7 (the reviewer said so in the plan check)",
     ]
     workspace = ChatWorkspace.open(tmp_path / "chat", set_pack=tmp_path)

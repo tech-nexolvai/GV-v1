@@ -289,9 +289,10 @@ def test_completeness_both_ways_from_readings_findings_and_the_sheet_index() -> 
     assert (report["architect_items"], report["vendor_items"]) == (5, 3)
 
     made = by_source(ledger.ledger_findings(findings, coverage, architect_items), "completeness")
+    # Wall W30 is counted, but its own finding already reports it missing (with its spots and
+    # pictures): no completeness copy of it (#1650).
     assert {(f["item"], f["architect"], f["vendor"]) for f in made} == {
         ("Pantry T24", "shown", "not found"),
-        ("Wall W30", "shown", "not found"),
         ("Filler F3", "not found", "shown"),
     }
     filler = next(f for f in made if f["item"] == "Filler F3")
