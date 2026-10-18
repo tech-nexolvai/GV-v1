@@ -249,7 +249,7 @@ def _unproved(finding: Mapping[str, Any]) -> Classified:
     if (
         finding.get("source") == "vendor_arithmetic"
         and finding.get("created_by") != "consistency"
-        and finding.get("string_geometry") != "verified"
+        and finding.get("string_geometry") not in ("verified", "two_reads")
     ):
         parts = [str(p) for p in finding.get("parts") or []]
         summed = " + ".join(parts) if parts else "the parts"
@@ -278,6 +278,19 @@ def _unproved(finding: Mapping[str, Any]) -> Classified:
             "unreadable",
             f"could not read the vendor's value on page {page}",
             f"a legible value on page {page} (or on the next round)",
+        )
+    critic = finding.get("critic")
+    if (
+        isinstance(critic, Mapping)
+        and critic.get("model") == "devil's advocate"
+        and str(critic.get("note") or "").startswith("Not verified within the fixed price")
+    ):
+        # The money ran out before its proof check (#1641): said so, never silently grey.
+        return _not(
+            "not_proved",
+            "not verified within the fixed price: code read the values, but the check that both "
+            "measure the same thing was not reached",
+            "the same check in a full check with money left for it",
         )
     if _read_by_code(finding):
         return _not(
