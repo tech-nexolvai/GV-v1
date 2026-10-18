@@ -15,9 +15,10 @@ states something is backed:
 - or it says the thing is not there ("not shown", "none"): an absence has no spot;
 - or it is a size code finds printed on that page, on that side's drawing (`dims.json`'s labels;
   a page whose labels are not known yet is never held against it);
-- or code made it: GV's rule requirement (a rule result's architect side), the vendor's own sum
-  (a string's should-be), or a code witness that located the values (printed at both spots, the
-  drawn-ink reading, a finish code read from the text, code's sum).
+- or code made it: a GV rule result that states its requirement (GV's rule engine read the vendor's
+  value itself), the vendor's own sum (a string's should-be), or a code witness that located the
+  values (printed at both spots, the drawn-ink reading, a finish code read from the text, code's
+  sum). A rule result with no stated requirement ("see GV Review's record") is never sent.
 
 Pure code: no PDF here; the labels come from the caller (`dim_index.DimLabels.on_page`).
 Verification: `tests/review/assistant/test_spot_guard.py` (made-up findings).
@@ -112,7 +113,12 @@ def unbacked(finding: Mapping[str, Any], labels: Labels) -> str | None:
     if finding.get("status") not in _SHOWN:
         return None
     witnesses = finding.get("witnesses")
-    if isinstance(witnesses, list) and _LOCATED & {str(w) for w in witnesses}:
+    found = {str(w) for w in witnesses} if isinstance(witnesses, list) else set()
+    if _LOCATED & found:
+        return None
+    if "rule" in found and _size(_flat(finding.get("architect"))) is not None:
+        # GV's rule engine read the vendor's value itself and states the requirement: a rule
+        # result with a requirement is code's, spot or not (one without is never sent, #1622).
         return None
     dims = finding.get("dims") if isinstance(finding.get("dims"), Mapping) else {}
     page = finding.get("page")

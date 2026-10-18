@@ -66,8 +66,11 @@ def test_words_with_no_spot_are_never_shown_to_the_vendor() -> None:
 def test_absences_code_made_values_and_located_items_are_kept() -> None:
     missing = finding(status="check", vendor="not shown on the vendor")
     assert unbacked({**missing, "arch_box": BOX}, labels) is None
-    # GV's rule requirement and code's sum are code's own values, not printed ones.
+    # GV's rule requirement and code's sum are code's own values, not printed ones; a rule result
+    # that states its requirement is code's even with no spot (GV's rule engine read the value).
     assert unbacked(finding(source="rules", architect='68"', vendor_box=BOX), labels) is None
+    rule = finding(source="rules", architect='68"', vendor='72"', witnesses=["rule"])
+    assert unbacked(rule, labels) is None
     summed = finding(source="vendor_arithmetic", architect='61 1/8"', vendor_box=BOX)
     assert unbacked(summed, labels) is None
     # A code witness that located the values, or a code label on a side.
