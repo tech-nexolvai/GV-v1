@@ -419,6 +419,41 @@ def test_near_miss() -> None:
     assert not vv.near_miss(Decimal("39.5"), Decimal(39))
 
 
+def test_a_fraction_no_drawing_prints_is_no_near_miss() -> None:
+    from decimal import Decimal
+
+    # `63 1/2"` read 6317 by one pass: 63 1/7" is no fraction a drawing prints and 6317" no
+    # length, so it is a misread of the fraction's digits, not a rival value.
+    assert vv.impossible_fraction(Decimal("63.5"), "6317")
+    assert not vv.near_miss(Decimal("63.5"), Decimal(6317))
+    assert vv.impossible_fraction(Decimal("15.9375"), "151517")  # 15 15/17
+    assert vv.impossible_fraction(Decimal("28.75"), "2835")  # 28 3/5
+    assert vv.impossible_fraction(Decimal("28.75"), "2844")  # 28 4/4: top not below the bottom
+    # Still rivals: a fraction a drawing prints, another whole number, digits that are a real
+    # number, a whole value.
+    assert not vv.impossible_fraction(Decimal("63.5"), "6314")
+    assert vv.near_miss(Decimal("63.5"), Decimal(6314))
+    assert not vv.impossible_fraction(Decimal("63.5"), "6417")
+    assert vv.near_miss(Decimal("63.5"), Decimal(6412))
+    assert not vv.impossible_fraction(Decimal("3.5"), "317")  # 317" is a length
+    assert vv.near_miss(Decimal("3.5"), Decimal(317))
+    assert not vv.impossible_fraction(Decimal("0.5"), "17")  # 17" is a length
+    assert vv.near_miss(Decimal("0.5"), Decimal(17))
+    assert not vv.impossible_fraction(Decimal(46), "47")
+
+
+def test_an_impossible_fraction_read_does_not_refuse_the_match(tmp_path: Path) -> None:
+    # Both engines read `63 1/2"`; one also reads it 6317. Two engines agree, and the odd read is
+    # no value, so the match stands. A pass reading a real rival (`63 1/4"`) still refuses it.
+    pdf = _write(tmp_path, _pdf(stamp=_outlines("63", 20, 100)))
+    box = _around(20, 100, 30)
+    misread = [_Shaped("Tesseract", ['63 1/2"', "6317"], [0.3]), _Scripted("RapidOCR", ["63 1/2"])]
+    assert vv.verify_value(pdf, 1, box, '63 1/2"', readers=misread).result == "match"
+    rival = [_Shaped("Tesseract", ['63 1/2"', "6314"], [0.3]), _Scripted("RapidOCR", ["63 1/2"])]
+    found = vv.verify_value(pdf, 1, box, '63 1/2"', readers=rival)
+    assert found.result == "cannot_read" and "near-miss" in found.reason
+
+
 def test_a_big_box_holding_several_numbers_is_refused(tmp_path: Path) -> None:
     stamp = _outlines("46", 20, 100) + _outlines("72", 120, 30)
     pdf = _write(tmp_path, _pdf(stamp=stamp))
