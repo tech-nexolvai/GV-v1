@@ -751,6 +751,13 @@ class TesseractReader:
         text = self._tesseract.image_to_string(picture, config=config, timeout=60)
         return [line for line in str(text).splitlines() if line.strip()]
 
+    def raw_line(self, picture: np.ndarray) -> list[str]:
+        """One line read as a raw line (`--psm 13`, no layout analysis): the drawn route's read of
+        a stacked fraction alone, whose `3` the line model (`--psm 7`) reads as `5`."""
+        config = "--psm 13 -c " + shlex.quote(f"tessedit_char_whitelist={_WHITELIST}")
+        text = self._tesseract.image_to_string(picture, config=config, timeout=60)
+        return [line for line in str(text).splitlines() if line.strip()]
+
     def one_shapes(self, picture: np.ndarray, *, single_line: bool) -> list[float]:
         """The width-to-height of the ink of every glyph Tesseract reads as `1` here."""
         config = f"--psm {7 if single_line else 11} -c " + shlex.quote(
