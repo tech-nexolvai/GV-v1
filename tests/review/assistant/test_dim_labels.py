@@ -293,8 +293,15 @@ def test_only_the_vendors_drawn_numbers_with_an_inch_mark_and_room_round_them(
     # Ink in line with it, about a word space away: part of a word or a longer number (`WD-02`,
     # `SCALE : 1"`, `2'-10"`).
     crowded = tmp_path / "crowded.pdf"
-    crowded.write_bytes(_pdf([_drawn_page(_glyphs(300.0, 303.5) + _letter(291.5))]))
+    crowded.write_bytes(_pdf([_drawn_page(_glyphs(300.0, 303.5) + _letter(290.8))]))
     assert not _drawn(crowded, _agreeing())
+
+
+def test_the_next_dimension_of_a_chain_does_not_crowd_a_label(tmp_path: Path) -> None:
+    # Two drawn dimensions end to end on one line, each with its own inch mark (a chain).
+    path = tmp_path / "chain.pdf"
+    path.write_bytes(_pdf([_drawn_page(_glyphs(300.0, 303.5) + _glyphs(315.0, 318.5))]))
+    assert len(_drawn(path, _agreeing())) == 2
 
 
 @pytest.mark.parametrize(

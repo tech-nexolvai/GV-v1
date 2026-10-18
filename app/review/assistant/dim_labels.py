@@ -645,27 +645,27 @@ def _label_reads(label: ink_labels.Label, engines: Sequence[Any]) -> list[Any]:
             for row in ink_labels.rows(label, turn):
                 layout = _layout(row)
                 marked = bool(ink_labels.inch_mark_at_end(row, turn))
-                # An engine that reads `"` as `99` reads the row without its inch mark; one that
-                # knows the mark reads it both ways (Tesseract reads `3/4"` as `349` at times).
-                marks = (
-                    (True, False)
-                    if marked and getattr(reader, "reads_inch_marks", True)
-                    else (not marked or getattr(reader, "reads_inch_marks", True),)
-                )
-                for mark in marks:
+                # An engine that reads `"` as `99` reads the row without its inch mark.
+                for mark in (not marked or getattr(reader, "reads_inch_marks", True),):
                     for height in ink_labels.HEIGHTS_PX:
                         picture = ink_labels.row_picture(row, turn, height, inch_mark=mark)
                         if picture is None:
                             continue
                         line = " ".join(reader(picture, single_line=True)).strip()
                         read.add(reader, picture, [line] if line else [], True)
-                        whole = (
-                            _laid_out(line, layout)
-                            if layout is not None
-                            else vv._row_value(line, inch_mark=mark)
-                        )
+                        # The digits laid out as the vectors draw them first: an engine that
+                        # loses a space (`11/2` for a 1 and a stacked 1 over 2) still reads the
+                        # value. When the digits do not match the drawing (a digit drawn in two
+                        # strokes counts twice), the line as read.
+                        whole = None if layout is None else _laid_out(line, layout)
+                        if whole is None:
+                            whole = vv._row_value(line, inch_mark=mark)
                         if whole is not None:
                             read.whole.add(whole)
+                            # This picture gave it (the `1` shape check reads it per picture).
+                            values, ones = read.passes[-1]
+                            read.passes[-1] = (values | {whole}, ones)
+                            read.values.add(whole)
         reads.append(read)
     return reads
 
@@ -674,9 +674,10 @@ type _Layout = tuple[int, int, int]
 
 
 def _layout(row: Sequence[ink_labels.Token]) -> _Layout | None:
-    """How many characters the row's vectors draw for its whole number, its stacked fraction's
-    numerator and its denominator (`(2, 1, 8)` is never: `(2, 1, 1)` is `13 1/8"`), or `None`
-    when the row is not one number with at most one stacked fraction at its end."""
+    """How many glyphs the row's vectors draw for its whole number, its stacked fraction's
+    numerator and its denominator (`(2, 1, 1)` is `13 1/8"`), or `None` when the row is not one
+    number with at most one stacked fraction at its end. A digit drawn in two strokes that do not
+    touch counts twice, so a layout only ever confirms digits, never adds one."""
     whole = numerator = denominator = 0
     for token in row:
         if token.kind == "mark":
@@ -731,10 +732,10 @@ def _line_work(path: Any, turn: ink_labels.Turn) -> bool:
     ends = ink_labels._ends(glyph)
     if ends is None:
         return False
-    (x0, y0), (x1, y1) = ends
+    (x0, y0), (x1, y1) = (float(v) for v in ends[0]), (float(v) for v in ends[1])
     length = math.hypot(x1 - x0, y1 - y0) or 1.0
     along = abs(x1 - x0) / length if turn == 0 else abs(y1 - y0) / length
-    return along < 0.9
+    return bool(along < 0.9)
 
 
 def _crowded(page: Any, label: ink_labels.Label) -> bool:
@@ -742,9 +743,22 @@ def _crowded(page: Any, label: ink_labels.Label) -> bool:
     height (a word space), in a direction it may read: a word or a number the label belongs to
     (`WD-` before `02`, `SCALE :` before `1"`, `2'-` before `10"`). Such a label is not read: what
     it is part of decides its value. The dimension's own ticks, arrowheads and extension lines do
-    not count (`_line_work`)."""
+    not count (`_line_work`), nor the next dimension of a chain (a label with its own inch mark).
+    """
     own = {id(path) for glyph in label.glyphs for path in glyph.paths}
     near = [path for path in vv._ink_paths_near(page, label.box) if id(path) not in own]
+    # The next dimension of a chain (its own number and inch mark) is no word round this one.
+    x0, y0, x1, y1 = label.box
+    reach = 1.2 * max(x1 - x0, y1 - y0)
+    around = (x0 - reach, y0 - reach, x1 + reach, y1 + reach)
+    dimensions = {
+        id(path)
+        for other in ink_labels.labels(vv._ink_paths_near(page, around), around)
+        if _inch_marked(other)
+        for glyph in other.glyphs
+        for path in glyph.paths
+    }
+    near = [path for path in near if id(path) not in dimensions]
     for turn in ink_labels.turns(label):
         frame = ink_labels._frame(label.box, turn)
         tall = frame[3] - frame[1]
@@ -818,7 +832,16 @@ def _drawn_value(reads: Sequence[Any]) -> Decimal | None:
     value = agreed[0]
     if not 0 < value <= _BARE_MAX_IN:
         return None
-    seen = {v for read in reads for v in read.values} | set(engines)
+    # A line whose digits are exactly the value's (`11/2` for 1 1/2") is the same reading with
+    # its spaces lost, not a near-miss: only the other lines' values are checked.
+    digits = vv._digit_string(value)
+    seen = {
+        v
+        for read in reads
+        for line in read.lines
+        if "".join(ch for ch in vv._plain(line) if ch.isdigit()) != digits
+        for v in vv._ocr_values([line])
+    } | set(engines)
     if any(vv.near_miss(value, other) for other in seen):
         return None
     if vv._ones_unsure(list(reads), value) is not None:
