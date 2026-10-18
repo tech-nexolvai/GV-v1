@@ -248,6 +248,12 @@ describe('a full-check answer', () => {
     expect(progressWords({ created_at: '2026-10-17T10:00:00Z', findings: [], coverage: null, progress: { ...progress, eta_seconds: 20 } })).toBe('Checking page 12 of 60 · 8 wrong so far · under a minute left');
   });
 
+  it('counts drawings in the simple full check (#1665)', () => {
+    const progress = { phase: 'checking' as const, pages_done: 3, pages_total: 60, wrong_so_far: 2, decision_so_far: 0, right_so_far: 1, eta_seconds: 400, drawings_done: 11, drawings_total: 36 };
+    expect(progressWords({ created_at: '2026-10-17T10:00:00Z', findings: [], coverage: null, progress })).toBe('Comparing drawing 12 of 36 · 2 wrong so far · about 7 min left');
+    expect(progressWords({ created_at: '2026-10-17T10:00:00Z', findings: [], coverage: null, progress: { ...progress, phase: 'reading', pages_done: 0, drawings_done: 0, eta_seconds: null } })).toBe('Comparing drawing 1 of 36 · 2 wrong so far');
+  });
+
   it('counts the reviewer’s answers and makes the cloud drawing again from them (#1525)', async () => {
     const user = userEvent.setup();
     const decide = vi.fn(async (_message: string, _finding: string, decision: string) => ({ decision, by: 'anant', at: '2026-10-17T11:00:00Z' }));

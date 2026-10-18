@@ -495,6 +495,12 @@ class EngineSettings:
     numbering: Callable[[Sequence[Mapping[str, Any]]], dict[str, str]] | None = None
     """This check's stable comment numbers from the set's earlier checks
     (`package_store.numbering`); `None`: the check numbers its own."""
+    full_check_mode: str = "roster"
+    """Which full check runs (`GV_ASSISTANT_FULL_CHECK_MODE`): `roster`, or `simple` (one compare
+    call per vendor drawing, code verifies, one blind look per red candidate: `simple_check/`)."""
+    simple: Any = None
+    """The simple check's options for this run (`simple_check.run.SimpleOptions.of`): the compare
+    and blind-look settings and the pilot's size."""
 
 
 @dataclass(slots=True)
@@ -933,6 +939,11 @@ class ChatEngine:
         self._code_findings_added = False
         #: A roster full check judges its red candidates with the devil's advocate instead.
         self.critic_off = False
+        #: The simple full check (#1665): why it did not finish when no stop says so (drawings that
+        #: could not be compared: review result S0), and its Not-compared rows that are not
+        #: findings (an architect that gives no size), for the Not-compared PDF and workbook.
+        self.incomplete_note: str | None = None
+        self.extra_gaps: list[dict[str, Any]] = []
         #: Refusal-fallback switches already shown (#1577), and the thinking blocks the API dropped
         #: from this answer's calls because their conversation no longer matched (a bug signal).
         self._fallbacks_shown: set[tuple[str, str]] = set()
@@ -2302,7 +2313,9 @@ class ChatEngine:
             drawn = ink.submit(
                 drawn_ink_checks, book.live(), book.pdf_paths(), stop=self.cancel.is_set
             )
-            skipped = self._post_checks()
+            # The simple full check makes no second or third reads and has no critic: its two AI
+            # roles are the compare call and the blind look (CONTRACT-SIMPLE).
+            skipped = 0 if self._simple else self._post_checks()
         with self.finding_lock:
             for inked in with_drawn_ink(book.live(), drawn.result()):
                 if book.replace(inked):
@@ -2440,10 +2453,16 @@ class ChatEngine:
                 if self.book.replace(renamed):
                     self._show_finding(renamed)
 
+    @property
+    def _simple(self) -> bool:
+        """The simple full check (CONTRACT-SIMPLE): no resolver, no escalation, no second reads."""
+        return self.settings.mode == "full_check" and self.settings.full_check_mode == "simple"
+
     def _resolve_decisions(self) -> None:
         """Whole-set work (#1554): code settles the "Your decision" items the drawings answer
-        (`decision_resolver`) before the trust report, the files and the summary."""
-        if not self._whole_set_work():
+        (`decision_resolver`) before the trust report, the files and the summary. Not in the
+        simple full check: code verified each of its items already."""
+        if not self._whole_set_work() or self._simple:
             return
         try:
             self._settled = resolve_answer(self)
@@ -2454,7 +2473,7 @@ class ChatEngine:
         """A full check (#1619): the free code steps on every item the resolver left undecided
         (`escalation`), after the resolver and before the trust report and the files; what is
         still open then is Not compared, with its reason (the Not-compared list)."""
-        if self.settings.mode != "full_check" or not self._whole_set_work():
+        if self.settings.mode != "full_check" or not self._whole_set_work() or self._simple:
             return
         try:
             self._escalation = escalate_answer(self)
@@ -2695,7 +2714,7 @@ class ChatEngine:
         worked: dict[str, Any] = {}
         # Pages never accounted for (no note why) mean the check did not finish (S0).
         gaps = book.coverage_gaps() if book.coverage_used else []
-        incomplete = incomplete_reason(stopped, {"not_opened": len(gaps)})
+        incomplete = incomplete_reason(stopped, {"not_opened": len(gaps)}) or self.incomplete_note
         # The Not-compared list's rows (#1619): one source for its PDF, its workbook, the cloud
         # drawing's cover and the summary's line.
         nothing = self._not_compared_rows(findings)
@@ -2761,7 +2780,9 @@ class ChatEngine:
                     self._add_text(f"*The {what} could not be made for this answer.*")
         # The list also names the set's own gaps code found (the finish check, #1623; the vendor
         # consistency check), apart from the answer's items.
-        listed = self._not_compared_files([*nothing, *not_compared.gap_rows(self.consistency_gaps)])
+        listed = self._not_compared_files(
+            [*nothing, *not_compared.gap_rows([*self.consistency_gaps, *self.extra_gaps])]
+        )
         names += [name for name, _path in listed]
         # The send-ready package (#1622) holds every file just made, the Not-compared list too.
         context = worked.get("context")
@@ -4007,6 +4028,11 @@ class ChatEngine:
         text = ""
         guard_sent = False
         self._room_for_history()
+        if settings.mode == "full_check" and settings.full_check_mode == "simple":
+            # The simple full check (CONTRACT-SIMPLE): work list, code, compare, verify, blind.
+            return import_module(  # type: ignore[no-any-return]
+                "app.review.assistant.simple_check.run"
+            ).run(self)
         if settings.mode == "full_check" and settings.roster:
             # A fixed-price roster of specialists, no lead (`full_check_roster`); `None` when
             # there is no page map to plan from, and the lead plans as before.

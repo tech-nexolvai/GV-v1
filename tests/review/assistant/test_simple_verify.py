@@ -413,7 +413,10 @@ def test_view_types_that_differ_block_red() -> None:
         (Region(FILE, 1, tuple(ARCH_HALF), None, "elevation"),),  # type: ignore[arg-type]
     )
     found = _one(_pair("p2.D1", "p1.D1"), plan)
-    assert found.outcome == "not_compared" and "a plan against a elevation" in found.reason
+    assert (
+        found.outcome == "not_compared"
+        and "the vendor's is a plan view, the architect's a elevation" in found.reason
+    )
 
 
 def test_the_newest_round_printing_the_same_value_lets_round_1_through() -> None:

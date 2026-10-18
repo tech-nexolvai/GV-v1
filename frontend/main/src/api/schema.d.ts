@@ -3836,6 +3836,13 @@ export interface components {
         AssistantModelsOut: {
             /** Available */
             available: boolean;
+            /**
+             * Full Check Mode
+             * @description Which full check runs (`GV_ASSISTANT_FULL_CHECK_MODE`): the roster of specialists, or the simple check (one compare call per vendor drawing, #1665).
+             * @default roster
+             * @enum {string}
+             */
+            full_check_mode: "roster" | "simple";
             /** Message Cap Usd */
             message_cap_usd: string;
             /** Models */
@@ -5429,6 +5436,16 @@ export interface components {
          */
         ChatMessageIn: {
             /**
+             * Compare Effort
+             * @description The simple full check only: this run's compare call effort, for every drawing.
+             */
+            compare_effort?: ("low" | "medium" | "high" | "xhigh" | "max") | null;
+            /**
+             * Compare Model
+             * @description The simple full check only (#1665): this run's compare call model, for every drawing (the hard ones too); none: the settings' (`GV_ASSISTANT_SIMPLE_COMPARE_MODEL`).
+             */
+            compare_model?: ("claude-sonnet-5-5" | "claude-opus-5-5") | null;
+            /**
              * Continue From
              * @description Continue (#1514): the id of the answer a server restart interrupted. The answer goes on from its saved work; a full check keeps its findings and checks only the pages not yet done (`mode` and `products` are then the interrupted answer's).
              */
@@ -5446,6 +5463,11 @@ export interface components {
             mode: "chat" | "full_check";
             /** Model */
             model: string;
+            /**
+             * Pilot
+             * @description The simple full check only (#1665): compare only the first N drawings of the work list (a paid pilot); the rest are listed as left out on purpose.
+             */
+            pilot?: number | null;
             /**
              * Plan Answers
              * @description A full check only (#1569): the answers to the plan check's questions (`GET /packages/{package_id}/full-check-plan`), kept with the drawing set's page map.
@@ -5474,7 +5496,7 @@ export interface components {
             /** @description The answer's accuracy by code (its `accuracy` block, scored again with today's calibration: see `rescored`); null on older answers. */
             accuracy?: components["schemas"]["ChatAccuracyOut"] | null;
             /** Blocks */
-            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatFindingUpdateBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"] | components["schemas"]["ChatScopeBlock"] | components["schemas"]["ChatProgressBlock"] | components["schemas"]["ChatResumeBlock"] | components["schemas"]["ChatResolverBlock"] | components["schemas"]["ChatUnderstoodBlock"] | components["schemas"]["ChatFallbackBlock"] | components["schemas"]["ChatPackageBlock"])[] | null;
+            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatFindingUpdateBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"] | components["schemas"]["ChatScopeBlock"] | components["schemas"]["ChatProgressBlock"] | components["schemas"]["ChatWorkItemsBlock"] | components["schemas"]["ChatResumeBlock"] | components["schemas"]["ChatResolverBlock"] | components["schemas"]["ChatUnderstoodBlock"] | components["schemas"]["ChatFallbackBlock"] | components["schemas"]["ChatPackageBlock"])[] | null;
             /** @description With `stopped: cost_cap`: `message` (this answer's cap) or `package` (the drawing set's budget ran out). */
             cap_hit?: components["schemas"]["ChatCapHit"] | null;
             /** Cost Usd */
@@ -5748,6 +5770,16 @@ export interface components {
         ChatProgressOut: {
             /** Decision So Far */
             decision_so_far: number;
+            /**
+             * Drawings Done
+             * @description The simple full check (#1665): vendor drawings compared so far ('Comparing drawing 12 of 36'); null in the roster check.
+             */
+            drawings_done?: number | null;
+            /**
+             * Drawings Total
+             * @description The simple full check: drawings in its work list.
+             */
+            drawings_total?: number | null;
             /**
              * Eta Seconds
              * @description Time left at the pace so far; null before any page is done.
@@ -6549,6 +6581,50 @@ export interface components {
              * @description The evidence detail's line, written by code.
              */
             words: string;
+        };
+        /**
+         * ChatWorkItemOut
+         * @description One vendor drawing of the simple full check's work list (#1665): compared (`answered`),
+         *     `failed` with the reason (never dropped), or `skipped` by code with its reason.
+         */
+        ChatWorkItemOut: {
+            /**
+             * Cost Usd
+             * @description Its compare call's estimated cost.
+             * @default 0
+             */
+            cost_usd: string;
+            /**
+             * Id
+             * @description The drawing's id, `p23.v1` (page 23, round 1).
+             */
+            id: string;
+            /**
+             * Model
+             * @description The model that answered.
+             */
+            model?: string | null;
+            /** Page */
+            page: number;
+            /** Reason */
+            reason?: string | null;
+            /** Round */
+            round?: number | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "answered" | "failed" | "skipped";
+        };
+        /** ChatWorkItemsBlock */
+        ChatWorkItemsBlock: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "work_items";
+            /** Work Items */
+            work_items: components["schemas"]["ChatWorkItemOut"][];
         };
         /** CheckOut */
         CheckOut: {

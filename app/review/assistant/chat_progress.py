@@ -55,6 +55,20 @@ def progress_numbers(
     }
 
 
+def with_work(
+    numbers: dict[str, Any], work: tuple[int, int] | None, elapsed: float
+) -> dict[str, Any]:
+    """The simple full check's drawings (#1665): "Comparing drawing 12 of 36", and the time left at
+    the pace of the drawings so far (not the pages')."""
+    if work is None:
+        return numbers
+    done, total = work
+    eta: int | None = None
+    if 0 < done < total and elapsed > 0:
+        eta = round((total - done) * elapsed / done)
+    return {**numbers, "drawings_done": done, "drawings_total": total, "eta_seconds": eta}
+
+
 class FullCheckProgress:
     """Publishes the progress numbers when they change, and on a timer while they do not."""
 
@@ -77,12 +91,18 @@ class FullCheckProgress:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._ticker: threading.Thread | None = None
+        self._work: tuple[int, int] | None = None
 
     def current(self) -> dict[str, Any]:
         findings, coverage, pages = self._snapshot()
-        return progress_numbers(
-            findings, coverage, pages, self._phase, self._clock() - self._started
-        )
+        elapsed = self._clock() - self._started
+        numbers = progress_numbers(findings, coverage, pages, self._phase, elapsed)
+        return with_work(numbers, self._work, elapsed)
+
+    def set_work(self, done: int, total: int) -> None:
+        """The simple full check's drawings compared so far, of the work list's (#1665)."""
+        self._work = (done, total)
+        self.changed(force=True)
 
     def changed(self, *, force: bool = False) -> None:
         """Publish when the numbers (other than the time left) changed, or when forced."""

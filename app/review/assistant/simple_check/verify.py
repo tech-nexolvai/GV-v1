@@ -817,7 +817,9 @@ def _view_check(item: Item, a_file: str, a_page: int) -> Check:
         (r.view for r in item.architect if r.file == a_file and r.page == a_page and r.view), None
     )
     if item.vendor.view and theirs and item.vendor.view != theirs:
-        return Check("view", "fail", f"a {item.vendor.view} against a {theirs}")
+        return Check(
+            "view", "fail", f"the vendor's is a {item.vendor.view} view, the architect's a {theirs}"
+        )
     return Check("view", "pass")
 
 
