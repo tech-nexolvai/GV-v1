@@ -5036,17 +5036,6 @@
             "title": "Page",
             "type": "integer"
           },
-          "pairing": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ChatFindingPairingOut"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Proof that both numbers measure the same thing (#1581); without it an architect comparison is never clouded automatically."
-          },
           "parts": {
             "anyOf": [
               {
@@ -5353,42 +5342,6 @@
           "created_by"
         ],
         "title": "ChatFindingOut",
-        "type": "object"
-      },
-      "ChatFindingPairingOut": {
-        "description": "Proof that the vendor's and the architect's numbers measure the same thing (#1581): needed\nbefore an architect comparison is clouded with no human step.",
-        "properties": {
-          "how": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "In plain words, for the proof page.",
-            "title": "How"
-          },
-          "method": {
-            "description": "code_geometry: both values printed at their spots and their dimension lines' end points on the same drawn extent; blind_picks: two blind AI picks of the same labels plus code's checks (setting assistant_pairing_proof).",
-            "enum": [
-              "code_geometry",
-              "blind_picks"
-            ],
-            "title": "Method",
-            "type": "string"
-          },
-          "proved": {
-            "title": "Proved",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "proved",
-          "method"
-        ],
-        "title": "ChatFindingPairingOut",
         "type": "object"
       },
       "ChatFindingProofOut": {

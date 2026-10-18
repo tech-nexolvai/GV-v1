@@ -42,10 +42,17 @@ from app.review.assistant.full_check_plan import (
     rules_summary,
     wait_for_page_map,
 )
+from app.review.assistant.full_check_specialists import HELPER_CORE
 from tests.dummy_products import DUMMY, use_dummy_registry
 from tests.review.assistant.chat_fakes import SONNET, ScriptedProvider, reply, text, tool
 from tests.review.assistant.test_chat_engine import DOLLARS, Harness
 from tests.review.assistant.test_chat_findings import workspace_with_pdf
+
+
+def _helper_system(text: str) -> bool:
+    """A helper's system prompt: the shared one, or a helper kind's (`full_check_specialists`)."""
+    return text == HELPER_SYSTEM_PROMPT or text.startswith(HELPER_CORE)
+
 
 __all__ = ["use_dummy_registry"]  # the fixture, imported so pytest finds it
 
@@ -291,10 +298,10 @@ class _Script:
     def __call__(self, params: Mapping[str, Any]) -> list[dict[str, Any]]:
         system = params["system"][0]["text"]
         asked = _first_text(params)
-        if system == HELPER_SYSTEM_PROMPT and asked == "Reply with OK.":
+        if _helper_system(system) and asked == "Reply with OK.":
             self.warmups.append(params)
             return reply(text("OK"), model=SONNET, stop="max_tokens")
-        if system == HELPER_SYSTEM_PROMPT:
+        if _helper_system(system):
             return self.helper(params, asked)
         if system == finding_critic.SYSTEM:
             return self.critic(params, asked)
@@ -452,7 +459,10 @@ def test_a_full_check_starts_every_job_at_once_and_the_lead_only_verifies(
         assert brief["max_tokens"] == FULL_CHECK_HELPER_MAX_TOKENS
         words = brief["messages"][0]["content"][0]["text"]
         assert words.startswith("OBJECTIVE: a full GV review of the vendor's drawings on pages ")
-        assert "CHECKLIST, for every page:" in words and "START: you are one of 4 helpers" in words
+        assert "WHAT TO COMPARE: " in words and "START: you are one of 4 helpers" in words
+        # Each helper kind has its own system prompt: the shared core and its knowledge (#roster).
+        system = brief["system"][0]["text"]
+        assert system.startswith(HELPER_CORE) and "what-dimensions-measure.md" in system
         assert HELPER_FOOTER_MARK in words and "at most 200 words" in words
         assert "Your pages: " in words and "/mnt/user-data/set/pages/Vendor_set/p-0" in words
     # Divider pages: not comparable, by code.
@@ -562,7 +572,7 @@ def test_a_full_check_helper_wraps_up_after_its_reading_calls(tmp_path: Path) ->
     calls: list[int] = []
 
     def answer(params: Mapping[str, Any]) -> list[dict[str, Any]]:
-        if params["system"][0]["text"] != HELPER_SYSTEM_PROMPT:
+        if not _helper_system(params["system"][0]["text"]):
             return reply(text('{"architect": null, "vendor": null, "sure": false}'), model=HAIKU)
         if _first_text(params) == "Reply with OK.":
             return reply(text("OK"), model=SONNET)
@@ -618,7 +628,7 @@ def test_a_helper_is_sent_back_once_to_finish_its_checklist_then_the_lead_gets_t
     def answer(params: Mapping[str, Any]) -> list[dict[str, Any]]:
         if _first_text(params) == "Reply with OK.":
             return reply(text("OK"), model=SONNET)
-        if params["system"][0]["text"] != HELPER_SYSTEM_PROMPT:
+        if not _helper_system(params["system"][0]["text"]):
             return reply(text('{"architect": null, "vendor": null, "sure": false}'), model=HAIKU)
         last = params["messages"][-1]["content"][-1].get("text", "")
         sent.append(last)
@@ -683,7 +693,7 @@ def test_a_stopped_full_check_still_gets_codes_finish_and_its_files(tmp_path: Pa
             return reply(text("OK"), model=SONNET)
         if params["model"] == HAIKU:  # the helper's difference, read again before the lead
             return reply(text('{"architect": null, "vendor": "41\\"", "sure": true}'), model=HAIKU)
-        if params["system"][0]["text"] != HELPER_SYSTEM_PROMPT:
+        if not _helper_system(params["system"][0]["text"]):
             raise AssertionError("no third read or critic runs on a stopped full check")
         if _steps(params) == 0:
             return reply(
