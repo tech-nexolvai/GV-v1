@@ -11,7 +11,8 @@ a false red cloud goes straight to the vendor, so **only what code proved is clo
   read as one size). Never a value measured off the drawing or taken from a scale note (the
   printed scales are wrong wherever GV resized a pasted drawing). A comparison of two drawn
   dimensions (vendor against architect or prototype) also needs a **pairing proof** that both
-  numbers measure the same thing (`pairing_proved`); GV's rule, GV's limits and the vendor's own
+  numbers measure the same thing (`pairing_proved`: the full check's devil's advocate passed it,
+  #1611, under the setting `assistant_pairing_proof`); GV's rule, GV's limits and the vendor's own
   sum need none. Red cloud at the vendor's value, green "Should be", and a proof entry.
 - **not_verified**: a Wrong item only AI readings back ("AI reading only", or Likely from two AI
   readings with no code witness), or one code read right whose pairing is not proved: listed in
@@ -36,6 +37,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final, Literal
 
+from app.review.assistant import full_check_advocate as advocate
 from app.review.assistant import witness
 from app.review.assistant.chat_trust import inch_words
 
@@ -45,7 +47,6 @@ __all__ = [
     "GROUP_WORDS",
     "KEEP_WORDS",
     "LEFT_CAPTIONS",
-    "PAIRING_METHODS",
     "PAIRING_REASON",
     "RULE_LINE",
     "ProofGroup",
@@ -102,10 +103,8 @@ _SCALED: Final = re.compile(
 PAIRING_REASON: Final = "What each number measures is not proved by code; check it before sending."
 #: Why a Wrong item only AI readings back is grey.
 AI_ONLY_REASON: Final = "Only AI readings back it; check it before sending."
-#: How a pairing proof may be made (see `pairing_proved`).
-PAIRING_METHODS: Final = ("code_geometry", "blind_picks")
-#: Sources that compare nothing drawn by someone else: no pairing proof needed.
-_NO_PAIRING_SOURCES: Final = frozenset({"rules", "vendor_arithmetic"})
+#: The full check's devil's advocate (`full_check_advocate`, #1611) signs its verdict so.
+_ADVOCATE: Final = "devil's advocate"
 #: Trust levels a clouded item may have (with a code witness).
 _PROVED_LEVELS: Final = frozenset({"confirmed", "likely"})
 #: Why a person must decide (`decision_resolver.keep_reason`), in one plain line.
@@ -147,11 +146,11 @@ _PROOF_WORDS: Final[Mapping[str, str]] = {
 }
 #: The limits in the resolver's words for GV's limits (`decision_resolver._filler_limits`).
 _LIMITS: Final = re.compile(r"limits are (.+?) \(")
-#: A pairing proof in the proof line.
-_PAIRING_WORDS: Final[Mapping[str, str]] = {
-    "code_geometry": "code paired the two dimensions by their drawn extent",
-    "blind_picks": "two blind picks of the same labels agree, checked by code",
-}
+#: A pairing proof in the proof line: code paired the two itself, or the advocate's checks.
+_PAIRED_BY_CODE: Final = "code paired the two dimensions itself"
+_PAIRED_BY_ADVOCATE: Final = (
+    "a blind second pick chose the same architect dimension and code checked both ends"
+)
 #: The resolver's words (#1554): the vendor's value code read at its spot, the filler widths
 #: GV's limits caught, and code's sum of the vendor's parts.
 _HOW_VENDOR: Final = re.compile(r"\bvendor ((?:\d[\d/\s'-]*)?\d[\d/]*\")")
@@ -193,13 +192,13 @@ def scaled(finding: Mapping[str, Any]) -> bool:
 
 
 def needs_pairing(finding: Mapping[str, Any]) -> bool:
-    """Whether the item compares two drawn dimensions (the vendor's against the architect's, a
-    brand prototype's, or a difference GV Review's page review recorded), so a red cloud needs
-    proof that both numbers measure the same thing. GV's rule, GV's limits and the vendor's own
-    sum compare nothing drawn by someone else: they need none."""
-    if _gv_limits(finding) is not None or vendor_own(finding) == "span":
+    """Whether a red cloud needs proof that both numbers measure the same thing: the full check's
+    own rule (`full_check_advocate.needs_pairing`, #1611: a Wrong between two drawings that code
+    did not pair by itself, not GV's rule check). A filler GV's limits settled compares the
+    vendor's width with GV's rule, not with a drawing: it needs none either."""
+    if _gv_limits(finding) is not None:
         return False
-    return finding.get("source") not in _NO_PAIRING_SOURCES
+    return bool(advocate.needs_pairing(finding))
 
 
 def vendor_own(finding: Mapping[str, Any]) -> str | None:
@@ -226,17 +225,22 @@ LEFT_CAPTIONS: Final[Mapping[str | None, str]] = {
 }
 
 
+def _advocate(finding: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    critic = finding.get("critic")
+    if isinstance(critic, Mapping) and critic.get("model") == _ADVOCATE:
+        return critic
+    return None
+
+
 def pairing_proved(finding: Mapping[str, Any]) -> bool:
-    """The finding carries a pairing proof (`pairing: {proved: true, method, how}`):
-    `code_geometry` (both values printed at their spots and their dimension lines' end points on
-    the same drawn extent) or `blind_picks` (two blind AI picks of the same labels plus code's
-    checks, behind the setting `assistant_pairing_proof`)."""
-    pairing = finding.get("pairing")
-    return (
-        isinstance(pairing, Mapping)
-        and pairing.get("proved") is True
-        and pairing.get("method") in PAIRING_METHODS
-    )
+    """The full check proved the pairing (#1611, the one signal): code paired the two labels by
+    itself (`paired_by: code`), or the devil's advocate passed the item: two blind picks of the
+    same labels, code reading both, the same drawn extent and every code check
+    (`full_check_advocate.decide`, under `assistant_pairing_proof`)."""
+    if finding.get("paired_by") == "code":
+        return True
+    verdict = _advocate(finding)
+    return verdict is not None and verdict.get("result") == "passed"
 
 
 def _read_by_code(finding: Mapping[str, Any]) -> bool:
@@ -264,6 +268,10 @@ def code_proved(finding: Mapping[str, Any]) -> bool:
 
 def unproved_reason(finding: Mapping[str, Any]) -> str:
     """Why a Wrong item is in the grey "Not verified by code" list, in one plain line."""
+    verdict = _advocate(finding)
+    if verdict is not None and verdict.get("result") == "objects" and verdict.get("note"):
+        # The advocate's own reason ("Not proved: a blind second pick chose p23.D12, ...").
+        return f"{_short(verdict.get('note'), 200)} Check it before sending."
     if _read_by_code(finding) and needs_pairing(finding) and not pairing_proved(finding):
         return PAIRING_REASON
     return AI_ONLY_REASON
@@ -425,9 +433,13 @@ def proof_line(finding: Mapping[str, Any]) -> str:
         parts.append(f"agreed by {decision.get('by') or 'the reviewer'}")
     how = _settled_how(finding)
     witnesses = _witnesses(finding)
-    pairing = finding.get("pairing")
-    if needs_pairing(finding) and pairing_proved(finding) and isinstance(pairing, Mapping):
-        parts.append(_PAIRING_WORDS[str(pairing["method"])])
+    if needs_pairing(finding) and pairing_proved(finding):
+        verdict = _advocate(finding)
+        answers = verdict.get("answers") if verdict is not None else None
+        by_code = finding.get("paired_by") == "code" or (
+            isinstance(answers, Mapping) and answers.get("pairing") == "code"
+        )
+        parts.append(_PAIRED_BY_CODE if by_code else _PAIRED_BY_ADVOCATE)
     if how:
         parts.append(f"settled by GV Review: {_short(how, 200)}")
     else:

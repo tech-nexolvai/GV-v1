@@ -18,7 +18,7 @@ export const PROOF_GROUPS: readonly ProofGroup[] = ['clouded', 'not_verified', '
 export type ProofCounts = Record<ProofGroup, number>;
 
 const PROVED_LEVELS = new Set(['confirmed', 'likely']);
-const PAIRING_METHODS = new Set(['code_geometry', 'blind_picks']);
+const PAIRED_SOURCES = new Set(['architect', 'brand_prototype', 'gv_review']);
 const SCALED = /\bscal(?:e|es|ed|ing)\b|\bmeasured (?:off|on) the drawing\b/i;
 
 /** The rule for a finding with no `proof` from the server yet (a streaming answer). */
@@ -29,9 +29,11 @@ function codeProved(finding: ChatFinding): boolean {
   if (!PROVED_LEVELS.has(finding.trust_level ?? '') || witnesses.length === 0) return false;
   if (witnesses.includes('rule') || finding.settled?.method === 'gv_limits') return true;
   if (finding.source === 'vendor_arithmetic' && witnesses.includes('arithmetic')) return true;
-  // An architect comparison also needs proof that both numbers measure the same thing.
-  const paired = finding.pairing?.proved === true && PAIRING_METHODS.has(finding.pairing.method);
-  return finding.inches?.architect != null && finding.source !== 'rules' && paired;
+  // An architect comparison also needs proof that both numbers measure the same thing: the full
+  // check's one signal (#1611): code paired the two itself, or its devil's advocate passed it.
+  const needsPairing = PAIRED_SOURCES.has(finding.source) && !finding.rule_check_id && finding.paired_by !== 'code';
+  const paired = finding.critic?.model === "devil's advocate" && finding.critic.result === 'passed';
+  return finding.inches?.architect != null && (!needsPairing || paired);
 }
 
 /** Where the zero-click drawing puts a finding, with the reviewer's newest click laid over. */

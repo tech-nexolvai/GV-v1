@@ -396,8 +396,6 @@ def apply_checks(
     }
     # The vendor's own string (#1554): code's sum of its parts, for the row and the notes.
     out["parts_sum"] = _parts_sum(finding)
-    # Proof that both numbers measure the same thing (#1581): set by the pairing check, if any.
-    out.setdefault("pairing", None)
     # Set for a "same" item at the finish (`mark_compared`): not seen is not right.
     out.setdefault("compared", None)
     out.setdefault("not_compared_why", None)

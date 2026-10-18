@@ -50,6 +50,13 @@ from app.review.assistant.proof_drawing import (
 )
 
 WIDTH, HEIGHT = 1000.0, 700.0
+#: The full check's devil's advocate passing an item (#1611): the pairing is proved.
+ADVOCATE_PASSED: dict[str, Any] = {
+    "result": "passed",
+    "answers": {"spans": "agree", "extent": "same_extent"},
+    "note": "",
+    "model": "devil's advocate",
+}
 #: Where the sheet prints its values (shown points, origin top-left: x, baseline y).
 VENDOR_46 = (600.0, 520.0)
 ARCHITECT_37 = (200.0, 200.0)
@@ -114,8 +121,8 @@ def _proved(**changes: Any) -> dict[str, Any]:
         "inches": {"architect": "37", "vendor": "46", "difference": "9"},
         "vendor_box": _box(VENDOR_46),
         "arch_box": _box(ARCHITECT_37),
-        # Both numbers measure the same thing, proved by code (an architect comparison needs it).
-        "pairing": {"proved": True, "method": "code_geometry", "how": "same drawn extent"},
+        # The full check's devil's advocate proved both numbers measure the same thing (#1611).
+        "critic": ADVOCATE_PASSED,
     }
     finding.update(changes)
     return finding
@@ -221,37 +228,44 @@ def test_a_scaled_value_or_a_vendor_side_only_witness_is_never_clouded() -> None
 def test_an_architect_comparison_needs_a_pairing_proof_a_rule_or_sum_does_not() -> None:
     """Reading the vendor's number right (its mm and inches agreeing, or printed at its spot)
     does not prove the architect's number measures the same thing (a counter's underside against
-    its top): with no pairing proof the item is grey, with the reason."""
-    unpaired = _proved(witnesses=["units"], pairing=None)
+    its top). The one signal is the full check's (#1611): code paired the two itself, or the
+    devil's advocate passed the item. Without it the item is grey, with the reason."""
+    unpaired = _proved(witnesses=["units"], critic=None)
     assert proof_group(unpaired) == "not_verified"
     assert proof_of(unpaired)["reason"] == PAIRING_REASON
     assert unproved_reason(unpaired) == PAIRING_REASON
     assert proof_of(_ai_only())["reason"] == AI_ONLY_REASON
-    for pairing in (
-        {"proved": False, "method": "code_geometry"},
-        {"proved": True, "method": "a guess"},
-        "yes",
-    ):
-        assert proof_group(_proved(pairing=pairing)) == "not_verified"
-    assert proof_group(_proved(pairing={"proved": True, "method": "blind_picks"})) == "clouded"
-    assert proof_group(_proved(source="brand_prototype", pairing=None)) == "not_verified"
-    assert proof_group(_proved(source="gv_review", pairing=None)) == "not_verified"
+    # The advocate objecting: grey with its own reason.
+    objects = {
+        **ADVOCATE_PASSED,
+        "result": "objects",
+        "note": "Not proved: a blind second pick chose p23.D12, not p23.D10.",
+    }
+    objected = _proved(critic=objects, trust_level="to_check")
+    assert proof_group(objected) == "not_verified"
+    assert unproved_reason(objected).startswith("Not proved: a blind second pick chose p23.D12")
+    # Another model's critic passing is not the advocate's proof.
+    other = _proved(critic={**ADVOCATE_PASSED, "model": "critic"})
+    assert proof_group(other) == "not_verified"
+    assert proof_group(_proved(critic=None, paired_by="code")) == "clouded"
+    assert proof_group(_proved(source="brand_prototype", critic=None)) == "not_verified"
+    assert proof_group(_proved(source="gv_review", critic=None)) == "not_verified"
     # GV's rule, GV's limits and the vendor's own sum compare nothing drawn by someone else.
-    rule = _proved(source="rules", witnesses=["rule"], rule_check_id="C1", pairing=None)
+    rule = _proved(source="rules", witnesses=["rule"], rule_check_id="C1", critic=None)
     assert not needs_pairing(rule) and proof_group(rule) == "clouded"
     summed = _proved(
         source="vendor_arithmetic",
         witnesses=["arithmetic"],
         parts_sum="80.125",
         inches={"architect": None},
-        pairing=None,
+        critic=None,
     )
     assert proof_group(summed) == "clouded"
     limits = _proved(
         source="architect",
         witnesses=["rule"],
         inches={"architect": None},
-        pairing=None,
+        critic=None,
         settled={"method": "gv_limits", "how": 'GV\'s filler limits are 1" to 2" (x); y.'},
     )
     assert not needs_pairing(limits) and proof_group(limits) == "clouded"
@@ -290,8 +304,8 @@ def test_the_words_say_what_is_wrong_and_what_it_should_be() -> None:
     assert vendor_value(finding) == '46"'
     assert should_be(finding) == '37" (architect 3\'-1", page 2)'
     assert proof_line(finding) == (
-        "Code paired the two dimensions by their drawn extent; printed at both spots, read by "
-        "code; a second reading agrees; checked on the drawing"
+        "A blind second pick chose the same architect dimension and code checked both ends; "
+        "printed at both spots, read by code; a second reading agrees; checked on the drawing"
     )
     summed = _proved(
         source="vendor_arithmetic",
@@ -408,7 +422,7 @@ def test_the_drawing_clouds_only_what_code_proved_in_red_and_green(tmp_path: Pat
     assert _count(picture, RED, (x - 20, y - 25, x + 40, y + 15)) == 0  # AI reading only
     assert _count(picture, GREEN) > 20  # the "Should be" words
     proof = reader.pages[2].extract_text()
-    assert "Proved by: Code paired the two dimensions by their drawn extent" in proof
+    assert "Proved by: A blind second pick chose the same architect dimension" in proof
     assert "printed at both spots, read by code" in proof
     assert "Vendor page 1 (architect's drawing on the same sheet)" in proof
     proof_picture = _render(out, 2)
@@ -528,7 +542,7 @@ def test_the_vendor_s_own_string_or_span_is_not_labelled_architect(tmp_path: Pat
         witnesses=["arithmetic"],
         inches={"architect": None, "vendor": "80"},
         arch_box=None,
-        pairing=None,
+        critic=None,
     )
     span = _proved(
         id="F6",
@@ -539,13 +553,13 @@ def test_the_vendor_s_own_string_or_span_is_not_labelled_architect(tmp_path: Pat
         architect='34"',
         vendor='46"',
         inches={"architect": "34", "vendor": "46"},
-        pairing=None,
+        critic=None,
     )
     assert vendor_own(summed) == "sum" and vendor_own(span) == "span"
     assert vendor_own(_proved()) is None
     # The same span proved by the drawing's geometry needs no other pairing proof.
     assert not needs_pairing(span) and proof_group(span) == "clouded"
-    assert needs_pairing({**span, "created_by": "ledger"})
+    assert needs_pairing({**span, "source": "architect", "rule_check_id": None})
     out = _draw(tmp_path, [summed, span])
     proof = _words("".join(page.extract_text() for page in PdfReader(str(out)).pages))
     assert LEFT_CAPTIONS["sum"] in proof
