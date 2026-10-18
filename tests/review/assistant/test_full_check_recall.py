@@ -170,11 +170,18 @@ def test_a_helper_records_what_it_read_before_it_wraps_up(
     findings = _findings(outcome)
     assert any(f["item"].startswith("Top on page") for f in findings)  # recorded in its turn
     kept = [f for f in findings if f["item"] == "Area 1: outlet height"]
-    assert kept, "the UNRECORDED line is kept as an item"
-    for finding in kept:
-        assert finding["created_by"].startswith("helper:")
-        assert finding["vendor"] == '48"' and finding["architect"] == "3'-3\""
-        assert proof.proof_group(finding) == "not_compared"  # an AI reading: never red
+    notes = [
+        b["reason"]
+        for b in outcome.blocks
+        if b["type"] == "finding_dropped" and "Area 1: outlet height" in str(b.get("reason"))
+    ]
+    # The UNRECORDED line is kept: here it has no spot and its values are not printed on its page
+    # (code's labels of the sheet), so it is an internal note naming the item and both values,
+    # never sent to the vendor (#1650); with a spot or a printed value it stays an item (an AI
+    # reading: never red).
+    assert not kept and notes, "the UNRECORDED lines are kept as internal notes"
+    assert all(note.startswith("Internal note, not for the vendor") for note in notes)
+    assert '48"' in notes[0] and "3'-3\"" in notes[0]
 
 
 def test_unrecorded_lines_are_read_from_a_report() -> None:

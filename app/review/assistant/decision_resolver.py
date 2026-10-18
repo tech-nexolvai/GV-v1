@@ -830,15 +830,19 @@ def _readable(finding: Mapping[str, Any]) -> bool:
 def _choose_primary(group: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
     """The copy that carries an item: a Wrong or Right one first, else the decision whose vendor
     value is readable and that compares with something, then the one that says why, then the
-    newest round (the same order for every copy, so two copies never point at each other)."""
+    newest round (the same order for every copy, so two copies never point at each other). A copy
+    with a spot on the drawing comes before one without."""
     settled = [f for f in group if f.get("status") != "check"]
     pool = settled or list(group)
 
-    def rank(f: Mapping[str, Any]) -> tuple[int, int, int, int, int, str]:
+    def rank(f: Mapping[str, Any]) -> tuple[int, int, int, int, int, int, str]:
         compares = 0 if _NOTHING_PRINTED.search(str(f.get("architect") or "")) else 1
+        # The copy with a spot on the drawing (its picture) carries the item: a copy with none
+        # cannot be shown to anyone (#1650).
+        spotted = 1 if f.get("vendor_box") or f.get("arch_box") else 0
         says_why = 1 if f.get("why") else 0
         readable = 1 if _readable(f) else 0
-        return (readable, compares, says_why, _round(f), _page(f), str(f.get("id")))
+        return (readable, compares, spotted, says_why, _round(f), _page(f), str(f.get("id")))
 
     return max(pool, key=rank)
 
