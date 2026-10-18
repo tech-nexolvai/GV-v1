@@ -4371,6 +4371,18 @@
             "title": "Second Read",
             "type": "string"
           },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "agrees: code read the finish codes in the drawings' own text and searched every vendor sheet and round of the area (#1623); null: not that check's finding.",
+            "title": "Text"
+          },
           "units": {
             "anyOf": [
               {
@@ -4894,7 +4906,7 @@
             "title": "Compared"
           },
           "created_by": {
-            "description": "\"lead\", \"helper:<n>\", \"gv_review\" (made by code from a recorded result), \"ledger\" (made by code from the reading ledger), or \"consistency\" (made by code from the vendor's own drawings: a string that does not add up, a span printed twice).",
+            "description": "\"lead\", \"helper:<n>\", \"gv_review\" (made by code from a recorded result), \"ledger\" (made by code from the reading ledger), \"consistency\" (made by code from the vendor's own drawings: a string that does not add up, a span printed twice), or \"architect_items\" (made by code from the drawings' text: a finish the architect tags that the vendor missed, changed or added).",
             "title": "Created By",
             "type": "string"
           },
@@ -5325,7 +5337,7 @@
                 "type": "null"
               }
             ],
-            "description": "The non-AI witnesses behind it: printed, rule, arithmetic, ledger, units.",
+            "description": "The non-AI witnesses behind it: printed, ocr_ink, text, rule, arithmetic, ledger, units.",
             "title": "Witnesses"
           }
         },
@@ -8634,7 +8646,8 @@
               "refused_alignment",
               "no_counterpart",
               "missing_round",
-              "not_in_set"
+              "not_in_set",
+              "not_comparable"
             ],
             "title": "Why",
             "type": "string"

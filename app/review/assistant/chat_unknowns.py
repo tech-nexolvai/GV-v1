@@ -13,6 +13,10 @@ Each answer gets a list of unknowns, one record each:
 - `no_counterpart`, `missing_round`, `not_in_set` (the vendor consistency check, #1584): an area
   drawn on one side only, an area a later round leaves out, a sheet the vendor's index lists that
   no page shows. These are about the set, not this answer's work (`scope: set`).
+- `not_comparable` (the finish check, #1623): what code read but cannot compare by itself (the two
+  sides name finishes in different tag systems, a finish only the brand prototype tags, an
+  architect note naming a part no vendor sheet names); also `scope: set`. The finish check also
+  gives `pairing_uncertain` and `unreadable` set items.
 
 `needs` says what would settle it. `scope` is `page` (a whole page), `item` (one value) or `set`
 (the drawing set itself): the accuracy score counts page gaps through the pages accounted for and
@@ -44,6 +48,7 @@ UNKNOWN_WHYS: Final = (
     "no_counterpart",
     "missing_round",
     "not_in_set",
+    "not_comparable",
 )
 #: The most records one answer lists (a 300-page set with nothing opened stays readable).
 _MAX_UNKNOWNS: Final = 200
@@ -84,7 +89,8 @@ def unknown_records(
     when the answer was whole-set work (its unaccounted pages become `not_opened`). `waiting`: GV
     checks waiting on a job value (`Recorded.waiting`). `refused_diffs`: round pairs code would not
     line up, `{page, round2_page?, reason}` (`refused_from_diff`). `set_gaps`: the vendor consistency
-    check's grey items (`{page, what, why, needs}`, #1584), kept as they are with `scope: set`."""
+    check's grey items (`{page, what, why, needs}`, #1584) and the finish check's (#1623), kept as
+    they are with `scope: set`."""
     records: list[dict[str, Any]] = []
     if coverage:
         for entry in coverage.get("pages") or []:

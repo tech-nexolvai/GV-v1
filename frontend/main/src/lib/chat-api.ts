@@ -511,7 +511,9 @@ export type EvidenceKind = 'observed' | 'derived' | 'inferred';
 export type UnknownWhy =
   | 'unreadable' | 'not_opened' | 'missing_job_value' | 'pairing_uncertain' | 'refused_alignment'
   /** #1584, the vendor consistency check: an area on one side only, a round or an indexed sheet the set lacks. */
-  | 'no_counterpart' | 'missing_round' | 'not_in_set';
+  | 'no_counterpart' | 'missing_round' | 'not_in_set'
+  /** #1623, the finish check: different tag systems, a prototype-only finish, a note naming a part. */
+  | 'not_comparable';
 
 /** One thing the answer did not check, and what would settle it (built by code). */
 export interface ChatUnknown {

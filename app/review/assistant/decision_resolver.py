@@ -73,6 +73,7 @@ from app.review.assistant.finding_checks import (
 from app.review.assistant.witness import disagreement, witnesses
 
 __all__ = [
+    "OTHER_TRADE_FAMILIES",
     "PRECISION",
     "RESOLVER_CAP_MICROS",
     "RESOLVER_READ_LIMIT",
@@ -163,6 +164,8 @@ _TAG_CODE: Final = re.compile(r"\b([A-Z]{1,4})-?(\d{1,4})(?:-[A-Z]{2,6})?\b")
 _OTHER_TRADES: Final = frozenset(
     {"TW", "TL", "WT", "PT", "PTW", "P", "V", "VWC", "WC", "TB", "CPT", "LVT", "RB", "ACT", "ACP"}
 )
+#: The same families for other code (`architect_items` leaves these tags out).
+OTHER_TRADE_FAMILIES: Final = _OTHER_TRADES
 #: Tag families of the millwork GV reviews (stone, laminate, wood, solid surface, quartz).
 _MILLWORK: Final = frozenset({"ST", "LA", "WD", "PL", "PLAM", "SS", "QZ", "CT", "MW", "L", "WV"})
 _ROUND_ONE: Final = re.compile(r"\(\s*round\s*1\b[^)]*\)|round\s*1\s*:[^;)]*", re.IGNORECASE)

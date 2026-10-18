@@ -38,6 +38,14 @@
 #   hints              optional: words that only suggest this product may be drawn on a page
 #                      ("sink", "stone"). A page printing one is never left out of a check of this
 #                      product; they never give an item its category. Broad is safe here.
+#   tag_families       optional: the tag families that name this product's finishes and materials
+#                      (the capital letters before a code's number: QZ for QZ-12). Code compares the
+#                      architect's and the vendor's codes of these families, area by area, and files
+#                      what it finds under this product. A family belongs to one product only. Leave
+#                      out a family that means different things in different sets (PL is plastic
+#                      laminate in one set and a plumbing fixture in another): a wrong family gives a
+#                      false "missed finish". Other trades' families (tile, paint, wall covering)
+#                      are never listed.
 
 version: 1
 # Where each product's skill file `<id>.md` lives, relative to this file.
@@ -84,6 +92,8 @@ products:
     words: [countertop, countertops, counter top, counter tops, quartz, granite, marble,
             solid surface, backsplash, back splash, side splash, sidesplash, splash]
     hints: [stone, sink, sinks, cooktop, faucet, lavatory, vanity top, counter, counters]
+    # Countertop, stone, quartz, solid surface.
+    tag_families: [CT, ST, QZ, QTZ, SS, SSM]
 
   - id: cabinet
     label: Cabinet
@@ -126,6 +136,8 @@ products:
             shelves, end panel, end panels]
     hints: [door, doors, base, upper, uppers, scribe, pull, pulls, hinge, hinges, panel, panels,
             vanity, cab, toe]
+    # Laminate, plastic laminate, wood, wood veneer, metal.
+    tag_families: [LA, PLAM, WD, WV, MT]
 
   - id: lighting
     label: Lighting
