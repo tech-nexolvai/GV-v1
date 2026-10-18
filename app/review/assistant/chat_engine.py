@@ -225,9 +225,11 @@ from app.review.assistant.full_check_plan import (
 )
 from app.review.assistant.full_check_specialists import specialist_system
 from app.review.assistant.ledger import LEDGER_TOOL_NAMES, ReadingLedger, recorded_results_check
+from app.review.assistant.product_scope import ProductScope, outside_unit
 from app.review.assistant.sandbox import SET_PACK, SKILLS, UPLOADS, SandboxRefused
 from app.review.assistant.sharpen import helper_lines
 from app.review.assistant.vendor_consistency import add_to_answer as add_consistency
+from app.review.assistant.vendor_consistency import page_texts
 from app.runs.rates import ModelRates, call_cost_micros
 
 __all__ = [
@@ -773,6 +775,10 @@ class ChatEngine:
             checker=self._checked,
             extents=tools.extents,
         )
+        # The products this answer checks, a strict scope (`product_scope`, Anant 2026-10-18): a
+        # finding of another product is never recorded.
+        self.product_scope = ProductScope.of(settings.products)
+        self.book.product_scope = self.product_scope
         self._positions: dict[str, int] = {}
         self._coverage_index: int | None = None
         # What this answer is about (#1520): the whole set, or the pages / area the question names.
@@ -784,7 +790,10 @@ class ChatEngine:
             main_file=self.book.main_file,
         )
         self.book.scope_pages = scoped_pages(self._asked_scope)
-        self._started_scope: dict[str, Any] = dict(self._asked_scope)
+        self._started_scope: dict[str, Any] = {
+            **self._asked_scope,
+            **self.product_scope.as_dict(),
+        }
         self._helpers_started = 0
         self._recorded: Recorded | None = None
         self._recorded_document: Mapping[str, Any] | None = None
@@ -1460,7 +1469,7 @@ class ChatEngine:
         }
         scope = widened(self._asked_scope, used)
         book.scope_pages = scoped_pages(scope)
-        return scope
+        return {**scope, **self.product_scope.as_dict()}
 
     def _whole_set_work(self) -> bool:
         """Whole-set work (a full check, or a whole-set answer that used coverage): only it gets
@@ -2968,7 +2977,7 @@ class ChatEngine:
                     workspace.set_pack, self.cancel, assume=True, main_file=self.book.main_file
                 )
             with self.timings.phase("planning"):
-                plan = plan_jobs(page_map, self.book.main_file, self._max_agents)
+                plan, _pages_all = self.scoped_jobs(page_map)
                 rules = self._rules_summary() if plan is not None else ""
                 pictures = pack_ready(workspace.set_pack)
             if warm is not None:
@@ -3018,6 +3027,32 @@ class ChatEngine:
         self._wait_checks()
         self._lead_message(agents, entries)
         return True
+
+    def scoped_jobs(self, page_map: Mapping[str, Any] | None) -> tuple[FanOutPlan | None, int]:
+        """A full check's helper jobs for the products in scope, and the pages the whole set would
+        have compared: an area whose every page names only out-of-scope products gets no helper
+        (`product_scope.outside_unit`, read from the pages' printed words, $0)."""
+        main = self.book.main_file
+        plan = plan_jobs(page_map, main, self._max_agents)
+        scope = self.product_scope
+        if plan is None or scope.every or self.tools.workspace.set_pack is None:
+            return plan, 0 if plan is None else plan.pages
+        files = [str(name) for name in (page_map or {}).get("files") or [] if name]
+        if not files and main:
+            files = [main]
+        try:
+            read = page_texts(self.tools.workspace.set_pack, files)
+        except Exception as failed:  # noqa: BLE001 - every area is then checked
+            _log.warning("assistant chat page words not read: %s", type(failed).__name__)
+            return plan, plan.pages
+        texts = {page: text for (name, page), text in read.items() if name == main}
+        scoped = plan_jobs(
+            page_map,
+            main,
+            self._max_agents,
+            outside=lambda pages: outside_unit(pages, texts, scope),
+        )
+        return scoped, plan.pages
 
     def _note_coverage(self, page: int, note: str) -> None:
         coverage = self.book.note_coverage(page, note)
@@ -3440,7 +3475,13 @@ class ChatEngine:
             block = self.blocks[index]
             if block.get("type") != "trust":
                 return
-            trust = {**block["trust"], "timings": timings}
+            # The strict product scope: the products checked and the findings of other products
+            # the book refused (kept for the record, not shown).
+            scope = {
+                **self.product_scope.as_dict(),
+                "dropped_out_of_scope": self.book.out_of_scope,
+            }
+            trust = {**block["trust"], "timings": timings, "product_scope": scope}
             self.blocks[index] = {"type": "trust", "trust": trust}
         self.emit("trust", {"index": index, "trust": json.loads(json.dumps(trust))})
 
