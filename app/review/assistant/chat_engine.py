@@ -218,7 +218,7 @@ from app.review.assistant.full_check_brief import (
     helper_brief,
     with_label_gaps,
 )
-from app.review.assistant.full_check_lenses import Fold, lens_folds
+from app.review.assistant.full_check_lenses import Fold, lens_folds, same_wrongs
 from app.review.assistant.full_check_plan import (
     FanOutPlan,
     HelperJob,
@@ -2294,6 +2294,7 @@ class ChatEngine:
             self._finish_trust(skipped)
 
     def _finish_trust(self, skipped: int) -> None:
+        self._fold_same_wrongs()
         self._resolve_decisions()
         self._escalate()
         book = self.book
@@ -2346,6 +2347,21 @@ class ChatEngine:
         index = self._add_block({"type": "trust", "trust": report})
         self._trust_index = index
         self.emit("trust", {"index": index, "trust": json.loads(json.dumps(report))})
+
+    def _fold_same_wrongs(self) -> None:
+        """The same Wrong item reported more than once (two helpers, or a helper and a gap
+        closer): kept once, before the resolver, the counts and the files (#1622,
+        `full_check_lenses.same_wrongs`), so no letter, register or cloud drawing repeats it."""
+        try:
+            folds = same_wrongs(self.book.live())
+        except Exception:  # noqa: BLE001 - the answer keeps its findings as they were
+            _log.exception("assistant chat same-item fold failed")
+            return
+        for fold in folds:
+            with self.finding_lock:
+                if not self.book.absorb(fold.drop):
+                    continue
+            self._show_dropped(fold.drop, fold.reason)
 
     def _resolve_decisions(self) -> None:
         """Whole-set work (#1554): code settles the "Your decision" items the drawings answer

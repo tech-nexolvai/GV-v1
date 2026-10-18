@@ -618,3 +618,71 @@ def test_a_gv_rule_states_its_requirement_from_its_own_comparison(tmp_path: Path
     assert seeded is not None and seeded["architect"] == '40 1/2"'
     proved = _c10(architect=seeded["architect"], inches={"architect": "40.5", "vendor": "38.25"})
     assert requires_words(proved) == 'GV rule requires 40 1/2"'
+
+
+def _outlet(finding_id: str, **changes: Any) -> dict[str, Any]:
+    """One of the triple from the fake-server run: the same outlet spacing, reported three times."""
+    given: dict[str, Any] = {
+        "id": finding_id,
+        "page": 1,
+        "item": "Outlet spacing",
+        "architect": '8"',
+        "vendor": "254 [10]",
+        "inches": {"architect": "8", "vendor": "10", "difference": "2"},
+        "vendor_box": _box(VENDOR_12),
+        "arch_box": None,
+        "dims": {"vendor": {"id": "D30", "page": 1}},
+    }
+    return _proved(**{**given, **changes})
+
+
+def test_the_same_wrong_item_reported_three_times_is_one_comment() -> None:
+    """The triple (C-04, C-73, C-74 in the fake-server run): folded into the first before numbering,
+    so the letter, the register, the clouds and the counts list it once, with the lowest number."""
+    from app.review.assistant.full_check_lenses import same_wrongs
+
+    triple = [_outlet("F50"), _outlet("F81", trust_level="likely"), _outlet("F90")]
+    other_value = _outlet("F91", inches={"architect": "8", "vendor": "12", "difference": "4"})
+    other_spot = _outlet("F92", dims={"vendor": {"id": "D31", "page": 1}})
+    recorded = _outlet("F93", record_id="c7")
+    folds = same_wrongs([*triple, other_value, other_spot, recorded])
+    # A recorded difference is never folded away: it is the one kept.
+    assert {(f.keep, f.drop) for f in folds} == {("F93", "F50"), ("F93", "F81"), ("F93", "F90")}
+    folds = same_wrongs([*triple, other_value, other_spot])
+    assert {(f.keep, f.drop) for f in folds} == {("F50", "F81"), ("F50", "F90")}
+    assert "the same item reported again" in folds[0].reason
+    # Without code's label, an overlapping box is the same item only for the same words.
+    unlabelled = {"dims": None}
+    assert not same_wrongs(
+        [_outlet("H1", **unlabelled), _outlet("H2", item="Outlet 2 height", **unlabelled)]
+    )
+    assert [
+        f.drop for f in same_wrongs([_outlet("H1", **unlabelled), _outlet("H2", **unlabelled)])
+    ] == ["H2"]
+    # Another round of the same drawing is never the same comment.
+    assert not same_wrongs([_outlet("F1", round=1), _outlet("F2", round=2)])
+
+    # An earlier check (before this fold) numbered the triple C-01, C-02, C-03: the folded comment
+    # of a later check keeps the lowest of them, and the letter lists it once.
+    now = datetime(2026, 10, 18, tzinfo=UTC)
+    earlier = _answer(triple, now)
+    later = _answer([_outlet("G1")], now + timedelta(days=1))
+    found = comment_numbers([earlier, later])
+    assert sorted(found[(str(earlier.message_id), i)] for i in ("F50", "F81", "F90")) == [
+        "C-01",
+        "C-02",
+        "C-03",
+    ]
+    assert found[(str(later.message_id), "G1")] == "C-01"
+    kept = [f for f in triple if f["id"] not in {fold.drop for fold in folds}]
+    context = PackageContext(
+        identity=IDENTITY,
+        date="2026-10-18",
+        round_no=1,
+        rounds=None,
+        state=CheckState(),
+        labels=comment_labels(kept, {"F50": "C-01"}),
+    )
+    letter = letter_of(kept, context, drawing_set="sheet.pdf")
+    assert [(c.label, c.item) for c in letter.corrections] == [("C-01", "Outlet spacing")]
+    assert review_action(kept).corrections == 1
