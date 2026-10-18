@@ -1424,9 +1424,10 @@ def _drawn_value(
 ) -> Decimal | None:
     """The one value a drawn label reads as, or `None`: `verify_value`'s label rule with no value
     to expect. Exactly one value read as a whole row by two engines, no reading of the label a
-    near-miss of it (one digit off, or inside a longer number), and a `1` in it shaped as a 1. A
-    zero or a number too big for inches is no dimension, and neither is a sum written out
-    (`2"+3" FILLER`: the line it sits on spans both)."""
+    near-miss of it (one digit off, or inside a longer number; a pass whose odd digit makes a
+    fraction no drawing prints, 6317 for `63 1/2"`, is no rival: `vv.impossible_fraction`), and a
+    `1` in it shaped as a 1. A zero or a number too big for inches is no dimension, and neither is
+    a sum written out (`2"+3" FILLER`: the line it sits on spans both)."""
     lines = [line for read in reads for line in read.lines]
     if any("+" in line or _LEADING_ZERO.search(line) or _WORD.search(line) for line in lines):
         # A sum written out; a number with a leading zero, which no dimension has (`EQ` read
