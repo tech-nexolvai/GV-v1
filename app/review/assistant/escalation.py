@@ -1,9 +1,9 @@
-"""Escalation (#1619): every item code could not settle is tried again, cheapest step first.
+"""Escalation (#1619): every item code could not compare at first is tried again, cheapest first.
 
-With nobody at GV in the loop, an item that is neither a proven Wrong nor a Right used to sit in a
-grey list ("check before sending") or wait as "Your decision". Now, inside the full check and its
-fixed price, each such item climbs a ladder, the biggest items first (`impact.by_impact`), and
-stops at the first step that settles it:
+The architect's drawings are the source of truth and nobody at GV is asked to decide anything
+(Anant, 2026-10-18; the rules are `classification.py`). Before an item falls to "Not compared",
+inside the full check and its fixed price, it climbs a ladder, the biggest items first
+(`impact.by_impact`), and stops at the first step that settles it:
 
 1. **Free code steps** (this module, $0):
    - `labels`: the drawn-label reader (`dims.json`, set pack v3): code's numbered label inside the
@@ -12,25 +12,24 @@ stops at the first step that settles it:
    - `under_markup`: the drawing's own text under GV's markup (`under_markup.read_under_markup`),
      for a vendor value hidden by GV's boxes;
    - `same_item`: the same item on the vendor's other views or rounds: a copy that is already a
-     proven Wrong carries it, and several undecided copies become one question;
+     proven Wrong carries it, and several open copies become one item;
    - `vendor_sums`: a string of the vendor's own that code already proved does not add up
      (`vendor_consistency`) carries the item;
-   - `notes`: the tags each drawing prints (`notes.json`): which architect tag the vendor's drawing
-     leaves out, said precisely in the question;
+   - `notes`: the tags each drawing prints (`notes.json`): an architect's tag that the vendor's
+     drawings of the same area never print is a missed item code proved by text search (R4: red);
    - `pairs`: code's own pairing of the two labels by drawn position (`pairs.json`): a proof that
      both numbers measure the same thing (`paired_by: code`).
 2. **One deeper AI look** per item that is left (the roster, `full_check_roster`): a sharper crop
    through the existing verifier and devil's advocate, under the pairing-proof setting, and only
    with the money left under the fixed price.
-3. **Whatever is still undecided** becomes an amber "Vendor to confirm" question
-   (`vendor_confirm`, `proof.proof_group`), or "Not applicable / no information" when there is
-   nothing to ask.
+3. **Whatever is still open** is Not compared, with its reason and what would settle it
+   (`classification`), listed in the separate Not-compared PDF, never on the cloud drawing.
 
 Code decides every outcome, with the same witness rules as the red clouds: a step only adds code's
-readings (a label, the text under the markup, code's pairing) or folds a copy into the item that
-already carries it; a Right needs both values read by code and equal; a red cloud still needs
-`proof.code_proved`. Every step tried is kept on the finding (`escalation`), so the reviewer and
-the replay can see what each item went through.
+readings (a label, the text under the markup, code's pairing, a text search) or folds a copy into
+the item that already carries it; a Right needs both values read by code and equal; a red cloud
+still needs `proof.code_proved`. Every step tried is kept on the finding (`escalation`), so the
+reviewer and the replay can see what each item went through.
 
 `escalate` is pure (its readers are passed in); `escalate_answer(engine)` is the engine's hook.
 """
@@ -160,8 +159,9 @@ def _inside(point: tuple[float, float], box: Sequence[float], slack: float = _SL
 
 
 def undecided(finding: Mapping[str, Any]) -> bool:
-    """An item the escalation works on: amber or info today, never one the reviewer decided."""
-    return proof.proof_group(finding) in ("vendor_confirm", "info")
+    """An item the escalation works on: Not compared today (a Right item not looked at on both
+    sides aside), never one the reviewer decided."""
+    return proof.proof_group(finding) == "not_compared" and finding.get("status") != "same"
 
 
 def _labels_in(
@@ -451,9 +451,27 @@ def _tags_on(entry: Mapping[str, Any] | None, role: str) -> set[str]:
     return found
 
 
-def _notes_step(item: _Item, ctx: EscalationContext) -> None:
-    """Tags: which of the architect's tags the vendor's drawing does not print (code read both
-    drawings' text, on their own pages): said in the question, never a red cloud by itself."""
+def _area_text(ctx: EscalationContext, pages: Sequence[int]) -> str:
+    """Every tag and note the vendor's drawings print on `pages`, as one searchable string."""
+    file = ctx.main_file or ""
+    words: list[str] = []
+    for page in pages:
+        for drawing in (ctx.notes.get((file, page)) or {}).get("drawings") or []:
+            if not isinstance(drawing, Mapping) or drawing.get("role") != "vendor":
+                continue
+            for entry in [*(drawing.get("tags") or []), *(drawing.get("notes") or [])]:
+                if isinstance(entry, Mapping) and entry.get("text"):
+                    words.append(str(entry["text"]))
+    return _squash(" ".join(words))
+
+
+def _squash(text: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", text.upper())
+
+
+def _notes_step(item: _Item, ctx: EscalationContext, areas: Mapping[int, str]) -> None:
+    """R4, missed something: an architect's tag (code read it on the architect's drawing) that
+    no vendor drawing of the same area prints, by text search, is a Wrong code proved."""
     finding = item.finding
     if not _TAG_ITEM.search(str(finding.get("item") or "")):
         return
@@ -466,21 +484,49 @@ def _notes_step(item: _Item, ctx: EscalationContext) -> None:
         item.note("notes", "no_change", "no notes and tags read on these pages")
         return
     architect = _tags_on(arch_entry, "architect")
-    if not architect:
-        architect = {str(t) for t in arch_entry.get("architect_only_tags") or []}
     named = set(_TAG.findall(str(finding.get("architect") or "")))
-    wanted = architect & named if named else architect
-    left_out = sorted(wanted - _tags_on(vendor_entry, "vendor"))
-    if not left_out:
-        item.note("notes", "no_change", "the vendor's drawing prints the architect's tags here")
+    wanted = sorted(architect & named if named else architect)
+    if not wanted:
+        item.note("notes", "no_change", "code read no architect's tag for this item")
         return
-    finding["missing_tags"] = left_out[:4]
-    item.changed = True
-    item.note(
-        "notes",
-        "read",
-        f"the vendor's drawing on page {page} does not print {', '.join(left_out[:4])}",
+    area = areas.get(page)
+    pages = sorted({p for p, a in areas.items() if a == area} if area else {page}) or [page]
+    printed = _area_text(ctx, pages)
+    if not printed:
+        item.note("notes", "no_change", "code read no vendor tag or note in this area")
+        return
+    # A tag counts as printed when its code (with or without a suffix such as -CUST) is there.
+    left_out = [
+        tag for tag in wanted if _squash(tag) not in printed and _squash(_base(tag)) not in printed
+    ]
+    if not left_out:
+        item.note("notes", "no_change", "the vendor's drawings print the architect's tags")
+        return
+    shown = ", ".join(left_out[:4])
+    where_pages = ", ".join(str(p) for p in pages)
+    finding.update(
+        status="different",
+        missing_tags=left_out[:4],
+        settled={
+            "outcome": "wrong",
+            "method": "escalation_notes",
+            "how": (
+                f"code searched every tag and note on the vendor's drawings of this area (page"
+                f"{'s' if len(pages) > 1 else ''} {where_pages}) for the architect's {shown}: "
+                "not printed"
+            ),
+            "was": str(item.finding.get("status") or "check"),
+        },
     )
+    finding.pop("keep_reason", None)
+    item.changed = True
+    item.outcome = "wrong"
+    item.note("notes", "proved", f"the vendor's drawings of this area do not print {shown}")
+
+
+def _base(tag: str) -> str:
+    """A tag without its trailing word suffix (ML-003-CUST: ML-003)."""
+    return re.sub(r"-[A-Z]{2,6}$", "", tag)
 
 
 def _pairs_step(item: _Item, ctx: EscalationContext) -> None:
@@ -535,7 +581,7 @@ def escalate(findings: Sequence[Mapping[str, Any]], ctx: EscalationContext) -> E
                 if carrier is not None:
                     _fold(item, carrier, step, result)
             elif step == "notes":
-                _notes_step(item, ctx)
+                _notes_step(item, ctx, areas)
             else:
                 _pairs_step(item, ctx)
             if item.changed:

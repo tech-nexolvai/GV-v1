@@ -29,4 +29,4 @@ pocket. No extra field cut. Without the pocket detail, a person decides.
 - Only layout A adds the field cut. Applying it to B or C gives false Wrongs.
 - A vendor string that says "including field cut" must still add up exactly: name each part's label
   and the total's; code adds them.
-- When you cannot tell the layout, report the item as Your decision and say which layout is unclear.
+- When you cannot tell the layout, report the item as not compared (status check) and say which layout is unclear.

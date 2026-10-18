@@ -14,16 +14,14 @@ a false red cloud goes straight to the vendor, so **only what code proved is clo
   numbers measure the same thing (`pairing_proved`: the full check's devil's advocate passed it,
   #1611, under the setting `assistant_pairing_proof`); GV's rule, GV's limits and the vendor's own
   sum need none. Red cloud at the vendor's value, green "Should be", and a proof entry.
-- **vendor_confirm** (amber, #1619): what code could not settle after the full check's escalation
-  (`escalation.py`): a Wrong item only AI readings back, or one code read right whose pairing is
-  not proved (`unproved_reason`), and a "Your decision" item the resolver kept. Nobody at GV has to
-  look: the item becomes ONE question to the vendor (`vendor_confirm.question_of`), an amber
-  marker and note "Confirm: …" on the vendor's sheet (never a cloud: red stays for proven
-  Wrongs), and round 2 says whether the vendor answered it.
-- **info**: an undecided item with nothing to ask the vendor (an area with no vendor sheet, no
-  values on either side): "Not applicable / no information", listed apart.
+- **not_compared** (#1619, Anant's architect-first rules R1-R10, `classification.py`): what code
+  could not compare after the full check's escalation (`escalation.py`): a difference code could
+  not prove (no pairing proof, a value code could not read), an item the architect gives no size
+  for, different reference points, a missing job value, the brand prototype (reference only),
+  the architect's own drawings disagreeing, a Right item not seen on both sides. Never a question
+  to anyone: listed with its reason and what would settle it in the separate "Not compared" PDF,
+  and counted in the summary's one line.
 - **right**: a Right item that was compared: a short green list.
-- **not_compared**: a Right item not seen on both sides (`mark_compared`): listed apart.
 
 The reviewer's Agree / Not a problem stay as optional overrides: an agreed item is clouded
 whatever code proved (the reviewer is the witness), and an item marked not a problem is never
@@ -41,8 +39,8 @@ from collections.abc import Iterable, Mapping, Sequence
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final, Literal
 
+from app.review.assistant import classification, witness
 from app.review.assistant import full_check_advocate as advocate
-from app.review.assistant import vendor_confirm, witness
 from app.review.assistant.chat_trust import inch_words
 
 __all__ = [
@@ -55,6 +53,7 @@ __all__ = [
     "RULE_LINE",
     "ProofGroup",
     "blocks_with_proof",
+    "classified",
     "code_proved",
     "could_not_compare_reason",
     "governs",
@@ -64,54 +63,39 @@ __all__ = [
     "proof_group",
     "proof_line",
     "proof_of",
-    "question",
     "scaled",
     "should_be",
     "should_be_value",
-    "undecided_reason",
+    "tags_proved",
     "unproved_reason",
     "vendor_own",
     "vendor_value",
 ]
 
-type ProofGroup = Literal["clouded", "vendor_confirm", "right", "info", "not_compared", "dismissed"]
-GROUPS: Final[tuple[ProofGroup, ...]] = (
-    "clouded",
-    "vendor_confirm",
-    "right",
-    "info",
-    "not_compared",
-    "dismissed",
-)
+type ProofGroup = Literal["clouded", "right", "not_compared", "dismissed"]
+GROUPS: Final[tuple[ProofGroup, ...]] = ("clouded", "right", "not_compared", "dismissed")
 #: Each group as the drawing, the report, the CSV and the screen name it.
 GROUP_WORDS: Final[Mapping[str, str]] = {
     "clouded": "Wrong, proved by code (clouded)",
-    "vendor_confirm": "Vendor to confirm",
     "right": "Right",
-    "info": "Not applicable / no information",
     "not_compared": "Not compared",
     "dismissed": "Not a problem (reviewer)",
 }
 #: The rule, in one line, on the drawing's cover and the report.
 RULE_LINE: Final = (
-    "Only items code proved are clouded in red (GV's rule, the vendor's own sum, or two dimensions "
-    "code proved measure the same thing); what code could not settle is asked of the vendor in "
-    'amber ("Confirm: …"), never clouded.'
+    "The architect's drawings govern. Only differences code proved are clouded in red (GV's rule, "
+    "the vendor's own sum, a tag the vendor leaves out, or two dimensions code proved measure the "
+    "same thing); what could not be compared is listed apart, with the reason."
 )
 #: Words saying a value was measured off the drawing or taken from a scale note, not printed.
 _SCALED: Final = re.compile(
     r"\bscal(?:e|es|ed|ing)\b|\bmeasured (?:off|on) the drawing\b",
     re.IGNORECASE,
 )
-#: Why a Wrong item code read right is amber, not red: nothing proves both numbers measure the same.
-PAIRING_REASON: Final = (
-    "Not clouded: code read both values, but what each measures is not proved; the vendor is "
-    "asked to confirm."
-)
-#: Why a Wrong item only AI readings back is amber, not red.
-AI_ONLY_REASON: Final = (
-    "Not clouded: code could not read both values at their spots; the vendor is asked to confirm."
-)
+#: Why a Wrong item code read right is not clouded: nothing proves both numbers measure the same.
+PAIRING_REASON: Final = "Not clouded: code read both values, but what each measures is not proved."
+#: Why a Wrong item only AI readings back is not clouded.
+AI_ONLY_REASON: Final = "Not clouded: code could not read both values at their spots."
 #: The full check's devil's advocate (`full_check_advocate`, #1611) signs its verdict so.
 _ADVOCATE: Final = "devil's advocate"
 #: Trust levels a clouded item may have (with a code witness).
@@ -263,6 +247,18 @@ def _read_by_code(finding: Mapping[str, Any]) -> bool:
     return bool(found) and _governing_known(finding, found)
 
 
+def tags_proved(finding: Mapping[str, Any]) -> bool:
+    """R4, missed a tag: code searched the vendor's drawings of the area for the architect's tag
+    and did not find it (the escalation's `notes` step)."""
+    settled = finding.get("settled")
+    return (
+        isinstance(settled, Mapping)
+        and settled.get("method") == "escalation_notes"
+        and settled.get("outcome") == "wrong"
+        and bool(finding.get("missing_tags"))
+    )
+
+
 def code_proved(finding: Mapping[str, Any]) -> bool:
     """A Wrong item code proved: an independent code witness AND trust Confirmed or Likely (a check
     that disagrees makes it "AI reading only", so it never passes), with neither value measured
@@ -270,17 +266,19 @@ def code_proved(finding: Mapping[str, Any]) -> bool:
     dimensions, a pairing proof (`needs_pairing`, `pairing_proved`): reading the vendor's number
     right (its millimetres and inches agreeing) does not prove the architect's number measures the
     same thing."""
+    if finding.get("status") == "different" and tags_proved(finding):
+        return True
     if not _read_by_code(finding):
         return False
     return not needs_pairing(finding) or pairing_proved(finding)
 
 
 def unproved_reason(finding: Mapping[str, Any]) -> str:
-    """Why a Wrong item is amber (Vendor to confirm), not red, in one plain line."""
+    """Why a Wrong item is not clouded, in one plain line."""
     verdict = _advocate(finding)
     if verdict is not None and verdict.get("result") == "objects" and verdict.get("note"):
         # The advocate's own reason ("Not proved: a blind second pick chose p23.D12, ...").
-        return f"{_short(verdict.get('note'), 200)} The vendor is asked to confirm."
+        return _short(verdict.get("note"), 200)
     if _read_by_code(finding) and needs_pairing(finding) and not pairing_proved(finding):
         return PAIRING_REASON
     return AI_ONLY_REASON
@@ -310,10 +308,14 @@ def proof_group(finding: Mapping[str, Any]) -> ProofGroup:
             return "dismissed"
     if status == "different" and code_proved(finding):
         return "clouded"
-    if status in ("different", "check"):
-        # Undecided after the escalation: one question to the vendor, else nothing to ask.
-        return "vendor_confirm" if vendor_confirm.has_question(finding) else "info"
-    return "not_compared" if finding.get("compared") is False else "right"
+    return "right" if classified(finding).outcome == "right" else "not_compared"
+
+
+def classified(finding: Mapping[str, Any]) -> classification.Classified:
+    """The item under the architect-first rules (R1-R10), with code's proof (`code_proved`)."""
+    return classification.classify(
+        finding, proved=finding.get("status") == "different" and code_proved(finding)
+    )
 
 
 def proof_counts(findings: Iterable[Mapping[str, Any]]) -> dict[str, int]:
@@ -360,7 +362,10 @@ def _settled_how(finding: Mapping[str, Any]) -> str:
 def vendor_value(finding: Mapping[str, Any]) -> str:
     """The vendor's wrong value, short, as code read it: its inches (`16"` for "407 [16]"), the
     printed total of a string that does not add up, the value code read at the spot or the filler
-    widths GV's limits caught (#1554); else the vendor's value as the finding words it."""
+    widths GV's limits caught (#1554), a tag it leaves out; else the vendor's value as the finding
+    words it."""
+    if tags_proved(finding):
+        return "tag not printed"
     if finding.get("source") == "vendor_arithmetic" and finding.get("printed_total"):
         return _short(finding.get("printed_total"), 40)
     inches = _decimal((finding.get("inches") or {}).get("vendor"))
@@ -381,6 +386,8 @@ def should_be_value(finding: Mapping[str, Any]) -> str:
     limits = _gv_limits(finding)
     if limits is not None:
         return limits
+    if tags_proved(finding):
+        return ", ".join(str(tag) for tag in finding.get("missing_tags") or [])
     if finding.get("source") == "vendor_arithmetic":
         summed = _decimal(finding.get("parts_sum"))
         if summed is not None:
@@ -487,40 +494,36 @@ def could_not_compare_reason(finding: Mapping[str, Any]) -> str:
     return KEEP_WORDS["other"]
 
 
-def undecided_reason(finding: Mapping[str, Any]) -> str:
-    """Why an amber or info item is not settled, in one line (for the reviewer, never the
-    vendor): a Wrong's missing proof, else why a decision item stays."""
-    if finding.get("status") == "different":
-        return unproved_reason(finding)
-    return could_not_compare_reason(finding)
-
-
-def question(finding: Mapping[str, Any]) -> str | None:
-    """The question to the vendor for an amber item (`vendor_confirm.question_of`), else `None`."""
-    if proof_group(finding) != "vendor_confirm":
-        return None
-    return vendor_confirm.question_of(finding)
-
-
 def proof_of(finding: Mapping[str, Any]) -> dict[str, Any]:
     """A finding's `proof` for the screen and the CSV: its group, the green "Should be" (Wrong
-    items), the proof line (clouded items), the question to the vendor (amber items) and the
-    reason it is not settled."""
+    items), the proof line (clouded items), and for a Not-compared item the rule, the reason, why
+    in one line and what would settle it (#1619)."""
     group = proof_group(finding)
-    wrong = finding.get("status") == "different" or group == "clouded"
+    found = classified(finding)
+    not_compared = group == "not_compared"
+    wrong = (finding.get("status") == "different" and not not_compared) or group == "clouded"
     reason: str | None = None
-    if group in ("vendor_confirm", "info"):
-        reason = undecided_reason(finding)
+    if not_compared:
+        reason = found.why
     elif group == "dismissed":
         reason = "The reviewer marked it not a problem."
-    elif group == "not_compared":
-        reason = "Not seen on both sides, so not counted as right."
     return {
         "group": group,
         "should_be": should_be(finding) if wrong else None,
         "proof": proof_line(finding) if group == "clouded" else None,
         "reason": reason,
-        "question": vendor_confirm.question_of(finding) if group == "vendor_confirm" else None,
+        "rule": (
+            None
+            if group == "dismissed"
+            else (
+                found.rule
+                if group != "clouded"
+                else (classification.classify(finding, proved=True).rule)
+            )
+        ),
+        "not_compared": found.reason if not_compared else None,
+        "label": found.label if not_compared else None,
+        "settle": found.settle if not_compared else None,
     }
 
 

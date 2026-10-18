@@ -103,7 +103,7 @@ LENS_SCOPE: Final[dict[str, str]] = {
         "shelves, hardware, position, extent, the ID set against the brand prototype)."
     ),
     "numbers": (
-        "Yours: every size and dimension string, scaled sizes (only ever Your decision), and what "
+        "Yours: every size and dimension string, scaled sizes (only ever Not compared), and what "
         "each dimension spans."
     ),
     "drawn": (
@@ -147,7 +147,7 @@ DIMENSION LABELS: code numbered every printed dimension it found on your pages (
 {labels}
 Every vendor label on your pages must be handled: matched in a finding (vendor_dim, with architect_dim for the architect's), part of a string (record_string part_dims and total_dim), or named on a line LABELS p<N> not on architect: D3, D9. Code counts the vendor labels left over.
 
-OUTPUT: code, not you, decides what is wrong, and only a value code can find on the drawing can become a red cloud, so give code the spot, not your reading. For every item you compare, the Right ones too, call report_finding with the labels: vendor_dim and architect_dim (p28.D5 for another page). Type a value with its box only when no label covers it; code will try to read it there. For every dimension string, record_string with part_dims and total_dim; code adds them. Before you pair two heights or widths, say in why where each end lands (the spans words of what-dimensions-measure). When the ends differ, or you are not sure two labels measure the same thing, still report it: status check (Your decision) with decision_help and one line why. A miss is never found again; a doubtful item is only listed. Status different = Wrong, check = Your decision, same = Right. Name each item starting with its area from the list above ("<area>: counter height"), the same way on every page, view and round; round on vendor findings; vs_page when the architect is on another page. record_reading for a value you read without a label. set_coverage for each page. verified: false (a separate check verifies).
+OUTPUT: code, not you, decides what is wrong, and only a value code can find on the drawing can become a red cloud, so give code the spot, not your reading. For every item you compare, the Right ones too, call report_finding with the labels: vendor_dim and architect_dim (p28.D5 for another page). Type a value with its box only when no label covers it; code will try to read it there. For every dimension string, record_string with part_dims and total_dim; code adds them. Before you pair two heights or widths, say in why where each end lands (the spans words of what-dimensions-measure). When the ends differ, or you are not sure two labels measure the same thing, still report it: status check (Not compared) with decision_help and one line why. A miss is never found again; a doubtful item is only listed. Status different = Wrong, check = Not compared, same = Right. Name each item starting with its area from the list above ("<area>: counter height"), the same way on every page, view and round; round on vendor findings; vs_page when the architect is on another page. record_reading for a value you read without a label. set_coverage for each page. verified: false (a separate check verifies).
 
 REPORT BACK (short): per page the differences (item, vendor vs architect, finding ids), anything unreadable and where, then one line per page exactly like
 CHECKLIST p<N>: architect a/b; notes a/b; strings a/b; not compared: <what and why, or none>

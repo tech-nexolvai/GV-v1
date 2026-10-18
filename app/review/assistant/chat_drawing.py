@@ -276,13 +276,13 @@ CLEAN_WORDS: Final = "Drawn on a copy without earlier review markup"
 LEGEND: Final = (
     "Red cloud, red numbered circle and note: Wrong. The vendor's value is wrong; the note says "
     'what it needs to be, and ends in grey with "AI reading only" or "Likely" when no '
-    "independent check confirmed it. Amber numbered circle (no cloud): needs your decision; its entry below "
+    "independent check confirmed it. Amber numbered circle (no cloud): not compared; its entry below "
     "says what to decide. Right items are not marked; they are listed at the end."
 )
 LEGEND_CLOUDED: Final = (
     "Red cloud, red numbered circle and note: Wrong. The vendor's value is wrong; the note says "
     'what it needs to be, and ends in grey with "AI reading only" or "Likely" when no '
-    "independent check confirmed it. Amber cloud and amber numbered circle: needs your decision "
+    "independent check confirmed it. Amber cloud and amber numbered circle: not compared "
     "(the AI cannot call it right or wrong). Right items are not marked; they are listed at the "
     "end."
 )
@@ -399,7 +399,7 @@ def note_text(number: int, finding: Mapping[str, Any]) -> str:
         if needs != architect:
             text += f" (architect {architect})"
         return text
-    return f"Your decision: {finding.get('item')}: vendor {vendor}; architect {architect}"
+    return f"Not compared: {finding.get('item')}: vendor {vendor}; architect {architect}"
 
 
 def _sign(kind: str | None) -> str:
@@ -1003,7 +1003,7 @@ def counts_line(findings: Sequence[Mapping[str, Any]], *, clouded_decisions: boo
     return (
         f"{len(findings)} items: {counts['wrong']} wrong (red clouds"
         f"{'; ' + unconfirmed if unconfirmed else ''}), "
-        f"{counts['decision']} your decision ({decision}), "
+        f"{counts['decision']} not compared ({decision}), "
         f"{counts['right']} right{unseen} (listed, not marked)."
     )
 
@@ -1177,9 +1177,9 @@ def check_report_pdf(
         """The item's place on the zero-click drawing (#1581), and the check that proved it."""
         found = proof.proof_of(f)
         words = proof.GROUP_WORDS[found["group"]]
-        # An amber item says the question that goes to the vendor (#1619).
-        asked = f"Confirm: {found['question']}" if found.get("question") else None
-        detail = found["proof"] or asked or found["reason"]
+        # A Not-compared item (#1619) says why, and what would settle it.
+        settle = f" Needed: {found['settle']}." if found.get("settle") else ""
+        detail = found["proof"] or (f"{found['reason']}.{settle}" if found["reason"] else None)
         return f"{words}: {detail}" if detail else words
 
     def by_product(chosen: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
@@ -1190,13 +1190,8 @@ def check_report_pdf(
     summary = {
         **summary,
         "Cloud drawing": (
-            f"{groups['clouded']} wrong clouded (proved by code), {groups['vendor_confirm']} for "
-            f"the vendor to confirm, {groups['right']} right"
-            + (
-                f", {groups['info'] + groups['not_compared']} not applicable / no information"
-                if groups["info"] + groups["not_compared"]
-                else ""
-            )
+            f"{groups['clouded']} wrong clouded (proved by code), {groups['right']} right, "
+            f"{groups['not_compared']} with nothing to compare (the Not-compared list)"
         ),
         "The rule": proof.RULE_LINE,
     }
@@ -1205,20 +1200,18 @@ def check_report_pdf(
         story.append(Paragraph(f"<b>{escape(str(label))}:</b> {escape(str(value))}", body))
     number = {id(f): n for n, f in enumerate(findings, start=1)}
     # The cloud drawing's own groups (#1581, #1619): Wrong = clouded (code proved it, or the
-    # reviewer agreed), Vendor to confirm = one question each, then Right; what has nothing to ask
-    # is listed with what was not compared.
+    # reviewer agreed), Right, and what could not be compared (with its reason).
     placed = {id(f): proof.proof_group(f) for f in findings}
     wrong = by_product([f for f in findings if placed[id(f)] == "clouded"])
-    check = by_product([f for f in findings if placed[id(f)] == "vendor_confirm"])
     right = by_product([f for f in findings if placed[id(f)] == "right"])
-    unseen = by_product([f for f in findings if placed[id(f)] in ("not_compared", "info")])
+    unseen = by_product([f for f in findings if placed[id(f)] == "not_compared"])
     per_product: dict[str, list[int]] = {}
-    for kinds, chosen in enumerate((wrong, check, right)):
+    for kinds, chosen in enumerate((wrong, unseen, right)):
         for f in chosen:
             per_product.setdefault(group(f), [0, 0, 0])[kinds] += 1
     if per_product:
         words = "; ".join(
-            f"{name}: {w} wrong, {c} to confirm, {r} right"
+            f"{name}: {w} wrong, {r} right, {c} not compared"
             for name, (w, c, r) in per_product.items()
         )
         summary_count = len(summary) + 1
@@ -1245,24 +1238,6 @@ def check_report_pdf(
             [24, 58, 30, 128, 92, 132, 196, 56],
         ),
         (
-            f"Vendor to confirm ({len(check)})",
-            ["AI", "Product", "Page", "Item", "Vendor", "Architect", "Question", "Trust"],
-            [
-                [
-                    number[id(f)],
-                    group(f),
-                    f.get("page"),
-                    f.get("item"),
-                    f.get("vendor"),
-                    f.get("architect"),
-                    f"Confirm: {proof.question(f) or ''}",
-                    TRUST_WORDS.get(str(f.get("trust_level")), ""),
-                ]
-                for f in check
-            ],
-            [26, 70, 34, 150, 80, 80, 140, 60],
-        ),
-        (
             f"What's right ({len(right)})",
             ["AI", "Product", "Page", "Item", "Value", "Matches"],
             [
@@ -1282,8 +1257,8 @@ def check_report_pdf(
     if unseen:
         sections.append(
             (
-                f"Not applicable / no information ({len(unseen)})",
-                ["AI", "Product", "Page", "Item", "Value", "Why"],
+                f"Nothing to compare ({len(unseen)})",
+                ["AI", "Product", "Page", "Item", "Value", "Why not compared"],
                 [
                     [
                         number[id(f)],
@@ -1291,11 +1266,7 @@ def check_report_pdf(
                         f.get("page"),
                         f.get("item"),
                         f.get("vendor"),
-                        (
-                            "not seen on both sides, so not counted as right"
-                            if placed[id(f)] == "not_compared"
-                            else proof.undecided_reason(f)
-                        ),
+                        proof.proof_of(f)["reason"] or "",
                     ]
                     for f in unseen
                 ],
@@ -1321,7 +1292,7 @@ def check_report_pdf(
         )
     for title, header, rows, widths in sections:
         story += [Spacer(1, 10), Paragraph(escape(title), styles["Heading2"])]
-        if rows and title.startswith(("What's wrong", "Vendor to confirm")):
+        if rows and title.startswith("What's wrong"):
             story.append(p(f"{BIGGEST_FIRST}: {IMPACT_NOTE}", small))
         story.append(table(header, rows, widths) if rows else p("None.", body))
     story += [Spacer(1, 10), Paragraph("Not checked", styles["Heading2"])]

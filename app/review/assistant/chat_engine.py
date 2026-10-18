@@ -76,6 +76,7 @@ import json
 import logging
 import re
 import threading
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
@@ -87,6 +88,7 @@ from time import monotonic, monotonic_ns
 from typing import Any, Final, Protocol
 from uuid import uuid4
 
+from app.review.assistant import not_compared
 from app.review.assistant.agent import (
     HELPER_PICTURE_EDGE_PX,
     billed_input_tokens,
@@ -204,6 +206,7 @@ from app.review.assistant.chat_trust import (
     with_second_read,
 )
 from app.review.assistant.chat_unknowns import refused_from_diff, unknown_records
+from app.review.assistant.classification import not_compared_line
 from app.review.assistant.decision_resolver import recount_words, resolve_answer
 from app.review.assistant.dim_index import labels_for
 from app.review.assistant.escalation import Escalation, escalate_answer
@@ -346,10 +349,10 @@ WRAP_UP_NOTE: Final = (
 #: The 5-6 line summary that ends every full check (both instructions below end with it).
 _FULL_CHECK_SUMMARY: Final = """End with a 5-6 line plain-English summary for the reviewer (no tables, no disclaimers: the app draws the cloud drawing, the report and the lists):
 1. What was checked: pages, products, rounds.
-2. The overall verdict in one line (how many items are Wrong, need the reviewer's decision, are Right).
+2. The overall verdict in one line (how many items are Wrong, are Right, could not be compared).
 3. The top 3-5 issues by impact, each with its page, item, and architect vs vendor value.
-4. What needs the reviewer's decision.
-5. The next step (e.g. "send the cloud drawing to the vendor; confirm the 3 items that need your decision").
+4. What could not be compared, in one line, by reason (the app lists them apart; never ask the reviewer to decide).
+5. The next step (e.g. "send the cloud drawing to the vendor").
 If you are told to stop early, still write this summary from what you have."""
 
 #: The full check's own instruction (CONTRACT4): the reviewer presses a button, never types it.
@@ -794,6 +797,8 @@ class ChatEngine:
         self._unknowns: list[dict[str, Any]] = []
         # The vendor consistency check's grey items (#1584), for the "not checked" list.
         self.consistency_gaps: list[dict[str, Any]] = []
+        #: A full check's Not-compared rows (#1619), once its files are made.
+        self.not_compared: list[Any] = []
         self.consistency_line: str | None = None
         # The decision items code settled itself (#1554), for the cloud drawing and the report.
         self._settled: list[dict[str, Any]] = []
@@ -2320,7 +2325,7 @@ class ChatEngine:
     def _escalate(self) -> None:
         """A full check (#1619): the free code steps on every item the resolver left undecided
         (`escalation`), after the resolver and before the trust report and the files; what is
-        still undecided then is a question to the vendor (amber) on the cloud drawing."""
+        still open then is Not compared, with its reason (the Not-compared list)."""
         if self.settings.mode != "full_check" or not self._whole_set_work():
             return
         try:
@@ -2343,7 +2348,7 @@ class ChatEngine:
             counts = {
                 **listed,
                 "wrong": groups["clouded"],
-                "decision": groups["vendor_confirm"],
+                "decision": groups["not_compared"],
                 "right": groups["right"],
             }
         with self._lock:
@@ -2472,8 +2477,9 @@ class ChatEngine:
         )
         # The same counts as the screen and the cloud drawing (#1554, #1619): one final list.
         groups = proof_counts(findings)
-        nothing = groups["info"] + groups["not_compared"]
-        unseen = f", {nothing} not applicable or not compared" if nothing else ""
+        unseen = (
+            f", {groups['not_compared']} with nothing to compare" if groups["not_compared"] else ""
+        )
         coverage = book.coverage_map()["counts"] if book.coverage_used else None
         trust = report.get("counts") or {}
         products = products_words(self.settings.products)
@@ -2482,8 +2488,7 @@ class ChatEngine:
             "Products": products,
             "Made": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
             "Model": f"{self.settings.model.label}, {self.settings.effort} effort",
-            "Items": f"{groups['clouded']} wrong (proved by code), {groups['vendor_confirm']} for "
-            f"the vendor to confirm, {groups['right']} right{unseen}",
+            "Items": f"{groups['clouded']} wrong (proved by code), {groups['right']} right{unseen}",
             "Coverage": (
                 "not recorded"
                 if coverage is None
@@ -2501,6 +2506,9 @@ class ChatEngine:
             )
         made_base = self._markup_base
         settled = list(self._settled)
+        # The Not-compared list's rows (#1619): one source for its PDF, its workbook, the cloud
+        # drawing's cover and the summary's line.
+        nothing = self._not_compared_rows(findings)
 
         def drawing(out: Path) -> MarkupFile:
             base = None
@@ -2511,7 +2519,7 @@ class ChatEngine:
                     _log.warning("assistant chat markup copy failed: %s", type(failed).__name__)
             # The zero-click red/green proof drawing (#1581): only code-proved Wrongs clouded.
             return make_proof_file(
-                workspace, findings, out, base, settled=settled, gaps=list(self.consistency_gaps)
+                workspace, findings, out, base, settled=settled, not_compared=len(nothing)
             )
 
         def checked(out: Path) -> MarkupFile:
@@ -2546,7 +2554,42 @@ class ChatEngine:
                     if file_id is not None:
                         (workspace.files / file_id).unlink(missing_ok=True)
                     self._add_text(f"*The {what} could not be made for this answer.*")
+        names += self._not_compared_files(nothing)
         return names
+
+    def _not_compared_rows(self, findings: Sequence[Mapping[str, Any]]) -> list[Any]:
+        """The full check's Not-compared rows (`not_compared.rows`), kept for the summary line."""
+        try:
+            self.not_compared = not_compared.check_rows(
+                self.tools.workspace, findings, list(self.settings.products)
+            )
+        except Exception:  # noqa: BLE001 - counted from the findings alone then
+            _log.exception("assistant chat not-compared rows failed")
+            self.not_compared = not_compared.rows(findings)
+        return self.not_compared
+
+    def _not_compared_files(self, rows: Sequence[Any]) -> list[str]:
+        """The Not-compared PDF and workbook (#1619), registered as the answer's files."""
+        register = self.tools.register_file
+        workspace = self.tools.workspace
+        if register is None:
+            return []
+        ids = (str(uuid4()), str(uuid4()))
+        try:
+            with self.timings.phase("not_compared"):
+                pdf, sheet = not_compared.make_files(
+                    workspace, rows, workspace.files / ids[0], workspace.files / ids[1]
+                )
+        except Exception as failed:  # noqa: BLE001 - told plainly in the answer
+            _log.warning("assistant chat not-compared list failed: %s", type(failed).__name__)
+            for file_id in ids:
+                (workspace.files / file_id).unlink(missing_ok=True)
+            self._add_text("*The Not-compared list could not be made for this answer.*")
+            return []
+        register(ids[0], pdf.name, pdf.size, "application/pdf", pdf.sha256)
+        mime = not_compared.XLSX_MIME if sheet.name.endswith(".xlsx") else "text/csv"
+        register(ids[1], sheet.name, sheet.size, mime, sheet.sha256)
+        return [pdf.name, sheet.name]
 
     def _close_full_check(self, text: str, stopped: str | None, cap_hit: str | None) -> str:
         """Full check (#1518): the two files, also when it stopped early with findings; then
@@ -2562,11 +2605,14 @@ class ChatEngine:
                 _log.exception("assistant chat full-check files failed")
         line = self.consistency_line
         if not needs_code_summary(text, stopped):
-            if line:
-                # The vendor consistency check's line (#1584), after the AI's own summary.
-                index = self._add_block({"type": "text", "text": line, "by": "code"})
-                self.emit("text_delta", {"index": index, "text": line, "by": "code"})
-                text = f"{text}\n\n{line}"
+            # The vendor consistency check's line (#1584) and what could not be compared (#1619),
+            # after the AI's own summary.
+            nothing = not_compared_line(Counter(row.reason for row in self.not_compared))
+            for words in (line, nothing.replace("list.", "list (PDF / Excel).")):
+                if words:
+                    index = self._add_block({"type": "text", "text": words, "by": "code"})
+                    self.emit("text_delta", {"index": index, "text": words, "by": "code"})
+                    text = f"{text}\n\n{words}"
             return text
         book, settings = self.book, self.settings
         summary = code_summary(
@@ -2581,6 +2627,7 @@ class ChatEngine:
             turns=settings.lead_max_turns,
             files=names,
             also=[line] if line else (),
+            reasons=[row.reason for row in self.not_compared] or None,
         )
         index = self._add_block({"type": "text", "text": summary, "by": "code"})
         self.emit("text_delta", {"index": index, "text": summary, "by": "code"})

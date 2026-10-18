@@ -152,13 +152,13 @@ numbers ("pull-out drawers", "by others"): a note the vendor does not follow is 
   dropped or changed.
 - **Construction notes** the vendor contradicts, on the architect's or brand sheet ("toe kick
   integrated with door", "door to the floor", "pull-out drawers for bins", "metal lining").
-- **ID set vs brand prototype** conflicts: status `check` (Your decision), `check_reason:
-  which_governs`.
+- **ID set vs brand prototype**: the ID set governs (the prototype only where the ID set says "per
+  brand standard"); a prototype-only difference: `check`, `check_reason: which_governs`.
 - **Scaled values**: where the architect prints no size, `measure_on_drawing` (two printed dimensions
-  of the same view) gives "about X (±T)": status `check` (Your decision), never `different` (Wrong).
+  of the same view) gives "about X (±T)": status `check` (not compared), never `different`.
 - **Extent first**: before a height or width is Wrong, check what the architect's dimension spans
   (`measure_on_drawing` with `dimension`). Floor to the top of a box, soffit or blocking beyond the
-  unit is not the unit: status `check` (Your decision), `check_reason: different_extent`.
+  unit is not the unit: status `check` (not compared), `check_reason: different_extent`.
 - **Printed vs printed is Wrong**: a vendor value printed unlike the architect's printed value for the
   same span (counter height 34" vs 2'-9") is `different` (Wrong), not `check`, unless a
   `check_reason` holds.
@@ -201,8 +201,8 @@ In a full check the app has done steps 1-3 (split, helpers, checklist): start at
 
 ## 9. How to answer
 
-The reviewer's words: each item is **Wrong** (`status: different`), **Your decision** (`check`) or
-**Right** (`same`); a page nobody compared is **Not compared**. Trust (**Confirmed**, **Likely**,
+The reviewer's words: each item is **Wrong** (`status: different`), **Not compared** (`check`:
+nothing to compare, say why) or **Right** (`same`); the architect's drawings govern. Trust (**Confirmed**, **Likely**,
 **AI reading only**) is scored by code from independent checks: never claim it yourself.
 
 - **Every difference is a finding**: `report_finding` for each, with the page, item, category (the
@@ -210,7 +210,7 @@ The reviewer's words: each item is **Wrong** (`status: different`), **Your decis
   what the architect shows and what the vendor shows **as printed** (inches), status, source, and
   boxes where each value is printed (section 10). The app crops the evidence at the boxes, checks
   the printed values and draws the table: never write the findings again as a markdown table.
-- **Every `check` (Your decision) has `decision_help`**, short plain words: what it measures (where
+- **Every `check` (not compared) has `decision_help`**, short plain words: what it measures (where
   its extension lines end); your best estimate and method (a string added up, an overall less its
   fillers, `measure_on_drawing`, a brand prototype string that sums to the vendor's value) or null;
   `likely`; what to confirm. Mention bigger context (a section the vendor left out) in `why`.

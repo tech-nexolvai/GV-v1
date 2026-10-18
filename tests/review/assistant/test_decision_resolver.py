@@ -815,7 +815,7 @@ def test_every_count_shown_comes_from_the_final_list(
     assert shown_counts(live)["decision"] == 1 and shown_counts(live)["wrong"] == 3
     final = {
         "wrong": groups["clouded"],
-        "decision": groups["vendor_confirm"],
+        "decision": groups["not_compared"],
         "right": groups["right"],
     }
     assert final == {"wrong": 2, "decision": 2, "right": 0}
@@ -832,18 +832,18 @@ def test_every_count_shown_comes_from_the_final_list(
         for page in PdfReader(str(harness.workspace.files / harness.files[1]["id"])).pages
     )
     assert (
-        f"{final['wrong']} wrong (proved by code), {final['decision']} for the vendor to "
-        f"confirm, {final['right']} right" in " ".join(report.split())
+        f"{final['wrong']} wrong (proved by code), {final['right']} right, {final['decision']} "
+        "with nothing to compare" in " ".join(report.split())
     )
     assert f"What's wrong ({final['wrong']})" in report
-    assert f"Vendor to confirm ({final['decision']})" in report
+    assert f"Nothing to compare ({final['decision']})" in report
     # The zero-click cloud drawing's cover (#1581): the same final list.
     drawing = PdfReader(str(harness.workspace.files / harness.files[0]["id"]))
     cover = drawing.pages[0].extract_text()
     for count, label in (
         (groups["clouded"], "Wrong"),
-        (groups["vendor_confirm"], "Vendor to confirm"),
         (groups["right"], "Right"),
+        (groups["not_compared"], "Nothing to compare"),
     ):
         assert re.search(rf"\b{count}\s+{label}", cover), (count, label)
 

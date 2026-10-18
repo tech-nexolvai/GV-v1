@@ -9,16 +9,17 @@ clouds (a Right needs both values read by code and equal; a red cloud still need
 - `under_markup`: one size in the drawing's own ink under GV's markup is the vendor's value;
 - `same_item`: a copy that is a proven Wrong, or a newer round of the same question, carries it;
 - `vendor_sums`: a vendor string code proved does not add up carries it;
-- `notes`: the architect's tags the vendor's drawing does not print;
+- `notes`: an architect's tag the vendor's drawings of the area never print: Wrong, proved by a
+  text search (R4, missed something);
 - `pairs`: code's own pairing of the two labels proves the pairing (red when code read both);
-- what nothing settles stays a question to the vendor, and every step tried is kept.
+- what nothing settles is Not compared (with its reason), and every step tried is kept.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from app.review.assistant import proof, vendor_confirm
+from app.review.assistant import proof
 from app.review.assistant.escalation import (
     FREE_STEPS,
     EscalationContext,
@@ -49,7 +50,7 @@ def _box(at: tuple[float, float], page: int = 3) -> dict[str, Any]:
 
 
 def _wrong(**changes: Any) -> dict[str, Any]:
-    """A Wrong item code has not proved: AI readings only, so a question to the vendor today."""
+    """A Wrong item code has not proved: AI readings only, so Not compared today."""
     finding: dict[str, Any] = {
         "id": "F1",
         "page": 3,
@@ -110,11 +111,12 @@ def test_the_ladder_is_cheapest_first_and_every_step_tried_is_kept() -> None:
     result = escalate([_wrong()], _ctx())
     finding = _by_id(result)["F1"]
     # Code read both values at their labels: a code witness, but no pairing proof yet, so the item
-    # stays a question to the vendor (never red on a reading alone).
+    # stays Not compared (never red on a reading alone): different reference points not ruled out.
     assert finding["checks"]["printed_vendor"] == "match"
     assert finding["checks"]["printed_architect"] == "match"
     assert finding["dims"]["vendor"]["id"] == "D1" and finding["witnesses"] == ["printed"]
-    assert proof.proof_group(finding) == "vendor_confirm"
+    assert proof.proof_group(finding) == "not_compared"
+    assert proof.proof_of(finding)["not_compared"] == "different_reference"
     steps = [s["step"] for s in finding["escalation"]["steps"]]
     assert steps == ["labels", "pairs"] and finding["escalation"]["outcome"] == "undecided"
     assert result.tried == 1 and result.settled == {}
@@ -127,7 +129,7 @@ def test_code_s_own_pairing_makes_a_code_read_difference_red() -> None:
     assert finding["escalation"]["outcome"] == "wrong" and result.settled == {"pairs": 1}
     # Code pairing the vendor's label with ANOTHER architect label proves nothing.
     other = escalate([_wrong()], _ctx(pairs={"p3.D1": "p3.D9"}))
-    assert proof.proof_group(_by_id(other)["F1"]) == "vendor_confirm"
+    assert proof.proof_group(_by_id(other)["F1"]) == "not_compared"
 
 
 def test_an_unreadable_value_is_read_from_the_only_label_in_its_box() -> None:
@@ -145,7 +147,7 @@ def test_an_unreadable_value_is_read_from_the_only_label_in_its_box() -> None:
     labels[0] = _label("D1", "vendor", "40", (300, 300))
     finding = _by_id(escalate([_decision()], _ctx(labels)))["F2"]
     assert finding["status"] == "different" and finding["inches"]["vendor"] == "40"
-    assert proof.proof_group(finding) == "vendor_confirm"
+    assert proof.proof_group(finding) == "not_compared"
     # Two labels in the box: code does not guess which one.
     labels.append(_label("D3", "vendor", "41", (305, 302)))
     finding = _by_id(escalate([_decision()], _ctx(labels)))["F2"]
@@ -167,7 +169,7 @@ def test_one_size_under_gvs_markup_is_the_vendors_value() -> None:
     assert finding["checks"]["printed_vendor"] == "match"
     steps = {s["step"]: s for s in finding["escalation"]["steps"]}
     assert steps["under_markup"]["outcome"] == "read"
-    assert proof.proof_group(finding) == "vendor_confirm"  # the architect's side is not read
+    assert proof.proof_group(finding) == "not_compared"  # the architect's side is not read
 
 
 def test_the_same_item_on_another_round_or_a_proven_copy_carries_it() -> None:
@@ -217,7 +219,26 @@ def test_a_vendor_string_code_proved_carries_the_question_about_it() -> None:
     assert "Same item as C1" in result.absorbed["F8"]
 
 
-def test_tags_the_vendor_leaves_out_are_named() -> None:
+def _notes(vendor_tags: list[str], vendor_notes: list[str] = ()) -> dict[tuple[str, int], Any]:
+    """notes.json: the architect's drawing on page 3 tags CT-001; the vendor's drawings of the
+    same area (pages 3 and 4) print `vendor_tags` and `vendor_notes`."""
+
+    def drawing(role: str, tags: list[str], notes: list[str] = ()) -> dict[str, Any]:
+        return {
+            "role": role,
+            "tags": [{"text": t, "box": [0, 0, 1, 1]} for t in tags],
+            "notes": [{"text": t, "box": [0, 0, 1, 1]} for t in notes],
+        }
+
+    return {
+        (FILE, 3): {"drawings": [drawing("architect", ["CT-001"]), drawing("vendor", [])]},
+        (FILE, 4): {"drawings": [drawing("vendor", vendor_tags, list(vendor_notes))]},
+    }
+
+
+def test_an_architect_tag_the_vendor_never_prints_is_a_wrong_code_proved() -> None:
+    """R4, missed something: code read the architect's tag and searched every tag and note of the
+    vendor's drawings of the same area; none prints it."""
     tags = _wrong(
         id="F9",
         item="Counter top material tag",
@@ -225,16 +246,17 @@ def test_tags_the_vendor_leaves_out_are_named() -> None:
         vendor="ST-002",
         inches={},
     )
-    notes = {(FILE, 3): {"architect_only_tags": ["CT-001"], "vendor_only_tags": ["ST-002"]}}
-    finding = _by_id(escalate([tags], _ctx([], notes=notes)))["F9"]
+    finding = _by_id(escalate([tags], _ctx([], notes=_notes(["ST-002"]))))["F9"]
     assert finding["missing_tags"] == ["CT-001"]
-    assert vendor_confirm.question_of(finding) == (
-        "The architect tags CT-001 on the same sheet for the counter top material tag; the "
-        "vendor's drawing on page 3 does not print it. Confirm the material and finish."
-    )
-    assert any(
-        s["step"] == "notes" and s["outcome"] == "read" for s in finding["escalation"]["steps"]
-    )
+    assert proof.proof_group(finding) == "clouded"
+    assert proof.vendor_value(finding) == "tag not printed"
+    assert proof.should_be_value(finding) == "CT-001"
+    assert "not printed" in proof.proof_line(finding) and "pages 3, 4" in proof.proof_line(finding)
+    assert finding["escalation"]["outcome"] == "wrong"
+    # Printed anywhere in the area (a tag or a note, with or without its suffix): no proof.
+    for printed in (_notes(["CT-001"]), _notes([], ["COUNTER CT-001 QUARTZ"])):
+        found = _by_id(escalate([tags], _ctx([], notes=printed)))["F9"]
+        assert proof.proof_group(found) == "not_compared"
 
 
 def test_items_already_settled_or_decided_are_left_alone() -> None:

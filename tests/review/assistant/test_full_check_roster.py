@@ -713,5 +713,5 @@ def test_the_escalation_spends_only_what_is_left_under_the_price(
     found = next(f for f in harness.engine.book.live() if f["id"] == finding_id)
     assert "advocate" not in script.calls  # no money left: no AI call
     assert found["checks"]["printed_vendor"] == "match"  # the free step still ran
-    assert proof.proof_group(found) == "vendor_confirm"  # still a question, never red
-    assert any("stay to confirm" in line for line in run.not_done)
+    assert proof.proof_group(found) == "not_compared"  # still not compared, never red
+    assert any("stay not compared" in line for line in run.not_done)

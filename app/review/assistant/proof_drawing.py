@@ -2,23 +2,21 @@
 
 What the vendor gets, with no human step (the rule is `proof.py`):
 
-1. **Cover**: the counts (Wrong in red, Vendor to confirm in amber, Right in green, and a small
-   "Not applicable / no information" count), the rule in one line, the stamp "Checked
-   automatically by GV Review: <date>" ("… and reviewed by <name>" once a reviewer decided
-   anything), every assumption code made about the page map, and the list of the clouded items.
+1. **Cover**: the counts (Wrong, clouded; Right; Nothing to compare), the rule in one line, the stamp "Checked automatically by GV Review: <date>" ("… and reviewed by <name>" once a
+   reviewer decided anything), every assumption code made about the page map, and the list of the
+   clouded items.
 2. **The vendor's sheets**: a tight red cloud round each wrong value code proved, a numbered red
    marker, and a short note in clear space: the item, "Vendor: 46"" in red and "Should be: 37"
-   (architect 3'-1", page 28)" in green. Each item code could not settle (#1619) gets an amber
-   diamond marker and a note "Confirm: <the question>", never a cloud: red stays for proven
-   Wrongs. The tight-cloud and clear-space layout is the cloud drawing's own (`chat_drawing`,
-   `cloud_layout`).
+   (architect 3'-1", page 28)" in green. The tight-cloud and clear-space layout is the cloud
+   drawing's own (`chat_drawing`, `cloud_layout`).
 3. **Proof pages**: one entry per clouded item, in the clouded order (biggest first): the
    architect's crop with the governing value boxed in green beside the vendor's crop with the
    wrong value boxed in red, one line naming the check that proved it, and the pages. Crops are cut
    from the hi-res page cache (#1557); a page already drawn is never drawn again.
-4. **Notes pages**: the "Vendor to confirm" questions in amber, numbered as on the sheets; the
-   items with nothing to ask ("Not applicable / no information", grey); a short green list of
-   what is right; what the reviewer marked not a problem, and what code settled by itself.
+4. **Notes pages**: a short green list of what is right; what the reviewer marked not a problem,
+   and what code settled by itself. What could not be compared (#1619, the architect-first rules
+   R1-R10, `classification.py`) is NOT on this drawing: it is the separate "Not compared" PDF
+   (`not_compared_pdf`), grouped by reason, each row with why and what would settle it.
 
 Page labels: the cover is "Cover", the vendor's sheets keep their own numbers (1, 2, …), then
 "Proof 1…" and "Notes 1…", so "page 12" in a note is page 12 in any PDF viewer.
@@ -99,20 +97,19 @@ from app.review.assistant.proof import (
     proof_line,
     should_be,
     should_be_value,
-    undecided_reason,
     vendor_own,
     vendor_value,
 )
-from app.review.assistant.vendor_confirm import PREFIX, question_of
 
 __all__ = [
-    "AMBER",
     "GREEN",
     "LEGEND_LINES",
+    "NOT_COMPARED_TITLE",
     "RED",
     "STAMP_WORDS",
     "ProofCounts",
     "contrast",
+    "not_compared_pdf",
     "proof_markup_pdf",
     "stamp_line",
 ]
@@ -127,18 +124,16 @@ RED: Final = _RED
 #: What it should be: a dark, print-safe green (contrast 5.6:1 on white; it stays a dark grey,
 #: never washed out, in greyscale print). `contrast` measures both; a test keeps them >= 4.5:1.
 GREEN: Final = Color(0.0, 0.47, 0.2)
-#: Vendor to confirm (#1619): a dark amber (#996600) that reads on white (contrast 4.9:1) and
-#: prints as a dark grey; its marker is a diamond, never a circle, so it stays apart from the
-#: red markers in greyscale print too. A test keeps it >= 4.5:1 and apart from red.
-AMBER: Final = Color(0.6, 0.4, 0.0)
-#: Grey for the items with nothing to ask.
+#: Grey for the lists code could not prove.
 _LIST_GREY: Final = Color(0.4, 0.4, 0.4)
 STAMP_WORDS: Final = "Checked automatically by GV Review"
 LEGEND_LINES: Final = (
     "Red cloud and red words: the vendor's value that is wrong.",
     "Green words: what it should be, and which drawing or rule says so.",
-    "Amber diamond and note: please confirm; the question is on the sheet and listed after it.",
+    "What could not be compared is listed apart, with the reason, in the Not-compared list.",
 )
+#: The separate list's title (and its file name's end, `chat_findings`).
+NOT_COMPARED_TITLE: Final = "Not compared"
 #: The proof crops: at least this much of the drawing round the value (points), at most this big
 #: on the page (points per crop).
 _CONTEXT_W: Final = 220.0
@@ -179,9 +174,7 @@ def stamp_line(date: str, reviewers: Sequence[str] = ()) -> str:
 @dataclass(frozen=True, slots=True)
 class ProofCounts:
     clouded: int
-    vendor_confirm: int
     right: int
-    info: int
     not_compared: int
     dismissed: int
 
@@ -216,45 +209,9 @@ def _round(mark: Mark) -> Any:
 
 
 def _later(mark: Mark) -> bool:
-    """A round-1 item's mark on its round-2 page (#1603, #1619)."""
+    """A round-1 item's mark on its round-2 page (#1603)."""
     rounds = _round(mark)
-    return rounds is not None and rounds.status in (
-        "fixed",
-        "still_wrong",
-        "answered",
-        "still_open",
-    )
-
-
-def _wrap(text: str, font: str, colour: Color, room: float, lines: int) -> list[list[_Run]]:
-    """`text` in at most `lines` lines of `room` points, the last cut with "…"."""
-    out: list[list[_Run]] = []
-    words = text.split()
-    line = ""
-    for at, word in enumerate(words):
-        trial = f"{line} {word}".strip()
-        if _measure(trial, font) <= room or not line:
-            line = trial
-            continue
-        if len(out) == lines - 1:
-            rest = " ".join([line, *words[at:]])
-            return [*out, _fit([(rest, font, colour)], room)]
-        out.append([(line, font, colour)])
-        line = word
-    if line:
-        out.append(_fit([(line, font, colour)], room))
-    return out
-
-
-def _question_lines(head: Sequence[_Run], question: str, room: float) -> list[list[_Run]]:
-    """An amber note: the item, then "Confirm: " in amber and the question, wrapped."""
-    # A little room is kept for "Confirm:" in bold.
-    wrapped = _wrap(PREFIX + question, _NOTE_FONT, _DARK, room - 6, 4)
-    first, *rest = wrapped or [[("", _NOTE_FONT, _DARK)]]
-    text = first[0][0] if first else ""
-    lead = PREFIX.strip()
-    body = text.removeprefix(lead)
-    return [_fit(head, room), [(lead, _NOTE_BOLD, AMBER), (body, _NOTE_FONT, _DARK)], *rest]
+    return rounds is not None and rounds.status in ("fixed", "still_wrong")
 
 
 def _grown(box: Box, pad: float = 2.0) -> Box:
@@ -275,25 +232,6 @@ def note_lines(mark: Mark) -> list[list[_Run]]:
     item = str(finding.get("item") or "Item")
     rounds = _round(mark)
     head: list[_Run] = [(item, _NOTE_BOLD, _DARK)]
-    if rounds is not None and rounds.status == "answered":
-        return [
-            _fit(head, room),
-            _fit(
-                [
-                    ("Answered in round 2: ", _NOTE_FONT, GREEN),
-                    (str(rounds.now or ""), _NOTE_BOLD, GREEN),
-                ],
-                room,
-            ),
-        ]
-    if rounds is not None and rounds.status == "still_open":
-        return [
-            _fit(head, room),
-            _fit([("Still open in round 2", _NOTE_BOLD, AMBER)], room),
-            *_question_lines([], question_of(finding) or "", room)[1:],
-        ]
-    if mark.kind == "confirm":
-        return _question_lines(head, question_of(finding) or "", room)
     if rounds is not None and rounds.status == "fixed":
         return [
             _fit(head, room),
@@ -358,52 +296,21 @@ class _Placed:
     lines: list[list[_Run]] = field(default_factory=list)
 
 
-def _sheet_stamp_box(count: int, confirm: int = 0) -> Box:
+def _sheet_stamp_box(count: int) -> Box:
     x, y = _STAMP_AT
-    width = sum(
-        _measure(text, _NOTE_BOLD, _SHEET_STAMP_SIZE) for text, _c in _stamp_pieces(count, confirm)
-    )
+    width = _measure(_sheet_stamp_words(count), _NOTE_BOLD, _SHEET_STAMP_SIZE)
     return (x - 4, y - _SHEET_STAMP_SIZE - 3, x + width + 8, y + 5)
 
 
-def _counted(count: int, confirm: int) -> str:
-    parts = []
-    if count:
-        parts.append("1 correction" if count == 1 else f"{count} corrections")
-    if confirm:
-        parts.append(f"{confirm} to confirm")
-    return " and ".join(parts)
-
-
-def _stamp_pieces(count: int, confirm: int) -> list[tuple[str, Color]]:
-    pieces: list[tuple[str, Color]] = [
-        (f"GV Review: {_counted(count, confirm)} on this page (", _DARK)
-    ]
-    if count:
-        pieces += [
-            ("red: the vendor's value", RED),
-            ("; ", _DARK),
-            ("green: what it should be", GREEN),
-        ]
-    if confirm:
-        pieces += [("; " if count else "", _DARK), ("amber: please confirm", AMBER)]
-    return [*pieces, (")", _DARK)]
-
-
-def _sheet_stamp_words(count: int, confirm: int = 0) -> str:
-    return "".join(text for text, _c in _stamp_pieces(count, confirm))
-
-
-def _sheet_counts(placed: Sequence[_Placed]) -> tuple[int, int]:
-    """(corrections, items to confirm) on one sheet, each item once."""
-    red = {i.mark.number for i in placed if i.mark.kind == "wrong"}
-    amber = {i.mark.number for i in placed if i.mark.kind == "confirm"}
-    return len(red), len(amber)
+def _sheet_stamp_words(count: int) -> str:
+    items = "1 correction" if count == 1 else f"{count} corrections"
+    return f"GV Review: {items} on this page (red: the vendor's value; green: what it should be)"
 
 
 def _layout(size: tuple[float, float], placed: list[_Placed], ink: InkMap | None) -> None:
-    """Markers, then notes, for one sheet's clouds and questions (in place)."""
-    blocked: list[Box] = [_sheet_stamp_box(*_sheet_counts(placed))]
+    """Markers, then notes, for one sheet's clouds (in place)."""
+    count = len({item.mark.number for item in placed})
+    blocked: list[Box] = [_sheet_stamp_box(count)]
     taken: list[tuple[float, float]] = []
     r = _MARKER_RADIUS
     for item in placed:
@@ -411,7 +318,6 @@ def _layout(size: tuple[float, float], placed: list[_Placed], ink: InkMap | None
         grown = (x0 - _CLOUD_PAD - 0.4 * r, y0 - _CLOUD_PAD - 0.4 * r, x1, y1)
         item.marker = marker_spot(grown, r, taken, size)
         taken.append(item.marker)
-        # An amber item has no cloud, but its value stays clear of notes all the same.
         blocked.append(
             (x0 - _CLOUD_PAD - 3, y0 - _CLOUD_PAD - 3, x1 + _CLOUD_PAD + 3, y1 + _CLOUD_PAD + 3)
         )
@@ -436,16 +342,8 @@ def _draw_sheet(c: canvas.Canvas, height: float, placed: Sequence[_Placed]) -> N
     for item in placed:
         x0, y0, x1, y1 = item.spot
         fixed = item.mark.kind == "fixed"
-        confirm = item.mark.kind == "confirm"
-        colour = GREEN if fixed else AMBER if confirm else RED
-        if confirm:
-            # Vendor to confirm: a thin amber underline under the value, never a cloud.
-            c.setStrokeColor(AMBER)
-            c.setLineWidth(1.0)
-            c.setDash(2, 1.5)
-            c.line(x0 - 1, up(y1) - 2, x1 + 1, up(y1) - 2)
-            c.setDash()
-        elif fixed:
+        colour = GREEN if fixed else RED
+        if fixed:
             c.setStrokeColor(GREEN)
             c.setLineWidth(1.2)
             c.rect(x0 - 2, up(y1) - 2, x1 - x0 + 4, y1 - y0 + 4, stroke=1, fill=0)
@@ -461,7 +359,7 @@ def _draw_sheet(c: canvas.Canvas, height: float, placed: Sequence[_Placed]) -> N
         left, right = x0 - _CLOUD_PAD, x1 + _CLOUD_PAD
         low, high = up(y1) - _CLOUD_PAD, up(y0) + _CLOUD_PAD
         radius = max(2.5, min(5.0, min(right - left, high - low) / 4))
-        if not fixed and not confirm:
+        if not fixed:
             c.setStrokeColor(RED)
             c.setLineWidth(1.4)
             _cloud(c, left, low, right, high, radius)
@@ -495,26 +393,9 @@ def _draw_sheet(c: canvas.Canvas, height: float, placed: Sequence[_Placed]) -> N
                 x += _measure(text, font)
     for item in placed:
         mx, my = item.marker
+        c.setFillColor(GREEN if item.mark.kind == "fixed" else RED)
         c.setStrokeColor(white)
         c.setLineWidth(0.8)
-        if item.mark.kind == "confirm":
-            # A diamond: told apart from the red circles in greyscale print too.
-            r = _MARKER_RADIUS * 1.15
-            c.setFillColor(AMBER)
-            path = c.beginPath()
-            path.moveTo(mx, up(my) + r)
-            path.lineTo(mx + r, up(my))
-            path.lineTo(mx, up(my) - r)
-            path.lineTo(mx - r, up(my))
-            path.close()
-            c.drawPath(path, stroke=1, fill=1)
-            label = str(item.mark.number)
-            size = 7.0 if len(label) < 3 else 5.5
-            c.setFillColor(white)
-            c.setFont(_NOTE_BOLD, size)
-            c.drawCentredString(mx, up(my) - size * 0.35, label)
-            continue
-        c.setFillColor(GREEN if item.mark.kind == "fixed" else RED)
         c.circle(mx, up(my), _MARKER_RADIUS, stroke=1, fill=1)
         if item.mark.kind == "fixed":
             # A check mark: fixed in round 2.
@@ -532,19 +413,27 @@ def _draw_sheet(c: canvas.Canvas, height: float, placed: Sequence[_Placed]) -> N
         c.setFillColor(white)
         c.setFont(_NOTE_BOLD, size)
         c.drawCentredString(mx, up(my) - size * 0.35, label)
-    count, asks = _sheet_counts(placed)
-    if count or asks:
-        _sheet_stamp(c, height, count, asks)
+    numbers = {item.mark.number for item in placed if item.mark.kind != "fixed"}
+    if numbers:
+        _sheet_stamp(c, height, len(numbers))
 
 
-def _sheet_stamp(c: canvas.Canvas, height: float, count: int, confirm: int = 0) -> None:
+def _sheet_stamp(c: canvas.Canvas, height: float, count: int) -> None:
     x, y = _STAMP_AT
-    x0, y0, x1, y1 = _sheet_stamp_box(count, confirm)
+    x0, y0, x1, y1 = _sheet_stamp_box(count)
     c.setFillColor(white)
     c.setStrokeColor(_GREY)
     c.setLineWidth(0.5)
     c.rect(x0, height - y1, x1 - x0, y1 - y0, stroke=1, fill=1)
-    pieces = _stamp_pieces(count, confirm)
+    head = f"GV Review: {'1 correction' if count == 1 else f'{count} corrections'} on this page "
+    pieces: list[tuple[str, Color]] = [
+        (head, _DARK),
+        ("(", _DARK),
+        ("red: the vendor's value", RED),
+        ("; ", _DARK),
+        ("green: what it should be", GREEN),
+        (")", _DARK),
+    ]
     cursor = x
     c.setFont(_NOTE_BOLD, _SHEET_STAMP_SIZE)
     for text, colour in pieces:
@@ -737,9 +626,9 @@ def _cover(
         Paragraph(escape(stamp), styles["stamp"]),
     ]
     tiles = [
-        ("Wrong", counts["clouded"], RED, "proved by code, clouded in red"),
-        ("Vendor to confirm", counts["vendor_confirm"], AMBER, "one question each, in amber"),
-        ("Right", counts["right"], GREEN, "matches the drawings"),
+        ("Wrong", counts["clouded"], RED, "proved by code, clouded"),
+        ("Right", counts["right"], GREEN, "matches the architect"),
+        ("Nothing to compare", counts["not_compared"], _LIST_GREY, "listed apart, with the reason"),
     ]
     cells = [
         [
@@ -765,11 +654,6 @@ def _cover(
     )
     story += [grid, Spacer(1, 14)]
     extra = []
-    info = counts["info"] + counts["not_compared"]
-    if info:
-        extra.append(
-            f"{info} not applicable / no information (nothing to ask; listed after the sheets)"
-        )
     if counts["dismissed"]:
         extra.append(f"{counts['dismissed']} marked not a problem by the reviewer")
     if extra:
@@ -779,13 +663,13 @@ def _cover(
     legend = [
         _coloured("", LEGEND_LINES[0], RED),
         _coloured("", LEGEND_LINES[1], GREEN),
-        _coloured("", LEGEND_LINES[2], AMBER),
+        f'<font color="{_hex(_LIST_GREY)}">{escape(LEGEND_LINES[2])}</font>',
     ]
     story += [Paragraph(line, body) for line in legend]
     story.append(
         Paragraph(
             "Page numbers are the vendor file's own pages; each clouded item has a proof entry "
-            "after the sheets, and every question to confirm is listed there too.",
+            "after the sheets.",
             grey,
         )
     )
@@ -836,8 +720,8 @@ _ROUND_WORDS: Final[Mapping[str, tuple[str, Color]]] = {
     "still_wrong": ("Still wrong", RED),
     "new": ("NEW", RED),
     "also_in_round_1": ("Still wrong (also in round 1)", RED),
-    "answered": ("Answered", GREEN),
-    "still_open": ("Still open", AMBER),
+    "now_right": ("Now right (was not compared)", GREEN),
+    "still_not_compared": ("Still not compared", _LIST_GREY),
 }
 
 
@@ -877,11 +761,7 @@ def _round_section(
                 Paragraph(_coloured("", words, colour), body),
                 Paragraph(_coloured("", item.was, RED), body),
                 Paragraph(
-                    _coloured(
-                        "",
-                        str(item.now or ""),
-                        GREEN if item.status in ("fixed", "answered") else colour,
-                    ),
+                    _coloured("", str(item.now or ""), GREEN if item.status == "fixed" else RED),
                     body,
                 ),
                 Paragraph(_coloured("", item.should_be, GREEN), body),
@@ -1036,49 +916,6 @@ def _list_entries(
     return story
 
 
-def _confirm_entries(
-    styles: Mapping[str, ParagraphStyle], items: Sequence[tuple[int, Mapping[str, Any], str]]
-) -> list[Any]:
-    """The questions to the vendor (#1619), numbered as on the sheets."""
-    story: list[Any] = [
-        Paragraph(_coloured("", f"Vendor to confirm ({len(items)})", AMBER), styles["section"]),
-        Paragraph(
-            escape(
-                "Code could not settle these from the drawings. Please answer each one, or "
-                "show the size on the next round."
-            ),
-            styles["grey"],
-        ),
-    ]
-    if not items:
-        return [*story, Paragraph("None.", styles["grey"])]
-    for number, finding, where in items:
-        story.append(
-            Paragraph(
-                f'<font color="{_hex(AMBER)}"><b>{number}</b></font>&nbsp;&nbsp;'
-                f"<b>p.{escape(str(finding.get('page')))}&nbsp;&nbsp;"
-                f"{escape(str(finding.get('item') or ''))}</b><br/>"
-                + f'<font color="{_hex(AMBER)}"><b>{escape(PREFIX.strip())}</b></font> '
-                + escape(question_of(finding) or "")
-                + (
-                    f'<br/><font color="{_hex(_LIST_GREY)}">{escape(where)}</font>' if where else ""
-                ),
-                styles["body"],
-            )
-        )
-        story.append(Spacer(1, 4))
-    return story
-
-
-def _info_line(finding: Mapping[str, Any]) -> str:
-    return f"{_short_words(finding.get('vendor'))}. {undecided_reason(finding)}"
-
-
-def _short_words(text: object, limit: int = 90) -> str:
-    words = " ".join(str(text or "").split())
-    return words if len(words) <= limit else words[: limit - 1].rstrip() + "…"
-
-
 def _right_line(finding: Mapping[str, Any]) -> str:
     source = "architect" if finding.get("source") in (None, "architect", "gv_review") else ""
     source = source or str(finding.get("source") or "").replace("_", " ")
@@ -1161,7 +998,7 @@ def proof_markup_pdf(
     assumptions: Sequence[str] = (),
     settled: Sequence[Mapping[str, Any]] = (),
     rounds: Any = None,
-    gaps: Sequence[Mapping[str, Any]] = (),
+    not_compared: int | None = None,
 ) -> ProofCounts:
     """The zero-click cloud drawing of a full check (see the module's words) written to `out`.
 
@@ -1173,16 +1010,18 @@ def proof_markup_pdf(
     `rounds`: the automatic round-2 check (`round_check.RoundReport`, #1603): each round-1 item
     marked on its round-2 page (fixed: green check; still wrong: red cloud), new round-2 items
     headed "NEW", a summary on the cover and the items code could not compare in grey.
-    `gaps`: the set's gaps with nothing to ask (the vendor consistency check's `unknowns`: an area
-    with no vendor sheet, a round left out), listed and counted as "Not applicable / no
-    information" (#1619). Returns the counts the cover shows."""
+    `not_compared`: how many rows the Not-compared list has (its product scope), shown on the
+    cover; else counted here. Returns the counts the cover shows."""
     base = base if base is not None else clone_pdf(source)
     pdf = base.pdf
     known = dict(files or {})
     known.setdefault(source.name, source)
     findings = [finding for _n, finding, *_rest in placed]
     counts = proof_counts(findings)
-    counts["info"] += len(gaps)
+    cover_counts = {
+        **counts,
+        "not_compared": counts["not_compared"] if not_compared is None else not_compared,
+    }
     by_round = rounds.by_finding() if rounds is not None else {}
     crop_source = source
     try:
@@ -1198,49 +1037,7 @@ def proof_markup_pdf(
             if page is not None and box is not None and not 1 <= page <= pages:
                 page, box, where = None, None, f"Not marked: the file has no page {page}."
             clouded.append((len(clouded) + 1, shown, page, box, where))
-        # Vendor to confirm (#1619): numbered after the clouds, an amber marker and note each.
-        confirm_items: list[tuple[int, Mapping[str, Any], str]] = []
-        confirming: list[tuple[int, Mapping[str, Any], int | None, Box | None]] = []
-        for _n, finding, page, box, where in placed:
-            if proof_group(finding) != "vendor_confirm":
-                continue
-            number = len(clouded) + len(confirm_items) + 1
-            if page is not None and box is not None and not 1 <= page <= pages:
-                page, box, where = None, None, f"Not marked: the file has no page {page}."
-            confirm_items.append((number, finding, where))
-            confirming.append((number, finding, page, box))
         marks: list[Mark] = []
-        for number, finding, page, box in confirming:
-            vendor_box = finding.get("vendor_box")
-            value = str(
-                finding.get("vendor")
-                if isinstance(vendor_box, Mapping)
-                else finding.get("architect")
-            )
-            if page is not None and box is not None:
-                marks.append(Mark(number, finding, page, box, "confirm", True, value or ""))
-            marks += also_marks(number, finding, "confirm", True, source, pages)
-            later = by_round.get(str(finding.get("id")))
-            if (
-                later is not None
-                and later.status in ("answered", "still_open")
-                and later.spot is not None
-                and later.page is not None
-                and later.file in (None, source.name)
-                and 1 <= later.page <= pages
-            ):
-                marks.append(
-                    Mark(
-                        number,
-                        {**finding, _ROUND_KEY: later, "page": later.page},
-                        later.page,
-                        later.spot,
-                        "fixed" if later.status == "answered" else "confirm",
-                        True,
-                        str(later.now or ""),
-                        extra=True,
-                    )
-                )
         for number, finding, page, box, _where in clouded:
             vendor_box = finding.get("vendor_box")
             value = str(
@@ -1356,30 +1153,18 @@ def proof_markup_pdf(
     for finding in findings:
         groups.setdefault(proof_group(finding), []).append(finding)
     folded = [e for e in settled if e.get("outcome") in ("merged", "not_a_difference")]
-    notes: list[Any] = _confirm_entries(styles, confirm_items)
-    info = groups.get("info", [])
-    if info or gaps:
-        listed = _list_entries(styles, GROUP_WORDS["info"], info, _info_line, _LIST_GREY)
-        heading = f"{GROUP_WORDS['info']} ({len(info) + len(gaps)})"
-        notes.append(Paragraph(escape(heading), styles["section"]))
-        notes += listed[1:] if info else []
-        notes += [
-            Paragraph(
-                f"<b>p.{escape(str(gap.get('page') or ''))}</b>&nbsp;&nbsp;"
-                f"{escape(str(gap.get('what') or ''))}",
-                styles["grey"],
-            )
-            for gap in gaps
-        ]
-    notes += _list_entries(styles, "Right", groups.get("right", []), _right_line, GREEN)
-    if groups.get("not_compared"):
-        notes += _list_entries(
-            styles,
-            GROUP_WORDS["not_compared"],
-            groups["not_compared"],
-            lambda f: f"{f.get('vendor')}: not seen on both sides, so not counted as right.",
-            _LIST_GREY,
+    notes: list[Any] = []
+    nothing = cover_counts["not_compared"]
+    notes.append(
+        Paragraph(
+            escape(
+                f"Nothing to compare ({nothing}): listed with the reason and what would settle "
+                f'it in the separate list, "{set_name} - {NOT_COMPARED_TITLE}".'
+            ),
+            styles["grey"],
         )
+    )
+    notes += _list_entries(styles, "Right", groups.get("right", []), _right_line, GREEN)
     if groups.get("dismissed"):
         notes += _list_entries(
             styles, GROUP_WORDS["dismissed"], groups["dismissed"], _dismissed_line, _LIST_GREY
@@ -1396,9 +1181,8 @@ def proof_markup_pdf(
         )
         notes += [
             Paragraph(
-                f"<b>{escape(item.item)}</b>: was {escape(item.was)}"
-                + (f"; should be {escape(item.should_be)}" if item.should_be else "")
-                + f". Why: {escape(item.reason or '')}",
+                f"<b>{escape(item.item)}</b>: was {escape(item.was)}; should be "
+                f"{escape(item.should_be)}. Why: {escape(item.reason or '')}",
                 styles["grey"],
             )
             for item in unmatched
@@ -1419,7 +1203,7 @@ def proof_markup_pdf(
         styles,
         set_name=set_name,
         stamp=stamp,
-        counts=counts,
+        counts=cover_counts,
         clouded=proof_items,
         assumptions=assumptions,
         width=size[0],
@@ -1453,3 +1237,111 @@ def _shown_size_of(data: bytes) -> tuple[float, float]:
     """The first page's shown size (the cover, proof and notes pages take it)."""
     with pikepdf.open(io.BytesIO(data)) as pdf:
         return _shown_size(pdf.pages[0])
+
+
+# ---- the Not-compared list (#1619) ----------------------------------------------------------------
+
+#: The list's page: US letter, landscape (a table, not a drawing).
+_LIST_PAGE: Final = (792.0, 612.0)
+#: The small picture of each spot (points on the list's page).
+_SPOT_W: Final = 130.0
+_SPOT_H: Final = 80.0
+
+
+def not_compared_pdf(
+    source: Path,
+    rows: Sequence[Any],
+    out: Path,
+    *,
+    set_name: str,
+    stamp: str,
+    cache: Path | None = None,
+) -> int:
+    """The separate "Not compared" PDF of a full check (#1619), written to `out`: the rows of
+    `not_compared.rows` (every item that could not be compared under the architect-first rules),
+    grouped by reason, each with its page, item, what the vendor shows, why it could not be
+    compared, what is needed to compare it and a small picture of its spot (cut from the hi-res
+    cache when there is one). Nobody is asked to decide anything here. Returns how many rows it
+    lists (the workbook and the screen count the same rows)."""
+    from app.review.assistant.classification import REASON_WORDS, REASONS, TRADE_WORDS
+
+    styles = _styles()
+    body, small, grey = styles["body"], styles["small"], styles["grey"]
+    width, _height = _LIST_PAGE
+    usable = width - 72
+    sizes = _Sizes()
+    grouped: dict[str, list[list[Any]]] = {}
+    for row in rows:
+        picture: Any = Paragraph("", small)
+        if row.box is not None and row.page is not None and row.file in (None, source.name):
+            png = boxed_crop(source, row.page, row.box, _LIST_GREY, sizes, cache)
+            if png is not None:
+                picture = _image(png, _SPOT_W, _SPOT_H)
+        grouped.setdefault(row.reason, []).append(
+            [
+                Paragraph(escape("" if row.page is None else str(row.page)), body),
+                Paragraph(f"<b>{escape(row.item)}</b>", body),
+                Paragraph(escape(row.vendor), small),
+                Paragraph(escape(row.architect), small),
+                Paragraph(escape(row.why), small),
+                Paragraph(escape(row.needed), small),
+                picture,
+            ]
+        )
+    total = len(rows)
+    story: list[Any] = [
+        Paragraph(escape(f"{NOT_COMPARED_TITLE}: {set_name}"), styles["title"]),
+        Paragraph(escape(stamp), styles["stamp"]),
+        Paragraph(
+            escape(
+                f"{total} item{'' if total == 1 else 's'} could not be compared. The architect's "
+                "drawings govern; these items are not on the cloud drawing, and nobody is asked to "
+                "decide them: each row says why it could not be compared and what is needed."
+            ),
+            body,
+        ),
+        Spacer(1, 8),
+    ]
+    if not total:
+        story.append(Paragraph("Every item could be compared.", grey))
+    head = [
+        Paragraph(f"<b>{escape(words)}</b>", small)
+        for words in ("Page", "Item", "Vendor shows", "Architect shows", "Why not compared",
+                      "What is needed", "Spot")
+    ]  # fmt: skip
+    widths = [30, usable * 0.15, usable * 0.11, usable * 0.13, usable * 0.2, usable * 0.16]
+    widths.append(usable - sum(widths))
+    for reason in REASONS:
+        group = grouped.get(reason)
+        if not group:
+            continue
+        words = REASON_WORDS[reason]
+        story.append(
+            Paragraph(
+                escape(f"{TRADE_WORDS.get(reason, words)} ({len(group)})")
+                + f'<font size="9" color="{_hex(_LIST_GREY)}">&nbsp;&nbsp;{escape(words)}</font>',
+                styles["section"],
+            )
+        )
+        table = Table([head, *group], colWidths=widths, repeatRows=1, hAlign="LEFT")
+        table.setStyle(
+            TableStyle(
+                [
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LINEBELOW", (0, 0), (-1, -1), 0.25, Color(0.8, 0.8, 0.8)),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                ]
+            )
+        )
+        story.append(table)
+    made = _pages_pdf(_LIST_PAGE, [(NOT_COMPARED_TITLE, story)])[0]
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with pikepdf.open(io.BytesIO(made)) as document:
+        document.docinfo["/Title"] = pikepdf.String(f"{NOT_COMPARED_TITLE}: {set_name}")
+        document.save(out, deterministic_id=True)
+    return total
+
+
+def _clip(text: object, limit: int) -> str:
+    words = " ".join(str(text or "").split())
+    return words if len(words) <= limit else words[: limit - 1].rstrip() + "…"

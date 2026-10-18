@@ -347,7 +347,7 @@ def test_only_wrong_items_are_clouded_and_decisions_get_a_numbered_marker(tmp_pa
         _amber(picture, (check_box[2] + 2, check_box[1] - 2, check_box[2] + 14, check_box[3] + 2))
         > 5
     )
-    assert "Your decision: Bay sizes" in PdfReader(str(clouded)).pages[0].extract_text()
+    assert "Not compared: Bay sizes" in PdfReader(str(clouded)).pages[0].extract_text()
 
 
 def test_the_remade_drawing_clouds_agreed_items_and_leaves_ai_only_ones_grey(
@@ -385,7 +385,9 @@ def test_the_remade_drawing_clouds_agreed_items_and_leaves_ai_only_ones_grey(
     )
     words = "".join(page.extract_text() for page in PdfReader(str(out)).pages)
     assert "Agreed by Reviewer One" in words
-    assert "Vendor to confirm (1)" in words and "check before sending" not in words
+    # #1619: what code could not prove is not on the drawing: the separate Not-compared list.
+    assert "Nothing to compare (1)" in " ".join(words.split()) and "Bay sizes" not in words
+    assert "check before sending" not in words
 
 
 # ---- a clean copy --------------------------------------------------------------------------------
@@ -454,7 +456,7 @@ def test_the_notes_pages_group_items_by_page_with_counts_legend_and_pictures(
     reader = PdfReader(str(out))
     notes = "".join(page.extract_text() for page in reader.pages[2:])
     counts = (
-        "4 items: 2 wrong (red clouds), 1 your decision (amber numbers, not clouded), "
+        "4 items: 2 wrong (red clouds), 1 not compared (amber numbers, not clouded), "
         "1 right (listed, not marked)."
     )
     assert counts in " ".join(notes.split())
@@ -473,7 +475,7 @@ def test_the_notes_pages_group_items_by_page_with_counts_legend_and_pictures(
     elsewhere = notes.index("Not on the drawing (1)")
     assert elsewhere < notes.index("Backsplash height", on_drawing)
     assert notes.index("Right (not marked) (1)") < notes.index("Sink centre")
-    assert "Your decision, AI reading only" in notes and 'Needs: 37"' in notes
+    assert "Not compared, AI reading only" in notes and 'Needs: 37"' in notes
     assert "Check" not in notes
     # A small picture of each drawn spot, none for the others.
     with pikepdf.open(out) as opened:
@@ -492,7 +494,7 @@ def test_the_words_match_the_vocabulary() -> None:
     chain = note_text(1, _finding(architect="1'-0\", 1'-6\" wall to wall", inches={}))
     assert chain == 'Outlet height: vendor 46"; architect 1\'-0", 1\'-6" wall to wall'
     decision = note_text(2, _finding(status="check", trust_level="to_check"))
-    assert decision.startswith("Your decision: Outlet height") and "Check" not in decision
+    assert decision.startswith("Not compared: Outlet height") and "Check" not in decision
     # An AI "different" that no independent check confirmed is still Wrong (the screen's count);
     # its note ends with the grey trust words.
     unconfirmed = _finding(trust_level="to_check")
@@ -543,6 +545,6 @@ def test_every_wrong_status_is_a_red_cloud_with_its_trust_words(tmp_path: Path) 
     notes = " ".join("".join(p.extract_text() for p in reader.pages[1:]).split())
     assert (
         "4 items: 3 wrong (red clouds; 1 AI reading only, 1 Likely), "
-        "1 your decision (amber numbers, not clouded), 0 right (listed, not marked)."
+        "1 not compared (amber numbers, not clouded), 0 right (listed, not marked)."
     ) in notes
     assert "On the drawing (3)" in notes

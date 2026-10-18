@@ -1,7 +1,7 @@
 """Clear words and re-scored badges in the chat's code-made outputs (#1513, $0).
 
-- The trust level `to_check` reads "AI reading only" and the status `check` "Needs your decision"
-  ("Your decision" for short), so the two never share the words "To check": in the accuracy
+- The trust level `to_check` reads "AI reading only" and the status `check` "Not compared"
+  (#1619), so the two never share the words "To check": in the accuracy
   click-through, the CSV, the cloud drawing's notes and legend, and the check report.
 - An answer stored before a recalibration is scored again from its stored findings with today's
   points table, nothing written, and marked `rescored` only when the number moved.
@@ -65,10 +65,10 @@ def test_trust_and_status_have_their_own_words() -> None:
     }
     assert STATUS_WORDS == {
         "different": "Wrong",
-        "check": "Needs your decision",
+        "check": "Not compared",
         "same": "Right",
     }
-    assert CLOUD_WORDS == {"wrong": "Wrong", "check": "Your decision", None: "Right"}
+    assert CLOUD_WORDS == {"wrong": "Wrong", "check": "Not compared", None: "Right"}
     every = [*TRUST_WORDS.values(), *STATUS_WORDS.values(), *CLOUD_WORDS.values()]
     assert not any("to check" in words.casefold() for words in every)
 
@@ -96,7 +96,8 @@ def test_the_csv_says_the_words_people_read() -> None:
     )
     header, first, second = rows
     values = dict(zip(header, first, strict=True))
-    assert values["Status"] == "Needs your decision" and values["Trust"] == "AI reading only"
+    # #1619: the Status is where the cloud drawing puts it: nothing to compare here.
+    assert values["Status"] == "Not compared" and values["Trust"] == "AI reading only"
     values = dict(zip(header, second, strict=True))
     assert values["Status"] == "Right" and values["Trust"] == ""
 

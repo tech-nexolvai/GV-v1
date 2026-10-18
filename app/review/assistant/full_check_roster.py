@@ -25,7 +25,7 @@ checkers decide what may be red:
   first, with only the money left under the fixed price: the free code steps first
   (`escalation`: code's labels, its pairs), then a sharper verifier pass (tight crops from the
   hi-res cache) for an item no code witness backs, and the devil's advocate for one code now reads
-  on both sides. What stays undecided is asked of the vendor (amber), never clouded.
+  on both sides. What stays open is Not compared, with its reason, never clouded.
 - **P5.** Code's finish (the reading ledger, the resolver, the free escalation steps on every
   undecided item, the trust report, the files), then the **summary writer**: code's 5-6 lines,
   reworded by Haiku only when every number survives.
@@ -1148,7 +1148,8 @@ class _Run:
         left under the fixed price: the free code steps first (code's labels and pairs, $0), then
         a sharper verifier pass for the items no code witness backs, and the devil's advocate on
         each item code now reads on both sides that it has not judged. Nothing is repeated: an
-        item gets its look once. What the money does not reach stays amber, and is said so."""
+        item gets its look once. What the money does not reach stays Not compared, and is said
+        so."""
         engine = self.engine
         from app.review.assistant.escalation import escalate_answer
 
@@ -1160,7 +1161,7 @@ class _Run:
         if not waiting:
             return
         if self._left() <= 0:
-            self._note(f"the escalation's deeper look: {len(waiting)} items stay to confirm")
+            self._note(f"the escalation's deeper look: {len(waiting)} items stay not compared")
             return
         unread = [f for f in waiting if not self._read_by_code(f)]
         if unread and not engine.cancel.is_set():
@@ -1174,7 +1175,9 @@ class _Run:
                 if not self._read_by_code(finding) or _judged(finding):
                     continue
                 if self._left() <= 0:
-                    self._note("the escalation's deeper look: the fixed price ran out (amber)")
+                    self._note(
+                        "the escalation's deeper look: the fixed price ran out (not compared)"
+                    )
                     break
                 self.escalated.add(str(finding["id"]))
                 verdict = self._judge(finding, page_map, _annotations(engine))
@@ -1184,13 +1187,14 @@ class _Run:
             self.pick_phase = "advocate"
 
     def _unproved(self) -> list[dict[str, Any]]:
-        """The Wrongs still not proved (amber today), the biggest first, not looked at again yet."""
+        """The Wrongs still not proved (Not compared today), the biggest first, not looked at again
+        yet."""
         live = [judged(f) for f in self.engine.book.live()]
         return [
             dict(f)
             for f in by_impact(live)
             if f.get("status") == "different"
-            and proof_rule.proof_group(f) == "vendor_confirm"
+            and proof_rule.proof_group(f) == "not_compared"
             and str(f["id"]) not in self.escalated
         ]
 
@@ -1253,7 +1257,7 @@ class _Run:
         for agent, entry, ids in zip(agents, entries, asked, strict=True):
             done = apply_proofs(engine, str(entry.get("report") or ""), ids)
             if entry.get("stopped") == "cost_cap":
-                self._note(f"{agent.description}: stopped at its cap (the rest stay to confirm)")
+                self._note(f"{agent.description}: stopped at its cap (the rest stay not compared)")
             engine._queue_second_reads(
                 [f for f in engine.book.live() if f["id"] in done and f.get("status") != "same"]
             )
@@ -1291,6 +1295,8 @@ class _Run:
             budget_usd=cap_text(settings.package_cap_micros),
             turns=settings.lead_max_turns,
             files=files,
+            # The Not-compared list's own rows (its product scope), when its files were made.
+            reasons=[row.reason for row in engine.not_compared] or None,
         )
         # Code's summary is the roster's own, not a fallback: its "AI did not finish" note goes.
         text = "\n".join(

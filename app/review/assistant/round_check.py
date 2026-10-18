@@ -27,12 +27,12 @@ that round 1 did not have. Code decides each status from the printed values, nev
 4. **New**: a round-2 item code proved wrong is **new** when round 1 printed a different value at
    the same place (or none); when round 1 printed the same value it was already wrong there
    (`also_in_round_1`).
-5. **The questions (#1619)**: each round-1 item the vendor was asked to confirm (amber, `proof`)
-   is **answered** when round 2 now prints what it should be (the architect's value, GV's
-   limits, code's sum), or prints a size where round 1 printed none at that spot (the vendor added
-   the missing information); **still_open** when round 2 prints the same value, or still prints
-   nothing there; else not compared (grey): round 2 changed it to a value code cannot judge, or
-   the fit was refused, as above.
+5. **What round 1 could not compare (#1619)** is re-checked: a round-1 Not-compared item is
+   **now_right** when round 2 now prints what it should be (the architect's value, GV's limits,
+   code's sum), or prints a size where round 1 printed none at that spot (the vendor added the
+   missing information); **still_not_compared** when round 2 prints the same value, or still
+   prints nothing there; else not compared (grey): round 2 changed it to a value code cannot
+   judge, or the fit was refused, as above.
 
 Both values are printed text read by code at their spots and the fit is code's arithmetic, so a
 Fixed or Still wrong status is code-proved (the same witness rule as the clouds, #1581). Pure code
@@ -69,7 +69,13 @@ __all__ = [
 
 type Box = tuple[float, float, float, float]
 type Status = Literal[
-    "fixed", "still_wrong", "new", "also_in_round_1", "answered", "still_open", "not_compared"
+    "fixed",
+    "still_wrong",
+    "new",
+    "also_in_round_1",
+    "now_right",
+    "still_not_compared",
+    "not_compared",
 ]
 #: Zones of changed ink for (round-1 page, its box, round-2 page, its box): each zone's round-1
 #: box, or `None` when the ink could not be lined up (`revision_diff.diff_pages`).
@@ -164,7 +170,14 @@ class RoundReport:
         found = Counter(item.status for item in self.items)
         return {
             key: found.get(key, 0)
-            for key in ("fixed", "still_wrong", "new", "answered", "still_open", "not_compared")
+            for key in (
+                "fixed",
+                "still_wrong",
+                "new",
+                "now_right",
+                "still_not_compared",
+                "not_compared",
+            )
         }
 
     def line(self) -> str | None:
@@ -176,10 +189,10 @@ class RoundReport:
             f"Round 2: {counts['fixed']} fixed, {counts['still_wrong']} still wrong, "
             f"{counts['new']} new"
         )
-        if counts["answered"] or counts["still_open"]:
+        if counts["now_right"] or counts["still_not_compared"]:
             line += (
-                f"; of the questions, {counts['answered']} answered, {counts['still_open']} "
-                "still open"
+                f"; of what round 1 could not compare, {counts['now_right']} now right, "
+                f"{counts['still_not_compared']} still not compared"
             )
         if counts["not_compared"]:
             line += f"; {counts['not_compared']} could not be compared by code"
@@ -497,8 +510,8 @@ def round_two(
     main_file = next((str(d.file) for drawings in by_area.values() for d in drawings), None)
     drawings_all = [d for ds in by_area.values() for d in ds]
     for finding in findings:
-        # The questions the vendor was asked in round 1: answered or still open in round 2.
-        if proof_group(finding) != "vendor_confirm":
+        # What round 1 could not compare: re-checked on round 2.
+        if proof_group(finding) != "not_compared" or finding.get("status") == "same":
             continue
         where = _vendor_box(finding)
         if where is None:
@@ -508,7 +521,7 @@ def round_two(
             continue
         following = best_next(drawing)
         if following[0] is not None:
-            report.items.append(_round_one_question(finding, drawing, following, labels, zones))
+            report.items.append(_round_one_recheck(finding, drawing, following, labels, zones))
 
     for finding in live:
         where = _vendor_box(finding)
@@ -584,14 +597,15 @@ def _round_two_item(
     )
 
 
-def _round_one_question(
+def _round_one_recheck(
     finding: Mapping[str, Any],
     drawing: _Drawing,
     found: tuple[_Drawing | None, Fit | None, str | None],
     labels: Mapping[tuple[str, int], list[Label]],
     zones: InkZones | None,
 ) -> RoundItem:
-    """A round-1 question to the vendor (amber, #1619): answered, still open, or not compared."""
+    """A round-1 item that could not be compared (#1619), re-checked: now right, still not
+    compared, or not compared (grey)."""
     finding_id, item = str(finding.get("id")), str(finding.get("item") or "")
     governs = _governs(finding)
     should = "" if governs is None else should_be_value(finding)
@@ -640,9 +654,9 @@ def _round_one_question(
         added = [lab for lab in later if _inside(lab.centre, spot, _BOX_SLACK_PT)]
         if len(added) == 1:
             now = _words(added[0].inches, added[0].text)
-            return item_of("answered", now, second.page, added[0].box, second.file)
+            return item_of("now_right", now, second.page, added[0].box, second.file)
         if not added:
-            return item_of("still_open", None, second.page, None, None)
+            return item_of("still_not_compared", None, second.page, None, None)
         return item_of(
             "not_compared",
             None,
@@ -673,16 +687,16 @@ def _round_one_question(
             "the drawing's ink and its printed value disagree at this spot",
         )
     if _right(after.inches, governs) is True and changed:
-        return item_of("answered", now, second.page, after.box, second.file)
+        return item_of("now_right", now, second.page, after.box, second.file)
     if not changed:
-        return item_of("still_open", now, second.page, after.box, second.file)
+        return item_of("still_not_compared", now, second.page, after.box, second.file)
     return item_of(
         "not_compared",
         now,
         second.page,
         None,
         None,
-        f"round 2 changed it to {now}; code cannot tell whether that answers the question",
+        f"round 2 changed it to {now}; code does not know the value it should be",
     )
 
 

@@ -126,7 +126,9 @@ def test_no_tool_is_offered_twice_and_the_lead_has_every_helper_tool() -> None:
 #: The words and tools the prompts no longer use, with what replaced them.
 RETIRED: dict[str, str] = {
     r"\bTo check\b": "the trust level is 'AI reading only'",
-    r"\bNeeds checking\b": "the status is 'Your decision'",
+    r"\bNeeds checking\b": "the status is 'Not compared'",
+    # #1619: nothing goes to the reviewer's decision; the architect's drawings govern.
+    r"\b[Yy]our decision\b|\bVendor to confirm\b|check before sending": "Not compared",
     r"Download marked-up PDF": "the cloud drawing (made by code)",
     r"\bdelegate\b": "the Agent tool",
     r"`plan`|`bash`": "TaskCreate / bash_tool",
@@ -169,11 +171,11 @@ def test_no_prompt_uses_a_retired_word_or_tool(pattern: str) -> None:
 def test_the_prompts_use_the_reviewers_words() -> None:
     for where in ("lead system prompt", "SKILL.md"):
         text = _prompts()[where]
-        for words in ("Wrong", "Your decision", "Right", "Not compared", "AI reading only"):
+        for words in ("Wrong", "Right", "Not compared", "AI reading only"):
             assert words in text, (where, words)
     findings = next(tool for tool in LEAD_TOOLS if tool["name"] == "report_finding")
     status = findings["input_schema"]["properties"]["status"]["description"]
-    for words in ("different = Wrong", "check = Your", "same = Right"):
+    for words in ("different = Wrong", "check = Not compared", "same = Right"):
         assert words in status
 
 
