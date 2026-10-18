@@ -508,8 +508,31 @@ def test_a_countertop_only_check_keeps_no_cabinet_item_anywhere(postgres_engine,
             f"/api/v1/chats/{chat_id}/messages/{message['id']}/findings.csv"
         ).text
         assert "Vanity top length" in csv_text and "cabinet" not in csv_text.lower()
+        documents: list[bytes] = []
         for file in message["files"]:
-            pdf = PdfReader(io.BytesIO(world.client.get(file["url"]).content))
+            data = world.client.get(file["url"]).content
+            if file["mime"] != "application/zip":
+                documents.append(data)
+                continue
+            # The send-ready package (#1622) keeps the scope too: its letter and register.
+            with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                for name in archive.namelist():
+                    inside = archive.read(name)
+                    if name.endswith(".pdf"):
+                        documents.append(inside)
+                    elif name.endswith(".xlsx"):
+                        book = pytest.importorskip("openpyxl").load_workbook(io.BytesIO(inside))
+                        cells = " ".join(
+                            str(value)
+                            for sheet in book.worksheets
+                            for row in sheet.iter_rows(values_only=True)
+                            for value in row
+                            if value
+                        )
+                        assert "Vanity top length" in cells
+                        assert "Sink base cabinet" not in cells
+        for data in documents:
+            pdf = PdfReader(io.BytesIO(data))
             assert "Sink base cabinet" not in " ".join(page.extract_text() for page in pdf.pages)
 
 

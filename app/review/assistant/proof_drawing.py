@@ -738,7 +738,7 @@ def _cover(
         usable = width - 72
         table = Table(
             [head, *rows],
-            colWidths=[24, 36, usable * 0.34, usable * 0.22, usable * 0.44 - 60],
+            colWidths=[34, 32, usable * 0.34, usable * 0.22, usable * 0.44 - 66],
             repeatRows=1,
             hAlign="LEFT",
         )
