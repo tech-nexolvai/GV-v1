@@ -265,13 +265,13 @@ def test_a_candidate_is_never_red_without_the_blind_look() -> None:
 @pytest.mark.parametrize(
     ("answer", "words"),
     [
-        (dict(pick="p1.D3"), "chose p1.D3, not p1.D1"),
-        (dict(pick=None), "chose no architect dimension"),
-        (dict(verdict="different_points"), "measure different points"),
-        (dict(verdict="unsure"), "not sure"),
-        (dict(vendor_ink_black="no"), "in colour"),
-        (dict(vendor_to="underside of counter", architect_to="top of counter"), "different"),
-        (dict(vendor_to="ceiling"), "room context"),
+        ({"pick": "p1.D3"}, "chose p1.D3, not p1.D1"),
+        ({"pick": None}, "chose no architect dimension"),
+        ({"verdict": "different_points"}, "measure different points"),
+        ({"verdict": "unsure"}, "not sure"),
+        ({"vendor_ink_black": "no"}, "in colour"),
+        ({"vendor_to": "underside of counter", "architect_to": "top of counter"}, "different"),
+        ({"vendor_to": "ceiling"}, "room context"),
     ],
 )
 def test_a_blind_look_that_disagrees_keeps_the_pair_grey(
