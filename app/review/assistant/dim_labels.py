@@ -51,6 +51,15 @@ ends at its ticks (a centre line's dash or a letter's stroke does not cut it), a
 a span narrower than itself (a `3/4"` of a chain) takes that span, and one line has one label (the
 one centred on it). A label read this way is the drawn-ink witness, never more (#756 D2).
 
+**An architect's hand lettering** (#1662): on the architect's drawings the drawn route reads
+dimensions lettered on one line in a CAD hand-lettering font (`2'-6 1/2"`, `3'-10"`, `5 3/8"`),
+found on the vectors by `hand_labels` (characters, rows, each character's role, a dimension's
+shape, the digits' layout). Both engines must read the same value from the row's picture, every
+reading laid out by the vectors (a digit the vectors know, a bare-stroke `1` or a slashed zero,
+read otherwise counts for nothing; so does a `1` where the vectors show a hand-lettered `7`). The
+label needs room round it and a dimension line of its own running the way it reads. The vendor's
+drawings keep the route above.
+
 **Ids are stable:** text labels are numbered in reading order (top to bottom, left to right), then
 drawn labels after them, so a drawn label found or not never moves a text label's id.
 
@@ -80,7 +89,7 @@ import numpy as np
 import pdfplumber
 from PIL import Image, ImageDraw, ImageFont
 
-from app.review.assistant import ink_labels
+from app.review.assistant import hand_labels, ink_labels
 from app.review.assistant import verify_value as vv
 from app.review.assistant.finding_checks import to_inches, units_check
 from app.review.assistant.measure import _pieces
@@ -1925,9 +1934,106 @@ def _add_drawn(
                     drawn.append((found_label, part))
         if result.drawn == "partial" or len(labels) + len(drawn) >= MAX_LABELS:
             break
+    if result.drawn != "partial":
+        _add_lettered(result, parsed, halves, engines, budget_s - (clock() - started), clock, drawn)
     settled = _settle_lines(parsed, drawn, labels)
     settled.sort(key=lambda label: (round(label["box"][1] / 4), label["box"][0]))
     labels += settled
+
+
+def _lettered_value(item: hand_labels.Lettered, engines: Sequence[Any]) -> Decimal | None:
+    """The one value two engines read a hand-lettered dimension as, or `None`: each row picture
+    (`hand_labels.tokens`, at two sizes) read by each engine, every reading laid out by the vectors
+    (`hand_labels.value`; a reading the vectors refuse counts for nothing). Both engines must give
+    a value, and every value given must be the same."""
+    found: dict[str, set[Decimal]] = {}
+    row = hand_labels.tokens(item)
+    for reader in engines:
+        mark = getattr(reader, "reads_inch_marks", True)
+        for height in ink_labels.HEIGHTS_PX:
+            picture = ink_labels.row_picture(row, item.turn, height, inch_mark=mark)
+            if picture is None:
+                continue
+            line = " ".join(reader(picture, single_line=True)).strip()
+            got = hand_labels.value(item, line)
+            if got is not None:
+                found.setdefault(reader.name, set()).add(got)
+    every = {value for values in found.values() for value in values}
+    if len(found) < 2 or len(every) != 1:
+        return None
+    return every.pop()
+
+
+def _lettered_label(
+    parsed: _Parsed, item: hand_labels.Lettered, engines: Sequence[Any]
+) -> tuple[dict[str, Any], _Part] | None:
+    """One hand-lettered dimension as a label, or `None`: room round it (`_crowded`), a dimension
+    line of its own running the way it reads (`_line_of`), and one value two engines read
+    (`_lettered_value`)."""
+    part = _Part(item.label, turn=item.turn)
+    if _crowded(parsed.page, item.label, (), item.turn):
+        return None
+    line = _line_of(parsed, part)
+    if line is None or line[1] != ("h" if item.turn == 0 else "v"):
+        return None
+    found, orientation = line
+    try:
+        value = _lettered_value(item, engines)
+    except Exception as failed:  # noqa: BLE001 - an unread label is left out
+        _log.warning("dimension labels: lettered read failed: %s", type(failed).__name__)
+        return None
+    if value is None:
+        return None
+    box = item.label.box
+    reading = _Reading(
+        text=hand_labels.text_of(item, value),
+        inches=value,
+        box=box,
+        along=(1.0, 0.0) if orientation == "h" else (0.0, 1.0),
+        font=min(box[2] - box[0], box[3] - box[1]),
+        bare=False,
+        route="drawn",
+    )
+    return _label(reading, found, "architect"), part
+
+
+def _add_lettered(
+    result: PageLabels,
+    parsed: _Parsed,
+    halves: Sequence[Mapping[str, Any]],
+    engines: Sequence[Any],
+    budget_s: float,
+    clock: Callable[[], float],
+    drawn: list[tuple[dict[str, Any], _Part]],
+) -> None:
+    """The architect's hand-lettered dimensions (`hand_labels`: feet and inches, inline
+    fractions), on the architect's drawings only, within what is left of the time budget."""
+    started = clock()
+    skip = [tuple(label["box"]) for label in result.labels]
+    paths = [
+        path
+        for path in parsed.page.paths
+        if _side(path.box, halves) == "architect"
+        and not any(_overlap(path.box, box) > 0.5 for box in skip)
+    ]
+    if not paths:
+        return
+    try:
+        found_items = hand_labels.lettered(paths)
+    except Exception as failed:  # noqa: BLE001 - the page keeps every other label
+        _log.warning("dimension labels: lettering search failed: %s", type(failed).__name__)
+        return
+    for item in found_items:
+        if len(result.labels) + len(drawn) >= MAX_LABELS:
+            break
+        if clock() - started > budget_s:
+            result.drawn = "partial"
+            break
+        if _side(item.label.box, halves) != "architect":
+            continue
+        found = _lettered_label(parsed, item, engines)
+        if found is not None:
+            drawn.append(found)
 
 
 def build_dims(

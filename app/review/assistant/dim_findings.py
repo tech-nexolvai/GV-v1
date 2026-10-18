@@ -172,7 +172,9 @@ def label_checks(finding: Mapping[str, Any], checks: Mapping[str, Any]) -> dict[
             continue
         route = "drawn" if label.get("route") == "drawn" else "text"
         how = (
-            "the vendor's drawn ink (two OCR engines)" if route == "drawn" else "the drawing's text"
+            f"the {side}'s drawn ink (two OCR engines)"
+            if route == "drawn"
+            else "the drawing's text"
         )
         out[key] = {
             "result": "match",
