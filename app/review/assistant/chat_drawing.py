@@ -50,6 +50,7 @@ from reportlab.platypus import (  # type: ignore[import-untyped]
     TableStyle,
 )
 
+from app.review.assistant import proof
 from app.review.assistant.chat_findings import decision_help_lines
 from app.review.assistant.chat_trust import (
     CLOUD_WORDS,
@@ -1109,7 +1110,7 @@ def markup_pdf(
 
 # ---- the check report ----------------------------------------------------------------------------
 
-REPORT_TITLE: Final = "AI check report: draft, not GV's signed review"
+REPORT_TITLE: Final = "Check report: checked automatically by GV Review"
 #: Under What's wrong (#1569): how the list is ordered, in plain words.
 IMPACT_NOTE: Final = (
     "checked items before AI readings only, then what changes fabrication (overall sizes, "
@@ -1172,10 +1173,27 @@ def check_report_pdf(
     def group(f: Mapping[str, Any]) -> str:
         return known.category_label(str(f.get("category") or ""))
 
+    def proof_cell(f: Mapping[str, Any]) -> str:
+        """The item's place on the zero-click drawing (#1581), and the check that proved it."""
+        found = proof.proof_of(f)
+        words = proof.GROUP_WORDS[found["group"]]
+        detail = found["proof"] or found["reason"]
+        return f"{words}: {detail}" if detail else words
+
     def by_product(chosen: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
         last = len(rank) - 1  # an unknown category sorts with "other"
         return sorted(chosen, key=lambda f: rank.get(str(f.get("category") or ""), last))
 
+    groups = proof.proof_counts(findings)
+    summary = {
+        **summary,
+        "Cloud drawing": (
+            f"{groups['clouded']} wrong clouded (proved by code), {groups['not_verified']} not "
+            f"verified by code, {groups['could_not_compare']} could not be compared, "
+            f"{groups['right']} right"
+        ),
+        "The rule": proof.RULE_LINE,
+    }
     story: list[Any] = [Paragraph(escape(REPORT_TITLE), styles["Title"])]
     for label, value in summary.items():
         story.append(Paragraph(f"<b>{escape(str(label))}:</b> {escape(str(value))}", body))
@@ -1204,7 +1222,7 @@ def check_report_pdf(
     sections: list[tuple[str, list[str], list[list[Any]], list[int]]] = [
         (
             f"What's wrong ({len(wrong)})",
-            ["AI", "Product", "Page", "Item", "Vendor", "Needs", "Architect", "Source", "Trust"],
+            ["AI", "Product", "Page", "Item", "Vendor", "Should be", "Proof", "Trust"],
             [
                 [
                     number[id(f)],
@@ -1212,14 +1230,13 @@ def check_report_pdf(
                     f.get("page"),
                     f.get("item"),
                     f.get("vendor"),
-                    needs_text(f),
-                    f.get("architect"),
-                    f.get("source"),
+                    proof.should_be(f),
+                    proof_cell(f),
                     TRUST_WORDS.get(str(f.get("trust_level")), ""),
                 ]
                 for f in wrong
             ],
-            [26, 70, 34, 150, 80, 70, 80, 70, 60],
+            [24, 58, 30, 128, 92, 132, 196, 56],
         ),
         (
             f"Your decision ({len(check)})",

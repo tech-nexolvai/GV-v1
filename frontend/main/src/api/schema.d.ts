@@ -129,10 +129,10 @@ export interface paths {
         put?: never;
         /**
          * The cloud drawing (and check report) made again from the reviewer's decisions
-         * @description Red clouds only at the findings the reviewer agreed with ("✗ Vendor: X — Needs: Y
-         *     (architect Z)"); not-yet-decided, not-a-problem and right items listed on the notes page and in
-         *     the report, never clouded; "Reviewed by <name>" once every item needing a decision was decided,
-         *     else the draft stamp. A new cloud drawing and check report each time (older files are kept);
+         * @description The zero-click cloud drawing made again with the reviewer's decisions as overrides (#1581):
+         *     red clouds at the Wrong items code proved and at every agreed item, none at an item marked not
+         *     a problem; the rest listed in grey; stamped "Checked automatically by GV Review: <date>, and
+         *     reviewed by <name>". A new cloud drawing and check report each time (older files are kept);
          *     returns the cloud drawing.
          */
         post: operations["cloud_drawing_api_v1_chats__chat_id__messages__message_id__cloud_drawing_post"];
@@ -4934,6 +4934,8 @@ export interface components {
             parts_sum?: string | null;
             /** Printed Total */
             printed_total?: string | null;
+            /** @description Where the zero-click cloud drawing puts it, and why (#1581); worked out on read, so it follows the reviewer's latest decision. */
+            proof?: components["schemas"]["ChatFindingProofOut"] | null;
             /**
              * Question
              * @description Status check: the one question a person answers, written by code (#1554).
@@ -4999,6 +5001,35 @@ export interface components {
              * @description The non-AI witnesses behind it: printed, rule, arithmetic, ledger, units.
              */
             witnesses?: string[] | null;
+        };
+        /**
+         * ChatFindingProofOut
+         * @description Where the zero-click cloud drawing puts a finding (#1581), worked out by code on read
+         *     (`proof.proof_of`): only Wrong items code proved are clouded; the reviewer's Agree / Not a
+         *     problem override.
+         */
+        ChatFindingProofOut: {
+            /**
+             * Group
+             * @description clouded: Wrong, proved by code (red cloud); not_verified: Wrong that only AI readings back (grey, check before sending); could_not_compare: Your decision (grey, with the reason); right; not_compared; dismissed: the reviewer marked it not a problem.
+             * @enum {string}
+             */
+            group: "clouded" | "not_verified" | "could_not_compare" | "right" | "not_compared" | "dismissed";
+            /**
+             * Proof
+             * @description Clouded items: the check that proved it, in plain words.
+             */
+            proof?: string | null;
+            /**
+             * Reason
+             * @description The other groups: why it is not clouded, in one line.
+             */
+            reason?: string | null;
+            /**
+             * Should Be
+             * @description Wrong items: what the value should be and what governs it, e.g. '37" (architect 3'-1", page 28)'.
+             */
+            should_be?: string | null;
         };
         /**
          * ChatFindingReadOut

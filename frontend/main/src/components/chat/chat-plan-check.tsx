@@ -93,9 +93,9 @@ export function PlanCheck({ state, picked, onPick }: PlanCheckProps) {
           ))}
         </ul>
       )}
-      {plan.more > 0 && (
-        <p className="text-xs text-muted-foreground">
-          {plan.more} more {plan.more === 1 ? 'place' : 'places'} the page map is unsure of will be compared as read.
+      {plan.doubts.length > 0 && (
+        <p data-slot="chat-plan-optional" className="text-xs text-muted-foreground">
+          Optional: skip these and GV Review takes the first answer itself{plan.more > 0 ? `, here and in ${plan.more} more ${plan.more === 1 ? 'place' : 'places'}` : ''}, and notes each one on the cloud drawing.
         </p>
       )}
     </div>

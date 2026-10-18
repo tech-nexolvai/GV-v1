@@ -112,7 +112,7 @@ from app.review.assistant.chat_findings import (
     decision_help_note,
     helpless_decisions,
     main_upload,
-    make_markup_file,
+    make_proof_file,
     make_report_file,
     markup_base,
     page_ranges,
@@ -2461,9 +2461,8 @@ class ChatEngine:
                     base = made_base.result()
                 except Exception as failed:  # noqa: BLE001 - the copy is made again below
                     _log.warning("assistant chat markup copy failed: %s", type(failed).__name__)
-            return make_markup_file(
-                workspace, findings, out, "AI cloud drawing", base, settled=settled
-            )
+            # The zero-click red/green proof drawing (#1581): only code-proved Wrongs clouded.
+            return make_proof_file(workspace, findings, out, base, settled=settled)
 
         def checked(out: Path) -> MarkupFile:
             return make_report_file(workspace, summary, findings, not_checked, out, settled=settled)
@@ -2944,7 +2943,10 @@ class ChatEngine:
         try:
             warm = warm_pool.submit(self._prewarm) if workspace.set_pack is not None else None
             with self.timings.phase("set_pack"):
-                page_map = wait_for_page_map(workspace.set_pack, self.cancel)
+                # No human step (#1581): code's likely answer to any plan-check question left.
+                page_map = wait_for_page_map(
+                    workspace.set_pack, self.cancel, assume=True, main_file=self.book.main_file
+                )
             with self.timings.phase("planning"):
                 plan = plan_jobs(page_map, self.book.main_file, self._max_agents)
                 rules = self._rules_summary() if plan is not None else ""

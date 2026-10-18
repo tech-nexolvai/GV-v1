@@ -50,6 +50,7 @@ from app.review.assistant.chat_findings import (
     UPDATE_FINDING,
     main_upload,
     page_ranges,
+    read_listing,
 )
 from app.review.assistant.chat_memory import (
     MAX_AI_NOTES_PER_MESSAGE,
@@ -60,7 +61,7 @@ from app.review.assistant.chat_memory import (
 from app.review.assistant.dim_index import label_lines, labels_for
 from app.review.assistant.internal_refs import without_ticket_refs
 from app.review.assistant.ledger import LEDGER_TOOLS
-from app.review.assistant.plan_check import apply_answers, read_answers
+from app.review.assistant.plan_check import read_answers, with_assumptions
 from app.review.assistant.sandbox import (
     MAX_FOLDER_BYTES,
     OUTPUTS,
@@ -1809,8 +1810,12 @@ def helper_footer(
     if pages:
         try:
             page_map = json.loads((folder / "page_map.json").read_text(encoding="utf-8"))
-            # The reviewer's plan-check answers laid over it, as the plan and brief see it (#1569).
-            page_map = apply_answers(page_map, read_answers(folder))
+            # The reviewer's plan-check answers laid over it, as the plan and brief see it (#1569),
+            # and code's likely answer to any question left (#1581: nobody has to answer).
+            main = main_upload(read_listing(workspace))
+            page_map = with_assumptions(
+                page_map, None if main is None else str(main["name"]), read_answers(folder)
+            )
             wanted = set(pages)
             entries = [
                 e

@@ -21,9 +21,10 @@ anything else is a 404 that says nothing. The routes, under `/api/v1`:
 - `POST /chats/{chat_id}/messages/{message_id}/findings/{finding_id}/decision` (#1521): the
   reviewer's ✓ Agree / ✗ Not a problem, kept append-only; the latest per finding counts and comes
   back on the finding (`decision`) in `GET /chats/{chat_id}` and the follow feed.
-- `POST /chats/{chat_id}/messages/{message_id}/cloud-drawing` (#1521): the cloud drawing and the
-  check report made again by code from the current decisions (only agreed items clouded); a new
-  pair of files each time, the older ones kept.
+- `POST /chats/{chat_id}/messages/{message_id}/cloud-drawing` (#1521, #1581): the cloud drawing
+  and the check report made again by code with the current decisions as overrides (an agreed item
+  is clouded, one marked not a problem is not; nobody has to decide); a new pair of files each
+  time, the older ones kept.
 - `GET  /packages/{package_id}/full-check-plan` (#1569): before a paid full check, code's plan in
   one line and 0-3 questions where it is unsure of the page map (whose drawing, which round, which
   architect page); the answers go with the full check (`plan_answers`). `$0`: no AI call. `GET
@@ -102,6 +103,7 @@ from app.review.assistant.chat_decisions import (
     latest_decisions,
     make_decided_files,
     record_decision,
+    resolver_settled,
 )
 from app.review.assistant.chat_engine import cost_text
 from app.review.assistant.chat_feed import MessageFeed
@@ -911,10 +913,10 @@ def cloud_drawing(
     session: Annotated[Session, Depends(get_session)],
     registry: Annotated[ChatRegistry, Depends(chat_registry)],
 ) -> ChatFileOut:
-    """Red clouds only at the findings the reviewer agreed with ("✗ Vendor: X — Needs: Y
-    (architect Z)"); not-yet-decided, not-a-problem and right items listed on the notes page and in
-    the report, never clouded; "Reviewed by <name>" once every item needing a decision was decided,
-    else the draft stamp. A new cloud drawing and check report each time (older files are kept);
+    """The zero-click cloud drawing made again with the reviewer's decisions as overrides (#1581):
+    red clouds at the Wrong items code proved and at every agreed item, none at an item marked not
+    a problem; the rest listed in grey; stamped "Checked automatically by GV Review: <date>, and
+    reviewed by <name>". A new cloud drawing and check report each time (older files are kept);
     returns the cloud drawing."""
     chat, package = _chat(session, chat_id, principal)
     _not_running(registry, chat_id, message_id)
@@ -949,7 +951,13 @@ def cloud_drawing(
     }
     try:
         made = make_decided_files(
-            workspace, findings, summary, not_checked, scratch[drawing_id], scratch[report_id]
+            workspace,
+            findings,
+            summary,
+            not_checked,
+            scratch[drawing_id],
+            scratch[report_id],
+            settled=resolver_settled(row.blocks),
         )
     except LookupError:
         raise CodedHTTPException(
