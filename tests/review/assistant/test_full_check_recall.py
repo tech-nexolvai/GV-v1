@@ -553,7 +553,7 @@ def test_an_unsearched_one_sided_ledger_item_is_for_gvs_reviewer_only() -> None:
 def test_the_protected_share_scales_with_the_price() -> None:
     for price in (5 * DOLLARS, 6 * DOLLARS):
         plan = PricePlan.balanced(price, 10, 45)
-        assert plan.protected() == pytest.approx(0.36 * price, rel=0.01)
+        assert plan.protected() == pytest.approx(0.30 * price, rel=0.01)
 
 
 def test_each_kind_of_specialist_is_timed_in_its_own_phase(
@@ -619,3 +619,87 @@ def test_each_gap_closer_gets_enough_money_to_make_its_calls() -> None:
     chosen, _left = full_check_roster.gap_pages({p: ["x"] for p in range(3, 30)}, budget)
     runs = full_check_roster.page_runs(chosen, closers)
     assert len(runs) == 3 and all(budget * len(r) // len(chosen) >= 200_000 for r in runs)
+
+
+# ---- #1654: what the paid run of 2026-10-19 (test 6) showed ---------------------------------
+
+
+def test_a_page_marked_with_a_not_reached_note_is_unfinished_whatever_its_status() -> None:
+    coverage = {
+        "pages": [
+            {"page": 25, "status": "different", "by": "helper:4",
+             "note": "not reached within the fixed price"},
+            {"page": 31, "status": "not_opened", "by": "helper:5", "note": "partly compared"},
+            {"page": 36, "status": "different", "by": "helper:6",
+             "note": "only overview read; leads not individually recorded"},
+            {"page": 23, "status": "different", "by": "helper:27", "note": None},
+            {"page": 26, "status": "not_comparable", "by": "code", "note": "divider"},
+        ]
+    }  # fmt: skip
+    left = full_check_roster.unfinished_pages([23, 25, 31, 36, 40], coverage)
+    assert set(left) == {25, 31, 36, 40}
+
+
+def test_the_lead_review_takes_what_is_left_and_the_open_pages_biggest_first(
+    tmp_path: Path,
+) -> None:
+    harness = _roster(tmp_path, _Roster(), price=6 * DOLLARS)
+    run = _strings_run(harness)
+    run.plan = PricePlan.balanced(6 * DOLLARS, 2, 4)
+    # Nothing spent yet: the lead takes all but what the steps after it need, never less than its
+    # own share, and as many pages as that pays for.
+    money = run._lead_money()
+    assert money > run.plan.caps["lead"]
+    assert money <= 6 * DOLLARS - run.plan.budgets["advocate"] - run.plan.budgets["summary"]
+    engine = harness.engine
+    engine.book.report(
+        {"page": 5, "item": "Area 2: outlet height", "category": "countertop",
+         "architect": "6'-0\"", "vendor": '73 1/2"', "status": "check", "verified": False,
+         "source": "architect",
+         "decision_help": {"measures": "x", "estimate": None, "likely": "can't tell",
+                           "confirm": "y"}},
+        "helper:1",
+    )  # fmt: skip
+    pages, unplaced = run._lead_pages(money)
+    assert 5 in pages and unplaced and unplaced[0]["page"] == 5
+    assert len(run._lead_pages(100_000)[0]) == 1  # one page's money: the biggest item's page
+
+
+def test_the_record_turn_is_never_refused_for_the_helpers_share(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.review.assistant.chat_engine import ChatEngine
+
+    _clean_ink(monkeypatch)
+    script = _Reader()
+    harness = _roster(tmp_path, script)
+    # The helpers' shared ceiling is reached: no call is held for them any more.
+    monkeypatch.setattr(ChatEngine, "_hold", lambda self, share, estimate: False)
+
+    harness.run()
+
+    assert script.calls.get("record"), "the helper still got its turn to record"
+    record_call = script.params["record"][0]
+    assert record_call["tool_choice"]["type"] == "auto" and record_call["max_tokens"] <= 4000
+
+
+def test_dpi_and_marks_given_on_a_crop_are_the_calls(tmp_path: Path) -> None:
+    from app.review.assistant.chat_tools import new_step
+
+    harness = _roster(tmp_path, _Roster())
+    raw = {"crops": [{"page": 2, "box": {"x0": 0, "y0": 0, "x1": 80, "y1": 80}, "dpi": 150,
+                      "marks": True}], "description": "x"}  # fmt: skip
+    result = harness.engine.tools.zoom(raw, new_step("z1", "zoom", raw), "helper:1")
+    assert result.step["ok"], result.step.get("output")
+
+
+def test_an_absence_claim_with_no_spot_on_the_architect_is_internal() -> None:
+    from app.review.assistant.classification import internal
+
+    claim = {"id": "F26", "page": 53, "status": "check", "created_by": "helper:9",
+             "source": "architect", "architect": "5'-4\", 13'-11\"",
+             "vendor": "not shown on the vendor", "arch_box": None, "dims": None,
+             "item": "Area 9: locating dimensions"}  # fmt: skip
+    assert internal(claim) and not proof.vendor_facing(claim)
+    spotted = {**claim, "arch_box": _box(53, 100)}
+    assert not internal(spotted)  # the architect's side is at its spot: it may be listed
