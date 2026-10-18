@@ -53,6 +53,7 @@ __all__ = [
     "NO_REQUIREMENT_REASON",
     "PAIRING_REASON",
     "RULE_LINE",
+    "TWO_READS",
     "ProofGroup",
     "blocks_with_proof",
     "classified",
@@ -95,6 +96,8 @@ _SCALED: Final = re.compile(
     r"\bscal(?:e|es|ed|ing)\b|\bmeasured (?:off|on) the drawing\b",
     re.IGNORECASE,
 )
+#: A vendor string two blind readings agree on (#1641, `string_verified`).
+TWO_READS: Final = "two_reads"
 #: Why a Wrong item code read right is not clouded: nothing proves both numbers measure the same.
 PAIRING_REASON: Final = "Not clouded: code read both values, but what each measures is not proved."
 #: Why a GV rule result is not a comment to the vendor (#1622): no requirement it can act on.
@@ -228,11 +231,14 @@ LEFT_CAPTIONS: Final[Mapping[str | None, str]] = {
 def string_verified(finding: Mapping[str, Any]) -> bool:
     """A vendor string whose geometry code verified (#1639): the consistency check made it (its
     parts touch end to end and end on the overall's extension lines), or it confirmed a reading's
-    string is that same chain (`string_geometry: verified`). A string an AI grouped (the reading
+    string is that same chain (`string_geometry: verified`); or, under D1 (`ai_pair_plus_code`),
+    two readings of the drawing agree on its parts and overall, the second blind to the first
+    (`string_geometry: two_reads`, #1641: the full check sets it only in that mode). A string an AI grouped (the reading
     ledger's `record_string`, a helper's sum) is never red without it: a part from another chain
     makes a string that "does not add up" out of one that does."""
-    return (
-        finding.get("created_by") == "consistency" or finding.get("string_geometry") == "verified"
+    return finding.get("created_by") == "consistency" or finding.get("string_geometry") in (
+        "verified",
+        TWO_READS,
     )
 
 
@@ -490,6 +496,8 @@ def proof_line(finding: Mapping[str, Any]) -> str:
         for name in witnesses:
             if name == "arithmetic":
                 parts.append(_sum_words(finding))
+                if finding.get("string_geometry") == TWO_READS:
+                    parts.append("a second reading, blind to the first, lists the same parts")
             elif name == "rule" and finding.get("rule_check_id"):
                 parts.append(f"GV's rule check {finding.get('rule_check_id')} fails it")
             elif name in _PROOF_WORDS:

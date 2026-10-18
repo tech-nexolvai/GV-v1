@@ -58,6 +58,7 @@ __all__ = [
     "context_from_pack",
     "escalate",
     "escalate_answer",
+    "label_provenance",
     "undecided",
 ]
 
@@ -179,6 +180,7 @@ def _same(a: Decimal | None, b: Decimal | None) -> bool:
 
 
 def _provenance(label: Mapping[str, Any]) -> dict[str, Any]:
+    """A label as a finding's `dims` side keeps it (where its value came from)."""
     return {
         "id": str(label.get("id")),
         "page": int(label.get("page") or 0),
@@ -190,6 +192,9 @@ def _provenance(label: Mapping[str, Any]) -> dict[str, Any]:
         "orientation": label.get("orientation"),
         "box": [float(v) for v in label.get("box") or (0, 0, 0, 0)],
     }
+
+
+label_provenance = _provenance
 
 
 def _ref(label: Mapping[str, Any]) -> str:

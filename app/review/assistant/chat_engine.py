@@ -369,6 +369,25 @@ WRAP_UP_NOTE: Final = (
     "Wrap up now ({why}). Do not use any more tools: report what you found, and which pages or "
     "parts you did not get to."
 )
+#: A roster page helper's or gap closer's one turn to record before it wraps up (#1641).
+RECORD_NOTE: Final = (
+    "Record now ({why}). In this one turn call report_finding (and record_string) for every "
+    "difference, Right item and dimension string you have read but not recorded yet: the labels "
+    "where code numbered them, else the value with its box. No more zooms. A reading you do not "
+    "record is lost: your report records nothing. Your report comes after this turn."
+)
+#: The marker of a difference a roster helper read but could not record (#1641): code records each
+#: such line as an AI-only item (Not compared until it is placed), so it is never lost.
+UNRECORDED: Final = "UNRECORDED"
+ROSTER_WRAP_UP_NOTE: Final = (
+    WRAP_UP_NOTE
+    + " For each difference you read but did not record, add one line exactly like: "
+    + UNRECORDED
+    + " p<page> | <area: item> | architect <value> | vendor <value> | different or check | "
+    "<where each end lands, or why>."
+)
+#: A roster helper's report at its wrap-up: short, so it fits the money its share keeps for it.
+ROSTER_WRAP_UP_MAX_TOKENS: Final = 2500
 
 #: The 5-6 line summary that ends every full check (both instructions below end with it).
 _FULL_CHECK_SUMMARY: Final = """End with a 5-6 line plain-English summary for the reviewer (no tables, no disclaimers: the app draws the cloud drawing, the report and the lists):
@@ -895,6 +914,15 @@ class ChatEngine:
         #: The share of what is left that one delegation's helpers may spend (a roster full check
         #: has no lead to keep money for: each specialist has its own cap instead).
         self.helper_share_percent = HELPER_SHARE_PERCENT
+        #: The most the message may have spent when a delegation's helpers stop (millionths of $),
+        #: or `None`. A roster full check sets it for its page helpers and gap closers, so the
+        #: money kept for the checks after them (the verifier, the devil's advocate, the lead
+        #: review) is never spent by them: the paid run of 2026-10-19 spent $5.31 of a $5 price on
+        #: helpers and its devil's advocate never ran.
+        self.helper_ceiling: int | None = None
+        #: The code findings of the finish (ledger, consistency, finishes, code's pairs) were
+        #: added already (a roster full check adds them before its proof steps).
+        self._code_findings_added = False
         #: A roster full check judges its red candidates with the devil's advocate instead.
         self.critic_off = False
         #: Refusal-fallback switches already shown (#1577), and the thinking blocks the API dropped
@@ -1068,6 +1096,14 @@ class ChatEngine:
                 return False
             share.held += estimate
             return True
+
+    def _final_fits(self, share: _Share, estimate: int | None) -> bool:
+        """A roster specialist's last call (its report) fits the fixed price and its share: the
+        share is what keeps the later checks' money (`helper_ceiling`)."""
+        if not self._fits(estimate):
+            return False
+        with self._lock:
+            return self._spent + share.held + (estimate or 0) <= share.limit
 
     def _release(self, share: _Share, held: int) -> None:
         with self._lock:
@@ -2236,23 +2272,7 @@ class ChatEngine:
         book = self.book
         if self._progress is not None:
             self._progress.phase("checking")
-        with self.timings.phase("finish_checks"):
-            try:
-                self._ledger_findings()
-            except Exception:  # noqa: BLE001 - the answer goes on without the ledger's findings
-                _log.exception("assistant chat ledger findings failed")
-            try:
-                add_consistency(self)  # a full check's vendor consistency check (#1584), $0
-            except Exception:  # noqa: BLE001 - the answer goes on without it
-                _log.exception("assistant chat vendor consistency check failed")
-            try:
-                add_architect_items(self)  # missed, changed and added finishes (#1623), $0
-            except Exception:  # noqa: BLE001 - the answer goes on without it
-                _log.exception("assistant chat finish check failed")
-            try:
-                add_code_pairs(self)  # dimensions code paired by itself, Wrong or Right, $0
-            except Exception:  # noqa: BLE001 - the answer goes on without them
-                _log.exception("assistant chat code pairs failed")
+        self.add_code_findings()
         if not book.live() and not book.coverage_used and not self._ledger_used():
             self._close_checks()
             return
@@ -2276,10 +2296,14 @@ class ChatEngine:
         with self.timings.phase("finish_checks"):
             self._finish_trust(skipped)
 
-    def _code_finish(self) -> None:
-        """A stopped full check's finish, by code only: no model call."""
-        self._close_checks()  # second reads started before the stop end at once (cancelled)
-        book = self.book
+    def add_code_findings(self) -> None:
+        """The finish's code findings, $0, once per answer: the reading ledger's, the vendor
+        consistency check's (#1584), the finish check's (#1623) and code's own pairs. A roster
+        full check adds them before its proof steps (#1641), so its blind reads and devil's
+        advocate see them; the trust phase then does not add them again."""
+        if self._code_findings_added:
+            return
+        self._code_findings_added = True
         with self.timings.phase("finish_checks"):
             try:
                 self._ledger_findings()
@@ -2297,6 +2321,13 @@ class ChatEngine:
                 add_code_pairs(self)  # dimensions code paired by itself, Wrong or Right, $0
             except Exception:  # noqa: BLE001 - the answer goes on without them
                 _log.exception("assistant chat code pairs failed")
+
+    def _code_finish(self) -> None:
+        """A stopped full check's finish, by code only: no model call."""
+        self._close_checks()  # second reads started before the stop end at once (cancelled)
+        book = self.book
+        self.add_code_findings()
+        with self.timings.phase("finish_checks"):
             if self._ledger_used():
                 ledger = self.reading_ledger.as_dict()
                 for finding in book.live():
@@ -2902,7 +2933,10 @@ class ChatEngine:
         thread as soon as it has reported (a full check starts its second reads there)."""
         with self._lock:
             left = max(0, self.settings.message_cap_micros - self._spent)
-            share = _Share(limit=self._spent + left * self.helper_share_percent // 100)
+            limit = self._spent + left * self.helper_share_percent // 100
+            if self.helper_ceiling is not None:
+                limit = min(limit, max(self._spent, self.helper_ceiling))
+            share = _Share(limit=limit)
             for agent in agents:
                 self._helpers_started += 1
                 agent.number = self._helpers_started
@@ -3210,6 +3244,9 @@ class ChatEngine:
             self.book.by(f"helper:{numbers.number}"), self.book.by(f"helper:{drawn.number}")
         )
         for fold in folds:
+            if fold.disagree:
+                with self._lock:
+                    self._lens_disagree.append(fold)
             with self.finding_lock:
                 if not self.book.absorb(fold.drop):
                     continue
@@ -3222,9 +3259,6 @@ class ChatEngine:
                 renamed = {**live[finding_id], "item": name}
                 if self.book.replace(renamed):
                     self._show_finding(renamed)
-            if fold.disagree:
-                with self._lock:
-                    self._lens_disagree.append(fold)
 
     def _fan_out(self) -> bool:
         """A full check's helpers, planned by code from the set pack's page map and run at once;
@@ -3459,7 +3493,8 @@ class ChatEngine:
         if name == "set_coverage" and agent.lens == "drawn":
             skipped = self._not_run(call, "the numbers helper records these pages' coverage")
             return lambda: skipped
-        if name in HELPER_FINDING_TOOL_NAMES:
+        if name in HELPER_FINDING_TOOL_NAMES or (name == "update_finding" and agent.lens == "lead"):
+            # The full check's lead review (#1641) places items already recorded.
             return lambda: self._result(call, self._finding_tool(name, call.get("input"), by))
         if name in LEDGER_TOOL_NAMES:
             return lambda: self._result(call, self._ledger_tool(name, call.get("input"), by))
@@ -3528,6 +3563,7 @@ class ChatEngine:
             budget = max(budget, ROSTER_CALLS_PER_PAGE * len(agent.pages or ()))
         sent_back = False
         sent_on = False
+        record_turn = False
         wrap: str | None = None
         cached = previous = 0
         while True:
@@ -3539,6 +3575,8 @@ class ChatEngine:
                 )
             final = wrap is not None
             max_tokens = WRAP_UP_MAX_TOKENS if final else allowance
+            if final and roster_pages:
+                max_tokens = ROSTER_WRAP_UP_MAX_TOKENS
             body = self._body(
                 model=model,
                 thinking=thinking,
@@ -3552,7 +3590,7 @@ class ChatEngine:
             if (
                 final
                 and agent.soft_cap
-                and not self._fits(self._estimate(model, body, cached, previous))
+                and not self._final_fits(share, self._estimate(model, body, cached, previous))
             ):
                 # A roster specialist never passes the fixed price, not even to write its report:
                 # code keeps what it recorded, and its report says where it stopped.
@@ -3578,10 +3616,28 @@ class ChatEngine:
                     wrap, why = "cost_cap", "you have used your part of the money"
                 elif not self._hold(share, estimate):
                     wrap, why = "cost_cap", "the helpers have used their share of the money"
-                if why is not None:
-                    _append_note(messages, WRAP_UP_NOTE.format(why=why))
+                if (
+                    why is not None
+                    and roster_pages
+                    and not record_turn
+                    and why != "this message is near its money cap"
+                    and turns < self.settings.helper_max_turns
+                    and self._fits(estimate)
+                    and self._hold(share, estimate)
+                ):
+                    # One turn to record what it read before its report (the paid run of
+                    # 2026-10-19: gap closers read the pages, then wrapped up with no tools and
+                    # recorded nothing, so their differences were lost).
+                    record_turn = True
+                    wrap = None
+                    _append_note(messages, RECORD_NOTE.format(why=why))
+                    held = estimate or 0
+                elif why is not None:
+                    note = ROSTER_WRAP_UP_NOTE if roster_pages else WRAP_UP_NOTE
+                    _append_note(messages, note.format(why=why))
                     continue
-                held = estimate or 0
+                else:
+                    held = estimate or 0
             upper = prompt_tokens_upper(body, picture_sizes(messages))
             try:
                 reply = self._call(
