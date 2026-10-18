@@ -165,7 +165,8 @@ def test_only_the_products_in_scope_are_compared() -> None:
 
 def test_an_area_code_cannot_pair_is_not_compared() -> None:
     result = _check(["LA-41"], None, ["WD-3"])
-    assert result.findings == [] and result.paired == 0
+    assert result.findings == [] and (result.paired, result.unpaired) == (0, 1)
+    assert "(1 not paired)" in ai.summary_line(result)
     (open_item,) = result.unknowns
     assert open_item["why"] == "pairing_uncertain" and "LA-41" in open_item["what"]
 

@@ -329,6 +329,8 @@ class ItemsResult:
     """Areas with an architect and a vendor drawing."""
     paired: int = 0
     """Of them, areas whose pairing code proved."""
+    unpaired: int = 0
+    """Areas whose architect tags a product's finish but whose pairing code could not prove."""
     compared: int = 0
     """Architect codes compared (in a product's families)."""
     matched: int = 0
@@ -345,6 +347,7 @@ class ItemsResult:
             "unknowns": len(self.unknowns),
             "areas": self.areas,
             "paired": self.paired,
+            "unpaired": self.unpaired,
             "compared": self.compared,
             "matched": self.matched,
             "left_out": dict(self.left_out),
@@ -364,7 +367,7 @@ def summary_line(result: ItemsResult) -> str:
     bits = [
         f"{_plural(result.compared, 'architect finish code', 'architect finish codes')} compared "
         f"in {_plural(result.paired, 'area', 'areas')}"
-        + (f" ({result.areas - result.paired} not paired)" if result.paired < result.areas else "")
+        + (f" ({result.unpaired} not paired)" if result.unpaired else "")
     ]
     wrong = len(result.findings)
     bits.append(
@@ -624,11 +627,13 @@ def _compare(ctx: _Context) -> None:
             continue
         if code.family not in vendor_families:
             if ours_latest:
+                architect_keys = {c.key for _d, c in theirs}
+                unmatched = [c for c in ours_latest if c.key not in architect_keys] or ours_latest
                 result.unknowns.append(
                     _unknown(
                         drawing.page,
                         f"{area.name}: architect's {code.text} against the vendor's "
-                        f"{_codes_words(ours_latest)}",
+                        f"{_codes_words(unmatched)}",
                         "not_comparable",
                         "a printed legend, or the vendor's confirmation, that their code is the "
                         f"architect's {code.text} (the two use different tag systems)",
@@ -870,6 +875,7 @@ def check_set(
         if pairing is None:
             asked = sorted({c.text for d in architect for c in d.codes if c.family in families})
             if asked:
+                result.unpaired += 1
                 result.unknowns.append(
                     _unknown(
                         min(d.page for d in architect),
