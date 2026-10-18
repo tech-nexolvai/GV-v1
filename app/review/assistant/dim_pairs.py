@@ -22,6 +22,10 @@ the printed values. This module feeds it from the set pack and compares what it 
 A `different` pair with both values printed as text is a code-proved Wrong: red = the vendor's
 value, green = the architect's. Everything code cannot pair is said with `pairing.py`'s reason.
 
+Where positional pairing cannot work (an elevation not drawn to one scale, a fixture the vendor
+moved), `dim_anchors` pairs by what both ends land on (walls, the floor, the same outlet); its
+pairs join each page's list with `method: anchors`.
+
 `pairs.json` holds `pairs` (the one-to-one pairs, in the shape the full check reads:
 `full_check_advocate.code_pairs`, where a pair code made is proof by itself) and `pages` (every
 pair and every reason, per page).
@@ -269,8 +273,15 @@ def page_pairs(
     return {"page": page, "pairs": pairs, "notes": notes[:40]}
 
 
-def set_pairs(dims: Mapping[str, Any], scales: Mapping[str, Any]) -> dict[str, Any]:
-    """`pairs.json` for a whole set, from its `dims.json` and `scales.json`."""
+def set_pairs(
+    dims: Mapping[str, Any],
+    scales: Mapping[str, Any],
+    anchored: Mapping[tuple[str, int], Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """`pairs.json` for a whole set, from its `dims.json` and `scales.json`; `anchored`: the pairs
+    `dim_anchors.set_anchor_pairs` made by what both ends land on, per (file, vendor page), added
+    to the page's pairs (`method: anchors`). A vendor label code pairs with two different
+    architect labels is refused (a note says so): any doubt means no pair."""
     by_page = {
         (str(entry.get("file")), int(entry.get("page") or 0)): entry
         for entry in scales.get("pages") or []
@@ -293,25 +304,61 @@ def set_pairs(dims: Mapping[str, Any], scales: Mapping[str, Any]) -> dict[str, A
             continue
         result = page_pairs(key[1], labels, measured, found.get("labels") or [])
         pages.append({"file": key[0], **result})
+    for (file, page), extra in sorted((anchored or {}).items()):
+        entry = next((e for e in pages if (e["file"], e["page"]) == (file, page)), None)
+        if entry is None:
+            entry = {"file": file, "page": page, "pairs": [], "notes": []}
+            pages.append(entry)
+        entry["pairs"] = [*entry["pairs"], *(extra.get("pairs") or [])]
+        entry["notes"] = [*entry["notes"], *(extra.get("notes") or [])][:60]
+    pages.sort(key=lambda e: (str(e["file"]), int(e["page"])))
+    _refuse_conflicts(pages)
     return {"version": 1, "pairs": flat_pairs(pages), "pages": pages}
+
+
+def _refuse_conflicts(pages: Sequence[dict[str, Any]]) -> None:
+    """Drop every pair of a vendor label that two pairings send to different architect labels."""
+    seen: dict[tuple[Any, Any, Any], set[tuple[Any, Any]]] = {}
+    for entry in pages:
+        for pair in entry["pairs"]:
+            vendor = pair.get("vendor") or []
+            arch = pair.get("architect") or {}
+            if len(vendor) == 1:
+                key = (entry["file"], entry["page"], vendor[0].get("id"))
+                seen.setdefault(key, set()).add((arch.get("page", entry["page"]), arch.get("id")))
+    clash = {key for key, found in seen.items() if len(found) > 1}
+    for entry in pages:
+        kept = []
+        for pair in entry["pairs"]:
+            vendor = pair.get("vendor") or []
+            label = vendor[0].get("id") if len(vendor) == 1 else None
+            if label is not None and (entry["file"], entry["page"], label) in clash:
+                why = f"vendor {label}: paired with two different architect labels, so not paired"
+                entry["notes"] = [*entry["notes"], why]
+                continue
+            kept.append(pair)
+        entry["pairs"] = kept
 
 
 def flat_pairs(pages: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """The one-to-one pairs as the full check reads them (`full_check_advocate.code_pairs`):
     `{"vendor": "p23.D30 254 [10]", "architect": "p23.D10 8\"", "status": "same" | "different"}`.
-    A pair of one architect dimension with several vendor pieces stays in its page's list only:
-    no one vendor label stands for it."""
+    A pair of one architect dimension with several vendor pieces, or of a chain of architect
+    dimensions with one vendor label (`kind: sum`), stays in its page's list only: no one label
+    stands for it. The architect's label may be on another page (`architect.page`)."""
     out: list[dict[str, Any]] = []
     for entry in pages:
         for pair in entry.get("pairs") or []:
             vendor = pair.get("vendor") or []
-            if len(vendor) != 1:
+            arch = pair.get("architect") or {}
+            if len(vendor) != 1 or len(arch.get("ids") or [arch.get("id")]) != 1:
                 continue
-            page, arch = pair.get("page"), pair.get("architect") or {}
+            page = pair.get("page")
+            arch_page = arch.get("page", page)
             out.append(
                 {
                     "vendor": f"p{page}.{vendor[0].get('id')} {vendor[0].get('text')}",
-                    "architect": f"p{page}.{arch.get('id')} {arch.get('text')}",
+                    "architect": f"p{arch_page}.{arch.get('id')} {arch.get('text')}",
                     "status": pair.get("status"),
                     "file": entry.get("file"),
                     "page": page,
@@ -319,6 +366,8 @@ def flat_pairs(pages: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
                     "vendor_in": pair.get("vendor_in"),
                     "printed_both": pair.get("printed_both"),
                     "how": pair.get("how"),
+                    "paired_by": "code",
+                    "method": pair.get("method") or "position",
                 }
             )
     return out

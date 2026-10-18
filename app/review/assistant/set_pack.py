@@ -29,7 +29,8 @@ that set-up once per upload, in the background, and the agent sees it read-only 
 - `notes.json`: each drawing's printed tags and notes (`drawing_notes.py`, from the phrases
   `dims.json` keeps), and the architect's tags the vendor's drawing does not print.
 - `pairs.json`: architect against vendor dimensions paired by drawn position (`dim_pairs.py`,
-  wrapping `extraction/architect/pairing.py`), each `same` or `different`.
+  wrapping `extraction/architect/pairing.py`) or by anchors, what both ends land on (`dim_anchors.py`:
+  the same wall, floor or outlet on both drawings, no scale used), each `same` or `different`.
 - `status.json`: `building`, `ready` or `failed`, and the steps done. The agent can work before
   the pack is ready (the first message never waits); the `zoom` tool makes the drawings-only copy
   it needs at once if the pack has not made it yet.
@@ -91,7 +92,7 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 #: Changes when what the pack holds changes: an older pack is built again.
-PACK_VERSION: Final = 3
+PACK_VERSION: Final = 4
 RENDER_DPI: Final = 100
 #: Seconds the dimension labels' drawn-ink route (OCR) may spend on one set, after every page's
 #: text labels (`GV_DIM_LABELS_DRAWN_BUDGET_S`; 0 turns it off). It reads the vendor's drawn
@@ -553,7 +554,9 @@ notes.json             per drawing: the tags (FN-01, FX-101-CUST) and notes it p
                        page the architect's tags the vendor's drawing does not print.
 pairs.json             architect against vendor dimensions paired by drawn position (both
                        ends on each other's ticks at each drawing's measured scale, never by
-                       value), each same or different; and why a row could not be paired.
+                       value) or by anchors (method anchors: both ends land on the same wall,
+                       floor or outlet on both drawings, no scale used), each same or different;
+                       and why a row could not be paired.
 status.json            building / ready / failed.
 hires/                 code's 300-dpi tiles of the pages zoom has cut from (not for reading:
                        zoom gives you any area sharp).
@@ -690,7 +693,15 @@ def write_dims(
     scales = import_module("app.review.assistant.view_scales")
     notes = import_module("app.review.assistant.drawing_notes")
     pairs = import_module("app.review.assistant.dim_pairs")
+    anchors = import_module("app.review.assistant.dim_anchors")
     pages = {"pages": list(page_map)}
+    line_work: dict[tuple[str, int], Any] = {}
+    anchored_memo: dict[Any, Any] = {}
+
+    def segments_of(name: str, page: int) -> Any:
+        if (name, page) not in line_work:
+            line_work[(name, page)] = anchors.page_segments(uploads / name, page - 1)
+        return line_work[(name, page)]
 
     def written(document: dict[str, Any]) -> None:
         if parent is not None and os.getppid() != parent:
@@ -699,8 +710,15 @@ def write_dims(
         # Each drawing's scale, measured from its printed dimensions (a few milliseconds).
         measured = scales.set_scales(document)
         _write_json(folder / scales.SCALES_FILE, measured)
+        # Architect against vendor dimensions paired by what both ends land on (walls, the floor,
+        # the same outlet), where no single scale holds; never allowed to stop the pack.
+        try:
+            anchored = anchors.set_anchor_pairs(document, pages, segments_of, cache=anchored_memo)
+        except Exception:  # noqa: BLE001 - a fact the pack can do without
+            _log.exception("anchor pairing failed; pairs.json keeps the positional pairs only")
+            anchored = {}
         # Architect against vendor dimensions paired by drawn position, compared exactly.
-        _write_json(folder / pairs.PAIRS_FILE, pairs.set_pairs(document, measured))
+        _write_json(folder / pairs.PAIRS_FILE, pairs.set_pairs(document, measured, anchored))
         # Each drawing's printed notes and tags (from the phrases dims.json keeps).
         _write_json(folder / notes.NOTES_FILE, notes.set_notes(document, pages))
 
