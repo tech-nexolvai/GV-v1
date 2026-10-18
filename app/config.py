@@ -161,6 +161,24 @@ class Settings(BaseSettings):
     # advocate check passes); `code_only` = only items code paired by itself (the vendor's own
     # sums, GV's rules) can be red.
     assistant_pairing_proof: Literal["ai_pair_plus_code", "code_only"] = "ai_pair_plus_code"
+    # Which full check runs (CONTRACT-SIMPLE, 2026-10-19): `roster` (today's specialists) or
+    # `simple` (code's work list of every vendor drawing, one compare call per drawing, code
+    # verifies, one blind look per red candidate; `app/review/assistant/simple_check/`). The switch
+    # to `simple` waits for a paid test that beats today's best.
+    assistant_full_check_mode: Literal["roster", "simple"] = "roster"
+    # The simple check's compare call: the model and effort for every drawing, the stronger model
+    # for drawings the work list marks hard (no code labels, very dense, hand-lettered architect),
+    # how many calls run at once, the reply's token room (thinking included) and the retries on a
+    # lost connection or an overloaded service.
+    assistant_simple_compare_model: Literal["claude-sonnet-5-5", "claude-opus-5-5"] = (
+        "claude-sonnet-5-5"
+    )
+    assistant_simple_compare_effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
+    assistant_simple_hard_model: Literal["claude-sonnet-5-5", "claude-opus-5-5"] = "claude-opus-5-5"
+    assistant_simple_hard_effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
+    assistant_simple_parallel: int = Field(default=8, ge=1, le=32)
+    assistant_simple_max_tokens: int = Field(default=64000, ge=4096, le=128000)
+    assistant_simple_retries: int = Field(default=3, ge=0, le=6)
     # One sandbox command's time limit, and which sandbox runs it (`auto` and `docker`: the Docker
     # image `gv-assistant-sandbox` when built and Docker answers, else no shell: the chat says the
     # secure sandbox is not running; `macos`: `sandbox-exec`, only for tests on a Mac, never a
