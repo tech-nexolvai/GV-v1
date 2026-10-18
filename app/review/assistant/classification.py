@@ -23,7 +23,7 @@ The rules, in the order they are applied:
   architect's tag); otherwise Not compared, with why it could not be proved.
 - **R5, the vendor's own contradictions** (a string that does not add up, one span printed twice):
   Wrong when code proved it.
-- **R6, GV's rule** (Raj's) broken: Wrong.
+- **R6, GV's rule** (from GV's rulebook) broken: Wrong.
 - **R7, the architect gives no information** (no size, no layout, no drawing of the area).
 - **R8, different reference points** (the underside against the top of the counter): not directly
   comparable.

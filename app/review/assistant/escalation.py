@@ -525,7 +525,7 @@ def _notes_step(item: _Item, ctx: EscalationContext, areas: Mapping[int, str]) -
 
 
 def _base(tag: str) -> str:
-    """A tag without its trailing word suffix (ML-003-CUST: ML-003)."""
+    """A tag without its trailing word suffix (AB-012-CUST: AB-012)."""
     return re.sub(r"-[A-Z]{2,6}$", "", tag)
 
 
