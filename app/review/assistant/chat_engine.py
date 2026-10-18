@@ -389,6 +389,8 @@ ROSTER_WRAP_UP_NOTE: Final = (
 )
 #: A roster helper's report at its wrap-up: short, so it fits the money its share keeps for it.
 ROSTER_WRAP_UP_MAX_TOKENS: Final = 2500
+#: How many times the full check's lead review is sent on to pages it left (#1656).
+LEAD_SEND_ON: Final = 2
 #: A roster helper's record turn (#1654): tool calls that record, no long reply.
 RECORD_MAX_TOKENS: Final = 4000
 
@@ -3601,6 +3603,7 @@ class ChatEngine:
             budget = max(budget, ROSTER_CALLS_PER_PAGE * len(agent.pages or ()))
         sent_back = False
         sent_on = False
+        lead_sent_on = 0
         record_turn = False
         wrap: str | None = None
         cached = previous = 0
@@ -3797,6 +3800,26 @@ class ChatEngine:
                     continue
                 with self._lock:
                     self._checklist_gaps[agent.number] = gaps
+            elif agent.lens == "lead" and roster_pages:
+                # The full check's lead review (#1656) stops short by itself: the paid runs of
+                # 2026-10-19 ended it with half its money left and pages "not opened". It is sent
+                # on (twice at most) while it has money for them.
+                unreached = unreached_pages(report, agent.pages or ())
+                left_note = unreached_send_back(unreached)
+                if (
+                    left_note is not None
+                    and lead_sent_on < LEAD_SEND_ON
+                    and wrap is None
+                    and agent.cap_micros is not None
+                    and agent.spent < agent.cap_micros * 7 // 10
+                    and turns < self.settings.helper_max_turns
+                ):
+                    lead_sent_on += 1
+                    budget += ROSTER_CALLS_PER_PAGE * len(unreached)
+                    messages.append(
+                        {"role": "user", "content": [{"type": "text", "text": left_note}]}
+                    )
+                    continue
             return report, True, wrap
 
     # ---- the lead --------------------------------------------------------------------------------

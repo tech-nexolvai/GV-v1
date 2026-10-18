@@ -458,6 +458,37 @@ _NOT_ON_VENDOR: Final = re.compile(
 )
 
 
+def _code_disagrees(finding: Mapping[str, Any]) -> str | None:
+    """Why code's own checks contradict an item, in plain words; `None` when none does (an AI
+    reading that disagrees is not code's)."""
+    checks = finding.get("checks")
+    if not isinstance(checks, Mapping):
+        return None
+    if checks.get("arithmetic") == "does_not_add_up":
+        return "code's sum of the parts does not add up to the printed overall"
+    if checks.get("rule") == "disagrees":
+        return "GV's recorded check disagrees"
+    if checks.get("ledger") == "disagrees":
+        return "code's reading ledger disagrees"
+    if checks.get("units") == "disagrees":
+        return "its millimetres and inches disagree"
+    for side, key in (("architect", "verify_architect"), ("vendor", "verify_vendor")):
+        read = checks.get(key)
+        # Only a side that is one printed size is read against its spot (a description of
+        # fronts and legs is not).
+        if (
+            isinstance(read, Mapping)
+            and read.get("result") == "mismatch"
+            and _ONE_SIZE.fullmatch(" ".join(str(finding.get(side) or "").split()))
+        ):
+            return f"the drawing prints {read.get('read') or 'another value'} at its spot"
+    return None
+
+
+#: A side that is one printed size: 28", 3' - 1", 711 [28], 33 1/4".
+_ONE_SIZE: Final = re.compile(r"[0-9][0-9 /'\-\".\[\]]*")
+
+
 def internal(finding: Mapping[str, Any]) -> bool:
     """An item for GV's reviewer only, never the vendor's (#1652): a difference a helper read but
     never recorded at its spots (`salvaged`, the full check's UNRECORDED lines), or the reading
@@ -513,6 +544,16 @@ def _classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
             return Classified("wrong", "R5")
         return Classified("wrong", "R6" if source == "rules" else "R4")
     if status == "same":
+        against = _code_disagrees(finding)
+        if against is not None:
+            # Right needs proof too (#1656): an item called the same that code's own check
+            # contradicts (the paid run of 2026-10-19: "30 + 18 + 18" called the same as 72")
+            # is never a Right sent to the vendor.
+            return _not(
+                "not_proved",
+                f"called the same, but {against}",
+                "both values read at their spots, and code's check agreeing",
+            )
         if finding.get("compared") is False:
             return _not(
                 "not_seen",

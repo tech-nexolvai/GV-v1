@@ -82,6 +82,8 @@ from app.review.assistant.full_check_advocate import (
     ink_colour,
     needs_pairing,
     same_extent,
+    string_extent,
+    string_extras,
     string_gap,
 )
 from app.review.assistant.full_check_specialists import HELPER_CORE, knowledge_text
@@ -545,7 +547,7 @@ def _decimal(value: object) -> Any:
 
 
 LEAD_BRIEF: Final = """LEAD REVIEW of {where}: you are the senior reviewer after the page helpers. Code, not you, decides Wrong, Right or Not compared, from the spots you record; record what is missing, never repeat what is recorded. In this order, the biggest first:
-Never view whole pages: zoom tight (about 300 points across at most) on each item's two spots; your money is the lead's share of the fixed price, about a dozen calls.
+Never view whole pages: zoom tight (about 300 points across at most) on each item's two spots. Go through every page in your list, the first ones first: the app tells you when your money runs out, so never stop early to save it.
 1. PLACE each item below: a helper (or GV Review's own page review) read it, but code has no spot for it, so it cannot be proved. Zoom both drawings with marks: true and give code the spots: update_finding with its finding_id and the labels (vendor_dim, architect_dim) or, for a number with no label (pen strokes), the value with its tight box; for GV Review's recorded item report_finding with its record_id. When the two do not measure the same thing, say so (status check, decision_help).
 2. STRINGS: record_string every vendor dimension string on these pages not recorded yet (part_dims and total_dim, or each value with its box on pen-stroke pages): code adds them.
 3. COMPARE what the helpers left on these pages (their notes below), the pages nobody opened first: every architect dimension and note against the vendor's, as the brief below says. A drawing with no code labels (hand lettering, pen strokes, a picture) is read from the zoom: report each value with its tight box. When you cannot prove two values measure the same thing, still report the item (status check, both values and boxes): it is then compared, not lost. set_coverage for every page you compare.
@@ -1459,7 +1461,22 @@ class _Run:
                 # Code's own lines say a part was left out: no reading can prove it ($0).
                 self._set_string(finding_id, "gap", gap)
                 continue
-            reply = self._blind_string(finding)
+            extent = self._string_extent(finding)
+            if isinstance(extent, str):
+                # The run's whole extent is unknown: a reading of a cut view proves nothing (#1656).
+                self._set_string(finding_id, "gap", extent)
+                continue
+            overall, line_box = extent
+            extras = string_extras(finding["parts"], overall, self._page_labels(finding))
+            if extras:
+                self._set_string(
+                    finding_id,
+                    "gap",
+                    "code sees other dimensions along the overall's run that the reading leaves "
+                    f"out ({', '.join(extras[:4])})",
+                )
+                continue
+            reply = self._blind_string(finding, line_box)
             if reply is None:
                 self.stopped_for_money = True
                 self._note("a vendor string's second reading: not verified within the fixed price")
@@ -1489,11 +1506,21 @@ class _Run:
         pad = max(_STRING_PAD_PT, 0.1 * max(x1 - x0, y1 - y0))
         return x0 - pad, y0 - pad, x1 + pad, y1 + pad
 
-    def _string_gap(self, finding: Mapping[str, Any]) -> str | None:
+    def _page_labels(self, finding: Mapping[str, Any]) -> list[dict[str, Any]]:
         box = finding["vendor_box"]
         file = str(box.get("file") or self.engine.book.main_file or "")
         page = int(box.get("page") or finding["page"])
-        labels = self.engine.book.dim_labels.on_page(file, page, read_now=False) or []
+        return list(self.engine.book.dim_labels.on_page(file, page, read_now=False) or [])
+
+    def _string_extent(
+        self, finding: Mapping[str, Any]
+    ) -> tuple[Mapping[str, Any], tuple[float, float, float, float]] | str:
+        return string_extent(
+            finding.get("printed_total"), self._page_labels(finding), self._string_box(finding)
+        )
+
+    def _string_gap(self, finding: Mapping[str, Any]) -> str | None:
+        labels = self._page_labels(finding)
         return string_gap(
             finding.get("parts") or [],
             finding.get("printed_total"),
@@ -1501,9 +1528,14 @@ class _Run:
             self._string_box(finding),
         )
 
-    def _blind_string(self, finding: Mapping[str, Any]) -> dict[str, Any] | None:
+    def _blind_string(
+        self,
+        finding: Mapping[str, Any],
+        line_box: tuple[float, float, float, float] | None = None,
+    ) -> dict[str, Any] | None:
         """One fresh-context reading of the string's area (the hi-res crop only, never the first
-        reading's parts or claim); `None` when the price leaves no room."""
+        reading's parts or claim); `None` when the price leaves no room. The crop covers the
+        printed overall's whole dimension line, end to end (`line_box`, #1656), and the string."""
         engine = self.engine
         # The lead's model, not the helpers': a second Sonnet could repeat the first reading's
         # slip (a helper left the 3/4" and 1/8" end pieces out of a Set 3 string).
@@ -1513,6 +1545,9 @@ class _Run:
             return None
         box = finding["vendor_box"]
         x0, y0, x1, y1 = self._string_box(finding)
+        if line_box is not None:
+            x0, y0 = min(x0, line_box[0] - _STRING_PAD_PT), min(y0, line_box[1] - _STRING_PAD_PT)
+            x1, y1 = max(x1, line_box[2] + _STRING_PAD_PT), max(y1, line_box[3] + _STRING_PAD_PT)
         raw = {
             "crops": [
                 {
