@@ -216,6 +216,8 @@ from app.review.assistant.full_check_brief import (
     checklist_gaps,
     checklist_send_back,
     helper_brief,
+    unreached_pages,
+    unreached_send_back,
     with_label_gaps,
 )
 from app.review.assistant.full_check_lenses import Fold, lens_folds, names_apart, same_wrongs
@@ -300,6 +302,17 @@ FULL_CHECK_HELPER_CALLS: Final = 12
 #: More reading calls for a helper sent back once to finish its per-page checklist.
 FULL_CHECK_SEND_BACK_CALLS: Final = 4
 FULL_CHECK_HELPER_MAX_TOKENS: Final = 12000
+#: A roster page helper's or gap closer's output allowance per call (#1634). Its money is held per
+#: call at the upper bound (`_hold`), so with ten helpers at once a 12000-token allowance held about
+#: $1.7 that was never spent and stopped helpers early; a reply of findings and a short report fits
+#: in this, and a reply cut at it is sent on (`_CUT_NOTE`).
+ROSTER_HELPER_MAX_TOKENS: Final = 6000
+#: A roster helper's reading calls per page of its own (at least `FULL_CHECK_HELPER_CALLS`).
+ROSTER_CALLS_PER_PAGE: Final = 3
+_CUT_NOTE: Final = (
+    "Your last reply was cut at its length limit. Go on in shorter steps: one page at a time, "
+    "fewer findings per reply."
+)
 FULL_CHECK_REPORT_WORDS: Final = 200
 #: The lead's output allowance when it only verifies a code-planned full check.
 FULL_CHECK_LEAD_MAX_TOKENS: Final = 32000
@@ -3481,6 +3494,9 @@ class ChatEngine:
         system = agent.system or helper_system_prompt(agent.kit)
         tools = agent.tools or helper_tools(agent.kit)
         allowance = FULL_CHECK_HELPER_MAX_TOKENS if full_check else HELPER_MAX_TOKENS
+        roster_pages = agent.soft_cap and agent.output_format is None and bool(agent.pages)
+        if roster_pages:
+            allowance = ROSTER_HELPER_MAX_TOKENS
         try:
             # A specialist with a reply shape (the roster's verifier, tag reader) has its pages in
             # its brief, and the footer's "report_finding" is not one of its tools.
@@ -3507,7 +3523,11 @@ class ChatEngine:
         ]
         turns = reading = 0
         budget = FULL_CHECK_HELPER_CALLS
+        if roster_pages:
+            # Enough reading calls for every page of its own (#1634), never fewer than before.
+            budget = max(budget, ROSTER_CALLS_PER_PAGE * len(agent.pages or ()))
         sent_back = False
+        sent_on = False
         wrap: str | None = None
         cached = previous = 0
         while True:
@@ -3606,6 +3626,17 @@ class ChatEngine:
             content = reply.history_content()
             messages.append({"role": "assistant", "content": content})
             calls = reply.tool_uses()
+            if (
+                roster_pages
+                and reply.stop_reason == "max_tokens"
+                and not calls
+                and not final
+                and turns < self.settings.helper_max_turns
+            ):
+                # A reply cut at the smaller allowance: sent on, never taken as the report.
+                _append_note(messages, _CUT_NOTE)
+                turns += 1
+                continue
             if reply.stop_reason == "tool_use" and calls and not final:
                 bad = reply.bad_inputs
 
@@ -3643,6 +3674,24 @@ class ChatEngine:
                     sent_back = True
                     budget += FULL_CHECK_SEND_BACK_CALLS
                     messages.append({"role": "user", "content": [{"type": "text", "text": note}]})
+                    continue
+                unreached = unreached_pages(report, agent.pages) if roster_pages else []
+                left_note = unreached_send_back(unreached)
+                if (
+                    left_note is not None
+                    and not sent_on
+                    and wrap is None
+                    and agent.cap_micros is not None
+                    and agent.spent < agent.cap_micros // 2
+                    and turns < self.settings.helper_max_turns
+                ):
+                    # A roster helper that stopped short of pages with half its money unspent
+                    # (#1634) is sent on once to compare them.
+                    sent_on = True
+                    budget += ROSTER_CALLS_PER_PAGE * len(unreached)
+                    messages.append(
+                        {"role": "user", "content": [{"type": "text", "text": left_note}]}
+                    )
                     continue
                 with self._lock:
                     self._checklist_gaps[agent.number] = gaps

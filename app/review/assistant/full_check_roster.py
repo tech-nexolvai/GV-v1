@@ -47,7 +47,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -98,29 +98,39 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 _MICROS: Final = 1_000_000
-#: Each phase's share of the fixed price (Balanced: about $4.5 expected of a $5 price on a
-#: 60-page set). The shares add up to 1, so the caps can never add up to more than the price.
+#: Each phase's share of the fixed price. The shares add up to 1, so the caps can never add up to
+#: more than the price. Rebalanced after the first paid run on a 60-page set (#1634): the page-group
+#: helpers stopped at small fixed caps with half the content pages unread while a fifth of the price
+#: was never spent, so the numbers pickers (where the red clouds come from) and the gap closers that
+#: finish what they leave get more, the drawn-things readers about the same per page.
 SHARES: Final[Mapping[str, float]] = {
-    "numbers": 0.36,
-    "drawn": 0.26,
+    "numbers": 0.38,
+    "drawn": 0.20,
     "tags": 0.03,
-    "gaps": 0.08,
-    "provers": 0.14,
-    "advocate": 0.08,
+    "gaps": 0.19,
+    "provers": 0.08,
+    "advocate": 0.06,
     "summary": 0.005,
-    "reads": 0.045,
+    "reads": 0.055,
 }
-#: A specialist's own cap at most (the design's Balanced caps), whatever its phase's share.
+#: A specialist's own cap at most, whatever its phase's share. The page-group helpers (numbers,
+#: drawn) and the gap closers have none: their cap is their phase's money in proportion to their
+#: pages (`PricePlan.cap_for`).
 JOB_CAPS: Final[Mapping[str, int]] = {
-    "numbers": 150_000,
-    "drawn": 150_000,
     "tags": 200_000,
-    "gaps": 80_000,
     "provers": 100_000,
     "advocate": 400_000,
     "summary": 20_000,
 }
-MAX_GAP_CLOSERS: Final = 8
+#: The kinds whose cap follows their pages.
+PAGE_KINDS: Final = frozenset({"numbers", "drawn", "gaps"})
+#: The most gap closers at once (one per run of pages; the engine's parallel agents bound it too).
+MAX_GAP_CLOSERS: Final = 10
+#: The least money a gap closer gets per page (millionths of $): about three Sonnet calls with
+#: their crops (the paid run's gap closers spent $0.07-0.13 for one page from a fresh start).
+MIN_GAP_PAGE_MICROS: Final = 40_000
+#: The later phases' money, kept back when the gap closers take what P1 left.
+_LATER_PHASES: Final = ("provers", "advocate", "summary", "reads")
 #: Code's estimate of one advocate call's prompt (two crops and the question) and its reply.
 _ADVOCATE_PROMPT_TOKENS: Final = 7_000
 _ADVOCATE_MAX_TOKENS: Final = 2_000
@@ -145,12 +155,16 @@ class PricePlan:
     groups: int
     budgets: Mapping[str, int]
     caps: Mapping[str, int]
+    pages: int = 1
+    """The pages compared (each page once, whatever its lenses): what a page-group cap shares."""
 
     @classmethod
-    def balanced(cls, price: int, groups: int) -> PricePlan:
-        """Each phase gets its share of `price`; a specialist's cap is its phase's budget over
-        its count (the page groups for pickers, readers and verifiers), at most `JOB_CAPS`."""
+    def balanced(cls, price: int, groups: int, pages: int | None = None) -> PricePlan:
+        """Each phase gets its share of `price`. A page-group helper's cap is its phase's budget
+        over the pages, times its own pages (`cap_for`); `caps` holds one even group's for the page
+        kinds, and for the others their phase's budget over their count, at most `JOB_CAPS`."""
         groups = max(1, groups)
+        pages = max(1, pages if pages is not None else groups)
         budgets = {name: int(price * share) for name, share in SHARES.items()}
         counts = {
             "numbers": groups,
@@ -161,8 +175,22 @@ class PricePlan:
             "advocate": 1,
             "summary": 1,
         }
-        caps = {name: min(JOB_CAPS[name], budgets[name] // counts[name]) for name in JOB_CAPS}
-        return cls(price=price, groups=groups, budgets=budgets, caps=caps)
+        caps = {
+            name: (
+                budgets[name] // counts[name]
+                if name in PAGE_KINDS
+                else min(JOB_CAPS[name], budgets[name] // counts[name])
+            )
+            for name in counts
+        }
+        return cls(price=price, groups=groups, budgets=budgets, caps=caps, pages=pages)
+
+    def cap_for(self, kind: str, pages: int) -> int:
+        """A specialist's cap: for a page-group helper its phase's budget over the set's pages,
+        times its own pages (a five-page group gets five pages' worth); else `caps[kind]`."""
+        if kind in ("numbers", "drawn"):
+            return self.budgets[kind] * max(1, pages) // self.pages
+        return self.caps[kind]
 
     def most(self) -> int:
         """The most the specialists' caps can add up to (never more than the price)."""
@@ -531,6 +559,72 @@ def keeps_numbers(code_text: str, reworded: str) -> bool:
     return sorted(numbers_in(code_text)) == sorted(numbers_in(reworded))
 
 
+# ---- the pages left (P2, #1634) ------------------------------------------------------------------
+
+#: A helper's coverage note that says it never compared the page (it "skipped with a note").
+_UNREACHED: Final = re.compile(
+    r"not reached|not opened|budget|ran out|out of (?:money|time)|not compared in detail|did not",
+    re.IGNORECASE,
+)
+
+
+def unfinished_pages(planned: Sequence[int], coverage: Mapping[str, Any] | None) -> dict[int, str]:
+    """The planned pages no helper compared: no coverage entry, `not_opened`, or a helper's
+    `not_comparable` whose note says it was not reached (`{page: why}`, the helper's note)."""
+    entries = {
+        int(entry["page"]): entry
+        for entry in (coverage or {}).get("pages") or []
+        if isinstance(entry, Mapping) and isinstance(entry.get("page"), int)
+    }
+    out: dict[int, str] = {}
+    for page in planned:
+        entry = entries.get(page)
+        if entry is None:
+            out[page] = "no helper set its coverage"
+            continue
+        note = " ".join(str(entry.get("note") or "").split())
+        by_helper = str(entry.get("by") or "").startswith("helper")
+        if entry.get("status") == "not_opened" or (
+            entry.get("status") == "not_comparable" and by_helper and _UNREACHED.search(note)
+        ):
+            out[page] = note or "not reached"
+    return out
+
+
+def gap_pages(
+    pages: Mapping[int, Sequence[str]], budget: int, has_record: Collection[int] = ()
+) -> tuple[list[int], list[int]]:
+    """The pages the gap closers take within `budget` (at least `MIN_GAP_PAGE_MICROS` each) and
+    those left: pages with a recorded difference to place first, then in page order."""
+    room = max(0, budget // MIN_GAP_PAGE_MICROS)
+    ordered = sorted(pages, key=lambda page: (page not in has_record, page))
+    chosen = sorted(ordered[:room])
+    return chosen, sorted(ordered[room:])
+
+
+def page_runs(pages: Sequence[int], closers: int) -> list[list[int]]:
+    """`pages` in at most `closers` runs of neighbouring pages, as even as they come."""
+    ordered = sorted(pages)
+    count = max(1, min(closers, len(ordered)))
+    size, extra = divmod(len(ordered), count)
+    runs, at = [], 0
+    for index in range(count):
+        take = size + (1 if index < extra else 0)
+        runs.append(ordered[at : at + take])
+        at += take
+    return [run for run in runs if run]
+
+
+def page_ranges_words(pages: Sequence[int]) -> str:
+    """`page 7`, `pages 3-5`, `pages 3, 5 and 9`."""
+    ordered = sorted(pages)
+    if len(ordered) == 1:
+        return f"page {ordered[0]}"
+    if ordered == list(range(ordered[0], ordered[-1] + 1)):
+        return f"pages {ordered[0]}-{ordered[-1]}"
+    return f"pages {', '.join(map(str, ordered[:-1]))} and {ordered[-1]}"
+
+
 # ---- the run ------------------------------------------------------------------------------------------
 
 
@@ -633,7 +727,7 @@ class _Run:
         groups = len({job.pages for job in plan.jobs})
         # The fixed price shrinks with the pages the product scope leaves to compare (never grows).
         price = scaled_price(settings.message_cap_micros, plan.pages, pages_all)
-        self.plan = PricePlan.balanced(price, groups)
+        self.plan = PricePlan.balanced(price, groups, plan.pages)
         engine._started_scope = engine.scope()
         engine.emit(
             "scope", {"index": None, "scope": json.loads(json.dumps(engine._started_scope))}
@@ -667,7 +761,7 @@ class _Run:
                     pages=job.pages,
                     lens=job.lens,
                     effort="low",
-                    cap_micros=self.plan.caps[kind],
+                    cap_micros=self.plan.cap_for(kind, len(job.pages)),
                     soft_cap=True,
                     system=engine._kind_system(job.lens),
                 )
@@ -741,6 +835,10 @@ class _Run:
     # -- P2: gap closers --
 
     def _gap_closers(self, page_map: Mapping[str, Any] | None, rules: str, pictures: bool) -> None:
+        """P2 (#1634): every page a P1 helper left (not reached, stopped at its cap, an open
+        checklist) and every recorded difference no helper placed goes to a gap closer, several
+        pages each, with the gap phase's money plus all P1 left unspent (the later phases' shares
+        kept back). A page the price cannot reach is said so on its coverage, never dropped."""
         engine = self.engine
         assert self.plan is not None
         from app.review.assistant.full_check_brief import helper_brief
@@ -756,6 +854,15 @@ class _Run:
             if f.get("created_by") == "gv_review" and not (f.get("arch_box") or f.get("vendor_box"))
         ]
         pages: dict[int, list[str]] = {}
+        planned = sorted(
+            {page for job in (engine._plan.jobs if engine._plan else ()) for page in job.pages}
+        )
+        coverage = engine.book.coverage_map() if engine.book.coverage_used else None
+        for page, why in unfinished_pages(planned, coverage).items():
+            pages.setdefault(page, []).append(
+                f"page not compared yet ({why}): compare the whole page, every dimension and "
+                "string against the architect's"
+            )
         for page, why in open_gaps.items():
             pages.setdefault(page, []).append(f"checklist: {why}")
         for finding in unboxed:
@@ -767,34 +874,38 @@ class _Run:
             )
         if not pages:
             return
-        ordered = sorted(pages)
-        chosen, left = ordered[:MAX_GAP_CLOSERS], ordered[MAX_GAP_CLOSERS:]
+        budget = self._gap_budget()
+        chosen, left = gap_pages(pages, budget, has_record={int(f["page"]) for f in unboxed})
         if left:
-            self._note(f"gaps on pages {', '.join(map(str, left))}: more than {MAX_GAP_CLOSERS}")
+            self._note(f"pages {', '.join(map(str, left))}: not reached within the fixed price")
             for page in left:
-                engine._note_coverage(page, "not closed: more gaps than gap closers")
+                engine._note_coverage(page, "not reached within the fixed price")
+        if not chosen:
+            return
+        runs = page_runs(chosen, min(MAX_GAP_CLOSERS, engine._max_agents))
         agents = []
-        for page in chosen:
+        for run in runs:
             brief = helper_brief(
-                [page],
+                list(run),
                 file_name=f"{UPLOADS}/{engine.book.main_file}",
                 page_map=page_map,
                 review_document=engine._recorded_document,
                 lens="numbers",
-                labels=engine._dim_labels(engine.book.main_file, [page], read_now=False),
+                labels=engine._dim_labels(engine.book.main_file, list(run), read_now=False),
                 products=engine.settings.products,
             )
-            gaps = "\n".join(f"- {line}" for line in pages[page])
+            gaps = "\n".join(f"- p{page}: {line}" for page in run for line in pages[page])
+            where = page_ranges_words(run)
             agents.append(
                 self._agent(
-                    call_id=f"gap-{page}",
-                    description=f"Close the gaps on page {page}",
-                    prompt=f"{GAP_SCHEMA_NOTE} on page {page} (only these):\n{gaps}\n\n{brief}",
+                    call_id=f"gap-{run[0]}",
+                    description=f"Close the gaps on {where}",
+                    prompt=f"{GAP_SCHEMA_NOTE} on {where} (only these):\n{gaps}\n\n{brief}",
                     model=BY_SHORT["sonnet"],
-                    pages=(page,),
+                    pages=tuple(run),
                     lens="gap",
                     effort="medium",
-                    cap_micros=self.plan.caps["gaps"],
+                    cap_micros=budget * len(run) // len(chosen),
                     soft_cap=True,
                     system=engine._kind_system("numbers"),
                 )
@@ -805,6 +916,13 @@ class _Run:
                 self.stopped_for_money = True
                 self._note(f"{agent.description}: stopped at its cap")
         del rules, pictures
+
+    def _gap_budget(self) -> int:
+        """The gap closers' money: their own share, or all that is left under the fixed price less
+        the later phases' shares, whichever is more (P1's unspent money is not lost)."""
+        assert self.plan is not None
+        later = sum(self.plan.budgets[name] for name in _LATER_PHASES)
+        return max(self.plan.budgets["gaps"], min(self._left(), self._left() - later))
 
     # -- P3: the verifier --
 
