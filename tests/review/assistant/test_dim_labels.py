@@ -760,11 +760,11 @@ def test_every_printed_phrase_is_kept_with_its_box_and_side(pdf: Path) -> None:
     ("line", "layout", "value"),
     [
         ("11/2", (1, 1, 1), Decimal("1.5")),  # a 1 and a stacked 1 over 2, the space lost
-        ("13 1/8", (2, 1, 1), Decimal("13.125")),
+        ("17 3/8", (2, 1, 1), Decimal("17.375")),
         ('34"', (2, 0, 0), Decimal(34)),
         ("3/4", (0, 1, 1), Decimal("0.75")),
         ("349", (0, 1, 1), None),  # the inch mark read as a 9: more digits than drawn
-        ("13 78", (2, 1, 1), Decimal("13.875")),  # read as drawn; another engine must agree
+        ("17 58", (2, 1, 1), Decimal("17.625")),  # read as drawn; another engine must agree
         ("5/3", (0, 1, 1), None),  # no drawing writes thirds
         ("4/2", (0, 1, 1), None),  # a numerator not below its denominator
         ("EQ", (2, 0, 0), None),
