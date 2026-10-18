@@ -142,7 +142,11 @@ PAGE_KINDS: Final = frozenset({"numbers", "drawn", "gaps"})
 MAX_GAP_CLOSERS: Final = 10
 #: The least money a gap closer gets per page (millionths of $): about three Sonnet calls with
 #: their crops (the paid run's gap closers spent $0.07-0.13 for one page from a fresh start).
-MIN_GAP_PAGE_MICROS: Final = 40_000
+MIN_GAP_PAGE_MICROS: Final = 80_000
+#: The least money one gap closer gets (#1652): a closer's first call is held at its upper bound
+#: (about $0.15 with its crops), so the paid run of 2026-10-19's closers at $0.08 each never made a
+#: call (4 of 10 stopped at once).
+MIN_GAP_RUN_MICROS: Final = 250_000
 #: The later phases' money, kept back when the gap closers take what P1 left.
 _LATER_PHASES: Final = PROTECTED
 #: Code's estimate of one advocate call's prompt (two crops and the question) and its reply.
@@ -163,6 +167,9 @@ _STRING_MAX_TOKENS: Final = 3_000
 _STRING_PAD_PT: Final = 24.0
 #: The lead review's pages at most (#1641): about $0.10 of Opus 5.5 a page.
 LEAD_MAX_PAGES: Final = 8
+#: The lead review's money per page it takes (#1652): with tight zooms at low effort, about two
+#: Opus calls a page.
+LEAD_PAGE_MICROS: Final = 100_000
 #: A helper's report in the lead's brief, and all of them, at most (characters).
 _NOTE_CHARS: Final = 1_500
 _NOTES_CHARS: Final = 7_000
@@ -469,6 +476,8 @@ def unrecorded_lines(report: str, pages: Collection[int]) -> list[dict[str, Any]
             continue
         if not architect or not vendor or not found.group(2).strip():
             continue
+        if not re.search(r"\d", vendor):
+            continue  # "as listed", "not read": no value was read (paid run 2026-10-19, #1652)
         out.append(
             {
                 "page": page,
@@ -512,6 +521,8 @@ def _item_lines(findings: Sequence[Mapping[str, Any]]) -> str:
             name = "GV Review's recorded difference"
         why = " ".join(str(finding.get("why") or "").split())[:200]
         record = f" record_id {finding['record_id']};" if finding.get("record_id") else ""
+        if finding.get("salvaged"):
+            record = " a helper's note: report_finding it anew at its spots;"
         lines.append(
             f"- {finding['id']} p{finding['page']}: {name}; architect {finding.get('architect')}; "
             f"vendor {finding.get('vendor')};{record} {why}"
@@ -529,6 +540,7 @@ def _decimal(value: object) -> Any:
 
 
 LEAD_BRIEF: Final = """LEAD REVIEW of {where}: you are the senior reviewer after the page helpers. Code, not you, decides Wrong, Right or Not compared, from the spots you record; record what is missing, never repeat what is recorded. In this order, the biggest first:
+Never view whole pages: zoom tight (about 300 points across at most) on each item's two spots; your money is the lead's share of the fixed price, about a dozen calls.
 1. PLACE each item below: a helper (or GV Review's own page review) read it, but code has no spot for it, so it cannot be proved. Zoom both drawings with marks: true and give code the spots: update_finding with its finding_id and the labels (vendor_dim, architect_dim) or, for a number with no label (pen strokes), the value with its tight box; for GV Review's recorded item report_finding with its record_id. When the two do not measure the same thing, say so (status check, decision_help).
 2. STRINGS: record_string every vendor dimension string on these pages not recorded yet (part_dims and total_dim, or each value with its box on pen-stroke pages): code adds them.
 3. COMPARE what the helpers left on these pages (their notes below): every architect dimension and note against the vendor's, as the brief below says.
@@ -1053,7 +1065,8 @@ class _Run:
                 engine._note_coverage(page, "not reached within the fixed price")
         if not chosen:
             return
-        runs = page_runs(chosen, min(MAX_GAP_CLOSERS, engine._max_agents))
+        closers = min(MAX_GAP_CLOSERS, engine._max_agents, max(1, budget // MIN_GAP_RUN_MICROS))
+        runs = page_runs(chosen, closers)
         agents = []
         for run in runs:
             brief = helper_brief(
@@ -1076,6 +1089,7 @@ class _Run:
                     pages=tuple(run),
                     lens="gap",
                     effort="medium",
+                    phase="gap_closers",
                     cap_micros=budget * len(run) // len(chosen),
                     soft_cap=True,
                     system=engine._kind_system("numbers"),
@@ -1134,6 +1148,7 @@ class _Run:
                 self._agent(
                     call_id=f"prove-{pages[0]}",
                     description=f"Verify pages {pages[0]}-{pages[-1]}",
+                    phase="provers",
                     prompt=PROVER_BRIEF.format(
                         pages=", ".join(str(p) for p in pages),
                         file=f"{UPLOADS}/{engine.book.main_file}",
@@ -1182,27 +1197,50 @@ class _Run:
                 "category": "other",
                 "architect": line["architect"],
                 "vendor": line["vendor"],
-                "status": line["status"],
+                # Never Wrong: nobody recorded it at its spots (#1652); it is a note for GV's
+                # reviewer until a helper or the lead review records it there.
+                "status": "check",
                 "source": "architect",
                 "verified": False,
                 "why": f"Read by a helper that did not record it at its spots: {line['why']}"[
                     :_SALVAGE_WHY
                 ],
-            }
-            if line["status"] == "check":
-                given["decision_help"] = {
+                "decision_help": {
                     "measures": line["why"][:_SALVAGE_WHY] or "not recorded at its spots",
                     "estimate": None,
                     "likely": "can't tell",
                     "confirm": "find both values at their spots",
-                }
+                },
+            }
             try:
-                finding, _notes = engine.book.report(given, f"helper:{agent.number}")
+                with engine.finding_lock:
+                    finding, _notes = engine.book.report(given, f"helper:{agent.number}")
+                    # Code's "printed against printed is Wrong" rule never makes a note Wrong.
+                    finding = judged({**finding, "status": "check", "salvaged": True})
+                    engine.book.replace(finding)
             except Exception as refused:  # noqa: BLE001 - one bad line never stops the others
                 _log.info("assistant roster salvage line not used: %s", refused)
                 continue
             live.append(finding)
             engine._show_finding(finding)
+
+    def _drop_placed_salvage(self) -> None:
+        """A note a helper could not record (`salvaged`) goes once a recorded item has the same
+        page and values (the lead review or a gap closer recorded it at its spots)."""
+        engine = self.engine
+        live = engine.book.live()
+        recorded = [f for f in live if not f.get("salvaged")]
+        for note in [f for f in live if f.get("salvaged")]:
+            line = {k: note.get(k) for k in ("page", "item", "architect", "vendor")}
+            twin = next((f for f in recorded if _known(line, [f])), None)
+            if twin is None:
+                continue
+            with engine.finding_lock:
+                gone = engine.book.absorb(str(note["id"]))
+            if gone:
+                engine._show_dropped(
+                    str(note["id"]), f"Recorded at its spots as {twin['id']}: that item carries it."
+                )
 
     # -- P3b: the lead review (#1641) --
 
@@ -1233,7 +1271,10 @@ class _Run:
         for page in sorted(set(unfinished_pages(planned, coverage)) | gaps):
             if page not in order and page in planned:
                 order.append(page)
-        chosen = sorted(order[:LEAD_MAX_PAGES])
+        room = LEAD_MAX_PAGES
+        if self.plan is not None:
+            room = max(1, min(room, self.plan.caps["lead"] // LEAD_PAGE_MICROS))
+        chosen = sorted(order[:room])
         return chosen, [f for f in unplaced if int(f["page"]) in chosen]
 
     def _lead_review(self, page_map: Mapping[str, Any] | None) -> None:
@@ -1275,7 +1316,10 @@ class _Run:
             model=model,
             pages=tuple(pages),
             lens="lead",
-            effort="medium",
+            # Low: the paid run of 2026-10-19 spent the whole lead share on two calls of
+            # whole-page views and a long think, and wrote nothing (#1652).
+            effort="low",
+            phase="lead_review",
             cap_micros=cap,
             soft_cap=True,
             system=engine._kind_system("numbers"),
@@ -1283,6 +1327,7 @@ class _Run:
         )
         entries = engine._launch([agent], on_done=engine._helper_done)
         self._salvage(agent, entries[0])
+        self._drop_placed_salvage()
         if entries[0].get("stopped") == "cost_cap":
             self._note(f"{agent.description}: stopped at its cap")
 
@@ -1866,6 +1911,7 @@ class _Run:
                 self._agent(
                     call_id=f"sharper-{pages[0]}",
                     description=f"Look again, pages {pages[0]}-{pages[-1]}",
+                    phase="escalation",
                     prompt=PROVER_BRIEF.format(
                         pages=", ".join(str(p) for p in pages),
                         file=f"{UPLOADS}/{engine.book.main_file}",

@@ -751,7 +751,7 @@ def test_the_escalation_spends_only_what_is_left_under_the_price(
     assert proof.proof_group(found) == "not_compared"  # still not compared, never red
     # Said on the item (#1641): the check it needed was not reached within the fixed price.
     assert found["critic"]["note"].startswith("Not verified within the fixed price")
-    assert proof.classified(found).why.startswith("not verified within the fixed price")
+    assert str(proof.classified(found).why).startswith("not verified within the fixed price")
     assert any("not verified" in line for line in run.not_done)
 
 

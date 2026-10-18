@@ -71,6 +71,7 @@ type Reason = Literal[
     "no_sheet",
     "no_overall",
     "string_not_verified",
+    "internal",
 ]
 
 #: The Not-compared reasons, in the order the list and the summary give them.
@@ -88,6 +89,7 @@ REASONS: Final[tuple[Reason, ...]] = (
     "finish_not_comparable",
     "no_sheet",
     "prototype",
+    "internal",
 )
 #: Each reason as the Not-compared list's heading and the summary line say it.
 REASON_WORDS: Final[Mapping[str, str]] = {
@@ -104,6 +106,7 @@ REASON_WORDS: Final[Mapping[str, str]] = {
     "no_sheet": "no sheet of the area or round to compare",
     "no_overall": "architect gives only parts, no overall",
     "string_not_verified": "vendor's string not verified on the drawing",
+    "internal": "read by the AI only, never at its spot (GV's reviewer only)",
 }
 #: The trade's own words for each reason (industry review, topic 5), shown next to ours on the
 #: Not-compared list, the workbook and the screen.
@@ -121,6 +124,7 @@ TRADE_WORDS: Final[Mapping[str, str]] = {
     "no_sheet": "Not reviewed: no sheet to compare",
     "no_overall": "Not reviewed: architect gives no overall",
     "string_not_verified": "Not reviewed: string not verified on the drawing",
+    "internal": "Internal: read but not recorded at its spot",
 }
 #: The rule each reason comes from.
 _RULES: Final[Mapping[str, str]] = {
@@ -137,6 +141,7 @@ _RULES: Final[Mapping[str, str]] = {
     "no_sheet": "R7",
     "no_overall": "R7",
     "string_not_verified": "R5",
+    "internal": "R9",
 }
 #: The architect's drawing points to the brand standard: the prototype is then its intent (R1).
 _POINTS_TO_PROTOTYPE: Final = re.compile(
@@ -447,7 +452,30 @@ def classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
     )
 
 
+def internal(finding: Mapping[str, Any]) -> bool:
+    """An item for GV's reviewer only, never the vendor's (#1652): a difference a helper read but
+    never recorded at its spots (`salvaged`, the full check's UNRECORDED lines), or the reading
+    ledger's "one drawing shows it, the other does not" item, whose absence code never searched
+    for. Neither is ever red, and neither is in the letter, the register, the Not-compared list
+    or the cloud drawing; the screen lists it in grey."""
+    if finding.get("salvaged") is True:
+        return True
+    return finding.get("created_by") == "ledger" and finding.get("source") == "completeness"
+
+
 def _classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
+    if internal(finding):
+        if finding.get("salvaged") is True:
+            why = (
+                "a helper read it but did not record it at its spots, so code never read it; "
+                "kept for GV's reviewer only"
+            )
+        else:
+            why = (
+                "an AI reading lists it on one drawing only and code did not search the other "
+                "drawing for it; kept for GV's reviewer only"
+            )
+        return _not("internal", why, "both values read at their spots on the drawings")
     status = finding.get("status")
     source = str(finding.get("source") or "")
     parts = finding.get("architect_parts")

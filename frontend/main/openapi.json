@@ -5300,6 +5300,17 @@
             "title": "Status",
             "type": "string"
           },
+          "string_reads": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatFindingStringReadsOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A vendor string (#1641): the blind second reading's outcome, in code's words (proved: the same parts and overall, and code's sum is off; gap: code's lines show a part left out, so no reading was asked; not_verified: the fixed price did not reach it)."
+          },
           "sum_text": {
             "anyOf": [
               {
@@ -5463,7 +5474,8 @@
                   "finish_not_comparable",
                   "no_sheet",
                   "no_overall",
-                  "string_not_verified"
+                  "string_not_verified",
+                  "internal"
                 ],
                 "type": "string"
               },
@@ -5662,6 +5674,34 @@
           "how"
         ],
         "title": "ChatFindingSettledOut",
+        "type": "object"
+      },
+      "ChatFindingStringReadsOut": {
+        "description": "A full check (#1641, #1652): what the blind second reading of a vendor string gave.",
+        "properties": {
+          "outcome": {
+            "enum": [
+              "proved",
+              "adds_up",
+              "within_rounding",
+              "disagrees",
+              "not_found",
+              "gap",
+              "not_verified"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "why": {
+            "title": "Why",
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "why"
+        ],
+        "title": "ChatFindingStringReadsOut",
         "type": "object"
       },
       "ChatFindingUpdateBlock": {

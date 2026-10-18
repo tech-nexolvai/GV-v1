@@ -64,7 +64,7 @@ from pathlib import Path
 from time import monotonic
 from typing import Any, Final, Literal
 
-from app.review.assistant.classification import missing_on_vendor
+from app.review.assistant.classification import internal, missing_on_vendor
 from app.review.assistant.finding_checks import (
     arithmetic_off_by,
     claim_value,
@@ -134,7 +134,8 @@ _OTHER_MEASURE: Final = re.compile(
     re.IGNORECASE,
 )
 _GV_MARKUP: Final = re.compile(
-    r"GV'?s? (?:yellow|markup|cloud|box|note|ink)|yellow[- ]box|GV[- ]markup|red ink|coloured ink",
+    r"GV'?s? (?:yellow|markup|cloud|box|note|ink)|yellow[- ]box|GV[- ]markup|red ink|coloured ink"
+    r"|(?:noted|marked|written) by GV",
     re.IGNORECASE,
 )
 _UNREADABLE: Final = re.compile(
@@ -175,6 +176,9 @@ _SCALES_ABOUT: Final = re.compile(
 )
 _CONFIRM: Final = re.compile(r"confirm (whether|which|if|what)\b([^.;]+)", re.IGNORECASE)
 _FILLER: Final = re.compile(r"\bfillers?\b", re.IGNORECASE)
+#: An item about a run's overall or its parts that mentions its fillers is not a filler item (the
+#: paid run of 2026-10-19 read "overalls 118\" (with fillers)" as a 118" filler, #1652).
+_RUN_ITEM: Final = re.compile(r"\boveralls?\b|\bsegments?\b|\bstrings?\b", re.IGNORECASE)
 _MEASURE_WORDS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
     ("width", re.compile(r"\b(?:widths?|wide|runs?|lengths?)\b", re.IGNORECASE)),
     ("height", re.compile(r"\b(?:heights?|high|tall)\b", re.IGNORECASE)),
@@ -445,6 +449,8 @@ def _filler_limits(finding: Mapping[str, Any], settings: Mapping[str, str]) -> _
     """GV's filler limits in force for the set (rules.md) against the vendor's filler widths."""
     if not _FILLER.search(str(finding.get("item") or "")):
         return None  # a filler mentioned beside a run's width is not a filler item
+    if _RUN_ITEM.search(str(finding.get("item") or "")):
+        return None  # a run's overall or parts "with fillers" is not a filler width
     low, high = _limit(settings, "filler_min"), _limit(settings, "filler_max")
     if low is None or high is None:
         return None
@@ -834,6 +840,8 @@ def _choose_primary(group: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
     with a spot on the drawing comes before one without."""
     settled = [f for f in group if f.get("status") != "check"]
     pool = settled or list(group)
+    # A copy for GV's reviewer only never carries an item the vendor may see (#1652).
+    pool = [f for f in pool if not internal(f)] or pool
 
     def rank(f: Mapping[str, Any]) -> tuple[int, int, int, int, int, int, str]:
         compares = 0 if _NOTHING_PRINTED.search(str(f.get("architect") or "")) else 1
@@ -1163,6 +1171,8 @@ def resolve(findings: Sequence[Mapping[str, Any]], ctx: ResolverContext) -> Reso
         finding_id = str(finding["id"])
         if finding.get("status") != "check" or finding_id in absorbed:
             continue
+        if internal(finding):
+            continue  # GV's reviewer only (#1652): no rule or reading ever settles it
         current = changed.get(finding_id) or dict(finding)
         settle, reason, read_words = _settle_one(current, ctx)
         if settle is not None and settle.outcome == "right" and not _backs_right(current, settle):

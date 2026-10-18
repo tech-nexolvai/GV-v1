@@ -48,6 +48,17 @@ describe('the zero-click drawing groups (#1581)', () => {
   });
 });
 
+describe('items for GV’s reviewer only (#1652)', () => {
+  it('are never clouded, even when agreed, and are not counted with what is sent', () => {
+    const note = finding('n1', { status: 'check', proof: { group: 'not_compared', not_compared: 'internal', label: 'Internal: read but not recorded at its spot' } });
+    expect(proofGroup(note)).toBe('not_compared');
+    expect(proofGroup(note, { decision: 'agree' })).toBe('not_compared');
+    expect(notComparedWords(note)?.label).toBe('Internal: read but not recorded at its spot');
+    const sent = finding('w1', { status: 'different', proof: { group: 'clouded' } });
+    expect(proofCounts([note, sent])).toEqual({ clouded: 1, right: 0, not_compared: 0, dismissed: 0 });
+  });
+});
+
 describe('a full check shows each item where its cloud drawing puts it (#1619)', () => {
   it('puts what code could not prove under Nothing to compare, and Make it Wrong moves it to Wrong', () => {
     const open = finding('w1', { status: 'different', proof: { group: 'not_compared', label: 'Not reviewed: not directly comparable', reason: 'the two dimensions run between different points', settle: 'the printed offset' } });

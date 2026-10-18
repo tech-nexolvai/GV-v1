@@ -233,6 +233,22 @@ def test_fillers_outside_gvs_limits_are_wrong_and_inside_are_right() -> None:
     assert by_id(result)["F2"]["status"] == "same"
 
 
+def test_a_run_overall_with_fillers_markup_values_and_helper_notes_are_never_filler_wrongs() -> (
+    None
+):
+    """#1652: the paid run of 2026-10-19 clouded a run's overalls and GV's own noted values as
+    filler widths, both from a helper's unrecorded note."""
+    overall = finding("F1", item='Elevation B overalls 118" (with fillers)', vendor='118" / 111"')
+    noted = finding("F2", item="Area 2: filler widths", vendor='3 1/2" noted by GV', page=7)
+    note = {
+        **finding("F3", item="Area 2: filler widths", vendor='3 1/2"', page=8),
+        "salvaged": True,
+    }
+    result = resolve([overall, noted, note], ResolverContext(areas=AREAS, settings=SETTINGS))
+    assert all(by_id(result).get(i, {"status": "check"})["status"] == "check" for i in ("F1", "F2"))
+    assert "F3" not in by_id(result)  # GV's reviewer only: never settled, never changed
+
+
 def test_a_run_width_that_mentions_its_fillers_is_not_a_filler_item() -> None:
     run = finding("F1", item="Buffet run width", vendor='150" = 3"+2" filler + 140" + 3"+2" filler')
     result = resolve([run], ResolverContext(areas=AREAS, settings=SETTINGS))
