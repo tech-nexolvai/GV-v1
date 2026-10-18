@@ -235,7 +235,9 @@ class Drawing(_Frozen):
     """One drawing pasted on a page (a page map `half`)."""
 
     ref: str
-    """`p23.v1` (the page's first vendor drawing), `p23.a1` (architect), `p28.b1` (prototype)."""
+    """A vendor drawing: `p{page}.v{round}` (`v0`: round not known), with `.1`, `.2`... when one
+    page has two vendor drawings of one round, in reading order (`p11.v1.2`). An architect drawing:
+    `p23.a1` (the page's first); a brand prototype: `p28.b1`."""
     file: str
     page: int
     half: int
@@ -266,7 +268,7 @@ class WorkItem(_Frozen):
     """One vendor drawing to compare, with the architect drawings of its area."""
 
     id: str
-    """The vendor drawing's ref, `p23.v1`."""
+    """The vendor drawing's ref (`p23.v1`, `p54.v2.1`): the same id every builder uses."""
     file: str
     page: int
     section: str | None = None

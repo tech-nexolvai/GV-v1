@@ -202,6 +202,22 @@ def _assign_labels(
     return left
 
 
+def _vendor_ids(page: int, halves: Sequence[_Half]) -> None:
+    """The vendor drawings' ids, shared by every builder of the simple check: `p{page}.v{round}`
+    (`v0` when the round is not known), and `.1`, `.2`... when one page has two vendor drawings of
+    one round, in reading order (top to bottom, then left to right)."""
+    ordered = sorted(halves, key=lambda h: (h.round or 0, h.box[1], h.box[0]))
+    total: dict[int, int] = {}
+    for half in ordered:
+        total[half.round or 0] = total.get(half.round or 0, 0) + 1
+    seen: dict[int, int] = {}
+    for half in ordered:
+        number = half.round or 0
+        seen[number] = seen.get(number, 0) + 1
+        base = f"p{page}.v{number}"
+        half.ref = base if total[number] == 1 else f"{base}.{seen[number]}"
+
+
 def _label(page: int, raw: Mapping[str, Any]) -> Label | None:
     box = _box(raw.get("box"))
     label_id = raw.get("id")
@@ -435,8 +451,10 @@ def worklist_from(
                     f"p{page}.h{index + 1}",
                 )
                 continue
-            counts[letter] = counts.get(letter, 0) + 1
-            half.ref = f"p{page}.{letter}{counts[letter]}"
+            if letter != "v":
+                counts[letter] = counts.get(letter, 0) + 1
+                half.ref = f"p{page}.{letter}{counts[letter]}"
+        _vendor_ids(page, [h for h in halves if h.role == "vendor"])
         dims_page = dims_pages.get((file, page))
         left = _assign_labels(
             [h for h in halves if h.ref],

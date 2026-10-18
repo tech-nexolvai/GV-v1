@@ -163,9 +163,9 @@ def _worklist() -> Any:
 
 def test_one_item_per_vendor_drawing_with_rounds() -> None:
     work = _worklist()
-    assert [item.id for item in work.items] == ["p2.v1", "p3.v1", "p5.v1", "p5.v2"]
+    assert [item.id for item in work.items] == ["p2.v1", "p3.v2", "p5.v1.1", "p5.v1.2"]
     first, second = work.items[0], work.items[1]
-    assert (first.round, first.newest_round, first.later_rounds) == (1, False, ("p3.v1",))
+    assert (first.round, first.newest_round, first.later_rounds) == (1, False, ("p3.v2",))
     assert (second.round, second.newest_round, second.earlier_rounds) == (2, True, ("p2.v1",))
     assert second.area == "1. Kitchen" and second.section == "1. WALL"
 
@@ -241,7 +241,7 @@ def test_a_page_skipped_in_the_plan_check_and_another_upload() -> None:
         {**_page(1, [_half("architect", TOP)], area="1. Kitchen"), "file": "other.pdf"}
     )
     work = worklist_from(pages, dims=_dims(), notes=_notes(), main_file=FILE)
-    assert "p3.v1" not in [item.id for item in work.items]
+    assert "p3.v2" not in [item.id for item in work.items]
     assert any(s.page == 3 and "plan check" in s.reason for s in work.skipped)
     assert any(s.file == "other.pdf" and "another upload" in s.reason for s in work.skipped)
 
@@ -254,9 +254,9 @@ def test_build_from_a_pack_folder(tmp_path: Path) -> None:
     # Read as a full check reads it: code's likely answers to the plan check laid over the map
     # (page 7 compared with the architect page before it; page 8's unheaded drawing the vendor's).
     by_id = {item.id: item for item in work.items}
-    assert sorted(by_id) == ["p2.v1", "p3.v1", "p5.v1", "p5.v2", "p7.v1", "p8.v1"]
+    assert sorted(by_id) == ["p2.v1", "p3.v2", "p5.v1.1", "p5.v1.2", "p7.v1", "p8.v0"]
     assert [d.ref for d in by_id["p7.v1"].architect] == ["p6.a1"]
-    assert [d.ref for d in by_id["p8.v1"].architect] == ["p8.a1"]
+    assert [d.ref for d in by_id["p8.v0"].architect] == ["p8.a1"]
     assert work.uncovered == ()
     with pytest.raises(FileNotFoundError):
         build_worklist(tmp_path / "missing", FILE)
