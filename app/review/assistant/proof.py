@@ -6,9 +6,9 @@ a false red cloud goes straight to the vendor, so **only what code proved is clo
 
 - **clouded**: a Wrong item (status `different`) with an independent code witness behind it
   (`witness.py`: printed at both spots, drawn ink read by two OCR engines, GV's rule check, code's
-  sum, the reading ledger, millimetres and inches agreeing), a trust level of Confirmed or Likely,
-  and a governing value code knows (GV's rule or limits, code's sum, or the architect's value
-  read as one size). Never a value measured off the drawing or taken from a scale note (the
+  sum, the reading ledger, millimetres and inches agreeing, finish codes read from the drawings'
+  text), a trust level of Confirmed or Likely, and a governing value code knows (GV's rule or
+  limits, code's sum, the architect's value read as one size, or the architect's finish code). Never a value measured off the drawing or taken from a scale note (the
   printed scales are wrong wherever GV resized a pasted drawing). A comparison of two drawn
   dimensions (vendor against architect or prototype) also needs a **pairing proof** that both
   numbers measure the same thing (`pairing_proved`: the full check's devil's advocate passed it,
@@ -143,6 +143,8 @@ _PROOF_WORDS: Final[Mapping[str, str]] = {
     "rule": "GV's rule check fails it",
     "ledger": "code's reading ledger backs it (the string adds up, or other views agree)",
     "units": "the millimetres and inches printed together agree",
+    "text": "code read the finish codes in the drawings' own text and searched every vendor "
+    "sheet and round of the area",
 }
 #: The limits in the resolver's words for GV's limits (`decision_resolver._filler_limits`).
 _LIMITS: Final = re.compile(r"limits are (.+?) \(")
@@ -285,6 +287,9 @@ def _governing_known(finding: Mapping[str, Any], found: Sequence[str]) -> bool:
     if "rule" in found or _gv_limits(finding) is not None:
         return True
     if finding.get("source") == "vendor_arithmetic" and "arithmetic" in found:
+        return True
+    if "text" in found:
+        # The finish check (#1623): the architect's code, read from the drawing's text, governs.
         return True
     return _decimal((finding.get("inches") or {}).get("architect")) is not None
 
