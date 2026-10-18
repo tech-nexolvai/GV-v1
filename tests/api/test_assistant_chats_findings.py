@@ -25,8 +25,8 @@ from pypdf import PdfReader
 from app.review.assistant import chat_engine, chat_trust
 from app.review.assistant.chat_findings import COVERAGE_CHECK_PREFIX
 from tests.api.test_assistant_chats import _events, _held, _named, _running, _until_saved, _world
-from tests.review.assistant.chat_fakes import ScriptedProvider, reply, text, tool
 from tests.dummy_products import DUMMY, use_dummy_registry
+from tests.review.assistant.chat_fakes import ScriptedProvider, reply, text, tool
 from tests.review.assistant.test_chat_findings import VENDOR_BOX, finding_input, make_pdf
 
 __all__ = ["use_dummy_registry"]  # the fixture, imported so pytest finds it

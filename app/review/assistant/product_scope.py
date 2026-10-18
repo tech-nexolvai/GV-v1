@@ -185,9 +185,12 @@ def final_blocks(
         trust = block.get("trust")
         # The engine wrote the note with the book's count; it is replaced only when this filter
         # dropped more (or there is none), so the stored trust block matches the streamed one.
-        if block.get("type") == "trust" and isinstance(trust, Mapping):
-            if dropped or not isinstance(trust.get("product_scope"), Mapping):
-                kept[n] = {**block, "trust": {**trust, "product_scope": note}}
+        if (
+            block.get("type") == "trust"
+            and isinstance(trust, Mapping)
+            and (dropped or not isinstance(trust.get("product_scope"), Mapping))
+        ):
+            kept[n] = {**block, "trust": {**trust, "product_scope": note}}
     return kept, total
 
 
