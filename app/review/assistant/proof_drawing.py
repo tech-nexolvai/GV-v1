@@ -139,6 +139,8 @@ _CROP_MAX_W: Final = 0.46
 _CROP_MAX_H: Final = 210.0
 #: The search for printed values on the architect's side stops after this many seconds.
 _SNAP_BUDGET_S: Final = 20.0
+#: The key a round-2 mark's finding carries its `round_check.RoundItem` under (#1603).
+_ROUND_KEY: Final = "_round_two"
 #: The small heading on each sheet with clouds.
 _SHEET_STAMP_SIZE: Final = 9.0
 _NOTE_ROWS: Final = 3
@@ -200,16 +202,69 @@ def _fit(runs: Sequence[_Run], room: float) -> list[_Run]:
     return out
 
 
+def _round(mark: Mark) -> Any:
+    """The round-2 status a mark carries (`round_check.RoundItem`), or `None`."""
+    return mark.finding.get(_ROUND_KEY)
+
+
+def _later(mark: Mark) -> bool:
+    """A round-1 item's mark on its round-2 page (#1603)."""
+    rounds = _round(mark)
+    return rounds is not None and rounds.status in ("fixed", "still_wrong")
+
+
+def _grown(box: Box, pad: float = 2.0) -> Box:
+    x0, y0, x1, y1 = box
+    return (min(x0, x1) - pad, min(y0, y1) - pad, max(x0, x1) + pad, max(y0, y1) + pad)
+
+
 def note_lines(mark: Mark) -> list[list[_Run]]:
     """A clouded item's note: its item, "Vendor: 46"" in red, "Should be: 37" (architect …)" in
-    green, one line each (cut with "…"; the proof page has the whole words)."""
+    green, one line each (cut with "…"; the proof page has the whole words). On round 2 (#1603):
+    "Fixed in round 2: was 46", now 37"" in green, "Still wrong in round 2: now 46"" in red, or
+    the item headed "NEW" in red."""
     finding = mark.finding
     vendor = vendor_value(finding)
     value = should_be_value(finding)
     source = governs(finding)
     room = NOTE_WIDTH_PT - 2 * _NOTE_PAD - _NOTE_BAR - _prefix_width(mark)
+    item = str(finding.get("item") or "Item")
+    rounds = _round(mark)
+    head: list[_Run] = [(item, _NOTE_BOLD, _DARK)]
+    if rounds is not None and rounds.status == "fixed":
+        return [
+            _fit(head, room),
+            _fit(
+                [
+                    ("Fixed in round 2: ", _NOTE_FONT, GREEN),
+                    ("was ", _NOTE_FONT, GREEN),
+                    (rounds.was, _NOTE_BOLD, GREEN),
+                    (", now ", _NOTE_FONT, GREEN),
+                    (str(rounds.now), _NOTE_BOLD, GREEN),
+                ],
+                room,
+            ),
+        ]
+    if rounds is not None and rounds.status == "still_wrong":
+        middle = [
+            ("Still wrong in round 2: now ", _NOTE_FONT, RED),
+            (str(rounds.now), _NOTE_BOLD, RED),
+        ]
+        if rounds.now != rounds.was:
+            middle.append((f" (was {rounds.was})", _NOTE_FONT, RED))
+        return [
+            _fit(head, room),
+            _fit(middle, room),
+            _fit(
+                [("Should be: ", _NOTE_FONT, GREEN), (value, _NOTE_BOLD, GREEN)]
+                + ([(f" ({source})", _NOTE_FONT, GREEN)] if source else []),
+                room,
+            ),
+        ]
+    if rounds is not None and rounds.status == "new":
+        head = [("NEW ", _NOTE_BOLD, RED), (item, _NOTE_BOLD, _DARK)]
     return [
-        _fit([(str(finding.get("item") or "Item"), _NOTE_BOLD, _DARK)], room),
+        _fit(head, room),
         _fit([("Vendor: ", _NOTE_FONT, RED), (vendor, _NOTE_BOLD, RED)], room),
         _fit(
             [("Should be: ", _NOTE_FONT, GREEN), (value, _NOTE_BOLD, GREEN)]
@@ -285,7 +340,13 @@ def _draw_sheet(c: canvas.Canvas, height: float, placed: Sequence[_Placed]) -> N
 
     for item in placed:
         x0, y0, x1, y1 = item.spot
-        if item.area is not None and _outlined(item.area):
+        fixed = item.mark.kind == "fixed"
+        colour = GREEN if fixed else RED
+        if fixed:
+            c.setStrokeColor(GREEN)
+            c.setLineWidth(1.2)
+            c.rect(x0 - 2, up(y1) - 2, x1 - x0 + 4, y1 - y0 + 4, stroke=1, fill=0)
+        elif item.area is not None and _outlined(item.area):
             a0, b0, a1, b1 = item.area
             c.saveState()
             c.setStrokeColor(RED)
@@ -297,23 +358,24 @@ def _draw_sheet(c: canvas.Canvas, height: float, placed: Sequence[_Placed]) -> N
         left, right = x0 - _CLOUD_PAD, x1 + _CLOUD_PAD
         low, high = up(y1) - _CLOUD_PAD, up(y0) + _CLOUD_PAD
         radius = max(2.5, min(5.0, min(right - left, high - low) / 4))
-        c.setStrokeColor(RED)
-        c.setLineWidth(1.4)
-        _cloud(c, left, low, right, high, radius)
+        if not fixed:
+            c.setStrokeColor(RED)
+            c.setLineWidth(1.4)
+            _cloud(c, left, low, right, high, radius)
         if item.note is None:
             continue
         n0, m0, n1, m1 = item.note
         cx = min(max((n0 + n1) / 2, x0 - _CLOUD_PAD), x1 + _CLOUD_PAD)
         cy = min(max((m0 + m1) / 2, y0 - _CLOUD_PAD), y1 + _CLOUD_PAD)
         ex, ey = min(max(cx, n0), n1), min(max(cy, m0), m1)
-        c.setStrokeColor(RED)
+        c.setStrokeColor(colour)
         c.setLineWidth(0.8)
         c.line(cx, up(cy), ex, up(ey))
         c.setFillColor(white)
         c.setStrokeColor(_GREY)
         c.setLineWidth(0.5)
         c.rect(n0, up(m1), n1 - n0, m1 - m0, stroke=1, fill=1)
-        c.setFillColor(RED)
+        c.setFillColor(colour)
         c.rect(n0, up(m1), _NOTE_BAR, m1 - m0, stroke=0, fill=1)
         prefix = f"{item.mark.number}"
         lead = _prefix_width(item.mark)
@@ -323,23 +385,34 @@ def _draw_sheet(c: canvas.Canvas, height: float, placed: Sequence[_Placed]) -> N
         c.drawString(tx, up(ty), prefix)
         for row, line in enumerate(item.lines):
             x = tx + lead
-            for text, font, colour in line:
-                c.setFillColor(colour)
+            for text, font, ink in line:
+                c.setFillColor(ink)
                 c.setFont(font, _NOTE_SIZE)
                 c.drawString(x, up(ty + row * _NOTE_LEADING), text)
                 x += _measure(text, font)
     for item in placed:
         mx, my = item.marker
-        c.setFillColor(RED)
+        c.setFillColor(GREEN if item.mark.kind == "fixed" else RED)
         c.setStrokeColor(white)
         c.setLineWidth(0.8)
         c.circle(mx, up(my), _MARKER_RADIUS, stroke=1, fill=1)
+        if item.mark.kind == "fixed":
+            # A check mark: fixed in round 2.
+            r = _MARKER_RADIUS
+            c.setStrokeColor(white)
+            c.setLineWidth(1.6)
+            path = c.beginPath()
+            path.moveTo(mx - 0.45 * r, up(my))
+            path.lineTo(mx - 0.1 * r, up(my) - 0.38 * r)
+            path.lineTo(mx + 0.5 * r, up(my) + 0.42 * r)
+            c.drawPath(path, stroke=1, fill=0)
+            continue
         label = str(item.mark.number)
         size = 7.5 if len(label) < 3 else 6.0
         c.setFillColor(white)
         c.setFont(_NOTE_BOLD, size)
         c.drawCentredString(mx, up(my) - size * 0.35, label)
-    numbers = {item.mark.number for item in placed}
+    numbers = {item.mark.number for item in placed if item.mark.kind != "fixed"}
     if numbers:
         _sheet_stamp(c, height, len(numbers))
 
@@ -643,6 +716,90 @@ def _cover(
     return story
 
 
+#: A round-2 status as the cover says it, and its colour (#1603).
+_ROUND_WORDS: Final[Mapping[str, tuple[str, Color]]] = {
+    "fixed": ("Fixed", GREEN),
+    "still_wrong": ("Still wrong", RED),
+    "new": ("NEW", RED),
+    "also_in_round_1": ("Still wrong (also in round 1)", RED),
+}
+
+
+def _round_section(
+    styles: Mapping[str, ParagraphStyle],
+    rounds: Any,
+    numbers: Mapping[str, int],
+    width: float,
+) -> list[Any]:
+    """The cover's round-2 summary (#1603): one line, then each item code compared."""
+    line = rounds.line() if rounds is not None else None
+    if line is None:
+        return []
+    body = styles["body"]
+    story: list[Any] = [
+        Paragraph("Round 2: what the vendor did", styles["section"]),
+        Paragraph(escape(line), body),
+        Paragraph(
+            escape(
+                "Code lines round 2 up with round 1 by the values printed in both and compares "
+                "the printed values at each item's spot; where it cannot, the item is listed in "
+                "grey on the notes pages, never guessed."
+            ),
+            styles["grey"],
+        ),
+    ]
+    rows = []
+    for item in rounds.items:
+        if item.status not in _ROUND_WORDS:
+            continue
+        words, colour = _ROUND_WORDS[item.status]
+        rows.append(
+            [
+                Paragraph(f"<b>{numbers.get(item.finding_id, '')}</b>", body),
+                Paragraph(escape(str(item.page or "")), body),
+                Paragraph(escape(item.item), body),
+                Paragraph(_coloured("", words, colour), body),
+                Paragraph(_coloured("", item.was, RED), body),
+                Paragraph(
+                    _coloured("", str(item.now or ""), GREEN if item.status == "fixed" else RED),
+                    body,
+                ),
+                Paragraph(_coloured("", item.should_be, GREEN), body),
+            ]
+        )
+    if rows:
+        usable = width - 72
+        head = [
+            Paragraph(f"<b>{escape(words)}</b>", styles["small"])
+            for words in ("#", "Page", "Item", "Round 2", "Was", "Now", "Should be")
+        ]
+        table = Table(
+            [head, *rows],
+            colWidths=[
+                24,
+                36,
+                usable * 0.3,
+                usable * 0.14,
+                usable * 0.14,
+                usable * 0.14,
+                usable * 0.28 - 60,
+            ],
+            repeatRows=1,
+            hAlign="LEFT",
+        )
+        table.setStyle(
+            TableStyle(
+                [
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LINEBELOW", (0, 0), (-1, -1), 0.25, Color(0.8, 0.8, 0.8)),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                ]
+            )
+        )
+        story.append(table)
+    return story
+
+
 def _proof_entries(
     styles: Mapping[str, ParagraphStyle], items: Sequence[_ProofItem], width: float
 ) -> list[Any]:
@@ -855,6 +1012,7 @@ def proof_markup_pdf(
     cache: Path | None = None,
     assumptions: Sequence[str] = (),
     settled: Sequence[Mapping[str, Any]] = (),
+    rounds: Any = None,
 ) -> ProofCounts:
     """The zero-click cloud drawing of a full check (see the module's words) written to `out`.
 
@@ -863,6 +1021,9 @@ def proof_markup_pdf(
     the chat's uploads by name, for the architect's crops (the vendor's file is `source`).
     `cache`: the set pack's hi-res page cache. `assumptions`: what code assumed about the page map,
     one line each. `settled`: what code settled by itself (#1554), listed on the notes pages.
+    `rounds`: the automatic round-2 check (`round_check.RoundReport`, #1603): each round-1 item
+    marked on its round-2 page (fixed: green check; still wrong: red cloud), new round-2 items
+    headed "NEW", a summary on the cover and the items code could not compare in grey.
     Returns the counts the cover shows."""
     base = base if base is not None else clone_pdf(source)
     pdf = base.pdf
@@ -870,6 +1031,7 @@ def proof_markup_pdf(
     known.setdefault(source.name, source)
     findings = [finding for _n, finding, *_rest in placed]
     counts = proof_counts(findings)
+    by_round = rounds.by_finding() if rounds is not None else {}
     crop_source = source
     try:
         pages = len(pdf.pages)
@@ -878,6 +1040,9 @@ def proof_markup_pdf(
             if proof_group(finding) != "clouded":
                 continue
             shown = dict(finding)
+            found = by_round.get(str(finding.get("id")))
+            if found is not None and found.status == "new":
+                shown[_ROUND_KEY] = found
             if page is not None and box is not None and not 1 <= page <= pages:
                 page, box, where = None, None, f"Not marked: the file has no page {page}."
             clouded.append((len(clouded) + 1, shown, page, box, where))
@@ -892,10 +1057,34 @@ def proof_markup_pdf(
             if page is not None and box is not None:
                 marks.append(Mark(number, finding, page, box, "wrong", True, value or ""))
             marks += also_marks(number, finding, "wrong", True, source, pages)
+            # The same item on its round-2 page (#1603): fixed (green check) or still wrong.
+            later = by_round.get(str(finding.get("id")))
+            if (
+                later is not None
+                and later.status in ("fixed", "still_wrong")
+                and later.spot is not None
+                and later.page is not None
+                and later.file in (None, source.name)
+                and 1 <= later.page <= pages
+            ):
+                marks.append(
+                    Mark(
+                        number,
+                        {**finding, _ROUND_KEY: later, "page": later.page},
+                        later.page,
+                        later.spot,
+                        "fixed" if later.status == "fixed" else "wrong",
+                        later.status != "fixed",
+                        str(later.now or ""),
+                        extra=True,
+                    )
+                )
         by_page: dict[int, list[Mark]] = {}
         for mark in marks:
             by_page.setdefault(mark.page, []).append(mark)
-        spots = _spots(source, marks)
+        # A round-2 mark sits on code's own label (already tight), so it needs no search; it may
+        # share its number and page with the round-1 mark (both rounds on one sheet).
+        spots = _spots(source, [m for m in marks if not _later(m)])
         laid: dict[int, list[_Placed]] = {}
         clean = io.BytesIO()
         if by_page or base.dropped:
@@ -913,7 +1102,14 @@ def proof_markup_pdf(
                 document = pdfium.PdfDocument(clean.getvalue())
             try:
                 for number in sorted(by_page):
-                    items = [_Placed(m, *spots[(m.number, m.page)]) for m in by_page[number]]
+                    items = [
+                        (
+                            _Placed(m, _grown(m.box), None)
+                            if _later(m)
+                            else _Placed(m, *spots[(m.number, m.page)])
+                        )
+                        for m in by_page[number]
+                    ]
                     _layout(_shown_size(pdf.pages[number - 1]), items, _ink(document, number - 1))
                     laid[number] = items
             finally:
@@ -994,6 +1190,24 @@ def proof_markup_pdf(
         notes += _list_entries(
             styles, GROUP_WORDS["dismissed"], groups["dismissed"], _dismissed_line, _LIST_GREY
         )
+    unmatched = [
+        i for i in (rounds.items if rounds is not None else []) if i.status == "not_compared"
+    ]
+    if unmatched:
+        notes.append(
+            Paragraph(
+                escape(f"Round 2: could not be compared by code ({len(unmatched)})"),
+                styles["section"],
+            )
+        )
+        notes += [
+            Paragraph(
+                f"<b>{escape(item.item)}</b>: was {escape(item.was)}; should be "
+                f"{escape(item.should_be)}. Why: {escape(item.reason or '')}",
+                styles["grey"],
+            )
+            for item in unmatched
+        ]
     if folded:
         notes.append(
             Paragraph(f"Settled automatically by GV Review ({len(folded)})", styles["section"])
@@ -1015,6 +1229,8 @@ def proof_markup_pdf(
         assumptions=assumptions,
         width=size[0],
     )
+    numbers = {str(item.finding.get("id")): item.number for item in proof_items}
+    cover += _round_section(styles, rounds, numbers, size[0])
     parts = [("Cover", cover)]
     if proof_items:
         parts.append(("Proof", _proof_entries(styles, proof_items, size[0])))
