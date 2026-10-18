@@ -66,6 +66,9 @@ _ORDER: Final = {"red": 0, "not_compared": 1, "right": 2}
 #: Who made a finding the run judges with the code checks (everything but its own).
 _SKIP_JUDGING: Final = frozenset({CREATED_BY})
 _MICROS: Final = 1_000_000
+#: How long the run waits for the set pack to be made (its labels are read by OCR at upload).
+PACK_WAIT_SECONDS: Final = 1800.0
+_PACK_POLL_SECONDS: Final = 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,6 +173,13 @@ class _Run:
             return self._finish("cancelled")
         if self.page_map is None:
             return self._finish("error", "the drawing set's page map is not ready")
+        with engine.timings.phase("set_pack"):
+            # The work list needs the whole pack (every label, code's pairs), not just the page map.
+            waited = _wait_for_pack(folder, engine.cancel)
+        if engine.cancel.is_set():
+            return self._finish("cancelled")
+        if waited is not None:
+            return self._finish("error", waited)
         with engine.timings.phase("planning"):
             try:
                 worklist = import_module(
@@ -205,7 +215,8 @@ class _Run:
             self._compare_all(folder)
         if engine.cancel.is_set():
             return self._finish("cancelled")
-        verified = self._verify_all()
+        with engine.timings.phase("verify"):
+            verified = self._verify_all()
         if engine.cancel.is_set():
             return self._finish("cancelled")
         with engine.timings.phase("blind"):
@@ -775,6 +786,29 @@ class _Run:
             )
         lines.append(f"This check used ${engine.spent / _MICROS:.2f}.")
         return "\n\n".join(lines)
+
+
+def _pack_state(folder: Path) -> str | None:
+    try:
+        status = json.loads((folder / "status.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return str(status.get("state")) if isinstance(status, Mapping) else None
+
+
+def _wait_for_pack(folder: Path, cancel: threading.Event) -> str | None:
+    """Waits until the set pack is made (its labels and code's pairs too); why not, else None."""
+    ends = time.monotonic() + PACK_WAIT_SECONDS
+    while True:
+        state = _pack_state(folder)
+        if state == "ready":
+            return None
+        if state == "failed":
+            return "the drawing set's pack (labels, pairs) could not be made"
+        if time.monotonic() >= ends:
+            return "the drawing set's pack (labels, pairs) was still being made"
+        if cancel.wait(_PACK_POLL_SECONDS):
+            return None
 
 
 def _model(name: object) -> ChatModel | None:
