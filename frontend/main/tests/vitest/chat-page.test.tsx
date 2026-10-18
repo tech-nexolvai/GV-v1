@@ -110,7 +110,8 @@ describe('an empty chat', () => {
     ]);
     await waitFor(() => expect(starters[2].hasAttribute('disabled')).toBe(false));
     await userEvent.setup().click(starters[2]);
-    expect(stream.send).toHaveBeenCalledWith('c-1', { text: 'Make me a marked-up PDF of the problems', model: 'claude-opus-5-5', effort: 'high', thinking: true }, expect.any(Function), expect.any(AbortSignal));
+    // A set with no product stated is checked for every active product, always named (a strict scope).
+    expect(stream.send).toHaveBeenCalledWith('c-1', { text: 'Make me a marked-up PDF of the problems', model: 'claude-opus-5-5', effort: 'high', thinking: true, products: ['countertop', 'cabinet'] }, expect.any(Function), expect.any(AbortSignal));
     expect(screen.getByText('Make me a marked-up PDF of the problems', { selector: '[data-slot="chat-user-message"]' })).toBeTruthy();
   });
 
@@ -444,7 +445,7 @@ describe('model, effort and thinking in the composer', () => {
     expect(await screen.findByRole('button', { name: 'Model: Claude Sonnet 5.5' })).toBeTruthy();
     await screen.findByRole('heading', { name: `What do you want to know about ${SET_NAME}?` });
     await userEvent.setup().type(composer(), 'Hi{Enter}');
-    expect(stream.send.mock.calls[0][1]).toEqual({ text: 'Hi', model: 'claude-sonnet-5-5', effort: 'max', thinking: true });
+    expect(stream.send.mock.calls[0][1]).toEqual({ text: 'Hi', model: 'claude-sonnet-5-5', effort: 'max', thinking: true, products: ['countertop', 'cabinet'] });
   });
 });
 
