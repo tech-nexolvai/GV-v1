@@ -34,6 +34,7 @@ from app.review.assistant.product_scope import (
     named_products,
     no_rules_note,
     outside_unit,
+    refiled,
     scaled_price,
     scoped_document,
     scoped_loader,
@@ -319,3 +320,57 @@ def test_a_product_with_no_rules_is_said_plainly() -> None:
     assert "Countertops and Cabinets" in str(no_rules_note(["cabinet", "countertop"]))
     assert "No GV rules for Cabinets yet" in focus_line(["cabinet"], ["cabinet"])
     assert "No GV rules" not in focus_line(["cabinet"], ["countertop"])
+
+
+# ---- re-filing an "other" item before the scope drops it -------------------------------------------
+
+
+def test_an_other_item_is_refiled_to_its_product_before_it_is_dropped() -> None:
+    """A pull size or a finish tag the AI filed as "other" is a cabinet item (orchestrator,
+    2026-10-18): one product named = filed there; several = kept when one is picked; a product
+    not active yet (a pendant light) is never picked; nothing named = dropped, as before."""
+    pull = {"category": "other", "item": "Pull size and laminate frame note"}
+    assert refiled(pull, CABINET) == "cabinet" and refiled(pull, COUNTERTOP) is None
+    tags = {"category": "other", "item": "Material tags (counter / cabinets)"}
+    assert refiled(tags, CABINET) == "cabinet" and refiled(tags, COUNTERTOP) == "countertop"
+    light = {"category": "other", "item": "Pendant light count"}
+    assert refiled(light, CABINET) is None and refiled(light, COUNTERTOP) is None
+    assert refiled(light, BOTH) == "other"  # All drops nothing and re-files no AI item
+    plain = {"category": "other", "item": "Outlet height", "why": "drawn at 46 in"}
+    assert refiled(plain, CABINET) is None
+    # Its other words, then its page's printed words and area title (read only then).
+    worded = {**plain, "vendor": "outlet above the filler"}
+    assert refiled(worded, CABINET) == "cabinet"
+    read: list[int] = []
+
+    def page() -> str:
+        read.append(1)
+        return "4. Market area  FILLER 3/4 SCRIBE"
+
+    assert refiled(plain, CABINET, page) == "cabinet" and read == [1]
+    assert refiled(pull, CABINET, page) == "cabinet" and read == [1]  # its name was enough
+    assert refiled(plain, COUNTERTOP, page) is None
+    assert refiled(plain, COUNTERTOP, "QUARTZ TOP, FILLER") == "countertop"  # several: kept
+    # A finding of a product is never re-filed; an unknown category is treated like "other".
+    assert refiled({"category": "cabinet", "item": "Quartz top"}, COUNTERTOP) is None
+    assert refiled({"category": "spaceship", "item": "Toe kick"}, CABINET) == "cabinet"
+
+
+def test_the_book_refiles_with_its_pages_words(tmp_path: Path) -> None:
+    found = _scoped_book(tmp_path, CABINET)
+    found.page_words = lambda page: {2: "3. Coffee bar  FILLER  TOE KICK"}.get(page, "")
+
+    kept, _notes = found.report(finding_input(category="other", item="Outlet height"), "plan-1")
+    assert kept["category"] == "cabinet"
+    seeded = found.seed(
+        {"record_id": "r9", "page": 2, "what": "AI page review: outlet", "category": "other"}
+    )
+    assert seeded is not None and seeded["category"] == "cabinet"
+    with pytest.raises(SandboxRefused, match="items of no product"):
+        found.report(finding_input(page=1, category="other", item="Outlet height"), "plan-1")
+    # Changing an item to "other" re-files it too; a product out of scope is still refused.
+    changed, _notes = found.update({"finding_id": kept["id"], "category": "other"})
+    assert changed["category"] == "cabinet"
+    with pytest.raises(SandboxRefused, match="countertops are outside"):
+        found.update({"finding_id": kept["id"], "category": "countertop"})
+    assert found.out_of_scope == 1
