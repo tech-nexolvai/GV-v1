@@ -146,7 +146,8 @@ def test_recorded_results_are_only_the_helpers_pages() -> None:
     lines = recorded_on_pages(DOCUMENT, [7, 8])
     assert lines == [
         "- p7: Countertop row on page 7 (architect 68 in; vendor 72 in) [C4]",
-        '- p8: air:a1 (architect 3\'-1"; vendor 46") [ai-review:p8:air:a1]',
+        # Named by what it measures (#1634), never by its record id; the id stays in brackets.
+        '- p8: Floor to outlet (architect 3\'-1"; vendor 46") [ai-review:p8:air:a1]',
     ]
     assert recorded_on_pages(DOCUMENT, [9]) == []
     assert recorded_on_pages(None, [7]) == []

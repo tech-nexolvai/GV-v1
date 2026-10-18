@@ -65,7 +65,7 @@ from app.review.assistant.review_action import (
     review_action,
     stamp_words,
 )
-from app.review.assistant.vendor_text import vendor_text
+from app.review.assistant.vendor_text import item_name, vendor_text
 
 __all__ = [
     "LETTER_KIND",
@@ -498,10 +498,11 @@ class Letter:
 
 
 def _item(finding: Mapping[str, Any]) -> str:
-    """An item's name as the vendor reads it (the guard), else "Item on page N"."""
+    """An item's name as the vendor reads it (the guard, `vendor_text.item_name`: never a record
+    id), else "Item on page N" when there are no words to name it by."""
     page = _page_of(finding)
     fallback = f"Item on page {page}" if page is not None else "Item"
-    return vendor_text(finding.get("item"), fallback) or fallback
+    return item_name(dict(finding)) or fallback
 
 
 def _page_of(finding: Mapping[str, Any]) -> int | None:
