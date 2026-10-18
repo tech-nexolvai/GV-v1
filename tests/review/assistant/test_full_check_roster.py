@@ -85,9 +85,14 @@ def test_the_caps_never_add_up_to_more_than_the_price() -> None:
     # A page-group helper's cap follows its pages (#1634): a five-page group of a 45-page set gets
     # five forty-fifths of its phase, with no small fixed cap; the groups together never more.
     plan = PricePlan.balanced(5 * DOLLARS, 10, 45)
-    assert plan.cap_for("numbers", 5) == int(5 * DOLLARS * 0.40) * 5 // 45
+    assert (
+        plan.cap_for("numbers", 5)
+        == int(5 * DOLLARS * full_check_roster.SHARES["numbers"]) * 5 // 45
+    )
     assert plan.cap_for("numbers", 5) > 150_000  # more than the old fixed cap that starved them
-    assert plan.cap_for("drawn", 3) == int(5 * DOLLARS * 0.17) * 3 // 45
+    assert (
+        plan.cap_for("drawn", 3) == int(5 * DOLLARS * full_check_roster.SHARES["drawn"]) * 3 // 45
+    )
     assert sum(plan.cap_for("numbers", n) for n in [5] * 9) <= plan.budgets["numbers"]
     assert plan.cap_for("tags", 45) == plan.caps["tags"] <= full_check_roster.JOB_CAPS["tags"]
 

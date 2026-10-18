@@ -102,12 +102,12 @@ _MICROS: Final = 1_000_000
 #: more than the price. Rebalanced after the first paid run on a 60-page set (#1634): the page-group
 #: helpers stopped at small fixed caps with half the content pages unread while a fifth of the price
 #: was never spent, so the numbers pickers (where the red clouds come from) and the gap closers that
-#: finish what they leave get more; the drawn-things readers (grey items) less.
+#: finish what they leave get more, the drawn-things readers about the same per page.
 SHARES: Final[Mapping[str, float]] = {
-    "numbers": 0.40,
-    "drawn": 0.17,
+    "numbers": 0.38,
+    "drawn": 0.20,
     "tags": 0.03,
-    "gaps": 0.20,
+    "gaps": 0.19,
     "provers": 0.08,
     "advocate": 0.06,
     "summary": 0.005,
