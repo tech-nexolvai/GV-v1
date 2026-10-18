@@ -16,6 +16,12 @@ sees half of one. The key is the PDF's SHA-256 (the same bytes give the same pic
 chat or copy asks); page sizes are kept per key in `sizes.json`. The set pack keeps it at
 `<pack>/hires/` (`set_pack.HIRES`).
 
+**Bounded (#1575).** A page's `meta.json` time is when it was last used (drawn, or a crop cut from
+it; touched at most once a minute). `trim` removes the pages used longest ago until the folders
+given are under a size; `remove` drops a whole cache. A page is renamed away before it is deleted,
+so a reader sees all of it or none, and a crop whose page vanished mid-read returns `None` (drawn
+directly by the caller). The sizes are the set pack's to choose (`set_pack.trim_hires`).
+
 **Thread-safe.** One render per page at a time (later askers wait for it); pdfium itself is held
 under `chat_drawing.PDFIUM_LOCK` (it is not thread-safe), the tiles are written outside the lock.
 
@@ -30,6 +36,7 @@ import logging
 import os
 import shutil
 import threading
+import time
 from collections import OrderedDict
 from collections.abc import Iterable
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -48,11 +55,16 @@ __all__ = [
     "CACHE_DPI",
     "TILE_PX",
     "PageSize",
+    "Trimmed",
+    "configure",
     "cut",
+    "last_used",
     "page_sizes",
     "pdf_key",
     "prefetch",
+    "remove",
     "render_page",
+    "trim",
 ]
 
 _log = logging.getLogger(__name__)
@@ -64,23 +76,31 @@ TILE_PX: Final = 1024
 #: A page whose 300-dpi picture would be bigger than this (pixels) is not cached (a 36 x 24 in
 #: sheet is 78 million): its crops render as before.
 MAX_PAGE_PIXELS: Final = 120_000_000
-#: Pages drawn at once (`GV_ASSISTANT_PAGE_CACHE_WORKERS`). pdfium draws one page at a time; the
-#: workers overlap one page's drawing with others' tile writing.
+#: Pages drawn at once (`GV_ASSISTANT_PAGE_CACHE_WORKERS`, 1 to 8). pdfium draws one page at a
+#: time; the workers overlap one page's drawing with others' tile writing.
 _DEFAULT_WORKERS: Final = 3
 _SLACK: Final = 0.01
 #: A page whose colours differ by no more than this between channels is stored grey.
 _GREY_SPREAD: Final = 12
-#: Decoded tiles kept in memory (`GV_ASSISTANT_PAGE_CACHE_MEMORY_MB`): a crop on a page looked at
-#: a moment ago is cut without decoding anything.
+#: Decoded tiles kept in memory (`GV_ASSISTANT_PAGE_CACHE_MEMORY_MB`, at least 16): a crop on a
+#: page looked at a moment ago is cut without decoding anything.
 _DEFAULT_MEMORY_MB: Final = 256
+#: A stored page is marked used (its `meta.json` touched) at most this often (seconds).
+_TOUCH_EVERY_S: Final = 60.0
+#: A half-written page folder (a render that died) older than this (seconds) is removed by `trim`.
+_STALE_BUILD_S: Final = 3600.0
 
 _pool_lock: Final = threading.Lock()
 _pool: ThreadPoolExecutor | None = None
+_pool_size = 0
 _jobs: dict[tuple[Path, str, int], Future[Path | None]] = {}
 _keys: dict[tuple[str, int, int], str] = {}
 _sizes_lock: Final = threading.Lock()
 _memory: OrderedDict[tuple[str, int, int], Image.Image] = OrderedDict()
 _held = 0
+#: The two sizes from `Settings` (`configure`); `None`: the environment's, else the default.
+_set_workers: int | None = None
+_set_memory_mb: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,19 +111,54 @@ class PageSize:
     height: float
 
 
+@dataclass(frozen=True, slots=True)
+class Trimmed:
+    """What one `trim` removed (stored pages and half-written ones, and their bytes), and the
+    bytes of stored pages left."""
+
+    pages: int
+    freed: int
+    held: int
+
+
+@dataclass(frozen=True, slots=True)
+class _Stored:
+    path: Path
+    used: float
+    size: int
+
+
+def configure(*, workers: int, memory_mb: int) -> None:
+    """Use these sizes (from `Settings`, so a value in `.env` counts too) instead of reading the
+    environment. A pool already running with another size is replaced; the pages it is drawing
+    finish."""
+    global _pool, _set_workers, _set_memory_mb
+    old: ThreadPoolExecutor | None = None
+    with _pool_lock:
+        _set_workers, _set_memory_mb = workers, memory_mb
+        if _pool is not None and _pool_size != _workers():
+            old, _pool = _pool, None
+    if old is not None:
+        old.shutdown(wait=False)
+
+
 def _workers() -> int:
-    try:
-        value = int(os.environ.get("GV_ASSISTANT_PAGE_CACHE_WORKERS", _DEFAULT_WORKERS))
-    except ValueError:
-        value = _DEFAULT_WORKERS
+    if _set_workers is not None:
+        value = _set_workers
+    else:
+        try:
+            value = int(os.environ.get("GV_ASSISTANT_PAGE_CACHE_WORKERS", _DEFAULT_WORKERS))
+        except ValueError:
+            value = _DEFAULT_WORKERS
     return max(1, min(8, value))
 
 
 def _executor() -> ThreadPoolExecutor:
-    global _pool
+    global _pool, _pool_size
     with _pool_lock:
         if _pool is None:
-            _pool = ThreadPoolExecutor(max_workers=_workers(), thread_name_prefix="gv-page-cache")
+            _pool_size = _workers()
+            _pool = ThreadPoolExecutor(max_workers=_pool_size, thread_name_prefix="gv-page-cache")
         return _pool
 
 
@@ -240,10 +295,13 @@ def _tile(stored: Path, row: int, column: int) -> Image.Image:
 
 
 def _memory_bytes() -> int:
-    try:
-        megabytes = int(os.environ.get("GV_ASSISTANT_PAGE_CACHE_MEMORY_MB", _DEFAULT_MEMORY_MB))
-    except ValueError:
-        megabytes = _DEFAULT_MEMORY_MB
+    if _set_memory_mb is not None:
+        megabytes = _set_memory_mb
+    else:
+        try:
+            megabytes = int(os.environ.get("GV_ASSISTANT_PAGE_CACHE_MEMORY_MB", _DEFAULT_MEMORY_MB))
+        except ValueError:
+            megabytes = _DEFAULT_MEMORY_MB
     return max(16, megabytes) * 1_000_000
 
 
@@ -297,23 +355,141 @@ def cut(
     it (sharper than `CACHE_DPI`, or a page too big to cache): the caller renders it."""
     if scale * 72 > CACHE_DPI + _SLACK:
         return None
-    stored = render_page(folder, pdf, page)
-    if stored is None:
+    try:
+        stored = render_page(folder, pdf, page)
+        if stored is None:
+            return None
+        meta: dict[str, Any] = json.loads((stored / "meta.json").read_text(encoding="utf-8"))
+        _mark_used(stored)
+        ratio = float(meta["dpi"]) / 72
+        tile = int(meta["tile"])
+        left, top, right, bottom = box
+        x0 = max(0, int(left * ratio))
+        y0 = max(0, int(top * ratio))
+        x1 = min(int(meta["width_px"]), max(x0 + 1, round(right * ratio)))
+        y1 = min(int(meta["height_px"]), max(y0 + 1, round(bottom * ratio)))
+        canvas = Image.new(str(meta.get("mode") or "RGB"), (x1 - x0, y1 - y0), "white")
+        for row in range(y0 // tile, (y1 - 1) // tile + 1):
+            for column in range(x0 // tile, (x1 - 1) // tile + 1):
+                canvas.paste(_tile(stored, row, column), (column * tile - x0, row * tile - y0))
+    except OSError:
+        # The page was cleaned away while it was drawn or read (`trim`): the caller draws it.
         return None
-    meta: dict[str, Any] = json.loads((stored / "meta.json").read_text(encoding="utf-8"))
-    ratio = float(meta["dpi"]) / 72
-    tile = int(meta["tile"])
-    left, top, right, bottom = box
-    x0 = max(0, int(left * ratio))
-    y0 = max(0, int(top * ratio))
-    x1 = min(int(meta["width_px"]), max(x0 + 1, round(right * ratio)))
-    y1 = min(int(meta["height_px"]), max(y0 + 1, round(bottom * ratio)))
-    canvas = Image.new(str(meta.get("mode") or "RGB"), (x1 - x0, y1 - y0), "white")
-    for row in range(y0 // tile, (y1 - 1) // tile + 1):
-        for column in range(x0 // tile, (x1 - 1) // tile + 1):
-            canvas.paste(_tile(stored, row, column), (column * tile - x0, row * tile - y0))
     width = max(1, round((right - left) * scale))
     height = max(1, round((bottom - top) * scale))
     if (width, height) != canvas.size:
         canvas = canvas.resize((width, height), Image.Resampling.LANCZOS)
     return canvas
+
+
+# ---- keeping it bounded (#1575) ------------------------------------------------------------------
+
+
+def _mark_used(stored: Path) -> None:
+    """Touch the page's `meta.json` (at most once a minute): `trim` removes the least used first."""
+    meta = stored / "meta.json"
+    try:
+        if time.time() - meta.stat().st_mtime >= _TOUCH_EVERY_S:
+            os.utime(meta)
+    except OSError:
+        pass
+
+
+def _size(folder: Path) -> int:
+    total = 0
+    for item in folder.rglob("*"):
+        try:
+            if item.is_file() and not item.is_symlink():
+                total += item.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def _scan(folder: Path) -> tuple[list[_Stored], list[Path]]:
+    """The stored pages under one cache folder, and its half-written page folders too old to be
+    a render still running."""
+    pages: list[_Stored] = []
+    stale: list[Path] = []
+    now = time.time()
+    try:
+        keys = [key for key in folder.iterdir() if key.is_dir() and not key.name.startswith(".")]
+    except OSError:
+        return pages, stale
+    for key in keys:
+        try:
+            entries = list(key.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                if not entry.is_dir() or entry.is_symlink():
+                    continue
+                if entry.name.startswith(".p-"):
+                    if now - entry.stat().st_mtime > _STALE_BUILD_S:
+                        stale.append(entry)
+                    continue
+                if entry.name.startswith("p-"):
+                    used = (entry / "meta.json").stat().st_mtime
+                    pages.append(_Stored(entry, used, _size(entry)))
+            except OSError:
+                continue
+    return pages, stale
+
+
+def _delete(path: Path) -> bool:
+    """Rename away, then delete: a reader finds the whole folder or none of it. `False` when it
+    was gone already (another clean-up took it)."""
+    gone = path.with_name(f".{path.name}.gone-{uuid4().hex[:8]}")
+    try:
+        os.replace(path, gone)
+    except OSError:
+        return False
+    shutil.rmtree(gone, ignore_errors=True)
+    return True
+
+
+def last_used(folder: Path) -> float | None:
+    """When this cache was last used or written to (epoch seconds: a page's use, or a page or a
+    PDF's folder being made in it), or `None` when it cannot be read."""
+    times = [page.used for page in _scan(folder)[0]]
+    for path in (folder, *folder.glob("*")):
+        try:
+            if path.is_dir():
+                times.append(path.stat().st_mtime)
+        except OSError:
+            continue
+    return max(times, default=None)
+
+
+def trim(folders: Iterable[Path], max_bytes: int) -> Trimmed:
+    """Remove the pages used longest ago, across all these cache folders together, until they hold
+    at most `max_bytes`; half-written pages left by a render that died go too. A removed page is
+    drawn again on its next crop."""
+    pages: list[_Stored] = []
+    stale: list[Path] = []
+    for folder in folders:
+        found, old = _scan(folder)
+        pages += found
+        stale += old
+    removed, freed = 0, 0
+    for path in stale:
+        size = _size(path)
+        if _delete(path):
+            removed, freed = removed + 1, freed + size
+    held = sum(page.size for page in pages)
+    for page in sorted(pages, key=lambda stored: (stored.used, str(stored.path))):
+        if held <= max_bytes:
+            break
+        held -= page.size
+        if _delete(page.path):
+            removed, freed = removed + 1, freed + page.size
+    return Trimmed(removed, freed, held)
+
+
+def remove(folder: Path) -> Trimmed:
+    """Remove a whole cache folder (a set no chat uses any more)."""
+    if not folder.is_dir() or folder.is_symlink():
+        return Trimmed(0, 0, 0)
+    pages, size = len(_scan(folder)[0]), _size(folder)
+    return Trimmed(pages, size, 0) if _delete(folder) else Trimmed(0, 0, 0)
