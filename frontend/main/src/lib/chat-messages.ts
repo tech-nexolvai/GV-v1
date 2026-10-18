@@ -667,8 +667,14 @@ export function messageCost(value: string | null | undefined): string | null {
 }
 
 /** The small line under a finished answer: "Claude Opus 5.5 · High effort · $1.72". */
-export function footerWords(message: Pick<ViewMessage, 'model' | 'effort' | 'cost_usd'>, models: readonly Pick<ChatModel, 'id' | 'label'>[] | null): string {
+export function footerWords(
+  message: Pick<ViewMessage, 'model' | 'effort' | 'cost_usd'> & Partial<Pick<ViewMessage, 'scope'>>,
+  models: readonly Pick<ChatModel, 'id' | 'label'>[] | null,
+): string {
+  // The products this answer checked (a strict scope), quietly first when not all: "Checked: Countertops".
+  const scope = message.scope?.products?.length && !message.scope.all_products ? `Checked: ${message.scope.products_label ?? message.scope.products.join(', ')}` : null;
   return [
+    scope,
     modelLabel(message.model, models),
     message.effort ? `${EFFORT_WORDS[message.effort]} effort` : null,
     // A code-only answer (#1584) costs nothing; the server's "0.00" would read "<$0.01".

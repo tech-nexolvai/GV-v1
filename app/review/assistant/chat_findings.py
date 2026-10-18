@@ -45,6 +45,7 @@ from app.review.assistant.chat_corrections import parse_ref
 from app.review.assistant.dim_findings import LabelRefused, fill_from_labels, label_for_cite
 from app.review.assistant.dim_index import DimLabels, labels_for
 from app.review.assistant.impact import by_impact
+from app.review.assistant.product_scope import ProductScope, category_for
 from app.review.assistant.sandbox import UPLOADS, ChatWorkspace, SandboxRefused
 from app.review.assistant.tool_schema import box_schema
 from vocabulary.product_registry import registry
@@ -936,6 +937,11 @@ class FindingBook:
     follow-up may correct (#1548, `chat_corrections.earlier_findings`)."""
     corrections: dict[str, dict[str, Any]] = field(default_factory=dict)
     """This answer's corrections of earlier findings, by ref (the update stored)."""
+    product_scope: ProductScope | None = None
+    """The products this message checks (`product_scope`): a finding of another product is never
+    recorded (the hard filter); `None`: every product (tests and older callers)."""
+    out_of_scope: int = 0
+    """The findings refused because their product is not in scope (kept in the trust block)."""
     _cites: int = 0
     """The recorded differences this answer must account for (set by the engine)."""
     _count: int = 0
@@ -1111,6 +1117,20 @@ class FindingBook:
             )
         return out
 
+    def _in_scope(self, fields: dict[str, Any], created_by: str) -> bool:
+        """Whether a finding's product is in this message's scope; a code-made "other" item named
+        with one product's words gets that product's category first (`category_for`). An
+        out-of-scope one is counted, never recorded."""
+        scope = self.product_scope
+        if scope is None:
+            return True
+        fields["category"] = category_for({**fields, "created_by": created_by})
+        if scope.allows(fields["category"]):
+            return True
+        with self._lock:
+            self.out_of_scope += 1
+        return False
+
     def report(self, raw: object, created_by: str) -> tuple[dict[str, Any], list[str]]:
         """A new finding (id, crops made), and the reasons any box has no picture."""
         if not isinstance(raw, Mapping):
@@ -1120,6 +1140,9 @@ class FindingBook:
             raise SandboxRefused(f"unknown argument {min(unknown)!r}")
         raw, dims, label_notes = self._labelled(raw, None)
         fields = self._fields(raw, partial=False)
+        if not self._in_scope(fields, created_by):
+            assert self.product_scope is not None
+            raise SandboxRefused(self.product_scope.refusal(fields["category"]))
         if created_by != "lead":
             fields["verified"] = False
         fields["created_by"] = created_by
@@ -1214,6 +1237,8 @@ class FindingBook:
             except SandboxRefused as refused:
                 _log.warning("assistant chat ledger finding skipped: %s", refused)
                 return None
+        if not self._in_scope(fields, created_by):
+            return None
         with self._lock:
             if len(self.findings) >= MAX_FINDINGS:
                 return None
@@ -1363,6 +1388,9 @@ class FindingBook:
         changes = self._fields(given, partial=True)
         if not changes:
             raise SandboxRefused("give at least one field to change")
+        scope = self.product_scope
+        if "category" in changes and scope is not None and not scope.allows(changes["category"]):
+            raise SandboxRefused(scope.refusal(changes["category"]))
         changes["dims"] = dims
         notes: list[str] = list(label_notes)
         for box, picture, side in (
@@ -1511,6 +1539,13 @@ class FindingBook:
         page = record.get("page")
         if not isinstance(page, int) or page < 1:
             return None
+        category = (
+            record.get("category") if record.get("category") in finding_categories() else "other"
+        )
+        shown = " ".join(str(record.get("what") or "Recorded difference").split())[:_MAX_ITEM]
+        named = {"category": category, "item": shown}
+        if not self._in_scope(named, "gv_review"):
+            return None
         with self._lock:
             self._count += 1
             finding_id = f"F{self._count}"
@@ -1519,12 +1554,8 @@ class FindingBook:
             "id": finding_id,
             "page": page,
             "vs_page": None,
-            "item": " ".join(str(record.get("what") or "Recorded difference").split())[:_MAX_ITEM],
-            "category": (
-                record.get("category")
-                if record.get("category") in finding_categories()
-                else "other"
-            ),
+            "item": shown,
+            "category": named["category"],
             "architect": str(record.get("architect") or "see GV Review's record")[:_MAX_VALUE],
             "vendor": str(record.get("vendor") or "see GV Review's record")[:_MAX_VALUE],
             "status": "different",

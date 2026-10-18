@@ -7,7 +7,7 @@ import { PlanCheck } from '@/components/chat/chat-plan-check';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { chatPaths, type ChatAccuracy, type ChatCoverage, type ChatFile, type ChatFullCheckPlan, type ChatPlanAnswer, type ChatProduct } from '@/lib/chat-api';
 import { coverageCounts, coverageWords, type FindingCounts } from '@/lib/chat-findings';
-import { progressWords } from '@/lib/chat-full-check';
+import { allPicked, progressWords } from '@/lib/chat-full-check';
 import { planAnswers, usePlanCheck } from '@/lib/chat-plan-check';
 import { fileKind, fileSize, type ViewMessage } from '@/lib/chat-messages';
 import { activeProducts, comingLater, useProductCatalog } from '@/lib/products';
@@ -24,15 +24,36 @@ import { cn } from '@/lib/utils';
 
 /**
  * The product chips (#1547: the registry's active products, from `GET /products`): multi-select, at
- * least one stays picked. None shown picked = the set's own product. The products not ready yet are
- * one greyed chip, "N coming later", naming them.
+ * least one stays picked. The pick is a strict scope (Anant, 2026-10-18): only the products picked are
+ * checked, ruled, counted and drawn. A quiet "All" chip first picks every active product (pressed when
+ * all are); with one active product it is left out. The products not ready yet are one greyed chip,
+ * "N coming later", naming them.
  */
-export function ProductChips({ products, onToggle, disabled }: { products: readonly ChatProduct[] | null; onToggle: (product: ChatProduct) => void; disabled?: boolean }) {
+export function ProductChips({ products, onToggle, onAll, disabled }: { products: readonly ChatProduct[] | null; onToggle: (product: ChatProduct) => void; onAll?: () => void; disabled?: boolean }) {
   const catalog = useProductCatalog();
   const later = comingLater(catalog);
+  const active = activeProducts(catalog);
+  const every = allPicked(products, catalog);
+  const chip = 'inline-flex h-7 shrink-0 items-center rounded-full border px-2.5 text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-50 motion-reduce:transition-none';
   return (
     <div role="group" aria-label="Products to check" data-slot="chat-products" className="flex min-w-0 items-center gap-1">
-      {activeProducts(catalog).map(({ id: product, label, description }) => {
+      {onAll && active.length > 1 && (
+        <button
+          type="button"
+          data-slot="chat-products-all"
+          aria-pressed={every}
+          disabled={disabled}
+          onClick={onAll}
+          title={`Check every product: ${active.map((product) => product.plural).join(', ')}`}
+          className={cn(
+            chip,
+            every ? 'border-foreground/25 bg-accent text-foreground' : 'border-transparent bg-transparent text-muted-foreground hover:bg-accent hover:text-foreground',
+          )}
+        >
+          All
+        </button>
+      )}
+      {active.map(({ id: product, label, description }) => {
         const on = Boolean(products?.includes(product));
         return (
           <button
@@ -41,11 +62,8 @@ export function ProductChips({ products, onToggle, disabled }: { products: reado
             aria-pressed={on}
             disabled={disabled}
             onClick={() => onToggle(product)}
-            title={products ? description : 'Not picked yet: the drawing set’s own product is used'}
-            className={cn(
-              'inline-flex h-7 items-center rounded-full border px-2.5 text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-50 motion-reduce:transition-none',
-              on ? 'border-foreground bg-foreground text-background' : 'bg-background text-muted-foreground hover:bg-accent hover:text-foreground',
-            )}
+            title={on ? `${description} Checked in this chat.` : `${description} Not checked: press to add it.`}
+            className={cn(chip, on ? 'border-foreground bg-foreground text-background' : 'bg-background text-muted-foreground hover:bg-accent hover:text-foreground')}
           >
             {label}
           </button>
@@ -76,10 +94,12 @@ export interface FullCheckButtonProps {
   variant?: 'primary' | 'bar';
   /** #1569: code's plan and its 0-3 questions, read when the popover opens; absent: none asked. */
   loadPlan?: () => Promise<ChatFullCheckPlan>;
+  /** The product scope in one sentence: "Only countertops are checked; cabinets are left out." */
+  scope?: string | null;
 }
 
 /** "Run full check", confirmed in a small popover that names the products, model, effort and cap. */
-export function FullCheckButton({ summary, onRun, blocked, variant = 'primary', loadPlan }: FullCheckButtonProps) {
+export function FullCheckButton({ summary, onRun, blocked, variant = 'primary', loadPlan, scope }: FullCheckButtonProps) {
   const [open, setOpen] = useState(false);
   const [picked, setPicked] = useState<Record<string, string>>({});
   const plan = usePlanCheck(loadPlan, open);
@@ -103,6 +123,7 @@ export function FullCheckButton({ summary, onRun, blocked, variant = 'primary', 
       </PopoverTrigger>
       <PopoverContent align={variant === 'primary' ? 'center' : 'end'} className="w-[min(24rem,calc(100vw-24px))] gap-3 rounded-xl p-3 font-sans">
         <p data-slot="chat-full-check-summary" className="text-sm font-medium tabular-nums">{summary}</p>
+        {scope && <p data-slot="chat-full-check-scope" className="text-xs font-medium text-foreground">{scope}</p>}
         <p className="text-xs text-muted-foreground">
           Checks every page against the architect and GV’s rules, then code draws the cloud drawing and the check report.
         </p>

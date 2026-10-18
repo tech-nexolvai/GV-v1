@@ -8,9 +8,9 @@ to compare it, with the vendor's page reference. The rows here are the one sourc
 (`proof_drawing.not_compared_pdf`), the workbook (`xlsx`), its CSV fallback and the screen's count
 all come from `rows`, so every count agrees.
 
-Only items of the check's products are listed (the product scope): an item whose product is one
-of the registry's products but not one the check was run for is left out; an item of no product
-("other") stays.
+Only items of the check's products are listed: the full check's product scope (#1621,
+`product_scope`) already keeps out-of-scope findings out of the answer, and `rows` can also be
+given the products to keep.
 
 Pure code (the workbook through `workbook.write_xlsx`): no PDF, no AI call.
 """
@@ -245,13 +245,10 @@ def check_rows(
     pack = workspace.set_pack
     page_map = plan.read_page_map(pack, assume=True, main_file=name) if pack is not None else None
     areas = resolver.page_areas(page_map, name) if page_map else {}
-    return rows(
-        findings,
-        areas=areas,
-        products=products,
-        known_products=list(registry.categories()),
-        product_label=registry.category_label,
-    )
+    # The product scope (#1621) is already a hard filter on the answer's findings
+    # (`product_scope`, the finding book): every finding here is in scope.
+    del products
+    return rows(findings, areas=areas, product_label=registry.category_label)
 
 
 def make_files(
