@@ -677,7 +677,11 @@ def test_a_full_check_folds_the_same_decision_item_and_lists_it_in_the_report(
     assert resolver["before"]["decision"] == 2 and resolver["after"]["decision"] == 1
     assert [e["outcome"] for e in resolver["settled"]] == ["merged"]
     dropped = [b for b in outcome.blocks if b["type"] == "finding_dropped"]
-    assert len(dropped) == 1 and dropped[0]["reason"].startswith("Settled by GV Review:")
+    # The recorded difference with no value and no spot ("see GV Review's record" on both sides)
+    # is an internal note, never sent to the vendor (#1650); the same item is folded once.
+    notes = [b for b in dropped if b["reason"].startswith("Internal note, not for the vendor")]
+    folded = [b for b in dropped if b["reason"].startswith("Settled by GV Review:")]
+    assert len(notes) == 1 and len(folded) == 1 and len(dropped) == 2
     kept = [
         b["finding"]
         for b in outcome.blocks
@@ -812,17 +816,18 @@ def test_every_count_shown_comes_from_the_final_list(
     # A full check counts as its cloud drawing does (#1619): Wrong = proved by code (clouded),
     # Vendor to confirm (amber questions), Right.
     groups = proof_counts(live)
-    assert shown_counts(live)["decision"] == 1 and shown_counts(live)["wrong"] == 3
+    # The recorded difference with no value and no spot is an internal note (#1650), not counted.
+    assert shown_counts(live)["decision"] == 1 and shown_counts(live)["wrong"] == 2
     final = {
         "wrong": groups["clouded"],
         "decision": groups["not_compared"],
         "right": groups["right"],
     }
-    assert final == {"wrong": 2, "decision": 2, "right": 0}
+    assert final == {"wrong": 2, "decision": 1, "right": 0}
     # The AI's words.
     words = " ".join(b["text"] for b in outcome.blocks if b["type"] == "text")
-    assert "Two items are wrong and two need your decision" in words
-    assert outcome.text.startswith("Two items are wrong and two need your decision")
+    assert "Two items are wrong and one needs your decision" in words
+    assert outcome.text.startswith("Two items are wrong and one needs your decision")
     # The resolver block counts by status, as it settled them.
     resolver = next(b["resolver"] for b in outcome.blocks if b["type"] == "resolver")
     assert resolver["after"] == {k: shown_counts(live)[k] for k in ("wrong", "decision", "right")}

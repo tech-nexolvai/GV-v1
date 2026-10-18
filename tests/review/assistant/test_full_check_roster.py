@@ -361,9 +361,12 @@ class _Roster:
             return reply(text("Nothing left to place."), model=params["model"])
         if brief.startswith("TAGS:"):
             self._seen("tags", params)
+            # Each tag with its box, as the brief asks: a tag with no spot never reaches the
+            # vendor (#1650).
+            spot = {"page": 2, "x0": 10, "y0": 10, "x1": 30, "y1": 16}
             table = {"tags": [
-                {"page": 2, "side": "architect", "item": "Area 1: top", "tag": "ST-1", "box": None},
-                {"page": 2, "side": "vendor", "item": "Area 1: top", "tag": "ST-2", "box": None},
+                {"page": 2, "side": "architect", "item": "Area 1: top", "tag": "ST-1", "box": spot},
+                {"page": 2, "side": "vendor", "item": "Area 1: top", "tag": "ST-2", "box": spot},
             ]}  # fmt: skip
             return reply(text(json.dumps(table)), model=SONNET)
         if brief.startswith("PROVE:"):

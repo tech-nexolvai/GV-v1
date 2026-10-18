@@ -244,6 +244,7 @@ from app.review.assistant.send_package import (
     package_context,
 )
 from app.review.assistant.sharpen import helper_lines
+from app.review.assistant.spot_guard import dropped as spot_dropped
 from app.review.assistant.vendor_consistency import add_to_answer as add_consistency
 from app.review.assistant.vendor_consistency import page_texts
 from app.runs.rates import ModelRates, call_cost_micros
@@ -2348,6 +2349,7 @@ class ChatEngine:
 
     def _finish_trust(self, skipped: int) -> None:
         self._fold_same_wrongs()
+        self._guard_spots()
         self._resolve_decisions()
         self._escalate()
         book = self.book
@@ -2445,6 +2447,35 @@ class ChatEngine:
             self._escalation = escalate_answer(self)
         except Exception:  # noqa: BLE001 - the answer keeps its items as they were
             _log.exception("assistant chat escalation failed")
+
+    def _guard_spots(self) -> None:
+        """A full check (#1650): an item whose values code cannot find printed, or read at a spot
+        on the drawing, never reaches the vendor's files: dropped with its reason as an internal
+        note, before the resolver (so no spotless copy carries an item it folds), the counts and
+        the files (`spot_guard`)."""
+        if self.settings.mode != "full_check" or not self._whole_set_work():
+            return
+        main = self.book.main_file
+        labels = self.book.dim_labels
+
+        def on_page(file: str | None, page: int) -> Any:
+            name = file or main
+            return None if name is None else labels.on_page(name, page, read_now=False)
+
+        try:
+            with self.finding_lock:
+                found = spot_dropped(self.book.live(), on_page)
+        except Exception:  # noqa: BLE001 - the answer keeps its items as they were
+            _log.exception("assistant chat spot guard failed")
+            return
+        for finding_id, reason in found:
+            try:
+                with self.finding_lock:
+                    self.book.drop({"finding_id": finding_id, "reason": reason})
+            except Exception:  # noqa: BLE001 - one refused drop never stops the others
+                _log.exception("assistant chat spot guard could not drop a finding")
+                continue
+            self._show_dropped(finding_id, reason)
 
     def _agree_counts(self, text: str) -> str:
         """Whole-set work (#1554): every count the answer's words state is the final list's. The
