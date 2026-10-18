@@ -523,7 +523,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
           {/* PATH 4.2: the three numbers, pages and accuracy (each once). */}
           {(findings.length > 0 || coverage) && <ResultNumbers counts={counts} coverage={coverage} accuracy={message.accuracy} onPick={jumpTo} />}
           {/* PATH 4.3: the cloud drawing, the main output. */}
-          <FullCheckFiles cloud={made.cloud} report={made.report} chatId={chatId} page={previewPage(findings)} totalPages={coverage ? coverageCounts(coverage).total : null} counts={counts} proof={findings.length ? proofCounts(findings, decisionOf) : null} review={review} />
+          <FullCheckFiles cloud={made.cloud} report={made.report} chatId={chatId} page={previewPage(findings)} totalPages={coverage ? coverageCounts(coverage).total : null} counts={counts} proof={findings.length ? proofCounts(findings, decisionOf) : null} review={review} packaged={made.pkg !== null} />
           {/* #1622: the send-ready package, right after the cloud drawing. */}
           {made.pkg && <PackageCard pkg={made.pkg} chatId={chatId} action={message.review_action ?? null} hasReport={made.report !== null} hasNotCompared={files.some((file) => /\bNot compared\b/i.test(file.name))} />}
           {/* PATH 4.4 to 4.6: What's wrong, Your decision, Right (folded). */}

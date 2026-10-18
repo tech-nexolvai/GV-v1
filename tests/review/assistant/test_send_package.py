@@ -480,3 +480,36 @@ def test_the_screen_reads_the_result_once_the_package_is_made() -> None:
     assert shown is not None
     assert (shown.action, shown.rule) == ("revise_resubmit", "S3")
     assert shown.disclaimer == DISCLAIMER
+
+
+def test_the_register_speaks_to_the_vendor() -> None:
+    """Numbers only on comments, ranks in the register's order, the reviewer's notes reworded."""
+    context = PackageContext(
+        identity=IDENTITY,
+        date="2026-10-18",
+        round_no=1,
+        rounds=None,
+        state=CheckState(),
+        labels={"F1": "C-01", "F2": "C-02"},
+    )
+    rows = register_rows([_ai_only(), _right(), _proved()], context)
+    assert [(r[0], r[5], r[11]) for r in rows] == [
+        ("C-01", "Wrong", "1"),
+        ("", "Not compared", "2"),
+        ("", "Right", ""),
+    ]
+    assert rows[1][10] == "Possible difference, not proved by GV's code: vendor to confirm."
+    assert all("before sending" not in cell for row in rows for cell in row)
+
+
+def test_a_rule_with_no_printable_value_names_the_check() -> None:
+    from app.review.assistant.send_package import requires_words
+
+    rule = _proved(
+        source="rules",
+        rule_check_id="C1",
+        architect="see GV Review's record",
+        inches={"architect": None, "vendor": "39.5", "difference": None},
+    )
+    assert requires_words(rule) == "Does not meet GV rule C1"
+    assert requires_words(_proved()) == 'Architect requires 37"'

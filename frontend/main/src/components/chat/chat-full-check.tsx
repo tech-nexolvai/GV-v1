@@ -204,7 +204,7 @@ export interface CloudReview {
   failed: boolean;
 }
 
-export function FullCheckFiles({ cloud, report, chatId, page = 1, totalPages = null, counts = null, proof = null, review = null }: {
+export function FullCheckFiles({ cloud, report, chatId, page = 1, totalPages = null, counts = null, proof = null, review = null, packaged = false }: {
   cloud: ChatFile | null;
   report: ChatFile | null;
   chatId: string;
@@ -216,6 +216,8 @@ export function FullCheckFiles({ cloud, report, chatId, page = 1, totalPages = n
   proof?: ProofCounts | null;
   /** #1525: the reviewer's answers so far, and "Update cloud drawing" (optional overrides since #1581). */
   review?: CloudReview | null;
+  /** #1622: a send-ready package holds the drawing too; its download is then the one primary action. */
+  packaged?: boolean;
 }) {
   if (!cloud && !report) return null;
   const href = (file: ChatFile) => file.url || chatPaths.file(chatId, file.id);
@@ -263,7 +265,10 @@ export function FullCheckFiles({ cloud, report, chatId, page = 1, totalPages = n
             download={cloud.name}
             aria-label={`Download ${cloud.name}`}
             data-slot="chat-cloud-download"
-            className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-primary px-3.5 text-sm font-medium text-primary-foreground hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none"
+            className={cn(
+              'inline-flex h-9 items-center gap-1.5 rounded-lg px-3.5 text-sm font-medium focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none',
+              packaged ? 'border bg-background hover:bg-accent' : 'bg-primary text-primary-foreground hover:opacity-90',
+            )}
           >
             <Download className="size-4" aria-hidden="true" />
             Download

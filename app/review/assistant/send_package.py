@@ -33,6 +33,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import re
 import zipfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -42,6 +43,8 @@ from typing import Any, Final, Literal
 
 from app.review.assistant.impact import by_impact
 from app.review.assistant.proof import (
+    AI_ONLY_REASON,
+    PAIRING_REASON,
     governs,
     proof_group,
     proof_line,
@@ -277,7 +280,14 @@ def requires_words(finding: Mapping[str, Any]) -> str:
     settled = finding.get("settled")
     if isinstance(settled, Mapping) and settled.get("method") == "gv_limits":
         source = "rules"
-    return f"{_WHO.get(source, 'Architect')} requires {value}"
+    who = _WHO.get(source, "Architect")
+    if not any(ch.isdigit() for ch in value):
+        # No value code can print (the rule's own words): say which check it fails instead.
+        check = finding.get("rule_check_id")
+        if source == "rules":
+            return f"Does not meet GV rule {check}" if check else "Does not meet GV's rule"
+        return f"Does not match the {who.lower()}'s drawing"
+    return f"{who} requires {value}"
 
 
 def set_round(page_map: Mapping[str, Any] | None, findings: Sequence[Mapping[str, Any]]) -> int:
@@ -611,7 +621,28 @@ def _proof_words(finding: Mapping[str, Any], status: Status) -> str:
         return "Closed: this round prints what it should be"
     if status == "right":
         return "Matches the drawings"
-    return str(proof_of(finding).get("reason") or "Not compared by code")
+    return _vendor_words(str(proof_of(finding).get("reason") or ""))
+
+
+#: The reviewer-facing reasons (`proof.unproved_reason`) in the vendor's words (research note
+#: INDUSTRY-REVIEW.md, section 5: "Vendor to confirm").
+_TO_CONFIRM: Final = "Possible difference, not proved by GV's code: vendor to confirm."
+_BEFORE_SENDING: Final = re.compile(
+    r"\s*(?:check it before sending|the vendor is asked to confirm)\.?\s*$", re.IGNORECASE
+)
+
+
+def _vendor_words(reason: str) -> str:
+    """A Not-compared row's reason as the vendor reads it: never "check it before sending" (a note
+    to GV), and an unproved difference becomes "vendor to confirm"."""
+    if not reason:
+        return "Not compared by code."
+    if reason in (AI_ONLY_REASON, PAIRING_REASON):
+        return _TO_CONFIRM
+    trimmed = _BEFORE_SENDING.sub("", reason).strip()
+    if trimmed != reason.strip():
+        return f"{trimmed.rstrip('.')}. Vendor to confirm." if trimmed else _TO_CONFIRM
+    return reason
 
 
 def _item_action_of(finding: Mapping[str, Any], status: Status) -> str:
@@ -627,23 +658,24 @@ def register_rows(
     product_label: Any = None,
 ) -> list[list[str]]:
     """One row per item (`REGISTER_COLUMNS`): Wrong first (biggest first, each with its comment
-    number), then Not compared, then Right. Impact rank: 1 = matters most, over the Wrong and Not
-    compared items together. "Vendor response" is left blank for the vendor. Every cell is text."""
+    number), then Not compared, then Right, each biggest first. Impact rank: the row's place in
+    that order (1 = matters most), Right rows none. "Vendor response" is left blank for the
+    vendor. Every cell is text and vendor-facing (no internal "check before sending" words)."""
     ordered = by_impact(findings)
     by_round = context.rounds.by_finding() if context.rounds is not None else {}
-    rank = 0
+    closed = context.state.closed
     groups: dict[Status, list[list[str]]] = {"wrong": [], "not_compared": [], "right": []}
     for finding in ordered:
-        status = register_status(finding, context.state.closed)
-        shown_rank = ""
-        if status != "right":
-            rank += 1
-            shown_rank = str(rank)
+        status = register_status(finding, closed)
         page = _page_of(finding)
         category = str(finding.get("category") or "other")
+        finding_id = str(finding.get("id") or "")
+        # The comment number is shown where the item is (or was) a comment to the vendor: a Wrong
+        # row, or a previous comment this round closed.
+        commented = status == "wrong" or finding_id in closed
         groups[status].append(
             [
-                context.labels.get(str(finding.get("id") or ""), ""),
+                context.labels.get(finding_id, "") if commented else "",
                 "" if page is None else str(page),
                 context.areas.get(page or 0, ""),
                 str(product_label(category)) if product_label is not None else category,
@@ -654,12 +686,15 @@ def register_rows(
                 should_be_value(finding) if status != "not_compared" else "",
                 governs(finding),
                 _proof_words(finding, status),
-                shown_rank,
+                "",
                 _round_history(finding, status, by_round, context.round_no),
                 "",
             ]
         )
-    return [*groups["wrong"], *groups["not_compared"], *groups["right"]]
+    rows = [*groups["wrong"], *groups["not_compared"], *groups["right"]]
+    for rank, row in enumerate(rows[: len(groups["wrong"]) + len(groups["not_compared"])], start=1):
+        row[11] = str(rank)
+    return rows
 
 
 def submittal_rows(letter: Letter) -> list[list[str]]:
