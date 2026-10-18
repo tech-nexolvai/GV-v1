@@ -93,7 +93,7 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 #: Changes when what the pack holds changes: an older pack is built again.
-PACK_VERSION: Final = 7
+PACK_VERSION: Final = 8
 RENDER_DPI: Final = 100
 #: Seconds the dimension labels' drawn-ink route (OCR) may spend on one set, after every page's
 #: text labels (`GV_DIM_LABELS_DRAWN_BUDGET_S`; 0 turns it off). It reads the vendor's drawn
@@ -594,6 +594,9 @@ dims.json              every printed dimension code found, numbered per page (D1
                        route "drawn": numbers drawn as pen strokes (the vendor's, and an
                        architect's hand lettering such as 2'-6 1/2") read by two OCR engines
                        (added later; check one with zoom before you rely on it).
+                       "derived": an EQ part, numbered last: the printed overall (less
+                       the chain's printed parts) shared equally, by code; "from" names
+                       the overall (36" wall to wall marked EQ / EQ is 18" each side).
 scales.json            each drawing's scale measured from its own printed dimensions (labels
                        that agree within 1%), its box, and the printed scale note beside it
                        (note_agrees false: GV resized the drawing; trust the measured scale).
