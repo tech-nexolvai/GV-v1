@@ -164,6 +164,7 @@ from app.review.assistant.chat_scope import (
 from app.review.assistant.chat_summary import code_summary, needs_code_summary
 from app.review.assistant.chat_timings import Timings
 from app.review.assistant.chat_tools import (
+    HELPER_KITS,
     HELPER_SYSTEM_PROMPT,
     HELPER_TOOLS,
     HELPERS_PER_TURN,
@@ -177,6 +178,8 @@ from app.review.assistant.chat_tools import (
     ToolResult,
     arguments,
     helper_footer,
+    helper_system_prompt,
+    helper_tools,
     new_step,
 )
 from app.review.assistant.chat_trust import (
@@ -701,6 +704,8 @@ class _Agent:
     """A roster specialist's cap is checked on what it has spent (wrap-up at 80%), not on the
     next call's upper-bound estimate; the message's fixed price still holds every estimate, so
     the run never passes it and a specialist passes its own cap by one call at most."""
+    kit: str | None = None
+    """Its fixed tool kit (`chat_tools.HELPER_KITS`), or every helper tool."""
 
 
 @dataclass(slots=True)
@@ -1353,8 +1358,8 @@ class ChatEngine:
                 return self.task_list.update(raw, step)
             if name == "review_results":
                 return tools.review_results(raw, step)
-            if name == "compare_rounds":
-                return self._compare_rounds(raw, step)
+        if name == "compare_rounds":  # the lead's, and a helper's with the rounds kit
+            return self._compare_rounds(raw, step)
         return ToolResult(
             content=[{"type": "text", "text": f"Refused: there is no tool {name!r}"}],
             step={**step, "ok": False, "output": f"There is no tool {name!r}."},
@@ -2553,9 +2558,12 @@ class ChatEngine:
     def _agent_call(self, call: Mapping[str, Any]) -> _Agent:
         given = arguments(
             call.get("input"),
-            frozenset({"description", "prompt", "model"}),
+            frozenset({"description", "prompt", "model", "kit"}),
             frozenset({"description", "prompt"}),
         )
+        kit = given.get("kit")
+        if kit is not None and kit not in HELPER_KITS:
+            raise SandboxRefused(f"kit must be one of {', '.join(HELPER_KITS)}")
         description = str(given["description"]).strip().replace("\n", " ")[:_MAX_DESCRIPTION]
         prompt = str(given["prompt"]).strip()
         if not description or not prompt:
@@ -2569,7 +2577,7 @@ class ChatEngine:
             model = BY_SHORT[short]
         else:
             raise SandboxRefused("model must be opus, sonnet or haiku")
-        return _Agent(str(call.get("id")), description, prompt, model)
+        return _Agent(str(call.get("id")), description, prompt, model, kit=kit)
 
     def _run_agents(self, calls: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
         results: dict[int, dict[str, Any]] = {}
@@ -3154,8 +3162,8 @@ class ChatEngine:
             else helper_effort(self.settings.effort)
         )
         thinking = helper_thinking(model, effort, self.settings.thinking)
-        system = agent.system or HELPER_SYSTEM_PROMPT
-        tools = agent.tools or HELPER_TOOLS
+        system = agent.system or helper_system_prompt(agent.kit)
+        tools = agent.tools or helper_tools(agent.kit)
         allowance = FULL_CHECK_HELPER_MAX_TOKENS if full_check else HELPER_MAX_TOKENS
         try:
             # A specialist with a reply shape (the roster's verifier, tag reader) has its pages in

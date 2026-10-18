@@ -85,6 +85,7 @@ __all__ = [
     "FABLE_NOTE",
     "HELPERS_PER_TURN",
     "HELPER_FOOTER_MARK",
+    "HELPER_KITS",
     "HELPER_SYSTEM_PROMPT",
     "HELPER_TOOLS",
     "LEAD_LOADED",
@@ -99,6 +100,8 @@ __all__ = [
     "ToolResult",
     "arguments",
     "helper_footer",
+    "helper_system_prompt",
+    "helper_tools",
     "named_pages",
     "new_step",
     "seen_log",
@@ -169,7 +172,39 @@ HELPER_TOOL_NAMES: Final = (
     "verify_value",
     "measure_on_drawing",
     "read_under_markup",
+    "drawing_facts",
 )
+#: Fixed tool kits a helper may be started with (`Agent` `kit`, #1608): fewer tools for a narrower
+#: job, the same on both routes. A helper with no kit has every helper tool. Each kit is its own
+#: conversation prefix, cached on its own.
+HELPER_KITS: Final[Mapping[str, tuple[str, ...]]] = {
+    # A page pair compared value by value (strings and readings stay recorded until code adds
+    # every string by itself).
+    "compare": (
+        "bash_tool",
+        "view",
+        "zoom",
+        "report_finding",
+        "set_coverage",
+        "record_string",
+        "record_reading",
+        "verify_value",
+        "read_under_markup",
+        "drawing_facts",
+    ),
+    # Round 1 against round 2: what changed, and each round-1 finding's status.
+    "rounds": (
+        "view",
+        "zoom",
+        "report_finding",
+        "set_coverage",
+        "verify_value",
+        "compare_rounds",
+        "drawing_facts",
+    ),
+    # Every architect note and tag looked for on the vendor's drawing.
+    "notes": ("view", "zoom", "report_finding", "set_coverage", "drawing_facts"),
+}
 
 LEAD_SYSTEM_PROMPT: Final = f"""\
 You are Claude, an AI assistant made by Anthropic, working inside GV Review. Graniti Vicentia (GV) \
@@ -465,6 +500,15 @@ _AGENT: Final[Mapping[str, Any]] = {
                 "description": (
                     "Optional model for this helper. Default: sonnet (opus only for a hard "
                     "visual check)"
+                ),
+            },
+            "kit": {
+                "type": "string",
+                "enum": ["compare", "rounds", "notes"],
+                "description": (
+                    "Optional fixed tool kit: compare (a page pair value by value), rounds "
+                    "(round 1 against round 2, with compare_rounds), notes (architect notes and "
+                    "tags). Default: every helper tool"
                 ),
             },
         },
@@ -823,7 +867,28 @@ HELPER_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     VERIFY_VALUE,
     MEASURE_ON_DRAWING,
     READ_UNDER_MARKUP,
+    DRAWING_FACTS,
 )
+
+
+def helper_tools(kit: str | None = None) -> tuple[Mapping[str, Any], ...]:
+    """A helper's tools: its kit's, in the kit's order, or every helper tool."""
+    if kit is None:
+        return HELPER_TOOLS
+    by_name = {str(tool["name"]): tool for tool in (*HELPER_TOOLS, COMPARE_ROUNDS)}
+    return tuple(by_name[name] for name in HELPER_KITS[kit])
+
+
+def helper_system_prompt(kit: str | None = None) -> str:
+    """A helper's system prompt: it names only the tools its kit has."""
+    if kit is None or "record_string" in HELPER_KITS[kit]:
+        return HELPER_SYSTEM_PROMPT
+    return HELPER_SYSTEM_PROMPT.replace(
+        "the pages you compared with set_coverage, and every dimension string and value you read "
+        "with record_string and record_reading (code adds them up and compares them).",
+        "and the pages you compared with set_coverage.",
+    )
+
 
 _DEFAULT_LABELS: Final[Mapping[str, str]] = {
     "bash_tool": "Ran a command",
