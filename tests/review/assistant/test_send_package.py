@@ -514,16 +514,16 @@ def _c10(**changes: Any) -> dict[str, Any]:
     given: dict[str, Any] = {
         "id": "F10",
         "page": 1,
-        "item": "Countertop row on page 3",
+        "item": "Countertop row on page 5",
         "category": "countertop",
         "architect": "see GV Review's record",
-        "vendor": '39 1/2"',
+        "vendor": '38 1/4"',
         "source": "rules",
         "created_by": "gv_review",
         "rule_check_id": "C1",
         "record_id": "C1",
         "witnesses": ["rule"],
-        "inches": {"architect": None, "vendor": "39.5", "difference": None},
+        "inches": {"architect": None, "vendor": "38.25", "difference": None},
         "vendor_box": _box(VENDOR_12),
         "arch_box": None,
         "critic": None,
@@ -557,12 +557,12 @@ def test_a_gv_rule_result_without_a_stated_requirement_is_never_a_comment(
         register = archive.read("sheet - Issue register.xlsx")
     for words in (letter, cloud.split("Notes")[0]):
         assert FORBIDDEN.search(words) is None, FORBIDDEN.search(words)
-    assert "Comments (1)" in letter and "Countertop row on page 3" not in letter
+    assert "Comments (1)" in letter and "Countertop row on page 5" not in letter
     openpyxl = pytest.importorskip("openpyxl")
     rows = list(
         openpyxl.load_workbook(io.BytesIO(register))["Comments"].iter_rows(values_only=True)
     )
-    row = next(r for r in rows if r[4] == "Countertop row on page 3")
+    row = next(r for r in rows if r[4] == "Countertop row on page 5")
     assert row[0] in (None, "") and row[5] == "Not compared"
     assert row[10] == NO_REQUIREMENT_REASON
     assert not any(FORBIDDEN.search(str(c or "")) for r in rows for c in r)
@@ -576,14 +576,14 @@ def test_a_gv_rule_states_its_requirement_from_its_own_comparison(tmp_path: Path
     from app.review.assistant.send_package import requires_words
     from app.review.assistant.vendor_text import rule_requirement, vendor_text
 
-    assert rule_requirement("|39.5 - 41.625| = 2.125 > 0 in") == '41 5/8"'
+    assert rule_requirement("|38.25 - 40.5| = 2.25 > 0 in") == '40 1/2"'
     assert rule_requirement("|72 - 68| = 4 > 1/8 in") == '68" (± 1/8")'
     assert rule_requirement("30 < 34 in") == 'at least 34"'
     assert rule_requirement("3 > 2 in") == 'at most 2"'
     assert rule_requirement("0.5 <= 3 <= 2 in is False") == 'between 1/2" and 2"'
     assert rule_requirement("count = 3 != 4") is None
     assert vendor_text("see GV Review's record") is None
-    assert vendor_text("air:f719074f-1b4e-48f8-8e04-47c34 Buffet top", "x") == "Buffet top"
+    assert vendor_text("air:0000aaaa-1111-2222 Buffet top", "x") == "Buffet top"
     assert vendor_text("AI reading only", "fallback") == "fallback"
     assert vendor_text("AI_Set_3 sheet") == "AI_Set_3 sheet"
 
@@ -593,10 +593,10 @@ def test_a_gv_rule_states_its_requirement_from_its_own_comparison(tmp_path: Path
                 {
                     "id": "C1",
                     "page": 2,
-                    "label": "Countertop row on page 3",
+                    "label": "Countertop row on page 5",
                     "outcome": "Needs correction",
-                    "printed_overall": '39 1/2"',
-                    "rule": {"comparison": "|39.5 - 41.625| = 2.125 > 0 in"},
+                    "printed_overall": '38 1/4"',
+                    "rule": {"comparison": "|38.25 - 40.5| = 2.25 > 0 in"},
                 }
             ]
         }
@@ -608,6 +608,6 @@ def test_a_gv_rule_states_its_requirement_from_its_own_comparison(tmp_path: Path
     seeded = FindingBook(workspace=workspace, listing=listing, page_count=3).seed(
         recorded.differences[0]
     )
-    assert seeded is not None and seeded["architect"] == '41 5/8"'
-    proved = _c10(architect=seeded["architect"], inches={"architect": "41.625", "vendor": "39.5"})
-    assert requires_words(proved) == 'GV rule requires 41 5/8"'
+    assert seeded is not None and seeded["architect"] == '40 1/2"'
+    proved = _c10(architect=seeded["architect"], inches={"architect": "40.5", "vendor": "38.25"})
+    assert requires_words(proved) == 'GV rule requires 40 1/2"'

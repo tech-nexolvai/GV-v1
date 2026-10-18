@@ -7,8 +7,8 @@ helpers, "check it before sending". `vendor_text` cleans what can be cleaned (a 
 item's name) and refuses the rest (`None`, or the caller's fallback), so an internal phrase can never
 be printed by accident.
 
-`rule_requirement` turns a GV rule check's own comparison (`verdict/operations`: `|39.5 - 41.625| =
-2.125 > 0 in`, `30 < 34 in`, …) into the plain requirement with its computed value ("41 5/8"", "at
+`rule_requirement` turns a GV rule check's own comparison (`verdict/operations`: `|38.25 - 40.5| =
+2.25 > 0 in`, `30 < 34 in`, …) into the plain requirement with its computed value ("40 1/2"", "at
 least 34"", "between 1" and 2""), or `None` when the rule states none: then the item is not a
 numbered comment to the vendor (`proof.stated_requirement`).
 
@@ -89,7 +89,7 @@ _BETWEEN: Final = re.compile(rf"^{_NUM}\s*<=\s*{_NUM}\s*<=\s*{_NUM}\s*in\s+is\s+
 
 
 def rule_requirement(comparison: object) -> str | None:
-    """A failed GV rule check's requirement, in plain words with its computed value: `41 5/8"`
+    """A failed GV rule check's requirement, in plain words with its computed value: `40 1/2"`
     (± its tolerance when there is one), `at least 34"`, `at most 2"`, `between 1" and 2"`;
     `None` when the comparison states no requirement in inches."""
     text = " ".join(str(comparison or "").split())

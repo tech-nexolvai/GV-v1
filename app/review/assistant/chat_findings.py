@@ -1584,7 +1584,7 @@ class FindingBook:
         architect = record.get("architect")
         if code:
             # A GV rule's requirement in plain words with its computed value (#1622): the rule's
-            # comparison ("|39.5 - 41.625| = 2.125 > 0 in") read as `41 5/8"`, never the raw
+            # comparison ("|38.25 - 40.5| = 2.25 > 0 in") read as `40 1/2"`, never the raw
             # comparison or "see GV Review's record" when no value is recorded.
             stated = rule_requirement(record.get("comparison"))
             if stated is not None and (not architect or architect == record.get("comparison")):
