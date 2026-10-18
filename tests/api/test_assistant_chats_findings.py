@@ -26,7 +26,10 @@ from app.review.assistant import chat_engine, chat_trust
 from app.review.assistant.chat_findings import COVERAGE_CHECK_PREFIX
 from tests.api.test_assistant_chats import _events, _held, _named, _running, _until_saved, _world
 from tests.review.assistant.chat_fakes import ScriptedProvider, reply, text, tool
+from tests.dummy_products import DUMMY, use_dummy_registry
 from tests.review.assistant.test_chat_findings import VENDOR_BOX, finding_input, make_pdf
+
+__all__ = ["use_dummy_registry"]  # the fixture, imported so pytest finds it
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -431,7 +434,7 @@ def test_a_full_check_through_the_route_shows_its_label_and_ends_with_its_two_fi
         assert chat["messages"][1]["accuracy"]["rescored"] is False
         sent = json.loads(world.provider.lead_calls[0])["messages"][0]["content"]
         words = " ".join(block.get("text", "") for block in sent)
-        assert "Focus for this chat: countertops." in words
+        assert "Products checked in this chat: countertops only." in words
         assert "Full check of this drawing set" in words
         for file in message["files"]:
             assert world.client.get(file["url"]).content[:4] == b"%PDF"
@@ -443,6 +446,78 @@ def test_a_full_check_through_the_route_shows_its_label_and_ends_with_its_two_fi
             json={**ASK, "text": "hi", "products": ["cabinet", "cabinet"]},
         )
         assert empty.status_code == 422 and twice.status_code == 422
+
+
+def test_a_countertop_only_check_keeps_no_cabinet_item_anywhere(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """The product pick is a strict scope (Anant, 2026-10-18): the lead reports a countertop item
+    and a cabinet item; only the countertop one is recorded (the lead is told why), and none of
+    the cabinet's reaches the stored answer, its scope, its trust block, the CSV or the files."""
+    cabinet = finding_input(item="Sink base cabinet width", category="cabinet")
+    provider = ScriptedProvider(
+        lead=[
+            reply(
+                tool("r1", "report_finding", finding_input()),
+                tool("r2", "report_finding", cabinet),
+                stop="tool_use",
+            ),
+            reply(text("One item is wrong.")),
+        ]
+    )
+    with _world(postgres_engine, tmp_path, provider=provider, pdf=PDF3, pages=3) as world:
+        chat_id = world.chat()
+        response = world.client.post(
+            f"/api/v1/chats/{chat_id}/messages",
+            json={**ASK, "mode": "full_check", "products": ["countertop"]},
+        )
+        assert response.status_code == 200, response.text
+        message = _named(_events(response.text), "message_end")[0]["message"]
+        findings = [b["finding"] for b in message["blocks"] if b["type"] == "finding"]
+        assert [f["category"] for f in findings] == ["countertop"]
+        refused = json.loads(world.provider.lead_calls[1])["messages"][-1]["content"][1]
+        assert refused["is_error"] and "cabinets are outside this check" in str(refused)
+        scope = message["scope"]
+        assert scope["products"] == ["countertop"] and scope["all_products"] is False
+        assert scope["products_label"] == "Countertops"
+        trust = next(b["trust"] for b in message["blocks"] if b["type"] == "trust")
+        assert trust["product_scope"]["dropped_out_of_scope"] == 1
+        csv_text = world.client.get(
+            f"/api/v1/chats/{chat_id}/messages/{message['id']}/findings.csv"
+        ).text
+        assert "Vanity top length" in csv_text and "cabinet" not in csv_text.lower()
+        for file in message["files"]:
+            pdf = PdfReader(io.BytesIO(world.client.get(file["url"]).content))
+            assert "Sink base cabinet" not in " ".join(page.extract_text() for page in pdf.pages)
+
+
+@pytest.mark.usefixtures("use_dummy_registry")
+def test_a_product_with_no_gv_rules_is_checked_alone_and_says_so(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Every product behaves the same (Anant, 2026-10-18): a product added only to the registry,
+    picked alone, is the strict scope (a countertop item is refused), and since GV has published no
+    rule for it the answer says so plainly instead of checking against nothing in silence."""
+    widget = finding_input(item="Sample widget knob count", category=DUMMY)
+    provider = ScriptedProvider(
+        lead=[
+            reply(
+                tool("r1", "report_finding", widget),
+                tool("r2", "report_finding", finding_input()),
+                stop="tool_use",
+            ),
+            reply(text("One widget item differs.")),
+        ]
+    )
+    with _world(postgres_engine, tmp_path, provider=provider, pdf=PDF3, pages=3) as world:
+        chat_id = world.chat()
+        status, events = world.ask(chat_id, "Do the widgets match?", products=[DUMMY])
+        assert status == 200
+        message = _named(events, "message_end")[0]["message"]
+        findings = [b["finding"] for b in message["blocks"] if b["type"] == "finding"]
+        assert [f["category"] for f in findings] == [DUMMY]
+        note = "No GV rules for Dummy widgets yet: compared against the architect only."
+        assert message["text"].endswith(note)
+        assert message["blocks"][-1] == {"type": "text", "text": note, "by": None}
+        assert message["scope"]["products"] == [DUMMY]
+        sent = json.loads(world.provider.lead_calls[0])["messages"][0]["content"]
+        assert note in " ".join(block.get("text", "") for block in sent)
 
 
 def test_a_typed_question_keeps_its_mode_and_an_old_badge_is_scored_again(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]

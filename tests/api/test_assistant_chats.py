@@ -350,7 +350,12 @@ def test_a_message_streams_and_ends_with_the_stored_message(postgres_engine, tmp
         listing = first["messages"][0]["content"][0]["text"]
         assert listing.startswith("<uploaded_files>")
         assert 'path="/mnt/user-data/uploads/Vendor set.pdf"' in listing and 'pages="62"' in listing
-        assert first["messages"][0]["content"][1]["text"].startswith("Which items")
+        # The products are always named (a strict scope): a set with none stated checks every
+        # active product, and the model is told so before the question.
+        assert first["messages"][0]["content"][1]["text"].startswith(
+            "Products checked in this chat: countertops and cabinets (all of them)."
+        )
+        assert first["messages"][0]["content"][-1]["text"].startswith("Which items")
         # The set's PDF and the skill are in the chat's folder.
         folder = world.root / chat_id
         assert (folder / "uploads" / "Vendor set.pdf").read_bytes() == PDF
@@ -1076,4 +1081,4 @@ def test_with_no_sandbox_the_message_says_so_and_the_next_one_lists_the_files(po
         # The unanswered first message is not in the history; the files are listed now.
         assert len(first) == 1
         assert first[0]["content"][0]["text"].startswith("<uploaded_files>")
-        assert first[0]["content"][1]["text"] == "Second try"
+        assert first[0]["content"][-1]["text"] == "Second try"
