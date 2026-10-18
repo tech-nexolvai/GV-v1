@@ -290,3 +290,66 @@ def test_a_ones_shape_is_checked_on_its_vectors() -> None:
     assert dl._vector_ones(_label(wide_one + seven + ticks), Decimal(17), 0) is False
     # No row laid out as the value's digits: the engines' check decides.
     assert dl._vector_ones(narrow, Decimal("17.5"), 0) is None
+
+
+# ---- #1629: chains whose lines tile end to end ---------------------------------------------------
+
+
+def test_a_drawn_ones_foot_beside_a_line_is_no_tick_but_a_slash_across_it_is() -> None:
+    """A tall overall drawn beside its chain: the chain's `1`s touch the overall's line from one
+    side (an upright stroke and a short slanted foot). Only slashes crossing the line cut it."""
+    y = 100.0
+    segments = [
+        ((50.0, y + 3), (50.0, y - 20)),  # an extension line
+        ((48.5, y + 1.5), (51.5, y - 1.5)),  # its tick, across the line
+        ((150.0, y + 3), (150.0, y - 20)),
+        ((148.5, y + 1.5), (151.5, y - 1.5)),
+        ((90.0, y - 0.25), (90.0, y - 5.65)),  # a `1`'s stroke, ending at the line
+        ((90.0, y - 0.25), (90.7, y - 0.95)),  # its foot, on the same side
+    ]
+    assert dl._boundaries(y, 40.0, 160.0, segments, 6.0, drawn=True) == [40.0, 50.0, 150.0, 160.0]
+    assert dl._crosses(y + 1.5, y - 1.5, y)
+    assert not dl._crosses(y - 0.25, y - 0.95, y)
+
+
+def test_a_label_never_takes_back_a_line_it_gave_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A `3/4"` between its chain's line and the overall's: each line is centred on by another
+    label, so it gives up one, then the other, and ends on its own short span (it used to swing
+    between the two each round and keep a neighbour's)."""
+    overall = {"dim_line": [[0.0, 10.0], [100.0, 10.0]], "orientation": "h", "box": [45, 2, 55, 8]}
+    long = {"dim_line": [[0.0, 20.0], [90.0, 20.0]], "orientation": "h", "box": [40, 12, 50, 18]}
+    small = {"dim_line": [[0.0, 10.0], [100.0, 10.0]], "orientation": "h", "box": [86, 12, 93, 19]}
+    lines = [
+        ((0.0, 10.0), (100.0, 10.0)),
+        ((0.0, 20.0), (90.0, 20.0)),
+        ((90.0, 20.0), (100.0, 20.0)),
+    ]
+
+    def line_of(parsed: Any, part: Any, taken: Sequence[Any] = ()) -> Any:
+        for (x0, y0), (x1, _y1) in lines:
+            if any(
+                abs(t[1] - y0) <= 0.6 and abs(t[2] - x0) <= 0.6 and abs(t[3] - x1) <= 0.6
+                for t in taken
+            ):
+                continue
+            line = {"dim_line": [[x0, y0], [x1, y0]], "extension": [None, None], "span_pt": x1 - x0}
+            return line, "h"
+        return None
+
+    monkeypatch.setattr(dl, "_line_of", line_of)
+    found = [(long, object()), (small, object())]
+    settled = dl._settle_lines(None, found, [overall])  # type: ignore[arg-type]
+    assert small in settled
+    assert small["dim_line"] == [[90.0, 20.0], [100.0, 20.0]]
+    assert long["dim_line"] == [[0.0, 20.0], [90.0, 20.0]]
+
+
+def test_a_labels_own_strokes_along_a_line_are_never_that_line() -> None:
+    """A drawn `4"`: its upright is not a vertical dimension line, but still a crossing of a
+    horizontal one; line work that is not the label's stays."""
+    four = _label(_ink('4"', 100, 300))
+    own = dl._own_strokes(four)
+    upright = next(s for s in own if s[0][0] == s[1][0] and abs(s[1][1] - s[0][1]) >= 4)
+    other = ((10.0, 10.0), (10.0, 60.0))
+    assert dl._without_own([upright, other], own, "v") == [other]
+    assert dl._without_own([upright, other], own, "h") == [upright, other]

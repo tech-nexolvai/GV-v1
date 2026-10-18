@@ -298,9 +298,12 @@ def test_only_the_vendors_drawn_numbers_with_an_inch_mark_and_room_round_them(
 
 
 def test_the_next_dimension_of_a_chain_does_not_crowd_a_label(tmp_path: Path) -> None:
-    # Two drawn dimensions end to end on one line, each with its own inch mark (a chain).
+    # Two drawn dimensions end to end on one line, each with its own inch mark (a chain): an
+    # extension line between them ends one and starts the other (each label has its own span;
+    # the digits' own edges are never a line, #1629).
     path = tmp_path / "chain.pdf"
-    path.write_bytes(_pdf([_drawn_page(_glyphs(300.0, 303.5) + _glyphs(315.0, 318.5))]))
+    chain = _glyphs(300.0, 303.5) + _glyphs(315.0, 318.5) + _line(312, 0, 312, 53)
+    path.write_bytes(_pdf([_drawn_page(chain)]))
     assert len(_drawn(path, _agreeing())) == 2
 
 

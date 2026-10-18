@@ -91,6 +91,11 @@ TOLERANCE: Final = Fraction(1, 16)
 END_PT: Final = 0.25
 #: Two parts of a string meet within this many points (a tick mark's width is about 0.3 pt).
 GAP_PT: Final = 0.6
+#: Two parts also meet across a wider joint, up to this many line weights, when one tick marks
+#: both ends (#1629: a joint drawn as a double extension line under one slash, 0.9-1.1 pt apart
+#: on lines 0.72 pt wide). The usual rule of vector clean-up: snap ends within a small multiple of
+#: the stroke width, never more than the drawing itself shows to be one point.
+JOINT_WEIGHTS: Final = 2.5
 #: Labels on one dimension line: their lines are this close across (points).
 ROW_PT: Final = 0.6
 #: Two dimension lines are different rows when at least this far apart (points).
@@ -389,28 +394,33 @@ _MARK_MIN_PT: Final = 0.8
 _MARK_MAX_PT: Final = 8.0
 
 
-def _end_marked(segments: Sequence[Segment], label: _Label, at: float) -> bool:
-    """A tick or an arrowhead on the label's own dimension line at `at` (along its axis): a short
-    piece of line work at a slant to the dimension line that touches the end. An extension line
-    crossing there is not one (it is square to the line): a line cut at another dimension's
-    extension line has no mark of its own, so it is never taken for that span."""
+def _tick_strokes(segments: Sequence[Segment], label: _Label, at: float) -> set[int]:
+    """The end marks (as `_end_marked` finds them) touching the label's line at `at`, by index."""
     flip = label.orientation == "v"
     px, py = (label.across, at) if flip else (at, label.across)
-    for a, b in segments:
+    found: set[int] = set()
+    for index, (a, b) in enumerate(segments):
         (ax, ay), (bx, by) = a, b
         dx, dy = bx - ax, by - ay
         length = (dx * dx + dy * dy) ** 0.5
         if not _MARK_MIN_PT <= length <= _MARK_MAX_PT:
             continue
         along, square = (abs(dy), abs(dx)) if flip else (abs(dx), abs(dy))
-        # Slanted: between about 10 and 80 degrees to the dimension line.
         if square < 0.17 * length or along < 0.17 * length:
             continue
         t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / (length * length)))
         cx, cy = ax + t * dx - px, ay + t * dy - py
         if (cx * cx + cy * cy) ** 0.5 <= _MARK_PT:
-            return True
-    return False
+            found.add(index)
+    return found
+
+
+def _end_marked(segments: Sequence[Segment], label: _Label, at: float) -> bool:
+    """A tick or an arrowhead on the label's own dimension line at `at` (along its axis): a short
+    piece of line work at a slant to the dimension line that touches the end. An extension line
+    crossing there is not one (it is square to the line): a line cut at another dimension's
+    extension line has no mark of its own, so it is never taken for that span."""
+    return bool(_tick_strokes(segments, label, at))
 
 
 def ends_marked(segments: Sequence[Segment] | None, label: _Label) -> bool | None:
@@ -465,9 +475,15 @@ def _rows(labels: Sequence[_Label]) -> list[list[_Label]]:
     return rows
 
 
-def _chain(overall: _Label, row: Sequence[_Label]) -> list[_Label] | None:
+type Joint = Callable[[_Label, _Label], bool]
+
+
+def _chain(
+    overall: _Label, row: Sequence[_Label], joint: Joint | None = None
+) -> list[_Label] | None:
     """The row's labels that tile the overall's span exactly (end to end, from one of its extension
-    lines to the other), or None when the row is not its string."""
+    lines to the other), or None when the row is not its string. `joint` says whether two parts
+    further apart than `GAP_PT` still meet (`_joint`)."""
     lo, hi = overall.start - GAP_PT, overall.end + GAP_PT
     inside = sorted((la for la in row if la.start >= lo and la.end <= hi), key=lambda la: la.start)
     # A dimension of the row that crosses one of the overall's ends: the row runs past it.
@@ -480,9 +496,26 @@ def _chain(overall: _Label, row: Sequence[_Label]) -> list[_Label] | None:
         return None
     if abs(inside[0].start - overall.start) > END_PT or abs(inside[-1].end - overall.end) > END_PT:
         return None
-    if any(abs(a.end - b.start) > GAP_PT for a, b in pairwise(inside)):
-        return None
+    for a, b in pairwise(inside):
+        if abs(a.end - b.start) > GAP_PT and (joint is None or not joint(a, b)):
+            return None
     return inside
+
+
+def _joint(segments: Sequence[Segment], weight: float) -> Joint:
+    """Two consecutive parts meet across a gap wider than `GAP_PT` when the gap is at most
+    `JOINT_WEIGHTS` line weights and ONE tick marks both ends (the drafter's single joint over a
+    doubled extension line). Two ticks, or none, are two places: never bridged."""
+
+    def meets(a: _Label, b: _Label) -> bool:
+        gap = b.start - a.end
+        if gap < 0 or gap > max(GAP_PT, JOINT_WEIGHTS * weight):
+            return False
+        if a.orientation != b.orientation or abs(a.across - b.across) > ROW_PT:
+            return False
+        return bool(_tick_strokes(segments, a, a.end) & _tick_strokes(segments, b, b.start))
+
+    return meets
 
 
 def _judge(
@@ -557,6 +590,17 @@ def find_strings(labels: Sequence[_Label], segments: Segments | None = None) -> 
     `segments` gives a page's line work, read only for a string that does not add up."""
     out: list[StringCheck] = []
     seen: set[tuple[Any, ...]] = set()
+    joints: dict[tuple[str, int], Joint | None] = {}
+
+    def joint_of(file: str, page: int) -> Joint | None:
+        if (file, page) not in joints:
+            lines = segments(file, page) if segments is not None else None
+            weight = segments.weight(file, page) if isinstance(segments, LineWork) else None
+            joints[(file, page)] = (
+                None if lines is None or weight is None else _joint(lines, weight)
+            )
+        return joints[(file, page)]
+
     groups: dict[tuple[str, int, int | None], list[_Label]] = {}
     for label in labels:
         if label.side == "vendor" and label.half is not None:
@@ -570,6 +614,9 @@ def find_strings(labels: Sequence[_Label], segments: Segments | None = None) -> 
                     if abs(row[0].across - overall.across) < ROW_APART_PT:
                         continue
                     parts = _chain(overall, row)
+                    if parts is None:
+                        # A wider joint is looked at only for a row that is otherwise its string.
+                        parts = _chain(overall, row, joint_of(overall.file, overall.page))
                     if parts is None:
                         continue
                     key = (
@@ -1149,23 +1196,38 @@ def page_texts(folder: Path, files: Sequence[str]) -> dict[tuple[str, int], str]
     return out
 
 
-def line_work(uploads: Path) -> Segments:
+class LineWork:
     """A page's line work from the upload (`dim_labels`' own reading, loaded by name), each page
-    read at most once."""
-    read: dict[tuple[str, int], Sequence[Segment] | None] = {}
+    read at most once: its straight pieces (calling it, a `Segments`) and its line weight."""
 
-    def segments(file: str, page: int) -> Sequence[Segment] | None:
+    def __init__(self, uploads: Path) -> None:
+        self.uploads = uploads
+        self._read: dict[tuple[str, int], tuple[Sequence[Segment], float] | None] = {}
+
+    def _page(self, file: str, page: int) -> tuple[Sequence[Segment], float] | None:
         key = (file, page)
-        if key not in read:
+        if key not in self._read:
             try:
                 labels = import_module("app.review.assistant.dim_labels")
-                read[key] = labels._parse(uploads / file, page - 1).segments
+                parsed = labels._parse(self.uploads / file, page - 1)
+                self._read[key] = (parsed.segments, float(parsed.weight))
             except Exception as failed:  # noqa: BLE001 - its ends stay unchecked: no finding
                 _log.warning("vendor consistency: line work not read: %s", type(failed).__name__)
-                read[key] = None
-        return read[key]
+                self._read[key] = None
+        return self._read[key]
 
-    return segments
+    def __call__(self, file: str, page: int) -> Sequence[Segment] | None:
+        found = self._page(file, page)
+        return None if found is None else found[0]
+
+    def weight(self, file: str, page: int) -> float | None:
+        found = self._page(file, page)
+        return None if found is None else found[1]
+
+
+def line_work(uploads: Path) -> LineWork:
+    """A page's line work from the upload, each page read at most once (`LineWork`)."""
+    return LineWork(uploads)
 
 
 def check_pack(
