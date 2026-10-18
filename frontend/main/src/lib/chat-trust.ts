@@ -45,6 +45,7 @@ const WITNESS_WORDS: Record<string, string> = {
   ledger: 'code’s reading ledger backs it',
   units: 'the mm and inches printed together agree',
   ocr_ink: 'both values read from the vendor’s drawn ink by two OCR engines',
+  text: 'code read the finish codes in the drawings’ text and searched every vendor sheet',
 };
 
 /** A finding's evidence kind, read safely; null on older answers. */
@@ -84,6 +85,7 @@ export const UNKNOWN_WHY_WORDS: Record<UnknownWhy, string> = {
   no_counterpart: 'on one drawing only',
   missing_round: 'round not in the set',
   not_in_set: 'sheet not in the set',
+  not_comparable: 'not directly comparable',
 };
 
 /** "3 not checked", or null when there are none. */

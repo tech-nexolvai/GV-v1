@@ -345,6 +345,11 @@ class ChatFindingChecksOut(BaseModel):
         description="agrees | disagrees: code's reading ledger (a string that adds up, other "
         "views agreeing); null: the ledger says nothing about it.",
     )
+    text: str | None = Field(
+        default=None,
+        description="agrees: code read the finish codes in the drawings' own text and searched "
+        "every vendor sheet and round of the area (#1623); null: not that check's finding.",
+    )
     units: str | None = Field(
         default=None,
         description="agrees | disagrees: millimetres and inches printed together (940 [37]).",
@@ -583,6 +588,8 @@ class ChatFindingProofOut(BaseModel):
             "not_proved",
             "not_seen",
             "field_verify",
+            "finish_not_comparable",
+            "no_sheet",
         ]
         | None
     ) = Field(default=None, description="not_compared: the reason (the list's group).")
@@ -672,8 +679,10 @@ class ChatFindingOut(BaseModel):
     vendor_picture_id: str | None = None
     created_by: str = Field(
         description='"lead", "helper:<n>", "gv_review" (made by code from a recorded result), '
-        '"ledger" (made by code from the reading ledger), or "consistency" (made by code from the '
-        "vendor's own drawings: a string that does not add up, a span printed twice)."
+        '"ledger" (made by code from the reading ledger), "consistency" (made by code from the '
+        "vendor's own drawings: a string that does not add up, a span printed twice), or "
+        '"architect_items" (made by code from the drawings\' text: a finish the architect tags '
+        "that the vendor missed, changed or added)."
     )
     ledger_ids: list[str] | None = Field(
         default=None, description="The reading ledger's entries (S<n>, R<n>) behind it."
@@ -709,7 +718,8 @@ class ChatFindingOut(BaseModel):
     )
     witnesses: list[str] | None = Field(
         default=None,
-        description="The non-AI witnesses behind it: printed, rule, arithmetic, ledger, units.",
+        description="The non-AI witnesses behind it: printed, ocr_ink, text, rule, arithmetic, "
+        "ledger, units.",
     )
     compared: bool | None = Field(
         default=None,
@@ -1306,6 +1316,7 @@ class ChatUnknownOut(BaseModel):
         "no_counterpart",
         "missing_round",
         "not_in_set",
+        "not_comparable",
     ]
     needs: str
     scope: Literal["page", "item", "set"] = Field(

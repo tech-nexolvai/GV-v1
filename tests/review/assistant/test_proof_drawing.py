@@ -607,7 +607,34 @@ def test_the_not_compared_list_has_the_same_rows_as_the_workbook_and_the_screen(
     assert table[1][2] == "Lobby" and table[1][6] == "no width printed"
     assert book["Not compared"]["A2"].number_format == "@"  # text, so 1/8 stays 1/8
     summary = [[c.value for c in row] for row in book["Summary"].iter_rows()]
-    assert ["Total", None, "3"] in summary
+    assert ["Total", "items of this check", "3"] in summary
+    # The set's own gaps code found (#1623 finish check, #1584) are listed apart, never counted as
+    # items: the screen's count stays the item rows'.
+    gaps = not_compared.gap_rows(
+        [
+            {
+                "page": 4,
+                "what": "Lobby: architect's QZ-1 against the vendor's SL-2",
+                "why": "not_comparable",
+                "needs": "a printed legend",
+            },
+            {
+                "page": 9,
+                "what": "Lobby: round 2 does not include this area",
+                "why": "missing_round",
+                "needs": "the round-2 sheet",
+            },
+        ]
+    )
+    assert [(g.reason, g.level) for g in gaps] == [
+        ("finish_not_comparable", "set"),
+        ("no_sheet", "set"),
+    ]
+    out2 = tmp_path / "list2.pdf"
+    assert not_compared_pdf(sheet, [*rows, *gaps], out2, set_name="sheet.pdf", stamp="Checked") == 3
+    words2 = " ".join("".join(p.extract_text() for p in PdfReader(str(out2)).pages).split())
+    assert "Found by code across the set (2)" in words2
+    assert "Not reviewed: finish codes not comparable (1)" in words2
     assert not_compared.csv_text(rows).count("\r\n") == 4
     # The product scope: an item of a product the check was not run for is left out.
     scoped = not_compared.rows(

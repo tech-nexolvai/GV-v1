@@ -73,6 +73,9 @@ class Row:
     reference: str
     file: str | None
     box: tuple[float, float, float, float] | None
+    level: str = "item"
+    """`item`: a finding of the answer (counted on screen); `set`: a gap of the set found by code
+    (the finish check, #1623; the vendor consistency check), listed but not a finding."""
 
     @property
     def reason_words(self) -> str:
@@ -174,6 +177,47 @@ def rows(
     return out
 
 
+#: A set-level gap's `why` (`chat_unknowns` shape) as a Not-compared reason.
+_GAP_REASONS: Final[Mapping[str, str]] = {
+    "not_comparable": "finish_not_comparable",
+    "unreadable": "unreadable",
+}
+
+
+def gap_rows(
+    gaps: Sequence[Mapping[str, Any]], *, areas: Mapping[int, str] | None = None
+) -> list[Row]:
+    """The set's gaps code found (the finish check's "not comparable" codes, #1623; areas or rounds
+    with no sheet, #1584) as Not-compared rows of the set (`level: set`)."""
+    out: list[Row] = []
+    for gap in gaps:
+        if not isinstance(gap, Mapping) or not gap.get("what"):
+            continue
+        page = gap.get("page") if isinstance(gap.get("page"), int) else None
+        reason = _GAP_REASONS.get(str(gap.get("why") or ""), "no_sheet")
+        out.append(
+            Row(
+                finding_id="",
+                page=page,
+                area=(areas or {}).get(page or 0, ""),
+                product="",
+                item=_flat(gap.get("what"), 160),
+                vendor="",
+                architect="",
+                reason=reason,
+                why=REASON_WORDS.get(reason, reason),
+                needed=_flat(gap.get("needs"), 200),
+                reference="" if page is None else f"page {page}",
+                file=None,
+                box=None,
+                level="set",
+            )
+        )
+    order: dict[str, int] = {reason: at for at, reason in enumerate(REASONS)}
+    out.sort(key=lambda row: (order.get(row.reason, len(order)), row.page or 0, row.item))
+    return out
+
+
 def _table(found: Sequence[Row]) -> list[list[str]]:
     return [
         [
@@ -198,7 +242,10 @@ def summary_rows(found: Sequence[Row]) -> list[list[str]]:
     by_product = Counter(row.product for row in found)
     out = [["By reason", TRADE_WORDS.get(r, r), str(by_reason[r])] for r in REASONS if by_reason[r]]
     out += [["By product", name, str(n)] for name, n in sorted(by_product.items())]
-    out.append(["Total", "", str(len(found))])
+    items = sum(1 for row in found if row.level == "item")
+    out.append(["Total", "items of this check", str(items)])
+    if items != len(found):
+        out.append(["Total", "found by code across the set", str(len(found) - items)])
     return out
 
 

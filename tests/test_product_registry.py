@@ -84,6 +84,17 @@ def test_the_registry_holds_the_clients_products_two_active() -> None:
     assert known.get("lighting") is not None and not known.get("lighting").active  # type: ignore[union-attr]
 
 
+def test_each_active_product_names_its_own_tag_families() -> None:
+    """The finish check (#1623) compares and files codes by these families."""
+    known = registry()
+    countertop, cabinet = known.get("countertop"), known.get("cabinet")
+    assert countertop is not None and cabinet is not None
+    assert "CT" in countertop.tag_families and "LA" in cabinet.tag_families
+    assert not set(countertop.tag_families) & set(cabinet.tag_families)
+    # A family that names a plumbing fixture in some sets is never one.
+    assert "PL" not in {f for p in known.products for f in p.tag_families}
+
+
 def test_product_type_is_the_registry() -> None:
     assert {member.value for member in ProductType} <= set(registry().ids())
     assert ProductType("countertop") is ProductType.COUNTERTOP
@@ -119,6 +130,8 @@ def _broken(tmp_path: Path, change: object) -> Path:
         (lambda d: d.update(version=2), "version: 1"),
         (lambda d: d["products"][0].update(words="countertop"), "`words` must be a list"),
         (lambda d: d["products"][1].update(hints=[""]), "`hints` must be a list"),
+        (lambda d: d["products"][0].update(tag_families=["qz-1"]), "tag_families"),
+        (lambda d: d["products"][1].update(tag_families=["CT"]), "given to two products"),
     ],
     ids=[
         "repeated-id",
@@ -133,6 +146,8 @@ def _broken(tmp_path: Path, change: object) -> Path:
         "unknown-version",
         "words-not-a-list",
         "empty-hint",
+        "bad-tag-family",
+        "tag-family-twice",
     ],
 )
 def test_a_registry_that_does_not_hold_together_is_refused(

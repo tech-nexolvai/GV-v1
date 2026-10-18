@@ -63,6 +63,8 @@ type Reason = Literal[
     "not_proved",
     "not_seen",
     "field_verify",
+    "finish_not_comparable",
+    "no_sheet",
 ]
 
 #: The Not-compared reasons, in the order the list and the summary give them.
@@ -75,6 +77,8 @@ REASONS: Final[tuple[Reason, ...]] = (
     "missing_setting",
     "not_proved",
     "not_seen",
+    "finish_not_comparable",
+    "no_sheet",
     "prototype",
 )
 #: Each reason as the Not-compared list's heading and the summary line say it.
@@ -88,6 +92,8 @@ REASON_WORDS: Final[Mapping[str, str]] = {
     "not_seen": "not looked at on both drawings",
     "prototype": "brand prototype differs (reference only)",
     "field_verify": "the drawing says verify in field",
+    "finish_not_comparable": "finish codes not comparable (the finish check)",
+    "no_sheet": "no sheet of the area or round to compare",
 }
 #: The trade's own words for each reason (industry review, topic 5), shown next to ours on the
 #: Not-compared list, the workbook and the screen.
@@ -101,6 +107,8 @@ TRADE_WORDS: Final[Mapping[str, str]] = {
     "not_proved": "Not reviewed: not proved by code",
     "not_seen": "Not reviewed: not looked at on both drawings",
     "prototype": "Not reviewed: brand prototype (reference only)",
+    "finish_not_comparable": "Not reviewed: finish codes not comparable",
+    "no_sheet": "Not reviewed: no sheet to compare",
 }
 #: The rule each reason comes from.
 _RULES: Final[Mapping[str, str]] = {
@@ -113,6 +121,8 @@ _RULES: Final[Mapping[str, str]] = {
     "not_seen": "R4",
     "prototype": "R1",
     "field_verify": "R7",
+    "finish_not_comparable": "R4",
+    "no_sheet": "R7",
 }
 #: The architect's drawing points to the brand standard: the prototype is then its intent (R1).
 _POINTS_TO_PROTOTYPE: Final = re.compile(

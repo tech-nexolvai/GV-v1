@@ -95,6 +95,7 @@ from app.review.assistant.agent import (
     estimate_micros,
     prompt_tokens_upper,
 )
+from app.review.assistant.architect_items import add_to_answer as add_architect_items
 from app.review.assistant.chat_context import (
     NEAR_SHARE,
     context_edits,
@@ -811,6 +812,8 @@ class ChatEngine:
         #: A full check's Not-compared rows (#1619), once its files are made.
         self.not_compared: list[Any] = []
         self.consistency_line: str | None = None
+        # The finish check's line (#1623); its Not compared items join `consistency_gaps`.
+        self.items_line: str | None = None
         # The decision items code settled itself (#1554), for the cloud drawing and the report.
         self._settled: list[dict[str, Any]] = []
         #: The full check's escalation of undecided items (#1619), once it ran.
@@ -2215,6 +2218,10 @@ class ChatEngine:
                 add_consistency(self)  # a full check's vendor consistency check (#1584), $0
             except Exception:  # noqa: BLE001 - the answer goes on without it
                 _log.exception("assistant chat vendor consistency check failed")
+            try:
+                add_architect_items(self)  # missed, changed and added finishes (#1623), $0
+            except Exception:  # noqa: BLE001 - the answer goes on without it
+                _log.exception("assistant chat finish check failed")
         if not book.live() and not book.coverage_used and not self._ledger_used():
             self._close_checks()
             return
@@ -2251,6 +2258,10 @@ class ChatEngine:
                 add_consistency(self)  # a full check's vendor consistency check (#1584), $0
             except Exception:  # noqa: BLE001 - the answer goes on without it
                 _log.exception("assistant chat vendor consistency check failed")
+            try:
+                add_architect_items(self)  # missed, changed and added finishes (#1623), $0
+            except Exception:  # noqa: BLE001 - the answer goes on without it
+                _log.exception("assistant chat finish check failed")
             if self._ledger_used():
                 ledger = self.reading_ledger.as_dict()
                 for finding in book.live():
@@ -2565,7 +2576,9 @@ class ChatEngine:
                     if file_id is not None:
                         (workspace.files / file_id).unlink(missing_ok=True)
                     self._add_text(f"*The {what} could not be made for this answer.*")
-        names += self._not_compared_files(nothing)
+        # The list also names the set's own gaps code found (the finish check, #1623; the vendor
+        # consistency check), apart from the answer's items.
+        names += self._not_compared_files([*nothing, *not_compared.gap_rows(self.consistency_gaps)])
         return names
 
     def _not_compared_rows(self, findings: Sequence[Mapping[str, Any]]) -> list[Any]:
@@ -2614,12 +2627,12 @@ class ChatEngine:
                 names = self._full_check_files()
             except Exception:  # noqa: BLE001 - the answer still ends, with its summary
                 _log.exception("assistant chat full-check files failed")
-        line = self.consistency_line
+        lines = [x for x in (self.consistency_line, self.items_line) if x]
         if not needs_code_summary(text, stopped):
-            # The vendor consistency check's line (#1584) and what could not be compared (#1619),
-            # after the AI's own summary.
+            # The vendor consistency check's line (#1584), the finish check's (#1623) and what
+            # could not be compared (#1619), one line each, after the AI's own summary.
             nothing = not_compared_line(Counter(row.reason for row in self.not_compared))
-            for words in (line, nothing.replace("list.", "list (PDF / Excel).")):
+            for words in (*lines, nothing.replace("list.", "list (PDF / Excel).")):
                 if words:
                     index = self._add_block({"type": "text", "text": words, "by": "code"})
                     self.emit("text_delta", {"index": index, "text": words, "by": "code"})
@@ -2637,7 +2650,7 @@ class ChatEngine:
             budget_usd=cap_text(settings.package_cap_micros),
             turns=settings.lead_max_turns,
             files=names,
-            also=[line] if line else (),
+            also=lines,
             reasons=[row.reason for row in self.not_compared] or None,
         )
         index = self._add_block({"type": "text", "text": summary, "by": "code"})

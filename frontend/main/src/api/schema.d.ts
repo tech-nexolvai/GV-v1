@@ -4648,6 +4648,11 @@ export interface components {
              */
             second_read: string;
             /**
+             * Text
+             * @description agrees: code read the finish codes in the drawings' own text and searched every vendor sheet and round of the area (#1623); null: not that check's finding.
+             */
+            text?: string | null;
+            /**
              * Units
              * @description agrees | disagrees: millimetres and inches printed together (940 [37]).
              */
@@ -4922,7 +4927,7 @@ export interface components {
             compared?: boolean | null;
             /**
              * Created By
-             * @description "lead", "helper:<n>", "gv_review" (made by code from a recorded result), "ledger" (made by code from the reading ledger), or "consistency" (made by code from the vendor's own drawings: a string that does not add up, a span printed twice).
+             * @description "lead", "helper:<n>", "gv_review" (made by code from a recorded result), "ledger" (made by code from the reading ledger), "consistency" (made by code from the vendor's own drawings: a string that does not add up, a span printed twice), or "architect_items" (made by code from the drawings' text: a finish the architect tags that the vendor missed, changed or added).
              */
             created_by: string;
             critic?: components["schemas"]["ChatFindingCriticOut"] | null;
@@ -5035,7 +5040,7 @@ export interface components {
             why?: string | null;
             /**
              * Witnesses
-             * @description The non-AI witnesses behind it: printed, rule, arithmetic, ledger, units.
+             * @description The non-AI witnesses behind it: printed, ocr_ink, text, rule, arithmetic, ledger, units.
              */
             witnesses?: string[] | null;
         };
@@ -6345,7 +6350,7 @@ export interface components {
              * Why
              * @enum {string}
              */
-            why: "unreadable" | "not_opened" | "missing_job_value" | "pairing_uncertain" | "refused_alignment" | "no_counterpart" | "missing_round" | "not_in_set";
+            why: "unreadable" | "not_opened" | "missing_job_value" | "pairing_uncertain" | "refused_alignment" | "no_counterpart" | "missing_round" | "not_in_set" | "not_comparable";
         };
         /** ChatUnknownsBlock */
         ChatUnknownsBlock: {

@@ -371,6 +371,7 @@ def apply_checks(
         "arithmetic": None,
         "lead_checked": bool(finding.get("verified")),
         "ledger": _ledger_made(finding),
+        "text": _text_made(finding),
         "units": None,
         "adjudication": None,
         "critic": None,
@@ -429,6 +430,19 @@ def _parts_sum(finding: Mapping[str, Any]) -> str | None:
     if any(value is None for value in values):
         return None
     return _number(sum((v for v in values if v is not None), Decimal(0)))
+
+
+#: The code check that reads finish codes from the drawings' text (`architect_items`, #1623).
+_TEXT_MADE_BY: Final = "architect_items"
+
+
+def _text_made(finding: Mapping[str, Any]) -> str | None:
+    """A finding the finish check made from the drawings' text (what it read and the vendor
+    sheets it searched are in `text_proof`): an observed code witness."""
+    proof = finding.get("text_proof")
+    if finding.get("created_by") == _TEXT_MADE_BY and isinstance(proof, Mapping) and proof:
+        return "agrees"
+    return None
 
 
 def _ledger_made(finding: Mapping[str, Any]) -> str | None:

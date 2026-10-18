@@ -1261,8 +1261,9 @@ def not_compared_pdf(
     `not_compared.rows` (every item that could not be compared under the architect-first rules),
     grouped by reason, each with its page, item, what the vendor shows, why it could not be
     compared, what is needed to compare it and a small picture of its spot (cut from the hi-res
-    cache when there is one). Nobody is asked to decide anything here. Returns how many rows it
-    lists (the workbook and the screen count the same rows)."""
+    cache when there is one); then the set's own gaps code found (`not_compared.gap_rows`: finish
+    codes not comparable, areas or rounds with no sheet). Nobody is asked to decide anything here.
+    Returns how many item rows it lists (the workbook and the screen count the same rows)."""
     from app.review.assistant.classification import REASON_WORDS, REASONS, TRADE_WORDS
 
     styles = _styles()
@@ -1270,25 +1271,31 @@ def not_compared_pdf(
     width, _height = _LIST_PAGE
     usable = width - 72
     sizes = _Sizes()
-    grouped: dict[str, list[list[Any]]] = {}
-    for row in rows:
-        picture: Any = Paragraph("", small)
-        if row.box is not None and row.page is not None and row.file in (None, source.name):
-            png = boxed_crop(source, row.page, row.box, _LIST_GREY, sizes, cache)
-            if png is not None:
-                picture = _image(png, _SPOT_W, _SPOT_H)
-        grouped.setdefault(row.reason, []).append(
-            [
-                Paragraph(escape("" if row.page is None else str(row.page)), body),
-                Paragraph(f"<b>{escape(row.item)}</b>", body),
-                Paragraph(escape(row.vendor), small),
-                Paragraph(escape(row.architect), small),
-                Paragraph(escape(row.why), small),
-                Paragraph(escape(row.needed), small),
-                picture,
-            ]
-        )
-    total = len(rows)
+    items = [row for row in rows if getattr(row, "level", "item") == "item"]
+    gaps = [row for row in rows if getattr(row, "level", "item") != "item"]
+
+    def grouped(chosen: Sequence[Any]) -> dict[str, list[list[Any]]]:
+        out: dict[str, list[list[Any]]] = {}
+        for row in chosen:
+            picture: Any = Paragraph("", small)
+            if row.box is not None and row.page is not None and row.file in (None, source.name):
+                png = boxed_crop(source, row.page, row.box, _LIST_GREY, sizes, cache)
+                if png is not None:
+                    picture = _image(png, _SPOT_W, _SPOT_H)
+            out.setdefault(row.reason, []).append(
+                [
+                    Paragraph(escape("" if row.page is None else str(row.page)), body),
+                    Paragraph(f"<b>{escape(row.item)}</b>", body),
+                    Paragraph(escape(row.vendor), small),
+                    Paragraph(escape(row.architect), small),
+                    Paragraph(escape(row.why), small),
+                    Paragraph(escape(row.needed), small),
+                    picture,
+                ]
+            )
+        return out
+
+    total = len(items)
     story: list[Any] = [
         Paragraph(escape(f"{NOT_COMPARED_TITLE}: {set_name}"), styles["title"]),
         Paragraph(escape(stamp), styles["stamp"]),
@@ -1311,30 +1318,50 @@ def not_compared_pdf(
     ]  # fmt: skip
     widths = [30, usable * 0.15, usable * 0.11, usable * 0.13, usable * 0.2, usable * 0.16]
     widths.append(usable - sum(widths))
-    for reason in REASONS:
-        group = grouped.get(reason)
-        if not group:
-            continue
-        words = REASON_WORDS[reason]
+
+    def sections(chosen: Sequence[Any]) -> None:
+        by_reason = grouped(chosen)
+        for reason in REASONS:
+            group = by_reason.get(reason)
+            if not group:
+                continue
+            words = REASON_WORDS[reason]
+            story.append(
+                Paragraph(
+                    escape(f"{TRADE_WORDS.get(reason, words)} ({len(group)})")
+                    + f'<font size="9" color="{_hex(_LIST_GREY)}">&nbsp;&nbsp;{escape(words)}</font>',
+                    # Not kept with its table: a long table starts on the same page and splits.
+                    ParagraphStyle("list_section", parent=styles["section"], keepWithNext=0),
+                )
+            )
+            table = Table([head, *group], colWidths=widths, repeatRows=1, hAlign="LEFT")
+            table.setStyle(
+                TableStyle(
+                    [
+                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                        ("LINEBELOW", (0, 0), (-1, -1), 0.25, Color(0.8, 0.8, 0.8)),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                    ]
+                )
+            )
+            story.append(table)
+
+    sections(items)
+    if gaps:
+        story.append(Spacer(1, 10))
+        story.append(
+            Paragraph(escape(f"Found by code across the set ({len(gaps)})"), styles["section"])
+        )
         story.append(
             Paragraph(
-                escape(f"{TRADE_WORDS.get(reason, words)} ({len(group)})")
-                + f'<font size="9" color="{_hex(_LIST_GREY)}">&nbsp;&nbsp;{escape(words)}</font>',
-                # Not kept with its table: a long table starts on the same page and splits.
-                ParagraphStyle("list_section", parent=styles["section"], keepWithNext=0),
+                escape(
+                    "Code's finish check and consistency check list what they could not compare "
+                    "for the set as a whole (not items of this answer)."
+                ),
+                grey,
             )
         )
-        table = Table([head, *group], colWidths=widths, repeatRows=1, hAlign="LEFT")
-        table.setStyle(
-            TableStyle(
-                [
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("LINEBELOW", (0, 0), (-1, -1), 0.25, Color(0.8, 0.8, 0.8)),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 3),
-                ]
-            )
-        )
-        story.append(table)
+        sections(gaps)
     made = _pages_pdf(_LIST_PAGE, [(NOT_COMPARED_TITLE, story)])[0]
     out.parent.mkdir(parents=True, exist_ok=True)
     with pikepdf.open(io.BytesIO(made)) as document:

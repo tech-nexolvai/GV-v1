@@ -602,8 +602,9 @@ def coverage_note(gaps: Sequence[int], file_name: str | None) -> str:
 # ---- "Your decision" items -------------------------------------------------------------------------
 
 #: Findings code made itself (GV Review's records, the reading ledger, the vendor consistency
-#: check): their words are code's, so the lead is never sent back for their decision help.
-_CODE_MADE: Final = ("gv_review", "ledger", "consistency")
+#: check, the finish check): their words are code's, so the lead is never sent back for their
+#: decision help.
+_CODE_MADE: Final = ("gv_review", "ledger", "consistency", "architect_items")
 
 
 def helpless_decisions(findings: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -1209,9 +1210,11 @@ class FindingBook:
         self, given: Mapping[str, Any], *, created_by: str = "ledger"
     ) -> dict[str, Any] | None:
         """A finding code made (the reading ledger's: `created_by: "ledger"`; the vendor
-        consistency check's: `"consistency"`), added like a lead finding (id, crops, checks). Its
-        `ledger_ids`, `reference_side` and `dims` (the labels its values came from) are kept. A box
-        that is not on an upload is left out; a finding that still does not fit is skipped (None).
+        consistency check's: `"consistency"`; the finish check's: `"architect_items"`), added like
+        a lead finding (id, crops, checks). Its `ledger_ids`, `reference_side`, `dims` (the labels
+        its values came from), `paired_by` (code paired the two sides) and `text_proof` (what the
+        finish check read and searched) are kept. A box that is not on an upload is left out; a
+        finding that still does not fit is skipped (None).
         """
         fields_given = {k: v for k, v in given.items() if k in _FINDING_FIELDS}
         for name, limit in (("item", _MAX_ITEM), ("why", _MAX_WHY)):
@@ -1284,6 +1287,10 @@ class FindingBook:
         }
         if isinstance(given.get("dims"), Mapping):
             finding["dims"] = dict(given["dims"])
+        if given.get("paired_by") == "code":
+            finding["paired_by"] = "code"
+        if isinstance(given.get("text_proof"), Mapping):
+            finding["text_proof"] = json.loads(json.dumps(given["text_proof"]))
         if self.checker is not None:
             finding = self.checker(finding)
         with self._lock:

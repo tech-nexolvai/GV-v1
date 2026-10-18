@@ -6,9 +6,9 @@ a false red cloud goes straight to the vendor, so **only what code proved is clo
 
 - **clouded**: a Wrong item (status `different`) with an independent code witness behind it
   (`witness.py`: printed at both spots, drawn ink read by two OCR engines, GV's rule check, code's
-  sum, the reading ledger, millimetres and inches agreeing), a trust level of Confirmed or Likely,
-  and a governing value code knows (GV's rule or limits, code's sum, or the architect's value
-  read as one size). Never a value measured off the drawing or taken from a scale note (the
+  sum, the reading ledger, millimetres and inches agreeing, finish codes read from the drawings'
+  text), a trust level of Confirmed or Likely, and a governing value code knows (GV's rule or
+  limits, code's sum, the architect's value read as one size, or the architect's finish code). Never a value measured off the drawing or taken from a scale note (the
   printed scales are wrong wherever GV resized a pasted drawing). A comparison of two drawn
   dimensions (vendor against architect or prototype) also needs a **pairing proof** that both
   numbers measure the same thing (`pairing_proved`: the full check's devil's advocate passed it,
@@ -66,7 +66,6 @@ __all__ = [
     "scaled",
     "should_be",
     "should_be_value",
-    "tags_proved",
     "unproved_reason",
     "vendor_own",
     "vendor_value",
@@ -84,7 +83,7 @@ GROUP_WORDS: Final[Mapping[str, str]] = {
 #: The rule, in one line, on the drawing's cover and the report.
 RULE_LINE: Final = (
     "The architect's drawings govern. Only differences code proved are clouded in red (GV's rule, "
-    "the vendor's own sum, a tag the vendor leaves out, or two dimensions code proved measure the "
+    "the vendor's own sum, a finish code the vendor leaves out or changes, or two dimensions code proved measure the "
     "same thing); what could not be compared is listed apart, with the reason."
 )
 #: Words saying a value was measured off the drawing or taken from a scale note, not printed.
@@ -136,6 +135,8 @@ _PROOF_WORDS: Final[Mapping[str, str]] = {
     "rule": "GV's rule check fails it",
     "ledger": "code's reading ledger backs it (the string adds up, or other views agree)",
     "units": "the millimetres and inches printed together agree",
+    "text": "code read the finish codes in the drawings' own text and searched every vendor "
+    "sheet and round of the area",
 }
 #: The limits in the resolver's words for GV's limits (`decision_resolver._filler_limits`).
 _LIMITS: Final = re.compile(r"limits are (.+?) \(")
@@ -247,18 +248,6 @@ def _read_by_code(finding: Mapping[str, Any]) -> bool:
     return bool(found) and _governing_known(finding, found)
 
 
-def tags_proved(finding: Mapping[str, Any]) -> bool:
-    """R4, missed a tag: code searched the vendor's drawings of the area for the architect's tag
-    and did not find it (the escalation's `notes` step)."""
-    settled = finding.get("settled")
-    return (
-        isinstance(settled, Mapping)
-        and settled.get("method") == "escalation_notes"
-        and settled.get("outcome") == "wrong"
-        and bool(finding.get("missing_tags"))
-    )
-
-
 def code_proved(finding: Mapping[str, Any]) -> bool:
     """A Wrong item code proved: an independent code witness AND trust Confirmed or Likely (a check
     that disagrees makes it "AI reading only", so it never passes), with neither value measured
@@ -266,8 +255,6 @@ def code_proved(finding: Mapping[str, Any]) -> bool:
     dimensions, a pairing proof (`needs_pairing`, `pairing_proved`): reading the vendor's number
     right (its millimetres and inches agreeing) does not prove the architect's number measures the
     same thing."""
-    if finding.get("status") == "different" and tags_proved(finding):
-        return True
     if not _read_by_code(finding):
         return False
     return not needs_pairing(finding) or pairing_proved(finding)
@@ -292,6 +279,9 @@ def _governing_known(finding: Mapping[str, Any], found: Sequence[str]) -> bool:
     if "rule" in found or _gv_limits(finding) is not None:
         return True
     if finding.get("source") == "vendor_arithmetic" and "arithmetic" in found:
+        return True
+    if "text" in found:
+        # The finish check (#1623): the architect's code, read from the drawing's text, governs.
         return True
     return _decimal((finding.get("inches") or {}).get("architect")) is not None
 
@@ -362,10 +352,7 @@ def _settled_how(finding: Mapping[str, Any]) -> str:
 def vendor_value(finding: Mapping[str, Any]) -> str:
     """The vendor's wrong value, short, as code read it: its inches (`16"` for "407 [16]"), the
     printed total of a string that does not add up, the value code read at the spot or the filler
-    widths GV's limits caught (#1554), a tag it leaves out; else the vendor's value as the finding
-    words it."""
-    if tags_proved(finding):
-        return "tag not printed"
+    widths GV's limits caught (#1554); else the vendor's value as the finding words it."""
     if finding.get("source") == "vendor_arithmetic" and finding.get("printed_total"):
         return _short(finding.get("printed_total"), 40)
     inches = _decimal((finding.get("inches") or {}).get("vendor"))
@@ -386,8 +373,6 @@ def should_be_value(finding: Mapping[str, Any]) -> str:
     limits = _gv_limits(finding)
     if limits is not None:
         return limits
-    if tags_proved(finding):
-        return ", ".join(str(tag) for tag in finding.get("missing_tags") or [])
     if finding.get("source") == "vendor_arithmetic":
         summed = _decimal(finding.get("parts_sum"))
         if summed is not None:
@@ -418,7 +403,7 @@ def governs(finding: Mapping[str, Any]) -> str:
     if isinstance(box, Mapping) and box.get("page"):
         page = box.get("page")
     where = f", page {page}" if page and page != finding.get("page") else ""
-    if should_be_value(finding) == architect or tags_proved(finding):
+    if should_be_value(finding) == architect:
         return f"{words}{where}"
     return f"{words} {architect}{where}"
 

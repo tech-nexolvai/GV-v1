@@ -15,10 +15,10 @@ inside the full check and its fixed price, it climbs a ladder, the biggest items
      proven Wrong carries it, and several open copies become one item;
    - `vendor_sums`: a string of the vendor's own that code already proved does not add up
      (`vendor_consistency`) carries the item;
-   - `notes`: the tags each drawing prints (`notes.json`): an architect's tag that the vendor's
-     drawings of the same area never print is a missed item code proved by text search (R4: red);
    - `pairs`: code's own pairing of the two labels by drawn position (`pairs.json`): a proof that
      both numbers measure the same thing (`paired_by: code`).
+   Missed, changed and added finishes (R4) are code's own finish check (`architect_items`, #1623),
+   which runs at the finish of every full check; its findings are proved there, never here.
 2. **One deeper AI look** per item that is left (the roster, `full_check_roster`): a sharper crop
    through the existing verifier and devil's advocate, under the pairing-proof setting, and only
    with the money left under the fixed price.
@@ -26,7 +26,7 @@ inside the full check and its fixed price, it climbs a ladder, the biggest items
    (`classification`), listed in the separate Not-compared PDF, never on the cloud drawing.
 
 Code decides every outcome, with the same witness rules as the red clouds: a step only adds code's
-readings (a label, the text under the markup, code's pairing, a text search) or folds a copy into
+readings (a label, the text under the markup, code's pairing) or folds a copy into
 the item that already carries it; a Right needs both values read by code and equal; a red cloud
 still needs `proof.code_proved`. Every step tried is kept on the finding (`escalation`), so the
 reviewer and the replay can see what each item went through.
@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
@@ -64,14 +63,13 @@ __all__ = [
 
 _log = logging.getLogger(__name__)
 
-type StepName = Literal["labels", "under_markup", "same_item", "vendor_sums", "notes", "pairs"]
+type StepName = Literal["labels", "under_markup", "same_item", "vendor_sums", "pairs"]
 #: The free code steps, cheapest first.
 FREE_STEPS: Final[tuple[StepName, ...]] = (
     "labels",
     "under_markup",
     "same_item",
     "vendor_sums",
-    "notes",
     "pairs",
 )
 #: Two printed values this close are the same (the drawings' smallest step, as the resolver).
@@ -79,8 +77,6 @@ PRECISION: Final = Decimal("0.0625")
 #: How far round a finding's box a label may sit and still be read as the box's value (points).
 _SLACK_PT: Final = 8.0
 #: A tag code as drawings print them (CT-001, ST-002-CUST, WD-01).
-_TAG: Final = re.compile(r"\b[A-Z]{1,4}-\d{1,4}(?:-[A-Z]{2,6})?\b")
-_TAG_ITEM: Final = re.compile(r"\b(?:tags?|material|finish)\b", re.IGNORECASE)
 
 #: (file, page, box) -> the drawing's own words under GV's markup in that box (text, colour).
 type UnderReader = Callable[[str, int, tuple[float, float, float, float]], list[dict[str, Any]]]
@@ -93,7 +89,6 @@ class EscalationContext:
     main_file: str | None
     labels: Mapping[tuple[str, int], Sequence[Mapping[str, Any]]] = field(default_factory=dict)
     page_map: Mapping[str, Any] | None = None
-    notes: Mapping[tuple[str, int], Mapping[str, Any]] = field(default_factory=dict)
     pairs: Mapping[str, str] = field(default_factory=dict)
     under: UnderReader | None = None
 
@@ -442,93 +437,6 @@ def _fold(item: _Item, carrier: dict[str, Any], step: StepName, result: Escalati
     item.outcome = "folded"
 
 
-def _tags_on(entry: Mapping[str, Any] | None, role: str) -> set[str]:
-    """The tags the drawings of one role print on a page (`notes.json`)."""
-    found: set[str] = set()
-    for drawing in (entry or {}).get("drawings") or []:
-        if isinstance(drawing, Mapping) and drawing.get("role") == role:
-            found |= {str(t.get("text")) for t in drawing.get("tags") or [] if t.get("text")}
-    return found
-
-
-def _area_text(ctx: EscalationContext, pages: Sequence[int]) -> str:
-    """Every tag and note the vendor's drawings print on `pages`, as one searchable string."""
-    file = ctx.main_file or ""
-    words: list[str] = []
-    for page in pages:
-        for drawing in (ctx.notes.get((file, page)) or {}).get("drawings") or []:
-            if not isinstance(drawing, Mapping) or drawing.get("role") != "vendor":
-                continue
-            for entry in [*(drawing.get("tags") or []), *(drawing.get("notes") or [])]:
-                if isinstance(entry, Mapping) and entry.get("text"):
-                    words.append(str(entry["text"]))
-    return _squash(" ".join(words))
-
-
-def _squash(text: str) -> str:
-    return re.sub(r"[^A-Z0-9]", "", text.upper())
-
-
-def _notes_step(item: _Item, ctx: EscalationContext, areas: Mapping[int, str]) -> None:
-    """R4, missed something: an architect's tag (code read it on the architect's drawing) that
-    no vendor drawing of the same area prints, by text search, is a Wrong code proved."""
-    finding = item.finding
-    if not _TAG_ITEM.search(str(finding.get("item") or "")):
-        return
-    page = int(finding.get("page") or 0)
-    where = _box(finding.get("arch_box"))
-    arch_page = where[1] if where is not None else int(finding.get("vs_page") or page)
-    file = ctx.main_file or ""
-    vendor_entry, arch_entry = ctx.notes.get((file, page)), ctx.notes.get((file, arch_page))
-    if vendor_entry is None or arch_entry is None:
-        item.note("notes", "no_change", "no notes and tags read on these pages")
-        return
-    architect = _tags_on(arch_entry, "architect")
-    named = set(_TAG.findall(str(finding.get("architect") or "")))
-    wanted = sorted(architect & named if named else architect)
-    if not wanted:
-        item.note("notes", "no_change", "code read no architect's tag for this item")
-        return
-    area = areas.get(page)
-    pages = sorted({p for p, a in areas.items() if a == area} if area else {page}) or [page]
-    printed = _area_text(ctx, pages)
-    if not printed:
-        item.note("notes", "no_change", "code read no vendor tag or note in this area")
-        return
-    # A tag counts as printed when its code (with or without a suffix such as -CUST) is there.
-    left_out = [
-        tag for tag in wanted if _squash(tag) not in printed and _squash(_base(tag)) not in printed
-    ]
-    if not left_out:
-        item.note("notes", "no_change", "the vendor's drawings print the architect's tags")
-        return
-    shown = ", ".join(left_out[:4])
-    where_pages = ", ".join(str(p) for p in pages)
-    finding.update(
-        status="different",
-        missing_tags=left_out[:4],
-        settled={
-            "outcome": "wrong",
-            "method": "escalation_notes",
-            "how": (
-                f"code searched every tag and note on the vendor's drawings of this area (page"
-                f"{'s' if len(pages) > 1 else ''} {where_pages}) for the architect's {shown}: "
-                "not printed"
-            ),
-            "was": str(item.finding.get("status") or "check"),
-        },
-    )
-    finding.pop("keep_reason", None)
-    item.changed = True
-    item.outcome = "wrong"
-    item.note("notes", "proved", f"the vendor's drawings of this area do not print {shown}")
-
-
-def _base(tag: str) -> str:
-    """A tag without its trailing word suffix (AB-012-CUST: AB-012)."""
-    return re.sub(r"-[A-Z]{2,6}$", "", tag)
-
-
 def _pairs_step(item: _Item, ctx: EscalationContext) -> None:
     """Code paired the item's two labels itself, by drawn position: the pairing is proved."""
     finding = item.finding
@@ -580,8 +488,6 @@ def escalate(findings: Sequence[Mapping[str, Any]], ctx: EscalationContext) -> E
                 carrier = _vendor_sum_carrier(item.finding, live)
                 if carrier is not None:
                     _fold(item, carrier, step, result)
-            elif step == "notes":
-                _notes_step(item, ctx, areas)
             else:
                 _pairs_step(item, ctx)
             if item.changed:
@@ -623,9 +529,8 @@ def context_from_pack(
     page_map: Mapping[str, Any] | None = None,
     under: UnderReader | None = None,
 ) -> EscalationContext:
-    """The free steps' facts from a set pack (`dims.json`, `notes.json`, `pairs.json`)."""
+    """The free steps' facts from a set pack (`dims.json`, `pairs.json`)."""
     labels: dict[tuple[str, int], list[Mapping[str, Any]]] = {}
-    notes: dict[tuple[str, int], Mapping[str, Any]] = {}
     pairs: dict[str, str] = {}
     if pack is not None:
         dims = _read(pack / "dims.json")
@@ -634,10 +539,6 @@ def context_from_pack(
                 labels[(str(entry.get("file")), int(entry["page"]))] = [
                     label for label in entry.get("labels") or [] if isinstance(label, Mapping)
                 ]
-        found = _read(pack / "notes.json")
-        for entry in (found or {}).get("pages") or [] if isinstance(found, Mapping) else []:
-            if isinstance(entry, Mapping) and isinstance(entry.get("page"), int):
-                notes[(str(entry.get("file")), int(entry["page"]))] = entry
         pairs = code_pairs(_read(pack / "pairs.json"))
         if page_map is None:
             page_map = _read(pack / "page_map.json")
@@ -645,7 +546,6 @@ def context_from_pack(
         main_file=main_file,
         labels=labels,
         page_map=page_map if isinstance(page_map, Mapping) else None,
-        notes=notes,
         pairs=pairs,
         under=under,
     )
