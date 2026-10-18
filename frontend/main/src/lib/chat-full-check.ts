@@ -4,7 +4,7 @@
  *
  * The owner: "A human uploads 2 PDFs; there is one button, full run check… the cloud drawing (our
  * code does it, the MAIN thing)… where they select countertop/cabinet, add a toggle to select the
- * product." So the composer carries Countertop / Cabinet chips (remembered per drawing set), a
+ * product." So the composer carries the product chips (All by default; a pick lasts for its chat), a
  * "Run full check" button sends `mode: "full_check"`, and a full-check answer leads with the cloud
  * drawing and the check report, then What's wrong / To check / What's right.
  *
@@ -31,54 +31,34 @@ export function productsWords(products: readonly ChatProduct[] | null | undefine
 /** The text a full check is sent with (the server runs the app's own instruction for `full_check`). */
 export const FULL_CHECK_TEXT = 'Full check';
 
-// ── Remembered per drawing set ──────────────────────────────
-
-const PRODUCTS_KEY = 'gv-chat-products:';
+// ── The pick ─────────────────────────────────────────────────
 
 /**
- * The products picked for this drawing set before, or null when none were (or storage is blocked).
- * Once the products have loaded, one that cannot be picked any more is left out.
- */
-export function readProducts(storage: Pick<Storage, 'getItem'> | null, packageId: string, catalog: ProductCatalog = productCatalog()): ChatProduct[] | null {
-  try {
-    const raw = storage?.getItem(PRODUCTS_KEY + packageId);
-    if (!raw) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return null;
-    const allowed = catalog.length ? pickable(catalog) : null;
-    const products = parsed.filter((product): product is string => typeof product === 'string' && (allowed === null || allowed.includes(product)));
-    return products.length ? inRegistryOrder(products, catalog) : null;
-  } catch {
-    return null;
-  }
-}
-
-export function saveProducts(storage: Pick<Storage, 'setItem'> | null, packageId: string, products: readonly ChatProduct[]): void {
-  try {
-    storage?.setItem(PRODUCTS_KEY + packageId, JSON.stringify(products));
-  } catch {
-    // Blocked storage (a private window): the choice simply lasts for this visit.
-  }
-}
-
-/**
- * The chips' products: the reviewer's pick, else what this set remembered, else the set's own
- * product type, else every active product (a set with no product stated is checked for all, as the
- * server does). The pick is a strict scope (Anant, 2026-10-18), so it is always shown. Null only
- * while the products have not loaded and nothing else is known.
+ * The chips' products: the reviewer's pick in this chat, else what this chat last asked with, else
+ * every active product. All is the default (2026-10-18): a set's stated product is not a scope, as a
+ * set stated "countertop" often holds cabinets too; the reviewer narrows by picking chips, and the
+ * pick is then a strict scope. Null only while the products have not loaded and nothing is known.
  */
 export function effectiveProducts(
   picked: readonly ChatProduct[] | null,
-  remembered: readonly ChatProduct[] | null,
-  productType: ChatProduct | null | undefined,
+  chatLast: readonly ChatProduct[] | null | undefined,
   catalog: ProductCatalog = productCatalog(),
 ): ChatProduct[] | null {
   if (picked?.length) return [...picked];
-  if (remembered?.length) return [...remembered];
-  // The set's own product, when it can be picked.
-  if (productType && (!catalog.length || pickable(catalog).includes(productType))) return [productType];
   const every = pickable(catalog);
+  // A product that cannot be picked any more is left out of what the chat last asked with.
+  const last = (chatLast ?? []).filter((product) => !catalog.length || every.includes(product));
+  if (last.length) return inRegistryOrder(last, catalog);
   return every.length ? every : null;
+}
+
+/** The products the chat's newest message was asked with (null: none stated, or no message). */
+export function lastProducts(messages: readonly Pick<ViewMessage, 'products'>[]): ChatProduct[] | null {
+  for (let n = messages.length - 1; n >= 0; n -= 1) {
+    const products = messages[n].products;
+    if (products?.length) return [...products];
+  }
+  return null;
 }
 
 /** True when every active product is picked ("All"). */
@@ -99,14 +79,14 @@ export function checkedWords(products: readonly ChatProduct[] | null | undefined
 
 /**
  * The scope in one sentence for the Run popover: "Only countertops are checked; cabinets are left
- * out." or "Every product is checked: countertops and cabinets."
+ * out." or "Checks all products (countertops, cabinets)."
  */
 export function scopeSentence(products: readonly ChatProduct[] | null | undefined, catalog: ProductCatalog = productCatalog()): string | null {
   if (!products?.length) return null;
   const lower = (ids: readonly ChatProduct[]) => inRegistryOrder(ids, catalog).map((id) => productPlural(id, catalog).toLowerCase());
   const listed = (words: string[]) => (words.length < 2 ? words.join('') : `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}`);
   const left = pickable(catalog).filter((product) => !products.includes(product));
-  if (!left.length) return `Every product is checked: ${listed(lower(products))}.`;
+  if (!left.length) return `Checks all products (${lower(products).join(', ')}).`;
   // Product names are plural ("countertops"), so "are" either way.
   return `Only ${listed(lower(products))} are checked; ${listed(lower(left))} are left out.`;
 }

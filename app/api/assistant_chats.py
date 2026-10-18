@@ -81,7 +81,6 @@ from app.models import (
     PackageRevision,
 )
 from app.models.document import Document, DocumentVersion, PackageRevisionDocument
-from app.models.package import package_product
 from app.review.assistant.chat_contract import (
     AssistantModelOut,
     AssistantModelsOut,
@@ -1176,10 +1175,10 @@ def _message(
         )
     revision_id = _latest_revision_id(session, package.id)
     factory = _factory(session)
-    own = package_product(package)
-    # The products are a strict scope (Anant, 2026-10-18): the pick, else the set's own product,
-    # else every active product; always named, so the scope is stored and shown.
-    products = ProductScope.of(body.products, None if own is None else own.value).products
+    # The products are a strict scope (Anant, 2026-10-18): the pick, else every active product
+    # (All is the default: a set stated "countertop" often holds cabinets too); always named, so
+    # the scope is stored and shown.
+    products = ProductScope.of(body.products).products
     # A picked product with no published GV rule yet: the answer says so (never silent).
     try:
         published = published_products(session)

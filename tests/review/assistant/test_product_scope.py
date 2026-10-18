@@ -53,14 +53,14 @@ BOTH = ProductScope.of(["cabinet", "countertop"])
 # ---- the scope -------------------------------------------------------------------------------------
 
 
-def test_the_scope_is_the_pick_else_the_sets_product_else_every_active_one() -> None:
+def test_the_scope_is_the_pick_else_every_active_product() -> None:
     assert COUNTERTOP.products == ("countertop",) and not COUNTERTOP.every
     assert BOTH.products == ("countertop", "cabinet") and BOTH.every  # registry order
-    assert ProductScope.of(None, "cabinet").products == ("cabinet",)
-    assert ProductScope.of(None).products == ("countertop", "cabinet")
+    # All is the default (2026-10-18): nothing picked = every active product.
+    assert ProductScope.of(None).products == ("countertop", "cabinet") and ProductScope.of([]).every
     # An inactive or unknown id never widens or narrows anything: it is left out.
     assert ProductScope.of(["lighting", "cabinet", "nope"]).products == ("cabinet",)
-    assert ProductScope.of(["lighting"], "countertop").products == ("countertop",)
+    assert ProductScope.of(["lighting"]).products == ("countertop", "cabinet")
     assert COUNTERTOP.as_dict() == {
         "products": ["countertop"],
         "all_products": False,

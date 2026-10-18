@@ -9,7 +9,7 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ProductChips } from '@/components/chat/chat-full-check';
-import { checkedWords, effectiveProducts, pickable, productsWords, readProducts, scopeSentence, toggleProduct } from '@/lib/chat-full-check';
+import { checkedWords, effectiveProducts, pickable, productsWords, scopeSentence, toggleProduct } from '@/lib/chat-full-check';
 import { categoriesPresent, categoryWords, groupFindings } from '@/lib/chat-findings';
 import { plusAction, plusActions } from '@/lib/chat-plus-actions';
 import { findingsCsv } from '@/lib/chat-trust';
@@ -26,7 +26,8 @@ describe('a product added only to the registry', () => {
     expect(pickable()).toEqual(['countertop', 'cabinet', 'dummy_widget']);
     expect(productsWords(['dummy_widget', 'countertop'])).toBe('Countertops + Dummy widgets');
     expect(toggleProduct(['dummy_widget'], 'countertop')).toEqual(['countertop', 'dummy_widget']);
-    expect(effectiveProducts(null, null, 'dummy_widget')).toEqual(['dummy_widget']);
+    expect(effectiveProducts(null, null)).toEqual(['countertop', 'cabinet', 'dummy_widget']); // All by default
+    expect(effectiveProducts(null, ['dummy_widget'])).toEqual(['dummy_widget']);
 
     const focus = plusActions().filter((action) => action.group === 'focus').map((action) => action.label);
     expect(focus.slice(0, 4)).toEqual(['Countertops only', 'Cabinets only', 'Dummy widgets only', 'All products']);
@@ -76,11 +77,9 @@ describe('products not ready yet', () => {
     expect(pickable()).not.toContain('lighting');
   });
 
-  it('are left out of a remembered pick', () => {
-    window.localStorage.setItem('gv-chat-products:p1', JSON.stringify(['lighting', 'cabinet', 'retired']));
-    expect(readProducts(window.localStorage, 'p1')).toEqual(['cabinet']);
-    // A set of a product not ready yet is checked for every active product (as the server does).
-    expect(effectiveProducts(null, null, 'lighting')).toEqual(['countertop', 'cabinet']);
+  it('are left out of what a chat last asked with', () => {
+    expect(effectiveProducts(null, ['lighting', 'cabinet', 'retired'])).toEqual(['cabinet']);
+    expect(effectiveProducts(null, ['lighting'])).toEqual(['countertop', 'cabinet']);
   });
 
   it('old answers keep their words: a category no product has any more still shows', () => {

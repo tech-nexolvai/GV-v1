@@ -134,7 +134,7 @@ describe('the plan check before a full check', () => {
     await waitFor(() => expect(stream.send).toHaveBeenCalled());
     expect(plan).toHaveBeenCalledWith('pkg-1');
     expect(stream.send.mock.calls[0][1]).toEqual({
-      text: 'Full check', model: 'claude-opus-5-5', effort: 'high', thinking: true, mode: 'full_check', products: ['countertop'],
+      text: 'Full check', model: 'claude-opus-5-5', effort: 'high', thinking: true, mode: 'full_check', products: ['countertop', 'cabinet'],
       plan_answers: [{ id: 'pair:f0:p41', answer: 'skip' }],
     });
   });

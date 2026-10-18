@@ -5,9 +5,9 @@ the other is not. If they select all, it checks all; any two, any three, as new 
 the products picked in the chat's chips are not a hint for the AI; they decide what is checked,
 ruled, counted and drawn, for a full check and for a typed question alike:
 
-- **One scope.** `ProductScope.of(picked, own)`: the picked product ids, checked against the product
-  registry's ACTIVE products (`vocabulary/products.yaml`); nothing picked means the drawing set's own
-  product, and a set with none means every active product. `every` is true when every active
+- **One scope.** `ProductScope.of(picked)`: the picked product ids, checked against the product
+  registry's ACTIVE products (`vocabulary/products.yaml`); nothing picked means every active
+  product (All is the default, 2026-10-18: a set's stated product is not a scope). `every` is true when every active
   product is in scope ("All"). It is stored on the message (its `scope` block's `products`) and
   shown on screen ("Checked: Countertops").
 - **Before any AI call**, only the in-scope products' checklists, skill files and GV rules are
@@ -81,14 +81,14 @@ class ProductScope:
     """Every active product is in scope ("All"): `other` and unknown categories are kept too."""
 
     @classmethod
-    def of(cls, picked: Sequence[str] | None, own: str | None = None) -> ProductScope:
+    def of(cls, picked: Sequence[str] | None) -> ProductScope:
         """The picked ACTIVE products (an unknown or inactive id is left out); none picked (or none
-        left): the set's own product when it is active; else every active product."""
+        left): every active product. All is the default (2026-10-18): a drawing set's stated
+        product is not a scope (a set stated "countertop" often holds cabinets too); the reviewer
+        narrows by picking chips."""
         known = registry()
         active = known.active_ids()
-        chosen = [pid for pid in known.ordered(picked or ()) if pid in active]
-        if not chosen:
-            chosen = [own] if own in active else list(active)
+        chosen = [pid for pid in known.ordered(picked or ()) if pid in active] or list(active)
         return cls(tuple(chosen), set(chosen) == set(active))
 
     def allows(self, category: object) -> bool:

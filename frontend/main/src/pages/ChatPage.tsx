@@ -40,7 +40,7 @@ import { AssistantMessage, UserMessage } from '@/components/chat/chat-message';
 import { UnderstoodLine } from '@/components/chat/chat-understood';
 import { ApiError } from '@/api/client';
 import { CHECK_MODEL, chatFailureWords, chatPaths, CONTINUE_TEXT, isAbort, LIVE_CHAT_API, type Chat, type ChatApi, type ChatEvent, type ChatMessage, type ChatMode, type ChatModels, type ChatPlanAnswer, type ChatProduct, type ChatTaskEdit } from '@/lib/chat-api';
-import { confirmWords, effectiveProducts, FULL_CHECK_TEXT, isFullCheck, pickable, readProducts, saveProducts, scopeSentence, toggleProduct } from '@/lib/chat-full-check';
+import { confirmWords, effectiveProducts, FULL_CHECK_TEXT, isFullCheck, lastProducts, pickable, scopeSentence, toggleProduct } from '@/lib/chat-full-check';
 import { useProductCatalog } from '@/lib/products';
 import { knownAreas, lastFindings, withPrompt } from '@/lib/chat-plus-actions';
 import { applyChatEvent, applyCorrection, CHAT_STARTERS, chatTitle, dollars, followedAnswer, fromSaved, localAnswer, localQuestion, previousQuestion, settle, type ViewMessage } from '@/lib/chat-messages';
@@ -118,17 +118,15 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   const listed = useRef<ReadonlySet<string> | null>(null);
   // The set's name from the list, for a new chat's greeting (no chat is read for it).
   const [listName, setListName] = useState<string | null>(null);
-  const [listProduct, setListProduct] = useState<ChatProduct | null>(null);
 
   useEffect(() => {
     let current = true;
     api.list(packageId).then(
-      ({ chats, package_name: setName, product_type: productType }) => {
+      ({ chats, package_name: setName }) => {
         listed.current = new Set(chats.map((listedChat) => listedChat.id));
         if (!current) return;
         setList({ status: 'ready', chats });
         if (setName) setListName(setName);
-        if (productType) setListProduct(productType);
       },
       (error: unknown) => current && setList((now) => (now.status === 'ready' ? now : { status: 'error', message: chatFailureWords(error) })),
     );
@@ -211,21 +209,15 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   const messages = chatId && thread?.chatId === chatId ? thread.messages : NO_MESSAGES;
   const name = chat?.package_name ?? listName;
 
-  // ── Products (chat v4; #1547: the registry's active products), remembered per drawing set ──
+  // ── Products (chat v4; #1547: the registry's active products) ──
+  // All by default (2026-10-18); a pick lasts for its chat (a new chat starts on All again), and a
+  // saved chat starts on what it last asked with.
   const catalog = useProductCatalog();
-  const [pickedProducts, setPickedProducts] = useState<{ packageId: string; products: ChatProduct[] } | null>(null);
-  const [rememberedProducts] = useState(() => ({ packageId, products: readProducts(browserStorage(), packageId) }));
-  const rememberedHere = rememberedProducts.packageId === packageId ? rememberedProducts.products : readProducts(browserStorage(), packageId, catalog);
-  const products = effectiveProducts(
-    pickedProducts?.packageId === packageId ? pickedProducts.products : null,
-    // Remembered before the products loaded: one that cannot be picked now is left out.
-    catalog.length && rememberedHere ? rememberedHere.filter((product) => pickable(catalog).includes(product)) : rememberedHere,
-    chat?.product_type ?? listProduct,
-    catalog,
-  );
+  const pickKey = chatId ?? `new:${packageId}`;
+  const [pickedProducts, setPickedProducts] = useState<{ key: string; products: ChatProduct[] } | null>(null);
+  const products = effectiveProducts(pickedProducts?.key === pickKey ? pickedProducts.products : null, lastProducts(messages), catalog);
   function setProducts(next: ChatProduct[]) {
-    setPickedProducts({ packageId, products: next });
-    saveProducts(browserStorage(), packageId, next);
+    setPickedProducts({ key: pickKey, products: next });
   }
   const toggle = (product: ChatProduct) => setProducts(toggleProduct(products, product, catalog));
 
@@ -512,6 +504,8 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
 
   /** New chat: the empty composer at `#/chat/<set>`; nothing is made until its first message. */
   function newChat() {
+    // A new chat starts on All again (2026-10-18).
+    setPickedProducts(null);
     if (!chatId) {
       textareaRef.current?.focus();
       return;

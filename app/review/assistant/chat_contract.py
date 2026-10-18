@@ -167,7 +167,7 @@ class ChatMessageIn(BaseModel):
         max_length=32,
         description="Active product ids from `GET /products` (e.g. countertop, cabinet): a "
         "strict scope, so only these products are checked, ruled, counted and drawn (every active "
-        "product = All). Not given: the drawing set's own product, else every active product.",
+        "product = All). Not given: every active product (All is the default).",
     )
     continue_from: str | None = Field(
         default=None,
