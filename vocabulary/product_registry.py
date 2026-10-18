@@ -68,8 +68,11 @@ _PRODUCT_FIELDS: Final = frozenset(
         "checklist",
         "global_rule_hints",
         "category_label",
+        "tag_families",
     }
 )
+#: A tag family: the letters before a finish or material code's number (`QZ` in `QZ-12`).
+_FAMILY: Final = re.compile(r"^[A-Z]{1,4}$")
 
 
 class RegistryError(ValueError):
@@ -100,6 +103,10 @@ class Product:
     category_label: str
     skill_file: Path
     """`<skills_folder>/<id>.md`: how to review this product. May be missing for an inactive one."""
+    tag_families: tuple[str, ...] = ()
+    """The tag families that name this product's finishes and materials (`QZ` for `QZ-12`): code
+    compares the architect's and the vendor's codes of these families (`architect_items`) and
+    files what it finds under this product. None: code compares no tags for it."""
 
     @property
     def has_skill(self) -> bool:
@@ -206,6 +213,11 @@ def _product(entry: object, skills_folder: Path, n: int) -> Product:
     hints = entry.get("global_rule_hints", [])
     if not isinstance(hints, list) or not all(isinstance(h, str) and h.strip() for h in hints):
         raise RegistryError(f"{where}: `global_rule_hints` must be a list of text")
+    families = entry.get("tag_families", [])
+    if not isinstance(families, list) or not all(
+        isinstance(f, str) and _FAMILY.match(f) for f in families
+    ):
+        raise RegistryError(f"{where}: `tag_families` must list 1 to 4 capital letters each")
     plural = _text(entry, "plural", where)
     product = Product(
         id=pid,
@@ -219,6 +231,7 @@ def _product(entry: object, skills_folder: Path, n: int) -> Product:
         global_rule_hints=tuple(" ".join(h.split()) for h in hints),
         category_label=_text(entry, "category_label", where, default=plural),
         skill_file=skills_folder / f"{pid}.md",
+        tag_families=tuple(dict.fromkeys(families)),
     )
     if product.active:
         if not product.checklist:
@@ -251,6 +264,10 @@ def load_registry(path: Path) -> ProductRegistry:
     repeated = sorted({pid for pid in ids if ids.count(pid) > 1})
     if repeated:
         raise RegistryError(f"{path}: product id(s) listed twice: {', '.join(repeated)}")
+    families = [f for p in products for f in p.tag_families]
+    shared = sorted({f for f in families if families.count(f) > 1})
+    if shared:
+        raise RegistryError(f"{path}: tag famil(ies) given to two products: {', '.join(shared)}")
     if not any(p.active for p in products):
         raise RegistryError(f"{path}: at least one product must be active")
     return ProductRegistry(products, path, skills_folder)

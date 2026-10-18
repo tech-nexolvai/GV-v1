@@ -26,6 +26,14 @@
 #   global_rule_hints  the kinds of GV standard to look for (no numbers: those are in rules.md).
 #   category_label     how findings for this product are grouped on screen and in the report
 #                      (default: plural). A finding's category is the product id, or "other".
+#   tag_families       optional: the tag families that name this product's finishes and materials
+#                      (the capital letters before a code's number: QZ for QZ-12). Code compares the
+#                      architect's and the vendor's codes of these families, area by area, and files
+#                      what it finds under this product. A family belongs to one product only. Leave
+#                      out a family that means different things in different sets (PL is plastic
+#                      laminate in one set and a plumbing fixture in another): a wrong family gives a
+#                      false "missed finish". Other trades' families (tile, paint, wall covering)
+#                      are never listed.
 
 version: 1
 # Where each product's skill file `<id>.md` lives, relative to this file.
@@ -69,6 +77,8 @@ products:
       - Sink front offset, and the minimum back offset left behind the cut-out.
       - Field cut added at each wall end.
       - Countertop depth from the cabinet depth plus the overhang.
+    # Countertop, stone, quartz, solid surface.
+    tag_families: [CT, ST, QZ, QTZ, SS, SSM]
 
   - id: cabinet
     label: Cabinet
@@ -107,6 +117,8 @@ products:
       - Filler width limits (smallest and largest filler).
       - Fit to the site by adjusting fillers first; equipment cabinets are never resized.
       - Cabinet width limits per kind (single door, double door, drawer) for this job.
+    # Laminate, plastic laminate, wood, wood veneer, metal.
+    tag_families: [LA, PLAM, WD, WV, MT]
 
   - id: lighting
     label: Lighting
