@@ -14,7 +14,7 @@ import { AssistantMessage, UserMessage } from '@/components/chat/chat-message';
 import { ShellSlotsContext } from '@/components/shell/shellSlots';
 import type { ChatApi, ChatFile } from '@/lib/chat-api';
 import { accuracyTone, accuracyWords } from '@/lib/chat-accuracy';
-import { allPicked, checkedWords, confirmWords, effectiveProducts, fullCheckBubble, fullCheckFiles, isFullCheck, matchesWords, productsWords, progressWords, readProducts, saveProducts, scopeSentence, toggleProduct } from '@/lib/chat-full-check';
+import { allPicked, checkedWords, confirmWords, effectiveProducts, fullCheckBubble, fullCheckFiles, isFullCheck, lastProducts, matchesWords, productsWords, progressWords, scopeSentence, toggleProduct } from '@/lib/chat-full-check';
 import { applyChatEvent, localAnswer, type ViewMessage } from '@/lib/chat-messages';
 import { ChatPage } from '@/pages/ChatPage';
 import { drivenStream, fakeChatApi, finding, OPUS } from './fixtures/chat';
@@ -38,26 +38,25 @@ const CLOUD: ChatFile = { id: 'f-c', kind: 'cloud_drawing', name: 'vendor-cloude
 const REPORT: ChatFile = { id: 'f-r', kind: 'check_report', name: 'check-report.pdf', size: 90_000, mime: 'application/pdf', url: '/api/v1/chats/c-1/files/f-r' };
 
 describe('products and the full check, without React', () => {
-  it('picks products: the reviewer’s, else remembered, else the set’s, else all; never none', () => {
-    expect(effectiveProducts(null, null, 'cabinet')).toEqual(['cabinet']);
-    expect(effectiveProducts(null, ['countertop'], 'cabinet')).toEqual(['countertop']);
-    expect(effectiveProducts(['countertop', 'cabinet'], ['countertop'], 'cabinet')).toEqual(['countertop', 'cabinet']);
-    // A set with no product stated is checked for every active product, shown picked (a strict scope).
-    expect(effectiveProducts(null, null, null)).toEqual(['countertop', 'cabinet']);
-    expect(effectiveProducts(null, null, null, [])).toBeNull(); // the products not loaded yet
+  it('picks products: the reviewer’s, else what the chat last asked with, else all; never none', () => {
+    // All by default (2026-10-18): a set's stated product is not a scope.
+    expect(effectiveProducts(null, null)).toEqual(['countertop', 'cabinet']);
+    expect(effectiveProducts(null, ['cabinet'])).toEqual(['cabinet']);
+    expect(effectiveProducts(['countertop'], ['cabinet'])).toEqual(['countertop']);
+    expect(effectiveProducts(null, ['lighting', 'cabinet'])).toEqual(['cabinet']); // not pickable now
+    expect(effectiveProducts(null, null, [])).toBeNull(); // the products not loaded yet
+    expect(lastProducts([{ products: ['countertop'] }, { products: null }])).toEqual(['countertop']);
+    expect(lastProducts([{ products: null }])).toBeNull();
     expect(allPicked(['cabinet', 'countertop'])).toBe(true);
     expect(allPicked(['cabinet'])).toBe(false);
     expect(checkedWords(['countertop'])).toBe('Checked: Countertops');
     expect(checkedWords(['countertop', 'cabinet'])).toBe('Checked: All products');
     expect(scopeSentence(['countertop'])).toBe('Only countertops are checked; cabinets are left out.');
-    expect(scopeSentence(['cabinet', 'countertop'])).toBe('Every product is checked: countertops and cabinets.');
+    expect(scopeSentence(['cabinet', 'countertop'])).toBe('Checks all products (countertops, cabinets).');
     expect(toggleProduct(['countertop'], 'cabinet')).toEqual(['countertop', 'cabinet']);
     expect(toggleProduct(['countertop', 'cabinet'], 'countertop')).toEqual(['cabinet']);
     expect(toggleProduct(['countertop'], 'countertop')).toEqual(['countertop']);
     expect(toggleProduct(null, 'cabinet')).toEqual(['cabinet']);
-    saveProducts(window.localStorage, 'pkg-9', ['cabinet']);
-    expect(readProducts(window.localStorage, 'pkg-9')).toEqual(['cabinet']);
-    expect(readProducts(window.localStorage, 'pkg-other')).toBeNull();
   });
 
   it('says the full check plainly', () => {
@@ -359,21 +358,22 @@ describe('the chat page', () => {
     );
   }
 
-  it('product chips start on the set’s product, are remembered for the set, and go with every message', async () => {
+  it('product chips start on All (even for a set stated "countertop"), a pick narrows what is sent, and a new chat starts on All again', async () => {
     const user = userEvent.setup();
     const stream = drivenStream();
     renderPage(fakeChatApi({ send: stream.send, list: vi.fn(async () => ({ chats: [], package_name: 'Sample', product_type: 'countertop' as const })) }));
     const chips = await screen.findByRole('group', { name: 'Products to check' });
-    await waitFor(() => expect(within(chips).getByRole('button', { name: 'Countertop' }).getAttribute('aria-pressed')).toBe('true'));
-    expect(within(chips).getByRole('button', { name: 'Cabinet' }).getAttribute('aria-pressed')).toBe('false');
+    await waitFor(() => expect(within(chips).getByRole('button', { name: 'All' }).getAttribute('aria-pressed')).toBe('true'));
+    expect(within(chips).getByRole('button', { name: 'Countertop' }).getAttribute('aria-pressed')).toBe('true');
+    expect(within(chips).getByRole('button', { name: 'Cabinet' }).getAttribute('aria-pressed')).toBe('true');
     await user.click(within(chips).getByRole('button', { name: 'Cabinet' }));
-    expect(readProducts(window.localStorage, 'pkg-1')).toEqual(['countertop', 'cabinet']);
+    expect(within(chips).getByRole('button', { name: 'All' }).getAttribute('aria-pressed')).toBe('false');
 
     await waitFor(() => expect((screen.getByRole('button', { name: 'Send message' }) as HTMLButtonElement).disabled).toBe(true));
     await user.type(screen.getByRole('textbox', { name: 'Your message' }), 'Which tops differ?');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() => expect(stream.send).toHaveBeenCalled());
-    expect(stream.send.mock.calls[0][1]).toEqual({ text: 'Which tops differ?', model: 'claude-opus-5-5', effort: 'high', thinking: true, products: ['countertop', 'cabinet'] });
+    expect(stream.send.mock.calls[0][1]).toEqual({ text: 'Which tops differ?', model: 'claude-opus-5-5', effort: 'high', thinking: true, products: ['countertop'] });
   });
 
   it('Run full check confirms what it will use, then sends a full check', async () => {
@@ -384,10 +384,12 @@ describe('the chat page', () => {
     await waitFor(() => expect((run as HTMLButtonElement).disabled).toBe(false));
     await user.click(run);
     const summary = await screen.findByText(/^Full check · /, { selector: '[data-slot="chat-full-check-summary"]' });
-    expect(summary.textContent).toBe('Full check · Countertops · Opus 5.5 · High · up to $5');
+    // All by default, even for a set stated "countertop" (2026-10-18).
+    expect(summary.textContent).toBe('Full check · Countertops + Cabinets · Opus 5.5 · High · up to $5');
+    expect(screen.getByText('Checks all products (countertops, cabinets).')).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Run' }));
     await waitFor(() => expect(stream.send).toHaveBeenCalled());
-    expect(stream.send.mock.calls[0][1]).toEqual({ text: 'Full check', model: 'claude-opus-5-5', effort: 'high', thinking: true, mode: 'full_check', products: ['countertop'] });
-    expect(document.querySelector('[data-slot="chat-user-message"]')?.textContent).toBe('Full check · Countertops · High effort');
+    expect(stream.send.mock.calls[0][1]).toEqual({ text: 'Full check', model: 'claude-opus-5-5', effort: 'high', thinking: true, mode: 'full_check', products: ['countertop', 'cabinet'] });
+    expect(document.querySelector('[data-slot="chat-user-message"]')?.textContent).toBe('Full check · Countertops + Cabinets · High effort');
   });
 });

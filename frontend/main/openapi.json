@@ -6359,7 +6359,7 @@
                 "type": "null"
               }
             ],
-            "description": "Active product ids from `GET /products` (e.g. countertop, cabinet): a strict scope, so only these products are checked, ruled, counted and drawn (every active product = All). Not given: the drawing set's own product, else every active product.",
+            "description": "Active product ids from `GET /products` (e.g. countertop, cabinet): a strict scope, so only these products are checked, ruled, counted and drawn (every active product = All). Not given: every active product (All is the default).",
             "title": "Products"
           },
           "task": {

@@ -572,6 +572,33 @@ def test_a_product_with_no_gv_rules_is_checked_alone_and_says_so(postgres_engine
         assert note in " ".join(block.get("text", "") for block in sent)
 
 
+def test_a_set_stated_countertop_is_checked_for_every_product_by_default(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """All is the default (2026-10-18): a set stated "countertop" often holds cabinets too, so a
+    message that names no product checks every active product; a cabinet item is kept."""
+    from app.models import Package
+
+    cabinet = finding_input(item="Bussing station: filler width", category="cabinet")
+    provider = ScriptedProvider(
+        lead=[
+            reply(tool("r1", "report_finding", cabinet), stop="tool_use"),
+            reply(text("One cabinet item differs.")),
+        ]
+    )
+    with _world(postgres_engine, tmp_path, provider=provider, pdf=PDF3, pages=3) as world:
+        package = world.session.get(Package, world.package_id)
+        assert package is not None
+        package.product_type = "countertop"
+        world.session.commit()
+        chat_id = world.chat()
+        status, events = world.ask(chat_id, "Do the fillers meet GV's rule?")
+        assert status == 200
+        message = _named(events, "message_end")[0]["message"]
+        assert message["products"] == ["countertop", "cabinet"]
+        assert message["scope"]["all_products"] is True
+        findings = [b["finding"] for b in message["blocks"] if b["type"] == "finding"]
+        assert [f["category"] for f in findings] == ["cabinet"]
+
+
 def test_a_typed_question_keeps_its_mode_and_an_old_badge_is_scored_again(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
     """#1513: a typed question and its answer come back as `chat` with the products picked; an
     answer stored before the recalibration (here: the same answer with an old 78 and no mode) is
