@@ -490,6 +490,7 @@ def test_a_full_check_starts_every_job_at_once_and_the_lead_only_verifies(
         "Vendor set - AI check report.pdf",
         "Vendor set - Not compared.pdf",
         "Vendor set - Not compared.xlsx",
+        "Vendor set - GV review package.zip",
     ]
 
 
@@ -738,6 +739,7 @@ def test_a_stopped_full_check_still_gets_codes_finish_and_its_files(tmp_path: Pa
         "Vendor set - AI check report.pdf",
         "Vendor set - Not compared.pdf",
         "Vendor set - Not compared.xlsx",
+        "Vendor set - GV review package.zip",
     ]
 
 
@@ -835,4 +837,5 @@ def test_a_full_check_of_a_product_added_only_to_the_registry(
         "Vendor set - AI check report.pdf",
         "Vendor set - Not compared.pdf",
         "Vendor set - Not compared.xlsx",
+        "Vendor set - GV review package.zip",
     ]

@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { Download, ExternalLink, FileText, ListX, RefreshCw, ScanSearch } from 'lucide-react';
+import { CircleAlert, CircleCheck, CircleX, Download, ExternalLink, FileText, ListX, PencilLine, RefreshCw, RotateCcw, ScanSearch } from 'lucide-react';
 
 import { AccuracyBadge } from '@/components/chat/chat-accuracy';
 import { GVSpark } from '@/components/chat/chat-motion';
 import { PlanCheck } from '@/components/chat/chat-plan-check';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { chatPaths, type ChatAccuracy, type ChatCoverage, type ChatFile, type ChatFullCheckPlan, type ChatPlanAnswer, type ChatProduct } from '@/lib/chat-api';
+import { chatPaths, type ChatAccuracy, type ChatCoverage, type ChatFile, type ChatFullCheckPlan, type ChatPlanAnswer, type ChatProduct, type ChatReviewAction } from '@/lib/chat-api';
 import { coverageCounts, coverageWords, type FindingCounts } from '@/lib/chat-findings';
 import { allPicked, progressWords } from '@/lib/chat-full-check';
 import { planAnswers, usePlanCheck } from '@/lib/chat-plan-check';
@@ -204,7 +204,7 @@ export interface CloudReview {
   failed: boolean;
 }
 
-export function FullCheckFiles({ cloud, report, notCompared = [], chatId, page = 1, totalPages = null, counts = null, proof = null, review = null }: {
+export function FullCheckFiles({ cloud, report, notCompared = [], chatId, page = 1, totalPages = null, counts = null, proof = null, review = null, packaged = false }: {
   cloud: ChatFile | null;
   report: ChatFile | null;
   /** #1619: the Not-compared list, as a PDF and a workbook. */
@@ -218,6 +218,8 @@ export function FullCheckFiles({ cloud, report, notCompared = [], chatId, page =
   proof?: ProofCounts | null;
   /** #1525: the reviewer's answers so far, and "Update cloud drawing" (optional overrides since #1581). */
   review?: CloudReview | null;
+  /** #1622: a send-ready package holds the drawing too; its download is then the one primary action. */
+  packaged?: boolean;
 }) {
   if (!cloud && !report && !notCompared.length) return null;
   const href = (file: ChatFile) => file.url || chatPaths.file(chatId, file.id);
@@ -278,7 +280,10 @@ export function FullCheckFiles({ cloud, report, notCompared = [], chatId, page =
             download={cloud.name}
             aria-label={`Download ${cloud.name}`}
             data-slot="chat-cloud-download"
-            className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-primary px-3.5 text-sm font-medium text-primary-foreground hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none"
+            className={cn(
+              'inline-flex h-9 items-center gap-1.5 rounded-lg px-3.5 text-sm font-medium focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none',
+              packaged ? 'border bg-background hover:bg-accent' : 'bg-primary text-primary-foreground hover:opacity-90',
+            )}
           >
             <Download className="size-4" aria-hidden="true" />
             Download
@@ -309,6 +314,90 @@ export function FullCheckFiles({ cloud, report, notCompared = [], chatId, page =
         {review?.failed && <p role="alert" className="text-sm text-muted-foreground">The cloud drawing could not be made again right now. Try again.</p>}
         {reportLine}
         {listLine}
+      </div>
+    </section>
+  );
+}
+
+// ── The send-ready package (#1622, right after the cloud drawing) ─
+
+const ACTION_LOOK: Record<ChatReviewAction['action'], { Icon: typeof RotateCcw; tone: string }> = {
+  revise_resubmit: { Icon: RotateCcw, tone: 'text-outcome-fail-fg' },
+  rejected: { Icon: CircleX, tone: 'text-outcome-fail-fg' },
+  approved_as_noted: { Icon: PencilLine, tone: 'text-outcome-review-fg' },
+  approved: { Icon: CircleCheck, tone: 'text-outcome-pass-fg' },
+  not_for_sending: { Icon: CircleAlert, tone: 'text-muted-foreground' },
+};
+
+/**
+ * One download for the vendor: the GV cloud drawing, the comment letter (the same comment numbers as
+ * the clouds, C-01…), the issue register, the Not-compared list (when made) and the check report,
+ * all made by code from the final list. The review result leads, decided by code (`review_action`,
+ * AWI's words); the letter and the cloud drawing's cover say the same. A check that did not finish
+ * says so plainly: the package is kept, but it is not for sending.
+ */
+export function PackageCard({ pkg, chatId, action, hasReport = true, hasNotCompared = false }: {
+  pkg: ChatFile;
+  chatId: string;
+  action: ChatReviewAction | null;
+  hasReport?: boolean;
+  hasNotCompared?: boolean;
+}) {
+  const href = pkg.url || chatPaths.file(chatId, pkg.id);
+  const look = action ? ACTION_LOOK[action.action] : null;
+  const corrections = action ? `${action.corrections} ${action.corrections === 1 ? 'comment' : 'comments'}, numbered like the clouds` : 'numbered like the clouds';
+  const unsent = action?.action === 'not_for_sending';
+  const inside = [
+    { name: 'GV cloud drawing', note: 'PDF' },
+    { name: 'Comment letter', note: corrections },
+    { name: 'Issue register', note: 'XLSX · one row per item' },
+    ...(hasNotCompared ? [{ name: 'Not-compared list', note: 'PDF and XLSX' }] : []),
+    ...(hasReport ? [{ name: 'Check report', note: 'PDF' }] : []),
+  ];
+  return (
+    <section data-slot="chat-package" aria-label="Send-ready package" className="chat-rise grid gap-5 rounded-xl border border-border/70 bg-card p-5 sm:p-6">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="grid min-w-0 gap-1">
+          <p className="text-xs font-medium text-muted-foreground">Send to the vendor</p>
+          <p className="text-[17px] font-semibold tracking-[-0.01em]">Send-ready package</p>
+          <p className="text-[13.5px] text-muted-foreground">{unsent ? 'Kept for you to look at. The check did not finish, so do not send it yet.' : 'Everything the vendor needs in one file, made by code from the final list. Nothing to edit.'}</p>
+        </div>
+        <a
+          href={href}
+          download={pkg.name}
+          aria-label={`Download package: ${pkg.name}`}
+          data-slot="chat-package-download"
+          className={cn(
+            'inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-lg px-3.5 text-sm font-medium focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none',
+            unsent ? 'border bg-background hover:bg-accent' : 'bg-primary text-primary-foreground hover:opacity-90',
+          )}
+        >
+          <Download className="size-4" aria-hidden="true" />
+          Download package (.zip)
+        </a>
+      </div>
+      {action && look && (
+        <div data-slot="chat-review-action" data-action={action.action} role={unsent ? 'alert' : undefined} className="grid gap-1 rounded-lg bg-muted/50 px-4 py-3">
+          <p className="text-xs font-medium text-muted-foreground">Review result</p>
+          <p className={cn('inline-flex items-center gap-2 text-[15px] font-semibold', look.tone)}>
+            <look.Icon className="size-4 shrink-0" aria-hidden="true" />
+            {action.words}
+          </p>
+          <p className="text-[13px] text-muted-foreground">{[action.reason, action.note].filter(Boolean).join(' ')}</p>
+          <p className="text-[13px]"><span className="text-muted-foreground">Action required by: </span>{action.required_by}</p>
+        </div>
+      )}
+      <div className="grid gap-2">
+        <p className="text-xs font-medium text-muted-foreground">In the package</p>
+        <ul data-slot="chat-package-contents" className="grid gap-x-6 gap-y-1.5 text-[13px] sm:grid-cols-2">
+          {inside.map((part) => (
+            <li key={part.name} className="flex min-w-0 items-baseline gap-2">
+              <FileText className="size-3.5 shrink-0 translate-y-0.5 text-muted-foreground" aria-hidden="true" />
+              <span className="min-w-0"><span className="font-medium">{part.name}</span><span className="text-muted-foreground"> · {part.note}</span></span>
+            </li>
+          ))}
+        </ul>
+        <p className="text-xs text-muted-foreground"><span className="break-all">{pkg.name}</span> · {fileSize(pkg.size)}</p>
       </div>
     </section>
   );

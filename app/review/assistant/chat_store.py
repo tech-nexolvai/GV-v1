@@ -32,9 +32,10 @@ from app.review.assistant.chat_contract import (
     ChatSummaryOut,
 )
 from app.review.assistant.chat_corrections import with_corrections
-from app.review.assistant.chat_decisions import with_decisions
+from app.review.assistant.chat_decisions import package_block, with_decisions
 from app.review.assistant.chat_trust import rescored
 from app.review.assistant.impact import blocks_with_impacts
+from app.review.assistant.review_action import CheckState, review_action
 
 __all__ = [
     "TITLE_CHARS",
@@ -341,6 +342,9 @@ def message_out(
                 "products": message.products,
             }
         )
+    blocks = blocks_with_impacts(
+        with_decisions(with_corrections(message.blocks, corrections), decisions) or []
+    )
     return ChatMessageOut.model_validate(
         {
             "id": message.id,
@@ -350,9 +354,7 @@ def message_out(
             "model": message.model,
             "effort": message.effort,
             "thinking": message.thinking,
-            "blocks": blocks_with_impacts(
-                with_decisions(with_corrections(message.blocks, corrections), decisions) or []
-            ),
+            "blocks": blocks,
             "files": [file_out(row) for row in files if row.message_id == message.id],
             "cost_usd": _usd(message.cost_micros),
             "stopped": message.stopped,
@@ -390,8 +392,28 @@ def message_out(
                 ),
                 None,
             ),
+            # #1622: the full check's review action, from the same findings as the screen.
+            "review_action": _review_action(message, blocks),
         }
     )
+
+
+def _review_action(
+    message: AssistantChatMessage, blocks: Sequence[Mapping[str, Any]]
+) -> dict[str, Any] | None:
+    """A full check's review result (#1622) once its package is made: its findings as shown (with
+    the reviewer's latest decisions) and the state kept with the package."""
+    if message.mode != "full_check":
+        return None
+    kept = package_block(message.blocks)
+    if kept is None:
+        return None
+    findings = [
+        block["finding"]
+        for block in blocks
+        if block.get("type") == "finding" and isinstance(block.get("finding"), Mapping)
+    ]
+    return review_action(findings, CheckState.from_dict(kept.get("state"))).as_dict()
 
 
 def _scope_of(blocks: Sequence[Any]) -> dict[str, Any] | None:

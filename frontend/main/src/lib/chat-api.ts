@@ -153,6 +153,39 @@ export interface ChatMessage {
   resume?: ChatResume | null;
   /** #1551: how the app understood the question (the answer's `understood` block); null when none. */
   understood?: ChatUnderstood | null;
+  /** #1622: a full check's review action, decided by code on read; null on other messages. */
+  review_action?: ChatReviewAction | null;
+}
+
+/**
+ * #1622: the review result a full check's send-ready package carries, decided by code (rules S0 to
+ * S7, the first that matches wins) from the comments it sends the vendor (the clouded Wrong items).
+ * The comment letter and the cloud drawing's cover say the same words.
+ */
+export interface ChatReviewAction {
+  action: 'approved' | 'approved_as_noted' | 'revise_resubmit' | 'rejected' | 'not_for_sending';
+  rule: 'S0' | 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6' | 'S7';
+  /** "Approved", "Approved as noted", "Revise and resubmit", "Rejected", "Check incomplete: not for sending". */
+  words: string;
+  /** Why, in one line: "2 of 5 corrections change fabrication." */
+  reason: string;
+  corrections: number;
+  fabrication: number;
+  /** S6: what was not reviewed. */
+  note?: string | null;
+  /** What the vendor does next (the letter's closing line). */
+  next_step: string;
+  /** Who must act now: "Vendor: revise and resubmit". */
+  required_by: string;
+  disclaimer: string;
+}
+
+/** #1622: what a full check's package kept with the answer (the result's state, the comment numbers). */
+export interface ChatPackageState {
+  state: { incomplete?: string | null; missing_areas?: number; wrong_product?: boolean; still_open?: number };
+  numbers?: Record<string, string>;
+  submittal?: string;
+  round?: number;
 }
 
 /** A full check's progress, by code (#1524): the last one is stored as a block. */
@@ -249,6 +282,7 @@ export type ChatBlock =
   | { type: 'unknowns'; unknowns: ChatUnknown[] }
   | { type: 'resume'; resume: ChatResume }
   | { type: 'resolver'; resolver: ChatResolver }
+  | { type: 'package'; package: ChatPackageState }
   | { type: 'understood'; understood: ChatUnderstood }
   | { type: 'fallback'; fallback: ChatFallback };
 

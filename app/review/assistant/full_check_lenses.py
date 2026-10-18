@@ -20,7 +20,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
-__all__ = ["Fold", "item_key", "lens_folds"]
+__all__ = ["Fold", "SameWrong", "item_key", "lens_folds", "same_wrongs"]
 
 _WORD: Final = re.compile(r"[a-z0-9]+(?:/[0-9]+)?")
 _FILLER: Final = frozenset({"the", "a", "an", "of", "on", "at", "in", "for", "to"})
@@ -103,4 +103,117 @@ def lens_folds(
                 statuses=(mine, theirs),
             )
         )
+    return folds
+
+
+# ---- the same Wrong item reported again (#1622) -------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class SameWrong:
+    """A Wrong finding that repeats another: `drop` is folded into `keep` (one comment)."""
+
+    keep: str
+    drop: str
+
+    @property
+    def reason(self) -> str:
+        return (
+            f"Folded into {self.keep}: the same item reported again (same page, the same vendor "
+            "value and the same value it should be, at the same spot)."
+        )
+
+
+_TRUST_ORDER: Final = {"confirmed": 0, "likely": 1, "to_check": 2}
+
+
+def _value(finding: Mapping[str, Any], side: str) -> str:
+    inches = finding.get("inches")
+    given = inches.get(side) if isinstance(inches, Mapping) else None
+    if given not in (None, ""):
+        return f"in:{given}"
+    return " ".join(str(finding.get(side) or "").lower().split())
+
+
+def _vendor_box(finding: Mapping[str, Any]) -> tuple[float, float, float, float] | None:
+    box = finding.get("vendor_box")
+    if not isinstance(box, Mapping):
+        return None
+    try:
+        return (float(box["x0"]), float(box["y0"]), float(box["x1"]), float(box["y1"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _label(finding: Mapping[str, Any]) -> str | None:
+    dims = finding.get("dims")
+    vendor = dims.get("vendor") if isinstance(dims, Mapping) else None
+    return str(vendor["id"]) if isinstance(vendor, Mapping) and vendor.get("id") else None
+
+
+def _same_spot(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
+    """The same vendor dimension label (code's own id for the printed dimension), else overlapping
+    vendor boxes on the same file for the same item words (two items read at one spot by an AI box
+    stay two)."""
+    label_a, label_b = _label(a), _label(b)
+    if label_a and label_b:
+        return label_a == label_b
+    if item_key(a.get("item")) != item_key(b.get("item")):
+        return False
+    box_a, box_b = _vendor_box(a), _vendor_box(b)
+    if box_a is None or box_b is None:
+        return False
+    file_a = (a.get("vendor_box") or {}).get("file")
+    file_b = (b.get("vendor_box") or {}).get("file")
+    if file_a and file_b and file_a != file_b:
+        return False
+    return not (
+        box_a[2] < box_b[0] or box_b[2] < box_a[0] or box_a[3] < box_b[1] or box_b[3] < box_a[1]
+    )
+
+
+def _number(finding_id: str) -> tuple[int, str]:
+    digits = "".join(ch for ch in finding_id if ch.isdigit())
+    return (int(digits) if digits else 0, finding_id)
+
+
+def same_wrongs(findings: Sequence[Mapping[str, Any]]) -> list[SameWrong]:
+    """Wrong findings that are the same item: the same page and round, the same vendor value, the
+    same value it should be, and the same vendor dimension label (or overlapping vendor boxes and the
+    same item words). Each
+    group is folded into one finding: a recorded difference first (it is never folded away), then
+    the best trust, then the one reported first. So the letter, the register, the clouds and the
+    counts never repeat an item (the resolver's same-item fold, #1554, settles only "Your decision"
+    items and never a Wrong one)."""
+    wrong = [f for f in findings if f.get("status") == "different" and f.get("id")]
+    folds: list[SameWrong] = []
+    gone: set[str] = set()
+    for at, finding in enumerate(wrong):
+        if str(finding["id"]) in gone:
+            continue
+        group = [finding] + [
+            other
+            for other in wrong[at + 1 :]
+            if str(other["id"]) not in gone
+            and other.get("page") == finding.get("page")
+            and _same_round(other, finding)
+            and _value(other, "vendor") == _value(finding, "vendor")
+            and _value(other, "architect") == _value(finding, "architect")
+            and _same_spot(other, finding)
+        ]
+        if len(group) < 2:
+            continue
+        keep = min(
+            group,
+            key=lambda f: (
+                0 if f.get("record_id") else 1,
+                _TRUST_ORDER.get(str(f.get("trust_level") or ""), 3),
+                _number(str(f["id"])),
+            ),
+        )
+        for other in group:
+            if other is keep or other.get("record_id"):
+                continue
+            gone.add(str(other["id"]))
+            folds.append(SameWrong(keep=str(keep["id"]), drop=str(other["id"])))
     return folds

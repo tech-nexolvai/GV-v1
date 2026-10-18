@@ -13,6 +13,7 @@ import io
 import json
 import re
 import threading
+import zipfile
 from collections.abc import Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, ClassVar
@@ -428,6 +429,7 @@ def test_a_full_check_through_the_route_shows_its_label_and_ends_with_its_two_fi
             "Vendor set - AI check report.pdf",
             "Vendor set - Not compared.pdf",
             "Vendor set - Not compared.xlsx",
+            "Vendor set - GV review package.zip",
         ]
         assert [d["file"]["name"] for d in _named(events, "file")] == names
         assert message["accuracy"] is not None and message["accuracy"]["claims"] == 1
@@ -441,10 +443,31 @@ def test_a_full_check_through_the_route_shows_its_label_and_ends_with_its_two_fi
         words = " ".join(block.get("text", "") for block in sent)
         assert "Products checked in this chat: countertops only." in words
         assert "Full check of this drawing set" in words
-        for file in message["files"]:
+        for file in message["files"][:4]:
             body = world.client.get(file["url"]).content
             # The PDFs, and the Not-compared workbook (a zip) (#1619).
             assert body[:4] == (b"PK\x03\x04" if file["name"].endswith(".xlsx") else b"%PDF")
+        # The send-ready package (#1622): one zip, the result on the message, the same comment
+        # numbers in the letter as on the cloud drawing; the Not-compared list is in it too.
+        package = message["files"][4]
+        assert package["mime"] == "application/zip"
+        with zipfile.ZipFile(io.BytesIO(world.client.get(package["url"]).content)) as archive:
+            inside = archive.namelist()
+            assert inside[:2] == [
+                "Vendor set - GV cloud drawing.pdf",
+                "Vendor set - Comment letter.pdf",
+            ]
+            assert "Vendor set - Not compared.pdf" in inside
+            assert "Vendor set - Not compared.xlsx" in inside
+            assert inside[-1] == "Vendor set - Check report.pdf"
+            letter = "".join(
+                page.extract_text() or ""
+                for page in PdfReader(io.BytesIO(archive.read(inside[1]))).pages
+            )
+        result = message["review_action"]
+        assert result is not None and result["words"] in letter
+        assert result["disclaimer"].split(".")[0] in " ".join(letter.split())
+        assert chat["messages"][1]["review_action"] == result
 
         # A chat message still needs its words; a product at most once.
         empty = world.client.post(f"/api/v1/chats/{chat_id}/messages", json={**ASK, "text": " "})
@@ -491,22 +514,30 @@ def test_a_countertop_only_check_keeps_no_cabinet_item_anywhere(postgres_engine,
             f"/api/v1/chats/{chat_id}/messages/{message['id']}/findings.csv"
         ).text
         assert "Vanity top length" in csv_text and "cabinet" not in csv_text.lower()
+        documents: list[bytes] = []
         for file in message["files"]:
-            body = world.client.get(file["url"]).content
-            if file["name"].endswith((".xlsx", ".csv")):
-                # The Not-compared workbook (#1619): no cabinet item in it either.
-                import openpyxl
-
-                book = openpyxl.load_workbook(io.BytesIO(body))
-                cells = " ".join(
-                    str(c or "")
-                    for sheet in book
-                    for row in sheet.iter_rows(values_only=True)
-                    for c in row
-                )
-                assert "Sink base cabinet" not in cells
-                continue
-            pdf = PdfReader(io.BytesIO(body))
+            data = world.client.get(file["url"]).content
+            if file["mime"] == "application/zip":
+                # The send-ready package (#1622) keeps the scope too: everything in it.
+                with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                    members = [(name, archive.read(name)) for name in archive.namelist()]
+            else:
+                members = [(file["name"], data)]
+            for name, inside in members:
+                if name.endswith(".pdf"):
+                    documents.append(inside)
+                elif name.endswith(".xlsx"):
+                    book = pytest.importorskip("openpyxl").load_workbook(io.BytesIO(inside))
+                    cells = " ".join(
+                        str(value)
+                        for sheet in book.worksheets
+                        for row in sheet.iter_rows(values_only=True)
+                        for value in row
+                        if value
+                    )
+                    assert "Sink base cabinet" not in cells
+        for data in documents:
+            pdf = PdfReader(io.BytesIO(data))
             assert "Sink base cabinet" not in " ".join(page.extract_text() for page in pdf.pages)
 
 
@@ -647,4 +678,5 @@ def test_a_full_check_with_no_words_is_stored_with_codes_summary_and_its_progres
             "Vendor set - AI check report.pdf",
             "Vendor set - Not compared.pdf",
             "Vendor set - Not compared.xlsx",
+            "Vendor set - GV review package.zip",
         ]

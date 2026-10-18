@@ -48,6 +48,7 @@ from app.review.assistant.impact import by_impact
 from app.review.assistant.product_scope import ProductScope, refiled
 from app.review.assistant.sandbox import UPLOADS, ChatWorkspace, SandboxRefused
 from app.review.assistant.tool_schema import box_schema
+from app.review.assistant.vendor_text import rule_requirement
 from vocabulary.product_registry import registry
 
 __all__ = [
@@ -73,6 +74,7 @@ __all__ = [
     "decision_help_lines",
     "decision_help_note",
     "finding_categories",
+    "full_check_rounds",
     "helpless_decisions",
     "live_findings",
     "main_upload",
@@ -1579,13 +1581,21 @@ class FindingBook:
             self._count += 1
             finding_id = f"F{self._count}"
         code = record.get("source") == "code"
+        architect = record.get("architect")
+        if code:
+            # A GV rule's requirement in plain words with its computed value (#1622): the rule's
+            # comparison ("|38.25 - 40.5| = 2.25 > 0 in") read as `40 1/2"`, never the raw
+            # comparison or "see GV Review's record" when no value is recorded.
+            stated = rule_requirement(record.get("comparison"))
+            if stated is not None and (not architect or architect == record.get("comparison")):
+                architect = stated
         finding: dict[str, Any] = {
             "id": finding_id,
             "page": page,
             "vs_page": None,
             "item": shown,
             "category": named["category"],
-            "architect": str(record.get("architect") or "see GV Review's record")[:_MAX_VALUE],
+            "architect": str(architect or "see GV Review's record")[:_MAX_VALUE],
             "vendor": str(record.get("vendor") or "see GV Review's record")[:_MAX_VALUE],
             "status": "different",
             "why": (str(record["why"])[:_MAX_WHY] if record.get("why") else None),
@@ -1816,6 +1826,7 @@ def make_proof_file(
     *,
     settled: Sequence[Mapping[str, Any]] = (),
     today: str | None = None,
+    context: Any = None,
     not_compared: int | None = None,
 ) -> MarkupFile:
     """The zero-click red/green proof drawing of a full check (#1581,
@@ -1824,7 +1835,15 @@ def make_proof_file(
     what code assumed about the page map, and how many items could not be compared
     (`not_compared`, the Not-compared list's rows, #1619). The reviewer's decisions
     (on `findings`, when there are any) override: agreed = clouded, not a problem = left out.
-    Raises `LookupError` when the chat has no copy of the set's PDFs."""
+    Raises `LookupError` when the chat has no copy of the set's PDFs. `context`: the send-ready
+    package's (#1622, `send_package.PackageContext`): its round-2 check, its stable comment numbers
+    ("C-07" on each cloud and note) and the review result stamped on the cover with the
+    disclaimer; without it the round-2 check is worked out here and the clouds are numbered 1, 2,
+    …."""
+    if context is not None:
+        findings = import_module("app.review.assistant.send_package").labelled(
+            findings, context.labels
+        )
     ordered = by_impact(findings)
     name, placed = place_findings(workspace, ordered)
     listing = read_listing(workspace)
@@ -1837,7 +1856,8 @@ def make_proof_file(
     pack = workspace.set_pack
     drawing = import_module(PROOF_MODULE)
     date = today or datetime.now(UTC).strftime("%Y-%m-%d")
-    rounds = round_two_report(workspace, name, ordered, pack)
+    action = None if context is None else context.action(ordered)
+    rounds = round_two_report(workspace, name, ordered, pack) if context is None else context.rounds
     drawing.proof_markup_pdf(
         workspace.uploads / name,
         placed,
@@ -1850,12 +1870,24 @@ def make_proof_file(
         assumptions=plan.plan_assumptions(pack, name),
         settled=settled,
         rounds=rounds,
+        action=action,
+        action_stamp=None if action is None else context.stamp(action),
         not_compared=not_compared,
     )
     data = out.read_bytes()
     return MarkupFile(
         markup_name(name, CLOUD_DRAWING_KIND), len(data), hashlib.sha256(data).hexdigest()
     )
+
+
+def full_check_rounds(workspace: ChatWorkspace, findings: Sequence[Mapping[str, Any]]) -> Any:
+    """The automatic round-2 check for a full check's files (`round_two_report` on the vendor's
+    file, biggest first), worked out once for the cloud drawing and the send-ready package.
+    Raises `LookupError` when the chat has no copy of the set's PDFs."""
+    main = main_upload(read_listing(workspace))
+    if main is None or not (workspace.uploads / str(main["name"])).is_file():
+        raise LookupError("no uploads")
+    return round_two_report(workspace, str(main["name"]), by_impact(findings), workspace.set_pack)
 
 
 def round_two_report(
