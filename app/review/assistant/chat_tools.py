@@ -1504,6 +1504,25 @@ class ChatTools:
                 raw, frozenset({"crops", "dpi", "description", "marks"}), frozenset({"crops"})
             )
             crops = given["crops"]
+            if isinstance(crops, list):
+                # `dpi` and `marks` given on a crop are the call's (#1654: a helper put them
+                # there and lost the call to "unknown argument").
+                lifted = [
+                    (
+                        {k: v for k, v in item.items() if k not in ("dpi", "marks")}
+                        if isinstance(item, Mapping)
+                        else item
+                    )
+                    for item in crops
+                ]
+                for item in crops:
+                    if not isinstance(item, Mapping):
+                        continue
+                    if "marks" in item and "marks" not in given:
+                        given = {**given, "marks": item["marks"]}
+                    if "dpi" in item and "dpi" not in given:
+                        given = {**given, "dpi": item["dpi"]}
+                crops = lifted
             if not isinstance(crops, list) or not 1 <= len(crops) <= MAX_ZOOM_CROPS:
                 raise SandboxRefused(f"crops must be a list of 1 to {MAX_ZOOM_CROPS} areas")
             dpi = given.get("dpi")

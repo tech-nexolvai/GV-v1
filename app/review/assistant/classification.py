@@ -452,6 +452,12 @@ def classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
     )
 
 
+#: A vendor side that says the item is not there.
+_NOT_ON_VENDOR: Final = re.compile(
+    r"^\s*(?:not (?:shown|drawn|on|found|in)\b|missing\b|absent\b|none\b)", re.IGNORECASE
+)
+
+
 def internal(finding: Mapping[str, Any]) -> bool:
     """An item for GV's reviewer only, never the vendor's (#1652): a difference a helper read but
     never recorded at its spots (`salvaged`, the full check's UNRECORDED lines), or the reading
@@ -460,12 +466,29 @@ def internal(finding: Mapping[str, Any]) -> bool:
     or the cloud drawing; the screen lists it in grey."""
     if finding.get("salvaged") is True:
         return True
-    return finding.get("created_by") == "ledger" and finding.get("source") == "completeness"
+    if finding.get("created_by") == "ledger" and finding.get("source") == "completeness":
+        return True
+    # An AI's "the vendor does not show it" with no spot on the architect's drawing either: code
+    # never saw what is claimed missing, so nothing can be shown to the vendor (#1654).
+    dims = finding.get("dims") if isinstance(finding.get("dims"), Mapping) else {}
+    return (
+        str(finding.get("created_by") or "").startswith("helper")
+        and _NOT_ON_VENDOR.match(" ".join(str(finding.get("vendor") or "").split())) is not None
+        and not finding.get("arch_box")
+        and not (dims or {}).get("architect")
+    )
 
 
 def _classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
     if internal(finding):
-        if finding.get("salvaged") is True:
+        if finding.get("salvaged") is not True and str(finding.get("created_by") or "").startswith(
+            "helper"
+        ):
+            why = (
+                "an AI reading says the vendor does not show it, with no spot on the architect's "
+                "drawing; code never saw it; kept for GV's reviewer only"
+            )
+        elif finding.get("salvaged") is True:
             why = (
                 "a helper read it but did not record it at its spots, so code never read it; "
                 "kept for GV's reviewer only"

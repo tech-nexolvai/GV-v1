@@ -389,6 +389,8 @@ ROSTER_WRAP_UP_NOTE: Final = (
 )
 #: A roster helper's report at its wrap-up: short, so it fits the money its share keeps for it.
 ROSTER_WRAP_UP_MAX_TOKENS: Final = 2500
+#: A roster helper's record turn (#1654): tool calls that record, no long reply.
+RECORD_MAX_TOKENS: Final = 4000
 
 #: The 5-6 line summary that ends every full check (both instructions below end with it).
 _FULL_CHECK_SUMMARY: Final = """End with a 5-6 line plain-English summary for the reviewer (no tables, no disclaimers: the app draws the cloud drawing, the report and the lists):
@@ -3652,22 +3654,29 @@ class ChatEngine:
                     wrap, why = "cost_cap", "you have used your part of the money"
                 elif not self._hold(share, estimate):
                     wrap, why = "cost_cap", "the helpers have used their share of the money"
+                record_estimate = None
+                if why is not None and roster_pages and not record_turn:
+                    record_body = {**body, "max_tokens": RECORD_MAX_TOKENS}
+                    record_estimate = self._estimate(model, record_body, cached, previous)
                 if (
                     why is not None
                     and roster_pages
                     and not record_turn
                     and why != "this message is near its money cap"
                     and turns < self.settings.helper_max_turns
-                    and self._fits(estimate)
-                    and self._hold(share, estimate)
+                    and self._fits(record_estimate)
                 ):
                     # One turn to record what it read before its report (the paid run of
                     # 2026-10-19: gap closers read the pages, then wrapped up with no tools and
                     # recorded nothing, so their differences were lost).
+                    # The record turn is never refused for the helpers' share (#1654): the paid
+                    # run of 2026-10-19's gap closers hit their shared ceiling, got no record
+                    # turn and recorded nothing. It is one short call within the fixed price.
                     record_turn = True
                     wrap = None
                     _append_note(messages, RECORD_NOTE.format(why=why))
-                    held = estimate or 0
+                    held = 0
+                    max_tokens = RECORD_MAX_TOKENS
                 elif why is not None:
                     note = ROSTER_WRAP_UP_NOTE if roster_pages else WRAP_UP_NOTE
                     _append_note(messages, note.format(why=why))
