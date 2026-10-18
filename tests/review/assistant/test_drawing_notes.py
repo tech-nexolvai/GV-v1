@@ -38,7 +38,7 @@ def test_tags_and_notes_are_sorted_per_drawing_and_one_sided_tags_listed() -> No
     ]
     assert sorted(t["text"] for t in architect["tags"]) == ["FN-01", "FX-101-CUST"]
     assert [n["text"] for n in vendor["notes"]] == ["TOEKICK- MX-02", "Support by others"]
-    assert sorted(t["text"] for t in vendor["tags"]) == ["MX-02", "FN-01"]
+    assert sorted(t["text"] for t in vendor["tags"]) == ["FN-01", "MX-02"]
     assert vendor["round"] == 1
     assert found["architect_only_tags"] == ["FX-101-CUST"]
     assert found["vendor_only_tags"] == ["MX-02"]
