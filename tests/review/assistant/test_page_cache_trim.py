@@ -380,9 +380,11 @@ def test_a_size_out_of_range_is_refused_not_quietly_clamped(tmp_path: Path) -> N
 def test_the_sizes_from_settings_beat_the_environment_and_resize_the_pool(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    for name in ("_set_workers", "_set_memory_mb", "_pool", "_pool_size"):
-        monkeypatch.setattr(page_cache, name, getattr(page_cache, name))
-    monkeypatch.setattr(page_cache, "_pool", None)
+    # Start unconfigured: a chat message run earlier in this process (another test) has already
+    # handed the cache its sizes, which beat the environment (the CI failure: 3, not 5).
+    for name in ("_set_workers", "_set_memory_mb", "_pool"):
+        monkeypatch.setattr(page_cache, name, None)
+    monkeypatch.setattr(page_cache, "_pool_size", 0)
     monkeypatch.setenv("GV_ASSISTANT_PAGE_CACHE_WORKERS", "5")
     monkeypatch.setenv("GV_ASSISTANT_PAGE_CACHE_MEMORY_MB", "999")
     assert page_cache._workers() == 5

@@ -29,7 +29,7 @@ from app.review.assistant.chat_corrections import (
     with_corrections,
 )
 from app.review.assistant.chat_memory import MAX_NOTES, decision_note, notes_block
-from app.review.assistant.chat_request import FALLBACK_BETA, MODELS, call_params
+from app.review.assistant.chat_request import BINDING_BETA, FALLBACK_BETA, MODELS, call_params
 from app.review.assistant.chat_tools import HELPER_TOOLS, LEAD_TOOLS, ChatTools, new_step
 from app.review.assistant.sandbox import ChatWorkspace
 from tests.review.assistant.chat_fakes import (
@@ -131,16 +131,18 @@ def test_the_lead_call_carries_the_context_beta_on_anthropic_only() -> None:
         "max_tokens": 64000,
     }
     sent = call_params(provider="anthropic", context_management=edits, **common)
-    assert sent["betas"] == [FALLBACK_BETA, CONTEXT_BETA] and sent["fallbacks"] == "default"
+    assert sent["betas"] == [BINDING_BETA, FALLBACK_BETA, CONTEXT_BETA]
+    assert sent["fallbacks"] == "default"
     assert sent["context_management"] == edits
     haiku = call_params(
         provider="anthropic",
         context_management=edits,
         **{**common, "model": MODELS["claude-haiku-5-5"]},
     )
-    assert haiku["betas"] == [CONTEXT_BETA] and "fallbacks" not in haiku
+    assert haiku["betas"] == [BINDING_BETA, CONTEXT_BETA] and "fallbacks" not in haiku
     assert "betas" not in call_params(
-        provider="anthropic", **{**common, "model": MODELS["claude-haiku-5-5"]}
+        provider="anthropic",
+        **{**common, "model": MODELS["claude-haiku-5-5"], "thinking": {"type": "disabled"}},
     )
     openrouter = call_params(provider="openrouter", context_management=edits, **common)
     assert "context_management" not in openrouter and "betas" not in openrouter
@@ -249,7 +251,7 @@ def test_the_notes_block_puts_the_asked_pages_first_and_keeps_it_short() -> None
     assert block is not None
     lines = [line for line in block.splitlines() if line.startswith("- ")]
     assert len(lines) == MAX_NOTES
-    assert all(line.startswith("- p.3:") for line in lines[:6])
+    assert all(line.startswith("- p.3 [") for line in lines[:6])
     assert "reviewer's decision" in lines[0] or "reviewer's decision" in block
     assert "older notes not shown" in block and block.startswith("<set_notes>")
     assert "New notes" in (notes_block(rows[:1], new=True) or "")  # type: ignore[arg-type]

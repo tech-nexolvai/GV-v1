@@ -4098,6 +4098,45 @@
         "title": "ChatDismissedOut",
         "type": "object"
       },
+      "ChatFallbackBlock": {
+        "properties": {
+          "fallback": {
+            "$ref": "#/components/schemas/ChatFallbackOut"
+          },
+          "type": {
+            "const": "fallback",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "fallback"
+        ],
+        "title": "ChatFallbackBlock",
+        "type": "object"
+      },
+      "ChatFallbackOut": {
+        "description": "#1577: Anthropic's refusal fallback answered instead of the model asked.",
+        "properties": {
+          "from_model": {
+            "description": "The model that declined (\"claude-fable-5-1\").",
+            "title": "From Model",
+            "type": "string"
+          },
+          "to_model": {
+            "description": "The model that answered instead (\"claude-opus-4-8\").",
+            "title": "To Model",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from_model",
+          "to_model"
+        ],
+        "title": "ChatFallbackOut",
+        "type": "object"
+      },
       "ChatFileOut": {
         "properties": {
           "id": {
@@ -4130,6 +4169,107 @@
           "url"
         ],
         "title": "ChatFileOut",
+        "type": "object"
+      },
+      "ChatFindingAlsoOnOut": {
+        "description": "The same item on another page or round, folded into this finding (#1554).",
+        "properties": {
+          "arch_box": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatBoxOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "architect": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Architect"
+          },
+          "finding_id": {
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "item": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "round": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Round"
+          },
+          "vendor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vendor"
+          },
+          "vendor_box": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatBoxOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its spot on that page: the cloud drawing marks it there too."
+          },
+          "vs_page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vs Page"
+          }
+        },
+        "required": [
+          "finding_id"
+        ],
+        "title": "ChatFindingAlsoOnOut",
         "type": "object"
       },
       "ChatFindingBlock": {
@@ -4231,6 +4371,18 @@
             "title": "Second Read",
             "type": "string"
           },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "agrees: code read the finish codes in the drawings' own text and searched every vendor sheet and round of the area (#1623); null: not that check's finding.",
+            "title": "Text"
+          },
           "units": {
             "anyOf": [
               {
@@ -4320,7 +4472,7 @@
         "type": "object"
       },
       "ChatFindingDecisionHelpOut": {
-        "description": "A \"Your decision\" item's reasoning for the reviewer (#1545), in plain words.",
+        "description": "A not-compared (\"check\") item's reasoning for the reviewer (#1545), in plain words.",
         "properties": {
           "confirm": {
             "description": "What the reviewer should confirm, and with whom.",
@@ -4530,8 +4682,62 @@
         "title": "ChatFindingDroppedBlock",
         "type": "object"
       },
+      "ChatFindingEscalationOut": {
+        "description": "What the full check's escalation did with an item code could not settle at first (#1619).",
+        "properties": {
+          "outcome": {
+            "enum": [
+              "wrong",
+              "right",
+              "folded",
+              "undecided"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/ChatFindingEscalationStepOut"
+            },
+            "title": "Steps",
+            "type": "array"
+          }
+        },
+        "required": [
+          "outcome"
+        ],
+        "title": "ChatFindingEscalationOut",
+        "type": "object"
+      },
+      "ChatFindingEscalationStepOut": {
+        "description": "One free code step the escalation tried on an item code could not compare at first\n(#1619).",
+        "properties": {
+          "how": {
+            "description": "What code did and found, in one plain line.",
+            "title": "How",
+            "type": "string"
+          },
+          "outcome": {
+            "description": "read, proved, folded or no_change.",
+            "title": "Outcome",
+            "type": "string"
+          },
+          "step": {
+            "description": "labels, under_markup, same_item, vendor_sums, notes or pairs (cheapest first).",
+            "title": "Step",
+            "type": "string"
+          }
+        },
+        "required": [
+          "step",
+          "outcome",
+          "how"
+        ],
+        "title": "ChatFindingEscalationStepOut",
+        "type": "object"
+      },
       "ChatFindingEstimateOut": {
-        "description": "The AI's best estimate for a \"Your decision\" item, with how it got it (#1545).",
+        "description": "The AI's best estimate for a not-compared (\"check\") item, with how it got it (#1545).",
         "properties": {
           "method": {
             "title": "Method",
@@ -4666,6 +4872,21 @@
       "ChatFindingOut": {
         "description": "One difference the assistant reported, with code-made evidence and checks.",
         "properties": {
+          "also_on": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ChatFindingAlsoOnOut"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The same item on other pages or rounds, folded in (#1554).",
+            "title": "Also On"
+          },
           "arch_box": {
             "anyOf": [
               {
@@ -4739,7 +4960,7 @@
             "title": "Compared"
           },
           "created_by": {
-            "description": "\"lead\", \"helper:<n>\", \"gv_review\" (made by code from a recorded result), or \"ledger\" (made by code from the reading ledger).",
+            "description": "\"lead\", \"helper:<n>\", \"gv_review\" (made by code from a recorded result), \"ledger\" (made by code from the reading ledger), \"consistency\" (made by code from the vendor's own drawings: a string that does not add up, a span printed twice), \"architect_items\" (made by code from the drawings' text: a finish the architect tags that the vendor missed, changed or added), or \"pairs\" (made by code from a dimension it paired on both drawings by itself: Wrong or Right with that proof).",
             "title": "Created By",
             "type": "string"
           },
@@ -4773,7 +4994,7 @@
                 "type": "null"
               }
             ],
-            "description": "Status check (Your decision): what it measures, the best estimate, how likely it is fine, what to confirm (#1545)."
+            "description": "Status check (not compared): what it measures, the best estimate, how likely it is fine, what to confirm (#1545)."
           },
           "dims": {
             "anyOf": [
@@ -4789,6 +5010,17 @@
             ],
             "description": "The numbered dimension label each side was built from (#1558), by side (architect, vendor); code filled that side's value and box from it.",
             "title": "Dims"
+          },
+          "escalation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatFindingEscalationOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A full check (#1619): the free code steps tried on this item when code could not settle it at first, and how it ended."
           },
           "evidence_kind": {
             "anyOf": [
@@ -4835,6 +5067,17 @@
           "item": {
             "title": "Item",
             "type": "string"
+          },
+          "keep_reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatKeepReason"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Status check: why it needs a person (#1554)."
           },
           "ledger_ids": {
             "anyOf": [
@@ -4884,6 +5127,18 @@
             ],
             "title": "Parts"
           },
+          "parts_sum": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Source vendor_arithmetic: code's sum of the parts, in inches (#1554).",
+            "title": "Parts Sum"
+          },
           "printed_total": {
             "anyOf": [
               {
@@ -4894,6 +5149,29 @@
               }
             ],
             "title": "Printed Total"
+          },
+          "proof": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatFindingProofOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where the zero-click cloud drawing puts it, and why (#1581); worked out on read, so it follows the reviewer's latest decision."
+          },
+          "question": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Status check: the one question a person answers, written by code (#1554).",
+            "title": "Question"
           },
           "reads": {
             "anyOf": [
@@ -4988,6 +5266,17 @@
               }
             ]
           },
+          "settled": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatFindingSettledOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when code settled this item, which was not compared, by itself (#1554)."
+          },
           "source": {
             "description": "cross_view and completeness are made only by code, from the reading ledger.",
             "enum": [
@@ -5010,6 +5299,17 @@
             ],
             "title": "Status",
             "type": "string"
+          },
+          "string_reads": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatFindingStringReadsOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A vendor string (#1641): the blind second reading's outcome, in code's words (proved: the same parts and overall, and code's sum is off; gap: code's lines show a part left out, so no reading was asked; not_verified: the fixed price did not reach it)."
           },
           "sum_text": {
             "anyOf": [
@@ -5113,7 +5413,7 @@
                 "type": "null"
               }
             ],
-            "description": "The non-AI witnesses behind it: printed, rule, arithmetic, ledger, units.",
+            "description": "The non-AI witnesses behind it: printed, ocr_ink, text, rule, arithmetic, ledger, units.",
             "title": "Witnesses"
           }
         },
@@ -5130,6 +5430,127 @@
           "created_by"
         ],
         "title": "ChatFindingOut",
+        "type": "object"
+      },
+      "ChatFindingProofOut": {
+        "description": "Where the zero-click cloud drawing puts a finding (#1581), worked out by code on read\n(`proof.proof_of`): only Wrong items code proved are clouded; the reviewer's Agree / Not a\nproblem override.",
+        "properties": {
+          "group": {
+            "description": "clouded: Wrong, proved by code (red cloud); right; not_compared: could not be compared under the architect-first rules (#1619: listed with its reason in the Not-compared PDF and workbook, never a question to anyone); dismissed: the reviewer marked it not a problem.",
+            "enum": [
+              "clouded",
+              "right",
+              "not_compared",
+              "dismissed"
+            ],
+            "title": "Group",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "not_compared: the trade's words for the reason (Field verify, RFI to the architect, Not reviewed: <reason>, Illegible).",
+            "title": "Label"
+          },
+          "not_compared": {
+            "anyOf": [
+              {
+                "enum": [
+                  "architect_disagrees",
+                  "nothing_to_compare",
+                  "different_reference",
+                  "unreadable",
+                  "missing_setting",
+                  "prototype",
+                  "not_proved",
+                  "not_seen",
+                  "field_verify",
+                  "finish_not_comparable",
+                  "no_sheet",
+                  "no_overall",
+                  "string_not_verified",
+                  "internal"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "not_compared: the reason (the list's group).",
+            "title": "Not Compared"
+          },
+          "proof": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Clouded items: the check that proved it, in plain words.",
+            "title": "Proof"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The other groups: why it is not clouded, in one line.",
+            "title": "Reason"
+          },
+          "rule": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The architect-first rule it falls under (#1619): R4 a difference, R5 the vendor's own contradiction, R6 GV's rule; for not_compared R1 (brand prototype), R3 (architect's drawings disagree), R7 (architect gives nothing), R8 (different reference points), R9 (unreadable), R10 (missing job value or setting).",
+            "title": "Rule"
+          },
+          "settle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "not_compared: what is needed to compare it, in plain words.",
+            "title": "Settle"
+          },
+          "should_be": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Wrong items: what the value should be and what governs it, e.g. '37\" (architect 3'-1\", page 28)'.",
+            "title": "Should Be"
+          }
+        },
+        "required": [
+          "group"
+        ],
+        "title": "ChatFindingProofOut",
         "type": "object"
       },
       "ChatFindingReadOut": {
@@ -5218,6 +5639,69 @@
           "model"
         ],
         "title": "ChatFindingReadOut",
+        "type": "object"
+      },
+      "ChatFindingSettledOut": {
+        "description": "How code settled a not-compared (\"check\") item by itself (#1554), shown as \"Settled by GV\nReview: \u2026\".",
+        "properties": {
+          "how": {
+            "description": "What code did and found, in one plain sentence.",
+            "title": "How",
+            "type": "string"
+          },
+          "method": {
+            "description": "The rule or tool: same_item, gv_limits, vendor_sum, printed_vs_printed, newest_round, prototype_prints_it, legend, sharper_read, other_trades_tags, out_of_scope; escalation_<step> when the full check's escalation settled it (#1619).",
+            "title": "Method",
+            "type": "string"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/ChatSettledOutcome"
+          },
+          "was": {
+            "default": "check",
+            "description": "check: it was not compared; different: a Wrong code could not prove, settled Right by the escalation (#1619).",
+            "enum": [
+              "check",
+              "different"
+            ],
+            "title": "Was",
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "method",
+          "how"
+        ],
+        "title": "ChatFindingSettledOut",
+        "type": "object"
+      },
+      "ChatFindingStringReadsOut": {
+        "description": "A full check (#1641, #1652): what the blind second reading of a vendor string gave.",
+        "properties": {
+          "outcome": {
+            "enum": [
+              "proved",
+              "adds_up",
+              "within_rounding",
+              "disagrees",
+              "not_found",
+              "gap",
+              "not_verified"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "why": {
+            "title": "Why",
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "why"
+        ],
+        "title": "ChatFindingStringReadsOut",
         "type": "object"
       },
       "ChatFindingUpdateBlock": {
@@ -5395,6 +5879,19 @@
           "summary",
           "clarify",
           "refuse_action"
+        ],
+        "type": "string"
+      },
+      "ChatKeepReason": {
+        "enum": [
+          "architect_prints_nothing",
+          "measures_something_else",
+          "which_governs",
+          "unreadable",
+          "needs_job_value",
+          "layout",
+          "vendor_disagrees",
+          "other"
         ],
         "type": "string"
       },
@@ -5903,7 +6400,7 @@
                 "type": "null"
               }
             ],
-            "description": "Active product ids from `GET /products` (e.g. countertop, cabinet).",
+            "description": "Active product ids from `GET /products` (e.g. countertop, cabinet): a strict scope, so only these products are checked, ruled, counted and drawn (every active product = All). Not given: every active product (All is the default).",
             "title": "Products"
           },
           "task": {
@@ -5959,10 +6456,13 @@
                       "accuracy": "#/components/schemas/ChatAccuracyBlock",
                       "cite": "#/components/schemas/ChatCiteBlock",
                       "coverage": "#/components/schemas/ChatCoverageBlock",
+                      "fallback": "#/components/schemas/ChatFallbackBlock",
                       "finding": "#/components/schemas/ChatFindingBlock",
                       "finding_dropped": "#/components/schemas/ChatFindingDroppedBlock",
                       "finding_update": "#/components/schemas/ChatFindingUpdateBlock",
+                      "package": "#/components/schemas/ChatPackageBlock",
                       "progress": "#/components/schemas/ChatProgressBlock",
+                      "resolver": "#/components/schemas/ChatResolverBlock",
                       "resume": "#/components/schemas/ChatResumeBlock",
                       "scope": "#/components/schemas/ChatScopeBlock",
                       "step": "#/components/schemas/ChatStepBlock",
@@ -6018,7 +6518,16 @@
                       "$ref": "#/components/schemas/ChatResumeBlock"
                     },
                     {
+                      "$ref": "#/components/schemas/ChatResolverBlock"
+                    },
+                    {
                       "$ref": "#/components/schemas/ChatUnderstoodBlock"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChatFallbackBlock"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChatPackageBlock"
                     }
                   ]
                 },
@@ -6174,6 +6683,17 @@
               }
             ],
             "description": "With `stopped: interrupted`: how Continue picks up (its `resume` block)."
+          },
+          "review_action": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatReviewActionOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#1622: a full check's review result, worked out on read from its findings with the reviewer's latest decisions; null on other messages and before its package."
           },
           "role": {
             "enum": [
@@ -6372,6 +6892,97 @@
         ],
         "type": "string"
       },
+      "ChatPackageBlock": {
+        "properties": {
+          "package": {
+            "$ref": "#/components/schemas/ChatPackageOut"
+          },
+          "type": {
+            "const": "package",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "package"
+        ],
+        "title": "ChatPackageBlock",
+        "type": "object"
+      },
+      "ChatPackageOut": {
+        "description": "A full check's send-ready package (#1622): kept with the answer so the screen and a remade\npackage read the same state and comment numbers.",
+        "properties": {
+          "numbers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Finding id -> stable comment number (\"C-07\").",
+            "title": "Numbers",
+            "type": "object"
+          },
+          "round": {
+            "default": 1,
+            "description": "The drawing set's round.",
+            "minimum": 1.0,
+            "title": "Round",
+            "type": "integer"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ChatPackageStateOut"
+          },
+          "submittal": {
+            "default": "",
+            "description": "The submittal number (\"25A\"); \"\" unknown.",
+            "title": "Submittal",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "ChatPackageOut",
+        "type": "object"
+      },
+      "ChatPackageStateOut": {
+        "description": "What the review result needs beyond the findings (#1622, `review_action.CheckState`).",
+        "properties": {
+          "incomplete": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why the check did not finish; null when it did.",
+            "title": "Incomplete"
+          },
+          "missing_areas": {
+            "default": 0,
+            "description": "Areas the architect draws with no vendor sheet.",
+            "minimum": 0.0,
+            "title": "Missing Areas",
+            "type": "integer"
+          },
+          "still_open": {
+            "default": 0,
+            "description": "Previous comments still wrong in this round.",
+            "minimum": 0.0,
+            "title": "Still Open",
+            "type": "integer"
+          },
+          "wrong_product": {
+            "default": false,
+            "description": "Code proved the vendor drew a different product.",
+            "title": "Wrong Product",
+            "type": "boolean"
+          }
+        },
+        "title": "ChatPackageStateOut",
+        "type": "object"
+      },
       "ChatPlanAnswerIn": {
         "additionalProperties": false,
         "description": "The reviewer's answer to one plan-check question (#1569).",
@@ -6485,6 +7096,39 @@
           "label"
         ],
         "title": "ChatPlanOptionOut",
+        "type": "object"
+      },
+      "ChatProductScopeOut": {
+        "description": "The strict product scope (Anant, 2026-10-18): the products checked, and the findings of\nother products code refused or dropped, whoever reported them.",
+        "properties": {
+          "all_products": {
+            "title": "All Products",
+            "type": "boolean"
+          },
+          "dropped_out_of_scope": {
+            "description": "Findings of products not in scope that code did not keep.",
+            "title": "Dropped Out Of Scope",
+            "type": "integer"
+          },
+          "products": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Products",
+            "type": "array"
+          },
+          "products_label": {
+            "title": "Products Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "products",
+          "all_products",
+          "products_label",
+          "dropped_out_of_scope"
+        ],
+        "title": "ChatProductScopeOut",
         "type": "object"
       },
       "ChatProgressBlock": {
@@ -6708,6 +7352,185 @@
         "title": "ChatRecordedResultsOut",
         "type": "object"
       },
+      "ChatResolverBlock": {
+        "properties": {
+          "resolver": {
+            "$ref": "#/components/schemas/ChatResolverOut"
+          },
+          "type": {
+            "const": "resolver",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "resolver"
+        ],
+        "title": "ChatResolverBlock",
+        "type": "object"
+      },
+      "ChatResolverCountsOut": {
+        "properties": {
+          "decision": {
+            "title": "Decision",
+            "type": "integer"
+          },
+          "right": {
+            "title": "Right",
+            "type": "integer"
+          },
+          "wrong": {
+            "title": "Wrong",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "wrong",
+          "decision",
+          "right"
+        ],
+        "title": "ChatResolverCountsOut",
+        "type": "object"
+      },
+      "ChatResolverEntryOut": {
+        "description": "One not-compared (\"check\") item code settled by itself (#1554): the folded group's line.",
+        "properties": {
+          "architect": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Architect"
+          },
+          "finding_id": {
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "how": {
+            "title": "How",
+            "type": "string"
+          },
+          "into": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The finding it was folded into.",
+            "title": "Into"
+          },
+          "item": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item"
+          },
+          "method": {
+            "title": "Method",
+            "type": "string"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/ChatSettledOutcome"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "vendor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vendor"
+          },
+          "vs_page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vs Page"
+          }
+        },
+        "required": [
+          "finding_id",
+          "outcome",
+          "method",
+          "how"
+        ],
+        "title": "ChatResolverEntryOut",
+        "type": "object"
+      },
+      "ChatResolverOut": {
+        "description": "The resolver's pass on a whole-set answer (#1554): the counts before and after, every item\nit settled, why the rest still need a person, its sharper reads and their cost.",
+        "properties": {
+          "after": {
+            "$ref": "#/components/schemas/ChatResolverCountsOut"
+          },
+          "before": {
+            "$ref": "#/components/schemas/ChatResolverCountsOut"
+          },
+          "cost_usd": {
+            "title": "Cost Usd",
+            "type": "string"
+          },
+          "kept": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Kept",
+            "type": "object"
+          },
+          "reads": {
+            "title": "Reads",
+            "type": "integer"
+          },
+          "settled": {
+            "items": {
+              "$ref": "#/components/schemas/ChatResolverEntryOut"
+            },
+            "title": "Settled",
+            "type": "array"
+          }
+        },
+        "required": [
+          "before",
+          "after",
+          "settled",
+          "kept",
+          "reads",
+          "cost_usd"
+        ],
+        "title": "ChatResolverOut",
+        "type": "object"
+      },
       "ChatResumeBlock": {
         "properties": {
           "resume": {
@@ -6775,6 +7598,99 @@
           "redo"
         ],
         "title": "ChatResumeOut",
+        "type": "object"
+      },
+      "ChatReviewActionOut": {
+        "description": "A full check's review result (#1622, `review_action.review_action`, rules S0 to S7),\ndecided by code on read from its findings with the reviewer's latest decisions and the state\nkept with its package; the comment letter and the cloud drawing's cover say the same.",
+        "properties": {
+          "action": {
+            "enum": [
+              "approved",
+              "approved_as_noted",
+              "revise_resubmit",
+              "rejected",
+              "not_for_sending"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "corrections": {
+            "description": "Comments sent (the clouds).",
+            "minimum": 0.0,
+            "title": "Corrections",
+            "type": "integer"
+          },
+          "disclaimer": {
+            "description": "The standard words printed under the result.",
+            "title": "Disclaimer",
+            "type": "string"
+          },
+          "fabrication": {
+            "description": "Of them, those that change fabrication.",
+            "minimum": 0.0,
+            "title": "Fabrication",
+            "type": "integer"
+          },
+          "next_step": {
+            "description": "What the vendor does next (the letter's closing line).",
+            "title": "Next Step",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "S6: what was not reviewed.",
+            "title": "Note"
+          },
+          "reason": {
+            "description": "Why, in one line: \"2 of 5 corrections change fabrication.\"",
+            "title": "Reason",
+            "type": "string"
+          },
+          "required_by": {
+            "description": "Who must act now (\"Vendor: revise and resubmit\").",
+            "title": "Required By",
+            "type": "string"
+          },
+          "rule": {
+            "description": "The rule that decided it (the first that matches wins).",
+            "enum": [
+              "S0",
+              "S1",
+              "S2",
+              "S3",
+              "S4",
+              "S5",
+              "S6",
+              "S7"
+            ],
+            "title": "Rule",
+            "type": "string"
+          },
+          "words": {
+            "description": "\"Approved as noted\", \"Revise and resubmit\", \u2026",
+            "title": "Words",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "rule",
+          "words",
+          "reason",
+          "corrections",
+          "fabrication",
+          "next_step",
+          "required_by",
+          "disclaimer"
+        ],
+        "title": "ChatReviewActionOut",
         "type": "object"
       },
       "ChatRoundPairOut": {
@@ -6918,6 +7834,12 @@
       "ChatScopeOut": {
         "description": "What the answer is about, worked out by code (#1520): the whole set, or some pages or an\narea. Only a whole-set answer gets the whole-set panels (all pages' coverage, every recorded\ndifference); a page or area answer's coverage, recorded results and trust counts cover its\npages only.",
         "properties": {
+          "all_products": {
+            "default": false,
+            "description": "True when every active product was checked (All).",
+            "title": "All Products",
+            "type": "boolean"
+          },
           "area": {
             "anyOf": [
               {
@@ -6951,6 +7873,26 @@
             },
             "title": "Pages",
             "type": "array"
+          },
+          "products": {
+            "description": "The products checked (product ids, a strict scope: a finding of another product is never kept); empty on older answers.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Products",
+            "type": "array"
+          },
+          "products_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The products in plain words: \"Countertops\".",
+            "title": "Products Label"
           },
           "why": {
             "enum": [
@@ -7000,6 +7942,15 @@
         },
         "title": "ChatSecondReadValuesOut",
         "type": "object"
+      },
+      "ChatSettledOutcome": {
+        "enum": [
+          "wrong",
+          "right",
+          "merged",
+          "not_a_difference"
+        ],
+        "type": "string"
       },
       "ChatStepBlock": {
         "properties": {
@@ -7155,7 +8106,8 @@
           "measure_on_drawing",
           "zoom",
           "read_under_markup",
-          "remember"
+          "remember",
+          "drawing_facts"
         ],
         "type": "string"
       },
@@ -7451,7 +8403,7 @@
             "type": "string"
           },
           "phase": {
-            "description": "seeding, set_pack, planning, prewarm, lead, helpers, lead_verification, second_reads, third_reads, critic, finish_checks, cloud_drawing, report",
+            "description": "seeding, set_pack, planning, prewarm, lead, helpers, lead_verification, second_reads, third_reads, critic, finish_checks, cloud_drawing, report, package",
             "title": "Phase",
             "type": "string"
           },
@@ -7717,6 +8669,17 @@
             ],
             "description": "\"What's right\" items not compared (not counted above).",
             "title": "Not Compared"
+          },
+          "product_scope": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatProductScopeOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The products checked and how many findings of other products code dropped (for the record, not shown); null on older answers."
           },
           "recorded_results": {
             "anyOf": [
@@ -8030,9 +8993,11 @@
           },
           "scope": {
             "default": "item",
+            "description": "page: a whole page; item: one value; set: the drawing set itself (an area on one side only, a round or a sheet the set lacks), not counted against the answer.",
             "enum": [
               "page",
-              "item"
+              "item",
+              "set"
             ],
             "title": "Scope",
             "type": "string"
@@ -8047,7 +9012,11 @@
               "not_opened",
               "missing_job_value",
               "pairing_uncertain",
-              "refused_alignment"
+              "refused_alignment",
+              "no_counterpart",
+              "missing_round",
+              "not_in_set",
+              "not_comparable"
             ],
             "title": "Why",
             "type": "string"
@@ -18938,6 +19907,16 @@
         "title": "SpendTotalsOut",
         "type": "object"
       },
+      "StateFilter": {
+        "enum": [
+          "open",
+          "fixed",
+          "not_a_problem",
+          "right_later",
+          "all"
+        ],
+        "type": "string"
+      },
       "StoredList": {
         "description": "One many-valued input as stored, in layout order.",
         "properties": {
@@ -19259,6 +20238,845 @@
           "source"
         ],
         "title": "TracedOperandOut",
+        "type": "object"
+      },
+      "TrackerCheckKind": {
+        "enum": [
+          "full_check",
+          "question"
+        ],
+        "type": "string"
+      },
+      "TrackerCheckOut": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "title": "At",
+            "type": "string"
+          },
+          "chat_id": {
+            "title": "Chat Id",
+            "type": "string"
+          },
+          "decision": {
+            "title": "Decision",
+            "type": "integer"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/TrackerCheckKind"
+          },
+          "message_id": {
+            "title": "Message Id",
+            "type": "string"
+          },
+          "right": {
+            "title": "Right",
+            "type": "integer"
+          },
+          "rounds": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Rounds",
+            "type": "array"
+          },
+          "stopped": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stopped"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "wrong": {
+            "title": "Wrong",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "chat_id",
+          "message_id",
+          "at",
+          "kind",
+          "title",
+          "stopped",
+          "rounds",
+          "wrong",
+          "decision",
+          "right"
+        ],
+        "title": "TrackerCheckOut",
+        "type": "object"
+      },
+      "TrackerItemLinkOut": {
+        "additionalProperties": false,
+        "properties": {
+          "chat_id": {
+            "title": "Chat Id",
+            "type": "string"
+          },
+          "finding_id": {
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "message_id": {
+            "title": "Message Id",
+            "type": "string"
+          },
+          "package_id": {
+            "title": "Package Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "package_id",
+          "chat_id",
+          "message_id",
+          "finding_id"
+        ],
+        "title": "TrackerItemLinkOut",
+        "type": "object"
+      },
+      "TrackerItemOut": {
+        "additionalProperties": false,
+        "description": "One item found, across its checks and rounds.",
+        "properties": {
+          "architect_value": {
+            "title": "Architect Value",
+            "type": "string"
+          },
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "category_label": {
+            "title": "Category Label",
+            "type": "string"
+          },
+          "check": {
+            "title": "Check",
+            "type": "string"
+          },
+          "check_label": {
+            "title": "Check Label",
+            "type": "string"
+          },
+          "checks_seen": {
+            "title": "Checks Seen",
+            "type": "integer"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "decided_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided By"
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision"
+          },
+          "ever_wrong": {
+            "title": "Ever Wrong",
+            "type": "boolean"
+          },
+          "first_round": {
+            "title": "First Round",
+            "type": "integer"
+          },
+          "first_seen_at": {
+            "title": "First Seen At",
+            "type": "string"
+          },
+          "fixed_round": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fixed Round"
+          },
+          "history": {
+            "items": {
+              "$ref": "#/components/schemas/TrackerSightingOut"
+            },
+            "title": "History",
+            "type": "array"
+          },
+          "impact": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Open items: how much it matters (#1569), 0-100.",
+            "title": "Impact"
+          },
+          "item": {
+            "title": "Item",
+            "type": "string"
+          },
+          "key": {
+            "description": "Stable id: from the first check that found it.",
+            "title": "Key",
+            "type": "string"
+          },
+          "kind": {
+            "description": "What it touches, by code (\"Overall size\", \"Height\").",
+            "title": "Kind",
+            "type": "string"
+          },
+          "last_seen_at": {
+            "title": "Last Seen At",
+            "type": "string"
+          },
+          "link": {
+            "$ref": "#/components/schemas/TrackerItemLinkOut"
+          },
+          "open_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "wrong",
+                  "decision"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Open Kind"
+          },
+          "package_id": {
+            "title": "Package Id",
+            "type": "string"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "round_now": {
+            "title": "Round Now",
+            "type": "integer"
+          },
+          "rounds": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Rounds",
+            "type": "array"
+          },
+          "set_name": {
+            "title": "Set Name",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/TrackerState"
+          },
+          "status_now": {
+            "title": "Status Now",
+            "type": "string"
+          },
+          "tags": {
+            "description": "\"New in round 2\", \"Still wrong\".",
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          },
+          "vendor_key": {
+            "title": "Vendor Key",
+            "type": "string"
+          },
+          "vendor_name": {
+            "title": "Vendor Name",
+            "type": "string"
+          },
+          "vendor_value": {
+            "title": "Vendor Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "package_id",
+          "set_name",
+          "vendor_name",
+          "vendor_key",
+          "item",
+          "page",
+          "vendor_value",
+          "architect_value",
+          "category",
+          "category_label",
+          "kind",
+          "check",
+          "check_label",
+          "state",
+          "open_kind",
+          "status_now",
+          "ever_wrong",
+          "fixed_round",
+          "tags",
+          "first_round",
+          "round_now",
+          "rounds",
+          "first_seen_at",
+          "last_seen_at",
+          "checks_seen",
+          "impact",
+          "decision",
+          "decided_by",
+          "decided_at",
+          "link",
+          "history"
+        ],
+        "title": "TrackerItemOut",
+        "type": "object"
+      },
+      "TrackerOut": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TrackerItemOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "made_at": {
+            "title": "Made At",
+            "type": "string"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "sets": {
+            "items": {
+              "$ref": "#/components/schemas/TrackerSetOut"
+            },
+            "title": "Sets",
+            "type": "array"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/TrackerTotalsOut"
+          },
+          "vendors": {
+            "items": {
+              "$ref": "#/components/schemas/TrackerVendorOut"
+            },
+            "title": "Vendors",
+            "type": "array"
+          }
+        },
+        "required": [
+          "project_id",
+          "made_at",
+          "totals",
+          "sets",
+          "items",
+          "vendors"
+        ],
+        "title": "TrackerOut",
+        "type": "object"
+      },
+      "TrackerRankOut": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "share": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Percent of the vendor's mistakes, whole number.",
+            "title": "Share"
+          }
+        },
+        "required": [
+          "label",
+          "count",
+          "share"
+        ],
+        "title": "TrackerRankOut",
+        "type": "object"
+      },
+      "TrackerRoundOut": {
+        "additionalProperties": false,
+        "properties": {
+          "decision": {
+            "title": "Decision",
+            "type": "integer"
+          },
+          "fixed": {
+            "description": "Items this round fixed (Wrong before, right here).",
+            "title": "Fixed",
+            "type": "integer"
+          },
+          "items": {
+            "title": "Items",
+            "type": "integer"
+          },
+          "open": {
+            "title": "Open",
+            "type": "integer"
+          },
+          "round": {
+            "title": "Round",
+            "type": "integer"
+          },
+          "wrong": {
+            "title": "Wrong",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "round",
+          "items",
+          "open",
+          "wrong",
+          "decision",
+          "fixed"
+        ],
+        "title": "TrackerRoundOut",
+        "type": "object"
+      },
+      "TrackerRoundStatus": {
+        "enum": [
+          "fixed",
+          "still_wrong",
+          "new",
+          "not_in_later_round",
+          "single_round"
+        ],
+        "type": "string"
+      },
+      "TrackerSetOut": {
+        "additionalProperties": false,
+        "properties": {
+          "checks": {
+            "items": {
+              "$ref": "#/components/schemas/TrackerCheckOut"
+            },
+            "title": "Checks",
+            "type": "array"
+          },
+          "fixed": {
+            "title": "Fixed",
+            "type": "integer"
+          },
+          "items": {
+            "title": "Items",
+            "type": "integer"
+          },
+          "last_checked_at": {
+            "title": "Last Checked At",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "not_a_problem": {
+            "title": "Not A Problem",
+            "type": "integer"
+          },
+          "open": {
+            "title": "Open",
+            "type": "integer"
+          },
+          "package_id": {
+            "title": "Package Id",
+            "type": "string"
+          },
+          "product": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Product"
+          },
+          "rounds": {
+            "items": {
+              "$ref": "#/components/schemas/TrackerRoundOut"
+            },
+            "title": "Rounds",
+            "type": "array"
+          },
+          "vendor_key": {
+            "title": "Vendor Key",
+            "type": "string"
+          },
+          "vendor_name": {
+            "title": "Vendor Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "package_id",
+          "name",
+          "vendor_name",
+          "vendor_key",
+          "product",
+          "items",
+          "open",
+          "fixed",
+          "not_a_problem",
+          "rounds",
+          "last_checked_at",
+          "checks"
+        ],
+        "title": "TrackerSetOut",
+        "type": "object"
+      },
+      "TrackerSightingOut": {
+        "additionalProperties": false,
+        "description": "One check that saw the item: when, which round and page, and what it said.",
+        "properties": {
+          "architect": {
+            "title": "Architect",
+            "type": "string"
+          },
+          "at": {
+            "title": "At",
+            "type": "string"
+          },
+          "chat_id": {
+            "title": "Chat Id",
+            "type": "string"
+          },
+          "check": {
+            "$ref": "#/components/schemas/TrackerCheckKind"
+          },
+          "check_title": {
+            "title": "Check Title",
+            "type": "string"
+          },
+          "compared": {
+            "description": "False: a Right that was not compared, so no proof.",
+            "title": "Compared",
+            "type": "boolean"
+          },
+          "decided_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided By"
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision"
+          },
+          "finding_id": {
+            "description": "The live finding a click opens (the carrier of a fold).",
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "folded": {
+            "description": "A page the resolver folded into another finding (#1554).",
+            "title": "Folded",
+            "type": "boolean"
+          },
+          "message_id": {
+            "title": "Message Id",
+            "type": "string"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "round": {
+            "title": "Round",
+            "type": "integer"
+          },
+          "round_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TrackerRoundStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "description": "different (Wrong), check (Not compared, #1619) or same (Right).",
+            "title": "Status",
+            "type": "string"
+          },
+          "vendor": {
+            "title": "Vendor",
+            "type": "string"
+          }
+        },
+        "required": [
+          "at",
+          "check",
+          "check_title",
+          "chat_id",
+          "message_id",
+          "finding_id",
+          "round",
+          "page",
+          "status",
+          "compared",
+          "round_status",
+          "folded",
+          "vendor",
+          "architect",
+          "decision",
+          "decided_by"
+        ],
+        "title": "TrackerSightingOut",
+        "type": "object"
+      },
+      "TrackerState": {
+        "enum": [
+          "open",
+          "fixed",
+          "not_a_problem",
+          "right_later"
+        ],
+        "type": "string"
+      },
+      "TrackerTotalsOut": {
+        "additionalProperties": false,
+        "properties": {
+          "checks": {
+            "description": "Stored answers with findings (full checks and questions).",
+            "title": "Checks",
+            "type": "integer"
+          },
+          "fixed": {
+            "title": "Fixed",
+            "type": "integer"
+          },
+          "items": {
+            "title": "Items",
+            "type": "integer"
+          },
+          "not_a_problem": {
+            "title": "Not A Problem",
+            "type": "integer"
+          },
+          "open": {
+            "title": "Open",
+            "type": "integer"
+          },
+          "open_decision": {
+            "title": "Open Decision",
+            "type": "integer"
+          },
+          "open_wrong": {
+            "title": "Open Wrong",
+            "type": "integer"
+          },
+          "right_later": {
+            "title": "Right Later",
+            "type": "integer"
+          },
+          "sets": {
+            "description": "Drawing sets with at least one check that found items.",
+            "title": "Sets",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sets",
+          "checks",
+          "items",
+          "open",
+          "open_wrong",
+          "open_decision",
+          "fixed",
+          "not_a_problem",
+          "right_later"
+        ],
+        "title": "TrackerTotalsOut",
+        "type": "object"
+      },
+      "TrackerVendorOut": {
+        "additionalProperties": false,
+        "description": "The vendor scorecard: what it gets wrong most, and how it fixes.",
+        "properties": {
+          "average_open_per_round": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Average Open Per Round"
+          },
+          "by_check": {
+            "items": {
+              "$ref": "#/components/schemas/TrackerRankOut"
+            },
+            "title": "By Check",
+            "type": "array"
+          },
+          "by_kind": {
+            "items": {
+              "$ref": "#/components/schemas/TrackerRankOut"
+            },
+            "title": "By Kind",
+            "type": "array"
+          },
+          "by_product": {
+            "items": {
+              "$ref": "#/components/schemas/TrackerRankOut"
+            },
+            "title": "By Product",
+            "type": "array"
+          },
+          "fixed_next_of": {
+            "description": "Wrong items seen again in the next round.",
+            "title": "Fixed Next Of",
+            "type": "integer"
+          },
+          "fixed_next_round": {
+            "title": "Fixed Next Round",
+            "type": "integer"
+          },
+          "fixed_next_share": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fixed Next Share"
+          },
+          "items": {
+            "title": "Items",
+            "type": "integer"
+          },
+          "mistakes": {
+            "description": "Items Wrong at least once, minus Not a problem.",
+            "title": "Mistakes",
+            "type": "integer"
+          },
+          "open": {
+            "title": "Open",
+            "type": "integer"
+          },
+          "rounds": {
+            "title": "Rounds",
+            "type": "integer"
+          },
+          "sets": {
+            "title": "Sets",
+            "type": "integer"
+          },
+          "vendor_key": {
+            "title": "Vendor Key",
+            "type": "string"
+          },
+          "vendor_name": {
+            "title": "Vendor Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "vendor_key",
+          "vendor_name",
+          "sets",
+          "rounds",
+          "items",
+          "mistakes",
+          "open",
+          "fixed_next_round",
+          "fixed_next_of",
+          "fixed_next_share",
+          "average_open_per_round",
+          "by_product",
+          "by_kind",
+          "by_check"
+        ],
+        "title": "TrackerVendorOut",
         "type": "object"
       },
       "UnaccountedOut": {
@@ -20644,6 +22462,56 @@
         ]
       }
     },
+    "/api/v1/chats/{chat_id}/consistency": {
+      "post": {
+        "description": "The \"+\" menu's Vendor consistency check (#1584), by code only (no AI call, $0): every\ndimension string the drawing proves is one string added up, two values printed for one span\ncompared, and the areas, rounds and indexed sheets the set lacks listed. Stored in the chat as\na question and its answer (findings with code's proof, the \"not checked\" list), so the cloud\ndrawing and the CSV work on it as on any answer. Returns the stored answer.",
+        "operationId": "consistency_check_api_v1_chats__chat_id__consistency_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chat_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Chat Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatMessageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No such chat (or no access)."
+          },
+          "409": {
+            "description": "`message_running`: a message is being answered in this chat; `uploads_missing`: the drawing set has no PDFs; `pack_building`: the set is still being read (ask again in a minute)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The vendor consistency check: the vendor's drawings against themselves (code, $0)",
+        "tags": [
+          "assistant chats"
+        ]
+      }
+    },
     "/api/v1/chats/{chat_id}/files/{file_id}": {
       "get": {
         "operationId": "download_file_api_v1_chats__chat_id__files__file_id__get",
@@ -20760,7 +22628,7 @@
     },
     "/api/v1/chats/{chat_id}/messages/{message_id}/cloud-drawing": {
       "post": {
-        "description": "Red clouds only at the findings the reviewer agreed with (\"\u2717 Vendor: X \u2014 Needs: Y\n(architect Z)\"); not-yet-decided, not-a-problem and right items listed on the notes page and in\nthe report, never clouded; \"Reviewed by <name>\" once every item needing a decision was decided,\nelse the draft stamp. A new cloud drawing and check report each time (older files are kept);\nreturns the cloud drawing.",
+        "description": "The zero-click cloud drawing made again with the reviewer's decisions as overrides (#1581):\nred clouds at the Wrong items code proved and at every agreed item, none at an item marked not\na problem; the rest listed in grey; stamped \"Checked automatically by GV Review: <date>, and\nreviewed by <name>\". A new cloud drawing and check report each time (older files are kept),\nand for a full check a new send-ready package (#1622); returns the cloud drawing.",
         "operationId": "cloud_drawing_api_v1_chats__chat_id__messages__message_id__cloud_drawing_post",
         "parameters": [
           {
@@ -27531,6 +29399,134 @@
         "summary": "Enter the project's sink; every sink check reads it once the checks run again",
         "tags": [
           "project sink"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/tracker": {
+      "get": {
+        "operationId": "read_tracker_api_v1_projects__project_id__tracker_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrackerOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Every item found across the project's drawing sets, rounds and checks",
+        "tags": [
+          "job tracker"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/tracker.xlsx": {
+      "get": {
+        "operationId": "export_tracker_api_v1_projects__project_id__tracker_xlsx_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Which items: all (default), open, fixed, not_a_problem, right_later.",
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/StateFilter",
+              "default": "all",
+              "description": "Which items: all (default), open, fixed, not_a_problem, right_later."
+            }
+          },
+          {
+            "description": "One drawing set only.",
+            "in": "query",
+            "name": "package_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "One drawing set only.",
+              "title": "Package Id"
+            }
+          },
+          {
+            "description": "One vendor only (its name, any case).",
+            "in": "query",
+            "name": "vendor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "One vendor only (its name, any case).",
+              "title": "Vendor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The tracker as a workbook (Items, Vendors, Checks); CSV of the items without openpyxl",
+        "tags": [
+          "job tracker"
         ]
       }
     },

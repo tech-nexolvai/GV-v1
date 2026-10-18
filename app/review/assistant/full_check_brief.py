@@ -59,13 +59,13 @@ from vocabulary.product_registry import Product, registry
 __all__ = [
     "CHECKLIST_FIELDS",
     "DRAWN_BRIEF",
-    "DRAWN_CHECKLIST",
     "HELPER_BRIEF",
     "LEAD_RESULTS",
     "LENSES",
     "LENS_FIELDS",
-    "NUMBERS_CHECKLIST",
-    "PAGE_CHECKLIST",
+    "LENS_SCOPE",
+    "NUMBERS_NOTE",
+    "PRINCIPLE",
     "checklist_gaps",
     "checklist_send_back",
     "helper_brief",
@@ -74,6 +74,8 @@ __all__ = [
     "page_lines",
     "product_checklist",
     "recorded_on_pages",
+    "unreached_pages",
+    "unreached_send_back",
     "with_label_gaps",
 ]
 
@@ -82,163 +84,36 @@ __all__ = [
 #: helper finds they match.
 LEAD_RESULTS: Final = ("unsure", "not_shown")
 
-#: What a helper answers for each of its pages, in this order. The report line names each field
-#: (`CHECKLIST p<N>: architect a/b; notes a/b; strings a/b; not compared: ...`).
-PAGE_CHECKLIST: Final[tuple[tuple[str, str], ...]] = (
-    (
-        "architect",
-        (
-            "Every dimension the architect prints for this area, each segment of a chain on its own "
-            "(wall to outlet, outlet to outlet, floor to a J-box or counter): the vendor's value at "
-            'the same spot, or "not shown on the vendor". A dimension that locates a thing (an '
-            "outlet, a sink or faucet centre line) is that thing's position: a thing the vendor left "
-            "out is its own finding with the architect's values, never a remark in a width finding."
-        ),
-    ),
-    (
-        "notes",
-        (
-            "Every architect note, callout and tag (drawers or doors, pull-outs, bins, shelves, "
-            'finishes, sink and appliance models, splashes, "by others"): what the vendor shows '
-            "for it. A note the vendor does not follow is a difference, even when the drawn count "
-            "matches."
-        ),
-    ),
-    (
-        "strings",
-        (
-            "Every vendor dimension string recorded with record_string (parts and printed overall, "
-            "as printed, notes left out of the numbers), and every vendor value matched to an "
-            'architect value, a brand prototype value (its own group), or "not on the architect".'
-        ),
-    ),
-    (
-        "drawn",
-        (
-            "Where the architect prints no size: counts and layout compared (bays, doors vs "
-            'drawers, shelves, uppers, splashes, sink and appliance positions), "about" when '
-            "scaled (see scaled)."
-        ),
-    ),
-    (
-        "hardware",
-        (
-            "Hardware and accessories: pulls (type, size, finish), locks (cam lock), grommets, "
-            "power and data units, legs and supports (shape, size, finish), shelves (fixed vs "
-            "pull-out): what the vendor shows against the architect's or brand sheet."
-        ),
-    ),
-    (
-        "construction",
-        (
-            "Construction notes on the architect's or brand sheet that the vendor's drawing "
-            'contradicts (e.g. "toe kick integrated with door", "door to the floor", "pull-out '
-            'drawers for bins", "metal lining"): each is a difference.'
-        ),
-    ),
-    (
-        "position",
-        (
-            "Position, not only size: an item that must be centred on or aligned with another "
-            "(microwave over the range, sink on its centre line, cabinet over the fridge); an item "
-            "that collides with a neighbour or does not fit its own opening."
-        ),
-    ),
-    (
-        "extent",
-        (
-            "Extent and count: a section the architect draws that the vendor omits, or extra pieces "
-            "the vendor adds; the number of doors, drawers, bins and fronts and their arrangement; "
-            "which way an island faces (front vs rear view)."
-        ),
-    ),
-    (
-        "brand",
-        (
-            "ID set vs brand prototype: where the two conflict, status check (Your decision) "
-            "with check_reason which_governs."
-        ),
-    ),
-    (
-        "scaled",
-        (
-            "Scaled values: where the architect prints no size, measure it with measure_on_drawing "
-            '(two printed dimensions of the same view to calibrate): "about X (±T)", only ever '
-            "status check (Your decision), never different (Wrong)."
-        ),
-    ),
-    (
-        "span",
-        (
-            "Before a height or width is status different (Wrong): what does the architect's dimension "
-            "span? measure_on_drawing with `dimension` (its extension-line ends) and from/to on "
-            "the unit's own outline. If it spans more than the unit (a box, soffit, blocking or "
-            "wall beyond it): status check (Your decision), check_reason different_extent. Otherwise two printed "
-            "values that differ for the same span are different (Wrong), not check (Your "
-            "decision)."
-        ),
-    ),
-    (
-        "decision",
-        (
-            "Every Your-decision item (status check) carries decision_help, in short plain words: "
-            "what it measures (where its extension lines end), your best estimate with its method "
-            "(a string added up, an overall less its fillers, measure_on_drawing) or null, likely "
-            "(probably fine / probably wrong / can't tell), what to confirm. A brand prototype "
-            "sheet that sums exactly to the vendor's value goes in the method."
-        ),
-    ),
-    (
-        "rounds",
-        (
-            "A round-2 page: each item compared with the architect again and with round 1 (Fixed, "
-            "Still wrong, or changed)."
-        ),
-    ),
+#: What to compare (#1515, #1543, #1569), as one principle (prompts design 2026-10-18, W2). It
+#: replaced a 13-item checklist that grew one incident at a time; the usual misses and how to spot
+#: each now live in the knowledge pack (`knowledge/vendor-mistakes.md`), which each helper kind
+#: carries in its own system prompt (`full_check_specialists`).
+PRINCIPLE: Final = (
+    "Treat every thing the architect shows for your area as its own comparison: each dimension "
+    "(each segment of a chain on its own), each note and tag, each drawn piece. A dimension that "
+    "locates a thing (an outlet, a sink centre line) is that thing's position: if the vendor leaves "
+    "the thing out, that is its own item, with the architect's values. A recorded GV result never "
+    "closes its area: still compare everything around it. A round-2 page is compared with the "
+    "architect again and with round 1 (Fixed, or Still wrong). Your instructions list the usual "
+    "misses and how to spot each."
 )
 
-_BY_NAME: Final = dict(PAGE_CHECKLIST)
-
-#: The numbers lens (#1569): sizes and strings only; the drawn things are the other helper's.
-NUMBERS_CHECKLIST: Final[tuple[tuple[str, str], ...]] = tuple(
-    (name, _BY_NAME[name])
-    for name in ("architect", "strings", "scaled", "span", "decision", "rounds")
-)
-
-#: The drawn-things lens (#1569): what is drawn and written, never a dimension or a string.
-DRAWN_CHECKLIST: Final[tuple[tuple[str, str], ...]] = (
-    ("notes", _BY_NAME["notes"]),
-    (
-        "counts",
-        (
-            "Doors, drawers, bins, shelves (fixed or pull-out), fronts, uppers, splashes and "
-            "sections: how many and how they are arranged on each side (left to right, top to "
-            'bottom). A note that asks for one thing while the drawing shows another ("pull-out '
-            'drawers" with doors drawn) is a difference, even when the count matches.'
-        ),
+#: What each lens covers, in one line (#1569): `both` is the single helper of a page group.
+LENS_SCOPE: Final[dict[str, str]] = {
+    "both": (
+        "Yours: every size and dimension string, every note and tag, and what is drawn (fronts, "
+        "shelves, hardware, position, extent, the ID set against the brand prototype)."
     ),
-    ("hardware", _BY_NAME["hardware"]),
-    ("construction", _BY_NAME["construction"]),
-    ("position", _BY_NAME["position"]),
-    ("extent", _BY_NAME["extent"]),
-    ("brand", _BY_NAME["brand"]),
-    (
-        "finishes",
-        (
-            "Material and finish tags (laminate, solid surface, veneer, edge band, PL-1, WD-2, "
-            "SS-1, metal): the vendor's tag or callout against the architect's tag, finish "
-            "schedule or brand sheet. A missing or different tag is a difference."
-        ),
+    "numbers": (
+        "Yours: every size and dimension string, scaled sizes (only ever Not compared), and what "
+        "each dimension spans."
     ),
-    ("decision", _BY_NAME["decision"]),
-    (
-        "rounds",
-        (
-            "A round-2 page: each drawn thing compared with the architect again and with round 1 "
-            "(fixed, still different, or changed)."
-        ),
+    "drawn": (
+        "Yours: notes, callouts and tags, doors, drawers, bins and shelves and how they are "
+        "arranged, hardware, construction notes, position, extent, the ID set against the brand "
+        "prototype, finish tags. Never a size."
     ),
-)
+}
 
 #: The lenses a helper can have: `both` is the single helper of a page group.
 LENSES: Final = ("both", "numbers", "drawn")
@@ -253,68 +128,66 @@ LENS_FIELDS: Final[dict[str, tuple[str, ...]]] = {
 #: The counted fields of the single helper's report line.
 CHECKLIST_FIELDS: Final = LENS_FIELDS["both"]
 
-_CHECKLISTS: Final[dict[str, tuple[tuple[str, str], ...]]] = {
-    "both": PAGE_CHECKLIST,
-    "numbers": NUMBERS_CHECKLIST,
-    "drawn": DRAWN_CHECKLIST,
-}
-
 HELPER_BRIEF: Final = """OBJECTIVE: a full GV review of the vendor's drawings on pages {pages} of {file}, against the architect's drawing of the same area. Your pages:
 {page_lines}
-Read /mnt/skills/gv-review/SKILL.md sections 4, 5, 7, 9 and 10, products/<id>.md for each product in focus, and the settings table of rules.md before you judge a number (a setting nobody entered is missing: say so, never assume one).
+{scope}
+Your instructions hold the trade knowledge for this job. products/<id>.md for each product in focus and the settings table of rules.md are in /mnt/skills/gv-review: read them before you judge a value against a GV rule (a setting nobody entered is missing: say so, never assume one).
 
-HOW: zoom the architect's and the vendor's drawing of each page (the app picks the sharpest dpi that fits; up to 8 crops per call). Numbers drawn as pen strokes are read from the picture; `pdftotext -f N -l N -bbox` of the drawings-only copy gives the boxes of text numbers. Anything coloured is GV's markup, never a value; a vendor number under it is still to be found (read_under_markup on that spot, 300 dpi, its mm against its inches) before you call it unreadable.
+HOW: view your pages, then zoom with marks: true on what you compare, the architect's and the vendor's side by side (the app picks the sharpest dpi that fits; up to 8 crops per call). Numbers drawn as pen strokes have no label: read them from the picture and give their box. A vendor number under GV's markup is still to be found (read_under_markup on that spot, its mm against its inches) before you call it unreadable.
 
-ALREADY RECORDED by GV Review on your pages (the lead checks these: do not report them again, but still compare everything around them, the strings that build them too; a recorded item never closes its area):
+ALREADY RECORDED by GV Review on your pages (they are checked separately: do not report them again, but still compare everything around them, the strings that build them too; a recorded item never closes its area):
 {recorded}
 
 LEADS from GV's own page review on your pages (it could not settle them, or saw the item on one side only): settle each on the drawing, with a finding or a reading.
 {leads}
 
-CHECKLIST, for every page:
-{checklist}
+WHAT TO COMPARE: {principle}
 
 {product_checklist}
 
 DIMENSION LABELS: code numbered every printed dimension it found on your pages (zoom with marks: true shows the ids; set pack dims.json lists them):
 {labels}
-Every VENDOR label on your pages must be handled: matched in a finding (report_finding vendor_dim, with architect_dim for the architect's), part of a string you recorded (record_string), or named on a line LABELS p<N> not on architect: D3, D9. Code counts the vendor labels left over.
+Every vendor label on your pages must be handled: matched in a finding (vendor_dim, with architect_dim for the architect's), part of a string (record_string part_dims and total_dim), or named on a line LABELS p<N> not on architect: D3, D9. Code counts the vendor labels left over.
 
-OUTPUT: report_finding for every item you compare, the Right ones too (status different = Wrong, check = Your decision with decision_help, same = Right), with vendor_box and arch_box (each with its page), values as printed in inches, round on vendor findings, vs_page when the architect is on another page. Name each item starting with its area from the list above ("<area>: counter height"), the same way on every page, view and round. record_string for every dimension string and record_reading for every value you read, both sides; never add up yourself. set_coverage for each page. verified: false (the lead verifies).
+OUTPUT: code, not you, decides what is wrong, and only a value code can find on the drawing can become a red cloud, so give code the spot, not your reading. For every item you compare, the Right ones too, call report_finding with the labels: vendor_dim and architect_dim (p28.D5 for another page). Type a value with its box only when no label covers it; code will try to read it there. For every dimension string, record_string with part_dims and total_dim; code adds them. Before you pair two heights or widths, say in why where each end lands (the spans words of what-dimensions-measure). When the ends differ, or you are not sure two labels measure the same thing, still report it: status check (Not compared) with decision_help and one line why. A miss is never found again; a doubtful item is only listed. Status different = Wrong, check = Not compared, same = Right. Name each item starting with its area from the list above ("<area>: counter height"), the same way on every page, view and round; round on vendor findings; vs_page when the architect is on another page. record_reading for a value you read without a label. set_coverage for each page. verified: false (a separate check verifies).
 
-REPORT BACK (short): per page the differences (item, vendor vs architect, finding ids), anything unreadable and where, then one line per page exactly like
+Record each item as soon as you have read it (report_finding, record_string), page by page: a reading only in your report is lost, because your report records nothing.
+
+REPORT BACK (short): per page the differences (item, vendor vs architect, finding ids), anything unreadable and where; for a difference you read but could not record, one line exactly like
+UNRECORDED p<N> | <area: item> | architect <value> | vendor <value> | different or check | <where each end lands, or why>
+then one line per page exactly like
 CHECKLIST p<N>: architect a/b; notes a/b; strings a/b; not compared: <what and why, or none>
 (a/b = items done of items on the page).
 
-BOUNDARIES: only your pages; never guess a number; GV's markup is never a value; no pass/fail words (GV's code records results, a reviewer decides)."""
+BOUNDARIES: only your pages; never guess a number; GV's markup is never a value; no pass/fail words (code records results, and a reviewer signs off)."""
 
 #: What the numbers lens adds to `HELPER_BRIEF` (#1569).
 NUMBERS_NOTE: Final = (
-    """LENS: NUMBERS. Another helper has the same pages for what is DRAWN and WRITTEN (notes, doors and drawers, hardware, extent, the brand prototype, finish tags): leave those to it, unless a number depends on them."""
+    """LENS: numbers. Another helper has the same pages for what is drawn and written (notes, doors and drawers, hardware, extent, the brand prototype, finish tags): leave those to it, unless a number depends on them."""
 )
 
 #: The drawn-things lens's brief (#1569): what is drawn and written, not sizes.
-DRAWN_BRIEF: Final = """OBJECTIVE: the DRAWN THINGS on pages {pages} of {file}: what the vendor drew and wrote, against the architect's drawing of the same area (a brand prototype is its own group). Another helper compares every number on these pages; you compare what is drawn and written, never a size. Your pages:
+DRAWN_BRIEF: Final = """OBJECTIVE: the drawn things on pages {pages} of {file}: what the vendor drew and wrote, against the architect's drawing of the same area (a brand prototype is its own group). Another helper compares every number on these pages; you compare what is drawn and written, never a size. Your pages:
 {page_lines}
-Read /mnt/skills/gv-review/SKILL.md sections 4, 5 and 7 first.
+{scope}
+Your instructions hold the trade knowledge for this job; products/<id>.md for each product in focus is in /mnt/skills/gv-review.
 
 HOW: view your pages' overview pictures, then zoom (up to 8 crops per call) on each unit's notes, tags, fronts and hardware, the architect's and the vendor's side by side. Anything coloured is GV's markup, never the vendor's drawing.
 
-ALREADY RECORDED by GV Review on your pages (the lead checks these: do not report them again):
+ALREADY RECORDED by GV Review on your pages (they are checked separately: do not report them again):
 {recorded}
 
-CHECKLIST, for every page:
-{checklist}
+WHAT TO COMPARE: {principle} A note the vendor does not follow is a difference, even when the count of fronts matches.
 
 {product_checklist}
 
-OUTPUT: report_finding for EVERY drawn thing you compare, the same ones too (status different, check or same; every check with decision_help), with vendor_box and arch_box. `architect` and `vendor` say in a few words what each side shows ("pull-out drawers (note)", "2 doors drawn", "no grommet"); vs_page when the architect is on another page. Name each item starting with its area from the list above ("<area>: bin drawer fronts"), the same way on every page, view and round. Never report a dimension or a dimension string, and do not call set_coverage: the numbers helper records both. verified: false (the lead verifies).
+OUTPUT: report_finding for every drawn thing you compare, the same ones too (status different, check or same; every check with decision_help), with vendor_box and arch_box. `architect` and `vendor` say in a few words what each side shows ("pull-out drawers (note)", "2 doors drawn", "no grommet"); vs_page when the architect is on another page. When you are not sure the two sides show the same thing, still report it, as check with one line why: a miss is never found again. Name each item starting with its area from the list above ("<area>: bin drawer fronts"), the same way on every page, view and round. Never report a dimension or a dimension string, and do not call set_coverage: the numbers helper records both. verified: false (a separate check verifies).
 
 REPORT BACK (short): per page the differences (item, vendor vs architect, finding ids), then one line per page exactly like
 CHECKLIST p<N>: notes a/b; counts a/b; hardware a/b; not compared: <what and why, or none>
 (a/b = items done of items on the page; notes = the architect's notes, callouts and tags; counts = doors, drawers, bins, shelves and sections; hardware = pulls, locks, legs, grommets, power units).
 
-BOUNDARIES: only your pages; never guess; GV's markup is never the vendor's drawing; no pass/fail words."""
+BOUNDARIES: only your pages; never guess; GV's markup is never the vendor's drawing; no pass/fail words (code records results, and a reviewer signs off)."""
 
 _NONE: Final = "- none"
 _MAX_ROW: Final = 160
@@ -336,26 +209,102 @@ def _pages_of(page_map: Mapping[str, Any] | Sequence[Any] | None) -> dict[int, M
     return out
 
 
+def _role_word(half: Mapping[str, Any]) -> str:
+    role = str(half.get("role") or "unlabelled").replace("_", " ")
+    if role == "vendor" and isinstance(half.get("round"), int):
+        role = f"vendor round {half['round']}"
+    return role
+
+
+def _centre(box: object) -> tuple[float, float] | None:
+    if not isinstance(box, Sequence) or isinstance(box, str) or len(box) != 4:
+        return None
+    try:
+        x0, y0, x1, y1 = (float(v) for v in box)
+    except (TypeError, ValueError):
+        return None
+    return (x0 + x1) / 2, (y0 + y1) / 2
+
+
+def _places(entry: Mapping[str, Any]) -> dict[str, str]:
+    """Where each of a page's two kinds of drawing is ("top" / "bottom", "left" / "right"), so a
+    helper never takes one for the other (#1644: a page holding the architect's drawing over a
+    brand prototype was read as the prototype alone). Empty unless the page holds exactly two
+    kinds of drawing, each with its box."""
+    centres: dict[str, list[tuple[float, float]]] = {}
+    for half in entry.get("halves") or []:
+        if not isinstance(half, Mapping):
+            continue
+        centre = _centre(half.get("box"))
+        if centre is None:
+            return {}
+        centres.setdefault(_role_word(half), []).append(centre)
+    if len(centres) != 2:
+        return {}
+    (first, a), (second, b) = (
+        (role, (sum(x for x, _ in c) / len(c), sum(y for _, y in c) / len(c)))
+        for role, c in centres.items()
+    )
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    if abs(dy) >= abs(dx):
+        return {first: "top", second: "bottom"} if dy > 0 else {first: "bottom", second: "top"}
+    return {first: "left", second: "right"} if dx > 0 else {first: "right", second: "left"}
+
+
 def _drawings(entry: Mapping[str, Any]) -> str:
-    """`architect + vendor round 1 + brand prototype`, from the page's labelled drawings."""
+    """`architect (top) + brand prototype (bottom)`, from the page's labelled drawings."""
     words: list[str] = []
     for half in entry.get("halves") or []:
         if not isinstance(half, Mapping):
             continue
-        role = str(half.get("role") or "unlabelled").replace("_", " ")
-        if role == "vendor" and isinstance(half.get("round"), int):
-            role = f"vendor round {half['round']}"
+        role = _role_word(half)
         if role not in words:
             words.append(role)
-    return " + ".join(words) if words else str(entry.get("role") or "no labelled drawing")
+    if not words:
+        return str(entry.get("role") or "no labelled drawing")
+    places = _places(entry)
+    return " + ".join(f"{w} ({places[w]})" if w in places else w for w in words)
+
+
+def _has_architect(entry: Mapping[str, Any] | None) -> bool:
+    return any(
+        isinstance(h, Mapping) and h.get("role") == "architect"
+        for h in (entry or {}).get("halves") or []
+    )
+
+
+def _area_of(entry: Mapping[str, Any], known: Mapping[int, Mapping[str, Any]]) -> str | None:
+    """The page's area within its section: its own title, else the title of the page it takes its
+    area from (two sections may reuse an area's title)."""
+    owner: Mapping[str, Any] = entry
+    if not entry.get("area") and isinstance(entry.get("area_from_page"), int):
+        owner = known.get(entry["area_from_page"]) or {}
+    area = owner.get("area")
+    if not area:
+        return None
+    return " ".join(f"{owner.get('section') or ''} / {area}".split()).lower()
+
+
+def _pages_words(pages: Sequence[int]) -> str:
+    named = [f"p{p}" for p in pages]
+    return named[0] if len(named) == 1 else ", ".join(named[:-1]) + f" and {named[-1]}"
 
 
 def page_lines(
     pages: Iterable[int], page_map: Mapping[str, Any] | Sequence[Any] | None = None
 ) -> list[str]:
-    """One line per page: its area, whose drawings it holds, and where its architect drawing is
-    when it is on another page (`area_from_page`). A page the map does not know is still listed."""
+    """One line per page: its area, whose drawings it holds (and where each is, when two kinds
+    share the page), and where the area's architect drawings are. A page with no architect drawing
+    is pointed to the area's pages that have one (never just to the page its area title came from:
+    that page may hold only the vendor's drawing); a page with one is told of the area's other
+    architect drawings, since the larger scale or detail governs (R5). A page the map does not know
+    is still listed."""
     known = _pages_of(page_map)
+    architect_pages: dict[str, list[int]] = {}
+    for number, listed in sorted(known.items()):
+        key = _area_of(listed, known)
+        if key and _has_architect(listed):
+            architect_pages.setdefault(key, []).append(number)
     lines: list[str] = []
     for page in sorted(set(pages)):
         entry = known.get(page)
@@ -364,9 +313,19 @@ def page_lines(
             continue
         area = entry.get("area") or entry.get("section") or "area not named"
         line = f"- p{page}: {_short(area)}; {_drawings(entry)}"
-        pair = entry.get("pair_page") or entry.get("area_from_page")
+        key = _area_of(entry, known)
+        others = [p for p in architect_pages.get(key or "", []) if p != page]
+        pair = entry.get("pair_page")
         if isinstance(pair, int) and pair != page:
             line += f"; the architect's drawing is on p{pair}"
+        elif _has_architect(entry):
+            if others:
+                line += (
+                    f"; the area's other architect drawing is on {_pages_words(others)} (the "
+                    "larger scale or the detail governs)"
+                )
+        elif others:
+            line += f"; the architect's drawing is on {_pages_words(others)}"
         if entry.get("pair_page") or any(
             isinstance(h, Mapping) and h.get("heading_by") == "reviewer"
             for h in entry.get("halves") or []
@@ -451,10 +410,17 @@ def product_checklist(products: Sequence[str] | None = None) -> str:
         if "global_rules" in product.check_kinds and product.global_rule_hints:
             hints = "; ".join(hint.rstrip(".") for hint in product.global_rule_hints)
             lines.append(f"- GV standards not on the drawing (values in rules.md): {hints}.")
-    lines.append(
-        "An item of no product in focus is category other. report_finding's category is the "
-        "product id."
-    )
+    if {p.id for p in focus} >= set(registry().active_ids()):
+        lines.append(
+            "An item of no product in focus is category other. report_finding's category is the "
+            "product id."
+        )
+    else:
+        # A strict scope (Anant, 2026-10-18): only the picked products are checked.
+        lines.append(
+            f"ONLY {words} are checked: leave out every item of another product or of no product "
+            "(code does not record it). report_finding's category is the product id."
+        )
     return "\n".join(lines)
 
 
@@ -487,10 +453,11 @@ def helper_brief(
         "file": file_name,
         "page_lines": "\n".join(page_lines(pages, page_map)),
         "recorded": "\n".join(recorded) or (unread if review_document is None else _NONE),
-        "checklist": "\n".join(f"- {name}: {text}" for name, text in _CHECKLISTS[lens]),
+        "scope": LENS_SCOPE[lens],
+        "principle": PRINCIPLE,
         "product_checklist": product_checklist(products),
         "labels": (
-            "\n".join(label_summary(pages, labels))
+            "\n".join(label_summary(pages, labels, page_map))
             if labels is not None
             else "- not listed yet: zoom with marks: true to see them"
         ),
@@ -509,9 +476,16 @@ def helper_brief(
 
 
 def label_summary(
-    pages: Iterable[int], labels: Mapping[int, Sequence[Mapping[str, Any]] | None]
+    pages: Iterable[int],
+    labels: Mapping[int, Sequence[Mapping[str, Any]] | None],
+    page_map: Mapping[str, Any] | Sequence[Any] | None = None,
 ) -> list[str]:
-    """One line per page: how many dimension labels code found on each drawing (#1558)."""
+    """One line per page: how many dimension labels code found on each drawing (#1558), and
+    (#1641) each architect or vendor drawing of the page where code found none: its numbers are
+    pen strokes or a picture, to read from the picture and give with their box. The paid run of
+    2026-10-19 left such pages alone ("the vendor's values are unlabelled, I did not compare
+    them"; a page whose architect half had no labels was taken for a brand prototype)."""
+    entries = _pages_of(page_map)
     lines: list[str] = []
     for page in sorted(set(pages)):
         found = labels.get(page)
@@ -523,8 +497,44 @@ def label_summary(
             side = str(label.get("side") or "unknown")
             counts[side] = counts.get(side, 0) + 1
         words = ", ".join(f"{side} {count}" for side, count in sorted(counts.items()))
-        lines.append(f"- p{page}: {len(found)} labels ({words or 'none'})")
+        line = f"- p{page}: {len(found)} labels ({words or 'none'})"
+        bare = _unlabelled_halves(entries.get(page), found)
+        if bare:
+            line += (
+                f"; NO labels on the {' and the '.join(bare)}: pen strokes or a picture, still "
+                "to compare (read each number from the zoom, report it with its tight box)"
+            )
+        lines.append(line)
     return lines
+
+
+def _unlabelled_halves(
+    entry: Mapping[str, Any] | None, labels: Sequence[Mapping[str, Any]]
+) -> list[str]:
+    """The page's architect and vendor drawings (from the page map) with no label inside."""
+    out: list[str] = []
+    for half in (entry or {}).get("halves") or []:
+        if not isinstance(half, Mapping) or half.get("role") not in ("architect", "vendor"):
+            continue
+        box = half.get("box")
+        if not isinstance(box, Sequence) or len(box) != 4:
+            continue
+        x0, y0, x1, y1 = (float(v) for v in box)
+        inside = False
+        for label in labels:
+            lx0, ly0, lx1, ly1 = (float(v) for v in label.get("box") or (0, 0, 0, 0))
+            cx, cy = (lx0 + lx1) / 2, (ly0 + ly1) / 2
+            if x0 <= cx <= x1 and y0 <= cy <= y1:
+                inside = True
+                break
+        if inside:
+            continue
+        heading = str(half.get("heading") or "").strip()
+        name = "architect's drawing" if half["role"] == "architect" else "vendor's drawing"
+        if half.get("round"):
+            name += f" (round {half['round']})"
+        out.append(f"{name}{f' {heading!r}' if heading else ''}")
+    return out
 
 
 def with_label_gaps(
@@ -596,6 +606,41 @@ _LEFT: Final = {
     "numbers": "each architect dimension segment by segment, each vendor string",
     "drawn": "each architect note and tag, each door, drawer, bin and shelf, each piece of hardware",
 }
+
+
+#: A checklist's "not compared" reason that says the page was never compared (not a reason the
+#: drawing gives: a prototype, nothing on the architect's side).
+_UNREACHED: Final = re.compile(
+    r"not reached|not opened|budget|ran out|out of (?:money|time)|did not (?:get|reach|open|zoom)",
+    re.IGNORECASE,
+)
+
+
+def unreached_pages(report: str, pages: Iterable[int]) -> list[int]:
+    """The pages whose CHECKLIST line (or none at all) says the helper never got to them."""
+    found: dict[int, str] = {}
+    for match in _LINE.finditer(report or ""):
+        found[int(match.group(1))] = match.group(2)
+    out = []
+    for page in sorted(set(pages)):
+        body = found.get(page)
+        said = _NOT_COMPARED.search(body) if body is not None else None
+        if body is None or (said is not None and _UNREACHED.search(said.group(1))):
+            out.append(page)
+    return out
+
+
+def unreached_send_back(pages: Sequence[int]) -> str | None:
+    """The message that sends a roster helper back to pages it stopped short of while its money
+    and tool calls were not used up (#1634: helpers stopped at a fifth of their money)."""
+    if not pages:
+        return None
+    listed = ", ".join(f"p{page}" for page in pages)
+    return (
+        f"You still have money and tool calls left for your pages: {listed} are not compared yet. "
+        "Compare them now, one page at a time (zoom the labels, record the findings and strings), "
+        "set_coverage for them, then report with an updated CHECKLIST line for every page."
+    )
 
 
 def checklist_send_back(gaps: Mapping[int, str], lens: str = "both") -> str | None:

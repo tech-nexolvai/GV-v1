@@ -82,9 +82,9 @@ describe('grouping, filtering and counts', () => {
   it('counts in plain words', () => {
     const counts = findingCounts(SET);
     expect(counts).toEqual({ different: 2, check: 1, same: 2, not_compared: 0, total: 5 });
-    expect(countWords(counts)).toBe('2 wrong · 1 needs your decision');
+    expect(countWords(counts)).toBe('2 wrong · 1 not compared');
     expect(countWords({ different: 1, check: 0 })).toBe('1 wrong');
-    expect(countWords({ different: 0, check: 3 })).toBe('Nothing wrong · 3 need your decision');
+    expect(countWords({ different: 0, check: 3 })).toBe('Nothing wrong · 3 not compared');
   });
 
   it('shows values verbatim, a dash for a blank, and the page pair', () => {
@@ -301,11 +301,11 @@ describe('areas and one-line rows (#1508)', () => {
     const groups = groupByArea(items, { status: 'all', category: null, page: null });
     expect(groups.map((group) => `${group.name}|${pagesWords(group.pages)}|${groupCountWords(group.counts)}|${group.findings.map((each) => each.id).join(',')}`)).toEqual([
       'Nurse station|p8–9|2 wrong|b1,b2',
-      'Coffee bar|p3|1 wrong · 1 your decision|a2,a1',
-      'Coffee point|p12–13|2 your decision|h1,h2',
-      'Page 15|p15|1 your decision|p1',
-      'Storage|p39|1 your decision|m1',
-      'Storage Area-1|p40|1 your decision|m2',
+      'Coffee bar|p3|1 wrong · 1 not compared|a2,a1',
+      'Coffee point|p12–13|2 not compared|h1,h2',
+      'Page 15|p15|1 not compared|p1',
+      'Storage|p39|1 not compared|m1',
+      'Storage Area-1|p40|1 not compared|m2',
     ]);
     expect(groups.find((group) => group.name === 'Page 15')?.byPage).toBe(true);
     // A filter never renames a group: the right item still joins its area.
@@ -329,7 +329,7 @@ describe('areas and one-line rows (#1508)', () => {
     expect(words).toMatchObject({ referenceLabel: 'Architect shows', reference: '37 in (printed 3\' - 1")', vendor: '46 in (printed 46")', whyLabel: 'Why it’s wrong' });
     expect(words.why).toBe('The vendor’s 46 in is 9 in more than the architect’s 37 in.');
     expect(words.tell).toBe('Change it to 37 in to match the architect (now 46 in).');
-    expect(reviewerWords(decide).whyLabel).toBe('What you need to decide');
+    expect(reviewerWords(decide).whyLabel).toBe('Why it could not be compared');
     expect(reviewerWords(decide).tell).toBeNull();
     // Never internal names or "not a number", in any of the words.
     const all = JSON.stringify([words, reviewerWords(decide), reviewerWords({ ...decide, checks: { printed_architect: 'not_a_number', printed_vendor: 'no_text' } as ChatFinding['checks'] })]);
@@ -337,10 +337,18 @@ describe('areas and one-line rows (#1508)', () => {
     expect(sureWords({ trust_level: 'to_check', checks: { printed_vendor: 'no_text' } as ChatFinding['checks'] })).toContain('pen strokes');
     // Pen strokes only when a check said so; sentences start with a capital.
     expect(sureWords({ trust_level: 'to_check', checks: { printed_vendor: 'not_a_number' } as ChatFinding['checks'] })).toBe('One AI reading backs this; nothing independent confirmed it yet.');
-    // The brand prototype is not the design: no "needs", and the vendor is asked which governs.
+    // The brand prototype is not the design: no "needs", and the architect governs (#1619, R1).
     const proto = finding('p', { source: 'brand_prototype', architect: "5'-6\"", vendor: '94"', inches: { architect: null, vendor: '94', difference: null } });
     expect(findingLine(proto)).toMatchObject({ verb: 'brand prototype shows', reference: { text: "5'-6\"" }, printed: null });
-    expect(reviewerWords(proto)).toMatchObject({ referenceLabel: 'Brand prototype shows', tell: "Confirm which governs: the brand prototype shows 5'-6\", the vendor drew 94 in." });
+    expect(reviewerWords(proto)).toMatchObject({ referenceLabel: 'Brand prototype shows', tell: "The architect’s drawings govern: the brand prototype (reference only) shows 5'-6\", the vendor drew 94 in." });
+    // #1584: the vendor's own numbers name no architect, and code's sum is not "printed".
+    const sum = finding('s', { source: 'vendor_arithmetic', architect: '90 1/2"', vendor: '88 1/2"', inches: { architect: '90.5', vendor: '88.5', difference: '-2' } });
+    expect(reviewerWords(sum)).toMatchObject({ reference: '90 1/2 in', tell: 'Correct the string: its parts add up to 90 1/2 in, but its overall prints 88 1/2 in.' });
+    const twice = finding('t', { source: 'cross_view', architect: '36"', vendor: '36 1/2"', inches: { architect: '36', vendor: '36.5', difference: '0.5' } });
+    expect(reviewerWords(twice).tell).toBe('Print one value for this span: the drawing measures 36 in, this view prints 36 1/2 in.');
+    // Likely from code alone is said as code's proof, not as two AI readings.
+    expect(sureWords({ trust_level: 'likely', witnesses: ['arithmetic'] })).toBe('Code proved it from the drawing; no AI reading has checked it yet.');
+    expect(sureWords({ trust_level: 'likely', witnesses: [] })).toBe('Two separate AI readings agree; no code check could read it.');
     // The value's own "prototype" lead-in is not said twice.
     const said = finding('q', { source: 'brand_prototype', status: 'check', architect: "prototype 3'-2\" (38\")", vendor: '42"', inches: null });
     expect(findingLine(said)).toMatchObject({ verb: 'brand prototype shows', reference: { text: "3'-2\"" } });

@@ -21,9 +21,10 @@ anything else is a 404 that says nothing. The routes, under `/api/v1`:
 - `POST /chats/{chat_id}/messages/{message_id}/findings/{finding_id}/decision` (#1521): the
   reviewer's ✓ Agree / ✗ Not a problem, kept append-only; the latest per finding counts and comes
   back on the finding (`decision`) in `GET /chats/{chat_id}` and the follow feed.
-- `POST /chats/{chat_id}/messages/{message_id}/cloud-drawing` (#1521): the cloud drawing and the
-  check report made again by code from the current decisions (only agreed items clouded); a new
-  pair of files each time, the older ones kept.
+- `POST /chats/{chat_id}/messages/{message_id}/cloud-drawing` (#1521, #1581): the cloud drawing
+  and the check report made again by code with the current decisions as overrides (an agreed item
+  is clouded, one marked not a problem is not; nobody has to decide); a new pair of files each
+  time, the older ones kept.
 - `GET  /packages/{package_id}/full-check-plan` (#1569): before a paid full check, code's plan in
   one line and 0-3 questions where it is unsure of the page map (whose drawing, which round, which
   architect page); the answers go with the full check (`plan_answers`). `$0`: no AI call. `GET
@@ -67,6 +68,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.api.dependencies import ARTIFACT_STORE_STATE, get_session
+from app.api.packages import published_products
 from app.auth import Principal
 from app.auth.dependencies import Authenticated
 from app.config import Settings
@@ -79,7 +81,6 @@ from app.models import (
     PackageRevision,
 )
 from app.models.document import Document, DocumentVersion, PackageRevisionDocument
-from app.models.package import package_product
 from app.review.assistant.chat_contract import (
     AssistantModelOut,
     AssistantModelsOut,
@@ -91,6 +92,7 @@ from app.review.assistant.chat_contract import (
     ChatFullCheckPlanOut,
     ChatListOut,
     ChatMessageIn,
+    ChatMessageOut,
     ChatOut,
 )
 from app.review.assistant.chat_corrections import corrections_by_answer, with_corrections
@@ -100,7 +102,9 @@ from app.review.assistant.chat_decisions import (
     decision_out,
     latest_decisions,
     make_decided_files,
+    package_block,
     record_decision,
+    resolver_settled,
 )
 from app.review.assistant.chat_engine import cost_text
 from app.review.assistant.chat_feed import MessageFeed
@@ -132,9 +136,13 @@ from app.review.assistant.chat_service import (
     recover_interrupted,
     run_message,
     shutdown_chats,
+    start_set_pack,
+    sync_uploads,
 )
 from app.review.assistant.chat_store import (
+    add_assistant_message,
     add_file,
+    add_user_message,
     chat_summaries,
     chat_title,
     create_chat,
@@ -147,8 +155,21 @@ from app.review.assistant.chat_store import (
 )
 from app.review.assistant.chat_tools import ResultsLoader
 from app.review.assistant.chat_trust import findings_csv
+from app.review.assistant.consistency_answer import (
+    CHECK_MODEL,
+    NO_MODEL_CALL_MICROS,
+    QUESTION,
+    PackNotReady,
+    run_check,
+)
+from app.review.assistant.package_store import identity as package_identity
+from app.review.assistant.package_store import stored_numbers
+from app.review.assistant.product_scope import ProductScope
+from app.review.assistant.review_action import CheckState
 from app.review.assistant.sandbox import ChatWorkspace, Sandbox, open_sandbox
+from app.review.assistant.send_package import ZIP_MIME
 from app.runs.rates import ModelRates, rates_from_environment
+from vocabulary.semantic_types import ProductType
 
 _log = logging.getLogger(__name__)
 
@@ -406,6 +427,8 @@ def assistant_models(
                 thinking_off_max_effort=model.thinking_off_max_effort,
             )
             for model in MODELS.values()
+            # Fable 5.1 only where the route offers it (#1577: Anthropic's own API).
+            if runtime.choice.name in model.providers
         ],
         message_cap_usd=cost_text(int(settings.assistant_message_cap_usd * _MICROS)),
         package_cap_usd=cost_text(int(settings.assistant_package_cap_usd * _MICROS)),
@@ -728,6 +751,90 @@ def findings_spreadsheet(
 # ---- the reviewer's decisions (#1521) -------------------------------------------------------------
 
 
+@router.post(
+    "/chats/{chat_id}/consistency",
+    response_model=ChatMessageOut,
+    summary="The vendor consistency check: the vendor's drawings against themselves (code, $0)",
+    responses={
+        404: {"description": "No such chat (or no access)."},
+        409: {
+            "description": "`message_running`: a message is being answered in this chat; "
+            "`uploads_missing`: the drawing set has no PDFs; `pack_building`: the set is still "
+            "being read (ask again in a minute)."
+        },
+    },
+)
+def consistency_check(
+    request: Request,
+    chat_id: UUID,
+    principal: Authenticated,
+    session: Annotated[Session, Depends(get_session)],
+    registry: Annotated[ChatRegistry, Depends(chat_registry)],
+) -> ChatMessageOut:
+    """The "+" menu's Vendor consistency check (#1584), by code only (no AI call, $0): every
+    dimension string the drawing proves is one string added up, two values printed for one span
+    compared, and the areas, rounds and indexed sheets the set lacks listed. Stored in the chat as
+    a question and its answer (findings with code's proof, the "not checked" list), so the cloud
+    drawing and the CSV work on it as on any answer. Returns the stored answer."""
+    chat, package = _chat(session, chat_id, principal)
+    message_id = uuid4()
+    run = registry.claim(chat.id, package.id, message_id)
+    if run is None:
+        raise CodedHTTPException(
+            status.HTTP_409_CONFLICT,
+            "message_running",
+            "A message is being answered in this chat. Wait for it, or stop it.",
+        )
+    try:
+        uploads = _upload_sources(
+            _factory(session),
+            getattr(request.app.state, ARTIFACT_STORE_STATE, None),
+            package.id,
+            _latest_revision_id(session, package.id),
+        )
+        workspace = ChatWorkspace.open(_chat_folder(request, chat_id))
+        listing, _changed = sync_uploads(workspace, uploads())
+        if not listing:
+            raise CodedHTTPException(
+                status.HTTP_409_CONFLICT,
+                "uploads_missing",
+                "This drawing set has no PDFs to check.",
+            )
+        workspace = start_set_pack(workspace, _chat_root(request.app), listing)
+        try:
+            made = run_check(workspace, listing)
+        except PackNotReady:
+            raise CodedHTTPException(
+                status.HTTP_409_CONFLICT,
+                "pack_building",
+                "The drawing set is still being read (its numbers are being listed). Try again "
+                "in a minute.",
+            ) from None
+        add_user_message(
+            session, chat_id=chat.id, created_by=principal.id, text=QUESTION, mode="chat"
+        )
+        answer = add_assistant_message(
+            session,
+            message_id=message_id,
+            chat_id=chat.id,
+            created_by=principal.id,
+            model=CHECK_MODEL,
+            effort="",
+            thinking=False,
+            text=made.text,
+            blocks=made.blocks,
+            api_content=made.api_content,
+            cost_micros=NO_MODEL_CALL_MICROS,
+            stopped=None,
+            error=None,
+            mode="chat",
+        )
+        session.commit()
+        return message_out(answer, [])
+    finally:
+        registry.release(run)
+
+
 def _not_running(registry: ChatRegistry, chat_id: UUID, message_id: UUID) -> None:
     run = registry.get(chat_id)
     if run is not None and run.message_id == message_id:
@@ -813,11 +920,11 @@ def cloud_drawing(
     session: Annotated[Session, Depends(get_session)],
     registry: Annotated[ChatRegistry, Depends(chat_registry)],
 ) -> ChatFileOut:
-    """Red clouds only at the findings the reviewer agreed with ("✗ Vendor: X — Needs: Y
-    (architect Z)"); not-yet-decided, not-a-problem and right items listed on the notes page and in
-    the report, never clouded; "Reviewed by <name>" once every item needing a decision was decided,
-    else the draft stamp. A new cloud drawing and check report each time (older files are kept);
-    returns the cloud drawing."""
+    """The zero-click cloud drawing made again with the reviewer's decisions as overrides (#1581):
+    red clouds at the Wrong items code proved and at every agreed item, none at an item marked not
+    a problem; the rest listed in grey; stamped "Checked automatically by GV Review: <date>, and
+    reviewed by <name>". A new cloud drawing and check report each time (older files are kept),
+    and for a full check a new send-ready package (#1622); returns the cloud drawing."""
     chat, package = _chat(session, chat_id, principal)
     _not_running(registry, chat_id, message_id)
     row = _answer(session, chat_id, message_id)
@@ -844,14 +951,30 @@ def cloud_drawing(
     )
     summary, not_checked = decided_summary(row, question, findings, package_name(package))
     workspace = ChatWorkspace(_chat_folder(request, chat.id))
-    drawing_id, report_id = uuid4(), uuid4()
+    drawing_id, report_id, package_id = uuid4(), uuid4(), uuid4()
     scratch = {
         drawing_id: workspace.files / f"{drawing_id}.partial",
         report_id: workspace.files / f"{report_id}.partial",
     }
+    # A full check's send-ready package is made again too (#1622), from the same list.
+    if row.mode == "full_check":
+        scratch[package_id] = workspace.files / f"{package_id}.partial"
     try:
         made = make_decided_files(
-            workspace, findings, summary, not_checked, scratch[drawing_id], scratch[report_id]
+            workspace,
+            findings,
+            summary,
+            not_checked,
+            scratch[drawing_id],
+            scratch[report_id],
+            settled=resolver_settled(row.blocks),
+            package_out=scratch.get(package_id),
+            extra=_not_compared_files(session, workspace, message_id),
+            identity=package_identity(session, package, tuple(row.products or ())),
+            numbers=stored_numbers(session, package.id, message_id),
+            incomplete=CheckState.from_dict(
+                (package_block(row.blocks) or {}).get("state")
+            ).incomplete,
         )
     except LookupError:
         raise CodedHTTPException(
@@ -864,7 +987,13 @@ def cloud_drawing(
             path.unlink(missing_ok=True)
         raise
     rows = []
-    for file_id, file in ((drawing_id, made.drawing), (report_id, made.report)):
+    kept = [
+        (drawing_id, made.drawing, "application/pdf"),
+        (report_id, made.report, "application/pdf"),
+    ]
+    if made.package is not None:
+        kept.append((package_id, made.package, ZIP_MIME))
+    for file_id, file, mime in kept:
         scratch[file_id].replace(workspace.files / str(file_id))
         rows.append(
             add_file(
@@ -874,7 +1003,7 @@ def cloud_drawing(
                 message_id=message_id,
                 name=file.name,
                 size=file.size,
-                mime="application/pdf",
+                mime=mime,
                 sha256=file.sha256,
             )
         )
@@ -883,6 +1012,26 @@ def cloud_drawing(
 
 
 # ---- one message ---------------------------------------------------------------------------------
+
+
+def _not_compared_files(
+    session: Session, workspace: ChatWorkspace, message_id: UUID
+) -> list[tuple[str, Path]]:
+    """The answer's newest Not-compared PDF and workbook (#1619) as the check made them, for the
+    remade send-ready package (#1622): each name and path."""
+    rows = session.scalars(
+        select(AssistantChatFile)
+        .where(AssistantChatFile.message_id == message_id)
+        .order_by(AssistantChatFile.created_at)
+    ).all()
+    newest: dict[str, tuple[str, Path]] = {}
+    for row in rows:
+        if " - Not compared." not in row.name:
+            continue
+        path = workspace.files / str(row.id)
+        if path.is_file():
+            newest["pdf" if row.name.endswith(".pdf") else "sheet"] = (row.name, path)
+    return list(newest.values())
 
 
 def _upload_sources(
@@ -960,9 +1109,33 @@ def _results_loader(
             snapshot = load_snapshot(session, project_id, package_id, revision)
             scoped = snapshot if page is None else _page_snapshot(snapshot, page)
             document["records"] = json.loads(prompt_records(scoped))
+            # Each GV check's product, from its rule in the rulebook: a strict product scope keeps
+            # only the checks of the products picked (`product_scope.scoped_document`).
+            document["record_products"] = _record_products(session, scoped.other_checks)
             return document
 
     return load
+
+
+def _record_products(session: Session, records: Sequence[Any]) -> dict[str, str]:
+    """`{record id ("F3"): product id}` for GV's other checks, by each check's published rule. A
+    rule the rulebook cannot name is left out (its record then belongs to no product)."""
+    from app.verdicts.rulebook import snapshot_store
+
+    try:
+        store = snapshot_store(session)
+    except Exception as failed:  # noqa: BLE001 - the records then belong to no product
+        _log.warning("assistant chat rule products not read: %s", type(failed).__name__)
+        return {}
+    out: dict[str, str] = {}
+    for record in records:
+        try:
+            snapshot = store.latest(str(record.check))
+        except Exception:  # noqa: BLE001 - an unknown rule id is no product
+            snapshot = None
+        if snapshot is not None:
+            out[str(record.id)] = snapshot.rule.product_type.value
+    return out
 
 
 @dataclass(frozen=True, slots=True)
@@ -990,7 +1163,7 @@ def _message(
             detail="The server is restarting. Send your message again in a moment.",
         )
     try:
-        model = check_choice(body.model, body.effort, body.thinking)
+        model = check_choice(body.model, body.effort, body.thinking, runtime.choice.name)
     except ChoiceRefused as refused:
         raise CodedHTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT, "choice_refused", str(refused)
@@ -1002,12 +1175,18 @@ def _message(
         )
     revision_id = _latest_revision_id(session, package.id)
     factory = _factory(session)
-    own = package_product(package)
-    products = (
-        tuple(body.products)
-        if body.products is not None
-        else (None if own is None else (own.value,))
-    )
+    # The products are a strict scope (Anant, 2026-10-18): the pick, else every active product
+    # (All is the default: a set stated "countertop" often holds cabinets too); always named, so
+    # the scope is stored and shown.
+    products = ProductScope.of(body.products).products
+    # A picked product with no published GV rule yet: the answer says so (never silent).
+    try:
+        published = published_products(session)
+        unruled = tuple(p for p in products if not published.get(ProductType(p)))
+    except Exception as failed:  # noqa: BLE001 - the answer then says nothing about rules
+        _log.warning("assistant chat published rules not read: %s", type(failed).__name__)
+        session.rollback()
+        unruled = ()
     mode: str = body.mode
     continue_from = None if body.continue_from is None else UUID(body.continue_from)
     if continue_from is not None:
@@ -1060,6 +1239,9 @@ def _message(
             page_cache_total_mb=settings.assistant_page_cache_total_mb,
             page_cache_workers=settings.assistant_page_cache_workers,
             page_cache_memory_mb=settings.assistant_page_cache_memory_mb,
+            roster=settings.assistant_full_check_roster,
+            full_check_cap_micros=int(settings.assistant_full_check_cap_usd * _MICROS),
+            pairing_proof=settings.assistant_pairing_proof,
             plan_answers=(
                 None
                 if mode != "full_check" or not body.plan_answers
@@ -1068,6 +1250,8 @@ def _message(
             sharpen_model=runtime.sharpen,
             sharpen_deadline_seconds=runtime.sharpen_deadline_seconds,
             task_edit=None if body.task is None else body.task.model_dump(),
+            unruled=unruled,
+            identity=package_identity(session, package, products or ()),
         )
     except BaseException:
         registry.release(run)

@@ -39,8 +39,8 @@ import { PlusMenu } from '@/components/chat/chat-plus-menu';
 import { AssistantMessage, UserMessage } from '@/components/chat/chat-message';
 import { UnderstoodLine } from '@/components/chat/chat-understood';
 import { ApiError } from '@/api/client';
-import { chatFailureWords, chatPaths, CONTINUE_TEXT, isAbort, LIVE_CHAT_API, type Chat, type ChatApi, type ChatEvent, type ChatMessage, type ChatMode, type ChatModels, type ChatPlanAnswer, type ChatProduct, type ChatTaskEdit } from '@/lib/chat-api';
-import { confirmWords, effectiveProducts, FULL_CHECK_TEXT, isFullCheck, pickable, readProducts, saveProducts, toggleProduct } from '@/lib/chat-full-check';
+import { CHECK_MODEL, chatFailureWords, chatPaths, CONTINUE_TEXT, isAbort, LIVE_CHAT_API, type Chat, type ChatApi, type ChatEvent, type ChatMessage, type ChatMode, type ChatModels, type ChatPlanAnswer, type ChatProduct, type ChatTaskEdit } from '@/lib/chat-api';
+import { confirmWords, effectiveProducts, FULL_CHECK_TEXT, isFullCheck, lastProducts, pickable, scopeSentence, toggleProduct } from '@/lib/chat-full-check';
 import { useProductCatalog } from '@/lib/products';
 import { knownAreas, lastFindings, withPrompt } from '@/lib/chat-plus-actions';
 import { applyChatEvent, applyCorrection, CHAT_STARTERS, chatTitle, dollars, followedAnswer, fromSaved, localAnswer, localQuestion, previousQuestion, settle, type ViewMessage } from '@/lib/chat-messages';
@@ -80,9 +80,11 @@ export interface ChatPageProps {
   api?: ChatApi;
   /** How long Stop waits for the server's stored (stopped) message before it stops reading. Tests pass 0. */
   stopGraceMs?: number;
+  /** #1578: an answer's finding to open at once (from the job tracker). */
+  focusFinding?: { messageId: string; findingId: string } | null;
 }
 
-export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LIVE_CHAT_API, stopGraceMs = 3000 }: ChatPageProps) {
+export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LIVE_CHAT_API, stopGraceMs = 3000, focusFinding = null }: ChatPageProps) {
   // ── The models and the reviewer's choice ──
   const [models, setModels] = useState<ModelsState>({ status: 'loading' });
   const [modelsAsk, setModelsAsk] = useState(0);
@@ -116,17 +118,15 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   const listed = useRef<ReadonlySet<string> | null>(null);
   // The set's name from the list, for a new chat's greeting (no chat is read for it).
   const [listName, setListName] = useState<string | null>(null);
-  const [listProduct, setListProduct] = useState<ChatProduct | null>(null);
 
   useEffect(() => {
     let current = true;
     api.list(packageId).then(
-      ({ chats, package_name: setName, product_type: productType }) => {
+      ({ chats, package_name: setName }) => {
         listed.current = new Set(chats.map((listedChat) => listedChat.id));
         if (!current) return;
         setList({ status: 'ready', chats });
         if (setName) setListName(setName);
-        if (productType) setListProduct(productType);
       },
       (error: unknown) => current && setList((now) => (now.status === 'ready' ? now : { status: 'error', message: chatFailureWords(error) })),
     );
@@ -209,21 +209,15 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   const messages = chatId && thread?.chatId === chatId ? thread.messages : NO_MESSAGES;
   const name = chat?.package_name ?? listName;
 
-  // ── Products (chat v4; #1547: the registry's active products), remembered per drawing set ──
+  // ── Products (chat v4; #1547: the registry's active products) ──
+  // All by default (2026-10-18); a pick lasts for its chat (a new chat starts on All again), and a
+  // saved chat starts on what it last asked with.
   const catalog = useProductCatalog();
-  const [pickedProducts, setPickedProducts] = useState<{ packageId: string; products: ChatProduct[] } | null>(null);
-  const [rememberedProducts] = useState(() => ({ packageId, products: readProducts(browserStorage(), packageId) }));
-  const rememberedHere = rememberedProducts.packageId === packageId ? rememberedProducts.products : readProducts(browserStorage(), packageId, catalog);
-  const products = effectiveProducts(
-    pickedProducts?.packageId === packageId ? pickedProducts.products : null,
-    // Remembered before the products loaded: one that cannot be picked now is left out.
-    catalog.length && rememberedHere ? rememberedHere.filter((product) => pickable(catalog).includes(product)) : rememberedHere,
-    chat?.product_type ?? listProduct,
-    catalog,
-  );
+  const pickKey = chatId ?? `new:${packageId}`;
+  const [pickedProducts, setPickedProducts] = useState<{ key: string; products: ChatProduct[] } | null>(null);
+  const products = effectiveProducts(pickedProducts?.key === pickKey ? pickedProducts.products : null, lastProducts(messages), catalog);
   function setProducts(next: ChatProduct[]) {
-    setPickedProducts({ packageId, products: next });
-    saveProducts(browserStorage(), packageId, next);
+    setPickedProducts({ key: pickKey, products: next });
   }
   const toggle = (product: ChatProduct) => setProducts(toggleProduct(products, product, catalog));
 
@@ -462,6 +456,38 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
     }
   }
 
+  /**
+   * #1584: the vendor consistency check, by code ($0, no AI). The server stores it in the chat as a
+   * question and its answer; the chat is then read again to show them. A new chat is made first when
+   * there is none yet (as a first message does).
+   */
+  async function runConsistency(): Promise<void> {
+    const check = api.consistency;
+    if (!check || runRef.current) return;
+    setNotice(null);
+    setAnnounce('Checking the vendor’s numbers');
+    let target = chatId;
+    try {
+      if (!target) {
+        const made = await api.create(packageId);
+        target = made.id;
+        setLoaded({ chatId: target, chat: { id: target, package_id: packageId, package_name: name ?? '', title: null, created_at: made.created_at, messages: [] } });
+        onOpenChat(target, { replace: true });
+      }
+      await check(target);
+      follow.current = true;
+      setAtBottom(true);
+      if (messages.length === 0) setFreshTitles((now) => new Set(now).add(target as string));
+      setListAsk((n) => n + 1);
+      reload();
+      setAnnounce('Vendor consistency check finished');
+    } catch (error) {
+      const words = `The vendor consistency check could not run: ${chatFailureWords(error)}`;
+      setNotice(words);
+      setAnnounce(words);
+    }
+  }
+
   /** Stop: ask the server to stop (it saves the message as stopped), then stop reading shortly after. */
   function stop() {
     const run = runRef.current;
@@ -478,6 +504,8 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
 
   /** New chat: the empty composer at `#/chat/<set>`; nothing is made until its first message. */
   function newChat() {
+    // A new chat starts on All again (2026-10-18).
+    setPickedProducts(null);
     if (!chatId) {
       textareaRef.current?.focus();
       return;
@@ -501,6 +529,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
 
   // ── Full check (chat v4): one button, confirmed with what it will use ──
   const pickedModel = choice ? modelList.find((model) => model.id === choice.model) ?? null : null;
+  const fullCheckScope = scopeSentence(products, catalog);
   const fullCheckSummary = confirmWords(products, pickedModel ? shortModelLabel(pickedModel) : null, choice ? EFFORT_WORDS[choice.effort] : null, money(cap));
   const fullCheckBlocked = blocked ?? (running ? 'A message is still running in this chat.' : null);
   const runFullCheck = (answers?: ChatPlanAnswer[]) => void send(FULL_CHECK_TEXT, 'full_check', undefined, undefined, answers);
@@ -512,7 +541,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
     <TooltipProvider delayDuration={300}>
       <div data-tw data-slot="chat-page" className="flex min-h-0 w-full min-w-0 flex-1 font-sans text-sm text-foreground antialiased">
         <HeaderActions>
-          {!centred && <FullCheckButton variant="bar" summary={fullCheckSummary} onRun={runFullCheck} blocked={fullCheckBlocked} loadPlan={loadPlan} />}
+          {!centred && <FullCheckButton variant="bar" summary={fullCheckSummary} scope={fullCheckScope} onRun={runFullCheck} blocked={fullCheckBlocked} loadPlan={loadPlan} />}
           <Button variant="ghost" size="sm" asChild>
             <a href={formatRoute({ page: 'review', packageId })} aria-label="Review list">
               <ListChecks /> <span className="hidden sm:inline">Review list</span>
@@ -595,7 +624,8 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                     models={modelList}
                     messageCapUsd={cap}
                     onReload={reload}
-                    onRetry={canRetry ? () => void send(question) : undefined}
+                    // A code check's answer (#1584) is run again by code, never sent to the AI.
+                    onRetry={canRetry ? () => void (message.model === CHECK_MODEL ? runConsistency() : send(question)) : undefined}
                     onContinue={resumeId ? () => void send(CONTINUE_TEXT, 'chat', { id: resumeId, mode: message.resume?.mode ?? 'chat' }) : undefined}
                     latest={at === messages.length - 1}
                     makeMarkupPdf={(messageId) => api.markup(chatId, messageId)}
@@ -603,6 +633,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                     remakeCloud={api.remakeCloud ? (messageId) => api.remakeCloud!(chatId, messageId) : undefined}
                     fullPageHref={formatRoute({ page: 'review', packageId })}
                     fullCheck={isFullCheck(message, asked?.role === 'user' ? asked : null)}
+                    focusFindingId={focusFinding && message.id === focusFinding.messageId ? focusFinding.findingId : null}
                   />
                 );
               })}
@@ -620,7 +651,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
             {centred && <Greeting name={name} />}
             {centred && (
               <div className="mb-4 flex flex-col items-center gap-1.5">
-                <FullCheckButton summary={fullCheckSummary} onRun={runFullCheck} blocked={fullCheckBlocked} loadPlan={loadPlan} />
+                <FullCheckButton summary={fullCheckSummary} scope={fullCheckScope} onRun={runFullCheck} blocked={fullCheckBlocked} loadPlan={loadPlan} />
                 <p className="text-center text-xs text-muted-foreground">What’s wrong, what to check and what’s right on every page, with the cloud drawing</p>
               </div>
             )}
@@ -667,12 +698,13 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                 placeholder={centred ? 'How can I help you today?' : 'Reply to Claude…'}
                 menuFootnote={footnote}
                 textareaRef={textareaRef}
-                leading={<ProductChips products={products} onToggle={toggle} disabled={running} />}
+                leading={<ProductChips products={products} onToggle={toggle} onAll={() => setProducts(pickable(catalog))} disabled={running} />}
                 plus={
                   <PlusMenu
                     onPrompt={(text) => setDraft((now) => withPrompt(now, text))}
                     textareaRef={textareaRef}
                     fullCheck={{ summary: fullCheckSummary, blocked: fullCheckBlocked, onRun: runFullCheck, loadPlan }}
+                    consistency={api.consistency ? { onRun: runConsistency } : null}
                     lastFindings={lastFindings(messages)}
                     makeMarkupPdf={chatId ? (messageId) => api.markup(chatId, messageId) : null}
                     fileHref={(file) => file.url || (chatId ? chatPaths.file(chatId, file.id) : '')}

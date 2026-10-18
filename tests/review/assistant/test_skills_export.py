@@ -36,7 +36,9 @@ from app.models import Package, PackageRevision, Project
 from app.models.package import PackageState
 from app.models.parameters import to_rows
 from app.models.project_sinks import ProjectSink
+from app.review.assistant.full_check_specialists import KNOWLEDGE_FILES
 from app.review.assistant.skills_export import (
+    KNOWLEDGE_SOURCE,
     LOCAL_FOLDER_VARIABLE,
     SKILL_SOURCE,
     build_skill_folder,
@@ -55,6 +57,8 @@ pytest_plugins = ("tests.app.postgres_fixture",)
 __all__ = ["use_dummy_registry"]  # the fixture, imported so pytest finds it
 
 WHEN = datetime(2026, 1, 5, 9, 30, tzinfo=UTC)
+#: The knowledge pack's files as the skill folder holds them.
+KNOWLEDGE = frozenset(f"knowledge/{name}" for name in KNOWLEDGE_FILES)
 
 
 @pytest.fixture
@@ -79,6 +83,9 @@ def local(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (folder / "checklists" / "countertop-checks.md").write_text("# Made-up checklist\n")
     (folder / ".hidden-notes.md").write_text("never copied\n")
     (folder / "SKILL.md").write_text("---\nname: something-else\n---\nnever copied\n")
+    # A local file never replaces the repository's knowledge pack.
+    (folder / "knowledge").mkdir()
+    (folder / "knowledge" / "glossary.md").write_text("never copied\n")
     outside = tmp_path / "outside.txt"
     outside.write_text("a file outside the folder\n")
     (folder / "checklists" / "link.md").symlink_to(outside)
@@ -171,7 +178,11 @@ def test_the_folder_holds_the_skill_the_rules_and_gvs_local_files(
         "rules.md",
         "checklists/countertop-checks.md",
         "products/countertop.md",
+        *KNOWLEDGE,
     }
+    # The knowledge pack, byte for byte from the repository (never the local "glossary.md").
+    for name in KNOWLEDGE_FILES:
+        assert files[f"knowledge/{name}"] == (KNOWLEDGE_SOURCE / name).read_bytes()
     assert files["SKILL.md"] == SKILL_SOURCE.read_bytes()
     product = files["products/countertop.md"].decode("utf-8")
     assert product.startswith("# Countertops")
@@ -310,27 +321,29 @@ def test_rules_md_names_no_internal_ticket_number(session: Session, local: Path)
     assert "the client has not yet confirmed which is right" in text
 
 
-def test_picked_products_come_first_and_the_others_follow(
+def test_only_the_picked_products_rules_are_listed(
     session: Session, local: Path, tmp_path: Path
 ) -> None:
-    """Chat v4: the products picked in the chat lead `rules.md`; the rest follow, labelled."""
+    """The pick is a strict scope (Anant, 2026-10-18): `rules.md` lists only the picked products'
+    checks, so another product's GV rules never reach the AI; both picked lists both."""
     _project, revision = _revision(session, product="countertop")
 
     text = rules_markdown(session, revision, ["cabinet"])
 
-    assert "Products picked for this chat: cabinet." in text
-    first_cabinet, other = text.index("### CAB-FILLER-001"), text.index("## Other products")
-    assert first_cabinet < other < text.index("### CT-WIDTH-001")
+    assert "Products picked for this chat: cabinet. Only their checks are listed" in text
+    assert "### CAB-FILLER-001" in text
+    assert "### CT-WIDTH-001" not in text and "Other products" not in text
     build_skill_folder(session, revision, tmp_path / "gv-review", products=["countertop"])
     rules = (tmp_path / "gv-review" / "rules.md").read_text(encoding="utf-8")
     assert "Products picked for this chat: countertop." in rules
-    assert rules.index("### CT-WIDTH-001") < rules.index("## Other products")
-    assert sorted(_files(tmp_path / "gv-review")) == [
-        "SKILL.md",
-        "checklists/countertop-checks.md",
-        "products/countertop.md",
-        "rules.md",
-    ]
+    assert "### CT-WIDTH-001" in rules and "### CAB-FILLER-001" not in rules
+    assert "Filler width" not in rules  # a cabinet rule's setting is not in force here
+    assert sorted(_files(tmp_path / "gv-review")) == sorted(
+        ["SKILL.md", "checklists/countertop-checks.md", "products/countertop.md", "rules.md"]
+        + list(KNOWLEDGE)
+    )
+    both = rules_markdown(session, revision, ["countertop", "cabinet"])
+    assert "### CAB-FILLER-001" in both and "### CT-WIDTH-001" in both
 
 
 def test_each_product_in_focus_gets_its_file_and_a_set_with_none_gets_every_active_one(
@@ -361,7 +374,7 @@ def test_the_same_records_give_the_same_bytes_and_a_folder_is_rebuilt_in_place(
 
     (local / "checklists" / "countertop-checks.md").unlink()
     build_skill_folder(session, revision, first)
-    assert set(_files(first)) == {"SKILL.md", "rules.md", "products/countertop.md"}
+    assert set(_files(first)) == {"SKILL.md", "rules.md", "products/countertop.md", *KNOWLEDGE}
     assert [path.name for path in first.parent.iterdir()] == ["gv-review"]
 
 
@@ -374,7 +387,7 @@ def test_a_missing_local_folder_is_fine(
 
     build_skill_folder(session, revision, dest)
 
-    assert set(_files(dest)) == {"SKILL.md", "rules.md", "products/countertop.md"}
+    assert set(_files(dest)) == {"SKILL.md", "rules.md", "products/countertop.md", *KNOWLEDGE}
 
 
 def test_a_folder_it_did_not_write_is_never_replaced(session: Session, tmp_path: Path) -> None:

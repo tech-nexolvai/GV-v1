@@ -178,6 +178,12 @@ def test_the_pack_holds_the_page_map_annotations_pictures_and_contact_sheets(pac
         assert abs(width - WIDTH * 100 / 72) <= 1 and abs(height - HEIGHT * 100 / 72) <= 1
     assert [p.name for p in (pack / "contact").iterdir()] == ["combined-p001-003.png"]
     assert (pack / "README.txt").read_text().startswith("The set pack")
+    # Code facts written with the labels: each drawing's scale, and its notes and tags.
+    scales = json.loads((pack / "scales.json").read_text())
+    notes = json.loads((pack / "notes.json").read_text())
+    assert [entry["page"] for entry in scales["pages"]] == [1, 2, 3]
+    assert [entry["page"] for entry in notes["pages"]] == [1, 2, 3]
+    assert json.loads((pack / "pairs.json").read_text())["version"] == 1
 
     annotations = json.loads((pack / "annotations.json").read_text())
     heading = next(a for a in annotations if a["text"] == "ID SET ELEVATION")
@@ -491,7 +497,7 @@ def test_the_leads_read_only_tools_run_together_and_reply_in_order(tmp_path: Pat
     # One user message with every result, in the order asked.
     results = outcome.api_content[2]["content"]
     assert [r["tool_use_id"] for r in results] == ["a", "b", "c"]
-    assert results[0]["content"][0]["text"].endswith("out slow")
+    assert results[0]["content"][0]["text"].endswith("out slow\n</drawing_data>")
     # The steps show in the order asked too.
     starts = [data["step"]["id"] for event, data in harness.events if event == "step_start"]
     assert starts == ["a", "b", "c"]
@@ -539,3 +545,14 @@ def test_parallel_helpers_are_capped_by_the_setting(tmp_path: Path) -> None:
     assert Settings.model_fields["assistant_max_parallel_agents"].default == 8
     with pytest.raises(ValueError):
         Settings(database_url="postgresql+psycopg://x@h/db", assistant_max_parallel_agents=13)
+
+
+def test_the_drawn_numbers_are_read_by_default_within_a_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # On by default (#1558 had it off): the vendor's pen-stroke numbers reach dims.json.
+    monkeypatch.delenv("GV_DIM_LABELS_DRAWN_BUDGET_S", raising=False)
+    assert set_pack._drawn_budget() == set_pack.DIMS_DRAWN_BUDGET_S > 0
+    assert set_pack.DIMS_TIMEOUT_S > set_pack.DIMS_DRAWN_BUDGET_S
+    monkeypatch.setenv("GV_DIM_LABELS_DRAWN_BUDGET_S", "0")
+    assert set_pack._drawn_budget() == 0

@@ -1,5 +1,5 @@
-import { useId, useState } from 'react';
-import { ChevronRight, CircleAlert, Download, FileDown, Sheet, FileImage, FileSpreadsheet, FileText, File as FileIcon, Play, RotateCw, ScanSearch } from 'lucide-react';
+import { useEffect, useId, useRef, useState } from 'react';
+import { ArrowRightLeft, ChevronRight, CircleAlert, Download, FileDown, Sheet, FileImage, FileSpreadsheet, FileText, File as FileIcon, Play, RotateCw, ScanSearch } from 'lucide-react';
 
 import { ApiError } from '@/api/client';
 import { AccuracyBadge, CiteChips } from '@/components/chat/chat-accuracy';
@@ -7,14 +7,15 @@ import { ActivityRow, TaskChecklist } from '@/components/chat/chat-activity';
 import { CoverageStrip } from '@/components/chat/chat-coverage';
 import { EvidenceViewer } from '@/components/chat/chat-evidence';
 import { FindingsSections, type DecisionProps } from '@/components/chat/chat-findings';
-import { FullCheckFiles, FullCheckProgress, ResultNumbers, type CloudReview } from '@/components/chat/chat-full-check';
+import { FullCheckFiles, FullCheckProgress, PackageCard, ResultNumbers, type CloudReview } from '@/components/chat/chat-full-check';
 import { ConfidenceLine, HowChecked } from '@/components/chat/chat-trust';
 import { ChatMarkdown } from '@/components/chat/chat-markdown';
 import { Collapse, CopyButton, GVSpark, Shimmer, Spark, Spinner, type SparkState } from '@/components/chat/chat-motion';
 import { chatPaths, type ChatEffort, type ChatFile, type ChatFinding, type ChatFindingUpdate, type ChatModel, type FindingDecision, type FindingDecisionValue } from '@/lib/chat-api';
 import { coverageCounts, findingCounts, isNarrowAnswer, isShortAnswer, NO_FILTER, sectionOrder, type FindingFilter } from '@/lib/chat-findings';
-import { fullCheckBubble, fullCheckFiles, previewPage, productsWords, withoutCodeNote } from '@/lib/chat-full-check';
+import { checkedWords, fullCheckBubble, fullCheckFiles, previewPage, productsWords, withoutCodeNote } from '@/lib/chat-full-check';
 import { useReducedMotion } from '@/lib/chat-motion';
+import { asShown, proofCounts } from '@/lib/chat-proof';
 import { EFFORT_WORDS } from '@/lib/chat-settings';
 import { downloadFile, downloadFindingsCsv, markupFailureWords } from '@/lib/chat-exports';
 import { hasTrust, roundCounts } from '@/lib/chat-trust';
@@ -22,6 +23,7 @@ import {
   answerItems,
   fileKind,
   fileSize,
+  fallbackWords,
   footerWords,
   shownBlocks,
   stoppedWords,
@@ -303,14 +305,26 @@ export interface AssistantMessageProps {
   decide?: (messageId: string, findingId: string, decision: FindingDecisionValue) => Promise<unknown>;
   /** #1525: make the cloud drawing again from the reviewer's decisions; returns the new drawing. */
   remakeCloud?: (messageId: string) => Promise<ChatFile>;
+  /** #1578: a finding of this answer to open in the evidence viewer at once (the job tracker's link). */
+  focusFindingId?: string | null;
 }
 
-export function AssistantMessage({ message, chatId, models, onReload, onRetry, onContinue, latest = false, makeMarkupPdf, fullPageHref, fullCheck = false, decide, remakeCloud }: AssistantMessageProps) {
+export function AssistantMessage({ message, chatId, models, onReload, onRetry, onContinue, latest = false, makeMarkupPdf, fullPageHref, fullCheck = false, decide, remakeCloud, focusFindingId = null }: AssistantMessageProps) {
   const running = message.status === 'running';
   const reduced = useReducedMotion();
   const pictureUrl = (pictureId: string) => chatPaths.picture(chatId, pictureId);
   const [filter, setFilter] = useState<FindingFilter>(NO_FILTER);
-  const [viewing, setViewing] = useState<string | null>(null);
+  const [viewing, setViewing] = useState<string | null>(focusFindingId);
+  // #1578: a link from the job tracker opens its finding, and brings the answer into view behind it.
+  const [focused, setFocused] = useState(focusFindingId);
+  if (focused !== focusFindingId) {
+    setFocused(focusFindingId);
+    if (focusFindingId) setViewing(focusFindingId);
+  }
+  const articleRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (focusFindingId) articleRef.current?.scrollIntoView?.({ block: 'start' });
+  }, [focusFindingId]);
   const [madeFiles, setMadeFiles] = useState<ChatFile[]>([]);
   const baseId = useId();
   const sectionIds = { different: `${baseId}-wrong`, check: `${baseId}-decide`, same: `${baseId}-right` };
@@ -321,13 +335,10 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
   const blocks = shownBlocks(message);
   const { items: allItems } = answerItems(blocks, Boolean(message.tasks?.length));
   const items = short ? allItems.filter((item) => item.kind === 'text') : allItems;
-  const counts = findingCounts(findings);
   // #1522: a narrow answer (a few pages) shows no whole-set panels: no page grid, no coverage, no ledger.
   const narrow = isNarrowAnswer(message, fullCheck);
-  // The viewer's arrows step through the findings in the order the sections show them.
-  const ordered = sectionOrder(findings, filter);
   const allFiles = [...message.files, ...madeFiles.filter((made) => !message.files.some((file) => file.id === made.id))];
-  const made = fullCheck ? fullCheckFiles(allFiles) : { cloud: null, report: null, rest: allFiles };
+  const made = fullCheck ? fullCheckFiles(allFiles) : { cloud: null, report: null, notCompared: [], pkg: null, rest: allFiles };
   const files = made.rest;
   const messageId = message.id;
   const finished = !running && message.status === 'done' && findings.length > 0;
@@ -355,6 +366,13 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
   const [decideFailed, setDecideFailed] = useState<string | null>(null);
   const [decisionsOff, setDecisionsOff] = useState(false);
   const decisionOf = (finding: ChatFinding): FindingDecision | null => decisions[finding.id] ?? finding.decision ?? null;
+  // #1619: a finished full check shows each item where its cloud drawing puts it (Wrong = proved
+  // by code, Right, Nothing to compare), the reviewer's newest click laid over.
+  const architectView = fullCheck && !running;
+  const shown = architectView ? findings.map((finding) => asShown(finding, decisionOf(finding))) : findings;
+  const counts = findingCounts(shown);
+  // The viewer's arrows step through the findings in the order the sections show them.
+  const ordered = sectionOrder(shown, filter);
   const decisionFor = finished && !decisionsOff && decide && messageId ? (finding: ChatFinding): DecisionProps => ({
     decision: decisionOf(finding)?.decision ?? null,
     onDecide: (decision) => {
@@ -445,7 +463,8 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
   };
   const sections = findings.length > 0 ? (
     <FindingsSections
-      findings={findings}
+      findings={shown}
+      architectView={architectView}
       filter={filter}
       onFilter={setFilter}
       onOpen={(finding) => setViewing(finding.id)}
@@ -454,6 +473,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
       decisionFor={decisionFor}
       narrow={narrow}
       ids={sectionIds}
+      resolver={message.resolver ?? null}
     />
   ) : null;
   const decideError = decideFailed ? (
@@ -473,6 +493,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
 
   return (
     <article
+      ref={articleRef}
       data-slot="chat-assistant-message"
       data-status={message.status}
       data-short={short ? 'true' : undefined}
@@ -486,10 +507,11 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
         <div data-slot="chat-full-check-lead" className="chat-wide grid min-w-0 gap-7">
           {/* PATH 4.1: the summary, prominent. */}
           <section data-slot="chat-summary" aria-label="Summary" className="grid max-w-3xl min-w-0 gap-2.5">
-            <p className="flex items-center gap-2 text-xs font-medium text-muted-foreground"><GVSpark size={16} />{['Full check', productsWords(message.products)].filter(Boolean).join(' · ')}</p>
+            <p className="flex items-center gap-2 text-xs font-medium text-muted-foreground"><GVSpark size={16} />{['Full check', checkedWords(message.products ?? message.scope?.products) ?? productsWords(message.products)].filter(Boolean).join(' · ')}</p>
             <h2 data-slot="chat-summary-headline" className="text-xl leading-snug font-semibold tracking-[-0.015em]">
-              {counts.different > 0 ? <span className="text-outcome-fail-fg">{counts.different} wrong</span> : 'Nothing wrong'} on the vendor’s drawings
-              {counts.check > 0 ? `, ${counts.check} ${counts.check === 1 ? 'needs' : 'need'} your decision.` : '.'}
+              {counts.different > 0 ? <span className="text-outcome-fail-fg">{counts.different} wrong</span> : 'Nothing proved wrong'} on the vendor’s drawings
+              {counts.same > 0 ? `, ${counts.same} right` : ''}
+              {counts.check > 0 ? <span className="text-muted-foreground">, {counts.check} with nothing to compare</span> : null}.
             </h2>
             {textItems.map((item) => {
               const block = blocks[item.index] as Extract<ViewBlock, { type: 'text' }>;
@@ -507,8 +529,10 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
           {/* PATH 4.2: the three numbers, pages and accuracy (each once). */}
           {(findings.length > 0 || coverage) && <ResultNumbers counts={counts} coverage={coverage} accuracy={message.accuracy} onPick={jumpTo} />}
           {/* PATH 4.3: the cloud drawing, the main output. */}
-          <FullCheckFiles cloud={made.cloud} report={made.report} chatId={chatId} page={previewPage(findings)} totalPages={coverage ? coverageCounts(coverage).total : null} counts={counts} review={review} />
-          {/* PATH 4.4 to 4.6: What's wrong, Your decision, Right (folded). */}
+          <FullCheckFiles cloud={made.cloud} report={made.report} notCompared={made.notCompared} chatId={chatId} page={previewPage(findings)} totalPages={coverage ? coverageCounts(coverage).total : null} counts={counts} proof={findings.length ? proofCounts(findings, decisionOf) : null} review={review} packaged={made.pkg !== null} />
+          {/* #1622: the send-ready package, right after the cloud drawing. */}
+          {made.pkg && <PackageCard pkg={made.pkg} chatId={chatId} action={message.review_action ?? null} hasReport={made.report !== null} hasNotCompared={made.notCompared.length > 0} />}
+          {/* PATH 4.4 to 4.6: What's wrong, Right (folded), Nothing to compare (folded, #1619). */}
           {decideError}
           {sections}
           {/* PATH 4.7: everything else, folded. */}
@@ -609,6 +633,14 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
       )}
 
       {(message.corrections?.length ?? 0) > 0 && <Corrections corrections={message.corrections ?? []} />}
+
+      {/* #1577: Anthropic's refusal fallback wrote this answer: said once, quietly. */}
+      {message.fallback && (
+        <p data-slot="chat-fallback" className="flex min-w-0 items-start gap-1.5 text-xs leading-snug text-muted-foreground">
+          <ArrowRightLeft className="mt-px size-3.5 shrink-0" aria-hidden="true" />
+          <span>{fallbackWords(message.fallback, models)}</span>
+        </p>
+      )}
 
       {running && <Spark label={message.id ? 'Working' : 'Sending your message'} state={sparkState(blocks, streaming)} className="chat-fade-in" />}
 

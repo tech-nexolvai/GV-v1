@@ -9,15 +9,16 @@ looks at the pictures it rendered. This module is where those commands run.
 they were uploaded with; `/home/claude` is an empty scratch folder the command may write. Nothing else of the host: no other package, no database, no key, no
 environment variable of the server, and no network.
 
-**Two backends, the first that is available:**
+**Two backends:**
 
-- **Docker** (`DockerSandbox`, the primary): the local image `gv-assistant-sandbox`
+- **Docker** (`DockerSandbox`, the only one `auto` chooses): the local image `gv-assistant-sandbox`
   (`deploy/assistant_sandbox/Dockerfile`: python 3.12-slim, poppler-utils, pypdf, pdfplumber,
   pypdfium2), run per command with `--network none`, a read-only root, the uploads mounted
-  read-only, the scratch folder writable, no capabilities, an unprivileged user, and CPU, memory and process
-  limits. Docker passes the container no environment variable of the host.
-- **macOS `sandbox-exec`** (`MacSandbox`, the fallback when Docker is not running or the image is
-  not built): a deny-by-default profile that allows reading only the system's own programs, the
+  read-only, the scratch folder writable, no capabilities, an unprivileged user, and CPU, memory,
+  process and file-size limits. Docker passes the container no environment variable of the host.
+- **macOS `sandbox-exec`** (`MacSandbox`, only when a setting asks for `macos` by name, for tests on
+  a Mac; never a silent fallback, security audit 2026-10-18: it has no memory or process limit and
+  can reach the Mac's system services): a deny-by-default profile that allows reading only the system's own programs, the
   Python runtime and the two folders, writing only `out/`, and no network. The command runs with an
   empty environment (a PATH and HOME only). It has no poppler: `pdftotext` and friends answer
   plainly that they are not here, and Python with pypdf, pdfplumber and pypdfium2 is. Its folders
@@ -27,9 +28,15 @@ environment variable of the server, and no network.
 `view_path` is the `view` tool: a picture (shrunk to what the model reads), a text file with
 numbered lines, or a folder listed two levels deep, from those two folders only.
 
-Every command has a time limit (60 s by default) and its output is cut at about 20 KB with
-"Output truncated", as claude.ai does. A command that runs over its time is killed with its
-process group (or its container).
+Every command has a time limit (60 s here; the chat's setting gives 120 s) and its output is cut at
+about 20 KB with "Output truncated", as claude.ai does. A command that runs over its time is killed
+with its process group (or its container).
+
+**Disk.** The writable folders are folders of the host, so a command could fill the Mac's disk (Postgres
+and Docker then stop, as on 17 Oct). Two limits: one file may not grow past `MAX_FILE_BYTES` (the
+kernel's file-size limit: the write fails with "File size limit exceeded"), and the writable folders
+together may not grow past `MAX_FOLDER_BYTES` (code measures them while the command runs and stops
+it, with a plain line, as soon as they do).
 """
 
 from __future__ import annotations
@@ -47,10 +54,12 @@ import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Final, Protocol
+from typing import Final, Protocol, Self
 
 __all__ = [
     "DOCKER_IMAGE",
+    "MAX_FILE_BYTES",
+    "MAX_FOLDER_BYTES",
     "MAX_OUTPUT_CHARS",
     "OUTPUTS",
     "SCRATCH",
@@ -70,6 +79,7 @@ __all__ = [
     "Workspace",
     "check_command",
     "cut_output",
+    "folder_bytes",
     "open_sandbox",
     "quiet_pdf_warnings",
     "safe_file_name",
@@ -89,6 +99,13 @@ SKILLS: Final = "/mnt/skills/gv-review"
 #: The set pack (`set_pack.py`, read-only): page map, drawings-only copies, page pictures.
 SET_PACK: Final = "/mnt/user-data/set"
 TIMEOUT_SECONDS: Final = 60
+#: The largest file one command may write (the kernel's file-size limit).
+MAX_FILE_BYTES: Final = 200_000_000
+#: What the writable folders (a chat's home and outputs) may hold together, at most. A chat on a
+#: 60-page set used about 30 MB (2026-10-17).
+MAX_FOLDER_BYTES: Final = 1_000_000_000
+#: How often the writable folders are measured while a command runs.
+_DISK_POLL_SECONDS: Final = 0.25
 MAX_OUTPUT_CHARS: Final = 20_000
 #: The longest command accepted: a short script, never a file pasted in.
 MAX_COMMAND_CHARS: Final = 8_000
@@ -509,6 +526,87 @@ class Sandbox(Protocol):
         """Stop every command running now (a cancelled chat message); harmless when none runs."""
 
 
+def folder_bytes(folders: Sequence[Path]) -> int:
+    """The disk space the files under `folders` use (allocated blocks, so a sparse file counts
+    what it really holds). Links are not followed; a file removed while counting is skipped."""
+    total = 0
+    pending = [Path(folder) for folder in folders]
+    while pending:
+        folder = pending.pop()
+        try:
+            entries = list(os.scandir(folder))
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(Path(entry.path))
+                    continue
+                info = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            blocks = getattr(info, "st_blocks", None)
+            total += blocks * 512 if isinstance(blocks, int) else info.st_size
+    return total
+
+
+def _writable(workspace: _Workspace) -> list[Path]:
+    return [mount.real for mount in workspace.mounts if mount.writable]
+
+
+_DISK_FULL: Final = (
+    "\n[Stopped: the chat's folders ({shown}) would hold more than {limit} MB. Delete files you "
+    "no longer need (rm), then run the command again]"
+)
+
+
+class _DiskWatch:
+    """Measures the writable folders while one command runs and calls `stop` once when they grow
+    past the limit (`MAX_FOLDER_BYTES`, or what they already held when the command started, so a
+    command that only deletes files still runs)."""
+
+    def __init__(
+        self,
+        workspace: _Workspace,
+        stop: Callable[[], None],
+        limit: int = MAX_FOLDER_BYTES,
+        every: float = _DISK_POLL_SECONDS,
+    ) -> None:
+        self._folders = _writable(workspace)
+        self._shown = ", ".join(mount.shown for mount in workspace.mounts if mount.writable)
+        self._limit_mb = limit // 1_000_000
+        self._stop_command = stop
+        self._every = every
+        self._done = threading.Event()
+        self.over = False
+        self._most = max(limit, folder_bytes(self._folders))
+        self._thread = threading.Thread(target=self._watch, name="gv-sandbox-disk", daemon=True)
+
+    def __enter__(self) -> Self:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self._done.set()
+        self._thread.join(timeout=5)
+        # A last look: a command that wrote fast and ended between two looks is still reported.
+        if not self.over and folder_bytes(self._folders) > self._most:
+            self.over = True
+
+    def _watch(self) -> None:
+        while not self._done.wait(self._every):
+            if folder_bytes(self._folders) > self._most:
+                self.over = True
+                try:
+                    self._stop_command()
+                except Exception:  # noqa: BLE001 - the time limit still stops the command
+                    _log.warning("assistant sandbox could not stop a command over the disk limit")
+                return
+
+    def note(self) -> str:
+        return _DISK_FULL.format(shown=self._shown, limit=self._limit_mb) if self.over else ""
+
+
 def check_command(command: str) -> str:
     if not isinstance(command, str) or not command.strip():
         raise SandboxRefused("the command is empty")
@@ -546,6 +644,8 @@ class DockerSandbox:
     cpus: str = "1"
     memory: str = "768m"
     pids: int = 128
+    max_file_bytes: int = MAX_FILE_BYTES
+    max_folder_bytes: int = MAX_FOLDER_BYTES
     _running: set[str] = field(default_factory=set)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -573,6 +673,9 @@ class DockerSandbox:
             self.memory,
             "--pids-limit",
             str(self.pids),
+            # One file may not grow past this (bytes): the write fails, the command goes on.
+            "--ulimit",
+            f"fsize={self.max_file_bytes}",
             "--cap-drop",
             "ALL",
             "--security-opt",
@@ -613,21 +716,25 @@ class DockerSandbox:
         argv = self.argv(check_command(command), name)
         with self._lock:
             self._running.add(name)
+        watch = _DiskWatch(self.workspace, lambda: self._kill(name), self.max_folder_bytes)
         try:
-            done = subprocess.run(
-                argv,
-                capture_output=True,
-                timeout=self.timeout_seconds,
-                check=False,
-                env=_docker_cli_env(),
-            )
+            with watch:
+                done = subprocess.run(
+                    argv,
+                    capture_output=True,
+                    timeout=self.timeout_seconds,
+                    check=False,
+                    env=_docker_cli_env(),
+                )
         except subprocess.TimeoutExpired as expired:
             self._kill(name)
             text, cut = cut_output(
                 quiet_pdf_warnings(_decode(expired.stdout) + _decode(expired.stderr))
             )
             return SandboxResult(
-                output=text + f"\n[Stopped: the command ran over {self.timeout_seconds} s]",
+                output=text
+                + watch.note()
+                + f"\n[Stopped: the command ran over {self.timeout_seconds} s]",
                 exit_code=None,
                 timed_out=True,
                 truncated=cut,
@@ -636,7 +743,7 @@ class DockerSandbox:
             with self._lock:
                 self._running.discard(name)
         text, cut = cut_output(quiet_pdf_warnings(_decode(done.stdout) + _decode(done.stderr)))
-        return SandboxResult(output=text, exit_code=done.returncode, truncated=cut)
+        return SandboxResult(output=text + watch.note(), exit_code=done.returncode, truncated=cut)
 
 
 def _profile(python_roots: Sequence[str], mounts: Sequence[Mount]) -> str:
@@ -680,6 +787,8 @@ class MacSandbox:
     python: str = sys.executable
     timeout_seconds: int = TIMEOUT_SECONDS
     kind: str = "macos-sandbox-exec"
+    max_file_bytes: int = MAX_FILE_BYTES
+    max_folder_bytes: int = MAX_FOLDER_BYTES
     _running: set[int] = field(default_factory=set)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -747,7 +856,9 @@ class MacSandbox:
             str(profile),
             "/bin/bash",
             "-c",
-            real,
+            # One file may not grow past the limit (bash counts 1024-byte blocks; without -S or -H
+            # both limits are set, so the command cannot raise it again).
+            f"ulimit -f {max(1, self.max_file_bytes // 1024)} || exit 1\n{real}",
         ]
         home = self.workspace.home
         env = {
@@ -768,17 +879,25 @@ class MacSandbox:
         )
         with self._lock:
             self._running.add(process.pid)
-        try:
-            raw, _ = process.communicate(timeout=self.timeout_seconds)
-        except subprocess.TimeoutExpired:
+
+        def stop() -> None:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+
+        watch = _DiskWatch(self.workspace, stop, self.max_folder_bytes)
+        try:
+            with watch:
+                raw, _ = process.communicate(timeout=self.timeout_seconds)
+        except subprocess.TimeoutExpired:
+            stop()
             raw, _ = process.communicate()
             text, cut = cut_output(quiet_pdf_warnings(self._to_shown(_decode(raw))))
             return SandboxResult(
-                output=text + f"\n[Stopped: the command ran over {self.timeout_seconds} s]",
+                output=text
+                + watch.note()
+                + f"\n[Stopped: the command ran over {self.timeout_seconds} s]",
                 exit_code=None,
                 timed_out=True,
                 truncated=cut,
@@ -788,7 +907,9 @@ class MacSandbox:
                 self._running.discard(process.pid)
             profile.unlink(missing_ok=True)
         text, cut = cut_output(quiet_pdf_warnings(self._to_shown(_decode(raw))))
-        return SandboxResult(output=text, exit_code=process.returncode, truncated=cut)
+        return SandboxResult(
+            output=text + watch.note(), exit_code=process.returncode, truncated=cut
+        )
 
 
 def docker_image_ready(image: str = DOCKER_IMAGE, docker: str = "docker") -> bool:
@@ -816,16 +937,24 @@ def open_sandbox(
     timeout_seconds: int = TIMEOUT_SECONDS,
     docker_limits: tuple[str, str] | None = None,
 ) -> Sandbox | None:
-    """The first available backend: Docker with the built image, else macOS `sandbox-exec`, else
-    `None` (the assistant then answers without the shell). `docker_limits` is `(cpus, memory)`."""
-    if prefer in ("auto", "docker") and docker_image_ready():
-        cpus, memory = docker_limits or ("1", "768m")
-        return DockerSandbox(workspace, timeout_seconds=timeout_seconds, cpus=cpus, memory=memory)
-    if prefer in ("auto", "macos") and Path("/usr/bin/sandbox-exec").exists():
+    """Docker with the built image (`auto` or `docker`), or macOS `sandbox-exec` only when `prefer`
+    is `macos` by name (tests on a Mac); else `None`, and the chat says plainly that the secure
+    sandbox is not running. `auto` never falls back to `sandbox-exec` (security audit 2026-10-18:
+    it has no memory or process limit and can reach the Mac's system services).
+    `docker_limits` is `(cpus, memory)`."""
+    if prefer in ("auto", "docker"):
+        if docker_image_ready():
+            cpus, memory = docker_limits or ("1", "768m")
+            return DockerSandbox(
+                workspace, timeout_seconds=timeout_seconds, cpus=cpus, memory=memory
+            )
+        _log.warning("assistant sandbox: Docker or its image is not available; no shell")
+        return None
+    if prefer == "macos" and Path("/usr/bin/sandbox-exec").exists():
         return MacSandbox(
             workspace, python=python or sys.executable, timeout_seconds=timeout_seconds
         )
-    _log.info("review assistant has no sandbox here (no Docker image, no sandbox-exec)")
+    _log.info("review assistant has no sandbox here (%s asked for)", prefer)
     return None
 
 

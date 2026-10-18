@@ -1,6 +1,7 @@
 """Database foundation conventions and transaction behavior for issue #191."""
 
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -177,3 +178,20 @@ def test_empty_database_url_is_rejected_instead_of_defaulted() -> None:
 
     with pytest.raises(ValueError, match="database_url"):
         engine_from_settings(SimpleNamespace(database_url=" "))
+
+
+def test_an_engine_never_logs_the_values_it_sends() -> None:
+    """A failed statement's error carries no parameters (a question, an answer, a drawing's
+    numbers): `hide_parameters` on every engine the app and the worker build (no connection made).
+    """
+
+    engine = engine_from_settings(
+        SimpleNamespace(database_url="postgresql+psycopg://x@localhost/x")
+    )
+    try:
+        assert engine.hide_parameters is True
+    finally:
+        engine.dispose()
+    for module in ("workflow/worker.py", "workflow/dispatcher.py"):
+        source = (Path(__file__).resolve().parents[2] / module).read_text(encoding="utf-8")
+        assert "create_engine(settings.database_url, hide_parameters=True)" in source, module

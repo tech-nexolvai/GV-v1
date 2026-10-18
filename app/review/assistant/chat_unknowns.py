@@ -9,10 +9,18 @@ Each answer gets a list of unknowns, one record each:
 - `missing_job_value`: a GV check that could not run because a job value is missing;
 - `pairing_uncertain`: a "What's right" item whose page pair is not compared;
 - `refused_alignment`: two rounds of a sheet that code could not line up (the change was not
-  measured).
+  measured);
+- `no_counterpart`, `missing_round`, `not_in_set` (the vendor consistency check, #1584): an area
+  drawn on one side only, an area a later round leaves out, a sheet the vendor's index lists that
+  no page shows. These are about the set, not this answer's work (`scope: set`).
+- `not_comparable` (the finish check, #1623): what code read but cannot compare by itself (the two
+  sides name finishes in different tag systems, a finish only the brand prototype tags, an
+  architect note naming a part no vendor sheet names); also `scope: set`. The finish check also
+  gives `pairing_uncertain` and `unreadable` set items.
 
-`needs` says what would settle it. `scope` is `page` (a whole page) or `item` (one value): the
-accuracy score counts page gaps through the pages accounted for and item gaps against the claims.
+`needs` says what would settle it. `scope` is `page` (a whole page), `item` (one value) or `set`
+(the drawing set itself): the accuracy score counts page gaps through the pages accounted for and
+item gaps against the claims; a set gap is not the answer's to close, so it is not counted.
 The trust card counts them; a follow-up "check the rest" message gets them as its work list.
 """
 
@@ -37,6 +45,10 @@ UNKNOWN_WHYS: Final = (
     "missing_job_value",
     "pairing_uncertain",
     "refused_alignment",
+    "no_counterpart",
+    "missing_round",
+    "not_in_set",
+    "not_comparable",
 )
 #: The most records one answer lists (a 300-page set with nothing opened stays readable).
 _MAX_UNKNOWNS: Final = 200
@@ -69,13 +81,16 @@ def unknown_records(
     *,
     waiting: Sequence[Mapping[str, Any]] = (),
     refused_diffs: Sequence[Mapping[str, Any]] = (),
+    set_gaps: Sequence[Mapping[str, Any]] = (),
 ) -> list[dict[str, Any]]:
     """The answer's unknowns, by code, in page order.
 
     `findings`: the live findings (with checks and `not_compared_why`). `coverage`: the coverage map
     when the answer was whole-set work (its unaccounted pages become `not_opened`). `waiting`: GV
     checks waiting on a job value (`Recorded.waiting`). `refused_diffs`: round pairs code would not
-    line up, `{page, round2_page?, reason}` (`refused_from_diff`)."""
+    line up, `{page, round2_page?, reason}` (`refused_from_diff`). `set_gaps`: the vendor consistency
+    check's grey items (`{page, what, why, needs}`, #1584) and the finish check's (#1623), kept as
+    they are with `scope: set`."""
     records: list[dict[str, Any]] = []
     if coverage:
         for entry in coverage.get("pages") or []:
@@ -136,6 +151,17 @@ def unknown_records(
                 "scope": "item",
             }
         )
+    for gap in set_gaps:
+        if gap.get("why") in UNKNOWN_WHYS:
+            records.append(
+                {
+                    "page": _page(gap.get("page")),
+                    "what": str(gap.get("what") or "Drawing set"),
+                    "why": str(gap["why"]),
+                    "needs": str(gap.get("needs") or ""),
+                    "scope": "set",
+                }
+            )
     records.sort(key=lambda r: (r["page"] is None, r["page"] or 0, UNKNOWN_WHYS.index(r["why"])))
     return [
         {"id": f"U{number}", **record}
@@ -193,7 +219,9 @@ def last_unknowns(
 
 
 def work_list_note(unknowns: Sequence[Mapping[str, Any]]) -> str | None:
-    """One short note to the lead: the last answer's unknowns as this answer's work list."""
+    """One short note to the lead: the last answer's unknowns as this answer's work list (a set
+    gap, a sheet the set lacks, is no work the lead can do)."""
+    unknowns = [u for u in unknowns if u.get("scope") != "set"]
     if not unknowns:
         return None
     lines = [

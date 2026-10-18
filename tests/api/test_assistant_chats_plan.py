@@ -17,11 +17,17 @@ from typing import Any, ClassVar
 
 from app.review.assistant import finding_critic
 from app.review.assistant.chat_tools import HELPER_SYSTEM_PROMPT, LEAD_SYSTEM_PROMPT
+from app.review.assistant.full_check_specialists import HELPER_CORE
 from app.review.assistant.plan_check import ANSWERS_FILE
 from tests.api.test_assistant_chats import _events, _named, _world
 from tests.api.test_assistant_chats_findings import ASK, PDF3
 from tests.review.assistant.chat_fakes import ScriptedProvider, reply, text, tool
 from tests.review.assistant.test_chat_findings import finding_input
+
+
+def _helper_system(text: str) -> bool:
+    """A helper's system prompt: the shared one, or a helper kind's (`full_check_specialists`)."""
+    return text == HELPER_SYSTEM_PROMPT or text.startswith(HELPER_CORE)
 
 
 def _plan(world: Any, wanted: str = "ready", seconds: float = 30) -> dict[str, Any]:
@@ -178,7 +184,7 @@ class _FakeLenses(BaseHTTPRequestHandler):
 
     def helper(self, body: dict[str, Any], brief: str) -> list[dict[str, Any]]:
         model = body["model"]
-        drawn = brief.startswith("OBJECTIVE: the DRAWN THINGS")
+        drawn = brief.startswith("OBJECTIVE: the drawn things")
         pages = [int(n) for n in brief.split("on pages ", 1)[1].split(" of ", 1)[0].split(", ")]
         step = sum(1 for m in body["messages"] if m["role"] == "assistant")
         if step == 0 and body.get("tool_choice") != {"type": "none"}:
@@ -211,9 +217,9 @@ class _FakeLenses(BaseHTTPRequestHandler):
         system = body["system"][0]["text"]
         first = _words(body["messages"][0]["content"])
         model = body["model"]
-        if system == HELPER_SYSTEM_PROMPT and first == "Reply with OK.":
+        if _helper_system(system) and first == "Reply with OK.":
             events = reply(text("OK"), model=model, stop="max_tokens")
-        elif system == HELPER_SYSTEM_PROMPT:
+        elif _helper_system(system):
             events = self.helper(body, first)
         elif system == LEAD_SYSTEM_PROMPT:
             if model != "claude-opus-5-5":
@@ -256,6 +262,8 @@ def test_a_two_lens_full_check_end_to_end_against_a_fake_anthropic_server(postgr
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     monkeypatch.setenv("ANTHROPIC_BASE_URL", f"http://127.0.0.1:{server.server_address[1]}")
+    # The lead-verifies full check (#1569); the roster has its own tests (test_full_check_roster).
+    monkeypatch.setenv("GV_ASSISTANT_FULL_CHECK_ROSTER", "0")
     _FakeLenses.requests, _FakeLenses.problems = [], []
     try:
         with _world(postgres_engine, tmp_path, pdf=PDF3, pages=3) as world:
@@ -316,7 +324,7 @@ def test_a_two_lens_full_check_end_to_end_against_a_fake_anthropic_server(postgr
             briefs = [
                 r
                 for r in _FakeLenses.requests
-                if r["system"][0]["text"] == HELPER_SYSTEM_PROMPT
+                if _helper_system(r["system"][0]["text"])
                 and not any(m["role"] == "assistant" for m in r["messages"])
                 and _words(r["messages"][0]["content"]) != "Reply with OK."
             ]
@@ -324,7 +332,7 @@ def test_a_two_lens_full_check_end_to_end_against_a_fake_anthropic_server(postgr
             drawn = next(
                 r
                 for r in briefs
-                if _words(r["messages"][0]["content"]).startswith("OBJECTIVE: the DRAWN THINGS")
+                if _words(r["messages"][0]["content"]).startswith("OBJECTIVE: the drawn things")
             )
             assert drawn["model"] == "claude-sonnet-5-5" and drawn["output_config"] == {
                 "effort": "low"
@@ -344,8 +352,11 @@ def test_a_two_lens_full_check_end_to_end_against_a_fake_anthropic_server(postgr
             wrong = [f for f in findings if f["status"] == "different"]
             assert sorted(f["impact"]["rank"] for f in wrong) == list(range(1, len(wrong) + 1))
             assert [f["name"] for f in message["files"]] == [
-                "Vendor set - AI cloud drawing.pdf",
+                "Vendor set - GV cloud drawing.pdf",
                 "Vendor set - AI check report.pdf",
+                "Vendor set - Not compared.pdf",
+                "Vendor set - Not compared.xlsx",
+                "Vendor set - GV review package.zip",
             ]
             rows = (pack / ANSWERS_FILE).read_text(encoding="utf-8").splitlines()
             assert [json.loads(row)["answer"] for row in rows] == ["architect"]

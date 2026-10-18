@@ -33,6 +33,7 @@ import re
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from decimal import Decimal
 from fractions import Fraction
 from importlib import import_module
@@ -44,13 +45,16 @@ from app.review.assistant.chat_corrections import parse_ref
 from app.review.assistant.dim_findings import LabelRefused, fill_from_labels, label_for_cite
 from app.review.assistant.dim_index import DimLabels, labels_for
 from app.review.assistant.impact import by_impact
+from app.review.assistant.product_scope import ProductScope, refiled
 from app.review.assistant.sandbox import UPLOADS, ChatWorkspace, SandboxRefused
 from app.review.assistant.tool_schema import box_schema
+from app.review.assistant.vendor_text import rule_requirement
 from vocabulary.product_registry import registry
 
 __all__ = [
     "CHECK_REASONS",
     "CITE",
+    "CLOUD_DRAWING_KIND",
     "CODE_SOURCES",
     "COVERAGE_CHECK_PREFIX",
     "DECISION_LIKELY",
@@ -58,6 +62,7 @@ __all__ = [
     "DROP_FINDING",
     "FINDING_TOOL_NAMES",
     "HELPER_FINDING_TOOL_NAMES",
+    "PROOF_MODULE",
     "REPORT_FINDING",
     "SET_COVERAGE",
     "UPDATE_FINDING",
@@ -69,10 +74,12 @@ __all__ = [
     "decision_help_lines",
     "decision_help_note",
     "finding_categories",
+    "full_check_rounds",
     "helpless_decisions",
     "live_findings",
     "main_upload",
     "make_markup_file",
+    "make_proof_file",
     "make_report_file",
     "markup_base",
     "markup_name",
@@ -81,6 +88,8 @@ __all__ = [
     "printed_conflict",
     "products_words",
     "read_listing",
+    "reviewers",
+    "round_two_report",
 ]
 
 _log = logging.getLogger(__name__)
@@ -174,8 +183,8 @@ _DECISION_HELP_SCHEMA: Final[Mapping[str, Any]] = {
             "site', 'ask the architect which governs')",
         },
     },
-    "description": "Required on every status 'check' (Your decision) finding: the reviewer's "
-    "reasoning in short plain words. Not needed on 'different' or 'same'.",
+    "description": "Required on every status 'check' (Not compared) finding: why it could not be "
+    "compared, in short plain words. Not needed on 'different' or 'same'.",
 }
 _FINDING_FIELDS: Final[Mapping[str, Any]] = {
     "page": {"type": "integer", "minimum": 1, "description": "The vendor's page (from 1)"},
@@ -207,9 +216,9 @@ _FINDING_FIELDS: Final[Mapping[str, Any]] = {
     "status": {
         "type": "string",
         "enum": list(STATUSES),
-        "description": "different = Wrong (the vendor does not match the source); check = Your "
-        "decision (a person must decide: give decision_help, and check_reason when both values "
-        "are printed and differ); same = Right (they match)",
+        "description": "different = Wrong (the vendor does not match the architect); check = Not "
+        "compared (nothing to compare: give decision_help saying why, and check_reason when both "
+        "values are printed and differ); same = Right (they match)",
     },
     "why": {"type": "string", "description": "Why it matters, one short line"},
     "verified": {
@@ -291,7 +300,7 @@ REPORT_FINDING: Final[Mapping[str, Any]] = {
     "description": (
         "Record one compared item: the vendor's value against the source's (the architect's "
         "drawing, a brand prototype, a GV rule, or the vendor's own arithmetic), with its status "
-        "Wrong (different), Your decision (check) or Right (same). Use it for every item you "
+        "Wrong (different), Not compared (check) or Right (same). Use it for every item you "
         "compare that the question is about, instead of writing a table: the app crops the "
         "evidence at your boxes, checks the printed values, scores how far to trust it "
         "(Confirmed / Likely / AI reading only) and shows it to the reviewer. Values as printed, "
@@ -544,7 +553,7 @@ def boxless_findings(findings: Sequence[Mapping[str, Any]]) -> list[dict[str, An
     left out. Each: `{id, page, item, missing: ["vendor_box", ...]}`."""
     out: list[dict[str, Any]] = []
     for finding in findings:
-        if finding.get("created_by") in ("gv_review", "ledger"):
+        if finding.get("created_by") in _CODE_MADE:
             continue
         missing: list[str] = []
         if _states(finding.get("vendor")) and not finding.get("vendor_box"):
@@ -594,9 +603,10 @@ def coverage_note(gaps: Sequence[int], file_name: str | None) -> str:
 
 # ---- "Your decision" items -------------------------------------------------------------------------
 
-#: Findings code made itself (GV Review's records, the reading ledger): their words are code's, so
-#: the lead is never sent back for their decision help.
-_CODE_MADE: Final = ("gv_review", "ledger")
+#: Findings code made itself (GV Review's records, the reading ledger, the vendor consistency
+#: check, the finish check, code's pairs): their words are code's, so the lead is never sent back for their
+#: decision help.
+_CODE_MADE: Final = ("gv_review", "ledger", "consistency", "architect_items", "pairs")
 
 
 def helpless_decisions(findings: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -619,7 +629,7 @@ def decision_help_note(items: Sequence[Mapping[str, Any]], *, prefixed: bool = T
     more = f" and {len(items) - 30} more" if len(items) > 30 else ""
     lead = f"{COVERAGE_CHECK_PREFIX} " if prefixed else ""
     return (
-        f"{lead}help the reviewer decide: these Your-decision findings have no decision_help: "
+        f"{lead}say why: these not-compared (status check) findings have no decision_help: "
         f"{listed}{more}. For each, update_finding with decision_help (what it measures; your "
         "best estimate with its method, e.g. a string added up or measure_on_drawing, or null; "
         "likely probably fine / probably wrong / can't tell; what to confirm), in short plain "
@@ -795,7 +805,7 @@ def _decision_when_wider(
             "than the unit)"
         )
     return (
-        "code made it status check (Your decision), not Wrong: your measure_on_drawing showed the "
+        "code made it status check (not compared), not Wrong: your measure_on_drawing showed the "
         f"architect's {fields.get('architect')} spans more than the unit ({extent.get('words')}). "
         "Its decision_help says what it measures and the unit's scaled size"
     )
@@ -930,6 +940,14 @@ class FindingBook:
     follow-up may correct (#1548, `chat_corrections.earlier_findings`)."""
     corrections: dict[str, dict[str, Any]] = field(default_factory=dict)
     """This answer's corrections of earlier findings, by ref (the update stored)."""
+    product_scope: ProductScope | None = None
+    """The products this message checks (`product_scope`): a finding of another product is never
+    recorded (the hard filter); `None`: every product (tests and older callers)."""
+    out_of_scope: int = 0
+    """The findings refused because their product is not in scope (kept in the trust block)."""
+    page_words: Callable[[int], str] | None = None
+    """A page's printed words and its area's title (the set pack), read to re-file an "other"
+    item to a product before the scope drops it (`product_scope.refiled`)."""
     _cites: int = 0
     """The recorded differences this answer must account for (set by the engine)."""
     _count: int = 0
@@ -1105,6 +1123,27 @@ class FindingBook:
             )
         return out
 
+    def _words_of(self, finding: Mapping[str, Any]) -> Callable[[], str]:
+        """Its page's words, read only when its own words name no product."""
+        page, words = finding.get("page"), self.page_words
+        return lambda: words(page) if words is not None and isinstance(page, int) else ""
+
+    def _in_scope(self, fields: dict[str, Any], created_by: str) -> bool:
+        """Whether a finding's product is in this message's scope. An "other" or unknown item is
+        re-filed to a product first, from its own words, then its page's (`refiled`); a code-made
+        one gets its one product even under All (`category_for`). An out-of-scope one is counted,
+        never recorded."""
+        scope = self.product_scope
+        if scope is None:
+            return True
+        category = refiled({**fields, "created_by": created_by}, scope, self._words_of(fields))
+        if category is not None:
+            fields["category"] = category
+            return True
+        with self._lock:
+            self.out_of_scope += 1
+        return False
+
     def report(self, raw: object, created_by: str) -> tuple[dict[str, Any], list[str]]:
         """A new finding (id, crops made), and the reasons any box has no picture."""
         if not isinstance(raw, Mapping):
@@ -1114,6 +1153,9 @@ class FindingBook:
             raise SandboxRefused(f"unknown argument {min(unknown)!r}")
         raw, dims, label_notes = self._labelled(raw, None)
         fields = self._fields(raw, partial=False)
+        if not self._in_scope(fields, created_by):
+            assert self.product_scope is not None
+            raise SandboxRefused(self.product_scope.refusal(fields["category"]))
         if created_by != "lead":
             fields["verified"] = False
         fields["created_by"] = created_by
@@ -1166,10 +1208,17 @@ class FindingBook:
         notes.extend(changed)
         return dict(finding), notes
 
-    def add_code_finding(self, given: Mapping[str, Any]) -> dict[str, Any] | None:
-        """A finding code made (the reading ledger's: `created_by: "ledger"`), added like a lead
-        finding (id, crops, checks). Its `ledger_ids` and `reference_side` are kept. A box that is
-        not on an upload is left out; a finding that still does not fit is skipped (None)."""
+    def add_code_finding(
+        self, given: Mapping[str, Any], *, created_by: str = "ledger"
+    ) -> dict[str, Any] | None:
+        """A finding code made (the reading ledger's: `created_by: "ledger"`; the vendor
+        consistency check's: `"consistency"`; the finish check's: `"architect_items"`; code's
+        pairs: `"pairs"`, with `architect_parts` for a summed chain), added like
+        a lead finding (id, crops, checks). Its `ledger_ids`, `reference_side`, `dims` (the labels
+        its values came from), `paired_by` (code paired the two sides) and `text_proof` (what the
+        finish check read and searched) are kept. A box that is not on an upload is left out; a
+        finding that still does not fit is skipped (None).
+        """
         fields_given = {k: v for k, v in given.items() if k in _FINDING_FIELDS}
         for name, limit in (("item", _MAX_ITEM), ("why", _MAX_WHY)):
             value = fields_given.get(name)
@@ -1204,6 +1253,8 @@ class FindingBook:
             except SandboxRefused as refused:
                 _log.warning("assistant chat ledger finding skipped: %s", refused)
                 return None
+        if not self._in_scope(fields, created_by):
+            return None
         with self._lock:
             if len(self.findings) >= MAX_FINDINGS:
                 return None
@@ -1232,11 +1283,19 @@ class FindingBook:
             "round": None,
             "arch_picture_id": arch_picture,
             "vendor_picture_id": vendor_picture,
-            "created_by": "ledger",
+            "created_by": created_by,
             "ledger_ids": [str(i) for i in given.get("ledger_ids") or []],
             "reference_side": side if side in ("vendor", "architect") else None,
             "sum_text": str(given["sum_text"]) if given.get("sum_text") else None,
         }
+        if isinstance(given.get("dims"), Mapping):
+            finding["dims"] = dict(given["dims"])
+        if given.get("paired_by") == "code":
+            finding["paired_by"] = "code"
+        if isinstance(given.get("text_proof"), Mapping):
+            finding["text_proof"] = json.loads(json.dumps(given["text_proof"]))
+        if isinstance(given.get("architect_parts"), Mapping):
+            finding["architect_parts"] = json.loads(json.dumps(given["architect_parts"]))
         if self.checker is not None:
             finding = self.checker(finding)
         with self._lock:
@@ -1351,6 +1410,14 @@ class FindingBook:
         changes = self._fields(given, partial=True)
         if not changes:
             raise SandboxRefused("give at least one field to change")
+        scope = self.product_scope
+        if "category" in changes and scope is not None:
+            with self._lock:
+                merged = {**self.findings[finding_id], **changes}
+            category = refiled(merged, scope, self._words_of(merged))
+            if category is None:
+                raise SandboxRefused(scope.refusal(changes["category"]))
+            changes["category"] = category
         changes["dims"] = dims
         notes: list[str] = list(label_notes)
         for box, picture, side in (
@@ -1499,21 +1566,39 @@ class FindingBook:
         page = record.get("page")
         if not isinstance(page, int) or page < 1:
             return None
+        category = (
+            record.get("category") if record.get("category") in finding_categories() else "other"
+        )
+        shown = " ".join(str(record.get("what") or "Recorded difference").split())[:_MAX_ITEM]
+        named = {
+            "category": category,
+            "item": shown,
+            "page": page,
+            "architect": record.get("architect"),
+            "vendor": record.get("vendor"),
+            "why": record.get("why"),
+        }
+        if not self._in_scope(named, "gv_review"):
+            return None
         with self._lock:
             self._count += 1
             finding_id = f"F{self._count}"
         code = record.get("source") == "code"
+        architect = record.get("architect")
+        if code:
+            # A GV rule's requirement in plain words with its computed value (#1622): the rule's
+            # comparison ("|38.25 - 40.5| = 2.25 > 0 in") read as `40 1/2"`, never the raw
+            # comparison or "see GV Review's record" when no value is recorded.
+            stated = rule_requirement(record.get("comparison"))
+            if stated is not None and (not architect or architect == record.get("comparison")):
+                architect = stated
         finding: dict[str, Any] = {
             "id": finding_id,
             "page": page,
             "vs_page": None,
-            "item": " ".join(str(record.get("what") or "Recorded difference").split())[:_MAX_ITEM],
-            "category": (
-                record.get("category")
-                if record.get("category") in finding_categories()
-                else "other"
-            ),
-            "architect": str(record.get("architect") or "see GV Review's record")[:_MAX_VALUE],
+            "item": shown,
+            "category": named["category"],
+            "architect": str(architect or "see GV Review's record")[:_MAX_VALUE],
             "vendor": str(record.get("vendor") or "see GV Review's record")[:_MAX_VALUE],
             "status": "different",
             "why": (str(record["why"])[:_MAX_WHY] if record.get("why") else None),
@@ -1539,6 +1624,26 @@ class FindingBook:
     def by(self, created_by: str) -> list[dict[str, Any]]:
         with self._lock:
             return [dict(f) for f in self.findings.values() if f["created_by"] == created_by]
+
+    def prove_by_code(self, finding_id: str, changes: Mapping[str, Any]) -> dict[str, Any] | None:
+        """An answer's finding re-proved by code's own pair of the same item (`pair_findings`):
+        code's values, status, labels and `paired_by: code` laid over it, a new picture for a box
+        it gains, then its checks again. None when it was dropped meanwhile."""
+        update = dict(changes)
+        for box, picture in (("arch_box", "arch_picture_id"), ("vendor_box", "vendor_picture_id")):
+            if box in update:
+                update[picture], _why = self._picture(update[box])
+        with self._lock:
+            if finding_id not in self.findings:
+                return None
+            finding = {**self.findings[finding_id], **update}
+        if self.checker is not None:
+            finding = self.checker(finding)
+        with self._lock:
+            if finding_id not in self.findings:
+                return None
+            self.findings[finding_id] = finding
+        return dict(finding)
 
     def live(self) -> list[dict[str, Any]]:
         """The findings not dropped, in the order they were reported."""
@@ -1696,18 +1801,172 @@ def make_markup_file(
     base: Any = None,
     *,
     cloud_decisions: bool = False,
+    settled: Sequence[Mapping[str, Any]] = (),
 ) -> MarkupFile:
     """The marked-up copy of the vendor's file, written to `out` (`chat_drawing.markup_pdf`): a
     tight red cloud, a numbered marker and a note at each Wrong finding's vendor box (else its
     architect box) when that box is on the vendor's file, a numbered amber marker at each one
     needing your decision (`cloud_decisions`: an amber cloud and note too), the draft stamp on page
     1, and every finding listed again on the notes pages. Raises `LookupError` when the chat has no
-    copy of the set's PDFs. `base`: a `markup_base` copy to draw on (used once)."""
+    copy of the set's PDFs. `base`: a `markup_base` copy to draw on (used once). `settled`: the
+    decision items code settled itself (#1554), listed on the notes pages."""
     name, placed = place_findings(workspace, by_impact(findings))
     drawing = import_module("app.review.assistant.chat_drawing")
-    drawing.markup_pdf(workspace.uploads / name, placed, out, base, cloud_decisions=cloud_decisions)
+    drawing.markup_pdf(
+        workspace.uploads / name,
+        placed,
+        out,
+        base,
+        cloud_decisions=cloud_decisions,
+        settled=settled,
+    )
     data = out.read_bytes()
     return MarkupFile(markup_name(name, kind), len(data), hashlib.sha256(data).hexdigest())
+
+
+#: The zero-click drawing (#1581) is drawn by this module, loaded by name.
+PROOF_MODULE: Final = "app.review.assistant.proof_drawing"
+#: The cloud drawing's file name ends with this.
+CLOUD_DRAWING_KIND: Final = "GV cloud drawing"
+
+
+def reviewers(findings: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Who decided anything on these findings (#1521), in the order they first did."""
+    names: list[str] = []
+    for finding in findings:
+        decision = finding.get("decision")
+        name = decision.get("by") if isinstance(decision, Mapping) else None
+        if name and str(name) not in names:
+            names.append(str(name))
+    return names
+
+
+def make_proof_file(
+    workspace: ChatWorkspace,
+    findings: Sequence[Mapping[str, Any]],
+    out: Path,
+    base: Any = None,
+    *,
+    settled: Sequence[Mapping[str, Any]] = (),
+    today: str | None = None,
+    context: Any = None,
+    not_compared: int | None = None,
+) -> MarkupFile:
+    """The zero-click red/green proof drawing of a full check (#1581,
+    `proof_drawing.proof_markup_pdf`), written to `out`: a red cloud and a red/green note at each
+    Wrong item code proved, a proof entry each, a cover with the counts, the rule, the stamp and
+    what code assumed about the page map, and how many items could not be compared
+    (`not_compared`, the Not-compared list's rows, #1619). The reviewer's decisions
+    (on `findings`, when there are any) override: agreed = clouded, not a problem = left out.
+    Raises `LookupError` when the chat has no copy of the set's PDFs. `context`: the send-ready
+    package's (#1622, `send_package.PackageContext`): its round-2 check, its stable comment numbers
+    ("C-07" on each cloud and note) and the review result stamped on the cover with the
+    disclaimer; without it the round-2 check is worked out here and the clouds are numbered 1, 2,
+    …."""
+    if context is not None:
+        findings = import_module("app.review.assistant.send_package").labelled(
+            findings, context.labels
+        )
+    ordered = by_impact(findings)
+    name, placed = place_findings(workspace, ordered)
+    listing = read_listing(workspace)
+    files = {
+        str(item["name"]): workspace.uploads / str(item["name"])
+        for item in listing
+        if (workspace.uploads / str(item["name"])).is_file()
+    }
+    plan = import_module("app.review.assistant.full_check_plan")
+    pack = workspace.set_pack
+    drawing = import_module(PROOF_MODULE)
+    date = today or datetime.now(UTC).strftime("%Y-%m-%d")
+    action = None if context is None else context.action(ordered)
+    rounds = round_two_report(workspace, name, ordered, pack) if context is None else context.rounds
+    drawing.proof_markup_pdf(
+        workspace.uploads / name,
+        placed,
+        out,
+        set_name=name,
+        stamp=drawing.stamp_line(date, reviewers(findings)),
+        base=base,
+        files=files,
+        cache=None if pack is None else pack / "hires",
+        assumptions=plan.plan_assumptions(pack, name),
+        settled=settled,
+        rounds=rounds,
+        action=action,
+        action_stamp=None if action is None else context.stamp(action),
+        not_compared=not_compared,
+    )
+    data = out.read_bytes()
+    return MarkupFile(
+        markup_name(name, CLOUD_DRAWING_KIND), len(data), hashlib.sha256(data).hexdigest()
+    )
+
+
+def full_check_rounds(workspace: ChatWorkspace, findings: Sequence[Mapping[str, Any]]) -> Any:
+    """The automatic round-2 check for a full check's files (`round_two_report` on the vendor's
+    file, biggest first), worked out once for the cloud drawing and the send-ready package.
+    Raises `LookupError` when the chat has no copy of the set's PDFs."""
+    main = main_upload(read_listing(workspace))
+    if main is None or not (workspace.uploads / str(main["name"])).is_file():
+        raise LookupError("no uploads")
+    return round_two_report(workspace, str(main["name"]), by_impact(findings), workspace.set_pack)
+
+
+def round_two_report(
+    workspace: ChatWorkspace,
+    main_file: str,
+    findings: Sequence[Mapping[str, Any]],
+    pack: Path | None,
+) -> Any:
+    """The automatic round-2 check (#1603, `round_check.round_two`) for the cloud drawing: the set
+    pack's dimension labels and page map (with code's own plan-check answers), and the drawings'
+    ink compared by `revision_diff.diff_pages` as a second witness. `None` without a pack, or
+    when it fails (the drawing is made without it)."""
+    if pack is None:
+        return None
+    try:
+        dims = json.loads((pack / "dims.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    plan = import_module("app.review.assistant.full_check_plan")
+    page_map = plan.read_page_map(pack, assume=True, main_file=main_file)
+    pdf = workspace.uploads / main_file
+    diff = import_module("app.review.assistant.revision_diff")
+    seen: dict[tuple[int, int], list[tuple[float, float, float, float]] | None] = {}
+
+    def zones(
+        first: int,
+        first_box: tuple[float, float, float, float],
+        second: int,
+        second_box: tuple[float, float, float, float],
+    ) -> list[tuple[float, float, float, float]] | None:
+        if (first, second) not in seen:
+            found = diff.diff_pages(
+                pdf, first, second, region_a=first_box, region_b=second_box, auto_regions=False
+            )
+            seen[(first, second)] = (
+                [
+                    (
+                        float(zone["box_a"]["x0"]),
+                        float(zone["box_a"]["y0"]),
+                        float(zone["box_a"]["x1"]),
+                        float(zone["box_a"]["y1"]),
+                    )
+                    for zone in found.get("zones") or []
+                ]
+                # Zones left out of the list say nothing about a spot: no ink witness then.
+                if found.get("aligned") and not found.get("more_zones")
+                else None
+            )
+        return seen[(first, second)]
+
+    try:
+        checker = import_module("app.review.assistant.round_check")
+        return checker.round_two(findings, dims, page_map, zones=zones)
+    except Exception as failed:  # noqa: BLE001 - the drawing is made without the round-2 check
+        _log.warning("assistant round-2 check failed: %s", type(failed).__name__)
+        return None
 
 
 type Placed = tuple[int, Mapping[str, Any], int | None, tuple[float, ...] | None, str]
@@ -1747,12 +2006,15 @@ def make_report_file(
     findings: Sequence[Mapping[str, Any]],
     not_checked: Sequence[str],
     out: Path,
+    *,
+    settled: Sequence[Mapping[str, Any]] = (),
 ) -> MarkupFile:
-    """The full check's report PDF (`chat_drawing.check_report_pdf`), written to `out`."""
+    """The full check's report PDF (`chat_drawing.check_report_pdf`), written to `out`, with the
+    decision items code settled itself (`settled`, #1554)."""
     main = main_upload(read_listing(workspace))
     name = "drawing set" if main is None else str(main["name"])
     drawing = import_module("app.review.assistant.chat_drawing")
-    drawing.check_report_pdf(out, summary, by_impact(findings), not_checked)
+    drawing.check_report_pdf(out, summary, by_impact(findings), not_checked, settled=settled)
     data = out.read_bytes()
     return MarkupFile(
         markup_name(name, "AI check report"), len(data), hashlib.sha256(data).hexdigest()

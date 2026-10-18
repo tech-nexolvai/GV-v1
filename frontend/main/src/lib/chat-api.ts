@@ -153,6 +153,39 @@ export interface ChatMessage {
   resume?: ChatResume | null;
   /** #1551: how the app understood the question (the answer's `understood` block); null when none. */
   understood?: ChatUnderstood | null;
+  /** #1622: a full check's review action, decided by code on read; null on other messages. */
+  review_action?: ChatReviewAction | null;
+}
+
+/**
+ * #1622: the review result a full check's send-ready package carries, decided by code (rules S0 to
+ * S7, the first that matches wins) from the comments it sends the vendor (the clouded Wrong items).
+ * The comment letter and the cloud drawing's cover say the same words.
+ */
+export interface ChatReviewAction {
+  action: 'approved' | 'approved_as_noted' | 'revise_resubmit' | 'rejected' | 'not_for_sending';
+  rule: 'S0' | 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6' | 'S7';
+  /** "Approved", "Approved as noted", "Revise and resubmit", "Rejected", "Check incomplete: not for sending". */
+  words: string;
+  /** Why, in one line: "2 of 5 corrections change fabrication." */
+  reason: string;
+  corrections: number;
+  fabrication: number;
+  /** S6: what was not reviewed. */
+  note?: string | null;
+  /** What the vendor does next (the letter's closing line). */
+  next_step: string;
+  /** Who must act now: "Vendor: revise and resubmit". */
+  required_by: string;
+  disclaimer: string;
+}
+
+/** #1622: what a full check's package kept with the answer (the result's state, the comment numbers). */
+export interface ChatPackageState {
+  state: { incomplete?: string | null; missing_areas?: number; wrong_product?: boolean; still_open?: number };
+  numbers?: Record<string, string>;
+  submittal?: string;
+  round?: number;
 }
 
 /** A full check's progress, by code (#1524): the last one is stored as a block. */
@@ -177,6 +210,10 @@ export interface ChatScope {
   area?: string | null;
   why?: string | null;
   label?: string | null;
+  /** The products checked: a strict scope (Anant, 2026-10-18). Absent on older answers. */
+  products?: string[] | null;
+  all_products?: boolean | null;
+  products_label?: string | null;
 }
 
 /** #1551: what a typed question asks for, as the app's sharpen step read it. */
@@ -244,7 +281,19 @@ export type ChatBlock =
   | { type: 'accuracy'; accuracy: ChatAccuracy }
   | { type: 'unknowns'; unknowns: ChatUnknown[] }
   | { type: 'resume'; resume: ChatResume }
-  | { type: 'understood'; understood: ChatUnderstood };
+  | { type: 'resolver'; resolver: ChatResolver }
+  | { type: 'package'; package: ChatPackageState }
+  | { type: 'understood'; understood: ChatUnderstood }
+  | { type: 'fallback'; fallback: ChatFallback };
+
+/**
+ * #1577: Anthropic's refusal fallback answered instead of the model asked (the model asked
+ * declined; another model wrote the answer). Model ids, e.g. "claude-fable-5-1" → "claude-opus-4-8".
+ */
+export interface ChatFallback {
+  from_model: string;
+  to_model: string;
+}
 
 // ── Chat v2 (CONTRACT2-findings): findings with evidence, and page coverage ──
 
@@ -349,6 +398,16 @@ export interface ChatFinding {
   decision_help?: FindingDecisionHelp | null;
   /** #1545: why two printed values that differ still need a person (else code calls it Wrong). */
   check_reason?: CheckReason | null;
+  /** #1554: set when GV Review settled this item (which was Your decision) by itself, and how. */
+  settled?: FindingSettled | null;
+  /** #1554, status `check`: the one question a person answers, written by code. */
+  question?: string | null;
+  /** #1554, status `check`: why it needs a person. */
+  keep_reason?: KeepReason | null;
+  /** #1554: the same item on other pages or rounds, folded into this one. */
+  also_on?: FindingAlsoOn[] | null;
+  /** #1554, `source: vendor_arithmetic`: code's sum of the parts, in inches ("80.125"). */
+  parts_sum?: string | null;
   /**
    * #1569: how much a Wrong (or Your-decision) item matters, by code: ordering only, never a status
    * or a colour. `rank` 1 is the biggest of its status; the cloud drawing and the report use the
@@ -357,6 +416,34 @@ export interface ChatFinding {
   impact?: FindingImpact | null;
   /** #1548: set when a later message of the chat corrected it; this is its newest version. */
   updated_in?: FindingLater | null;
+  /**
+   * #1581: where the zero-click cloud drawing puts it, by code (`proof.py`): only Wrong items code
+   * proved are clouded. Added on a stored answer (not while it streams); follows the decision.
+   */
+  proof?: FindingProof | null;
+  /** #1611: `code` when code paired the architect's and the vendor's labels by itself. */
+  paired_by?: string | null;
+}
+
+/** #1581: the zero-click cloud drawing's group for a finding, and its words. */
+export type ProofGroup = 'clouded' | 'right' | 'not_compared' | 'dismissed';
+
+export interface FindingProof {
+  group: ProofGroup;
+  /** Wrong items: what it should be and what governs it: '37" (architect 3'-1", page 28)'. */
+  should_be?: string | null;
+  /** Clouded items: the check that proved it, in plain words. */
+  proof?: string | null;
+  /** The other groups: why it is not clouded, in one line. */
+  reason?: string | null;
+  /** #1619, not_compared: the architect-first rule (R1-R10) it falls under. */
+  rule?: string | null;
+  /** #1619, not_compared: the reason (the Not-compared list's group). */
+  not_compared?: string | null;
+  /** #1619, not_compared: the trade's words for it ("Field verify", "RFI to the architect", "Illegible", "Not reviewed: …"). */
+  label?: string | null;
+  /** #1619, not_compared: what is needed to compare it. */
+  settle?: string | null;
 }
 
 /** #1569: code's impact score (0-100), its place among the items of its status, and why. */
@@ -375,6 +462,67 @@ export interface FindingDecisionHelp {
   estimate?: { value_in: number; plus_minus_in: number; method: string } | null;
   likely: 'probably fine' | 'probably wrong' | 'can\'t tell';
   confirm: string;
+}
+
+/** #1554: how an item that was Your decision ended when code settled it. */
+export type SettledOutcome = 'wrong' | 'right' | 'merged' | 'not_a_difference';
+
+/** #1554: why an item still needs a person. */
+export type KeepReason =
+  | 'architect_prints_nothing'
+  | 'measures_something_else'
+  | 'which_governs'
+  | 'unreadable'
+  | 'needs_job_value'
+  | 'layout'
+  | 'vendor_disagrees'
+  | 'other';
+
+export interface FindingSettled {
+  outcome: SettledOutcome;
+  /** The rule or tool code used (same_item, gv_limits, vendor_sum, printed_vs_printed, …). */
+  method: string;
+  /** What code did and found, in one plain sentence. */
+  how: string;
+  was?: 'check';
+}
+
+export interface FindingAlsoOn {
+  finding_id: string;
+  page?: number | null;
+  vs_page?: number | null;
+  round?: number | null;
+  item?: string | null;
+  vendor?: string | null;
+  architect?: string | null;
+  /** Its spot on that page: the cloud drawing marks it there too. */
+  vendor_box?: FindingBox | null;
+  arch_box?: FindingBox | null;
+}
+
+/** #1554: one Your-decision item GV Review settled by itself (the folded group's line). */
+export interface ChatResolverEntry {
+  finding_id: string;
+  page?: number | null;
+  vs_page?: number | null;
+  item?: string | null;
+  vendor?: string | null;
+  architect?: string | null;
+  outcome: SettledOutcome;
+  method: string;
+  how: string;
+  /** The finding it was folded into. */
+  into?: string | null;
+}
+
+/** #1554: the resolver's pass on a whole-set answer: counts before and after, and what it settled. */
+export interface ChatResolver {
+  before: { wrong: number; decision: number; right: number };
+  after: { wrong: number; decision: number; right: number };
+  settled: ChatResolverEntry[];
+  kept: Record<string, number>;
+  reads: number;
+  cost_usd: string;
 }
 
 /** #1548: the later answer of the same chat that corrected a finding. */
@@ -402,7 +550,12 @@ export interface ChatFindingUpdate {
 export type EvidenceKind = 'observed' | 'derived' | 'inferred';
 
 /** Why something was not checked (an unknown record). */
-export type UnknownWhy = 'unreadable' | 'not_opened' | 'missing_job_value' | 'pairing_uncertain' | 'refused_alignment';
+export type UnknownWhy =
+  | 'unreadable' | 'not_opened' | 'missing_job_value' | 'pairing_uncertain' | 'refused_alignment'
+  /** #1584, the vendor consistency check: an area on one side only, a round or an indexed sheet the set lacks. */
+  | 'no_counterpart' | 'missing_round' | 'not_in_set'
+  /** #1623, the finish check: different tag systems, a prototype-only finish, a note naming a part. */
+  | 'not_comparable';
 
 /** One thing the answer did not check, and what would settle it (built by code). */
 export interface ChatUnknown {
@@ -411,8 +564,8 @@ export interface ChatUnknown {
   what: string;
   why: UnknownWhy;
   needs: string;
-  /** `page`: a whole page; `item`: one value. */
-  scope?: 'page' | 'item' | null;
+  /** `page`: a whole page; `item`: one value; `set`: the drawing set itself (not counted against the answer). */
+  scope?: 'page' | 'item' | 'set' | null;
 }
 
 /**
@@ -705,7 +858,8 @@ export type ChatTool =
   | 'measure_on_drawing'
   | 'zoom'
   | 'read_under_markup'
-  | 'remember';
+  | 'remember'
+  | 'drawing_facts';
 
 /** One tool the assistant used. `step_start` sends it without its output; `step_end` sends it whole. */
 export interface ChatStep {
@@ -841,7 +995,9 @@ export type ChatEvent =
   | { event: 'trust'; data: { trust: ChatTrust } }
   | { event: 'cite'; data: { cite: ChatCite } }
   | { event: 'accuracy'; data: { accuracy: ChatAccuracy } }
-  | { event: 'unknowns'; data: { unknowns: ChatUnknown[] } };
+  | { event: 'unknowns'; data: { unknowns: ChatUnknown[] } }
+  | { event: 'resolver'; data: { index?: number; resolver: ChatResolver } }
+  | { event: 'fallback'; data: { index?: number; fallback: ChatFallback } };
 
 export type ChatEventName = ChatEvent['event'];
 
@@ -849,6 +1005,7 @@ const EVENT_NAMES: ReadonlySet<string> = new Set<ChatEventName>([
   'message_start', 'thinking_start', 'thinking_delta', 'thinking_end', 'text_delta', 'step_start', 'step_end',
   'tasks', 'agent_start', 'agent_step', 'agent_end', 'file', 'usage', 'message_end', 'error',
   'finding', 'finding_dropped', 'finding_update', 'coverage', 'progress', 'scope', 'trust', 'cite', 'accuracy', 'unknowns', 'understood',
+  'resolver', 'fallback',
 ]);
 
 /**
@@ -883,6 +1040,8 @@ export const chatPaths = {
   markupPdf: (chatId: string, messageId: string) => `${BASE}/chats/${id(chatId)}/messages/${id(messageId)}/markup-pdf`,
   /** #1525: the cloud drawing and report made again from the reviewer's decisions (POST). */
   cloudDrawing: (chatId: string, messageId: string) => `${BASE}/chats/${id(chatId)}/messages/${id(messageId)}/cloud-drawing`,
+  /** #1584: the vendor consistency check, by code ($0, POST). */
+  consistency: (chatId: string) => `${BASE}/chats/${id(chatId)}/consistency`,
   /** #1569: code's plan for a full check of the set, and where it is unsure (no AI call). */
   fullCheckPlan: (packageId: string) => `${BASE}/packages/${id(packageId)}/full-check-plan`,
   /** #1522: the reviewer's Agree / Not a problem on one finding (POST). */
@@ -956,6 +1115,17 @@ export function makeMarkupPdf(chatId: string, messageId: string): Promise<ChatFi
 /** #1525: make the cloud drawing (and report) again from the reviewer's decisions; returns the new drawing. */
 export function remakeCloudDrawing(chatId: string, messageId: string): Promise<ChatFile> {
   return json<ChatFile>(chatPaths.cloudDrawing(chatId, messageId), { method: 'POST', body: '{}' });
+}
+
+/** #1584: the "model" of an answer code wrote alone (the vendor consistency check): no AI. */
+export const CHECK_MODEL = 'code-check';
+
+/**
+ * #1584: the vendor consistency check, by code only ($0, no AI): stored in the chat as a question and
+ * its answer, which it returns. A 409 says why it cannot run yet (a message running, the set still read).
+ */
+export function runConsistencyCheck(chatId: string): Promise<ChatMessage> {
+  return json<ChatMessage>(chatPaths.consistency(chatId), { method: 'POST', body: '{}' });
 }
 
 /**
@@ -1076,6 +1246,8 @@ export interface ChatApi {
   /** #1522: Agree / Not a problem per finding; optional so a fake API can leave it out. */
   decide?: typeof decideFinding;
   remakeCloud?: typeof remakeCloudDrawing;
+  /** #1584: the $0 vendor consistency check; optional so a fake API can leave it out (no menu item then). */
+  consistency?: typeof runConsistencyCheck;
   /** #1569: the plan check; optional so a fake API can leave it out (then no questions). */
   plan?: typeof getFullCheckPlan;
 }
@@ -1091,5 +1263,6 @@ export const LIVE_CHAT_API: ChatApi = {
   markup: makeMarkupPdf,
   decide: decideFinding,
   remakeCloud: remakeCloudDrawing,
+  consistency: runConsistencyCheck,
   plan: getFullCheckPlan,
 };

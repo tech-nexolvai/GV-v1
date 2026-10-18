@@ -68,6 +68,11 @@ class Settings(BaseSettings):
 
     environment: str = Field(default="development", min_length=1)
     request_id_header: str = Field(default="X-Request-ID", min_length=1)
+    # The host names the API answers to besides this machine's own (`localhost`, `127.0.0.1`,
+    # `::1`): a deployment's public name, as a JSON list (`GV_TRUSTED_HOSTS='["gv.example.com"]'`).
+    # Any other `Host` is refused, and so is a browser write from another site's page
+    # (`app/host_guard.py`, against DNS rebinding).
+    trusted_hosts: tuple[str, ...] = ()
 
     # The reviewer chat is optional presentation over completed findings.  It shares the deployment's
     # configured Bedrock identity. An API without model credentials still serves the plain deterministic
@@ -105,8 +110,8 @@ class Settings(BaseSettings):
     # The tool-using assistant (owner, 2026-10-16): it runs read-only commands on this package's
     # PDFs in a locked sandbox (`app/review/assistant/sandbox.py`) and looks at pictures it renders,
     # up to `review_assistant_max_tool_turns` turns per question, within the caps above. `auto` uses
-    # the Docker image `gv-assistant-sandbox` when it is built and Docker answers, else macOS
-    # `sandbox-exec`; `off` keeps the one-call assistant.
+    # the Docker image `gv-assistant-sandbox` when it is built and Docker answers, else no sandbox
+    # (`macos`, `sandbox-exec`, only when named); `off` keeps the one-call assistant.
     review_assistant_sandbox: Literal["auto", "docker", "macos", "off"] = "auto"
     # The tool-using loop is led by this model, which also checks the helpers' reports; the helper
     # agents run on `review_assistant_model`. Agent turns get their own, longer time limit.
@@ -144,8 +149,22 @@ class Settings(BaseSettings):
     # A full check's second, drawn-things helper per page group (#1569): notes, doors and drawers,
     # hardware, extent, brand prototype, finish tags; Sonnet at low effort, capped per helper.
     assistant_drawn_helpers: bool = True
-    # One sandbox command's time limit, and which sandbox runs it (`auto`: the Docker image
-    # `gv-assistant-sandbox` when built and Docker answers, else macOS `sandbox-exec`).
+    # A full check as a fixed-price roster of specialists (prompts and specialists design,
+    # Balanced): code first, then Sonnet specialists with their own money caps, a fresh-context
+    # verifier and a devil's advocate, and no lead. The fixed price is the full check's whole cap;
+    # what does not fit in it is listed as not done, never dropped. Off: the lead verifies (#1512).
+    assistant_full_check_roster: bool = True
+    assistant_full_check_cap_usd: Decimal = Field(default=Decimal(5), gt=0, allow_inf_nan=False)
+    # What proves that a vendor number and an architect number measure the same thing, for a red
+    # cloud (orchestrator's decision D1, provisional): `ai_pair_plus_code` = two blind AI picks of
+    # the same label plus code's checks (printed at both spots, the drawn extents agree, every
+    # advocate check passes); `code_only` = only items code paired by itself (the vendor's own
+    # sums, GV's rules) can be red.
+    assistant_pairing_proof: Literal["ai_pair_plus_code", "code_only"] = "ai_pair_plus_code"
+    # One sandbox command's time limit, and which sandbox runs it (`auto` and `docker`: the Docker
+    # image `gv-assistant-sandbox` when built and Docker answers, else no shell: the chat says the
+    # secure sandbox is not running; `macos`: `sandbox-exec`, only for tests on a Mac, never a
+    # silent fallback, security audit 2026-10-18).
     assistant_command_timeout_seconds: int = Field(default=120, ge=5, le=900)
     assistant_sandbox: Literal["auto", "docker", "macos"] = "auto"
     # One model call's time limit (a streamed call with long thinking can take minutes).

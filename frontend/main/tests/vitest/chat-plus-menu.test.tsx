@@ -90,7 +90,7 @@ describe('the + menu’s rules, without React', () => {
     // #1547: the products' Focus options are the registry's: each active one, both, then the ones
     // not ready yet ("coming later").
     expect(ids).toEqual([
-      'full_check', 'check_page', 'compare_area', 'gv_rules', 'strings', 'missing', 'rounds',
+      'full_check', 'check_page', 'compare_area', 'gv_rules', 'consistency', 'strings', 'missing', 'rounds',
       'cloud', 'csv', 'letter', 'rfi', 'summary',
       'product:countertop', 'product:cabinet', 'all_products',
       'product:lighting', 'product:seating', 'product:case_goods', 'product:mirrors', 'product:accessories', 'product:artwork',
@@ -429,6 +429,33 @@ describe('the + menu', () => {
     expect(csv).toHaveBeenCalledWith(FINDINGS, 'findings-a-1.csv');
   });
 
+  it('the vendor consistency check runs by code ($0) and says when it is done', async () => {
+    const user = userEvent.setup();
+    let finish: () => void = () => {};
+    const onRun = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    render(<Harness consistency={{ onRun }} />);
+    await user.click(plusButton());
+    expect(opt('consistency').textContent).toContain('$0');
+    await user.click(opt('consistency'));
+    expect(onRun).toHaveBeenCalledTimes(1);
+    expect(plusButton().getAttribute('aria-busy')).toBe('true');
+    finish();
+    await waitFor(() => expect(document.querySelector('[data-slot=chat-plus-status]')?.textContent).toContain('Vendor consistency check finished'));
+    expect(plusButton().getAttribute('aria-busy')).toBeNull();
+  });
+
+  it('the vendor consistency check waits while an answer runs, and is absent where it cannot run', async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(<Harness consistency={{ onRun: vi.fn(async () => {}) }} running />);
+    await user.click(plusButton());
+    expect(opt('consistency').getAttribute('aria-disabled')).toBe('true');
+    expect(opt('consistency').textContent).toContain('After this answer');
+    unmount();
+    render(<Harness />);
+    await user.click(plusButton());
+    expect(opt('consistency').textContent).toContain('Not available here');
+  });
+
   it('lists the recently used options first', async () => {
     const user = userEvent.setup();
     render(<Harness />);
@@ -458,19 +485,22 @@ describe('the + menu on the chat page', () => {
     );
   }
 
-  it('fills the composer, sets the chips (remembered per set) and makes the cloud drawing from the last answer', async () => {
+  it('fills the composer, sets the chips (for this chat) and makes the cloud drawing from the last answer', async () => {
     const user = userEvent.setup();
     const api = fakeChatApi({ get: vi.fn(async (id: string) => chatOut(id, [QUESTION, ANSWER], { product_type: 'countertop' })) as never });
     renderPage(api);
     await screen.findByText('Two items differ.');
     const chips = screen.getByRole('group', { name: 'Products to check' });
-    await waitFor(() => expect(within(chips).getByRole('button', { name: 'Countertop' }).getAttribute('aria-pressed')).toBe('true'));
+    // All by default, even for a set stated "countertop" (2026-10-18).
+    await waitFor(() => expect(within(chips).getByRole('button', { name: 'All' }).getAttribute('aria-pressed')).toBe('true'));
+    expect(within(chips).getByRole('button', { name: 'Countertop' }).getAttribute('aria-pressed')).toBe('true');
 
     await user.click(plusButton());
     await user.click(opt('product:cabinet'));
     expect(within(chips).getByRole('button', { name: 'Cabinet' }).getAttribute('aria-pressed')).toBe('true');
     expect(within(chips).getByRole('button', { name: 'Countertop' }).getAttribute('aria-pressed')).toBe('false');
-    expect(window.localStorage.getItem('gv-chat-products:pkg-1')).toBe('["cabinet"]');
+    // The pick lasts for this chat only; nothing is remembered for the set.
+    expect(window.localStorage.getItem('gv-chat-products:pkg-1')).toBeNull();
 
     await user.click(plusButton());
     await user.click(opt('rfi'));
@@ -499,6 +529,35 @@ describe('the + menu on the chat page', () => {
     expect(estimate?.querySelector('.tabular-nums')).toBeTruthy();
   });
 
+  it('runs the vendor consistency check by code and shows its stored answer; Retry runs it again, never the AI', async () => {
+    const user = userEvent.setup();
+    const CHECKED: ChatMessage = {
+      id: 'a-2', role: 'assistant', created_at: '2026-10-17T09:05:00Z', text: 'Vendor consistency (by code, $0): 4 dimension strings added up, 1 does not.',
+      model: 'code-check', effort: '' as never, thinking: false, cost_usd: '0.00', stopped: null,
+      blocks: [{ type: 'text', text: 'Vendor consistency (by code, $0): 4 dimension strings added up, 1 does not.', by: 'code' }] as never, files: [],
+    };
+    const ASKED: ChatMessage = { id: 'q-2', role: 'user', created_at: '2026-10-17T09:05:00Z', text: 'Vendor consistency check' } as ChatMessage;
+    let stored = [QUESTION, ANSWER];
+    const api = fakeChatApi({
+      get: vi.fn(async (id: string) => chatOut(id, stored, { product_type: 'countertop' })) as never,
+      consistency: vi.fn(async () => {
+        stored = [QUESTION, ANSWER, ASKED, CHECKED];
+        return CHECKED;
+      }) as never,
+    });
+    renderPage(api);
+    await screen.findByText('Two items differ.');
+    await user.click(plusButton());
+    await user.click(opt('consistency'));
+    expect(api.consistency).toHaveBeenCalledWith('c-1');
+    expect(await screen.findByText(/4 dimension strings added up, 1 does not/)).toBeTruthy();
+    expect(api.send).not.toHaveBeenCalled();
+    const retries = screen.getAllByRole('button', { name: 'Retry' });
+    await user.click(retries[retries.length - 1]);
+    await waitFor(() => expect(api.consistency).toHaveBeenCalledTimes(2));
+    expect(api.send).not.toHaveBeenCalled();
+  });
+
   it('runs the full check through the page’s own send, after the confirm', async () => {
     const user = userEvent.setup();
     const api = fakeChatApi({ get: vi.fn(async (id: string) => chatOut(id, [QUESTION, ANSWER], { product_type: 'countertop' })) as never });
@@ -508,6 +567,6 @@ describe('the + menu on the chat page', () => {
     await user.click(opt('full_check'));
     await user.click(screen.getByRole('button', { name: 'Run full check' }));
     await waitFor(() => expect(api.send).toHaveBeenCalled());
-    expect(api.send.mock.calls[0][1]).toMatchObject({ text: 'Full check', mode: 'full_check', products: ['countertop'], model: OPUS.id, effort: 'high' });
+    expect(api.send.mock.calls[0][1]).toMatchObject({ text: 'Full check', mode: 'full_check', products: ['countertop', 'cabinet'], model: OPUS.id, effort: 'high' });
   });
 });

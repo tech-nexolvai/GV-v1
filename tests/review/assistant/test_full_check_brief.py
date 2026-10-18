@@ -24,7 +24,7 @@ import pytest
 
 from app.review.assistant.full_check_brief import (
     CHECKLIST_FIELDS,
-    PAGE_CHECKLIST,
+    PRINCIPLE,
     checklist_gaps,
     checklist_send_back,
     helper_brief,
@@ -32,6 +32,7 @@ from app.review.assistant.full_check_brief import (
     page_lines,
     recorded_on_pages,
 )
+from app.review.assistant.full_check_specialists import specialist_system
 
 SKILL = Path(__file__).parents[3] / "app/review/assistant/skills/gv-review/SKILL.md"
 
@@ -131,6 +132,57 @@ def test_page_lines_name_the_area_the_drawings_and_the_architect_page() -> None:
     ]
 
 
+def test_a_page_with_the_architects_drawing_is_never_sent_to_another_page() -> None:
+    """#1644: a page holding the architect's drawing over a brand prototype, its area titled on
+    the page before, was told "the architect's drawing is on" that page; the helper took the page
+    for the prototype alone. A page whose area title is on a vendor-only page was pointed there."""
+    top, bottom = [40, 40, 560, 380], [40, 420, 560, 780]
+    left, right = [40, 40, 290, 780], [310, 40, 560, 780]
+    page_map = {
+        "pages": [
+            {
+                "page": 1,
+                "area": "4. Vanity",
+                "halves": [
+                    {"role": "vendor", "round": 1, "box": right},
+                    {"role": "architect", "box": left},
+                ],
+            },
+            {
+                "page": 2,
+                "area": None,
+                "area_from_page": 1,
+                "halves": [
+                    {"role": "architect", "box": top},
+                    {"role": "brand_prototype", "box": bottom},
+                ],
+            },
+            {"page": 3, "area": "7. Island", "halves": [{"role": "vendor", "round": 1}]},
+            {
+                "page": 4,
+                "area": None,
+                "area_from_page": 3,
+                "halves": [
+                    {"role": "brand_prototype", "box": right},
+                    {"role": "architect", "box": left},
+                ],
+            },
+        ]
+    }
+    assert page_lines([1, 2, 3, 4], page_map) == [
+        (
+            "- p1: 4. Vanity; vendor round 1 (right) + architect (left); the area's other "
+            "architect drawing is on p2 (the larger scale or the detail governs)"
+        ),
+        (
+            "- p2: area not named; architect (top) + brand prototype (bottom); the area's other "
+            "architect drawing is on p1 (the larger scale or the detail governs)"
+        ),
+        "- p3: 7. Island; vendor round 1; the architect's drawing is on p4",
+        "- p4: area not named; brand prototype (right) + architect (left)",
+    ]
+
+
 def test_a_page_the_map_does_not_know_is_still_listed() -> None:
     assert page_lines([4], PAGE_MAP) == ["- p4: not in the page map; look at it"]
     assert page_lines([4], None) == ["- p4: not in the page map; look at it"]
@@ -145,7 +197,8 @@ def test_recorded_results_are_only_the_helpers_pages() -> None:
     lines = recorded_on_pages(DOCUMENT, [7, 8])
     assert lines == [
         "- p7: Countertop row on page 7 (architect 68 in; vendor 72 in) [C4]",
-        '- p8: air:a1 (architect 3\'-1"; vendor 46") [ai-review:p8:air:a1]',
+        # Named by what it measures (#1634), never by its record id; the id stays in brackets.
+        '- p8: Floor to outlet (architect 3\'-1"; vendor 46") [ai-review:p8:air:a1]',
     ]
     assert recorded_on_pages(DOCUMENT, [9]) == []
     assert recorded_on_pages(None, [7]) == []
@@ -191,9 +244,16 @@ def test_the_brief_carries_pages_recorded_results_leads_and_the_checklist() -> N
     assert "[C4]" in brief and "[ai-review:p8:air:a1]" in brief
     assert "a recorded item never closes its area" in brief
     assert "- p8: unsure: wall to first outlet" in brief
-    for name, text in PAGE_CHECKLIST:
-        assert f"- {name}: {text}" in brief
-    assert "each segment of a chain" in brief
+    assert f"WHAT TO COMPARE: {PRINCIPLE}" in brief
+    assert "each segment of a chain on its own" in brief
+    # Label-first output (prompts design W1): labels, strings by label, what each end spans.
+    for words in (
+        "vendor_dim and architect_dim",
+        "part_dims and total_dim",
+        "where each end lands",
+    ):
+        assert words in brief, words
+    assert "A miss is never found again; a doubtful item is only listed." in brief
     assert "CHECKLIST p<N>: architect a/b; notes a/b; strings a/b; not compared:" in brief
     assert "starting with its area" in brief
     assert "{" not in brief and "}" not in brief  # every slot filled
@@ -239,8 +299,8 @@ CHECKLIST p9: architect 2/2; notes 1/1; strings 0/0
     assert "segment by segment" in note
 
 
-def test_the_counted_fields_are_the_first_three_checklist_items() -> None:
-    assert CHECKLIST_FIELDS == tuple(name for name, _ in PAGE_CHECKLIST[:3])
+def test_the_counted_fields_are_the_ones_the_report_line_names() -> None:
+    assert CHECKLIST_FIELDS == ("architect", "notes", "strings")
 
 
 # ---- review_results keeps the leads --------------------------------------------------------------
@@ -324,17 +384,19 @@ def test_skill_md_says_the_recall_rules() -> None:
 
 # ---- the kinds of differences the helpers used to miss (#1543) ------------------------------------
 
-#: Each new checklist item, with words its line must carry.
+#: The kinds of differences the helpers used to miss (#1543, #1545), with words the knowledge pack
+#: must carry for them. The 13-item checklist became one principle in the brief (prompts design
+#: W2); the detail moved to the knowledge each helper kind has in its system prompt.
 NEW_ITEMS: dict[str, tuple[str, ...]] = {
-    "hardware": ("pulls (type, size, finish)", "cam lock", "grommets", "power and data units"),
-    "construction": ("Construction notes", "brand sheet", "contradicts", "metal lining"),
-    "position": ("centred on or aligned with", "collides with a neighbour", "its own opening"),
-    "extent": ("vendor omits", "extra pieces", "doors, drawers, bins and fronts", "island faces"),
-    "brand": ("ID set vs brand prototype", "Your decision", "which_governs"),
-    "scaled": ("measure_on_drawing", "only ever status check", "never different (Wrong)"),
-    # #1545: what a dimension spans, and the reasoning on every Your-decision item.
-    "span": ("measure_on_drawing with `dimension`", "box, soffit", "different_extent", "printed"),
-    "decision": ("decision_help", "what it measures", "best estimate", "what to confirm"),
+    "hardware": ("Hardware or accessory different", "cam lock", "grommet", "power unit"),
+    "construction": ("construction note contradicted", "metal lining"),
+    "position": ("centred or aligned", "collides with a neighbour", "misses its opening"),
+    "extent": ("A section the architect draws is missing", "island faces"),
+    "brand": ("brand prototype", "which governs"),
+    "scaled": ("A scaled size", "only ever", "never Wrong"),
+    "span": ("box_above_unit", "Different extent: not Wrong"),
+    "notes": ("A note not followed", "even when the count"),
+    "locating": ("A thing left out", "its own item"),
 }
 
 #: Shapes of client values (the same as `test_skills_export.py`): a drawing or sheet number, the
@@ -348,17 +410,15 @@ CLIENT_VALUE_SHAPES = (
 )
 
 
-def test_the_checklist_names_the_differences_helpers_used_to_miss() -> None:
-    checklist = dict(PAGE_CHECKLIST)
-    brief = helper_brief([7], file_name="set.pdf", page_map=PAGE_MAP, review_document={})
+def test_the_knowledge_names_the_differences_helpers_used_to_miss() -> None:
+    numbers = specialist_system("numbers", local=Path("/nonexistent"))
+    drawn = specialist_system("drawn", local=Path("/nonexistent"))
+    both = numbers + drawn
     for name, words in NEW_ITEMS.items():
-        assert name in checklist, name
-        assert f"- {name}: {checklist[name]}" in brief, name
         for word in words:
-            assert word in checklist[name], (name, word)
-    # The report line code reads back is unchanged: the new items are not counted fields.
+            assert word.lower() in " ".join(both.lower().split()), (name, word)
+    # The report line code reads back is unchanged.
     assert CHECKLIST_FIELDS == ("architect", "notes", "strings")
-    assert [name for name, _ in PAGE_CHECKLIST][-1] == "rounds"
 
 
 def test_the_brief_holds_no_client_value() -> None:
@@ -381,9 +441,9 @@ def test_skill_md_says_what_to_compare_beyond_dimensions() -> None:
         "**Construction notes**",
         "metal lining",
         "**ID set vs brand prototype**",
-        "`check_reason:\n  which_governs`",
+        "`check_reason: which_governs`",
         "**Scaled values**",
-        '"about X (±T)": status `check` (Your decision), never `different` (Wrong)',
+        '"about X (±T)": status `check` (not compared), never `different`',
         "**Extent first**",
         "`check_reason: different_extent`",
         "**Printed vs printed is Wrong**",

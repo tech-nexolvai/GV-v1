@@ -28,11 +28,16 @@ from app.review.assistant.chat_engine import (
 )
 from app.review.assistant.chat_findings import boxless_note, coverage_note, decision_help_note
 from app.review.assistant.chat_tools import (
+    FABLE_NOTE,
+    HELPER_KITS,
     HELPER_SYSTEM_PROMPT,
     HELPER_TOOL_NAMES,
     HELPER_TOOLS,
+    LEAD_LOADED,
     LEAD_SYSTEM_PROMPT,
     LEAD_TOOLS,
+    helper_system_prompt,
+    helper_tools,
 )
 from app.review.assistant.full_check_brief import checklist_send_back, helper_brief
 from app.review.assistant.tool_schema import BOX_UNITS
@@ -121,7 +126,9 @@ def test_no_tool_is_offered_twice_and_the_lead_has_every_helper_tool() -> None:
 #: The words and tools the prompts no longer use, with what replaced them.
 RETIRED: dict[str, str] = {
     r"\bTo check\b": "the trust level is 'AI reading only'",
-    r"\bNeeds checking\b": "the status is 'Your decision'",
+    r"\bNeeds checking\b": "the status is 'Not compared'",
+    # #1619: nothing goes to the reviewer's decision; the architect's drawings govern.
+    r"\b[Yy]our decision\b|\bVendor to confirm\b|check before sending": "Not compared",
     r"Download marked-up PDF": "the cloud drawing (made by code)",
     r"\bdelegate\b": "the Agent tool",
     r"`plan`|`bash`": "TaskCreate / bash_tool",
@@ -148,6 +155,7 @@ def _prompts() -> dict[str, str]:
                 decision_help_note([{"id": "F2", "page": 3, "item": "x"}]),
             ]
         ),
+        "Fable note": FABLE_NOTE,
         "tools": json.dumps([tool["description"] for tool in ALL_TOOLS.values()]),
         "SKILL.md": SKILL.read_text(encoding="utf-8"),
     }
@@ -163,11 +171,11 @@ def test_no_prompt_uses_a_retired_word_or_tool(pattern: str) -> None:
 def test_the_prompts_use_the_reviewers_words() -> None:
     for where in ("lead system prompt", "SKILL.md"):
         text = _prompts()[where]
-        for words in ("Wrong", "Your decision", "Right", "Not compared", "AI reading only"):
+        for words in ("Wrong", "Right", "Not compared", "AI reading only"):
             assert words in text, (where, words)
     findings = next(tool for tool in LEAD_TOOLS if tool["name"] == "report_finding")
     status = findings["input_schema"]["properties"]["status"]["description"]
-    for words in ("different = Wrong", "check = Your", "same = Right"):
+    for words in ("different = Wrong", "check = Not compared", "same = Right"):
         assert words in status
 
 
@@ -206,16 +214,48 @@ def test_the_prompts_stay_within_their_budgets() -> None:
     """Characters, measured at chat-v13 (the audit), with a little room. The tools grew on purpose
     (what each field means, when to use the tool, one example); the prompts shrank."""
     budgets = {
-        "lead system prompt": 2600,
+        "lead system prompt": 2700,  # +1 line on deferred tools (#1606)
         "helper system prompt": 1400,
         "full check": 1600,
         "full check, code-planned": 1900,
+        "Fable note": 400,
         "SKILL.md": 20000,
     }
     prompts = _prompts()
     for where, most in budgets.items():
         assert len(prompts[where]) <= most, (where, len(prompts[where]))
-    # chat-v15 (#1558): the numbered dimension labels' fields (zoom marks and guides,
+    # chat-v16 (#1558): the numbered dimension labels' fields (zoom marks and guides,
     # architect_dim / vendor_dim on report and update, cite's dim) took about 900 characters.
-    assert len(json.dumps(list(LEAD_TOOLS))) <= 45_000
-    assert len(json.dumps(list(HELPER_TOOLS))) <= 29_000
+    # Tool search (Anthropic's API): only the tools always loaded enter the lead's context, so
+    # they keep the budget; the deferred ones reach it when its search finds them.
+    loaded = [tool for tool in LEAD_TOOLS if not tool.get("defer_loading")]
+    assert len(json.dumps(loaded)) <= 30_000
+    assert len(json.dumps(list(LEAD_TOOLS))) <= 90_000
+    # The helpers' full list grew by drawing_facts (#1606); a kit is smaller (#1608).
+    assert len(json.dumps(list(HELPER_TOOLS))) <= 30_000
+    assert len(json.dumps(list(helper_tools("compare")))) <= 25_000
+    assert len(json.dumps(list(helper_tools("rounds")))) <= 20_000
+    assert len(json.dumps(list(helper_tools("notes")))) <= 20_000
+
+
+def test_each_helper_kit_has_known_tools_and_a_prompt_naming_only_those() -> None:
+    known = {str(tool["name"]) for tool in (*HELPER_TOOLS, *LEAD_TOOLS)}
+    for kit, names in HELPER_KITS.items():
+        tools = helper_tools(kit)
+        assert [tool["name"] for tool in tools] == list(names) and set(names) <= known, kit
+        assert {"zoom", "report_finding", "set_coverage", "drawing_facts"} <= set(names), kit
+        prompt = helper_system_prompt(kit)
+        for name in ("record_string", "record_reading"):
+            assert (name in prompt) is (name in names), (kit, name)
+    assert helper_tools() == HELPER_TOOLS and helper_system_prompt() == HELPER_SYSTEM_PROMPT
+
+
+def test_the_lead_keeps_its_core_tools_loaded_and_defers_the_rest() -> None:
+    names = {str(tool["name"]): tool for tool in LEAD_TOOLS}
+    assert LEAD_LOADED <= set(names)
+    for name, tool in names.items():
+        assert bool(tool.get("defer_loading")) is (name not in LEAD_LOADED), name
+    # A deferred tool is found by its name and description: each says what it is for.
+    for tool in LEAD_TOOLS:
+        if tool.get("defer_loading"):
+            assert len(str(tool["description"]).split(".")[0]) >= 30, tool["name"]

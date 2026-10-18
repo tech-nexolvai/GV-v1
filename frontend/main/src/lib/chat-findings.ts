@@ -34,19 +34,19 @@ export function categoryWords(category: FindingCategory, catalog: ProductCatalog
 }
 
 /**
- * The owner's one vocabulary (2026-10-17): Wrong (red) · Needs your decision, short "Your decision"
- * (amber, used sparingly) · Right (green) · Not compared (grey). "To check" is never shown.
+ * The owner's one vocabulary (2026-10-17; #1619: nothing goes to the reviewer's decision): Wrong (red)
+ * · Not compared (grey: nothing to compare, with the reason) · Right (green). "To check" is never shown.
  */
 export const STATUS_WORDS: Record<FindingStatus, string> = {
   different: 'Wrong',
-  check: 'Your decision',
+  check: 'Not compared',
   same: 'Right',
 };
 
 /** The long form, for headings and the summary. */
 export const STATUS_LONG: Record<FindingStatus, string> = {
   different: 'What’s wrong',
-  check: 'Needs your decision',
+  check: 'Nothing to compare',
   same: 'Right',
 };
 
@@ -62,13 +62,18 @@ export const SOURCE_WORDS: Record<FindingSource, string | null> = {
 };
 
 /**
- * The two value columns' names for a finding. A cross-view finding compares two views of the SAME
- * side's drawings, so its columns are "Reference view" (the governing view) and "This view".
+ * The two value columns' names for a finding, and the small tag on each picture. A cross-view
+ * finding compares two views of the SAME side's drawings, so its columns are "Reference view" (the
+ * governing view) and "This view". #1581: when the proof is the vendor's own string (its parts
+ * against its printed total) or the vendor printing the same span twice, both sides are the
+ * vendor's: never "Architect".
  */
-export function sideLabels(finding: Pick<ChatFinding, 'source'>): { architect: string; vendor: string } {
+export function sideLabels(finding: Pick<ChatFinding, 'source'> & Partial<Pick<ChatFinding, 'reference_side' | 'created_by'>>): { architect: string; vendor: string; architectTag: string; vendorTag: string } {
+  if (finding.source === 'vendor_arithmetic') return { architect: 'Vendor: the parts', vendor: 'Vendor: the printed total', architectTag: 'V', vendorTag: 'V' };
+  if (finding.source === 'cross_view' && finding.reference_side === 'vendor' && finding.created_by === 'consistency') return { architect: 'Vendor: the same span, elsewhere', vendor: 'Vendor: this dimension', architectTag: 'V', vendorTag: 'V' };
   return finding.source === 'cross_view'
-    ? { architect: 'Reference view', vendor: 'This view' }
-    : { architect: 'Architect', vendor: 'Vendor' };
+    ? { architect: 'Reference view', vendor: 'This view', architectTag: 'A', vendorTag: 'V' }
+    : { architect: 'Architect', vendor: 'Vendor', architectTag: 'A', vendorTag: 'V' };
 }
 
 /** What the small tick means, said on hover and to a screen reader. */
@@ -135,10 +140,10 @@ export function findingCounts(findings: readonly Pick<ChatFinding, 'status' | 'c
   return counts;
 }
 
-/** The count line: "12 wrong · 3 need your decision" ("Nothing wrong" when none). */
+/** The count line: "12 wrong · 3 not compared" ("Nothing wrong" when none). */
 export function countWords(counts: Pick<FindingCounts, 'different' | 'check'>): string {
   const parts = [counts.different === 0 ? 'Nothing wrong' : `${counts.different} wrong`];
-  if (counts.check > 0) parts.push(`${counts.check} ${counts.check === 1 ? 'needs' : 'need'} your decision`);
+  if (counts.check > 0) parts.push(`${counts.check} not compared`);
   return parts.join(' · ');
 }
 
@@ -196,7 +201,7 @@ export function categoriesPresent(findings: readonly ChatFinding[]): FindingCate
   return categoryOrderFor(findings).filter((category) => findings.some((finding) => categoryOf(finding) === category));
 }
 
-/** The findings in the order the result's sections show them (Wrong, Your decision, Right, Not compared; by area), for the viewer's arrows. */
+/** The findings in the order the result's sections show them (Wrong, Not compared, Right, not looked at; by area), for the viewer's arrows. */
 export function sectionOrder(findings: readonly ChatFinding[], filter: FindingFilter): ChatFinding[] {
   const shown = findings.filter((finding) => matchesFilter(finding, { ...filter, status: 'any' }));
   const rank = (finding: ChatFinding) => (finding.status === 'same' && finding.compared === false ? 'not_compared' : finding.status);
@@ -367,9 +372,9 @@ export function pagesWords(pages: readonly number[]): string {
 export function groupCountWords(counts: FindingCounts): string {
   const parts: string[] = [];
   if (counts.different) parts.push(`${counts.different} wrong`);
-  if (counts.check) parts.push(`${counts.check} your decision`);
+  if (counts.check) parts.push(`${counts.check} not compared`);
   if (counts.same) parts.push(`${counts.same} right`);
-  if (counts.not_compared) parts.push(`${counts.not_compared} not compared`);
+  if (counts.not_compared) parts.push(`${counts.not_compared} not looked at`);
   return parts.join(' · ');
 }
 
@@ -426,6 +431,8 @@ export interface LinePart {
 }
 
 export interface FindingLine {
+  /** What the vendor did: "drew", or "prints" for the vendor's own string (#1554). */
+  vendorVerb?: string;
   vendor: LinePart;
   /** "needs" (wrong), "both" (right, same inches), or the reference ("architect shows"). */
   verb: string;
@@ -434,6 +441,23 @@ export interface FindingLine {
   printed: string | null;
   /** Code's difference ("+9 in"), or null. */
   difference: string | null;
+}
+
+/**
+ * The vendor's own string (#1554): "Vendor prints 80 in · parts add up to 80 1/8 in −1/8 in". It
+ * has no architect value, so the row never says what it "needs".
+ */
+function sumLine(finding: Pick<ChatFinding, 'vendor' | 'inches' | 'architect'> & Partial<Pick<ChatFinding, 'parts_sum' | 'printed_total'>>): FindingLine {
+  const printed = inchNumber(finding.inches?.vendor);
+  const vendor: LinePart = printed !== null
+    ? { text: `${inchWords(printed)} in`, inches: true }
+    : { text: shortValue(finding.printed_total ?? finding.vendor) ?? 'nothing', inches: false };
+  const summed = inchNumber(finding.parts_sum);
+  if (summed === null) return { vendorVerb: 'prints', vendor, verb: 'its parts do not add up to it', reference: null, printed: null, difference: null };
+  const reference: LinePart = { text: `${inchWords(summed)} in`, inches: true };
+  const off = printed !== null ? printed - summed : null;
+  if (off === 0) return { vendorVerb: 'prints', vendor, verb: 'parts add up to it', reference: null, printed: null, difference: null };
+  return { vendorVerb: 'prints', vendor, verb: 'parts add up to', reference, printed: null, difference: off !== null ? differenceWords(off) : null };
 }
 
 /**
@@ -463,8 +487,9 @@ function linePart(finding: Pick<ChatFinding, 'architect' | 'vendor' | 'inches'>,
  * The row's one line, PATH step 4.4: "Vendor drew 46 in · needs 37 in (architect 3' - 1")".
  * Values are the finding's own (code's inches or the printed words); nothing is re-typed.
  */
-export function findingLine(original: Pick<ChatFinding, 'source' | 'status' | 'architect' | 'vendor' | 'inches'>): FindingLine {
+export function findingLine(original: Pick<ChatFinding, 'source' | 'status' | 'architect' | 'vendor' | 'inches'> & Partial<Pick<ChatFinding, 'parts_sum' | 'printed_total'>>): FindingLine {
   const finding = once(original);
+  if (finding.source === 'vendor_arithmetic') return sumLine(finding);
   const vendor = linePart(finding, 'vendor');
   const reference = linePart(finding, 'architect');
   const difference = inchNumber(finding.inches?.difference);
@@ -475,7 +500,7 @@ export function findingLine(original: Pick<ChatFinding, 'source' | 'status' | 'a
   }
   // The brand prototype is not the design: a row never says the vendor "needs" it (#1530 review).
   const needs = finding.status === 'different' && finding.source !== 'brand_prototype';
-  const verb = needs ? 'needs' : `${referenceWord(finding)} ${finding.source === 'rules' ? 'says' : finding.source === 'vendor_arithmetic' ? 'add to' : 'shows'}`;
+  const verb = needs ? 'needs' : `${referenceWord(finding)} ${finding.source === 'rules' ? 'says' : 'shows'}`;
   return { vendor, verb, reference, printed: needs ? printed : null, difference: differenceText };
 }
 
@@ -494,7 +519,7 @@ export interface ReviewerWords {
   /** "Vendor drew", or "This view shows" for two views of the same drawings. */
   vendorLabel: string;
   vendor: string;
-  /** "Why it’s wrong" / "What you need to decide" / "Why it’s right" / "Why it was not compared". */
+  /** "Why it’s wrong" / "Why it could not be compared" / "Why it’s right" / "Why it was not looked at". */
   whyLabel: string;
   why: string;
   /** What to tell the vendor (Wrong only). */
@@ -521,20 +546,25 @@ export function reviewerWords(original: ChatFinding): ReviewerWords {
   const fallback = status === 'different' && difference !== null && architect !== null && vendor !== null
     ? `The vendor’s ${inchWords(vendor)} in is ${inchWords(Math.abs(difference))} in ${difference > 0 ? 'more' : 'less'} than the ${whom}’s ${inchWords(architect)} in.`
     : status === 'different' ? `The vendor’s drawing does not match the ${whom}.`
-    : status === 'check' ? 'The AI could not settle this on its own: look at the two pictures and decide.'
+    : status === 'check' ? 'There is nothing to compare it with; it is listed apart with the reason.'
     : status === 'not_compared' ? `${finding.not_compared_why === 'pair_not_covered' ? 'Its page pair was not compared' : 'Both sides were not looked at'}, so this is not counted as right.`
     : `The vendor’s drawing matches the ${whom}.`;
   const tell = status !== 'different' ? null
-    : finding.source === 'brand_prototype' ? `Confirm which governs: the brand prototype shows ${architect !== null ? `${inchWords(architect)} in` : fullValue(finding.architect)}, the vendor drew ${vendor !== null ? `${inchWords(vendor)} in` : fullValue(finding.vendor)}.`
+    // The vendor's own numbers (#1584): no architect value to match.
+    : finding.source === 'vendor_arithmetic' && architect !== null ? `Correct the string: its parts add up to ${inchWords(architect)} in${vendor !== null ? `, but its overall prints ${inchWords(vendor)} in` : ''}.`
+    : finding.source === 'cross_view' && architect !== null ? `Print one value for this span: the drawing measures ${inchWords(architect)} in${vendor !== null ? `, this view prints ${inchWords(vendor)} in` : ''}.`
+    // #1619 (R1): the architect's drawings govern; the brand prototype is reference only.
+    : finding.source === 'brand_prototype' ? `The architect’s drawings govern: the brand prototype (reference only) shows ${architect !== null ? `${inchWords(architect)} in` : fullValue(finding.architect)}, the vendor drew ${vendor !== null ? `${inchWords(vendor)} in` : fullValue(finding.vendor)}.`
     : architect !== null ? `Change it to ${inchWords(architect)} in to match the ${whom}${vendor !== null ? ` (now ${inchWords(vendor)} in)` : ''}.`
     : finding.source === 'rules' ? `Fix it to meet GV’s rule: ${fullValue(finding.architect)}.`
     : `Match the ${whom}: ${fullValue(finding.architect)}.`;
   return {
     referenceLabel: referenceLabel(finding),
-    reference: sideWords(finding, 'architect'),
+    // Code's sum of the vendor's parts is not printed anywhere: no "(printed …)".
+    reference: finding.source === 'vendor_arithmetic' && architect !== null ? `${inchWords(architect)} in` : sideWords(finding, 'architect'),
     vendorLabel: finding.source === 'cross_view' ? 'This view shows' : 'Vendor drew',
     vendor: sideWords(finding, 'vendor'),
-    whyLabel: { different: 'Why it’s wrong', check: 'What you need to decide', same: 'Why it’s right', not_compared: 'Why it was not compared' }[status],
+    whyLabel: { different: 'Why it’s wrong', check: 'Why it could not be compared', same: 'Why it’s right', not_compared: 'Why it was not looked at' }[status],
     why: finding.why?.trim() || fallback,
     tell,
     sure: sureWords(finding),
@@ -572,11 +602,13 @@ export function decisionHelpRows(finding: Pick<ChatFinding, 'decision_help'>): D
 }
 
 /** How sure, in one plain line: what backs it, never a check's name. */
-export function sureWords(finding: Pick<ChatFinding, 'trust_level' | 'checks'>): string {
+export function sureWords(finding: Pick<ChatFinding, 'trust_level' | 'checks' | 'witnesses'>): string {
   const checks = finding.checks;
   // Only a check that said "no_text" may say pen strokes: most stroke numbers will get a witness.
   const strokes = checks?.printed_architect === 'no_text' || checks?.printed_vendor === 'no_text';
   if (finding.trust_level === 'confirmed') return 'Code found the values printed on the drawing (or worked them out), and an AI reading agrees.';
+  // Likely from code alone (a non-AI witness, no AI reading yet), or from two AI readings.
+  if (finding.trust_level === 'likely' && finding.witnesses?.length) return 'Code proved it from the drawing; no AI reading has checked it yet.';
   if (finding.trust_level === 'likely') return 'Two separate AI readings agree; no code check could read it.';
   if (checks?.second_read === 'disagrees' || checks?.critic === 'objects') return 'A second AI look disagreed, so check the pictures yourself.';
   if (strokes) return 'The numbers are drawn as pen strokes, so no independent check could read them.';
@@ -705,4 +737,10 @@ export function isShortAnswer(message: Pick<ViewMessage, 'status' | 'stopped' | 
   // A table or a code block is never a short answer, even on two lines.
   if (lines.some((line) => /^\s*(\||```)/.test(line))) return false;
   return lines.length <= SHORT_LINES && text.length <= SHORT_CHARACTERS;
+}
+
+/** "Also on p.9, p.12": the other pages of the same item, folded into this one (#1554). */
+export function alsoOnWords(finding: Pick<ChatFinding, 'also_on'>): string {
+  const pages = [...new Set((finding.also_on ?? []).map((other) => other.page).filter((page): page is number => typeof page === 'number'))];
+  return pages.length ? `Also on ${pages.map((page) => `p.${page}`).join(', ')}` : '';
 }

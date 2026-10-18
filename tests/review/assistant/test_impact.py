@@ -105,11 +105,20 @@ def test_blocks_get_their_impact_on_read_and_the_notes_name_the_biggest() -> Non
     assert biggest_line([(1, _f("F1", "x", status="same"))]) is None
 
 
+PROVED: dict[str, Any] = {
+    "source": "rules",
+    "rule_check_id": "C1",
+    "witnesses": ["rule"],
+    "checks": {"rule": "agrees"},
+}
+
+
 def test_the_check_report_lists_whats_wrong_biggest_first(tmp_path: Path) -> None:
     findings = by_impact(
         [
-            _f("F1", "Label text", "0.25"),
-            _f("F2", "Overall width", "6"),
+            # Wrong items code proved (GV's rule): the report's What's wrong (#1619).
+            _f("F1", "Label text", "0.25", **PROVED),
+            _f("F2", "Overall width", "6", **PROVED),
             _f("F3", "Top depth", "0", status="same"),
         ]
     )

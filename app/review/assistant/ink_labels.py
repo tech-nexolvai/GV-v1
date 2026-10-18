@@ -555,11 +555,17 @@ def inch_mark_at_end(row: Sequence[Token], turn: Turn) -> int:
 
 
 def row_picture(
-    row: Sequence[Token], turn: Turn, height_px: int = 48, *, inch_mark: bool = True
+    row: Sequence[Token],
+    turn: Turn,
+    height_px: int = 48,
+    *,
+    inch_mark: bool = True,
+    slash: bool = True,
 ) -> np.ndarray | None:
     """One row redrawn upright, dark ink on white: glyphs and marks at their own geometry, each
     stacked fraction moved onto the line (numerator, a drawn `/`, denominator, row-tall).
-    `inch_mark=False` leaves out a trailing inch mark (an engine that reads `"` as `99`)."""
+    `inch_mark=False` leaves out a trailing inch mark (an engine that reads `"` as `99`);
+    `slash=False` sets a fraction's parts apart with no slash (read for their digits only)."""
     if not inch_mark and (drop := inch_mark_at_end(row, turn)):
         row = row[: len(row) - drop]
     mains = [t for t in row if t.kind != "fraction"]
@@ -591,7 +597,9 @@ def row_picture(
                 paths = tuple(p for g in group for p in g.paths)
                 places.append(_Place(paths, part_scale, (start, high), (cursor, margin), scale))
                 cursor += (end - start) * part_scale + 0.12 * height_px
-                if index == 0:
+                if index == 0 and not slash:
+                    cursor += 0.5 * height_px
+                elif index == 0:
                     cursor += 0.1 * height_px
                     slashes.append(
                         (

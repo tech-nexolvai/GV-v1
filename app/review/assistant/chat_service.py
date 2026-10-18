@@ -67,6 +67,7 @@ from app.review.assistant.chat_findings import (
     products_words,
     read_listing,
 )
+from app.review.assistant.chat_harness import chat_harness, update_note
 from app.review.assistant.chat_memory import add_note, notes_block, set_notes
 from app.review.assistant.chat_provider import ChatProvider
 from app.review.assistant.chat_request import ChatModel
@@ -85,9 +86,16 @@ from app.review.assistant.chat_store import (
     stored_chat_spend,
     unanswered_questions,
 )
-from app.review.assistant.chat_tools import MAX_AGENTS, ChatTools, ResultsLoader, named_pages
+from app.review.assistant.chat_tools import (
+    FABLE_NOTE,
+    MAX_AGENTS,
+    ChatTools,
+    ResultsLoader,
+    named_pages,
+)
 from app.review.assistant.chat_unknowns import asks_for_the_rest, last_unknowns, work_list_note
 from app.review.assistant.full_check_plan import read_page_map
+from app.review.assistant.package_store import numbering
 from app.review.assistant.plan_check import (
     MAX_DOUBTS,
     answer_note,
@@ -96,7 +104,14 @@ from app.review.assistant.plan_check import (
     read_answers,
     record_answers,
 )
+from app.review.assistant.product_scope import (
+    ProductScope,
+    final_blocks,
+    no_rules_note,
+    scoped_loader,
+)
 from app.review.assistant.sandbox import UPLOADS, ChatWorkspace, Sandbox, safe_file_name
+from app.review.assistant.send_package import PackageIdentity
 from app.review.assistant.sharpen import apply_sharpen
 from app.runs.rates import ModelRates
 
@@ -607,12 +622,24 @@ def full_check_label(products: Sequence[str], effort: str) -> str:
     return f"Full check \u00b7 {products_words(products)} \u00b7 {effort.capitalize()} effort"
 
 
-def focus_line(products: Sequence[str]) -> str:
-    words = products_words(products).lower()
+def focus_line(products: Sequence[str], unruled: Sequence[str] = ()) -> str:
+    """What the lead is told of the products (a strict scope, Anant 2026-10-18); `unruled`: the
+    products in scope with no published GV rule yet."""
+    scope = ProductScope.of(products)
+    words = scope.label.lower()
+    rules = (
+        f"GV's rules for them are in /mnt/skills/gv-review/rules.md; read "
+        f"/mnt/skills/gv-review/products/<id>.md for each ({', '.join(scope.products)})."
+    )
+    note = no_rules_note([p for p in scope.products if p in unruled])
+    if note is not None:
+        rules += f" {note} Say so in your answer."
+    if scope.every:
+        return f"Products checked in this chat: {words} (all of them). {rules}"
     return (
-        f"Focus for this chat: {words}. GV's rules for them come first in "
-        "/mnt/skills/gv-review/rules.md; read /mnt/skills/gv-review/products/<id>.md for each "
-        f"({', '.join(products)})."
+        f"Products checked in this chat: {words} only. Compare and report only {words}: an item "
+        "of another product, or of no product, is outside this check and code drops it (never "
+        f"report it, never mention it as a problem). {rules}"
     )
 
 
@@ -659,6 +686,12 @@ class MessageJob:
     """Continue (#1514): the interrupted answer whose work this message goes on from."""
     drawn_helpers: bool = False
     """A full check's drawn-things helper per page group (#1569)."""
+    roster: bool = False
+    """A full check as a fixed-price roster of specialists, no lead (`full_check_roster`)."""
+    full_check_cap_micros: int | None = None
+    """The roster full check's fixed price (its whole cap); `None`: the message cap."""
+    pairing_proof: str = "ai_pair_plus_code"
+    """What proves a pairing for a red cloud (`full_check_roster`)."""
     plan_answers: Mapping[str, str] | None = None
     """The reviewer's answers to the plan check (#1569), kept with the set pack before the run."""
     sharpen_model: bool = False
@@ -673,11 +706,15 @@ class MessageJob:
     page_cache_workers: int = 3
     page_cache_memory_mb: int = 256
     """#1575: pages the hi-res cache draws at once, and its decoded tiles kept in memory."""
+    unruled: tuple[str, ...] = ()
+    """The products in scope with no published GV rule yet: the answer says so plainly."""
+    identity: PackageIdentity = field(default_factory=PackageIdentity)
+    """Who and what the full check's send-ready package is about (#1622)."""
 
 
 _NO_SANDBOX: Final = (
-    "The chat's computer (the sandbox) is not running on this server, so Claude cannot open the "
-    "drawings. Start Docker Desktop (with the gv-assistant-sandbox image built), then ask again."
+    "The secure sandbox (Docker) is not running, so Claude cannot open the drawings. Start Docker "
+    "Desktop (with the gv-assistant-sandbox image built), then ask again."
 )
 _NO_UPLOADS: Final = (
     "The drawing set's PDFs could not be copied into the chat's computer. Please ask again; if it "
@@ -960,6 +997,9 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             if job.continue_from is None
             else _interrupted(session, job.chat_id, job.continue_from)
         )
+    # The lead's system prompt and tools: the ones the chat began with (#1577), so the history's
+    # thinking stays valid after a restart on a newer harness; a newer prompt comes as a note.
+    harness = chat_harness(workspace.root, replayed=bool(replay))
     user_content: list[dict[str, Any]] = []
     # The files are listed in the first message the model sees (an earlier message that got no
     # answer is not in its history), and again when the set's PDFs changed.
@@ -967,13 +1007,16 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
         user_content.append(
             {"type": "text", "text": uploaded_files_text(listing, changed=changed and bool(replay))}
         )
+    newer = update_note(harness, replay)
+    if newer is not None:
+        user_content.append({"type": "text", "text": newer})
     focus = None
     if job.products is not None:
         marker = workspace.root / "chat_products.json"
         wanted = json.dumps(list(job.products))
         before = marker.read_text(encoding="utf-8") if marker.exists() else None
         if before != wanted or not replay:
-            focus = focus_line(job.products)
+            focus = focus_line(job.products, job.unruled)
         marker.write_text(wanted, encoding="utf-8")
     if focus is not None:
         user_content.append({"type": "text", "text": focus})
@@ -988,6 +1031,8 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
         user_content.append({"type": "text", "text": work_list})
     if earlier is not None:
         user_content.append({"type": "text", "text": continue_note(*earlier, mode=job.mode)})
+    if job.model.short == "fable":
+        user_content.append({"type": "text", "text": FABLE_NOTE})
     question = FULL_CHECK_INSTRUCTION if job.mode == "full_check" else job.text
     user_content.append({"type": "text", "text": question})
 
@@ -1039,19 +1084,28 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             lead_max_turns=job.lead_max_turns,
             helper_max_turns=job.helper_max_turns,
             max_parallel_agents=job.max_parallel_agents,
-            message_cap_micros=job.message_cap_micros,
+            message_cap_micros=(
+                job.full_check_cap_micros
+                if job.mode == "full_check" and job.roster and job.full_check_cap_micros
+                else job.message_cap_micros
+            ),
             package_cap_micros=job.package_cap_micros,
             rates=job.rates,
             mode=job.mode,
             products=job.products or (),
             drawn_helpers=job.drawn_helpers,
+            roster=job.roster,
+            pairing_proof=job.pairing_proof,
+            identity=job.identity,
+            numbering=numbering(job.factory, job.package_id, job.chat_id, run.message_id),
         ),
         provider=job.provider,
         tools=ChatTools(
             workspace=workspace,
             sandbox=sandbox,
             page_count=max((int(item.get("pages") or 0) for item in listing), default=0),
-            results=job.results,
+            # GV Review's recorded results cut to the products in scope (`product_scope`).
+            results=scoped_loader(job.results, ProductScope.of(job.products)),
             register_file=register_file,
             uploads=listing,
             remember_note=remember_note,
@@ -1063,6 +1117,8 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
         package_spent=package_spent,
         read_picture=read_picture,
         cancel=run.cancel,
+        lead_system=harness.system,
+        lead_tools=harness.tools,
     )
     run.engine = engine
     engine.book.earlier = dict(earlier_found)
@@ -1093,6 +1149,21 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
     outcome = engine.run()
     if outcome.stopped == "cancelled":
         sandbox.kill_all()
+    # The hard filter's backstop: no out-of-scope finding is stored, whatever reached the blocks.
+    outcome.blocks, dropped = final_blocks(
+        outcome.blocks, engine.product_scope, engine.book.out_of_scope
+    )
+    if dropped:
+        _log.warning(
+            "assistant chat product scope (%s): %d out-of-scope findings dropped",
+            ",".join(engine.product_scope.products),
+            dropped,
+        )
+    # A product with no GV rule yet is said plainly, never checked against nothing in silence.
+    note = no_rules_note([p for p in engine.product_scope.products if p in job.unruled])
+    if note is not None and outcome.stopped not in ("cancelled", "error"):
+        outcome.blocks.append({"type": "text", "text": note})
+        outcome.text = f"{outcome.text}\n\n{note}" if outcome.text else note
     finish(outcome)
 
 

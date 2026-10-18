@@ -26,6 +26,26 @@
 #   global_rule_hints  the kinds of GV standard to look for (no numbers: those are in rules.md).
 #   category_label     how findings for this product are grouped on screen and in the report
 #                      (default: plural). A finding's category is the product id, or "other".
+#   words              optional: words that, printed on a drawing or in an item's name, can only
+#                      mean this product. Code uses them when a check covers only some products
+#                      (the chat's product chips are a strict scope): an area whose every page
+#                      names only products outside the check is not sent to a helper, and a
+#                      code-made item named with them gets this category. Keep them specific (no
+#                      "door", "base", "sink"): a word two products share would skip the wrong
+#                      pages. A product with no words is never guessed. Products not active yet
+#                      have words too: an item a helper filed as "other" is re-filed by them
+#                      before a single-product check drops it (a pendant light is lighting).
+#   hints              optional: words that only suggest this product may be drawn on a page
+#                      ("sink", "stone"). A page printing one is never left out of a check of this
+#                      product; they never give an item its category. Broad is safe here.
+#   tag_families       optional: the tag families that name this product's finishes and materials
+#                      (the capital letters before a code's number: QZ for QZ-12). Code compares the
+#                      architect's and the vendor's codes of these families, area by area, and files
+#                      what it finds under this product. A family belongs to one product only. Leave
+#                      out a family that means different things in different sets (PL is plastic
+#                      laminate in one set and a plumbing fixture in another): a wrong family gives a
+#                      false "missed finish". Other trades' families (tile, paint, wall covering)
+#                      are never listed.
 
 version: 1
 # Where each product's skill file `<id>.md` lives, relative to this file.
@@ -69,6 +89,11 @@ products:
       - Sink front offset, and the minimum back offset left behind the cut-out.
       - Field cut added at each wall end.
       - Countertop depth from the cabinet depth plus the overhang.
+    words: [countertop, countertops, counter top, counter tops, quartz, granite, marble,
+            solid surface, backsplash, back splash, side splash, sidesplash, splash]
+    hints: [stone, sink, sinks, cooktop, faucet, lavatory, vanity top, counter, counters]
+    # Countertop, stone, quartz, solid surface.
+    tag_families: [CT, ST, QZ, QTZ, SS, SSM]
 
   - id: cabinet
     label: Cabinet
@@ -107,6 +132,12 @@ products:
       - Filler width limits (smallest and largest filler).
       - Fit to the site by adjusting fillers first; equipment cabinets are never resized.
       - Cabinet width limits per kind (single door, double door, drawer) for this job.
+    words: [cabinet, cabinets, filler, fillers, drawer, drawers, toe kick, toekick, shelf,
+            shelves, end panel, end panels]
+    hints: [door, doors, base, upper, uppers, scribe, pull, pulls, hinge, hinges, panel, panels,
+            vanity, cab, toe]
+    # Laminate, plastic laminate, wood, wood veneer, metal.
+    tag_families: [LA, PLAM, WD, WV, MT]
 
   - id: lighting
     label: Lighting
@@ -134,6 +165,8 @@ products:
       - Cord type and colour (for example a clear cord).
       - Plug type (for example a flat plug).
 
+    words: [light fixture, light fixtures, pendant, pendants, sconce, sconces, chandelier, luminaire,
+            lamp, lamps]
   - id: seating
     label: Seating
     plural: Seating
@@ -154,6 +187,7 @@ products:
         text: Every note and callout on the architect's drawing or specification is followed.
     global_rule_hints: []
 
+    words: [chair, chairs, stool, stools, banquette, banquettes, sofa, sofas]
   - id: case_goods
     label: Case good
     plural: Case goods
@@ -176,6 +210,7 @@ products:
         text: Every note and callout on the architect's drawing or specification is followed.
     global_rule_hints: []
 
+    words: [dresser, dressers, nightstand, nightstands, wardrobe, wardrobes]
   - id: mirrors
     label: Mirror
     plural: Mirrors
@@ -196,6 +231,7 @@ products:
         text: Every note and callout on the architect's drawing or specification is followed.
     global_rule_hints: []
 
+    words: [mirror, mirrors]
   - id: accessories
     label: Accessory
     plural: Accessories
@@ -216,6 +252,7 @@ products:
         text: Every note and callout on the architect's drawing or specification is followed.
     global_rule_hints: []
 
+    words: [towel bar, robe hook, coat hook, toilet paper holder]
   - id: artwork
     label: Artwork
     plural: Artwork
@@ -235,3 +272,4 @@ products:
       - name: notes
         text: Every note and callout on the architect's drawing or specification is followed.
     global_rule_hints: []
+    words: [artwork, art piece, framed art]

@@ -21,6 +21,7 @@ import pytest
 
 from app.review.assistant.chat_engine import _accumulate, prompt_ids
 from app.review.assistant.chat_provider import (
+    RETENTION_WORDS,
     AnthropicSdkProvider,
     ProviderChoice,
     ProviderFailure,
@@ -28,15 +29,21 @@ from app.review.assistant.chat_provider import (
     failure_from,
 )
 from app.review.assistant.chat_request import (
+    BINDING_BETA,
+    BY_SHORT,
     EFFORTS,
+    FALLBACK_BETA,
     HELPER_MAX_EFFORT,
     MODELS,
     ChoiceRefused,
     call_params,
     check_choice,
     helper_effort,
+    helper_shorts,
     helper_thinking,
     inline_pictures,
+    rates_key_for,
+    schema_note,
     thinking_config,
 )
 from app.review.assistant.chat_tools import HELPER_SYSTEM_PROMPT, LEAD_SYSTEM_PROMPT, LEAD_TOOLS
@@ -79,16 +86,70 @@ def test_opus_always_thinks_with_the_summary_shown_and_the_refusal_fallback() ->
             {"name": "b", "input_schema": {}, "cache_control": {"type": "ephemeral"}},
         ],
         "tool_choice": {"type": "auto"},
-        "thinking": {"type": "adaptive", "display": "summarized"},
+        "thinking": {
+            "type": "adaptive",
+            "display": "summarized",
+            "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+        },
         "output_config": {"effort": "high"},
-        "betas": ["server-side-fallback-2026-07-01"],
+        "betas": ["thinking-binding-controls-2026-08-01", "server-side-fallback-2026-07-01"],
         "fallbacks": "default",
     }
+
+
+def test_fable_always_thinks_with_the_summary_shown_the_fallback_and_the_binding_net() -> None:
+    """#1577, Anthropic's Fable 5.1 guide: adaptive thinking only (no `disabled`, no budget),
+    effort the only depth control, `fallbacks: "default"` with its beta, no forced tool."""
+    params = _params("claude-fable-5-1", "xhigh", True)
+    assert params["model"] == "claude-fable-5-1"
+    assert params["thinking"] == {
+        "type": "adaptive",
+        "display": "summarized",
+        "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+    }
+    assert params["output_config"] == {"effort": "xhigh"}
+    assert params["betas"] == [BINDING_BETA, FALLBACK_BETA] and params["fallbacks"] == "default"
+    assert params["tool_choice"] == {"type": "auto"}
+    assert _params("claude-fable-5-1", "low", True, final=True)["tool_choice"] == {"type": "none"}
+    flat = json.dumps(params)
+    for banned in ("budget_tokens", "temperature", "top_p", '"disabled"', "between_tools"):
+        assert banned not in flat
+    fable = MODELS["claude-fable-5-1"]
+    assert fable.label == "Claude Fable 5.1" and fable.thinking == "always"
+    assert fable.thinking_off is None and fable.thinking_off_max_effort is None
+    assert fable.rates_key == "anthropic.claude-fable-5-1" and fable.providers == ("anthropic",)
+
+
+@pytest.mark.parametrize("model", sorted(MODELS))
+@pytest.mark.parametrize("final", [False, True])
+def test_no_model_is_ever_sent_a_forced_tool_choice(model: str, final: bool) -> None:
+    """`any` and `tool` are a 400 on Fable 5.1 and the 5.5 models: only `auto`, or `none` for a
+    forced final answer."""
+    params = _params(model, "high", True, final=final)
+    assert params["tool_choice"] in ({"type": "auto"}, {"type": "none"})
+    assert params["tool_choice"] == ({"type": "none"} if final else {"type": "auto"})
+
+
+def test_fable_is_refused_on_openrouter_in_plain_words() -> None:
+    with pytest.raises(ChoiceRefused, match="only on Anthropic's own API"):
+        check_choice("claude-fable-5-1", "high", True, provider="openrouter")
+    assert check_choice("claude-fable-5-1", "high", True, provider="anthropic").short == "fable"
+    assert check_choice("claude-opus-5-5", "high", True, provider="openrouter").short == "opus"
+
+
+def test_fable_never_runs_as_a_helper_and_a_fallback_model_has_a_price_key() -> None:
+    assert helper_shorts() == ("opus", "sonnet", "haiku")
+    assert rates_key_for("claude-fable-5-1") == "anthropic.claude-fable-5-1"
+    assert rates_key_for("claude-opus-4-8") == "anthropic.claude-opus-4-8"
+    assert rates_key_for("claude-opus-5-20260901") == "anthropic.claude-opus-5"
+    assert rates_key_for("anthropic/claude-opus-5.5") == "anthropic.claude-opus-5.5"
 
 
 @pytest.mark.parametrize(
     ("model", "effort", "on", "expected"),
     [
+        ("claude-fable-5-1", "max", True, {"type": "adaptive", "display": "summarized"}),
+        ("claude-fable-5-1", "low", True, {"type": "adaptive", "display": "summarized"}),
         ("claude-opus-5-5", "max", True, {"type": "adaptive", "display": "summarized"}),
         ("claude-opus-5-5", "low", True, {"type": "adaptive", "display": "summarized"}),
         ("claude-sonnet-5-5", "xhigh", True, {"type": "adaptive", "display": "summarized"}),
@@ -102,7 +163,16 @@ def test_each_choice_sends_its_thinking_and_effort(
     model: str, effort: str, on: bool, expected: dict[str, str]
 ) -> None:
     params = _params(model, effort, on)
-    assert params["thinking"] == expected
+    thinking = dict(params["thinking"])
+    binding = thinking.pop("block_binding", None)
+    assert thinking == expected
+    # The preserved-thinking safety net rides on adaptive thinking only (#1577): `between_tools`
+    # and `disabled` take no other field.
+    if expected["type"] == "adaptive":
+        assert binding == {"prefix_mismatch_behavior": "drop_block"}
+        assert BINDING_BETA in params["betas"]
+    else:
+        assert binding is None and BINDING_BETA not in params.get("betas", [])
     assert params["output_config"] == {"effort": effort}
     assert params["model"] == model
     # Never a budget, a temperature or a forced tool.
@@ -113,12 +183,14 @@ def test_each_choice_sends_its_thinking_and_effort(
 
 def test_haiku_has_no_server_side_fallback() -> None:
     params = _params("claude-haiku-5-5", "low", True)
-    assert "betas" not in params and "fallbacks" not in params
+    assert params["betas"] == [BINDING_BETA] and "fallbacks" not in params
+    assert "betas" not in _params("claude-haiku-5-5", "low", False)
 
 
 def test_sonnet_takes_the_default_fallback_form_only() -> None:
     params = _params("claude-sonnet-5-5", "medium", False)
     assert params["betas"] == ["server-side-fallback-2026-07-01"]
+    assert "block_binding" not in params["thinking"]
     assert params["fallbacks"] == "default"
 
 
@@ -151,7 +223,8 @@ def test_openrouter_gets_its_names_and_the_keep_no_data_routing_and_no_betas() -
         ("claude-sonnet-5-5", "xhigh", False, "high or below"),
         ("claude-sonnet-5-5", "max", False, "high or below"),
         ("claude-haiku-5-5", "max", False, "high or below"),
-        ("claude-fable-5-1", "high", True, "not one of the models"),
+        ("claude-fable-5-1", "high", False, "always on"),
+        ("claude-fable-5", "high", True, "not one of the models"),
         ("claude-opus-5-5", "extreme", True, "effort must be"),
     ],
 )
@@ -329,10 +402,15 @@ def test_anthropic_direct_streams_with_its_key_and_the_fallback_beta(
     assert str(request.url).startswith("https://api.anthropic.com/v1/messages")
     assert request.headers["x-api-key"] == ANTHROPIC_KEY
     assert "server-side-fallback-2026-07-01" in request.headers["anthropic-beta"]
+    assert "thinking-binding-controls-2026-08-01" in request.headers["anthropic-beta"]
     assert OPENROUTER_KEY not in str(request.headers)
     body = json.loads(request.content)
     assert body["stream"] is True and body["fallbacks"] == "default"
-    assert body["thinking"] == {"type": "adaptive", "display": "summarized"}
+    assert body["thinking"] == {
+        "type": "adaptive",
+        "display": "summarized",
+        "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+    }
     assert "betas" not in body
     # The stream reads back as the API sent it.
     accumulated = _accumulate(got, None, lambda: False, {})
@@ -410,6 +488,38 @@ def test_failures_are_plain_and_say_whether_to_ask_again() -> None:
         anthropic.BadRequestError("bad", response=httpx2.Response(400, request=request), body=None)
     )
     assert not bad.retryable and str(bad) == "The AI service refused the request (error 400)."
+    # #1577: Fable 5.1 on an account without 30-day retention, told plainly (never their words).
+    words = (
+        "In order to access this model, your organization or workspace must have data "
+        "retention enabled."
+    )
+    retention = failure_from(
+        anthropic.BadRequestError(
+            words,
+            response=httpx2.Response(400, request=request),
+            body={"type": "error", "error": {"type": "invalid_request_error", "message": words}},
+        )
+    )
+    assert not retention.retryable and str(retention) == RETENTION_WORDS
+    assert "Pick Claude Opus 5.5" in str(retention) and words not in str(retention)
+
+
+def test_dropped_thinking_is_read_from_the_stream() -> None:
+    """#1577: with the thinking-binding beta the reply says which thinking blocks the API left
+    out (`input_transformations`, on `message_start` and again on `message_delta`)."""
+    events = reply(text("Hi"))
+    events[0]["message"]["input_transformations"] = [
+        {
+            "type": "thinking_dropped",
+            "path": "messages.1.content.0",
+            "reason": "prefix_binding_mismatch",
+        }
+    ]
+    assert _accumulate(events, None, lambda: False, {}).transformations[0]["path"] == (
+        "messages.1.content.0"
+    )
+    events[-2]["input_transformations"] = []
+    assert _accumulate(events, None, lambda: False, {}).transformations == []
 
 
 def test_usage_rows_name_the_route_and_the_purpose() -> None:
@@ -423,7 +533,8 @@ def test_usage_rows_name_the_route_and_the_purpose() -> None:
 def test_the_system_prompt_is_short_and_names_the_skill_and_the_three_facts() -> None:
     # Short like claude.ai's. chat-v13 (the prompt audit) took out the tool catalogue: each tool's
     # own description says what it does and when to use it.
-    assert len(LEAD_SYSTEM_PROMPT) < 2600
+    # Tool search (#1606) added one line about deferred tools.
+    assert len(LEAD_SYSTEM_PROMPT) < 2700
     for words in (
         "/mnt/skills/gv-review/SKILL.md",
         "inches",
@@ -457,9 +568,10 @@ def test_the_system_prompt_is_short_and_names_the_skill_and_the_three_facts() ->
         "measure_on_drawing",
         "read_under_markup",
         "remember",
+        "drawing_facts",
     ]
     # The reviewer's words, once, in the lead's prompt.
-    for words in ("Wrong, Your decision or Right", "Not compared", "AI reading only"):
+    for words in ("Wrong, Not compared or Right", "The architect governs", "AI reading only"):
         assert words in LEAD_SYSTEM_PROMPT, words
 
 
@@ -542,3 +654,139 @@ def test_closing_a_stream_from_another_thread_stops_its_read_at_once(
         _QuietHandler.release.set()
         server.shutdown()
         server.server_close()
+
+
+def _lead_params(provider: str, tools: Any = LEAD_TOOLS) -> dict[str, Any]:
+    chosen = check_choice("claude-opus-5-5", "high", True)
+    return call_params(
+        provider=provider,  # type: ignore[arg-type]
+        model=chosen,
+        effort="high",
+        thinking=thinking_config(chosen, True),
+        system="SYSTEM",
+        tools=tools,
+        messages=MESSAGES,
+        final=False,
+        max_tokens=64000,
+    )
+
+
+def test_anthropic_gets_tool_search_first_and_the_cache_mark_on_the_last_loaded_tool() -> None:
+    sent = _lead_params("anthropic")["tools"]
+    assert sent[0] == {"type": "tool_search_tool_regex_20251119", "name": "tool_search_tool_regex"}
+    marked = [tool["name"] for tool in sent if "cache_control" in tool]
+    loaded = [tool["name"] for tool in sent[1:] if not tool.get("defer_loading")]
+    assert marked == [loaded[-1]]
+    # A deferred tool never carries the cache mark (the API refuses it).
+    assert not any("cache_control" in tool for tool in sent if tool.get("defer_loading"))
+    assert {tool["name"] for tool in sent[1:] if tool.get("defer_loading")} == {
+        str(tool["name"]) for tool in LEAD_TOOLS if tool.get("defer_loading")
+    }
+
+
+def test_openrouter_gets_every_tool_loaded_and_no_tool_search() -> None:
+    sent = _lead_params("openrouter")["tools"]
+    assert [tool["name"] for tool in sent] == [tool["name"] for tool in LEAD_TOOLS]
+    assert not any("defer_loading" in tool for tool in sent)
+    assert "cache_control" in sent[-1]
+    # The chat's stored tool list is not changed by the request built from it.
+    assert any(tool.get("defer_loading") for tool in LEAD_TOOLS)
+
+
+def test_tools_without_deferred_ones_go_as_before() -> None:
+    sent = _lead_params(
+        "anthropic", [{"name": "a", "input_schema": {}}, {"name": "b", "input_schema": {}}]
+    )
+    assert [tool["name"] for tool in sent["tools"]] == ["a", "b"]
+    assert "cache_control" in sent["tools"][-1]
+
+
+def test_tool_search_blocks_are_kept_as_received_and_never_run() -> None:
+    search_input = {"query": "verify"}
+    found = {
+        "type": "tool_search_tool_result",
+        "tool_use_id": "srv_1",
+        "content": {
+            "type": "tool_search_tool_search_result",
+            "tool_references": [{"type": "tool_reference", "tool_name": "verify_value"}],
+        },
+    }
+    raw = json.dumps(search_input)
+    events: list[dict[str, Any]] = [
+        {"type": "message_start", "message": {"model": "claude-opus-5-5", "usage": {}}},
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+                "type": "server_tool_use",
+                "id": "srv_1",
+                "name": "tool_search_tool_regex",
+                "input": {},
+            },
+        },
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "input_json_delta", "partial_json": raw[:5]},
+        },
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "input_json_delta", "partial_json": raw[5:]},
+        },
+        {"type": "content_block_stop", "index": 0},
+        {"type": "content_block_start", "index": 1, "content_block": found},
+        {"type": "content_block_stop", "index": 1},
+        *reply(tool("t1", "verify_value", {"page": 1}), stop="tool_use")[1:],
+    ]
+    for event in events[7:]:
+        if "index" in event:
+            event["index"] += 2
+    accumulated = _accumulate(events, None, lambda: False, {})
+    kinds = [block["type"] for block in accumulated.history_content()]
+    assert kinds == ["server_tool_use", "tool_search_tool_result", "tool_use"]
+    # The search's input is replayed exactly as it streamed; only our own tool is run.
+    assert accumulated.content[0]["input"] == search_input
+    assert accumulated.content[1] == found
+    assert [call["name"] for call in accumulated.tool_uses()] == ["verify_value"]
+
+
+# ---- structured outputs (prompts design W5) --------------------------------------------------------
+
+_SHAPE = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["ok"],
+    "properties": {"ok": {"type": "boolean", "description": "Whether it is"}},
+}
+
+
+def test_a_reply_shape_goes_in_output_config_on_anthropic_and_in_the_prompt_on_openrouter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.review.assistant import chat_request
+
+    monkeypatch.setattr(chat_request, "_openrouter_routing", lambda: {"only": ["x"]})
+    model = BY_SHORT["haiku"]
+    common = {
+        "model": model,
+        "effort": "low",
+        "thinking": {"type": "disabled"},
+        "system": "Read the values.",
+        "tools": (),
+        "messages": [{"role": "user", "content": [{"type": "text", "text": "Go"}]}],
+        "final": False,
+        "max_tokens": 100,
+    }
+    anthropic = call_params(provider="anthropic", output_format=_SHAPE, **common)
+    assert anthropic["output_config"] == {
+        "effort": "low",
+        "format": {"type": "json_schema", "schema": _SHAPE},
+    }
+    assert anthropic["system"][0]["text"] == "Read the values."
+    openrouter = call_params(provider="openrouter", output_format=_SHAPE, **common)
+    assert openrouter["output_config"] == {"effort": "low"}
+    assert openrouter["system"][0]["text"] == f"Read the values.\n\n{schema_note(_SHAPE)}"
+    assert '"required":["ok"]' in schema_note(_SHAPE)
+    # Without a shape nothing changes.
+    assert call_params(provider="anthropic", **common)["output_config"] == {"effort": "low"}

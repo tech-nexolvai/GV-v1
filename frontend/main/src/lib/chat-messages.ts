@@ -7,7 +7,8 @@
  * message, which then replaces what was built live: a reload and a live answer end up identical.
  */
 
-import type { ChatAccuracy, ChatAgent, ChatBlock, ChatCite, ChatCoverage, ChatEffort, ChatEvent, ChatFile, ChatFinding, ChatFindingUpdate, ChatMessage, ChatMode, ChatModel, ChatProduct, ChatProgress, ChatResume, ChatScope, ChatStep, ChatStopped, ChatSummary, ChatTask, ChatTrust, ChatUnderstood, ChatUnknown } from '@/lib/chat-api';
+import type { ChatAccuracy, ChatAgent, ChatBlock, ChatCite, ChatCoverage, ChatEffort, ChatEvent, ChatFile, ChatFinding, ChatFindingUpdate, ChatMessage, ChatMode, ChatModel, ChatProduct, ChatProgress, ChatResolver, ChatResume, ChatReviewAction, ChatScope, ChatStep, ChatStopped, ChatSummary, ChatTask, ChatTrust, ChatUnderstood, ChatUnknown, ChatFallback } from '@/lib/chat-api';
+import { CHECK_MODEL } from '@/lib/chat-api';
 import { EFFORT_WORDS } from '@/lib/chat-settings';
 
 /** A helper agent while its Agent step runs: `running` until its `agent_end`. */
@@ -62,12 +63,18 @@ export interface ViewMessage {
   accuracy?: ChatAccuracy | null;
   /** What the answer did not check, as records (code's `unknowns` block); absent on older answers. */
   unknowns?: ChatUnknown[];
+  /** #1554: the Your-decision items GV Review settled by itself; absent on older answers. */
+  resolver?: ChatResolver | null;
   /** With `stopped: "interrupted"`: how Continue picks up (#1514). */
   resume?: ChatResume | null;
   /** #1548: the earlier answers' findings this answer corrected (newest per ref). */
   corrections?: ChatFindingUpdate[];
   /** #1551: how the app understood the question before the work; shown under the question. */
   understood?: ChatUnderstood | null;
+  /** #1622: a full check's review action (server, on read and at `message_end`). */
+  review_action?: ChatReviewAction | null;
+  /** #1577: the refusal fallback that answered instead of the model asked (the last switch). */
+  fallback?: ChatFallback | null;
   cost_usd: string | null;
   stopped: ChatStopped | null;
   error: string | null;
@@ -139,7 +146,7 @@ export function withCite(cites: readonly ChatCite[], cite: ChatCite): ChatCite[]
  * later block with the same id replaces it), and the last coverage block. A dropped finding is
  * simply not in the stored blocks; a `finding_dropped` block, if a server ever stores one, removes it.
  */
-export function evidenceOf(blocks: readonly ChatBlock[]): { findings: ChatFinding[]; coverage: ChatCoverage | null; trust: ChatTrust | null; cites: ChatCite[]; accuracy: ChatAccuracy | null; unknowns: ChatUnknown[]; progress: ChatProgress | null } {
+export function evidenceOf(blocks: readonly ChatBlock[]): { findings: ChatFinding[]; coverage: ChatCoverage | null; trust: ChatTrust | null; cites: ChatCite[]; accuracy: ChatAccuracy | null; unknowns: ChatUnknown[]; progress: ChatProgress | null; resolver: ChatResolver | null } {
   let findings: ChatFinding[] = [];
   let coverage: ChatCoverage | null = null;
   let trust: ChatTrust | null = null;
@@ -147,6 +154,7 @@ export function evidenceOf(blocks: readonly ChatBlock[]): { findings: ChatFindin
   let accuracy: ChatAccuracy | null = null;
   let unknowns: ChatUnknown[] = [];
   let progress: ChatProgress | null = null;
+  let resolver: ChatResolver | null = null;
   for (const block of blocks as readonly (ChatBlock | { type: 'finding_dropped'; finding_id: string })[]) {
     if (block.type === 'finding' && block.finding?.id) findings = withFinding(findings, block.finding);
     else if (block.type === 'finding_dropped') findings = findings.filter((finding) => finding.id !== block.finding_id);
@@ -156,8 +164,9 @@ export function evidenceOf(blocks: readonly ChatBlock[]): { findings: ChatFindin
     else if (block.type === 'accuracy' && block.accuracy) accuracy = block.accuracy;
     else if (block.type === 'unknowns' && Array.isArray(block.unknowns)) unknowns = block.unknowns;
     else if (block.type === 'progress' && block.progress) progress = block.progress;
+    else if (block.type === 'resolver' && block.resolver) resolver = block.resolver;
   }
-  return { findings, coverage, trust, cites, accuracy, unknowns, progress };
+  return { findings, coverage, trust, cites, accuracy, unknowns, progress, resolver };
 }
 
 /** The last scope block of a saved message (#1528), when the message itself carries none. */
@@ -171,6 +180,21 @@ function scopeOf(blocks: readonly ChatBlock[]): ChatScope | null {
 export function understoodOf(blocks: readonly ChatBlock[]): ChatUnderstood | null {
   for (const block of blocks) if (block.type === 'understood' && block.understood) return block.understood;
   return null;
+}
+
+/** The last refusal-fallback switch of an answer (#1577), or null. */
+export function fallbackOf(blocks: readonly ChatBlock[]): ChatFallback | null {
+  let found: ChatFallback | null = null;
+  for (const block of blocks) if (block.type === 'fallback' && block.fallback) found = block.fallback;
+  return found;
+}
+
+/**
+ * The quiet line under an answer a refusal fallback wrote (#1577): "Claude Fable 5.1 declined this
+ * request, so Claude Opus 4.8 answered it instead."
+ */
+export function fallbackWords(fallback: ChatFallback, models: readonly Pick<ChatModel, 'id' | 'label'>[] | null): string {
+  return `${modelLabel(fallback.from_model, models)} declined this request, so ${modelLabel(fallback.to_model, models)} answered it instead.`;
 }
 
 /** The `resume` block of an interrupted answer (#1514), or null. */
@@ -187,7 +211,7 @@ export function fromSaved(message: ChatMessage): ViewMessage {
   const saved = message.blocks ?? [];
   // Findings and coverage are drawn by the screen in their own places, not in the order of the work.
   const shown = saved.filter((block) => block.type === 'thinking' || block.type === 'text' || block.type === 'step');
-  const { findings, coverage, trust, cites, accuracy, unknowns, progress } = evidenceOf(saved);
+  const { findings, coverage, trust, cites, accuracy, unknowns, progress, resolver } = evidenceOf(saved);
   const blocks: ViewBlock[] = shown.length
     ? shown.map((block): ViewBlock =>
         block.type === 'thinking' ? { type: 'thinking', text: block.text ?? '', seconds: block.seconds ?? null, live: false }
@@ -216,9 +240,12 @@ export function fromSaved(message: ChatMessage): ViewMessage {
     accuracy: message.accuracy ?? accuracy,
     unknowns,
     progress,
+    resolver,
     resume: message.resume ?? resumeOf(saved),
     corrections: correctionsOf(saved),
     understood: message.understood ?? understoodOf(saved),
+    review_action: message.review_action ?? null,
+    fallback: fallbackOf(saved),
     cost_usd: message.cost_usd ?? null,
     stopped: message.stopped ?? null,
     error: message.error ?? null,
@@ -366,6 +393,10 @@ export function applyChatEvent(message: ViewMessage, event: ChatEvent): ViewMess
       return { ...message, accuracy: event.data.accuracy ?? message.accuracy ?? null };
     case 'unknowns':
       return Array.isArray(event.data.unknowns) ? { ...message, unknowns: event.data.unknowns } : message;
+    case 'resolver':
+      return event.data.resolver ? { ...message, resolver: event.data.resolver } : message;
+    case 'fallback':
+      return event.data.fallback ? { ...message, fallback: event.data.fallback } : message;
     case 'message_end': {
       // The stored message wins; the live task list, files, findings and coverage stay if it somehow
       // left them out.
@@ -381,11 +412,13 @@ export function applyChatEvent(message: ViewMessage, event: ChatEvent): ViewMess
         mode: stored.mode ?? message.mode ?? null,
         scope: stored.scope ?? message.scope ?? null,
         understood: stored.understood ?? message.understood ?? null,
+        fallback: stored.fallback ?? message.fallback ?? null,
         cites: stored.cites?.length ? stored.cites : message.cites ?? [],
         corrections: stored.corrections?.length ? stored.corrections : message.corrections ?? [],
         accuracy: stored.accuracy ?? message.accuracy ?? null,
         unknowns: stored.unknowns?.length ? stored.unknowns : message.unknowns ?? [],
         progress: stored.progress ?? message.progress ?? null,
+        resolver: stored.resolver ?? message.resolver ?? null,
         products: stored.products ?? message.products ?? null,
         error: stored.error ?? message.error,
       };
@@ -498,6 +531,8 @@ function phraseFor(step: ChatStep): { key: string; phrase: Phrase } {
       return { key: 'agents', phrase: { one: 'ran an agent', many: (n) => `ran ${n} agents` } };
     case 'read_under_markup':
       return { key: 'under', phrase: { one: "read under GV's markup", many: (n) => `read under GV's markup ${n} times` } };
+    case 'drawing_facts':
+      return { key: 'facts', phrase: { one: "read code's facts", many: (n) => `read code's facts ${n} times` } };
     case 'remember':
       return { key: 'remember', phrase: { one: 'kept a note for this set', many: (n) => `kept ${n} notes for this set` } };
     default:
@@ -635,11 +670,18 @@ export function messageCost(value: string | null | undefined): string | null {
 }
 
 /** The small line under a finished answer: "Claude Opus 5.5 · High effort · $1.72". */
-export function footerWords(message: Pick<ViewMessage, 'model' | 'effort' | 'cost_usd'>, models: readonly Pick<ChatModel, 'id' | 'label'>[] | null): string {
+export function footerWords(
+  message: Pick<ViewMessage, 'model' | 'effort' | 'cost_usd'> & Partial<Pick<ViewMessage, 'scope'>>,
+  models: readonly Pick<ChatModel, 'id' | 'label'>[] | null,
+): string {
+  // The products this answer checked (a strict scope), quietly first when not all: "Checked: Countertops".
+  const scope = message.scope?.products?.length && !message.scope.all_products ? `Checked: ${message.scope.products_label ?? message.scope.products.join(', ')}` : null;
   return [
+    scope,
     modelLabel(message.model, models),
     message.effort ? `${EFFORT_WORDS[message.effort]} effort` : null,
-    messageCost(message.cost_usd),
+    // A code-only answer (#1584) costs nothing; the server's "0.00" would read "<$0.01".
+    message.model === CHECK_MODEL ? '$0' : messageCost(message.cost_usd),
   ].filter(Boolean).join(' · ');
 }
 

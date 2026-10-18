@@ -17,7 +17,8 @@ Files in this folder (read-only):
 - `products/<id>.md`: one file for **each product in focus** (the products the reviewer picked):
   what that product's drawings show, what to compare, its checklist and the kinds of GV standard it
   has. **Read each one** before you review. This file is the same for every product.
-- `checklists/` (when present): GV's own checklists.
+- `knowledge/`: trade knowledge (**what a dimension measures**, vendor mistakes, field cuts...);
+  `knowledge/README.md` lists it. Also, when present: `gv-formulas.md`, `examples/`, `lessons.md`.
 
 ## 1. The three layers on a sheet
 
@@ -112,7 +113,7 @@ inches (`610 [24]`: 610 / 25.4 = 24). Only when all three fail: "unreadable", wi
 
 ## 6. GV's rules first, then everything else against the architect
 
-1. Read `rules.md` (and `checklists/` when present). Apply each rule that fits the item: it says
+1. Read `rules.md` (and `gv-formulas.md` when present). Apply each rule that fits the item: it says
    what is compared, the formula, and the numbers in force (each product's file in `products/`
    says which kinds of GV standard it has). GV compares **exactly**: no tolerance unless
    `rules.md` gives one. A value the rule needs that nobody gave is missing: say so, never assume.
@@ -151,13 +152,13 @@ numbers ("pull-out drawers", "by others"): a note the vendor does not follow is 
   dropped or changed.
 - **Construction notes** the vendor contradicts, on the architect's or brand sheet ("toe kick
   integrated with door", "door to the floor", "pull-out drawers for bins", "metal lining").
-- **ID set vs brand prototype** conflicts: status `check` (Your decision), `check_reason:
-  which_governs`.
+- **ID set vs brand prototype**: the ID set governs (the prototype only where the ID set says "per
+  brand standard"); a prototype-only difference: `check`, `check_reason: which_governs`.
 - **Scaled values**: where the architect prints no size, `measure_on_drawing` (two printed dimensions
-  of the same view) gives "about X (±T)": status `check` (Your decision), never `different` (Wrong).
+  of the same view) gives "about X (±T)": status `check` (not compared), never `different`.
 - **Extent first**: before a height or width is Wrong, check what the architect's dimension spans
   (`measure_on_drawing` with `dimension`). Floor to the top of a box, soffit or blocking beyond the
-  unit is not the unit: status `check` (Your decision), `check_reason: different_extent`.
+  unit is not the unit: status `check` (not compared), `check_reason: different_extent`.
 - **Printed vs printed is Wrong**: a vendor value printed unlike the architect's printed value for the
   same span (counter height 34" vs 2'-9") is `different` (Wrong), not `check`, unless a
   `check_reason` holds.
@@ -200,8 +201,8 @@ In a full check the app has done steps 1-3 (split, helpers, checklist): start at
 
 ## 9. How to answer
 
-The reviewer's words: each item is **Wrong** (`status: different`), **Your decision** (`check`) or
-**Right** (`same`); a page nobody compared is **Not compared**. Trust (**Confirmed**, **Likely**,
+The reviewer's words: each item is **Wrong** (`status: different`), **Not compared** (`check`:
+nothing to compare, say why) or **Right** (`same`); the architect's drawings govern. Trust (**Confirmed**, **Likely**,
 **AI reading only**) is scored by code from independent checks: never claim it yourself.
 
 - **Every difference is a finding**: `report_finding` for each, with the page, item, category (the
@@ -209,7 +210,7 @@ The reviewer's words: each item is **Wrong** (`status: different`), **Your decis
   what the architect shows and what the vendor shows **as printed** (inches), status, source, and
   boxes where each value is printed (section 10). The app crops the evidence at the boxes, checks
   the printed values and draws the table: never write the findings again as a markdown table.
-- **Every `check` (Your decision) has `decision_help`**, short plain words: what it measures (where
+- **Every `check` (not compared) has `decision_help`**, short plain words: what it measures (where
   its extension lines end); your best estimate and method (a string added up, an overall less its
   fillers, `measure_on_drawing`, a brand prototype string that sums to the vendor's value) or null;
   `likely`; what to confirm. Mention bigger context (a section the vendor left out) in `why`.

@@ -42,7 +42,7 @@ from __future__ import annotations
 import re
 import threading
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from fractions import Fraction
@@ -64,6 +64,7 @@ __all__ = [
     "Reading",
     "ReadingLedger",
     "StringEntry",
+    "add_up",
     "format_inches",
     "governing_view",
     "item_key",
@@ -116,21 +117,19 @@ _REPLACES: Final[Mapping[str, Any]] = {
 RECORD_STRING: Final[Mapping[str, Any]] = {
     "name": "record_string",
     "description": (
-        "Record one dimension string (a chain of dimensions with a printed overall) as printed: "
-        "its parts in order and the overall they should add up to. Use it for every string you "
-        "read, on either side, instead of adding it up yourself: code adds the parts exactly, "
-        "and a vendor string that does not add up becomes a finding. If the result says it does "
-        "not add up, re-read the string once and record it again with replaces. Returns the "
-        "entry id and code's sum (e.g. 'S3 recorded (vendor, p.7). Code's sum: 12 + 15 1/2 + 18 "
-        "= 45 1/2 = 45 1/2 printed'), what to do when it does not add up, or 'Not recorded: "
-        "<why>'. "
-        'Example: {"page": 7, "view": "elevation", "side": "vendor", "parts": ["12\\"", '
-        '"15 1/2\\"", "18\\""], "printed_total": "3\'-9 1/2\\""}'
+        "Record one dimension string (a chain with a printed overall): its parts in order and "
+        "the overall, by label (part_dims, total_dim: code fills the values) or, unlabelled, as "
+        "printed (parts, printed_total). Use it for every string you read, on "
+        "either side: code adds it exactly, and a vendor string that does not add up becomes a "
+        "finding; re-read one that does not add up once (replaces). Returns the entry id and "
+        "code's sum ('Code's sum: 12 + 18 = 30 = 30 printed'), or 'Not recorded: <why>'. "
+        'Example: {"page": 7, "side": "vendor", "part_dims": ["D12", "D13", "D14"], '
+        '"total_dim": "D15"}'
     ),
     "input_schema": {
         "type": "object",
         "additionalProperties": False,
-        "required": ["page", "side", "parts", "printed_total"],
+        "required": ["page", "side"],
         "properties": {
             "page": _PAGE,
             "view": _VIEW,
@@ -147,10 +146,21 @@ RECORD_STRING: Final[Mapping[str, Any]] = {
                 "description": 'The parts as printed, in order (e.g. ["12", "15 1/2\\""]); notes '
                 "such as EQ or TYP left out of the numbers",
             },
+            "part_dims": {
+                "type": "array",
+                "items": {"type": "string", "description": "A label id"},
+                "minItems": 2,
+                "maxItems": MAX_PARTS,
+                "description": "Instead of parts: their label ids, in order",
+            },
             "printed_total": {
                 "type": "string",
                 "maxLength": _MAX_VALUE,
                 "description": "The overall printed for the string, as printed",
+            },
+            "total_dim": {
+                "type": "string",
+                "description": "Instead of printed_total: the overall's label id",
             },
             "box": _BOX_SCHEMA,
             "replaces": _REPLACES,
@@ -337,6 +347,10 @@ class StringEntry:
     off_by: Decimal | None
     """The printed total minus the parts' sum, in inches (as `finding_checks.arithmetic_off_by`)."""
     rereads: int = 0
+    dims: tuple[str, ...] = ()
+    """The labels the parts and the overall came from (`p7.D12`, the overall last), when the
+    string was recorded by label: code read every value, none was typed. Kept on the entry for
+    code's proof; the stored trust block's shape is unchanged."""
 
     def sum_text(self) -> str:
         """`10 + 14 1/4 + 10 1/8 = 34 3/8" ≠ 34 1/4" printed (off 1/8")`, all written by code."""
@@ -484,6 +498,44 @@ def _box(raw: object, page: int, page_count: int | None) -> Box | None:
     return Box(box_page, numbers[0], numbers[1], numbers[2], numbers[3], file or None)
 
 
+#: Looks up a numbered dimension label: (ref, page, side) -> the label (`id`, `page`, `text`,
+#: `inches`, `box`, `file`), or `LookupError` with a plain reason.
+type LabelLookup = Callable[[object, int, str], Mapping[str, Any]]
+
+
+def _label_value(label: Mapping[str, Any]) -> str:
+    """A label's value as the ledger records a part: its text as printed when code reads that text
+    as the label's inches, else the label's inches written out (a mm-first label, say)."""
+    text = " ".join(str(label.get("text") or "").split())
+    try:
+        inches = Decimal(str(label.get("inches")))
+    except (ArithmeticError, ValueError):
+        raise LedgerRefused(f"{label.get('id')} holds no number code can read") from None
+    if text and to_inches(text) == inches:
+        return text
+    return f'{format_inches(inches)}"'
+
+
+def _labels_box(labels: Sequence[Mapping[str, Any]], page: int) -> Box | None:
+    """The box round the labels on the string's page (the evidence crop of the whole string)."""
+    boxes = [
+        [float(v) for v in label["box"]]
+        for label in labels
+        if label.get("page") == page and isinstance(label.get("box"), Sequence)
+    ]
+    if not boxes:
+        return None
+    file = labels[0].get("file")
+    return Box(
+        page,
+        min(b[0] for b in boxes),
+        min(b[1] for b in boxes),
+        max(b[2] for b in boxes),
+        max(b[3] for b in boxes),
+        str(file) if file else None,
+    )
+
+
 def _add_up(
     parts: Sequence[str], printed_total: str
 ) -> tuple[StringResult, Decimal | None, Decimal | None]:
@@ -513,6 +565,10 @@ def _add_up(
         "adds_up" if closure.status == chains.ClosureStatus.CLOSED else ("does_not_add_up")
     )
     return result, parts_sum, off_by
+
+
+#: The chain check for other code that adds up strings (`vendor_consistency`).
+add_up = _add_up
 
 
 # ---- which part is likely misread (#1545) --------------------------------------------------------
@@ -689,8 +745,10 @@ class ReadingLedger:
     for a tool call; `ledger_findings` and `ledger_report` are read when the answer finishes.
     """
 
-    def __init__(self, *, page_count: int | None = None) -> None:
+    def __init__(self, *, page_count: int | None = None, labels: LabelLookup | None = None) -> None:
         self.page_count = page_count
+        #: Looks up a numbered dimension label (`record_string`'s part_dims / total_dim).
+        self.labels = labels
         self._lock = threading.Lock()
         self._strings: dict[str, StringEntry] = {}
         self._readings: dict[str, Reading] = {}
@@ -723,20 +781,61 @@ class ReadingLedger:
     def record_string(self, raw: object, *, by: str = "lead") -> str:
         fields = _mapping(
             raw,
-            frozenset({"page", "view", "side", "parts", "printed_total", "box", "replaces"}),
-            frozenset({"page", "side", "parts", "printed_total"}),
+            frozenset(
+                {
+                    "page",
+                    "view",
+                    "side",
+                    "parts",
+                    "part_dims",
+                    "printed_total",
+                    "total_dim",
+                    "box",
+                    "replaces",
+                }
+            ),
+            frozenset({"page", "side"}),
         )
         page = _page(fields["page"], self.page_count)
         view = None if fields.get("view") is None else _choice(fields["view"], "view", VIEWS)
         side = _choice(fields["side"], "side", SIDES)
-        parts_raw = fields["parts"]
-        if isinstance(parts_raw, str) or not isinstance(parts_raw, Sequence):
-            raise LedgerRefused("parts must be a list of values as printed")
-        if not 2 <= len(parts_raw) <= MAX_PARTS:
-            raise LedgerRefused(f"parts must hold 2 to {MAX_PARTS} values")
-        parts = tuple(_text(part, "each part", _MAX_VALUE) for part in parts_raw)
-        printed_total = _text(fields["printed_total"], "printed_total", _MAX_VALUE)
+        labelled = [fields.get(name) is not None for name in ("part_dims", "total_dim")]
+        if fields.get("parts") is not None and labelled[0]:
+            raise LedgerRefused("give parts or part_dims, not both")
+        if fields.get("printed_total") is not None and labelled[1]:
+            raise LedgerRefused("give printed_total or total_dim, not both")
+        found: list[Mapping[str, Any]] = []
+        if labelled[0]:
+            parts_raw = fields["part_dims"]
+            if isinstance(parts_raw, str) or not isinstance(parts_raw, Sequence):
+                raise LedgerRefused("part_dims must be a list of label ids (D12)")
+            if not 2 <= len(parts_raw) <= MAX_PARTS:
+                raise LedgerRefused(f"part_dims must hold 2 to {MAX_PARTS} labels")
+            labels = [self._label(ref, page, side) for ref in parts_raw]
+            found += labels
+            parts = tuple(_label_value(label) for label in labels)
+        else:
+            parts_raw = fields.get("parts")
+            if parts_raw is None:
+                raise LedgerRefused("missing field(s): parts (or part_dims)")
+            if isinstance(parts_raw, str) or not isinstance(parts_raw, Sequence):
+                raise LedgerRefused("parts must be a list of values as printed")
+            if not 2 <= len(parts_raw) <= MAX_PARTS:
+                raise LedgerRefused(f"parts must hold 2 to {MAX_PARTS} values")
+            parts = tuple(_text(part, "each part", _MAX_VALUE) for part in parts_raw)
+        if labelled[1]:
+            total_label = self._label(fields["total_dim"], page, side)
+            found.append(total_label)
+            printed_total = _label_value(total_label)
+        elif fields.get("printed_total") is None:
+            raise LedgerRefused("missing field(s): printed_total (or total_dim)")
+        else:
+            printed_total = _text(fields["printed_total"], "printed_total", _MAX_VALUE)
         box = _box(fields.get("box"), page, self.page_count)
+        if box is None and found:
+            box = _labels_box(found, page)
+        # Recorded wholly by label: every value was read by code, none typed.
+        dims = tuple(f"p{label['page']}.{label['id']}" for label in found) if all(labelled) else ()
         result, parts_sum, off_by = _add_up(parts, printed_total)
         with self._lock:
             replaced = self._replaced(fields.get("replaces"), self._strings, "S")
@@ -757,9 +856,21 @@ class ReadingLedger:
                 parts_sum=parts_sum,
                 off_by=off_by,
                 rereads=replaced.rereads + 1 if replaced else 0,
+                dims=dims,
             )
             self._strings[entry.id] = entry
         return self._string_result(entry)
+
+    def _label(self, ref: object, page: int, side: str) -> Mapping[str, Any]:
+        """The numbered label `ref` names on `page` (or `p23.D5`), on this side's drawing."""
+        if self.labels is None:
+            raise LedgerRefused(
+                "labels cannot be looked up here: give parts and printed_total as printed"
+            )
+        try:
+            return self.labels(ref, page, side)
+        except LookupError as missing:
+            raise LedgerRefused(str(missing).rstrip(".")) from None
 
     def record_reading(self, raw: object, *, by: str = "lead") -> str:
         fields = _mapping(
@@ -1046,15 +1157,22 @@ class ReadingLedger:
         for listed in architect_items:
             if isinstance(listed.get("item"), str):
                 see(architect, listed["item"], listed.get("page"))
+        # Items a finding already reports as shown on one side only: that finding is the item
+        # (with its spots and pictures); a completeness copy of it would carry neither (#1650).
+        reported: set[str] = set()
         for finding in findings:
             item = finding.get("item")
             # Only the lead's architect-vs-vendor findings name items both sides show.
             if not isinstance(item, str) or finding.get("source") not in (None, "architect"):
                 continue
-            if _present(finding.get("architect")):
+            shown_architect = _present(finding.get("architect"))
+            shown_vendor = _present(finding.get("vendor"))
+            if shown_architect:
                 see(architect, item, finding.get("vs_page") or finding.get("page"))
-            if _present(finding.get("vendor")):
+            if shown_vendor:
                 see(vendor, item, finding.get("page"))
+            if shown_architect != shown_vendor:
+                reported.add(item_key(item)[0])
         excused = _excused_pages(coverage)
         result: dict[str, Any] = {
             "compared": bool(architect) and bool(vendor),
@@ -1074,6 +1192,8 @@ class ReadingLedger:
                 result["not_looked_at"].append(seen.name)
                 continue
             result["missing_on_vendor"].append(seen.name)
+            if key in reported:
+                continue
             result["findings"].append(
                 _completeness_finding(
                     seen,
@@ -1085,6 +1205,8 @@ class ReadingLedger:
             if key in architect:
                 continue
             result["extra_on_vendor"].append(seen.name)
+            if key in reported:
+                continue
             result["findings"].append(
                 _completeness_finding(
                     seen,
