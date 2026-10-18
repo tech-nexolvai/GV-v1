@@ -19,7 +19,6 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from importlib import import_module
 from typing import Annotated, Any, Final, Literal
 from uuid import UUID
 
@@ -37,6 +36,7 @@ from app.review.assistant.chat_decisions import decision_out, with_decisions
 from app.review.assistant.chat_findings import live_findings
 from app.review.assistant.chat_store import package_name
 from app.review.assistant.job_tracker import TrackerAnswer, TrackerSet, build_tracker
+from app.review.assistant.workbook import write_xlsx
 from app.schemas.job_tracker import TrackerOut
 
 router = APIRouter(tags=["job tracker"])
@@ -328,70 +328,45 @@ def items_csv(items: Sequence[Mapping[str, Any]]) -> str:
 
 
 def tracker_xlsx(built: Mapping[str, Any], items: Sequence[Mapping[str, Any]]) -> bytes:
-    """The workbook: Items (the filtered ones), Vendors, Checks. Every cell is text (`@`), so a
-    `1/8` is never turned into a date or a decimal; each sheet has its filter and a frozen header.
-    Raises `ModuleNotFoundError` when openpyxl is not installed."""
-    openpyxl = import_module("openpyxl")
-    styles = import_module("openpyxl.styles")
-    utils = import_module("openpyxl.utils")
-    book = openpyxl.Workbook()
-    sheets: list[tuple[str, Sequence[str], list[list[str]]]] = [
-        ("Items", _ITEM_COLUMNS, [item_row(item) for item in items]),
-        (
-            "Vendors",
+    """The workbook: Items (the filtered ones), Vendors, Checks (`workbook.write_xlsx`: every
+    cell text, a filter and a frozen header on each sheet). Raises `ModuleNotFoundError` when
+    openpyxl is not installed."""
+    return write_xlsx(
+        [
+            ("Items", _ITEM_COLUMNS, [item_row(item) for item in items]),
             (
-                "Vendor",
-                "Drawing sets",
-                "Rounds",
-                "Mistakes",
-                "Open now",
-                "Fixed on the next round",
-                "Average open per round",
-                "Most by product",
-                "Most by what it touches",
-                "Most by check",
+                "Vendors",
+                (
+                    "Vendor",
+                    "Drawing sets",
+                    "Rounds",
+                    "Mistakes",
+                    "Open now",
+                    "Fixed on the next round",
+                    "Average open per round",
+                    "Most by product",
+                    "Most by what it touches",
+                    "Most by check",
+                ),
+                _vendor_rows(built),
             ),
-            _vendor_rows(built),
-        ),
-        (
-            "Checks",
             (
-                "Drawing set",
-                "Kind",
-                "Question",
-                "Date",
-                "Stopped",
-                "Rounds",
-                "Wrong",
-                "Your decision",
-                "Right",
+                "Checks",
+                (
+                    "Drawing set",
+                    "Kind",
+                    "Question",
+                    "Date",
+                    "Stopped",
+                    "Rounds",
+                    "Wrong",
+                    "Your decision",
+                    "Right",
+                ),
+                _check_rows(built),
             ),
-            _check_rows(built),
-        ),
-    ]
-    first = True
-    for title, header, rows in sheets:
-        sheet = book.active if first else book.create_sheet()
-        first = False
-        sheet.title = title
-        sheet.append(list(header))
-        for row in rows:
-            sheet.append(row)
-        for cell in sheet[1]:
-            cell.font = styles.Font(bold=True)
-        widths = [len(h) for h in header]
-        for row in sheet.iter_rows(min_row=1):
-            for at, cell in enumerate(row):
-                cell.number_format = "@"
-                cell.alignment = styles.Alignment(vertical="top", wrap_text=False)
-                widths[at] = max(widths[at], min(60, len(str(cell.value or ""))))
-        for at, width in enumerate(widths, start=1):
-            sheet.column_dimensions[utils.get_column_letter(at)].width = width + 2
-        sheet.freeze_panes = "A2"
-        sheet.auto_filter.ref = f"A1:{utils.get_column_letter(len(header))}{max(1, len(rows) + 1)}"
-    out = io.BytesIO()
-    book.save(out)
-    return out.getvalue()
+        ]
+    )
 
 
 @router.get(

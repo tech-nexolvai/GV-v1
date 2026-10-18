@@ -31,6 +31,7 @@ __all__ = [
     "blocks_with_impacts",
     "by_impact",
     "impact_of",
+    "touches",
     "with_impacts",
 ]
 
@@ -152,6 +153,18 @@ def _touches(finding: Mapping[str, Any], difference: Decimal | None) -> tuple[in
     if touched is not None:
         return touched
     return 18, "a dimension"
+
+
+def touches(finding: Mapping[str, Any]) -> tuple[str, Decimal | None]:
+    """What a finding touches, in the score's own words ("changes fabrication (overall size)",
+    "changes a size", "cosmetic (a tag, label or note)", …), and code's difference in inches
+    (`None`: code did not work one out). The send-ready package's review action reads this
+    (`review_action.changes_fabrication`), so the action and the order agree."""
+    given = finding.get("inches")
+    inches: Mapping[str, Any] = given if isinstance(given, Mapping) else {}
+    raw = _decimal(inches.get("difference"))
+    difference = None if raw is None else abs(raw)
+    return _touches(finding, difference)[1], difference
 
 
 def impact_of(finding: Mapping[str, Any]) -> dict[str, Any] | None:

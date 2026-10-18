@@ -1220,7 +1220,7 @@ class _Run:
         if engine._progress is not None:
             engine._progress.phase("writing")
         try:
-            files = engine._full_check_files()
+            files = engine._full_check_files(stopped)
         except Exception:  # noqa: BLE001 - the answer still ends, with its summary
             _log.exception("assistant roster files failed")
         text = self._summary(stopped, cap_hit, files)

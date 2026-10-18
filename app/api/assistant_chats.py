@@ -102,6 +102,7 @@ from app.review.assistant.chat_decisions import (
     decision_out,
     latest_decisions,
     make_decided_files,
+    package_block,
     record_decision,
     resolver_settled,
 )
@@ -161,7 +162,11 @@ from app.review.assistant.consistency_answer import (
     PackNotReady,
     run_check,
 )
+from app.review.assistant.package_store import identity as package_identity
+from app.review.assistant.package_store import stored_numbers
+from app.review.assistant.review_action import CheckState
 from app.review.assistant.sandbox import ChatWorkspace, Sandbox, open_sandbox
+from app.review.assistant.send_package import ZIP_MIME
 from app.runs.rates import ModelRates, rates_from_environment
 
 _log = logging.getLogger(__name__)
@@ -916,8 +921,8 @@ def cloud_drawing(
     """The zero-click cloud drawing made again with the reviewer's decisions as overrides (#1581):
     red clouds at the Wrong items code proved and at every agreed item, none at an item marked not
     a problem; the rest listed in grey; stamped "Checked automatically by GV Review: <date>, and
-    reviewed by <name>". A new cloud drawing and check report each time (older files are kept);
-    returns the cloud drawing."""
+    reviewed by <name>". A new cloud drawing and check report each time (older files are kept),
+    and for a full check a new send-ready package (#1622); returns the cloud drawing."""
     chat, package = _chat(session, chat_id, principal)
     _not_running(registry, chat_id, message_id)
     row = _answer(session, chat_id, message_id)
@@ -944,11 +949,14 @@ def cloud_drawing(
     )
     summary, not_checked = decided_summary(row, question, findings, package_name(package))
     workspace = ChatWorkspace(_chat_folder(request, chat.id))
-    drawing_id, report_id = uuid4(), uuid4()
+    drawing_id, report_id, package_id = uuid4(), uuid4(), uuid4()
     scratch = {
         drawing_id: workspace.files / f"{drawing_id}.partial",
         report_id: workspace.files / f"{report_id}.partial",
     }
+    # A full check's send-ready package is made again too (#1622), from the same list.
+    if row.mode == "full_check":
+        scratch[package_id] = workspace.files / f"{package_id}.partial"
     try:
         made = make_decided_files(
             workspace,
@@ -958,6 +966,12 @@ def cloud_drawing(
             scratch[drawing_id],
             scratch[report_id],
             settled=resolver_settled(row.blocks),
+            package_out=scratch.get(package_id),
+            identity=package_identity(session, package, tuple(row.products or ())),
+            numbers=stored_numbers(session, package.id, message_id),
+            incomplete=CheckState.from_dict(
+                (package_block(row.blocks) or {}).get("state")
+            ).incomplete,
         )
     except LookupError:
         raise CodedHTTPException(
@@ -970,7 +984,13 @@ def cloud_drawing(
             path.unlink(missing_ok=True)
         raise
     rows = []
-    for file_id, file in ((drawing_id, made.drawing), (report_id, made.report)):
+    kept = [
+        (drawing_id, made.drawing, "application/pdf"),
+        (report_id, made.report, "application/pdf"),
+    ]
+    if made.package is not None:
+        kept.append((package_id, made.package, ZIP_MIME))
+    for file_id, file, mime in kept:
         scratch[file_id].replace(workspace.files / str(file_id))
         rows.append(
             add_file(
@@ -980,7 +1000,7 @@ def cloud_drawing(
                 message_id=message_id,
                 name=file.name,
                 size=file.size,
-                mime="application/pdf",
+                mime=mime,
                 sha256=file.sha256,
             )
         )
@@ -1173,6 +1193,7 @@ def _message(
             sharpen_model=runtime.sharpen,
             sharpen_deadline_seconds=runtime.sharpen_deadline_seconds,
             task_edit=None if body.task is None else body.task.model_dump(),
+            identity=package_identity(session, package, products or ()),
         )
     except BaseException:
         registry.release(run)

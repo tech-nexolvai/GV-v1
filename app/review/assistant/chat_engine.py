@@ -226,6 +226,13 @@ from app.review.assistant.full_check_plan import (
 from app.review.assistant.full_check_specialists import specialist_system
 from app.review.assistant.ledger import LEDGER_TOOL_NAMES, ReadingLedger, recorded_results_check
 from app.review.assistant.sandbox import SET_PACK, SKILLS, UPLOADS, SandboxRefused
+from app.review.assistant.send_package import (
+    ZIP_MIME,
+    PackageIdentity,
+    incomplete_reason,
+    make_package_file,
+    package_context,
+)
 from app.review.assistant.sharpen import helper_lines
 from app.review.assistant.vendor_consistency import add_to_answer as add_consistency
 from app.runs.rates import ModelRates, call_cost_micros
@@ -436,6 +443,12 @@ class EngineSettings:
     pairing_proof: str = "ai_pair_plus_code"
     """What proves that two numbers measure the same thing (`GV_ASSISTANT_PAIRING_PROOF`):
     `ai_pair_plus_code` or `code_only` (`full_check_roster`)."""
+    identity: PackageIdentity = field(default_factory=PackageIdentity)
+    """Who and what the send-ready package is about (#1622): project, vendor, submittal number,
+    date received, products."""
+    numbering: Callable[[Sequence[Mapping[str, Any]]], dict[str, str]] | None = None
+    """This check's stable comment numbers from the set's earlier checks
+    (`package_store.numbering`); `None`: the check numbers its own."""
 
 
 @dataclass(slots=True)
@@ -2426,7 +2439,7 @@ class ChatEngine:
         self._markup_base = pool.submit(make)
         pool.shutdown(wait=False)
 
-    def _full_check_files(self) -> list[str]:
+    def _full_check_files(self, stopped: str | None = None) -> list[str]:
         """Full check: the cloud drawing and the check report, made by code, as chat files (the
         names of those made). The two are written at the same time; the drawing on the copy made
         at the start."""
@@ -2470,6 +2483,12 @@ class ChatEngine:
             )
         made_base = self._markup_base
         settled = list(self._settled)
+        # The send-ready package's context (#1622): the round-2 check, the stable comment numbers
+        # and the review result's state, worked out once for the drawing and the package.
+        worked: dict[str, Any] = {}
+        # Pages never accounted for (no note why) mean the check did not finish (S0).
+        gaps = book.coverage_gaps() if book.coverage_used else []
+        incomplete = incomplete_reason(stopped, {"not_opened": len(gaps)})
 
         def drawing(out: Path) -> MarkupFile:
             base = None
@@ -2478,8 +2497,17 @@ class ChatEngine:
                     base = made_base.result()
                 except Exception as failed:  # noqa: BLE001 - the copy is made again below
                     _log.warning("assistant chat markup copy failed: %s", type(failed).__name__)
+            worked["context"] = package_context(
+                workspace,
+                findings,
+                self.settings.identity,
+                numbers=self._comment_numbers(findings),
+                incomplete=incomplete,
+            )
             # The zero-click red/green proof drawing (#1581): only code-proved Wrongs clouded.
-            return make_proof_file(workspace, findings, out, base, settled=settled)
+            return make_proof_file(
+                workspace, findings, out, base, settled=settled, context=worked["context"]
+            )
 
         def checked(out: Path) -> MarkupFile:
             return make_report_file(workspace, summary, findings, not_checked, out, settled=settled)
@@ -2500,6 +2528,7 @@ class ChatEngine:
                     raise
 
         names: list[str] = []
+        kept: list[tuple[str, str, Path]] = []
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix="gv-chat-files") as pool:
             futures = [(what, pool.submit(make, phase, maker)) for what, phase, maker in makers]
             for what, future in futures:
@@ -2508,12 +2537,62 @@ class ChatEngine:
                     file_id, made = future.result()
                     register(file_id, made.name, made.size, "application/pdf", made.sha256)
                     names.append(made.name)
+                    kept.append((what, made.name, workspace.files / file_id))
                 except Exception as failed:  # noqa: BLE001 - told plainly in the answer
                     _log.warning("assistant chat %s failed: %s", what, type(failed).__name__)
                     if file_id is not None:
                         (workspace.files / file_id).unlink(missing_ok=True)
                     self._add_text(f"*The {what} could not be made for this answer.*")
+        context = worked.get("context")
+        if context is not None and any(what == "cloud drawing" for what, _name, _path in kept):
+            names += self._package_file(findings, kept, context)
         return names
+
+    def _comment_numbers(self, findings: Sequence[Mapping[str, Any]]) -> dict[str, str] | None:
+        """The stable comment numbers of this check's findings (#1622), from the set's earlier
+        checks; `None` (this check numbers its own) when they cannot be read."""
+        numbering = self.settings.numbering
+        if numbering is None:
+            return None
+        try:
+            return numbering(findings)
+        except Exception as failed:  # noqa: BLE001 - numbered from this check alone
+            _log.warning("assistant comment numbers failed: %s", type(failed).__name__)
+            return None
+
+    def _package_file(
+        self,
+        findings: Sequence[Mapping[str, Any]],
+        kept: Sequence[tuple[str, str, Path]],
+        context: Any,
+    ) -> list[str]:
+        """Full check: the send-ready package (#1622): the files just made, the comment letter and
+        the issue register, as one zip chat file. Made only with the cloud drawing; when it fails,
+        the answer says so and the other files stand."""
+        register = self.tools.register_file
+        if register is None:
+            return []
+        workspace = self.tools.workspace
+        file_id = str(uuid4())
+        out = workspace.files / file_id
+        try:
+            with self.timings.phase("package"):
+                made = make_package_file(
+                    workspace,
+                    findings,
+                    [(name, path) for _what, name, path in kept],
+                    out,
+                    context,
+                )
+            register(file_id, made.name, made.size, ZIP_MIME, made.sha256)
+            # What the screen (the review result) and a remade package read again.
+            self._add_block({"type": "package", "package": context.block()})
+        except Exception as failed:  # noqa: BLE001 - told plainly in the answer
+            _log.warning("assistant chat package failed: %s", type(failed).__name__)
+            out.unlink(missing_ok=True)
+            self._add_text("*The send-ready package could not be made for this answer.*")
+            return []
+        return [made.name]
 
     def _close_full_check(self, text: str, stopped: str | None, cap_hit: str | None) -> str:
         """Full check (#1518): the two files, also when it stopped early with findings; then
@@ -2524,7 +2603,7 @@ class ChatEngine:
             self._progress.stop()
         if stopped not in ("cancelled", "error") or self.book.live():
             try:
-                names = self._full_check_files()
+                names = self._full_check_files(stopped)
             except Exception:  # noqa: BLE001 - the answer still ends, with its summary
                 _log.exception("assistant chat full-check files failed")
         line = self.consistency_line

@@ -62,13 +62,13 @@ describe('products and the full check, without React', () => {
   });
 
   it('finds the cloud drawing and the check report by kind, else by name; the newest of each', () => {
-    expect(fullCheckFiles([REPORT, CLOUD])).toEqual({ cloud: CLOUD, report: REPORT, rest: [] });
+    expect(fullCheckFiles([REPORT, CLOUD])).toEqual({ cloud: CLOUD, report: REPORT, pkg: null, rest: [] });
     const cloud2 = { ...CLOUD, id: 'f-c2' };
     const report2 = { ...REPORT, id: 'f-r2' };
-    expect(fullCheckFiles([CLOUD, REPORT, cloud2, report2])).toEqual({ cloud: cloud2, report: report2, rest: [] });
+    expect(fullCheckFiles([CLOUD, REPORT, cloud2, report2])).toEqual({ cloud: cloud2, report: report2, pkg: null, rest: [] });
     const old = { id: 'x', name: 'set-cloud-markup.pdf', size: 1, mime: 'application/pdf', url: '' };
     const csv = { id: 'y', name: 'items.csv', size: 1, mime: 'text/csv', url: '' };
-    expect(fullCheckFiles([csv, old])).toEqual({ cloud: old, report: null, rest: [csv] });
+    expect(fullCheckFiles([csv, old])).toEqual({ cloud: old, report: null, pkg: null, rest: [csv] });
   });
 
   it('reads cites and the accuracy from the stream', () => {

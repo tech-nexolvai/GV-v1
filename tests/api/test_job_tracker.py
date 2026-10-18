@@ -364,7 +364,7 @@ def test_the_export_falls_back_to_csv_without_openpyxl(postgres_engine, monkeypa
             raise ModuleNotFoundError(name)
         return real(name)
 
-    monkeypatch.setattr("app.api.job_tracker.import_module", without_openpyxl)
+    monkeypatch.setattr("app.review.assistant.workbook.import_module", without_openpyxl)
     with _world(postgres_engine) as world:
         _seed_with_correction(world)
         response = world.client.get(f"/api/v1/projects/{world.project_id}/tracker.xlsx")

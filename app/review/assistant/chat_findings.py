@@ -72,6 +72,7 @@ __all__ = [
     "decision_help_lines",
     "decision_help_note",
     "finding_categories",
+    "full_check_rounds",
     "helpless_decisions",
     "live_findings",
     "main_upload",
@@ -1756,13 +1757,22 @@ def make_proof_file(
     *,
     settled: Sequence[Mapping[str, Any]] = (),
     today: str | None = None,
+    context: Any = None,
 ) -> MarkupFile:
     """The zero-click red/green proof drawing of a full check (#1581,
     `proof_drawing.proof_markup_pdf`), written to `out`: a red cloud and a red/green note at each
     Wrong item code proved, a proof entry each, a cover with the counts, the rule, the stamp and
     what code assumed about the page map, and the rest listed in grey. The reviewer's decisions
     (on `findings`, when there are any) override: agreed = clouded, not a problem = left out.
-    Raises `LookupError` when the chat has no copy of the set's PDFs."""
+    Raises `LookupError` when the chat has no copy of the set's PDFs. `context`: the send-ready
+    package's (#1622, `send_package.PackageContext`): its round-2 check, its stable comment numbers
+    ("C-07" on each cloud and note) and the review result stamped on the cover with the
+    disclaimer; without it the round-2 check is worked out here and the clouds are numbered 1, 2,
+    …."""
+    if context is not None:
+        findings = import_module("app.review.assistant.send_package").labelled(
+            findings, context.labels
+        )
     ordered = by_impact(findings)
     name, placed = place_findings(workspace, ordered)
     listing = read_listing(workspace)
@@ -1775,7 +1785,8 @@ def make_proof_file(
     pack = workspace.set_pack
     drawing = import_module(PROOF_MODULE)
     date = today or datetime.now(UTC).strftime("%Y-%m-%d")
-    rounds = round_two_report(workspace, name, ordered, pack)
+    action = None if context is None else context.action(ordered)
+    rounds = round_two_report(workspace, name, ordered, pack) if context is None else context.rounds
     drawing.proof_markup_pdf(
         workspace.uploads / name,
         placed,
@@ -1788,11 +1799,23 @@ def make_proof_file(
         assumptions=plan.plan_assumptions(pack, name),
         settled=settled,
         rounds=rounds,
+        action=action,
+        action_stamp=None if action is None else context.stamp(action),
     )
     data = out.read_bytes()
     return MarkupFile(
         markup_name(name, CLOUD_DRAWING_KIND), len(data), hashlib.sha256(data).hexdigest()
     )
+
+
+def full_check_rounds(workspace: ChatWorkspace, findings: Sequence[Mapping[str, Any]]) -> Any:
+    """The automatic round-2 check for a full check's files (`round_two_report` on the vendor's
+    file, biggest first), worked out once for the cloud drawing and the send-ready package.
+    Raises `LookupError` when the chat has no copy of the set's PDFs."""
+    main = main_upload(read_listing(workspace))
+    if main is None or not (workspace.uploads / str(main["name"])).is_file():
+        raise LookupError("no uploads")
+    return round_two_report(workspace, str(main["name"]), by_impact(findings), workspace.set_pack)
 
 
 def round_two_report(

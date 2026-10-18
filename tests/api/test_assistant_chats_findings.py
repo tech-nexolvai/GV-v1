@@ -13,6 +13,7 @@ import io
 import json
 import re
 import threading
+import zipfile
 from collections.abc import Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, ClassVar
@@ -420,7 +421,11 @@ def test_a_full_check_through_the_route_shows_its_label_and_ends_with_its_two_fi
         events = _events(response.text)
         message = _named(events, "message_end")[0]["message"]
         names = [f["name"] for f in message["files"]]
-        assert names == ["Vendor set - GV cloud drawing.pdf", "Vendor set - AI check report.pdf"]
+        assert names == [
+            "Vendor set - GV cloud drawing.pdf",
+            "Vendor set - AI check report.pdf",
+            "Vendor set - GV review package.zip",
+        ]
         assert [d["file"]["name"] for d in _named(events, "file")] == names
         assert message["accuracy"] is not None and message["accuracy"]["claims"] == 1
         chat = world.client.get(f"/api/v1/chats/{chat_id}").json()
@@ -433,8 +438,27 @@ def test_a_full_check_through_the_route_shows_its_label_and_ends_with_its_two_fi
         words = " ".join(block.get("text", "") for block in sent)
         assert "Focus for this chat: countertops." in words
         assert "Full check of this drawing set" in words
-        for file in message["files"]:
+        for file in message["files"][:2]:
             assert world.client.get(file["url"]).content[:4] == b"%PDF"
+        # The send-ready package (#1622): one zip, the result on the message, the same comment
+        # numbers in the letter as on the cloud drawing.
+        package = message["files"][2]
+        assert package["mime"] == "application/zip"
+        with zipfile.ZipFile(io.BytesIO(world.client.get(package["url"]).content)) as archive:
+            inside = archive.namelist()
+            assert inside[:2] == [
+                "Vendor set - GV cloud drawing.pdf",
+                "Vendor set - Comment letter.pdf",
+            ]
+            assert inside[-1] == "Vendor set - Check report.pdf"
+            letter = "".join(
+                page.extract_text() or ""
+                for page in PdfReader(io.BytesIO(archive.read(inside[1]))).pages
+            )
+        result = message["review_action"]
+        assert result is not None and result["words"] in letter
+        assert result["disclaimer"].split(".")[0] in " ".join(letter.split())
+        assert chat["messages"][1]["review_action"] == result
 
         # A chat message still needs its words; a product at most once.
         empty = world.client.post(f"/api/v1/chats/{chat_id}/messages", json={**ASK, "text": " "})
@@ -549,4 +573,5 @@ def test_a_full_check_with_no_words_is_stored_with_codes_summary_and_its_progres
         assert [f["name"] for f in stored["files"]] == [
             "Vendor set - GV cloud drawing.pdf",
             "Vendor set - AI check report.pdf",
+            "Vendor set - GV review package.zip",
         ]

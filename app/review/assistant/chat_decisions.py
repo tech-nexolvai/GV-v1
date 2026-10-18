@@ -36,6 +36,11 @@ from app.review.assistant.chat_trust import cloud_kind
 from app.review.assistant.impact import by_impact
 from app.review.assistant.proof import proof_of
 from app.review.assistant.sandbox import ChatWorkspace
+from app.review.assistant.send_package import (
+    PackageIdentity,
+    make_package_file,
+    package_context,
+)
 
 __all__ = [
     "DecidedFiles",
@@ -206,6 +211,8 @@ def decided_summary(
 class DecidedFiles:
     drawing: MarkupFile
     report: MarkupFile
+    package: MarkupFile | None = None
+    """The send-ready package made again (#1622), when asked for (`package_out`)."""
 
 
 def resolver_settled(blocks: Sequence[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
@@ -226,16 +233,51 @@ def make_decided_files(
     report_out: Path,
     *,
     settled: Sequence[Mapping[str, Any]] = (),
+    package_out: Path | None = None,
+    identity: PackageIdentity | None = None,
+    numbers: Mapping[str, str] | None = None,
+    incomplete: str | None = None,
 ) -> DecidedFiles:
     """The cloud drawing and the check report made again with the reviewer's decisions as
     overrides (#1581, replacing #1521's only-agreed drawing): the same zero-click drawing as the
     full check's (`chat_findings.make_proof_file`), where an agreed item is clouded and an item
     marked not a problem is left out, stamped "… and reviewed by <name>". Raises `LookupError`
     when the chat has no copy of the set's PDFs. The biggest items first (#1569), so the drawing's
-    and the report's numbers agree."""
+    and the report's numbers agree. `package_out` (a full check's answer): the send-ready package
+    is made again too (#1622), from the same list and context (`identity`, the stable comment
+    `numbers`, and whether the check finished), so the drawing's cover, the letter and the
+    register say the same result and comment numbers."""
     findings = by_impact(findings)
-    drawing = make_proof_file(workspace, findings, drawing_out, settled=settled)
+    context = None
+    if package_out is not None:
+        context = package_context(
+            workspace,
+            findings,
+            identity or PackageIdentity(),
+            numbers=numbers,
+            incomplete=incomplete,
+        )
+    drawing = make_proof_file(workspace, findings, drawing_out, settled=settled, context=context)
     report = make_report_file(
         workspace, summary, findings, not_checked, report_out, settled=settled
     )
-    return DecidedFiles(drawing=drawing, report=report)
+    package = None
+    if package_out is not None and context is not None:
+        package = make_package_file(
+            workspace,
+            findings,
+            [(drawing.name, drawing_out), (report.name, report_out)],
+            package_out,
+            context,
+        )
+    return DecidedFiles(drawing=drawing, report=report, package=package)
+
+
+def package_block(blocks: Sequence[Mapping[str, Any]] | None) -> Mapping[str, Any] | None:
+    """A full check's `package` block (#1622): the review result's state and the comment numbers
+    when its package was made."""
+    for block in reversed(list(blocks or [])):
+        found = block.get("package") if block.get("type") == "package" else None
+        if isinstance(found, Mapping):
+            return found
+    return None
