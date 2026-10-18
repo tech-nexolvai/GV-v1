@@ -17,8 +17,10 @@ from app.review.assistant import pair_findings as pf
 from app.review.assistant import proof
 from app.review.assistant.chat_findings import FindingBook
 from app.review.assistant.chat_trust import judged
+from app.review.assistant.full_check_lenses import same_wrongs
 from app.review.assistant.product_scope import CODE_MADE, ProductScope, refiled
 from app.review.assistant.sandbox import ChatWorkspace
+from app.review.assistant.vendor_text import internal
 
 FILE = "Set.pdf"
 
@@ -119,6 +121,42 @@ def test_a_chain_is_summed_and_compared_with_the_vendors_label() -> None:
     assert '1\' - 0" + 1\' - 6" = 30"' in found[0]["why"]
 
 
+def test_a_chain_that_differs_is_never_wrong_it_is_not_compared() -> None:
+    # The architect prints 1'-0" + 8" (20") but no overall; the vendor prints 762 [30] (D12).
+    found = pf.findings_from(
+        _pairs(_pair(["D1", "D2"], "D12", "the left wall to outlet 2", "sum")), _dims(), PAGE_MAP
+    )
+    item = found[0]
+    assert item["status"] == "check" and item["paired_by"] == "code"
+    assert item["architect_parts"] == {"parts": ["1' - 0\"", '8"'], "total": '20"', "vendor": '30"'}
+    assert "prints no overall here" in item["why"]
+    checks = {"printed_architect": "not_found", "printed_vendor": "match", "units": "agrees"}
+    stored = judged(
+        {**item, "id": "F1", "checks": checks, "inches": {"architect": "20", "vendor": "30"}}
+    )
+    assert proof.proof_group(stored) == "not_compared"
+    found_as = proof.classified(stored)
+    assert (found_as.reason, found_as.label) == (
+        "no_overall",
+        "Not reviewed: architect gives no overall",
+    )
+    assert found_as.why == 'architect\'s parts add to 20"; vendor shows 30"'
+    # Never red, even if a later step said the status were different.
+    assert proof.proof_group({**stored, "status": "different"}) == "not_compared"
+
+
+def test_an_answers_own_item_on_a_differing_chain_becomes_not_compared() -> None:
+    code = pf.findings_from(
+        _pairs(_pair(["D1", "D2"], "D12", "the left wall to outlet 2", "sum")), _dims(), PAGE_MAP
+    )[0]
+    existing = {"id": "F5", "status": "different", "why": "Wall to outlet differs."}
+    changes = pf.proved_changes(code, existing)
+    assert changes["status"] == "check" and changes["architect_parts"]["total"] == '20"'
+    merged = {**existing, **changes}
+    assert proof.proof_group(merged) == "not_compared"
+    assert proof.classified(merged).reason == "no_overall"
+
+
 def test_a_chain_with_a_label_read_from_drawn_ink_is_left_out() -> None:
     drawn = _label("D5", '6"', "6", "architect", 220, route="drawn")
     found = pf.findings_from(
@@ -158,11 +196,15 @@ def test_pairs_code_did_not_make_or_could_not_read_are_left_out() -> None:
 
 def test_wrongs_come_first() -> None:
     found = pf.findings_from(
-        _pairs(_pair(["D4"], "D13", "x to y"), _pair(["D2"], "D11", "outlet 1 to outlet 2")),
+        _pairs(
+            _pair(["D4"], "D13", "x to y"),
+            _pair(["D1", "D2"], "D12", "wall to outlet 2", "sum"),
+            _pair(["D2"], "D11", "outlet 1 to outlet 2"),
+        ),
         _dims(),
         PAGE_MAP,
     )
-    assert [f["status"] for f in found] == ["different", "same"]
+    assert [f["status"] for f in found] == ["different", "check", "same"]
 
 
 def test_check_pack_reads_the_pack_files(tmp_path: Path) -> None:
@@ -354,3 +396,34 @@ def test_the_hook_runs_only_in_a_full_check(monkeypatch: pytest.MonkeyPatch) -> 
     assert pf.add_to_answer(_Engine("chat", [])) is None
     monkeypatch.setattr(pf, "check_pack", lambda folder: [])
     assert pf.add_to_answer(_Engine("full_check", [])) is None
+
+
+def test_a_code_pair_and_an_ai_item_on_the_same_label_fold_into_the_code_one() -> None:
+    code = {**_code(), "id": "F9", "trust_level": "likely"}
+    ai_item = {
+        "id": "F2",
+        "page": 2,
+        "status": "different",
+        "item": "Galley: outlet spacing",
+        "architect": '9"',
+        "vendor": "254 [10]",
+        "trust_level": "likely",
+        "dims": {"vendor": {"id": "D11", "page": 2}},
+    }
+    folds = same_wrongs([ai_item, code])
+    assert [(f.keep, f.drop) for f in folds] == [("F9", "F2")]
+
+
+def test_the_names_and_reasons_are_fit_for_the_vendor() -> None:
+    found = pf.findings_from(
+        _pairs(
+            _pair(["D4"], "D11", 'outlet 1 of the row at 78" (centre) to outlet 2'),
+            _pair(["D1", "D2"], "D12", "the left wall to the right wall", "sum"),
+            _pair(["D4"], "D13", "outlet 1 to the right wall"),
+        ),
+        _dims(),
+        PAGE_MAP,
+    )
+    assert len(found) == 3
+    for item in found:
+        assert not internal(item["item"]) and not internal(item["why"])

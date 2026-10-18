@@ -5461,7 +5461,8 @@
                   "not_seen",
                   "field_verify",
                   "finish_not_comparable",
-                  "no_sheet"
+                  "no_sheet",
+                  "no_overall"
                 ],
                 "type": "string"
               },

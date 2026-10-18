@@ -8,8 +8,11 @@ item; on Set 3 the AI never reported two outlet spacings code had paired (s3-28,
 stayed out of the answer. This module turns every pair into an item by itself:
 
 - **The values** are the printed labels code read (`dims.json`), compared exactly: more than 1/16"
-  apart is Wrong (the architect's value is what it should be), else Right. A pair of an architect's
-  chain with one vendor label (`kind: sum`) compares the chain's sum with the vendor's label.
+  apart is Wrong (the architect's value is what it should be), else Right. Both sides must be
+  printed: a pair of an architect's chain with one vendor label (`kind: sum`) is never Wrong, since
+  the architect never prints that total (orchestrator, 2026-10-18). When the chain's sum differs
+  from the vendor's label the item is Not compared, "Not reviewed: architect gives no overall"
+  ("architect's parts add to 110\"; vendor shows 107 3/4\""); when it agrees it is Right.
 - **The item** is named from what the pair's ends land on ("left wall to outlet 1 of the row at
   46\" (centre)"), under the page's area. The pair defines the item, never the value: a 9" on the
   same page that belongs to another item is a different item.
@@ -24,9 +27,10 @@ stayed out of the answer. This module turns every pair into an item by itself:
 The full check runs it at its finish next to the vendor consistency and finish checks
 (`add_to_answer`), before the free escalation and the proof groups.
 
-Measured on Set 3 ($0, a local replay of a stored full check on a fresh set pack): Wrong 16 -> 21,
-Right 24 -> 33, 0 false reds against the answer key (`score.py`'s matching): 3 Wrong and 9 Right
-added, 4 of the answer's own items re-proved (2 of them Wrong only through this).
+Measured on Set 3 ($0, a local replay of a stored full check on a fresh set pack): Wrong 16 -> 18,
+Right 24 -> 33, Not compared 65 -> 66; 0 false reds against the answer key (`score.py`'s matching)
+and no disputed key item in red. 2 Wrong and 9 Right added; 2 of the answer's own items re-proved
+to Wrong, 2 moved to "architect gives no overall" (summed chains), 1 such chain added.
 Verification: `tests/review/assistant/test_pair_findings.py` (made-up labels).
 """
 
@@ -167,10 +171,16 @@ def _finding(
         f"the architect's chain {' + '.join(arch_texts)} = {arch_text}" if chain else arch_text
     )
     why = f"Code paired these two dimensions {method} ({span}), no scale used. " + (
-        f"The architect prints {printed}; the vendor prints {vendor_text}, "
-        f"{_inches_text(abs(off))} {'more' if off > 0 else 'less'}."
-        if different
-        else f"Both print the same: the architect {printed}, the vendor {vendor_text}."
+        f"The architect prints no overall here, only parts ({' + '.join(arch_texts)} = "
+        f"{arch_text}); the vendor prints {vendor_text}. A total the architect never prints is "
+        "not compared."
+        if different and chain
+        else (
+            f"The architect prints {printed}; the vendor prints {vendor_text}, "
+            f"{_inches_text(abs(off))} {'more' if off > 0 else 'less'}."
+            if different
+            else f"Both print the same: the architect {printed}, the vendor {vendor_text}."
+        )
     )
     vendor_ref = f"p{page}.{vendors[0].get('id')}"
     finding: dict[str, Any] = {
@@ -179,7 +189,7 @@ def _finding(
         "category": "other",
         "architect": arch_text,
         "vendor": vendor_text,
-        "status": "different" if different else "same",
+        "status": ("check" if chain else "different") if different else "same",
         "why": why,
         "verified": False,
         "source": "architect",
@@ -192,7 +202,14 @@ def _finding(
     }
     if arch_page != page:
         finding["vs_page"] = arch_page
-    if not chain:
+    if chain:
+        # What the Not-compared row says (`classification`): the parts, their sum, the vendor's.
+        finding["architect_parts"] = {
+            "parts": arch_texts,
+            "total": arch_text,
+            "vendor": _inches_text(vendor_in),
+        }
+    else:
         assert arch_raws[0] is not None
         finding["dims"]["architect"] = _provenance(arch_raws[0], file, arch_page)
     return finding
@@ -229,7 +246,8 @@ def findings_from(
                 continue
             seen[key] = made
             out.append(made)
-    return sorted(out, key=lambda f: (f["status"] != "different", f["page"]))
+    order = {"different": 0, "check": 1, "same": 2}
+    return sorted(out, key=lambda f: (order[f["status"]], f["page"]))
 
 
 def _read(path: Path) -> Any:
@@ -307,8 +325,8 @@ def same_item(
 
 def proved_changes(code: Mapping[str, Any], existing: Mapping[str, Any]) -> dict[str, Any]:
     """What an existing finding takes from code's pair of the same item: code's values, status,
-    labels and pairing (code wins on proof); its id, name and pictures stay unless it has no
-    architect spot."""
+    labels and pairing (code wins on proof; a summed chain makes it Not compared); its id, name and
+    pictures stay unless it has no architect spot."""
     changes: dict[str, Any] = {
         "architect": code["architect"],
         "vendor": code["vendor"],
@@ -317,6 +335,9 @@ def proved_changes(code: Mapping[str, Any], existing: Mapping[str, Any]) -> dict
         "paired_by": "code",
         "why": " ".join(f"{existing.get('why') or ''} {code['why']}".split())[:600],
     }
+    if code.get("architect_parts"):
+        # A summed chain: Not compared, whatever the answer's own reading said (never red).
+        changes["architect_parts"] = dict(code["architect_parts"])
     if not existing.get("arch_box") and code.get("arch_box"):
         changes["arch_box"] = code["arch_box"]
     if not existing.get("vendor_box") and code.get("vendor_box"):

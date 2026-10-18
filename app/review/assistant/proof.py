@@ -260,6 +260,8 @@ def code_proved(finding: Mapping[str, Any]) -> bool:
     dimensions, a pairing proof (`needs_pairing`, `pairing_proved`): reading the vendor's number
     right (its millimetres and inches agreeing) does not prove the architect's number measures the
     same thing."""
+    if finding.get("architect_parts"):
+        return False  # a total the architect never prints (code's summed chain) is never proof
     if not _read_by_code(finding):
         return False
     return not needs_pairing(finding) or pairing_proved(finding)

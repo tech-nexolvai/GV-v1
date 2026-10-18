@@ -1213,7 +1213,7 @@ class FindingBook:
     ) -> dict[str, Any] | None:
         """A finding code made (the reading ledger's: `created_by: "ledger"`; the vendor
         consistency check's: `"consistency"`; the finish check's: `"architect_items"`; code's
-        pairs: `"pairs"`), added like
+        pairs: `"pairs"`, with `architect_parts` for a summed chain), added like
         a lead finding (id, crops, checks). Its `ledger_ids`, `reference_side`, `dims` (the labels
         its values came from), `paired_by` (code paired the two sides) and `text_proof` (what the
         finish check read and searched) are kept. A box that is not on an upload is left out; a
@@ -1294,6 +1294,8 @@ class FindingBook:
             finding["paired_by"] = "code"
         if isinstance(given.get("text_proof"), Mapping):
             finding["text_proof"] = json.loads(json.dumps(given["text_proof"]))
+        if isinstance(given.get("architect_parts"), Mapping):
+            finding["architect_parts"] = json.loads(json.dumps(given["architect_parts"]))
         if self.checker is not None:
             finding = self.checker(finding)
         with self._lock:
