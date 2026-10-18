@@ -128,13 +128,10 @@ def _broken(tmp_path: Path, change: object) -> Path:
         (lambda d: d["products"][2].update(active=True, id="lamp_post"), "skill file lamp_post"),
         (lambda d: [p.update(active=False) for p in d["products"]], "at least one product"),
         (lambda d: d.update(version=2), "version: 1"),
-<<<<<<< HEAD
-        (lambda d: d["products"][0].update(tag_families=["qz-1"]), "tag_families"),
-        (lambda d: d["products"][1].update(tag_families=["CT"]), "given to two products"),
-=======
         (lambda d: d["products"][0].update(words="countertop"), "`words` must be a list"),
         (lambda d: d["products"][1].update(hints=[""]), "`hints` must be a list"),
->>>>>>> origin/main
+        (lambda d: d["products"][0].update(tag_families=["qz-1"]), "tag_families"),
+        (lambda d: d["products"][1].update(tag_families=["CT"]), "given to two products"),
     ],
     ids=[
         "repeated-id",
@@ -147,13 +144,10 @@ def _broken(tmp_path: Path, change: object) -> Path:
         "active-without-skill",
         "none-active",
         "unknown-version",
-<<<<<<< HEAD
-        "bad-tag-family",
-        "tag-family-twice",
-=======
         "words-not-a-list",
         "empty-hint",
->>>>>>> origin/main
+        "bad-tag-family",
+        "tag-family-twice",
     ],
 )
 def test_a_registry_that_does_not_hold_together_is_refused(
