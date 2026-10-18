@@ -5459,7 +5459,9 @@
                   "prototype",
                   "not_proved",
                   "not_seen",
-                  "field_verify"
+                  "field_verify",
+                  "finish_not_comparable",
+                  "no_sheet"
                 ],
                 "type": "string"
               },

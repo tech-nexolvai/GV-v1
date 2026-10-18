@@ -5066,7 +5066,7 @@ export interface components {
              * Not Compared
              * @description not_compared: the reason (the list's group).
              */
-            not_compared?: ("architect_disagrees" | "nothing_to_compare" | "different_reference" | "unreadable" | "missing_setting" | "prototype" | "not_proved" | "not_seen" | "field_verify") | null;
+            not_compared?: ("architect_disagrees" | "nothing_to_compare" | "different_reference" | "unreadable" | "missing_setting" | "prototype" | "not_proved" | "not_seen" | "field_verify" | "finish_not_comparable" | "no_sheet") | null;
             /**
              * Proof
              * @description Clouded items: the check that proved it, in plain words.
