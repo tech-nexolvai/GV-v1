@@ -43,8 +43,8 @@ def _pack(folder: Path) -> None:
         _label(6, 30, 280, 400, "vendor"),
     ]
     phrases = [
-        {"text": "PULL-OUT DRAWERS FOR", "box": [20, 40, 120, 48], "side": "architect"},
-        {"text": "V-322-CUST", "box": [200, 40, 260, 48], "side": "architect"},
+        {"text": "SOFT-CLOSE DRAWERS FOR", "box": [20, 40, 120, 48], "side": "architect"},
+        {"text": "FX-101-CUST", "box": [200, 40, 260, 48], "side": "architect"},
         {"text": '1/4" = 1\'-0"', "box": [20, 280, 90, 288], "side": "architect"},
     ]
     dims = {
@@ -91,8 +91,8 @@ def test_the_tool_lists_scales_pairs_notes_and_one_sided_tags(tmp_path: Path) ->
     assert "architect's drawing" in text and "about 1:36" in text
     assert 'its printed note 1/4" = 1\'-0" does NOT agree' in text
     assert 'SAME: architect D1 36" vs vendor D4 36"' in text
-    assert '"PULL-OUT DRAWERS FOR"' in text
-    assert "Architect's tags the vendor's drawing on this page does not print: V-322-CUST" in text
+    assert '"SOFT-CLOSE DRAWERS FOR"' in text
+    assert "Architect's tags the vendor's drawing on this page does not print: FX-101-CUST" in text
     only = tools.drawing_facts({"page": 4, "facts": ["notes"]}, new_step("f2", "drawing_facts", {}))
     assert "Scale:" not in only.content[0]["text"]
 

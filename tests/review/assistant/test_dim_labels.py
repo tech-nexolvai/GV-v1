@@ -290,7 +290,7 @@ def test_only_the_vendors_drawn_numbers_with_an_inch_mark_and_room_round_them(
     bare = tmp_path / "bare.pdf"
     bare.write_bytes(_pdf([_drawn_page(_glyphs(300.0, 303.5, inch_mark=False))]))
     assert not _drawn(bare, _agreeing())
-    # Ink in line with it, about a word space away: part of a word or a longer number (`WD-02`,
+    # Ink in line with it, about a word space away: part of a word or a longer number (`FN-02`,
     # `SCALE : 1"`, `2'-10"`).
     crowded = tmp_path / "crowded.pdf"
     crowded.write_bytes(_pdf([_drawn_page(_glyphs(300.0, 303.5) + _letter(290.8))]))
@@ -308,7 +308,7 @@ def test_the_next_dimension_of_a_chain_does_not_crowd_a_label(tmp_path: Path) ->
     "lines",
     [
         ['03"'],  # a leading zero: `EQ` read upside down
-        ['WD-02"'],  # a word in it: a tag
+        ['FN-02"'],  # a word in it: a tag
         ['24" FILLER'],  # a dimension with its note: left to the AI
         ['2"+24"'],  # a sum written out
         ['0"'],  # no length

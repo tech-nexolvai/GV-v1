@@ -1,18 +1,18 @@
 """The notes and tags each drawing prints, listed by code: $0, no AI.
 
-The architect's drawing says more than its dimensions: "PULL-OUT DRAWERS FOR TOWEL STORAGE",
-"(2) ADJ. SHELVES", a finish tag `WD-01`, a fixture tag `V-322-CUST`. A helper reading a picture
+The architect's drawing says more than its dimensions: "SOFT-CLOSE DRAWERS FOR LINEN",
+"(3) FIXED SHELVES", a finish tag `FN-01`, a fixture tag `FX-101-CUST`. A helper reading a picture
 may miss a note, and the reviewer cannot tell a note it never read from one that is fine. Code
 reads every printed phrase once per set (`dim_labels`, the set pack's `dims.json`: the drawing's
 own text, black or grey, its pasted drawings included; GV's markup is never read) and this module
 sorts them per drawing of the page map:
 
-- **tags**: a phrase shaped like a tag (`WD-01`, `CT-001`, `V-322-CUST`: letters, a dash,
+- **tags**: a phrase shaped like a tag (`FN-01`, `TP-001`, `FX-101-CUST`: letters, a dash,
   digits, an optional suffix);
 - **notes**: a phrase of at least two words (dimensions, scale notes and lone tags are not notes);
 - per page, the **architect's tags the vendor's drawing does not print** and the other way round.
 
-What it proves is observed: the architect prints `V-322-CUST` here and the vendor's drawing on the
+What it proves is observed: the architect prints `FX-101-CUST` here and the vendor's drawing on the
 same page prints no such tag. Whether a different tag name means the same finish stays a person's
 call unless a printed legend says so (the resolver's rule). The notes are for the helpers'
 checklist: each architect note is something to look for on the vendor's drawing.
@@ -93,7 +93,7 @@ def page_notes(
             where["tags"].append({**item, "text": text.strip(" .,;:()")})
         else:
             where["notes"].append(item)
-            # A tag inside a note (`TOEKICK- WD-04`) is a tag the drawing prints too.
+            # A tag inside a note (`TOEKICK- FN-04`) is a tag the drawing prints too.
             where["tags"] += [{**item, "text": tag} for tag in tags]
     for drawing in (*drawings, outside):
         drawing["tags"] = drawing["tags"][:MAX_PER_DRAWING]
