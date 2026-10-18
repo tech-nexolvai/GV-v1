@@ -780,7 +780,7 @@ def _whole_label(
 ) -> ink_labels.Label | None:
     """The label gathered again round its own box until it stops growing, or `None`. A cluster
     gathers the ink a few points round it, so a label at the edge of what it gathered may have
-    lost a digit (`51"` cut to `1"`): only a label that gathers to itself is read. A label that
+    lost a digit (`47"` cut to `7"`): only a label that gathers to itself is read. A label that
     grows past a written number's size (hatching, a dotted fill) is none. A label well inside
     what was gathered round `gathered` (further than a word space from its edge) is whole."""
     if gathered is not None:
@@ -819,7 +819,7 @@ def _drawn_value(reads: Sequence[Any]) -> Decimal | None:
     lines = [line for read in reads for line in read.lines]
     if any("+" in line or _LEADING_ZERO.search(line) or _WORD.search(line) for line in lines):
         # A sum written out; a number with a leading zero, which no dimension has (`EQ` read
-        # upside down is `03`); or a word read in it (a tag `LA-002`, a note `(2) ADJ.
+        # upside down is `03`); or a word read in it (a tag `TG-002`, a note `(3) FIXED
         # SHELVES`, or a dimension with its note, left to the AI): no label then.
         return None
     engines: dict[Decimal, set[str]] = {}
