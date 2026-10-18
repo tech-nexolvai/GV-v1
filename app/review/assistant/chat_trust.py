@@ -489,15 +489,17 @@ def _parts_sum(finding: Mapping[str, Any]) -> str | None:
     return _number(sum((v for v in values if v is not None), Decimal(0)))
 
 
-#: The code check that reads finish codes from the drawings' text (`architect_items`, #1623).
-_TEXT_MADE_BY: Final = "architect_items"
+#: The code checks that read codes or values from the drawings' text and searched every vendor
+#: sheet of the area: the finish check (`architect_items`, #1623) and the simple full check's
+#: absence search (`simple_check.verify`, an architect value no vendor sheet prints).
+_TEXT_MADE_BY: Final = frozenset({"architect_items", "simple_check"})
 
 
 def _text_made(finding: Mapping[str, Any]) -> str | None:
-    """A finding the finish check made from the drawings' text (what it read and the vendor
-    sheets it searched are in `text_proof`): an observed code witness."""
+    """A finding a code check made from the drawings' text (what it read and the vendor sheets it
+    searched are in `text_proof`): an observed code witness."""
     proof = finding.get("text_proof")
-    if finding.get("created_by") == _TEXT_MADE_BY and isinstance(proof, Mapping) and proof:
+    if finding.get("created_by") in _TEXT_MADE_BY and isinstance(proof, Mapping) and proof:
         return "agrees"
     return None
 
