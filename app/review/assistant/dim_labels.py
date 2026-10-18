@@ -745,7 +745,7 @@ def _line_work(path: Any, turn: ink_labels.Turn) -> bool:
 def _crowded(page: Any, label: ink_labels.Label) -> bool:
     """Whether other character-sized ink sits in line with the label, closer than 1.2 times its
     height (a word space), in a direction it may read: a word or a number the label belongs to
-    (`WD-` before `02`, `SCALE :` before `1"`, `2'-` before `10"`). Such a label is not read: what
+    (`FN-` before `02`, `SCALE :` before `1"`, `2'-` before `10"`). Such a label is not read: what
     it is part of decides its value. The dimension's own ticks, arrowheads and extension lines do
     not count (`_line_work`), nor the next dimension of a chain (a label with its own inch mark).
     """
