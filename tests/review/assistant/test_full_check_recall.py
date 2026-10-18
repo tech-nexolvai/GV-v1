@@ -503,3 +503,119 @@ def test_the_brief_names_each_drawing_code_found_no_labels_on() -> None:
     assert "still to compare" in lines[1]
     # A drawing with labels gets no note.
     assert "architect's drawing" not in lines[0]
+
+
+# ---- #1652: what the paid run of 2026-10-19 showed ----------------------------------------------
+
+
+def test_a_helpers_note_is_never_red_and_never_sent_even_with_printed_values(
+    tmp_path: Path,
+) -> None:
+    from types import SimpleNamespace
+
+    from app.review.assistant.classification import internal
+
+    harness = _roster(tmp_path, _Roster())
+    run = _strings_run(harness)
+    # Both values are printed on page 3 (the fixture's labels: 46" vendor, 37" architect).
+    report = (
+        'UNRECORDED p3 | Area 1: filler widths | architect 37" | vendor 46" | different | '
+        "both ends on the walls\n"
+        "UNRECORDED p3 | Area 1: strings | architect none printed | vendor as listed | check | x"
+    )
+    run._salvage(SimpleNamespace(pages=(2, 3), number=7), {"report": report})
+
+    notes = [f for f in harness.engine.book.live() if f.get("salvaged")]
+    assert len(notes) == 1  # "as listed" is no value read: no note
+    note = notes[0]
+    assert note["status"] == "check" and internal(note)
+    assert proof.proof_group(note) == "not_compared"
+    assert proof.classified(note).label == "Internal: read but not recorded at its spot"
+    assert not proof.vendor_facing(note)
+    # Whatever later gives it a rule witness or a click, it is never clouded.
+    ruled = {**note, "status": "different", "witnesses": ["rule"], "trust_level": "likely",
+             "settled": {"method": "gv_limits", "how": "GV's filler limits are 1\" to 2\" (x"},
+             "decision": {"decision": "agree"}}  # fmt: skip
+    assert proof.proof_group(ruled) == "not_compared" and not proof.code_proved(ruled)
+
+
+def test_an_unsearched_one_sided_ledger_item_is_for_gvs_reviewer_only() -> None:
+    from app.review.assistant.classification import internal
+
+    one_sided = {"id": "F9", "page": 27, "status": "check", "created_by": "ledger",
+                 "source": "completeness", "architect": "shown", "vendor": "not found",
+                 "item": "Area 4: floor to outlet"}  # fmt: skip
+    assert internal(one_sided) and not proof.vendor_facing(one_sided)
+    tags = {**one_sided, "created_by": "architect_items", "source": "architect"}
+    assert not internal(tags)  # code searched every vendor sheet for a tag: it may be sent
+
+
+def test_the_protected_share_scales_with_the_price() -> None:
+    for price in (5 * DOLLARS, 6 * DOLLARS):
+        plan = PricePlan.balanced(price, 10, 45)
+        assert plan.protected() == pytest.approx(0.36 * price, rel=0.01)
+
+
+def test_each_kind_of_specialist_is_timed_in_its_own_phase(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clean_ink(monkeypatch)
+    script = _Lead()
+    harness = _roster(tmp_path, script)
+    harness.engine.book.report(
+        {"page": 3, "item": "Area 1: outlet height", "category": "countertop",
+         "architect": "3'-1\"", "vendor": '46"', "status": "different", "verified": False,
+         "source": "architect"},
+        "helper:1",
+    )  # fmt: skip
+    run = _strings_run(harness)
+
+    run._lead_review(None)
+
+    phases = harness.engine.timings.as_dict(harness.engine.spent)["phases"]
+    names = {p["phase"]: p for p in phases}
+    assert "lead_review" in names and names["lead_review"]["calls"] >= 1
+    assert "helpers" not in names  # the lead review is never counted as a page helper
+    lead = script.params["lead"][0]
+    assert lead["output_config"].get("effort", "low") == "low"
+
+
+class _Thinker(_Lead):
+    """A lead that first answers with nothing but thinking, then places the item."""
+
+    def helper(self, params: Mapping[str, Any], brief: str) -> list[dict[str, Any]]:
+        if brief.startswith("LEAD REVIEW") and _steps(params) == 0:
+            self._seen("empty", params)
+            return reply(text(""), model=OPUS)
+        if brief.startswith("LEAD REVIEW"):
+            params = {**params, "messages": params["messages"][2:]}
+        return super().helper(params, brief)
+
+
+def test_a_reply_with_no_words_and_no_tools_is_sent_on_not_taken_as_the_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clean_ink(monkeypatch)
+    script = _Thinker()
+    harness = _roster(tmp_path, script)
+    finding, _notes = harness.engine.book.report(
+        {"page": 3, "item": "Area 1: outlet height", "category": "countertop",
+         "architect": "3'-1\"", "vendor": '46"', "status": "different", "verified": False,
+         "source": "architect"},
+        "helper:1",
+    )  # fmt: skip
+
+    _strings_run(harness)._lead_review(None)
+
+    assert script.calls.get("empty") == 1 and script.calls.get("lead", 0) >= 1
+    placed = next(f for f in harness.engine.book.live() if f["id"] == finding["id"])
+    assert placed["dims"]["vendor"]["id"] == "D1"
+
+
+def test_each_gap_closer_gets_enough_money_to_make_its_calls() -> None:
+    assert full_check_roster.MIN_GAP_RUN_MICROS >= 200_000
+    budget = 790_000
+    closers = max(1, budget // full_check_roster.MIN_GAP_RUN_MICROS)
+    chosen, _left = full_check_roster.gap_pages({p: ["x"] for p in range(3, 30)}, budget)
+    runs = full_check_roster.page_runs(chosen, closers)
+    assert len(runs) == 3 and all(budget * len(r) // len(chosen) >= 200_000 for r in runs)

@@ -628,6 +628,17 @@ class ChatFindingEscalationOut(BaseModel):
     steps: list[ChatFindingEscalationStepOut] = Field(default_factory=list)
 
 
+class ChatFindingStringReadsOut(BaseModel):
+    """A full check (#1641, #1652): what the blind second reading of a vendor string gave."""
+
+    model_config = ConfigDict(frozen=True)
+
+    outcome: Literal[
+        "proved", "adds_up", "within_rounding", "disagrees", "not_found", "gap", "not_verified"
+    ]
+    why: str
+
+
 class ChatFindingLaterOut(BaseModel):
     """The later answer of the same chat that corrected a finding (#1548)."""
 
@@ -794,6 +805,12 @@ class ChatFindingOut(BaseModel):
         default=None,
         description="A full check (#1619): the free code steps tried on this item when code could "
         "not settle it at first, and how it ended.",
+    )
+    string_reads: ChatFindingStringReadsOut | None = Field(
+        default=None,
+        description="A vendor string (#1641): the blind second reading's outcome, in code's words "
+        "(proved: the same parts and overall, and code's sum is off; gap: code's lines show a part "
+        "left out, so no reading was asked; not_verified: the fixed price did not reach it).",
     )
 
 

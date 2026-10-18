@@ -5018,6 +5018,8 @@ export interface components {
              * @enum {string}
              */
             status: "different" | "check" | "same";
+            /** @description A vendor string (#1641): the blind second reading's outcome, in code's words (proved: the same parts and overall, and code's sum is off; gap: code's lines show a part left out, so no reading was asked; not_verified: the fixed price did not reach it). */
+            string_reads?: components["schemas"]["ChatFindingStringReadsOut"] | null;
             /**
              * Sum Text
              * @description vendor_arithmetic from the ledger: code's sum written out ("12 + 15 1/2 = 27 1/2 ≠ 27 1/4 printed (off 1/4)").
@@ -5066,7 +5068,7 @@ export interface components {
              * Not Compared
              * @description not_compared: the reason (the list's group).
              */
-            not_compared?: ("architect_disagrees" | "nothing_to_compare" | "different_reference" | "unreadable" | "missing_setting" | "prototype" | "not_proved" | "not_seen" | "field_verify" | "finish_not_comparable" | "no_sheet" | "no_overall" | "string_not_verified") | null;
+            not_compared?: ("architect_disagrees" | "nothing_to_compare" | "different_reference" | "unreadable" | "missing_setting" | "prototype" | "not_proved" | "not_seen" | "field_verify" | "finish_not_comparable" | "no_sheet" | "no_overall" | "string_not_verified" | "internal") | null;
             /**
              * Proof
              * @description Clouded items: the check that proved it, in plain words.
@@ -5146,6 +5148,19 @@ export interface components {
              * @enum {string}
              */
             was: "check" | "different";
+        };
+        /**
+         * ChatFindingStringReadsOut
+         * @description A full check (#1641, #1652): what the blind second reading of a vendor string gave.
+         */
+        ChatFindingStringReadsOut: {
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "proved" | "adds_up" | "within_rounding" | "disagrees" | "not_found" | "gap" | "not_verified";
+            /** Why */
+            why: string;
         };
         /** ChatFindingUpdateBlock */
         ChatFindingUpdateBlock: {

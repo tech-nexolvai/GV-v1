@@ -234,7 +234,7 @@ from app.review.assistant.full_check_specialists import specialist_system
 from app.review.assistant.ledger import LEDGER_TOOL_NAMES, ReadingLedger, recorded_results_check
 from app.review.assistant.pair_findings import add_to_answer as add_code_pairs
 from app.review.assistant.product_scope import ProductScope, outside_unit
-from app.review.assistant.proof import proof_counts
+from app.review.assistant.proof import proof_counts, vendor_facing
 from app.review.assistant.sandbox import SET_PACK, SKILLS, UPLOADS, SandboxRefused
 from app.review.assistant.send_package import (
     ZIP_MIME,
@@ -761,6 +761,9 @@ class _Agent:
     the run never passes it and a specialist passes its own cap by one call at most."""
     kit: str | None = None
     """Its fixed tool kit (`chat_tools.HELPER_KITS`), or every helper tool."""
+    phase: str = "helpers"
+    """The timings phase its calls are charged to (#1652: a roster's gap closers, verifiers, lead
+    review and deeper look each show apart from the page helpers)."""
 
 
 @dataclass(slots=True)
@@ -2488,7 +2491,7 @@ class ChatEngine:
         if self.settings.mode == "full_check":
             # A full check's words count as its cloud drawing does (#1619): Wrong = proved by
             # code, the questions to the vendor in the decision's place, then Right.
-            groups = proof_counts(self.book.live())
+            groups = proof_counts([f for f in self.book.live() if vendor_facing(f)])
             counts = {
                 **listed,
                 "wrong": groups["clouded"],
@@ -2641,7 +2644,8 @@ class ChatEngine:
         if register is None:
             return []
         book, workspace = self.book, self.tools.workspace
-        findings = book.live()
+        # Only what may reach the vendor (#1652): items for GV's reviewer only stay on the screen.
+        findings = [f for f in book.live() if vendor_facing(f)]
         report: dict[str, Any] = next(
             (b["trust"] for b in reversed(self.stored_blocks()) if b.get("type") == "trust"), {}
         )
@@ -3006,7 +3010,7 @@ class ChatEngine:
             entry = entries[position]
             pages = list(agent.pages or ())
             self.timings.helper_started(agent.number, agent.description, pages)
-            with self.timings.phase("helpers", helper=agent.number):
+            with self.timings.phase(agent.phase, helper=agent.number):
                 try:
                     report, ok, stopped = self._helper(agent, index, entry, share)
                 except Exception as failed:  # noqa: BLE001 - one helper failing never stops others
@@ -3715,12 +3719,13 @@ class ChatEngine:
             calls = reply.tool_uses()
             if (
                 roster_pages
-                and reply.stop_reason == "max_tokens"
                 and not calls
                 and not final
+                and (reply.stop_reason == "max_tokens" or not reply.text().strip())
                 and turns < self.settings.helper_max_turns
             ):
-                # A reply cut at the smaller allowance: sent on, never taken as the report.
+                # A reply cut at the smaller allowance, or one with only thinking in it (the lead
+                # review of 2026-10-19 ended so, recording nothing): sent on, never the report.
                 _append_note(messages, _CUT_NOTE)
                 turns += 1
                 continue

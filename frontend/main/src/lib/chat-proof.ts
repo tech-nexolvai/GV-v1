@@ -53,6 +53,8 @@ function codeProved(finding: ChatFinding): boolean {
 
 /** Where the zero-click drawing puts a finding, with the reviewer's newest click laid over. */
 export function proofGroup(finding: ChatFinding, decision: FindingDecision | null = finding.decision ?? null): ProofGroup {
+  // #1652: an item for GV's reviewer only (read by the AI, never at its spot) is never clouded.
+  if (isInternal(finding)) return 'not_compared';
   if (finding.status === 'different' || finding.status === 'check') {
     if (decision?.decision === 'agree' && statedRequirement(finding)) return 'clouded';
     if (decision?.decision === 'not_a_problem') return 'dismissed';
@@ -90,10 +92,22 @@ export function notComparedWords(finding: ChatFinding): NotComparedWords | null 
   return { label: proof.label?.trim() || 'Not reviewed', why: proof.reason?.trim() || null, settle: proof.settle?.trim() || null };
 }
 
-/** How many items each group has (the drawing's cover counts the same final list). */
+/**
+ * #1652: an item for GV's reviewer only: a helper read it but never recorded it at its spot, or one
+ * drawing shows it and code never searched the other. Listed on the screen in grey, never sent: not
+ * on the cloud drawing, the letter, the register or the Not-compared list, and not counted with them.
+ */
+export function isInternal(finding: ChatFinding): boolean {
+  return finding.proof?.not_compared === 'internal';
+}
+
+/** How many items each group has (the drawing's cover counts the same final list: internal items are not on it). */
 export function proofCounts(findings: readonly ChatFinding[], decisionOf?: (finding: ChatFinding) => FindingDecision | null): ProofCounts {
   const counts = Object.fromEntries(PROOF_GROUPS.map((group) => [group, 0])) as ProofCounts;
-  for (const finding of findings) counts[proofGroup(finding, decisionOf ? decisionOf(finding) : finding.decision ?? null)] += 1;
+  for (const finding of findings) {
+    if (isInternal(finding)) continue;
+    counts[proofGroup(finding, decisionOf ? decisionOf(finding) : finding.decision ?? null)] += 1;
+  }
   return counts;
 }
 

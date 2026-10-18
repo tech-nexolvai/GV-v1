@@ -453,7 +453,7 @@ def classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
 
 
 def internal(finding: Mapping[str, Any]) -> bool:
-    """An item for GV's reviewer only, never the vendor's (#1653): a difference a helper read but
+    """An item for GV's reviewer only, never the vendor's (#1652): a difference a helper read but
     never recorded at its spots (`salvaged`, the full check's UNRECORDED lines), or the reading
     ledger's "one drawing shows it, the other does not" item, whose absence code never searched
     for. Neither is ever red, and neither is in the letter, the register, the Not-compared list
