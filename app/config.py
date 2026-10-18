@@ -179,6 +179,13 @@ class Settings(BaseSettings):
     assistant_simple_parallel: int = Field(default=8, ge=1, le=32)
     assistant_simple_max_tokens: int = Field(default=64000, ge=4096, le=128000)
     assistant_simple_retries: int = Field(default=3, ge=0, le=6)
+    # The simple check's blind second look (`simple_check/blind.py`): one fresh call per red
+    # candidate, shown only crops of both drawings with code's marks, never the compare call's
+    # answer; a different model from the compare call by default. Red needs it to agree.
+    assistant_simple_blind_model: Literal["claude-sonnet-5-5", "claude-opus-5-5"] = (
+        "claude-opus-5-5"
+    )
+    assistant_simple_blind_effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
     # One sandbox command's time limit, and which sandbox runs it (`auto` and `docker`: the Docker
     # image `gv-assistant-sandbox` when built and Docker answers, else no shell: the chat says the
     # secure sandbox is not running; `macos`: `sandbox-exec`, only for tests on a Mac, never a

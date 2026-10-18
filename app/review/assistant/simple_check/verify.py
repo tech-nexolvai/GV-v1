@@ -560,7 +560,7 @@ class Item:
             vendor=Region(
                 str(vendor.file),
                 int(vendor.page),
-                _box(vendor.box),
+                _box(getattr(vendor, "crop_box", None)) or _box(vendor.box),
                 vendor.round,
                 _view_of(getattr(vendor, "titles", ()) or ()),
             ),
@@ -568,7 +568,7 @@ class Item:
                 Region(
                     str(d.file),
                     int(d.page),
-                    _box(d.box),
+                    _box(getattr(d, "crop_box", None)) or _box(d.box),
                     None,
                     _view_of(getattr(d, "titles", ()) or ()),
                 )
