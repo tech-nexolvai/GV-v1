@@ -5677,7 +5677,7 @@
         "type": "object"
       },
       "ChatFindingStringReadsOut": {
-        "description": "A full check (#1641, #1653): what the blind second reading of a vendor string gave.",
+        "description": "A full check (#1641, #1652): what the blind second reading of a vendor string gave.",
         "properties": {
           "outcome": {
             "enum": [

@@ -1618,6 +1618,7 @@ class ChatEngine:
             "also_on",
             "parts_sum",
             "escalation",
+            "string_reads",
         ):
             checked.setdefault(key, None)
         return checked
