@@ -22,7 +22,9 @@ The rules, in the order they are applied:
   both values and proved they measure the same thing, or code searched the vendor's sheets for the
   architect's tag); otherwise Not compared, with why it could not be proved.
 - **R5, the vendor's own contradictions** (a string that does not add up, one span printed twice):
-  Wrong when code proved it.
+  Wrong when code proved it. A string is proved only when code verified its geometry (the parts
+  touch end to end and end on the overall's extension lines, `proof.string_verified`); a string an
+  AI grouped is Not compared, "Not reviewed: string not verified on the drawing" (#1639).
 - **R6, GV's rule** (from GV's rulebook) broken: Wrong.
 - **R7, the architect gives no information** (no size, no layout, no drawing of the area), or only
   parts where the vendor prints an overall: a total the architect never prints is never Wrong
@@ -68,6 +70,7 @@ type Reason = Literal[
     "finish_not_comparable",
     "no_sheet",
     "no_overall",
+    "string_not_verified",
 ]
 
 #: The Not-compared reasons, in the order the list and the summary give them.
@@ -75,6 +78,7 @@ REASONS: Final[tuple[Reason, ...]] = (
     "field_verify",
     "nothing_to_compare",
     "no_overall",
+    "string_not_verified",
     "different_reference",
     "unreadable",
     "architect_disagrees",
@@ -99,6 +103,7 @@ REASON_WORDS: Final[Mapping[str, str]] = {
     "finish_not_comparable": "finish codes not comparable (the finish check)",
     "no_sheet": "no sheet of the area or round to compare",
     "no_overall": "architect gives only parts, no overall",
+    "string_not_verified": "vendor's string not verified on the drawing",
 }
 #: The trade's own words for each reason (industry review, topic 5), shown next to ours on the
 #: Not-compared list, the workbook and the screen.
@@ -115,6 +120,7 @@ TRADE_WORDS: Final[Mapping[str, str]] = {
     "finish_not_comparable": "Not reviewed: finish codes not comparable",
     "no_sheet": "Not reviewed: no sheet to compare",
     "no_overall": "Not reviewed: architect gives no overall",
+    "string_not_verified": "Not reviewed: string not verified on the drawing",
 }
 #: The rule each reason comes from.
 _RULES: Final[Mapping[str, str]] = {
@@ -130,6 +136,7 @@ _RULES: Final[Mapping[str, str]] = {
     "finish_not_comparable": "R4",
     "no_sheet": "R7",
     "no_overall": "R7",
+    "string_not_verified": "R5",
 }
 #: The architect's drawing points to the brand standard: the prototype is then its intent (R1).
 _POINTS_TO_PROTOTYPE: Final = re.compile(
@@ -239,6 +246,20 @@ def _vendor_read(finding: Mapping[str, Any]) -> bool:
 def _unproved(finding: Mapping[str, Any]) -> Classified:
     """A difference (status different) code could not prove: the closest reason."""
     page = _page(finding)
+    if (
+        finding.get("source") == "vendor_arithmetic"
+        and finding.get("created_by") != "consistency"
+        and finding.get("string_geometry") != "verified"
+    ):
+        parts = [str(p) for p in finding.get("parts") or []]
+        summed = " + ".join(parts) if parts else "the parts"
+        return _not(
+            "string_not_verified",
+            f"parts {summed} = {_short(finding.get('architect'), 30)}; printed "
+            f"{_short(finding.get('printed_total') or finding.get('vendor'), 30)}; code could not "
+            "verify on the drawing that these parts are one string",
+            "code's check that the parts run end to end between the overall's extension lines",
+        )
     if finding.get("check_reason") == "scaled" or _SCALES.search(_flat(finding.get("architect"))):
         return _not(
             "nothing_to_compare",

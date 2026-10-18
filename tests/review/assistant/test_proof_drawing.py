@@ -262,8 +262,14 @@ def test_an_architect_comparison_needs_a_pairing_proof_a_rule_or_sum_does_not() 
         parts_sum="80.125",
         inches={"architect": None},
         critic=None,
+        created_by="consistency",  # code verified the string's geometry (#1639)
     )
     assert proof_group(summed) == "clouded"
+    # A string an AI grouped is never red on its sum alone: only code's geometry proves it.
+    assert proof_group({**summed, "created_by": "ledger"}) == "not_compared"
+    assert proof_group({**summed, "created_by": "ledger", "string_geometry": "verified"}) == (
+        "clouded"
+    )
     limits = _proved(
         source="architect",
         witnesses=["rule"],
@@ -545,6 +551,7 @@ def test_the_vendor_s_own_string_or_span_is_not_labelled_architect(tmp_path: Pat
         inches={"architect": None, "vendor": "80"},
         arch_box=None,
         critic=None,
+        created_by="consistency",
     )
     span = _proved(
         id="F6",

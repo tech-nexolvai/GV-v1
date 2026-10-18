@@ -1210,6 +1210,83 @@ def _already(finding: Mapping[str, Any], live: Sequence[Mapping[str, Any]]) -> b
     return False
 
 
+@dataclass(frozen=True, slots=True)
+class StringJudgement:
+    """What code's geometry says of the strings a reading grouped (#1639)."""
+
+    verified: tuple[str, ...] = ()
+    """Findings whose parts are code's own chain that does not add up: their geometry is proved."""
+    dropped: Mapping[str, str] = field(default_factory=dict)
+    """Findings code's own reading of the same span replaces, with the reason: it adds up, or code
+    found other parts for it (its own finding is then added instead)."""
+
+
+def _overlaps(box: Mapping[str, Any] | None, label: _Label, margin: float = 6.0) -> bool:
+    if not isinstance(box, Mapping):
+        return False
+    try:
+        x0, y0, x1, y1 = (float(box[k]) for k in ("x0", "y0", "x1", "y1"))
+    except (KeyError, TypeError, ValueError):
+        return False
+    lx0, ly0, lx1, ly1 = label.box
+    return not (lx1 < x0 - margin or x1 + margin < lx0 or ly1 < y0 - margin or y1 + margin < ly0)
+
+
+def judge_strings(
+    findings: Sequence[Mapping[str, Any]], checks: Sequence[StringCheck]
+) -> StringJudgement:
+    """Each vendor string a reading grouped (`source: vendor_arithmetic`, not the consistency
+    check's own), against code's strings of the same span: the same page, the same printed overall
+    (at the finding's spot when it has one, else the only one with that value on the page).
+
+    - code's string does not add up and has the same parts: verified (the geometry is code's);
+    - code's string adds up: dropped (the reading grouped dimensions of another chain);
+    - code's string does not add up with other parts: dropped (code's own finding replaces it);
+    - no string of code's, or a doubt: left as it is (never red: Not compared)."""
+    to_inches = import_module("app.review.assistant.finding_checks").to_inches
+    verified: list[str] = []
+    dropped: dict[str, str] = {}
+    for finding in findings:
+        if finding.get("source") != "vendor_arithmetic" or finding.get("created_by") == CREATED_BY:
+            continue
+        if finding.get("status") != "different" or not finding.get("id"):
+            continue
+        printed = to_inches(str(finding.get("printed_total") or finding.get("vendor") or ""))
+        if printed is None:
+            continue
+        same = [
+            check
+            for check in checks
+            if check.overall.page == finding.get("page")
+            and Fraction(printed) == check.overall.inches
+            and check.verdict in ("adds_up", "does_not_add_up")
+        ]
+        placed = [c for c in same if _overlaps(finding.get("vendor_box"), c.overall)]
+        if placed:
+            same = placed
+        elif len(same) != 1:
+            continue  # two strings with that overall and no spot to tell them apart
+        check = same[0]
+        read = [to_inches(str(p)) for p in finding.get("parts") or []]
+        parts = sorted(Fraction(v) for v in read if v is not None)
+        ours = sorted(p.inches for p in check.parts)
+        overall = check.overall.text
+        listed = " + ".join(p.text for p in check.parts)
+        if check.verdict == "adds_up":
+            dropped[str(finding["id"])] = (
+                f"Code measured this string on the drawing: {listed} = {overall} printed, it adds "
+                "up; the reading grouped dimensions of another chain."
+            )
+        elif None not in read and parts == ours:
+            verified.append(str(finding["id"]))
+        else:
+            dropped[str(finding["id"])] = (
+                f"Code measured this string on the drawing as {listed} (printed {overall}); its "
+                "own finding replaces the reading's."
+            )
+    return StringJudgement(tuple(verified), dropped)
+
+
 def add_to_answer(engine: Any) -> ConsistencyResult | None:
     """The engine's hook (a full check, at its finish, $0): the check over the set pack; its Wrong
     items added through the finding book like the ledger's (the same checks and trust rule), unless
@@ -1223,6 +1300,17 @@ def add_to_answer(engine: Any) -> ConsistencyResult | None:
         return None
     book = engine.book
     with engine.finding_lock:
+        # The strings a reading grouped, against code's geometry (#1639): verified, or dropped
+        # for code's own reading of the same span; the rest are never red (Not compared).
+        judged = judge_strings(book.live(), result.checks)
+        for finding in book.live():
+            if str(finding.get("id")) in judged.verified:
+                proved = {**finding, "string_geometry": "verified"}
+                if book.replace(proved):
+                    engine._show_finding(proved)
+        for finding_id, reason in judged.dropped.items():
+            if book.absorb(finding_id):
+                engine._show_dropped(finding_id, reason)
         live = book.live()
         for finding in result.findings:
             if _already(finding, live):

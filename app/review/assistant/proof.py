@@ -69,6 +69,7 @@ __all__ = [
     "should_be",
     "should_be_value",
     "stated_requirement",
+    "string_verified",
     "unproved_reason",
     "vendor_own",
     "vendor_value",
@@ -224,6 +225,17 @@ LEFT_CAPTIONS: Final[Mapping[str | None, str]] = {
 }
 
 
+def string_verified(finding: Mapping[str, Any]) -> bool:
+    """A vendor string whose geometry code verified (#1639): the consistency check made it (its
+    parts touch end to end and end on the overall's extension lines), or it confirmed a reading's
+    string is that same chain (`string_geometry: verified`). A string an AI grouped (the reading
+    ledger's `record_string`, a helper's sum) is never red without it: a part from another chain
+    makes a string that "does not add up" out of one that does."""
+    return (
+        finding.get("created_by") == "consistency" or finding.get("string_geometry") == "verified"
+    )
+
+
 def _advocate(finding: Mapping[str, Any]) -> Mapping[str, Any] | None:
     critic = finding.get("critic")
     if isinstance(critic, Mapping) and critic.get("model") == _ADVOCATE:
@@ -262,6 +274,8 @@ def code_proved(finding: Mapping[str, Any]) -> bool:
     same thing."""
     if finding.get("architect_parts"):
         return False  # a total the architect never prints (code's summed chain) is never proof
+    if finding.get("source") == "vendor_arithmetic" and not string_verified(finding):
+        return False  # an AI-grouped string: only code's geometry proves the parts are one chain
     if not _read_by_code(finding):
         return False
     return not needs_pairing(finding) or pairing_proved(finding)
