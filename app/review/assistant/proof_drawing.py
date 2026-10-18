@@ -2,8 +2,7 @@
 
 What the vendor gets, with no human step (the rule is `proof.py`):
 
-1. **Cover**: the counts (clouded Wrong, not verified, could not compare, right), the rule in one
-   line, the stamp "Checked automatically by GV Review: <date>" ("… and reviewed by <name>" once a
+1. **Cover**: the counts (Wrong, clouded; Right; Nothing to compare), the rule in one line, the stamp "Checked automatically by GV Review: <date>" ("… and reviewed by <name>" once a
    reviewer decided anything), every assumption code made about the page map, and the list of the
    clouded items.
 2. **The vendor's sheets**: a tight red cloud round each wrong value code proved, a numbered red
@@ -14,9 +13,10 @@ What the vendor gets, with no human step (the rule is `proof.py`):
    architect's crop with the governing value boxed in green beside the vendor's crop with the
    wrong value boxed in red, one line naming the check that proved it, and the pages. Crops are cut
    from the hi-res page cache (#1557); a page already drawn is never drawn again.
-4. **Notes pages**: in grey, "Not verified by code: check before sending" (Wrong items only AI
-   readings back) and "Could not be compared" (with the reason); a short green list of what is
-   right; what the reviewer marked not a problem, and what code settled by itself.
+4. **Notes pages**: a short green list of what is right; what the reviewer marked not a problem,
+   and what code settled by itself. What could not be compared (#1619, the architect-first rules
+   R1-R10, `classification.py`) is NOT on this drawing: it is the separate "Not compared" PDF
+   (`not_compared_pdf`), grouped by reason, each row with why and what would settle it.
 
 Page labels: the cover is "Cover", the vendor's sheets keep their own numbers (1, 2, …), then
 "Proof 1…" and "Notes 1…", so "page 12" in a note is page 12 in any PDF viewer.
@@ -97,7 +97,6 @@ from app.review.assistant.proof import (
     proof_line,
     should_be,
     should_be_value,
-    unproved_reason,
     vendor_own,
     vendor_value,
 )
@@ -106,11 +105,13 @@ from app.review.assistant.vendor_text import vendor_text
 __all__ = [
     "GREEN",
     "LEGEND_LINES",
+    "NOT_COMPARED_TITLE",
     "RED",
     "STAMP_WORDS",
     "ProofCounts",
     "contrast",
     "item_words",
+    "not_compared_pdf",
     "proof_markup_pdf",
     "stamp_line",
     "tag",
@@ -132,8 +133,10 @@ STAMP_WORDS: Final = "Checked automatically by GV Review"
 LEGEND_LINES: Final = (
     "Red cloud and red words: the vendor's value that is wrong.",
     "Green words: what it should be, and which drawing or rule says so.",
-    "Grey lists: what code could not prove or compare; check these before sending.",
+    "What could not be compared is listed apart, with the reason, in the Not-compared list.",
 )
+#: The separate list's title (and its file name's end, `chat_findings`).
+NOT_COMPARED_TITLE: Final = "Not compared"
 #: The proof crops: at least this much of the drawing round the value (points), at most this big
 #: on the page (points per crop).
 _CONTEXT_W: Final = 220.0
@@ -183,8 +186,6 @@ def stamp_line(date: str, reviewers: Sequence[str] = ()) -> str:
 @dataclass(frozen=True, slots=True)
 class ProofCounts:
     clouded: int
-    not_verified: int
-    could_not_compare: int
     right: int
     not_compared: int
     dismissed: int
@@ -673,10 +674,9 @@ def _cover(
             Spacer(1, 8),
         ]
     tiles = [
-        ("Wrong, clouded", counts["clouded"], RED, "proved by code"),
-        ("Not verified by code", counts["not_verified"], _LIST_GREY, "check before sending"),
-        ("Could not compare", counts["could_not_compare"], _LIST_GREY, "listed with the reason"),
-        ("Right", counts["right"], GREEN, "matches the drawings"),
+        ("Wrong", counts["clouded"], RED, "proved by code, clouded"),
+        ("Right", counts["right"], GREEN, "matches the architect"),
+        ("Nothing to compare", counts["not_compared"], _LIST_GREY, "listed apart, with the reason"),
     ]
     cells = [
         [
@@ -689,7 +689,7 @@ def _cover(
             for words, number, colour, hint in tiles
         ]
     ]
-    grid = Table(cells, colWidths=[min(170.0, (width - 72) / 4)] * 4, hAlign="LEFT")
+    grid = Table(cells, colWidths=[min(190.0, (width - 72) / 3)] * 3, hAlign="LEFT")
     grid.setStyle(
         TableStyle(
             [
@@ -704,8 +704,6 @@ def _cover(
     extra = []
     if counts["dismissed"]:
         extra.append(f"{counts['dismissed']} marked not a problem by the reviewer")
-    if counts["not_compared"]:
-        extra.append(f"{counts['not_compared']} not compared (not seen on both sides)")
     if extra:
         story.append(Paragraph(escape("Also: " + "; ".join(extra) + "."), grey))
     story.append(Paragraph(f"<b>The rule:</b> {escape(RULE_LINE)}", body))
@@ -770,6 +768,8 @@ _ROUND_WORDS: Final[Mapping[str, tuple[str, Color]]] = {
     "still_wrong": ("Still wrong", RED),
     "new": ("NEW", RED),
     "also_in_round_1": ("Still wrong (also in round 1)", RED),
+    "now_right": ("Now right (was not compared)", GREEN),
+    "still_not_compared": ("Still not compared", _LIST_GREY),
 }
 
 
@@ -965,21 +965,6 @@ def _list_entries(
     return story
 
 
-def _not_verified_line(finding: Mapping[str, Any]) -> str:
-    return f"vendor {vendor_value(finding)}; should be {should_be(finding)}. " + unproved_reason(
-        finding
-    )
-
-
-def _could_not_line(finding: Mapping[str, Any]) -> str:
-    from app.review.assistant.proof import could_not_compare_reason
-
-    return (
-        f"vendor {finding.get('vendor')}; architect {finding.get('architect')}. "
-        f"Why: {could_not_compare_reason(finding)}"
-    )
-
-
 def _right_line(finding: Mapping[str, Any]) -> str:
     source = "architect" if finding.get("source") in (None, "architect", "gv_review") else ""
     source = source or str(finding.get("source") or "").replace("_", " ")
@@ -1064,6 +1049,7 @@ def proof_markup_pdf(
     rounds: Any = None,
     action: Any = None,
     action_stamp: str | None = None,
+    not_compared: int | None = None,
 ) -> ProofCounts:
     """The zero-click cloud drawing of a full check (see the module's words) written to `out`.
 
@@ -1079,13 +1065,18 @@ def proof_markup_pdf(
     line, said under the stamp with the disclaimer. A finding's `comment_no` ("C-07", the
     package's stable comment number) is printed on its cloud, note and entries instead of its
     place in the list.
-    Returns the counts the cover shows."""
+    `not_compared`: how many rows the Not-compared list has (its product scope), shown on the
+    cover; else counted here. Returns the counts the cover shows."""
     base = base if base is not None else clone_pdf(source)
     pdf = base.pdf
     known = dict(files or {})
     known.setdefault(source.name, source)
     findings = [finding for _n, finding, *_rest in placed]
     counts = proof_counts(findings)
+    cover_counts = {
+        **counts,
+        "not_compared": counts["not_compared"] if not_compared is None else not_compared,
+    }
     by_round = rounds.by_finding() if rounds is not None else {}
     crop_source = source
     try:
@@ -1218,29 +1209,17 @@ def proof_markup_pdf(
         groups.setdefault(proof_group(finding), []).append(finding)
     folded = [e for e in settled if e.get("outcome") in ("merged", "not_a_difference")]
     notes: list[Any] = []
-    notes += _list_entries(
-        styles,
-        GROUP_WORDS["not_verified"],
-        groups.get("not_verified", []),
-        _not_verified_line,
-        _LIST_GREY,
-    )
-    notes += _list_entries(
-        styles,
-        GROUP_WORDS["could_not_compare"],
-        groups.get("could_not_compare", []),
-        _could_not_line,
-        _LIST_GREY,
+    nothing = cover_counts["not_compared"]
+    notes.append(
+        Paragraph(
+            escape(
+                f"Nothing to compare ({nothing}): listed with the reason and what would settle "
+                f'it in the separate list, "{set_name} - {NOT_COMPARED_TITLE}".'
+            ),
+            styles["grey"],
+        )
     )
     notes += _list_entries(styles, "Right", groups.get("right", []), _right_line, GREEN)
-    if groups.get("not_compared"):
-        notes += _list_entries(
-            styles,
-            GROUP_WORDS["not_compared"],
-            groups["not_compared"],
-            lambda f: f"{f.get('vendor')}: not seen on both sides, so not counted as right.",
-            _LIST_GREY,
-        )
     if groups.get("dismissed"):
         notes += _list_entries(
             styles, GROUP_WORDS["dismissed"], groups["dismissed"], _dismissed_line, _LIST_GREY
@@ -1279,7 +1258,7 @@ def proof_markup_pdf(
         styles,
         set_name=set_name,
         stamp=stamp,
-        counts=counts,
+        counts=cover_counts,
         clouded=proof_items,
         assumptions=assumptions,
         width=size[0],
@@ -1315,3 +1294,139 @@ def _shown_size_of(data: bytes) -> tuple[float, float]:
     """The first page's shown size (the cover, proof and notes pages take it)."""
     with pikepdf.open(io.BytesIO(data)) as pdf:
         return _shown_size(pdf.pages[0])
+
+
+# ---- the Not-compared list (#1619) ----------------------------------------------------------------
+
+#: The list's page: US letter, landscape (a table, not a drawing).
+_LIST_PAGE: Final = (792.0, 612.0)
+#: The small picture of each spot (points on the list's page).
+_SPOT_W: Final = 130.0
+_SPOT_H: Final = 80.0
+
+
+def not_compared_pdf(
+    source: Path,
+    rows: Sequence[Any],
+    out: Path,
+    *,
+    set_name: str,
+    stamp: str,
+    cache: Path | None = None,
+) -> int:
+    """The separate "Not compared" PDF of a full check (#1619), written to `out`: the rows of
+    `not_compared.rows` (every item that could not be compared under the architect-first rules),
+    grouped by reason, each with its page, item, what the vendor shows, why it could not be
+    compared, what is needed to compare it and a small picture of its spot (cut from the hi-res
+    cache when there is one); then the set's own gaps code found (`not_compared.gap_rows`: finish
+    codes not comparable, areas or rounds with no sheet). Nobody is asked to decide anything here.
+    Returns how many item rows it lists (the workbook and the screen count the same rows)."""
+    from app.review.assistant.classification import REASON_WORDS, REASONS, TRADE_WORDS
+
+    styles = _styles()
+    body, small, grey = styles["body"], styles["small"], styles["grey"]
+    width, _height = _LIST_PAGE
+    usable = width - 72
+    sizes = _Sizes()
+    items = [row for row in rows if getattr(row, "level", "item") == "item"]
+    gaps = [row for row in rows if getattr(row, "level", "item") != "item"]
+
+    def grouped(chosen: Sequence[Any]) -> dict[str, list[list[Any]]]:
+        out: dict[str, list[list[Any]]] = {}
+        for row in chosen:
+            picture: Any = Paragraph("", small)
+            if row.box is not None and row.page is not None and row.file in (None, source.name):
+                png = boxed_crop(source, row.page, row.box, _LIST_GREY, sizes, cache)
+                if png is not None:
+                    picture = _image(png, _SPOT_W, _SPOT_H)
+            out.setdefault(row.reason, []).append(
+                [
+                    Paragraph(escape("" if row.page is None else str(row.page)), body),
+                    Paragraph(f"<b>{escape(row.item)}</b>", body),
+                    Paragraph(escape(row.vendor), small),
+                    Paragraph(escape(row.architect), small),
+                    Paragraph(escape(row.why), small),
+                    Paragraph(escape(row.needed), small),
+                    picture,
+                ]
+            )
+        return out
+
+    total = len(items)
+    story: list[Any] = [
+        Paragraph(escape(f"{NOT_COMPARED_TITLE}: {set_name}"), styles["title"]),
+        Paragraph(escape(stamp), styles["stamp"]),
+        Paragraph(
+            escape(
+                f"{total} item{'' if total == 1 else 's'} could not be compared. The architect's "
+                "drawings govern; these items are not on the cloud drawing, and nobody is asked to "
+                "decide them: each row says why it could not be compared and what is needed."
+            ),
+            body,
+        ),
+        Spacer(1, 8),
+    ]
+    if not total:
+        story.append(Paragraph("Every item could be compared.", grey))
+    head = [
+        Paragraph(f"<b>{escape(words)}</b>", small)
+        for words in ("Page", "Item", "Vendor shows", "Architect shows", "Why not compared",
+                      "What is needed", "Spot")
+    ]  # fmt: skip
+    widths = [30, usable * 0.15, usable * 0.11, usable * 0.13, usable * 0.2, usable * 0.16]
+    widths.append(usable - sum(widths))
+
+    def sections(chosen: Sequence[Any]) -> None:
+        by_reason = grouped(chosen)
+        for reason in REASONS:
+            group = by_reason.get(reason)
+            if not group:
+                continue
+            words = REASON_WORDS[reason]
+            story.append(
+                Paragraph(
+                    escape(f"{TRADE_WORDS.get(reason, words)} ({len(group)})")
+                    + f'<font size="9" color="{_hex(_LIST_GREY)}">&nbsp;&nbsp;{escape(words)}</font>',
+                    # Not kept with its table: a long table starts on the same page and splits.
+                    ParagraphStyle("list_section", parent=styles["section"], keepWithNext=0),
+                )
+            )
+            table = Table([head, *group], colWidths=widths, repeatRows=1, hAlign="LEFT")
+            table.setStyle(
+                TableStyle(
+                    [
+                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                        ("LINEBELOW", (0, 0), (-1, -1), 0.25, Color(0.8, 0.8, 0.8)),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                    ]
+                )
+            )
+            story.append(table)
+
+    sections(items)
+    if gaps:
+        story.append(Spacer(1, 10))
+        story.append(
+            Paragraph(escape(f"Found by code across the set ({len(gaps)})"), styles["section"])
+        )
+        story.append(
+            Paragraph(
+                escape(
+                    "Code's finish check and consistency check list what they could not compare "
+                    "for the set as a whole (not items of this answer)."
+                ),
+                grey,
+            )
+        )
+        sections(gaps)
+    made = _pages_pdf(_LIST_PAGE, [(NOT_COMPARED_TITLE, story)])[0]
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with pikepdf.open(io.BytesIO(made)) as document:
+        document.docinfo["/Title"] = pikepdf.String(f"{NOT_COMPARED_TITLE}: {set_name}")
+        document.save(out, deterministic_id=True)
+    return total
+
+
+def _clip(text: object, limit: int) -> str:
+    words = " ".join(str(text or "").split())
+    return words if len(words) <= limit else words[: limit - 1].rstrip() + "…"

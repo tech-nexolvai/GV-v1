@@ -76,6 +76,14 @@ IDENTITY = PackageIdentity(
 )
 
 
+#: Words that must never reach the vendor (#1622, `vendor_text`).
+FORBIDDEN = re.compile(
+    r"see GV Review'?s record|recorded check|rule_check_id|\bair:|\bhelpers?\b|\bthe lead\b|"
+    r"check (?:it )?before sending|(?<![\w-])AI(?![\w-])",
+    re.IGNORECASE,
+)
+
+
 def _minor(**changes: Any) -> dict[str, Any]:
     """A clouded Wrong that does not change fabrication: a filler a sixteenth off."""
     given: dict[str, Any] = {
@@ -498,16 +506,7 @@ def test_the_register_speaks_to_the_vendor() -> None:
         ("", "Not compared", "2"),
         ("", "Right", ""),
     ]
-    assert rows[1][10] == "Possible difference, not proved by GV's code: vendor to confirm."
-    assert all("before sending" not in cell for row in rows for cell in row)
-
-
-#: Words that must never reach the vendor (#1622, `vendor_text`).
-FORBIDDEN = re.compile(
-    r"see GV Review'?s record|recorded check|rule_check_id|\bair:|\bhelpers?\b|\bthe lead\b|"
-    r"check (?:it )?before sending|(?<![\w-])AI(?![\w-])",
-    re.IGNORECASE,
-)
+    assert rows[1][10] and not any(FORBIDDEN.search(cell) for row in rows for cell in row)
 
 
 def _c10(**changes: Any) -> dict[str, Any]:
@@ -541,7 +540,7 @@ def test_a_gv_rule_result_without_a_stated_requirement_is_never_a_comment(
     from app.review.assistant.proof import NO_REQUIREMENT_REASON, proof_group, proof_of
 
     c10 = _c10()
-    assert proof_group(c10) == "not_verified"
+    assert proof_group(c10) == "not_compared"
     assert proof_of(c10)["reason"] == NO_REQUIREMENT_REASON
     # Even the reviewer's Agree cannot make it a comment with nothing to require.
     assert proof_group({**c10, "decision": {"decision": "agree", "by": "R"}}) != "clouded"

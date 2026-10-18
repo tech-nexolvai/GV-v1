@@ -160,12 +160,15 @@ export function matchesWords(source: FindingSource): string {
 
 // ── The files a full check made ─────────────────────────────
 
+/** #1619: "… - Not compared.pdf" and "… - Not compared.xlsx" (".csv" without openpyxl). */
+const NOT_COMPARED = / - Not compared\.(pdf|xlsx|csv)$/i;
+
 /**
  * The cloud drawing (the main output), the check report, the send-ready package (#1622) and any
  * other files, from a message's files: by the server's `kind`, else by name ("cloud", "report",
  * a ".zip") for a file sent before kinds.
  */
-export function fullCheckFiles(files: readonly ChatFile[]): { cloud: ChatFile | null; report: ChatFile | null; pkg: ChatFile | null; rest: ChatFile[] } {
+export function fullCheckFiles(files: readonly ChatFile[]): { cloud: ChatFile | null; report: ChatFile | null; notCompared: ChatFile[]; pkg: ChatFile | null; rest: ChatFile[] } {
   const pdf = (file: ChatFile) => file.mime === 'application/pdf' || /\.pdf$/i.test(file.name);
   // A file sent before kinds: "cloud" in its name, else the full check's "… - AI markup.pdf".
   // The NEWEST of each (#1525: "Update cloud drawing" adds a new drawing and report; older ones are kept).
@@ -176,8 +179,14 @@ export function fullCheckFiles(files: readonly ChatFile[]): { cloud: ChatFile | 
   const cloud = last((file) => file.kind === 'cloud_drawing' && clouds.includes(file)) ?? last((file) => clouds.includes(file));
   const report = last((file) => reports.includes(file));
   const pkg = last((file) => packages.includes(file));
+  // #1619: the Not-compared list, as a PDF and a workbook (the newest of each).
+  const lists = files.filter((file) => NOT_COMPARED.test(file.name));
+  const notCompared = [
+    last((file) => lists.includes(file) && /\.pdf$/i.test(file.name)),
+    last((file) => lists.includes(file) && /\.(xlsx|csv)$/i.test(file.name)),
+  ].filter((file): file is ChatFile => file !== null);
   // Older drawings, reports and packages are kept on the server but not shown again as plain file cards.
-  return { cloud, report, pkg, rest: files.filter((file) => !clouds.includes(file) && !reports.includes(file) && !packages.includes(file)) };
+  return { cloud, report, notCompared, pkg, rest: files.filter((file) => !clouds.includes(file) && !reports.includes(file) && !lists.includes(file) && !packages.includes(file)) };
 }
 
 // ── Live progress while a full check runs (PATH step 3, #1522) ─

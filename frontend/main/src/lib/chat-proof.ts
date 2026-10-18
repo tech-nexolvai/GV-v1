@@ -1,19 +1,18 @@
 /**
- * #1581: the zero-click cloud drawing's rule, as the screen counts it. A full check ends with a
- * cloud drawing made by code with no clicks: only the Wrong items code proved are clouded (red:
- * the vendor's value, green: what it should be); Wrong items only AI readings back are listed in
- * grey ("not verified by code"); "Your decision" items are listed as "could not compare". The
- * reviewer's Agree / Not a problem are optional overrides: agreed = clouded, not a problem = left
- * out.
+ * #1581, #1619: the zero-click cloud drawing's rule, as the screen counts it. The architect's drawings
+ * govern (Anant's rules R1-R10, `classification.py`): an item is Wrong (red, proved by code: clouded),
+ * Right, or Not compared, with its reason and what is needed, listed apart in the Not-compared PDF and
+ * workbook and never a question to anyone. The reviewer's Agree / Not a problem stay as optional
+ * overrides on Wrong items, and "Make it Wrong" (the same Agree route) on a Not-compared one.
  *
  * The server sends each stored finding's group (`finding.proof`, worked out by `proof.py`); this
  * file only lays the reviewer's newest click over it, and mirrors the rule for a finding still
  * streaming (no `proof` yet), so the card's numbers match the drawing's cover.
  */
 
-import type { ChatFinding, FindingDecision, ProofGroup } from '@/lib/chat-api';
+import type { ChatFinding, FindingDecision, FindingStatus, ProofGroup } from '@/lib/chat-api';
 
-export const PROOF_GROUPS: readonly ProofGroup[] = ['clouded', 'not_verified', 'could_not_compare', 'right', 'not_compared', 'dismissed'];
+export const PROOF_GROUPS: readonly ProofGroup[] = ['clouded', 'right', 'not_compared', 'dismissed'];
 
 export type ProofCounts = Record<ProofGroup, number>;
 
@@ -44,9 +43,35 @@ export function proofGroup(finding: ChatFinding, decision: FindingDecision | nul
   }
   // With no click to lay over, the server's group stands.
   if (finding.proof?.group) return finding.proof.group;
-  if (finding.status === 'different') return codeProved(finding) ? 'clouded' : 'not_verified';
-  if (finding.status === 'check') return 'could_not_compare';
+  if (finding.status === 'different' && codeProved(finding)) return 'clouded';
+  // What code could not prove or compare is Not compared (#1619): listed apart, never asked.
+  if (finding.status === 'different' || finding.status === 'check') return 'not_compared';
   return finding.compared === false ? 'not_compared' : 'right';
+}
+
+/**
+ * A full check's finding as its result screen shows it (#1619): in the section of its place on the
+ * cloud drawing, with the reviewer's newest click laid over: clouded = Wrong, Right, and Not compared
+ * (status `check`, the folded "Nothing to compare" section). What the reviewer marked not a problem
+ * keeps its own status (its row shows the click).
+ */
+export function asShown(finding: ChatFinding, decision: FindingDecision | null = finding.decision ?? null): ChatFinding {
+  const group = proofGroup(finding, decision);
+  const status: FindingStatus | null = group === 'clouded' ? 'different' : group === 'right' ? 'same' : group === 'not_compared' ? 'check' : null;
+  return status === null || status === finding.status ? finding : { ...finding, status };
+}
+
+/** Why a Not-compared item could not be compared: the trade's words, ours, and what is needed. */
+export interface NotComparedWords {
+  label: string;
+  why: string | null;
+  settle: string | null;
+}
+
+export function notComparedWords(finding: ChatFinding): NotComparedWords | null {
+  const proof = finding.proof;
+  if (proof?.group !== 'not_compared') return null;
+  return { label: proof.label?.trim() || 'Not reviewed', why: proof.reason?.trim() || null, settle: proof.settle?.trim() || null };
 }
 
 /** How many items each group has (the drawing's cover counts the same final list). */
@@ -58,8 +83,6 @@ export function proofCounts(findings: readonly ChatFinding[], decisionOf?: (find
 
 export const PROOF_WORDS: Record<ProofGroup, string> = {
   clouded: 'Wrong, proved by code (clouded)',
-  not_verified: 'Not verified by code: check before sending',
-  could_not_compare: 'Could not be compared',
   right: 'Right',
   not_compared: 'Not compared',
   dismissed: 'Not a problem (reviewer)',

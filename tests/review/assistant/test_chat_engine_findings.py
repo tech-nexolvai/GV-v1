@@ -565,6 +565,8 @@ def test_a_full_check_seeds_recorded_results_and_makes_the_cloud_drawing_and_rep
     assert names == [
         "Vendor set - GV cloud drawing.pdf",
         "Vendor set - AI check report.pdf",
+        "Vendor set - Not compared.pdf",
+        "Vendor set - Not compared.xlsx",
         "Vendor set - GV review package.zip",
     ]
     from pypdf import PdfReader
@@ -573,7 +575,7 @@ def test_a_full_check_seeds_recorded_results_and_makes_the_cloud_drawing_and_rep
     drawing = PdfReader(str(workspace.files / harness.files[0]["id"]))
     # The zero-click drawing (#1581): its cover, the code-proved wrong item clouded on its page
     # (the cover is first, so the vendor's page 2 is the PDF's third), its proof, the Right list.
-    assert "1\nWrong, clouded" in drawing.pages[0].extract_text()
+    assert "1\nWrong" in drawing.pages[0].extract_text()
     assert "Vendor: 3'-10\"" in " ".join(drawing.pages[2].extract_text().split())
     assert "Proved by: GV's rule check c1 fails it" in drawing.pages[-2].extract_text()
     assert "Right (1)" in drawing.pages[-1].extract_text()
@@ -587,7 +589,6 @@ def test_a_full_check_seeds_recorded_results_and_makes_the_cloud_drawing_and_rep
         "Should be",
         "Countertop",
         "What's wrong (1)",
-        "Your decision (0)",
         "What's right (1)",
         "Backsplash height",
         "Not checked",

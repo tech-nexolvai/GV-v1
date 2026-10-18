@@ -814,7 +814,7 @@ _NOT_COMPARED: Final = " - Not compared."
 def _member_order(name: str) -> int:
     if name.endswith(_CLOUD_ENDING):
         return 0
-    if name.endswith(_REPORT_ENDING):
+    if name.endswith((_REPORT_ENDING, f" - {REPORT_IN_PACKAGE}.pdf")):
         return 9
     return 5
 

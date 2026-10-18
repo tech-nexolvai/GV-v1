@@ -173,26 +173,29 @@ def test_the_cloud_drawing_follows_the_decisions_and_keeps_older_files(postgres_
         assert "Checked automatically by GV Review" in cover
         assert "and reviewed by reviewer-one" in cover and "draft" not in cover.lower()
         # F1 agreed: clouded, an override (only AI readings back it here). F2 is not decided and
-        # only AI readings back it: listed in grey, never clouded.
-        assert "1\nWrong, clouded" in cover and "1\nNot verified by code" in cover
+        # only AI readings back it, F3 was not seen on both sides: Not compared (#1619), never
+        # clouded, not on the drawing: the separate Not-compared list.
+        assert "1\nWrong" in cover and "2\nNothing to compare" in cover
         sheet = " ".join(pages[2].split())
         assert "Vendor: 3'-10\"" in sheet and 'Should be: 37"' in sheet
         assert _red_near(pdf, 3, VENDOR_BOX) > 5
         assert _red_near(pdf, 4, PAGE3_BOX) == 0
         assert "Proved by: Agreed by reviewer-one" in pages[4]
-        notes = pages[5]
-        assert "Not verified by code: check before sending (1)" in notes
-        # The backsplash was not seen on both sides here: not counted as right.
-        assert "Sink base width" in notes and "Not compared (1)" in notes
+        notes = " ".join(pages[5].split())
+        assert "Nothing to compare (2)" in notes and "Sink base width" not in notes
 
         stored = world.client.get(f"/api/v1/chats/{chat_id}").json()["messages"][-1]
         found = _findings(stored)
         assert found["F1"]["proof"]["group"] == "clouded"
-        assert found["F2"]["proof"]["group"] == "not_verified"
+        assert found["F2"]["proof"]["group"] == "not_compared"
+        assert found["F2"]["proof"]["not_compared"] == "unreadable"
         assert found["F3"]["proof"]["group"] == "not_compared"
+        assert found["F3"]["proof"]["not_compared"] == "not_seen"
         report = next(f for f in stored["files"] if f["name"].endswith("AI check report.pdf"))
         report_text = "".join(_text(world.client.get(report["url"]).content))
-        assert "1 wrong clouded (proved by code), 1 not verified by code" in report_text
+        assert "1 wrong clouded (proved by code), 0 right, 2 with nothing to compare" in " ".join(
+            report_text.split()
+        )
 
         # F2 dismissed: not a problem, still never clouded, listed apart with the note.
         _decide(world, chat_id, answer["id"], "F2", decision="not_a_problem", note="Field fit")
@@ -237,5 +240,7 @@ def test_the_csv_carries_the_decisions(postgres_engine, tmp_path) -> None:  # ty
         # Where the zero-click cloud drawing puts each item (#1581).
         assert by_id["F1"]["Should be"] == '37" (architect, page 1)'
         assert by_id["F1"]["Proof"].startswith("Wrong, proved by code (clouded): Agreed by")
-        assert by_id["F2"]["Proof"].startswith("Not verified by code: check before sending")
+        assert by_id["F2"]["Proof"].startswith(
+            "Not compared: could not read the vendor's value on page 3. Needed:"
+        )
         assert by_id["F3"]["Proof"].startswith("Not compared")

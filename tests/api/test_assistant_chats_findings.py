@@ -115,7 +115,7 @@ def test_findings_stream_are_stored_and_reload_the_same_with_their_pictures(post
         # The stored answer adds code's impact on read (#1569): the biggest Wrong items first.
         assert finding["impact"]["rank"] == 1
         # ... and where the zero-click cloud drawing puts it (#1581), also worked out on read.
-        assert finding["proof"]["group"] == "not_verified"
+        assert finding["proof"]["group"] == "not_compared"
         assert live[0] == {k: v for k, v in finding.items() if k not in ("impact", "proof")}
         assert _named(events, "coverage")[-1]["coverage"] == coverage
         assert _named(events, "trust")[-1]["trust"] == message["blocks"][5]["trust"]
@@ -427,6 +427,8 @@ def test_a_full_check_through_the_route_shows_its_label_and_ends_with_its_two_fi
         assert names == [
             "Vendor set - GV cloud drawing.pdf",
             "Vendor set - AI check report.pdf",
+            "Vendor set - Not compared.pdf",
+            "Vendor set - Not compared.xlsx",
             "Vendor set - GV review package.zip",
         ]
         assert [d["file"]["name"] for d in _named(events, "file")] == names
@@ -441,11 +443,13 @@ def test_a_full_check_through_the_route_shows_its_label_and_ends_with_its_two_fi
         words = " ".join(block.get("text", "") for block in sent)
         assert "Products checked in this chat: countertops only." in words
         assert "Full check of this drawing set" in words
-        for file in message["files"][:2]:
-            assert world.client.get(file["url"]).content[:4] == b"%PDF"
+        for file in message["files"][:4]:
+            body = world.client.get(file["url"]).content
+            # The PDFs, and the Not-compared workbook (a zip) (#1619).
+            assert body[:4] == (b"PK\x03\x04" if file["name"].endswith(".xlsx") else b"%PDF")
         # The send-ready package (#1622): one zip, the result on the message, the same comment
-        # numbers in the letter as on the cloud drawing.
-        package = message["files"][2]
+        # numbers in the letter as on the cloud drawing; the Not-compared list is in it too.
+        package = message["files"][4]
         assert package["mime"] == "application/zip"
         with zipfile.ZipFile(io.BytesIO(world.client.get(package["url"]).content)) as archive:
             inside = archive.namelist()
@@ -453,6 +457,8 @@ def test_a_full_check_through_the_route_shows_its_label_and_ends_with_its_two_fi
                 "Vendor set - GV cloud drawing.pdf",
                 "Vendor set - Comment letter.pdf",
             ]
+            assert "Vendor set - Not compared.pdf" in inside
+            assert "Vendor set - Not compared.xlsx" in inside
             assert inside[-1] == "Vendor set - Check report.pdf"
             letter = "".join(
                 page.extract_text() or ""
@@ -511,26 +517,25 @@ def test_a_countertop_only_check_keeps_no_cabinet_item_anywhere(postgres_engine,
         documents: list[bytes] = []
         for file in message["files"]:
             data = world.client.get(file["url"]).content
-            if file["mime"] != "application/zip":
-                documents.append(data)
-                continue
-            # The send-ready package (#1622) keeps the scope too: its letter and register.
-            with zipfile.ZipFile(io.BytesIO(data)) as archive:
-                for name in archive.namelist():
-                    inside = archive.read(name)
-                    if name.endswith(".pdf"):
-                        documents.append(inside)
-                    elif name.endswith(".xlsx"):
-                        book = pytest.importorskip("openpyxl").load_workbook(io.BytesIO(inside))
-                        cells = " ".join(
-                            str(value)
-                            for sheet in book.worksheets
-                            for row in sheet.iter_rows(values_only=True)
-                            for value in row
-                            if value
-                        )
-                        assert "Vanity top length" in cells
-                        assert "Sink base cabinet" not in cells
+            if file["mime"] == "application/zip":
+                # The send-ready package (#1622) keeps the scope too: everything in it.
+                with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                    members = [(name, archive.read(name)) for name in archive.namelist()]
+            else:
+                members = [(file["name"], data)]
+            for name, inside in members:
+                if name.endswith(".pdf"):
+                    documents.append(inside)
+                elif name.endswith(".xlsx"):
+                    book = pytest.importorskip("openpyxl").load_workbook(io.BytesIO(inside))
+                    cells = " ".join(
+                        str(value)
+                        for sheet in book.worksheets
+                        for row in sheet.iter_rows(values_only=True)
+                        for value in row
+                        if value
+                    )
+                    assert "Sink base cabinet" not in cells
         for data in documents:
             pdf = PdfReader(io.BytesIO(data))
             assert "Sink base cabinet" not in " ".join(page.extract_text() for page in pdf.pages)
@@ -671,5 +676,7 @@ def test_a_full_check_with_no_words_is_stored_with_codes_summary_and_its_progres
         assert [f["name"] for f in stored["files"]] == [
             "Vendor set - GV cloud drawing.pdf",
             "Vendor set - AI check report.pdf",
+            "Vendor set - Not compared.pdf",
+            "Vendor set - Not compared.xlsx",
             "Vendor set - GV review package.zip",
         ]

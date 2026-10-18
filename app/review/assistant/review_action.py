@@ -45,7 +45,7 @@ from decimal import Decimal
 from typing import Any, Final, Literal
 
 from app.review.assistant.impact import TOP_IMPACT, touches
-from app.review.assistant.proof import proof_group
+from app.review.assistant.proof import classified, proof_group
 
 __all__ = [
     "ACTION_REQUIRED_BY",
@@ -133,7 +133,7 @@ _SPECIFIED: Final = re.compile(
     re.IGNORECASE,
 )
 #: Not-compared reasons that only say the architect gives no information (S7 allows them).
-_NO_INFORMATION: Final = frozenset({"architect_prints_nothing", "nothing_to_compare"})
+_NO_INFORMATION: Final = frozenset({"nothing_to_compare"})
 
 
 def item_action(finding: Mapping[str, Any]) -> str:
@@ -272,24 +272,23 @@ def _plural(count: int, word: str) -> str:
     return f"{count} {word}" if count == 1 else f"{count} {word}s"
 
 
+def _reason(finding: Mapping[str, Any]) -> str:
+    """A Not-compared item's reason under the architect-first rules (#1619, `classification`)."""
+    return str(classified(finding).reason or "")
+
+
 def _not_reviewed(findings: Sequence[Mapping[str, Any]]) -> int:
-    """Items code could not prove or compare, other than "the architect gives no information"
-    (and other than a Right item simply not seen on both sides)."""
-    count = 0
-    for finding in findings:
-        if proof_group(finding) in ("clouded", "right", "dismissed", "not_compared"):
-            continue
-        reason = str(finding.get("keep_reason") or finding.get("not_compared_reason") or "")
-        if reason not in _NO_INFORMATION:
-            count += 1
-    return count
+    """Items code could not prove or compare, other than "the architect gives no information"."""
+    return sum(
+        1
+        for finding in findings
+        if proof_group(finding) == "not_compared" and _reason(finding) not in _NO_INFORMATION
+    )
 
 
 def _illegible(findings: Sequence[Mapping[str, Any]]) -> bool:
     unreadable = sum(
-        1
-        for f in findings
-        if f.get("keep_reason") == "unreadable" or f.get("not_compared_reason") == "unreadable"
+        1 for f in findings if proof_group(f) == "not_compared" and _reason(f) == "unreadable"
     )
     return unreadable >= _ILLEGIBLE_MIN and unreadable > _ILLEGIBLE_SHARE * len(findings)
 

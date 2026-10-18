@@ -76,6 +76,7 @@ import json
 import logging
 import re
 import threading
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
@@ -87,6 +88,7 @@ from time import monotonic, monotonic_ns
 from typing import Any, Final, Protocol
 from uuid import uuid4
 
+from app.review.assistant import not_compared
 from app.review.assistant.agent import (
     HELPER_PICTURE_EDGE_PX,
     billed_input_tokens,
@@ -205,8 +207,10 @@ from app.review.assistant.chat_trust import (
     with_second_read,
 )
 from app.review.assistant.chat_unknowns import refused_from_diff, unknown_records
+from app.review.assistant.classification import not_compared_line
 from app.review.assistant.decision_resolver import recount_words, resolve_answer
 from app.review.assistant.dim_index import labels_for
+from app.review.assistant.escalation import Escalation, escalate_answer
 from app.review.assistant.full_check_brief import (
     LENSES,
     checklist_gaps,
@@ -227,6 +231,7 @@ from app.review.assistant.full_check_plan import (
 from app.review.assistant.full_check_specialists import specialist_system
 from app.review.assistant.ledger import LEDGER_TOOL_NAMES, ReadingLedger, recorded_results_check
 from app.review.assistant.product_scope import ProductScope, outside_unit
+from app.review.assistant.proof import proof_counts
 from app.review.assistant.sandbox import SET_PACK, SKILLS, UPLOADS, SandboxRefused
 from app.review.assistant.send_package import (
     ZIP_MIME,
@@ -354,10 +359,10 @@ WRAP_UP_NOTE: Final = (
 #: The 5-6 line summary that ends every full check (both instructions below end with it).
 _FULL_CHECK_SUMMARY: Final = """End with a 5-6 line plain-English summary for the reviewer (no tables, no disclaimers: the app draws the cloud drawing, the report and the lists):
 1. What was checked: pages, products, rounds.
-2. The overall verdict in one line (how many items are Wrong, need the reviewer's decision, are Right).
+2. The overall verdict in one line (how many items are Wrong, are Right, could not be compared).
 3. The top 3-5 issues by impact, each with its page, item, and architect vs vendor value.
-4. What needs the reviewer's decision.
-5. The next step (e.g. "send the cloud drawing to the vendor; confirm the 3 items that need your decision").
+4. What could not be compared, in one line, by reason (the app lists them apart; never ask the reviewer to decide).
+5. The next step (e.g. "send the cloud drawing to the vendor").
 If you are told to stop early, still write this summary from what you have."""
 
 #: The full check's own instruction (CONTRACT4): the reviewer presses a button, never types it.
@@ -817,11 +822,15 @@ class ChatEngine:
         self._unknowns: list[dict[str, Any]] = []
         # The vendor consistency check's grey items (#1584), for the "not checked" list.
         self.consistency_gaps: list[dict[str, Any]] = []
+        #: A full check's Not-compared rows (#1619), once its files are made.
+        self.not_compared: list[Any] = []
         self.consistency_line: str | None = None
         # The finish check's line (#1623); its Not compared items join `consistency_gaps`.
         self.items_line: str | None = None
         # The decision items code settled itself (#1554), for the cloud drawing and the report.
         self._settled: list[dict[str, Any]] = []
+        #: The full check's escalation of undecided items (#1619), once it ran.
+        self._escalation: Escalation | None = None
         """What this answer did not check (`chat_unknowns`), set by the trust phase."""
         self.refused_diffs: list[dict[str, Any]] = []
         """Round pairs `compare_rounds` would not line up (an unknown each)."""
@@ -1543,7 +1552,8 @@ class ChatEngine:
         )
         checked.setdefault("round_status", None)
         checked["second_read_values"] = dict(kept[2]) if kept is not None else None
-        # The resolver's fields (#1554) are set only on the items it touches.
+        # The resolver's fields (#1554) and the escalation's (#1619) are set only on the items
+        # they touch.
         for key in (
             "ledger_ids",
             "reference_side",
@@ -1553,6 +1563,7 @@ class ChatEngine:
             "keep_reason",
             "also_on",
             "parts_sum",
+            "escalation",
         ):
             checked.setdefault(key, None)
         return checked
@@ -2284,6 +2295,7 @@ class ChatEngine:
 
     def _finish_trust(self, skipped: int) -> None:
         self._resolve_decisions()
+        self._escalate()
         book = self.book
         statuses = round_statuses(book.live())
         with self._lock:
@@ -2345,13 +2357,35 @@ class ChatEngine:
         except Exception:  # noqa: BLE001 - the answer keeps its decision items as they were
             _log.exception("assistant chat decision resolver failed")
 
+    def _escalate(self) -> None:
+        """A full check (#1619): the free code steps on every item the resolver left undecided
+        (`escalation`), after the resolver and before the trust report and the files; what is
+        still open then is Not compared, with its reason (the Not-compared list)."""
+        if self.settings.mode != "full_check" or not self._whole_set_work():
+            return
+        try:
+            self._escalation = escalate_answer(self)
+        except Exception:  # noqa: BLE001 - the answer keeps its items as they were
+            _log.exception("assistant chat escalation failed")
+
     def _agree_counts(self, text: str) -> str:
         """Whole-set work (#1554): every count the answer's words state is the final list's. The
         AI wrote its words before code settled its decision items, so code sets them again (its
         own summary already counts the final list) and the resolver block's counts too."""
         if not self._whole_set_work():
             return text
-        counts = shown_counts(self.book.live())
+        listed = shown_counts(self.book.live())
+        counts = listed
+        if self.settings.mode == "full_check":
+            # A full check's words count as its cloud drawing does (#1619): Wrong = proved by
+            # code, the questions to the vendor in the decision's place, then Right.
+            groups = proof_counts(self.book.live())
+            counts = {
+                **listed,
+                "wrong": groups["clouded"],
+                "decision": groups["not_compared"],
+                "right": groups["right"],
+            }
         with self._lock:
             for at, block in enumerate(self.blocks):
                 if block.get("type") == "text" and block.get("by") != "code":
@@ -2359,7 +2393,8 @@ class ChatEngine:
                     if fixed != block.get("text"):
                         self.blocks[at] = {**block, "text": fixed}
                 elif block.get("type") == "resolver" and isinstance(block.get("resolver"), dict):
-                    after = {key: counts[key] for key in ("wrong", "decision", "right")}
+                    # The resolver's own block counts the items by status, as it settled them.
+                    after = {key: listed[key] for key in ("wrong", "decision", "right")}
                     self.blocks[at] = {**block, "resolver": {**block["resolver"], "after": after}}
         return recount_words(text, counts)
 
@@ -2475,9 +2510,11 @@ class ChatEngine:
         report: dict[str, Any] = next(
             (b["trust"] for b in reversed(self.stored_blocks()) if b.get("type") == "trust"), {}
         )
-        # The same counts as the screen (#1554): one final list, Right only when compared.
-        counts = shown_counts(findings)
-        unseen = f", {counts['not_compared']} not compared" if counts["not_compared"] else ""
+        # The same counts as the screen and the cloud drawing (#1554, #1619): one final list.
+        groups = proof_counts(findings)
+        unseen = (
+            f", {groups['not_compared']} with nothing to compare" if groups["not_compared"] else ""
+        )
         coverage = book.coverage_map()["counts"] if book.coverage_used else None
         trust = report.get("counts") or {}
         products = products_words(self.settings.products)
@@ -2486,8 +2523,7 @@ class ChatEngine:
             "Products": products,
             "Made": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
             "Model": f"{self.settings.model.label}, {self.settings.effort} effort",
-            "Items": f"{counts['wrong']} wrong, {counts['decision']} need your decision, "
-            f"{counts['right']} right{unseen}",
+            "Items": f"{groups['clouded']} wrong (proved by code), {groups['right']} right{unseen}",
             "Coverage": (
                 "not recorded"
                 if coverage is None
@@ -2511,6 +2547,9 @@ class ChatEngine:
         # Pages never accounted for (no note why) mean the check did not finish (S0).
         gaps = book.coverage_gaps() if book.coverage_used else []
         incomplete = incomplete_reason(stopped, {"not_opened": len(gaps)})
+        # The Not-compared list's rows (#1619): one source for its PDF, its workbook, the cloud
+        # drawing's cover and the summary's line.
+        nothing = self._not_compared_rows(findings)
 
         def drawing(out: Path) -> MarkupFile:
             base = None
@@ -2528,7 +2567,13 @@ class ChatEngine:
             )
             # The zero-click red/green proof drawing (#1581): only code-proved Wrongs clouded.
             return make_proof_file(
-                workspace, findings, out, base, settled=settled, context=worked["context"]
+                workspace,
+                findings,
+                out,
+                base,
+                settled=settled,
+                context=worked["context"],
+                not_compared=len(nothing),
             )
 
         def checked(out: Path) -> MarkupFile:
@@ -2565,9 +2610,15 @@ class ChatEngine:
                     if file_id is not None:
                         (workspace.files / file_id).unlink(missing_ok=True)
                     self._add_text(f"*The {what} could not be made for this answer.*")
+        # The list also names the set's own gaps code found (the finish check, #1623; the vendor
+        # consistency check), apart from the answer's items.
+        listed = self._not_compared_files([*nothing, *not_compared.gap_rows(self.consistency_gaps)])
+        names += [name for name, _path in listed]
+        # The send-ready package (#1622) holds every file just made, the Not-compared list too.
         context = worked.get("context")
         if context is not None and any(what == "cloud drawing" for what, _name, _path in kept):
-            names += self._package_file(findings, kept, context)
+            listed_kept = [("not compared", name, path) for name, path in listed]
+            names += self._package_file(findings, [*kept, *listed_kept], context)
         return names
 
     def _comment_numbers(self, findings: Sequence[Mapping[str, Any]]) -> dict[str, str] | None:
@@ -2616,6 +2667,41 @@ class ChatEngine:
             return []
         return [made.name]
 
+    def _not_compared_rows(self, findings: Sequence[Mapping[str, Any]]) -> list[Any]:
+        """The full check's Not-compared rows (`not_compared.rows`), kept for the summary line."""
+        try:
+            self.not_compared = not_compared.check_rows(
+                self.tools.workspace, findings, list(self.settings.products)
+            )
+        except Exception:  # noqa: BLE001 - counted from the findings alone then
+            _log.exception("assistant chat not-compared rows failed")
+            self.not_compared = not_compared.rows(findings)
+        return self.not_compared
+
+    def _not_compared_files(self, rows: Sequence[Any]) -> list[tuple[str, Path]]:
+        """The Not-compared PDF and workbook (#1619), registered as the answer's files: each one's
+        name and path (the send-ready package holds them too)."""
+        register = self.tools.register_file
+        workspace = self.tools.workspace
+        if register is None:
+            return []
+        ids = (str(uuid4()), str(uuid4()))
+        try:
+            with self.timings.phase("not_compared"):
+                pdf, sheet = not_compared.make_files(
+                    workspace, rows, workspace.files / ids[0], workspace.files / ids[1]
+                )
+        except Exception as failed:  # noqa: BLE001 - told plainly in the answer
+            _log.warning("assistant chat not-compared list failed: %s", type(failed).__name__)
+            for file_id in ids:
+                (workspace.files / file_id).unlink(missing_ok=True)
+            self._add_text("*The Not-compared list could not be made for this answer.*")
+            return []
+        register(ids[0], pdf.name, pdf.size, "application/pdf", pdf.sha256)
+        mime = not_compared.XLSX_MIME if sheet.name.endswith(".xlsx") else "text/csv"
+        register(ids[1], sheet.name, sheet.size, mime, sheet.sha256)
+        return [(pdf.name, workspace.files / ids[0]), (sheet.name, workspace.files / ids[1])]
+
     def _close_full_check(self, text: str, stopped: str | None, cap_hit: str | None) -> str:
         """Full check (#1518): the two files, also when it stopped early with findings; then
         code's summary (no AI call) when the AI did not write its own. Returns the answer's text."""
@@ -2629,14 +2715,15 @@ class ChatEngine:
             except Exception:  # noqa: BLE001 - the answer still ends, with its summary
                 _log.exception("assistant chat full-check files failed")
         lines = [x for x in (self.consistency_line, self.items_line) if x]
-        line = "\n\n".join(lines) if lines else None
         if not needs_code_summary(text, stopped):
-            if line:
-                # The vendor consistency check's line (#1584) and the finish check's (#1623),
-                # after the AI's own summary.
-                index = self._add_block({"type": "text", "text": line, "by": "code"})
-                self.emit("text_delta", {"index": index, "text": line, "by": "code"})
-                text = f"{text}\n\n{line}"
+            # The vendor consistency check's line (#1584), the finish check's (#1623) and what
+            # could not be compared (#1619), one line each, after the AI's own summary.
+            nothing = not_compared_line(Counter(row.reason for row in self.not_compared))
+            for words in (*lines, nothing.replace("list.", "list (PDF / Excel).")):
+                if words:
+                    index = self._add_block({"type": "text", "text": words, "by": "code"})
+                    self.emit("text_delta", {"index": index, "text": words, "by": "code"})
+                    text = f"{text}\n\n{words}"
             return text
         book, settings = self.book, self.settings
         summary = code_summary(
@@ -2651,6 +2738,7 @@ class ChatEngine:
             turns=settings.lead_max_turns,
             files=names,
             also=lines,
+            reasons=[row.reason for row in self.not_compared] or None,
         )
         index = self._add_block({"type": "text", "text": summary, "by": "code"})
         self.emit("text_delta", {"index": index, "text": summary, "by": "code"})

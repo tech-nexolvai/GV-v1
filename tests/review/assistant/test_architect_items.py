@@ -387,8 +387,15 @@ def test_the_hook_adds_new_findings_gaps_and_a_summary_line(
         return made
 
     monkeypatch.setattr(ai, "check_pack", fake)
-    # The lead already reported LA-43 on page 1: it is not added twice.
-    engine = _Engine("full_check", [{"page": 1, "item": "Galley: finish LA-043 missing"}])
+    # The lead already reported LA-43 on page 1 as a proven Wrong (here: agreed): not added twice.
+    proven = {
+        "page": 1,
+        "item": "Galley: finish LA-043 missing",
+        "architect": "LA-43",
+        "status": "different",
+        "decision": {"decision": "agree", "by": "R"},
+    }
+    engine = _Engine("full_check", [proven])
     ai.add_to_answer(engine)
     assert seen["products"] == ["cabinet"]
     assert [g["architect"] for g, by in engine.book.added] == ["LA-41"]
@@ -399,6 +406,11 @@ def test_the_hook_adds_new_findings_gaps_and_a_summary_line(
         {"page": 1, "why": "not_comparable"},
     ]
     assert (engine.items_line or "").startswith("Architect's finishes (by code, $0): 3 architect")
+    # An AI item naming the code that code could not prove never keeps code's own proof out
+    # (#1619): the finish check's LA-43 is added.
+    engine = _Engine("full_check", [{"page": 1, "item": "Galley: finish LA-043 missing"}])
+    ai.add_to_answer(engine)
+    assert [g["architect"] for g, by in engine.book.added] == ["LA-41", "LA-43"]
 
 
 def test_the_hook_runs_only_in_a_full_check(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -9,7 +9,7 @@ most, how often it fixes them on the next round, and its average open items per 
 Pure code: no I/O, no AI call. `app/api/job_tracker.py` loads the stored answers (each finding at its
 newest correction, with its latest decision) and hands them here.
 
-**What one item is.** A finding that was Wrong or Your decision in at least one check. Its sightings
+**What one item is.** A finding that was Wrong or Not compared in at least one check. Its sightings
 (one per finding, plus the pages the resolver folded into it) are linked by what the app already
 knows, never by new matching rules of its own:
 
@@ -32,7 +32,7 @@ read (`ROUND_STATUS_WORDS`), nothing is recomputed.
 `same` item that was not compared is no proof and is skipped). Then:
 
 - `not_a_problem`: the latest decision on any of its findings is Not a problem (the person's name);
-- `fixed`: Wrong or Your decision in an earlier round, right in a later one (or the stored round
+- `fixed`: Wrong or Not compared in an earlier round, right in a later one (or the stored round
   status says the later round fixed it): `fixed_round`;
 - `right_later`: right on a later check of the same round (the AI changed its reading, the vendor
   did not change the drawing);
@@ -74,7 +74,15 @@ __all__ = [
 NEAR_PT: Final = 18.0
 
 type State = Literal["open", "fixed", "not_a_problem", "right_later"]
-type RoundStatus = Literal["fixed", "still_wrong", "new", "not_in_later_round", "single_round"]
+type RoundStatus = Literal[
+    "fixed",
+    "still_wrong",
+    "new",
+    "not_in_later_round",
+    "single_round",
+    "now_right",
+    "still_not_compared",
+]
 
 #: A finding's stored `round_status`, in today's words and the automatic round-2 check's.
 ROUND_STATUS_WORDS: Final[Mapping[str, RoundStatus]] = {
@@ -85,6 +93,9 @@ ROUND_STATUS_WORDS: Final[Mapping[str, RoundStatus]] = {
     "new": "new",
     "not_in_later_round": "not_in_later_round",
     "single_round": "single_round",
+    # The automatic round-2 re-check of what round 1 could not compare (#1619).
+    "now_right": "now_right",
+    "still_not_compared": "still_not_compared",
 }
 
 #: What a finding was checked against (its `source`), in the reviewer's words.
@@ -269,7 +280,7 @@ def _sightings(answers: Sequence[TrackerAnswer]) -> list[_Sighting]:
                     "architect": entry.get("architect") or finding.get("architect"),
                     "vendor_box": entry.get("vendor_box"),
                     "round": entry.get("round"),
-                    # Only "Your decision" items are folded into another (#1554).
+                    # Only not-compared ("check") items are folded into another (#1554).
                     "status": "check",
                     "round_status": None,
                     "decision": None,
@@ -490,7 +501,8 @@ def _judge(item: _Item, first_round_of_set: int) -> None:
     fixed_round: int | None = None
     if current.status == "same" and wrong_rounds and wrong_rounds[-1] < current.round:
         fixed_round = min(r for r in rounds if r > wrong_rounds[-1])
-    elif current.status in _OPEN_STATUSES and stored == "fixed":
+    elif current.status in _OPEN_STATUSES and stored in ("fixed", "now_right"):
+        # Fixed in the next round, or (not compared in round 1, #1619) right there.
         fixed_round = current.round + 1
 
     if decision is not None and decision.get("decision") == "not_a_problem":
@@ -512,6 +524,8 @@ def _judge(item: _Item, first_round_of_set: int) -> None:
         or stored == "still_wrong"
     ):
         item.tags.append("Still wrong")
+    if item.standing == "open" and stored == "still_not_compared":
+        item.tags.append("Still not compared")
 
 
 def _item_out(item: _Item, sets: Mapping[UUID, TrackerSet]) -> dict[str, Any]:
@@ -630,7 +644,7 @@ def build_tracker(sets: Sequence[TrackerSet], answers: Sequence[TrackerAnswer]) 
         items.append(item)
 
     def order(item: _Item) -> tuple[int, int, str, str]:
-        # Wrong before Your decision (the reviewer's path), then fixed, then the rest.
+        # Wrong before Not compared, then fixed, then the rest.
         rank = (
             (0 if item.open_kind == "wrong" else 1)
             if item.standing == "open"

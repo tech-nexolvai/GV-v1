@@ -183,8 +183,8 @@ _DECISION_HELP_SCHEMA: Final[Mapping[str, Any]] = {
             "site', 'ask the architect which governs')",
         },
     },
-    "description": "Required on every status 'check' (Your decision) finding: the reviewer's "
-    "reasoning in short plain words. Not needed on 'different' or 'same'.",
+    "description": "Required on every status 'check' (Not compared) finding: why it could not be "
+    "compared, in short plain words. Not needed on 'different' or 'same'.",
 }
 _FINDING_FIELDS: Final[Mapping[str, Any]] = {
     "page": {"type": "integer", "minimum": 1, "description": "The vendor's page (from 1)"},
@@ -216,9 +216,9 @@ _FINDING_FIELDS: Final[Mapping[str, Any]] = {
     "status": {
         "type": "string",
         "enum": list(STATUSES),
-        "description": "different = Wrong (the vendor does not match the source); check = Your "
-        "decision (a person must decide: give decision_help, and check_reason when both values "
-        "are printed and differ); same = Right (they match)",
+        "description": "different = Wrong (the vendor does not match the architect); check = Not "
+        "compared (nothing to compare: give decision_help saying why, and check_reason when both "
+        "values are printed and differ); same = Right (they match)",
     },
     "why": {"type": "string", "description": "Why it matters, one short line"},
     "verified": {
@@ -300,7 +300,7 @@ REPORT_FINDING: Final[Mapping[str, Any]] = {
     "description": (
         "Record one compared item: the vendor's value against the source's (the architect's "
         "drawing, a brand prototype, a GV rule, or the vendor's own arithmetic), with its status "
-        "Wrong (different), Your decision (check) or Right (same). Use it for every item you "
+        "Wrong (different), Not compared (check) or Right (same). Use it for every item you "
         "compare that the question is about, instead of writing a table: the app crops the "
         "evidence at your boxes, checks the printed values, scores how far to trust it "
         "(Confirmed / Likely / AI reading only) and shows it to the reviewer. Values as printed, "
@@ -629,7 +629,7 @@ def decision_help_note(items: Sequence[Mapping[str, Any]], *, prefixed: bool = T
     more = f" and {len(items) - 30} more" if len(items) > 30 else ""
     lead = f"{COVERAGE_CHECK_PREFIX} " if prefixed else ""
     return (
-        f"{lead}help the reviewer decide: these Your-decision findings have no decision_help: "
+        f"{lead}say why: these not-compared (status check) findings have no decision_help: "
         f"{listed}{more}. For each, update_finding with decision_help (what it measures; your "
         "best estimate with its method, e.g. a string added up or measure_on_drawing, or null; "
         "likely probably fine / probably wrong / can't tell; what to confirm), in short plain "
@@ -805,7 +805,7 @@ def _decision_when_wider(
             "than the unit)"
         )
     return (
-        "code made it status check (Your decision), not Wrong: your measure_on_drawing showed the "
+        "code made it status check (not compared), not Wrong: your measure_on_drawing showed the "
         f"architect's {fields.get('architect')} spans more than the unit ({extent.get('words')}). "
         "Its decision_help says what it measures and the unit's scaled size"
     )
@@ -1827,11 +1827,13 @@ def make_proof_file(
     settled: Sequence[Mapping[str, Any]] = (),
     today: str | None = None,
     context: Any = None,
+    not_compared: int | None = None,
 ) -> MarkupFile:
     """The zero-click red/green proof drawing of a full check (#1581,
     `proof_drawing.proof_markup_pdf`), written to `out`: a red cloud and a red/green note at each
     Wrong item code proved, a proof entry each, a cover with the counts, the rule, the stamp and
-    what code assumed about the page map, and the rest listed in grey. The reviewer's decisions
+    what code assumed about the page map, and how many items could not be compared
+    (`not_compared`, the Not-compared list's rows, #1619). The reviewer's decisions
     (on `findings`, when there are any) override: agreed = clouded, not a problem = left out.
     Raises `LookupError` when the chat has no copy of the set's PDFs. `context`: the send-ready
     package's (#1622, `send_package.PackageContext`): its round-2 check, its stable comment numbers
@@ -1870,6 +1872,7 @@ def make_proof_file(
         rounds=rounds,
         action=action,
         action_stamp=None if action is None else context.stamp(action),
+        not_compared=not_compared,
     )
     data = out.read_bytes()
     return MarkupFile(
