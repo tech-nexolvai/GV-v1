@@ -228,8 +228,10 @@ def comment_labels(
 ) -> dict[str, str]:
     """Each finding's comment number (finding id -> "C-07"): the stable numbers given (from the
     set's earlier checks, `package_store.numbering`), else this list's own
-    (`job_tracker.comment_numbers` of this one check). A clouded item with none (an item the
-    reviewer agreed that was never Wrong) gets the next free number, biggest first."""
+    (`job_tracker.comment_numbers` of this one check). Each comment of the list has its own
+    number: one with none (an item the reviewer agreed that was never Wrong) or one sharing its
+    tracker item with a bigger comment of the same list (the same words on another page) gets the
+    next free number, biggest first."""
     tracker = import_module("app.review.assistant.job_tracker")
     if numbers is None:
         from datetime import UTC, datetime
@@ -250,11 +252,18 @@ def comment_labels(
     out = {str(k): str(v) for k, v in numbers.items()}
     used = [int(label[2:]) for label in out.values() if label[2:].isdigit()]
     after = max(used, default=0)
+    # Every comment of this list has its own number: one with none, or one whose item the tracker
+    # links to an earlier comment of the same list (the same words on another page), gets the next
+    # free number, biggest first.
+    given: set[str] = set()
     for finding in corrections(by_impact(findings)):
         finding_id = str(finding.get("id") or "")
-        if finding_id and finding_id not in out:
+        if not finding_id:
+            continue
+        if finding_id not in out or out[finding_id] in given:
             after += 1
             out[finding_id] = str(tracker.comment_label(after))
+        given.add(out[finding_id])
     return out
 
 

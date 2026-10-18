@@ -970,6 +970,7 @@ def cloud_drawing(
             scratch[report_id],
             settled=resolver_settled(row.blocks),
             package_out=scratch.get(package_id),
+            extra=_not_compared_files(session, workspace, message_id),
             identity=package_identity(session, package, tuple(row.products or ())),
             numbers=stored_numbers(session, package.id, message_id),
             incomplete=CheckState.from_dict(
@@ -1012,6 +1013,26 @@ def cloud_drawing(
 
 
 # ---- one message ---------------------------------------------------------------------------------
+
+
+def _not_compared_files(
+    session: Session, workspace: ChatWorkspace, message_id: UUID
+) -> list[tuple[str, Path]]:
+    """The answer's newest Not-compared PDF and workbook (#1619) as the check made them, for the
+    remade send-ready package (#1622): each name and path."""
+    rows = session.scalars(
+        select(AssistantChatFile)
+        .where(AssistantChatFile.message_id == message_id)
+        .order_by(AssistantChatFile.created_at)
+    ).all()
+    newest: dict[str, tuple[str, Path]] = {}
+    for row in rows:
+        if " - Not compared." not in row.name:
+            continue
+        path = workspace.files / str(row.id)
+        if path.is_file():
+            newest["pdf" if row.name.endswith(".pdf") else "sheet"] = (row.name, path)
+    return list(newest.values())
 
 
 def _upload_sources(

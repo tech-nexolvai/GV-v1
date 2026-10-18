@@ -237,6 +237,7 @@ def make_decided_files(
     identity: PackageIdentity | None = None,
     numbers: Mapping[str, str] | None = None,
     incomplete: str | None = None,
+    extra: Sequence[tuple[str, Path]] = (),
 ) -> DecidedFiles:
     """The cloud drawing and the check report made again with the reviewer's decisions as
     overrides (#1581, replacing #1521's only-agreed drawing): the same zero-click drawing as the
@@ -246,7 +247,8 @@ def make_decided_files(
     and the report's numbers agree. `package_out` (a full check's answer): the send-ready package
     is made again too (#1622), from the same list and context (`identity`, the stable comment
     `numbers`, and whether the check finished), so the drawing's cover, the letter and the
-    register say the same result and comment numbers."""
+    register say the same result and comment numbers. `extra`: the answer's other files the
+    package holds as they were made (the Not-compared list, #1619), each name and path."""
     findings = by_impact(findings)
     context = None
     if package_out is not None:
@@ -266,7 +268,7 @@ def make_decided_files(
         package = make_package_file(
             workspace,
             findings,
-            [(drawing.name, drawing_out), (report.name, report_out)],
+            [(drawing.name, drawing_out), (report.name, report_out), *extra],
             package_out,
             context,
         )

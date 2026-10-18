@@ -282,6 +282,12 @@ def test_comment_labels_of_one_check_and_an_agreed_item() -> None:
     agreed = _decision(decision={"decision": "agree", "by": "R"})
     labels = comment_labels([_second(), _proved(), agreed])
     assert labels == {"F1": "C-01", "F5": "C-02", "F3": "C-03"}
+    # Two comments the tracker links as one item (the same words) never share a number.
+    twin = _second(id="F6", page=2)
+    assert comment_labels([_second(), twin], {"F5": "C-03", "F6": "C-03"}) == {
+        "F5": "C-03",
+        "F6": "C-04",
+    }
     # Stable numbers given win; an agreed item with none takes the next free one.
     assert comment_labels([_proved(), agreed], {"F1": "C-07"}) == {"F1": "C-07", "F3": "C-08"}
 
