@@ -539,3 +539,14 @@ def test_parallel_helpers_are_capped_by_the_setting(tmp_path: Path) -> None:
     assert Settings.model_fields["assistant_max_parallel_agents"].default == 8
     with pytest.raises(ValueError):
         Settings(database_url="postgresql+psycopg://x@h/db", assistant_max_parallel_agents=13)
+
+
+def test_the_drawn_numbers_are_read_by_default_within_a_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # On by default (#1558 had it off): the vendor's pen-stroke numbers reach dims.json.
+    monkeypatch.delenv("GV_DIM_LABELS_DRAWN_BUDGET_S", raising=False)
+    assert set_pack._drawn_budget() == set_pack.DIMS_DRAWN_BUDGET_S > 0
+    assert set_pack.DIMS_TIMEOUT_S > set_pack.DIMS_DRAWN_BUDGET_S
+    monkeypatch.setenv("GV_DIM_LABELS_DRAWN_BUDGET_S", "0")
+    assert set_pack._drawn_budget() == 0
