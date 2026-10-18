@@ -376,6 +376,35 @@ def _number(value: Decimal | None) -> str | None:
     return text if text != "-0" else "0"
 
 
+#: The devil's advocate's verdicts the fixed price stopped: never kept, so it is tried again.
+_UNCHECKED: Final = ("Not checked", "Not verified within the fixed price")
+
+
+def _label_ref(label: object) -> str | None:
+    if not isinstance(label, Mapping) or not label.get("id"):
+        return None
+    return f"p{label.get('page')}.{label.get('id')}"
+
+
+def kept_advocate(finding: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The finding's devil's advocate verdict (`full_check_advocate`), when the labels it judged
+    are still the finding's (`pairing` against `dims`) and the price did not stop it; else
+    `None`."""
+    critic = finding.get("critic")
+    pairing = finding.get("pairing")
+    if not isinstance(critic, Mapping) or critic.get("model") != "devil's advocate":
+        return None
+    if not isinstance(pairing, Mapping) or str(critic.get("note") or "").startswith(_UNCHECKED):
+        return None
+    dims = finding.get("dims") if isinstance(finding.get("dims"), Mapping) else {}
+    assert isinstance(dims, Mapping)
+    if pairing.get("vendor") != _label_ref(dims.get("vendor")):
+        return None
+    if pairing.get("architect") not in (None, _label_ref(dims.get("architect"))):
+        return None
+    return dict(critic)
+
+
 def apply_checks(
     finding: Mapping[str, Any],
     pdf_paths: Mapping[str, Path],
@@ -423,6 +452,12 @@ def apply_checks(
     # The third read and the critic start again too (#1498): they come after the lead's answer.
     out["reads"] = None
     out["critic"] = None
+    kept = kept_advocate(finding)
+    if kept is not None:
+        # The devil's advocate judged these very labels (#1641): a later code step that changes
+        # nothing it judged (a box, a name, a check) keeps its verdict.
+        out["critic"] = kept
+        checks["critic"] = kept.get("result")
     # Nobody has decided on a finding being written (#1521): the reviewer's decision is added when
     # the stored answer is read.
     out["decision"] = None

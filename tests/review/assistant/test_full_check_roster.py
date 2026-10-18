@@ -234,7 +234,8 @@ def test_decision_d1_needs_every_condition_and_code_only_needs_code() -> None:
          "land in different places"),
         (agree, ("different_extent", "the ends land apart"), "the ends land apart"),
         (agree, ("cannot_tell", "too few dimensions"), "too few dimensions"),
-        (None, None, "the fixed price ran out"),
+        (None, same, "Not verified within the fixed price"),
+        (None, ("cannot_tell", "no line"), "no line"),  # geometry first: no AI call is needed
         ({**agree, "vendor_ink_black": "no"}, same, "in colour"),
     ):  # fmt: skip
         verdict = decide(mode="ai_pair_plus_code", advocate=advocate, extent=extent, **common)  # type: ignore[arg-type]
@@ -355,6 +356,9 @@ class _Roster:
 
     def helper(self, params: Mapping[str, Any], brief: str) -> list[dict[str, Any]]:
         step = _steps(params)
+        if brief.startswith("LEAD REVIEW"):
+            self._seen("lead", params)
+            return reply(text("Nothing left to place."), model=params["model"])
         if brief.startswith("TAGS:"):
             self._seen("tags", params)
             table = {"tags": [
@@ -723,7 +727,10 @@ def test_the_escalation_spends_only_what_is_left_under_the_price(
     assert "advocate" not in script.calls  # no money left: no AI call
     assert found["checks"]["printed_vendor"] == "match"  # the free step still ran
     assert proof.proof_group(found) == "not_compared"  # still not compared, never red
-    assert any("stay not compared" in line for line in run.not_done)
+    # Said on the item (#1641): the check it needed was not reached within the fixed price.
+    assert found["critic"]["note"].startswith("Not verified within the fixed price")
+    assert proof.classified(found).why.startswith("not verified within the fixed price")
+    assert any("not verified" in line for line in run.not_done)
 
 
 # ---- every page accounted for within the fixed price (#1634) ------------------------------------
@@ -757,11 +764,13 @@ def test_the_gap_closers_get_what_p1_left_less_the_later_phases(tmp_path: Path) 
     harness = _roster(tmp_path, _Roster())
     run = _run(harness)
     assert run.plan is not None
-    later = sum(run.plan.budgets[n] for n in ("provers", "advocate", "summary", "reads"))
+    later = sum(run.plan.budgets[n] for n in full_check_roster.PROTECTED)
+    assert later == run.plan.protected()
     # Nothing spent yet: all but the later phases' money, far more than the gap share alone.
     assert run._gap_budget() == 5 * DOLLARS - later > run.plan.budgets["gaps"]
-    harness.engine._spent = 5 * DOLLARS - later  # P1 used it all: the gap share stands
-    assert run._gap_budget() == run.plan.budgets["gaps"]
+    # P1 used it all: nothing for the gap closers, the protected money stays (#1641).
+    harness.engine._spent = 5 * DOLLARS - later
+    assert run._gap_budget() == 0
 
 
 class _Lazy(_Roster):

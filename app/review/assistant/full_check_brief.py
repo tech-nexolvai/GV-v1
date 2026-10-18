@@ -151,7 +151,11 @@ Every vendor label on your pages must be handled: matched in a finding (vendor_d
 
 OUTPUT: code, not you, decides what is wrong, and only a value code can find on the drawing can become a red cloud, so give code the spot, not your reading. For every item you compare, the Right ones too, call report_finding with the labels: vendor_dim and architect_dim (p28.D5 for another page). Type a value with its box only when no label covers it; code will try to read it there. For every dimension string, record_string with part_dims and total_dim; code adds them. Before you pair two heights or widths, say in why where each end lands (the spans words of what-dimensions-measure). When the ends differ, or you are not sure two labels measure the same thing, still report it: status check (Not compared) with decision_help and one line why. A miss is never found again; a doubtful item is only listed. Status different = Wrong, check = Not compared, same = Right. Name each item starting with its area from the list above ("<area>: counter height"), the same way on every page, view and round; round on vendor findings; vs_page when the architect is on another page. record_reading for a value you read without a label. set_coverage for each page. verified: false (a separate check verifies).
 
-REPORT BACK (short): per page the differences (item, vendor vs architect, finding ids), anything unreadable and where, then one line per page exactly like
+Record each item as soon as you have read it (report_finding, record_string), page by page: a reading only in your report is lost, because your report records nothing.
+
+REPORT BACK (short): per page the differences (item, vendor vs architect, finding ids), anything unreadable and where; for a difference you read but could not record, one line exactly like
+UNRECORDED p<N> | <area: item> | architect <value> | vendor <value> | different or check | <where each end lands, or why>
+then one line per page exactly like
 CHECKLIST p<N>: architect a/b; notes a/b; strings a/b; not compared: <what and why, or none>
 (a/b = items done of items on the page).
 
@@ -367,7 +371,7 @@ def helper_brief(
         "principle": PRINCIPLE,
         "product_checklist": product_checklist(products),
         "labels": (
-            "\n".join(label_summary(pages, labels))
+            "\n".join(label_summary(pages, labels, page_map))
             if labels is not None
             else "- not listed yet: zoom with marks: true to see them"
         ),
@@ -386,9 +390,16 @@ def helper_brief(
 
 
 def label_summary(
-    pages: Iterable[int], labels: Mapping[int, Sequence[Mapping[str, Any]] | None]
+    pages: Iterable[int],
+    labels: Mapping[int, Sequence[Mapping[str, Any]] | None],
+    page_map: Mapping[str, Any] | Sequence[Any] | None = None,
 ) -> list[str]:
-    """One line per page: how many dimension labels code found on each drawing (#1558)."""
+    """One line per page: how many dimension labels code found on each drawing (#1558), and
+    (#1641) each architect or vendor drawing of the page where code found none: its numbers are
+    pen strokes or a picture, to read from the picture and give with their box. The paid run of
+    2026-10-19 left such pages alone ("the vendor's values are unlabelled, I did not compare
+    them"; a page whose architect half had no labels was taken for a brand prototype)."""
+    entries = _pages_of(page_map)
     lines: list[str] = []
     for page in sorted(set(pages)):
         found = labels.get(page)
@@ -400,8 +411,44 @@ def label_summary(
             side = str(label.get("side") or "unknown")
             counts[side] = counts.get(side, 0) + 1
         words = ", ".join(f"{side} {count}" for side, count in sorted(counts.items()))
-        lines.append(f"- p{page}: {len(found)} labels ({words or 'none'})")
+        line = f"- p{page}: {len(found)} labels ({words or 'none'})"
+        bare = _unlabelled_halves(entries.get(page), found)
+        if bare:
+            line += (
+                f"; NO labels on the {' and the '.join(bare)}: pen strokes or a picture, still "
+                "to compare (read each number from the zoom, report it with its tight box)"
+            )
+        lines.append(line)
     return lines
+
+
+def _unlabelled_halves(
+    entry: Mapping[str, Any] | None, labels: Sequence[Mapping[str, Any]]
+) -> list[str]:
+    """The page's architect and vendor drawings (from the page map) with no label inside."""
+    out: list[str] = []
+    for half in (entry or {}).get("halves") or []:
+        if not isinstance(half, Mapping) or half.get("role") not in ("architect", "vendor"):
+            continue
+        box = half.get("box")
+        if not isinstance(box, Sequence) or len(box) != 4:
+            continue
+        x0, y0, x1, y1 = (float(v) for v in box)
+        inside = False
+        for label in labels:
+            lx0, ly0, lx1, ly1 = (float(v) for v in label.get("box") or (0, 0, 0, 0))
+            cx, cy = (lx0 + lx1) / 2, (ly0 + ly1) / 2
+            if x0 <= cx <= x1 and y0 <= cy <= y1:
+                inside = True
+                break
+        if inside:
+            continue
+        heading = str(half.get("heading") or "").strip()
+        name = "architect's drawing" if half["role"] == "architect" else "vendor's drawing"
+        if half.get("round"):
+            name += f" (round {half['round']})"
+        out.append(f"{name}{f' {heading!r}' if heading else ''}")
+    return out
 
 
 def with_label_gaps(
