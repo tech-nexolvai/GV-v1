@@ -76,7 +76,7 @@ const TRACKER: Tracker = {
 describe('tracker words (#1578)', () => {
   it('says each state one way, coloured only for Wrong and Fixed', () => {
     expect(stateWords(ITEMS[0])).toEqual({ word: 'Open · Wrong', tone: 'wrong', detail: null });
-    expect(stateWords(ITEMS[1])).toEqual({ word: 'Open · Vendor to confirm', tone: 'neutral', detail: null });
+    expect(stateWords(ITEMS[1])).toEqual({ word: 'Open · Not compared', tone: 'neutral', detail: null });
     expect(stateWords(ITEMS[2])).toEqual({ word: 'Fixed · round 2', tone: 'right', detail: null });
     expect(stateWords(ITEMS[3])).toEqual({ word: 'Not a problem', tone: 'neutral', detail: 'reviewer-two' });
     expect(stateWords({ ...ITEMS[0], state: 'right_later' }).word).toBe('Right on a later check');

@@ -1237,13 +1237,13 @@ class _Run:
                 self._agent(
                     call_id=f"sharper-{pages[0]}",
                     description=f"Look again, pages {pages[0]}-{pages[-1]}",
-                    prompt=SHARPER_NOTE
-                    + "\n\n"
-                    + PROVER_BRIEF.format(
+                    prompt=PROVER_BRIEF.format(
                         pages=", ".join(str(p) for p in pages),
                         file=f"{UPLOADS}/{engine.book.main_file}",
                         items=prover_items(engine, items),
-                    ),
+                    )
+                    + "\n\n"
+                    + SHARPER_NOTE,
                     model=BY_SHORT["sonnet"],
                     pages=pages,
                     lens="prover",

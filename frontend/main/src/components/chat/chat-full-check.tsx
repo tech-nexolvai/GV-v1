@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Download, ExternalLink, FileText, RefreshCw, ScanSearch } from 'lucide-react';
+import { Download, ExternalLink, FileText, ListX, RefreshCw, ScanSearch } from 'lucide-react';
 
 import { AccuracyBadge } from '@/components/chat/chat-accuracy';
 import { GVSpark } from '@/components/chat/chat-motion';
@@ -193,7 +193,7 @@ function CloudPreview({ href, page, total }: { href: string; page: number; total
  * on the left, Open and Download on the right; the check report as a quiet line inside it.
  */
 export interface CloudReview {
-  /** Items the reviewer has overridden, of those it could (Wrong + Vendor to confirm). */
+  /** Items the reviewer has overridden, of those it could (Wrong + Not compared). */
   decided: number;
   total: number;
   /** Who answered, once every item is answered: "Reviewed by <name>". */
@@ -204,20 +204,22 @@ export interface CloudReview {
   failed: boolean;
 }
 
-export function FullCheckFiles({ cloud, report, chatId, page = 1, totalPages = null, counts = null, proof = null, review = null }: {
+export function FullCheckFiles({ cloud, report, notCompared = [], chatId, page = 1, totalPages = null, counts = null, proof = null, review = null }: {
   cloud: ChatFile | null;
   report: ChatFile | null;
+  /** #1619: the Not-compared list, as a PDF and a workbook. */
+  notCompared?: readonly ChatFile[];
   chatId: string;
   /** The page the preview shows (the biggest clouded item's, the vendor's own page number). */
   page?: number;
   totalPages?: number | null;
   counts?: Pick<FindingCounts, 'different' | 'check'> | null;
-  /** #1581, #1619: the drawing's own groups (clouded / vendor to confirm / right), as its cover counts them. */
+  /** #1581, #1619: the drawing's own groups (clouded / right / not compared), as its cover counts them. */
   proof?: ProofCounts | null;
   /** #1525: the reviewer's answers so far, and "Update cloud drawing" (optional overrides since #1581). */
   review?: CloudReview | null;
 }) {
-  if (!cloud && !report) return null;
+  if (!cloud && !report && !notCompared.length) return null;
   const href = (file: ChatFile) => file.url || chatPaths.file(chatId, file.id);
   const reportLine = report && (
     <div data-slot="chat-check-report" className="flex min-w-0 items-center gap-3 border-t pt-3 text-[13px]">
@@ -230,7 +232,21 @@ export function FullCheckFiles({ cloud, report, chatId, page = 1, totalPages = n
       <a href={href(report)} download={report.name} aria-label={`Download ${report.name}`} className="rounded-md px-1.5 py-1 font-medium text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">Download</a>
     </div>
   );
-  if (!cloud) return <div className="rounded-xl border bg-card px-4 py-3">{reportLine}</div>;
+  const listLine = notCompared.length > 0 && (
+    <div data-slot="chat-not-compared-files" className="flex min-w-0 items-center gap-3 border-t pt-3 text-[13px]">
+      <ListX className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+      <span className="min-w-0 flex-1 truncate">
+        <span className="font-medium">Not-compared list</span>
+        <span className="text-muted-foreground"> · why each item could not be compared, and what is needed</span>
+      </span>
+      {notCompared.map((file) => (
+        <a key={file.id} href={href(file)} download={file.name} aria-label={`Download ${file.name}`} className="rounded-md px-1.5 py-1 font-medium text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
+          {/\.pdf$/i.test(file.name) ? 'PDF' : /\.csv$/i.test(file.name) ? 'CSV' : 'Excel'}
+        </a>
+      ))}
+    </div>
+  );
+  if (!cloud) return <div className="grid gap-3 rounded-xl border bg-card px-4 py-3">{reportLine}{listLine}</div>;
   return (
     <section data-slot="chat-cloud-drawing" aria-label="Cloud drawing" className="chat-rise grid overflow-hidden rounded-xl border border-border/70 bg-card md:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
       <a href={href(cloud)} target="_blank" rel="noopener noreferrer" aria-label="Open the cloud drawing" className="grid border-b border-border/60 bg-muted/40 p-4 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset md:border-r md:border-b-0">
@@ -241,13 +257,12 @@ export function FullCheckFiles({ cloud, report, chatId, page = 1, totalPages = n
           <p className="text-xs font-medium text-muted-foreground">Main output</p>
           <p className="text-[17px] font-semibold tracking-[-0.01em]">Cloud drawing</p>
           <p className="text-[13.5px] text-muted-foreground">
-            Ready to send: a red cloud at each wrong value code proved, with what it should be in green and the proof for each, and an amber question at each item the vendor needs to confirm.
+            Ready to send: a red cloud at each wrong value code proved, with what it should be in green and the proof for each. The architect’s drawings govern; what could not be compared is listed apart.
           </p>
           {proof ? (
             <p data-slot="chat-cloud-counts" className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground tabular-nums">
               <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="size-2 rounded-full bg-outcome-fail" /><span className="font-medium text-foreground">{proof.clouded}</span> clouded, proved by code</span>
-              {proof.vendor_confirm > 0 && <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="size-2 rotate-45 rounded-[1px] bg-outcome-review" /><span className="font-medium text-foreground">{proof.vendor_confirm}</span> for the vendor to confirm</span>}
-              {proof.info + proof.not_compared > 0 && <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="size-2 rounded-full ring-[1.5px] ring-inset ring-muted-foreground/50" />{proof.info + proof.not_compared} not applicable</span>}
+              {proof.not_compared > 0 && <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="size-2 rounded-full ring-[1.5px] ring-inset ring-muted-foreground/60" />{proof.not_compared} with nothing to compare</span>}
             </p>
           ) : counts && (counts.different > 0 || counts.check > 0) && (
             <p className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground tabular-nums">
@@ -288,11 +303,12 @@ export function FullCheckFiles({ cloud, report, chatId, page = 1, totalPages = n
         </div>
         {review && review.total > 0 && (
           <p data-slot="chat-cloud-review" className="text-xs text-muted-foreground tabular-nums">
-            {review.decided} of {review.total} overridden{review.reviewedBy ? ` · reviewed by ${review.reviewedBy}` : ''} · optional: Agree, Make it Wrong or Not a problem below changes the drawing
+            {review.decided} of {review.total} overridden{review.reviewedBy ? ` · reviewed by ${review.reviewedBy}` : ''} · optional: Agree, Not a problem or Make it Wrong below changes the drawing
           </p>
         )}
         {review?.failed && <p role="alert" className="text-sm text-muted-foreground">The cloud drawing could not be made again right now. Try again.</p>}
         {reportLine}
+        {listLine}
       </div>
     </section>
   );
@@ -301,9 +317,9 @@ export function FullCheckFiles({ cloud, report, chatId, page = 1, totalPages = n
 // ── The three numbers (PATH step 4.2) ───────────────────────
 
 const NUMBERS = [
-  { status: 'different', words: 'Wrong', hint: 'Proved by code, clouded red', dot: 'rounded-full bg-outcome-fail' },
-  { status: 'check', words: 'Vendor to confirm', hint: 'One question each, in amber', dot: 'rotate-45 rounded-[1px] bg-outcome-review' },
-  { status: 'same', words: 'Right', hint: 'Matches the drawings', dot: 'rounded-full bg-outcome-pass' },
+  { status: 'different', words: 'Wrong', hint: 'Proved by code, clouded red', dot: 'bg-outcome-fail' },
+  { status: 'same', words: 'Right', hint: 'Matches the architect', dot: 'bg-outcome-pass' },
+  { status: 'check', words: 'Nothing to compare', hint: 'Listed apart, with the reason', dot: 'bg-transparent ring-[1.5px] ring-inset ring-muted-foreground/60' },
 ] as const;
 
 export interface ResultNumbersProps {
@@ -315,7 +331,7 @@ export interface ResultNumbersProps {
 }
 
 /**
- * Wrong · Vendor to confirm · Right (#1619: as the cloud drawing counts them), plus pages checked
+ * Wrong · Right · Nothing to compare (#1619: as the cloud drawing counts them), plus pages checked
  * and the Accuracy % (each shown once on the screen). A number jumps to its section below.
  */
 export function ResultNumbers({ counts, coverage, accuracy, onPick }: ResultNumbersProps) {
@@ -334,10 +350,10 @@ export function ResultNumbers({ counts, coverage, accuracy, onPick }: ResultNumb
             aria-label={`${number.words}: ${count}. Go to them`}
             className="grid min-w-0 gap-1 rounded-xl bg-muted/50 p-3 text-left transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:cursor-default disabled:hover:bg-muted/50 motion-reduce:transition-none sm:p-4"
           >
-            {/* The label wraps instead of cutting "Vendor to confirm" short on a phone; two lines are kept
+            {/* The label wraps instead of cutting "Nothing to compare" short on a phone; two lines are kept
                 for every card there, so the three numbers stay on one level. */}
             <span data-slot="chat-kpi-label" className="flex min-h-[2.5em] min-w-0 items-start gap-1.5 text-[13px] leading-[1.25] font-medium text-muted-foreground sm:min-h-0 sm:items-center">
-              <span aria-hidden="true" className={cn('mt-[0.3em] size-2 shrink-0 sm:mt-0', number.dot)} />
+              <span aria-hidden="true" className={cn('mt-[0.3em] size-2 shrink-0 rounded-full sm:mt-0', number.dot)} />
               <span className="min-w-0 break-words">{number.words}</span>
             </span>
             <span className={cn('text-2xl leading-8 font-semibold tracking-[-0.03em] tabular-nums sm:text-[30px] sm:leading-9', count === 0 && 'text-muted-foreground')}>{count}</span>

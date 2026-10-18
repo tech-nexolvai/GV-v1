@@ -4460,7 +4460,7 @@
         "type": "object"
       },
       "ChatFindingDecisionHelpOut": {
-        "description": "A \"Your decision\" item's reasoning for the reviewer (#1545), in plain words.",
+        "description": "A not-compared (\"check\") item's reasoning for the reviewer (#1545), in plain words.",
         "properties": {
           "confirm": {
             "description": "What the reviewer should confirm, and with whom.",
@@ -4698,7 +4698,7 @@
         "type": "object"
       },
       "ChatFindingEscalationStepOut": {
-        "description": "One free code step the escalation tried on an undecided item (#1619).",
+        "description": "One free code step the escalation tried on an item code could not compare at first\n(#1619).",
         "properties": {
           "how": {
             "description": "What code did and found, in one plain line.",
@@ -4725,7 +4725,7 @@
         "type": "object"
       },
       "ChatFindingEstimateOut": {
-        "description": "The AI's best estimate for a \"Your decision\" item, with how it got it (#1545).",
+        "description": "The AI's best estimate for a not-compared (\"check\") item, with how it got it (#1545).",
         "properties": {
           "method": {
             "title": "Method",
@@ -4982,7 +4982,7 @@
                 "type": "null"
               }
             ],
-            "description": "Status check (Your decision): what it measures, the best estimate, how likely it is fine, what to confirm (#1545)."
+            "description": "Status check (not compared): what it measures, the best estimate, how likely it is fine, what to confirm (#1545)."
           },
           "dims": {
             "anyOf": [
@@ -5263,7 +5263,7 @@
                 "type": "null"
               }
             ],
-            "description": "Set when code settled this item, which was Your decision, by itself (#1554)."
+            "description": "Set when code settled this item, which was not compared, by itself (#1554)."
           },
           "source": {
             "description": "cross_view and completeness are made only by code, from the reading ledger.",
@@ -5413,17 +5413,50 @@
         "description": "Where the zero-click cloud drawing puts a finding (#1581), worked out by code on read\n(`proof.proof_of`): only Wrong items code proved are clouded; the reviewer's Agree / Not a\nproblem override.",
         "properties": {
           "group": {
-            "description": "clouded: Wrong, proved by code (red cloud); vendor_confirm: what code could not settle (#1619), one question to the vendor (amber marker, no cloud); right; info: undecided with nothing to ask (not applicable / no information); not_compared; dismissed: the reviewer marked it not a problem.",
+            "description": "clouded: Wrong, proved by code (red cloud); right; not_compared: could not be compared under the architect-first rules (#1619: listed with its reason in the Not-compared PDF and workbook, never a question to anyone); dismissed: the reviewer marked it not a problem.",
             "enum": [
               "clouded",
-              "vendor_confirm",
               "right",
-              "info",
               "not_compared",
               "dismissed"
             ],
             "title": "Group",
             "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "not_compared: the trade's words for the reason (Field verify, RFI to the architect, Not reviewed: <reason>, Illegible).",
+            "title": "Label"
+          },
+          "not_compared": {
+            "anyOf": [
+              {
+                "enum": [
+                  "architect_disagrees",
+                  "nothing_to_compare",
+                  "different_reference",
+                  "unreadable",
+                  "missing_setting",
+                  "prototype",
+                  "not_proved",
+                  "not_seen",
+                  "field_verify"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "not_compared: the reason (the list's group).",
+            "title": "Not Compared"
           },
           "proof": {
             "anyOf": [
@@ -5437,18 +5470,6 @@
             "description": "Clouded items: the check that proved it, in plain words.",
             "title": "Proof"
           },
-          "question": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "vendor_confirm: the one question to the vendor, written by code (shown after \"Confirm: \"): plain, cites the page and the values, never accuses, never says AI.",
-            "title": "Question"
-          },
           "reason": {
             "anyOf": [
               {
@@ -5460,6 +5481,30 @@
             ],
             "description": "The other groups: why it is not clouded, in one line.",
             "title": "Reason"
+          },
+          "rule": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The architect-first rule it falls under (#1619): R4 a difference, R5 the vendor's own contradiction, R6 GV's rule; for not_compared R1 (brand prototype), R3 (architect's drawings disagree), R7 (architect gives nothing), R8 (different reference points), R9 (unreadable), R10 (missing job value or setting).",
+            "title": "Rule"
+          },
+          "settle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "not_compared: what is needed to compare it, in plain words.",
+            "title": "Settle"
           },
           "should_be": {
             "anyOf": [
@@ -5569,7 +5614,7 @@
         "type": "object"
       },
       "ChatFindingSettledOut": {
-        "description": "How code settled a \"Your decision\" item by itself (#1554), shown as \"Settled by GV\nReview: \u2026\".",
+        "description": "How code settled a not-compared (\"check\") item by itself (#1554), shown as \"Settled by GV\nReview: \u2026\".",
         "properties": {
           "how": {
             "description": "What code did and found, in one plain sentence.",
@@ -5586,7 +5631,7 @@
           },
           "was": {
             "default": "check",
-            "description": "check: it was Your decision; different: a Wrong code could not prove, settled Right by the escalation (#1619).",
+            "description": "check: it was not compared; different: a Wrong code could not prove, settled Right by the escalation (#1619).",
             "enum": [
               "check",
               "different"
@@ -7187,7 +7232,7 @@
         "type": "object"
       },
       "ChatResolverEntryOut": {
-        "description": "One \"Your decision\" item code settled by itself (#1554): the folded group's line.",
+        "description": "One not-compared (\"check\") item code settled by itself (#1554): the folded group's line.",
         "properties": {
           "architect": {
             "anyOf": [
@@ -20578,7 +20623,7 @@
             ]
           },
           "status": {
-            "description": "different (Wrong), check (Your decision) or same (Right).",
+            "description": "different (Wrong), check (Not compared, #1619) or same (Right).",
             "title": "Status",
             "type": "string"
           },

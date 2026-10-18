@@ -338,7 +338,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
   // #1522: a narrow answer (a few pages) shows no whole-set panels: no page grid, no coverage, no ledger.
   const narrow = isNarrowAnswer(message, fullCheck);
   const allFiles = [...message.files, ...madeFiles.filter((made) => !message.files.some((file) => file.id === made.id))];
-  const made = fullCheck ? fullCheckFiles(allFiles) : { cloud: null, report: null, rest: allFiles };
+  const made = fullCheck ? fullCheckFiles(allFiles) : { cloud: null, report: null, notCompared: [], rest: allFiles };
   const files = made.rest;
   const messageId = message.id;
   const finished = !running && message.status === 'done' && findings.length > 0;
@@ -367,9 +367,9 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
   const [decisionsOff, setDecisionsOff] = useState(false);
   const decisionOf = (finding: ChatFinding): FindingDecision | null => decisions[finding.id] ?? finding.decision ?? null;
   // #1619: a finished full check shows each item where its cloud drawing puts it (Wrong = proved
-  // by code, Vendor to confirm = a question to the vendor, Right), the reviewer's newest click laid over.
-  const vendorView = fullCheck && !running;
-  const shown = vendorView ? findings.map((finding) => asShown(finding, decisionOf(finding))) : findings;
+  // by code, Right, Nothing to compare), the reviewer's newest click laid over.
+  const architectView = fullCheck && !running;
+  const shown = architectView ? findings.map((finding) => asShown(finding, decisionOf(finding))) : findings;
   const counts = findingCounts(shown);
   // The viewer's arrows step through the findings in the order the sections show them.
   const ordered = sectionOrder(shown, filter);
@@ -464,7 +464,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
   const sections = findings.length > 0 ? (
     <FindingsSections
       findings={shown}
-      vendorView={vendorView}
+      architectView={architectView}
       filter={filter}
       onFilter={setFilter}
       onOpen={(finding) => setViewing(finding.id)}
@@ -510,7 +510,8 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
             <p className="flex items-center gap-2 text-xs font-medium text-muted-foreground"><GVSpark size={16} />{['Full check', checkedWords(message.products ?? message.scope?.products) ?? productsWords(message.products)].filter(Boolean).join(' · ')}</p>
             <h2 data-slot="chat-summary-headline" className="text-xl leading-snug font-semibold tracking-[-0.015em]">
               {counts.different > 0 ? <span className="text-outcome-fail-fg">{counts.different} wrong</span> : 'Nothing proved wrong'} on the vendor’s drawings
-              {counts.check > 0 ? <>, <span className="text-outcome-review-fg">{counts.check} for the vendor to confirm</span>.</> : '.'}
+              {counts.same > 0 ? `, ${counts.same} right` : ''}
+              {counts.check > 0 ? <span className="text-muted-foreground">, {counts.check} with nothing to compare</span> : null}.
             </h2>
             {textItems.map((item) => {
               const block = blocks[item.index] as Extract<ViewBlock, { type: 'text' }>;
@@ -528,8 +529,8 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
           {/* PATH 4.2: the three numbers, pages and accuracy (each once). */}
           {(findings.length > 0 || coverage) && <ResultNumbers counts={counts} coverage={coverage} accuracy={message.accuracy} onPick={jumpTo} />}
           {/* PATH 4.3: the cloud drawing, the main output. */}
-          <FullCheckFiles cloud={made.cloud} report={made.report} chatId={chatId} page={previewPage(findings)} totalPages={coverage ? coverageCounts(coverage).total : null} counts={counts} proof={findings.length ? proofCounts(findings, decisionOf) : null} review={review} />
-          {/* PATH 4.4 to 4.6: What's wrong, Your decision, Right (folded). */}
+          <FullCheckFiles cloud={made.cloud} report={made.report} notCompared={made.notCompared} chatId={chatId} page={previewPage(findings)} totalPages={coverage ? coverageCounts(coverage).total : null} counts={counts} proof={findings.length ? proofCounts(findings, decisionOf) : null} review={review} />
+          {/* PATH 4.4 to 4.6: What's wrong, Right (folded), Nothing to compare (folded, #1619). */}
           {decideError}
           {sections}
           {/* PATH 4.7: everything else, folded. */}

@@ -4685,7 +4685,7 @@ export interface components {
         };
         /**
          * ChatFindingDecisionHelpOut
-         * @description A "Your decision" item's reasoning for the reviewer (#1545), in plain words.
+         * @description A not-compared ("check") item's reasoning for the reviewer (#1545), in plain words.
          */
         ChatFindingDecisionHelpOut: {
             /**
@@ -4800,7 +4800,8 @@ export interface components {
         };
         /**
          * ChatFindingEscalationStepOut
-         * @description One free code step the escalation tried on an undecided item (#1619).
+         * @description One free code step the escalation tried on an item code could not compare at first
+         *     (#1619).
          */
         ChatFindingEscalationStepOut: {
             /**
@@ -4821,7 +4822,7 @@ export interface components {
         };
         /**
          * ChatFindingEstimateOut
-         * @description The AI's best estimate for a "Your decision" item, with how it got it (#1545).
+         * @description The AI's best estimate for a not-compared ("check") item, with how it got it (#1545).
          */
         ChatFindingEstimateOut: {
             /** Method */
@@ -4927,7 +4928,7 @@ export interface components {
             critic?: components["schemas"]["ChatFindingCriticOut"] | null;
             /** @description The reviewer's latest decision on this finding (#1521); null: not decided. */
             decision?: components["schemas"]["ChatFindingDecisionOut"] | null;
-            /** @description Status check (Your decision): what it measures, the best estimate, how likely it is fine, what to confirm (#1545). */
+            /** @description Status check (not compared): what it measures, the best estimate, how likely it is fine, what to confirm (#1545). */
             decision_help?: components["schemas"]["ChatFindingDecisionHelpOut"] | null;
             /**
              * Dims
@@ -4999,7 +5000,7 @@ export interface components {
             /** Rule Check Id */
             rule_check_id?: string | null;
             second_read_values?: components["schemas"]["ChatSecondReadValuesOut"] | null;
-            /** @description Set when code settled this item, which was Your decision, by itself (#1554). */
+            /** @description Set when code settled this item, which was not compared, by itself (#1554). */
             settled?: components["schemas"]["ChatFindingSettledOut"] | null;
             /**
              * Source
@@ -5047,25 +5048,40 @@ export interface components {
         ChatFindingProofOut: {
             /**
              * Group
-             * @description clouded: Wrong, proved by code (red cloud); vendor_confirm: what code could not settle (#1619), one question to the vendor (amber marker, no cloud); right; info: undecided with nothing to ask (not applicable / no information); not_compared; dismissed: the reviewer marked it not a problem.
+             * @description clouded: Wrong, proved by code (red cloud); right; not_compared: could not be compared under the architect-first rules (#1619: listed with its reason in the Not-compared PDF and workbook, never a question to anyone); dismissed: the reviewer marked it not a problem.
              * @enum {string}
              */
-            group: "clouded" | "vendor_confirm" | "right" | "info" | "not_compared" | "dismissed";
+            group: "clouded" | "right" | "not_compared" | "dismissed";
+            /**
+             * Label
+             * @description not_compared: the trade's words for the reason (Field verify, RFI to the architect, Not reviewed: <reason>, Illegible).
+             */
+            label?: string | null;
+            /**
+             * Not Compared
+             * @description not_compared: the reason (the list's group).
+             */
+            not_compared?: ("architect_disagrees" | "nothing_to_compare" | "different_reference" | "unreadable" | "missing_setting" | "prototype" | "not_proved" | "not_seen" | "field_verify") | null;
             /**
              * Proof
              * @description Clouded items: the check that proved it, in plain words.
              */
             proof?: string | null;
             /**
-             * Question
-             * @description vendor_confirm: the one question to the vendor, written by code (shown after "Confirm: "): plain, cites the page and the values, never accuses, never says AI.
-             */
-            question?: string | null;
-            /**
              * Reason
              * @description The other groups: why it is not clouded, in one line.
              */
             reason?: string | null;
+            /**
+             * Rule
+             * @description The architect-first rule it falls under (#1619): R4 a difference, R5 the vendor's own contradiction, R6 GV's rule; for not_compared R1 (brand prototype), R3 (architect's drawings disagree), R7 (architect gives nothing), R8 (different reference points), R9 (unreadable), R10 (missing job value or setting).
+             */
+            rule?: string | null;
+            /**
+             * Settle
+             * @description not_compared: what is needed to compare it, in plain words.
+             */
+            settle?: string | null;
             /**
              * Should Be
              * @description Wrong items: what the value should be and what governs it, e.g. '37" (architect 3'-1", page 28)'.
@@ -5103,7 +5119,7 @@ export interface components {
         };
         /**
          * ChatFindingSettledOut
-         * @description How code settled a "Your decision" item by itself (#1554), shown as "Settled by GV
+         * @description How code settled a not-compared ("check") item by itself (#1554), shown as "Settled by GV
          *     Review: …".
          */
         ChatFindingSettledOut: {
@@ -5120,7 +5136,7 @@ export interface components {
             outcome: components["schemas"]["ChatSettledOutcome"];
             /**
              * Was
-             * @description check: it was Your decision; different: a Wrong code could not prove, settled Right by the escalation (#1619).
+             * @description check: it was not compared; different: a Wrong code could not prove, settled Right by the escalation (#1619).
              * @default check
              * @enum {string}
              */
@@ -5738,7 +5754,7 @@ export interface components {
         };
         /**
          * ChatResolverEntryOut
-         * @description One "Your decision" item code settled by itself (#1554): the folded group's line.
+         * @description One not-compared ("check") item code settled by itself (#1554): the folded group's line.
          */
         ChatResolverEntryOut: {
             /** Architect */
@@ -11908,7 +11924,7 @@ export interface components {
             round_status: components["schemas"]["TrackerRoundStatus"] | null;
             /**
              * Status
-             * @description different (Wrong), check (Your decision) or same (Right).
+             * @description different (Wrong), check (Not compared, #1619) or same (Right).
              */
             status: string;
             /** Vendor */

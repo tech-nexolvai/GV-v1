@@ -392,7 +392,7 @@ export interface ChatFinding {
 }
 
 /** #1581: the zero-click cloud drawing's group for a finding, and its words. */
-export type ProofGroup = 'clouded' | 'vendor_confirm' | 'right' | 'info' | 'not_compared' | 'dismissed';
+export type ProofGroup = 'clouded' | 'right' | 'not_compared' | 'dismissed';
 
 export interface FindingProof {
   group: ProofGroup;
@@ -402,8 +402,14 @@ export interface FindingProof {
   proof?: string | null;
   /** The other groups: why it is not clouded, in one line. */
   reason?: string | null;
-  /** #1619, vendor_confirm: the one question to the vendor, written by code (shown after "Confirm: "). */
-  question?: string | null;
+  /** #1619, not_compared: the architect-first rule (R1-R10) it falls under. */
+  rule?: string | null;
+  /** #1619, not_compared: the reason (the Not-compared list's group). */
+  not_compared?: string | null;
+  /** #1619, not_compared: the trade's words for it ("Field verify", "RFI to the architect", "Illegible", "Not reviewed: …"). */
+  label?: string | null;
+  /** #1619, not_compared: what is needed to compare it. */
+  settle?: string | null;
 }
 
 /** #1569: code's impact score (0-100), its place among the items of its status, and why. */

@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useId, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { Check, ChevronRight, CircleAlert, ExternalLink, ImageOff, Maximize2, X } from 'lucide-react';
 
 import { RoundChip } from '@/components/chat/chat-trust';
@@ -27,7 +27,7 @@ import {
   vendorPage,
 } from '@/lib/chat-findings';
 import { useReducedMotion } from '@/lib/chat-motion';
-import { vendorQuestion } from '@/lib/chat-proof';
+import { notComparedWords } from '@/lib/chat-proof';
 import { plainChecks, sumWords, TRUST_WORDS, trustLevelOf } from '@/lib/chat-trust';
 import { cn } from '@/lib/utils';
 
@@ -42,16 +42,15 @@ import { cn } from '@/lib/utils';
  * One vocabulary: Wrong · Your decision · Right · Not compared. Read-only, except the reviewer's own
  * Agree / Not a problem, shown only when the server offers the route.
  *
- * #1619: a finished full check speaks the cloud drawing's words instead (`VendorView`): Wrong (proved
- * by code) · Vendor to confirm (each row shows the question that goes to the vendor, in amber) ·
- * Right. Nobody has to answer: Agree / Not a problem stay optional, and an amber item offers
- * "Make it Wrong" (the Agree route: it is clouded red) in place of Agree.
+ * #1619: the architect's drawings govern and nothing goes to the reviewer's decision. A finished full
+ * check speaks the cloud drawing's words (`architectView`): What's wrong (proved by code), Right
+ * (folded), and Nothing to compare (folded: each row says why, in the trade's words and ours, and
+ * what is needed). Agree / Not a problem stay optional on a Wrong item; a Not-compared item offers
+ * only "Make it Wrong" (the Agree route: it is clouded red).
  */
 
 const DROP_MS = 220;
 
-/** #1619: true inside a finished full check's findings: the cloud drawing's words. */
-const VendorView = createContext(false);
 
 type RowStatus = FindingStatus | 'not_compared';
 
@@ -79,11 +78,10 @@ const STATUS_TEXT: Record<RowStatus, string> = {
 /** Wrong / Your decision / Right / Not compared, as a dot and a word (no filled chip). */
 export function StatusMark({ finding, className }: { finding: ChatFinding; className?: string }) {
   const status = statusOf(finding);
-  const vendorView = useContext(VendorView);
   return (
     <span data-slot="chat-finding-status" data-status={status} className={cn('inline-flex items-center gap-1.5 text-[13px] whitespace-nowrap', STATUS_TEXT[status], className)}>
       <StatusDot status={status} />
-      {status === 'not_compared' ? 'Not compared' : vendorView && status === 'check' ? 'Vendor to confirm' : STATUS_WORDS[finding.status]}
+      {status === 'not_compared' ? 'Not looked at' : STATUS_WORDS[finding.status]}
     </span>
   );
 }
@@ -251,8 +249,8 @@ export interface DecisionProps {
 }
 
 /**
- * ✓ Agree / ✗ Not a problem: one click each, real buttons (keyboard: Tab, Enter or Space). An amber
- * item of a full check (#1619) offers "Make it Wrong" instead of Agree: the same route, it is clouded.
+ * ✓ Agree / ✗ Not a problem: one click each, real buttons (keyboard: Tab, Enter or Space). A
+ * Not-compared item (#1619) offers only "Make it Wrong": the Agree route, it is clouded red.
  */
 function DecisionButtons({ decision, onDecide, busy, makeWrong = false }: DecisionProps & { makeWrong?: boolean }) {
   const base = 'inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-[12.5px] font-medium whitespace-nowrap transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-60 motion-reduce:transition-none';
@@ -268,7 +266,7 @@ function DecisionButtons({ decision, onDecide, busy, makeWrong = false }: Decisi
         {makeWrong ? <CircleAlert aria-hidden="true" className="size-3.5" /> : <Check aria-hidden="true" className="size-3.5" />}
         {makeWrong ? 'Make it Wrong' : 'Agree'}
       </button>
-      <button
+      {!makeWrong && <button
         type="button"
         aria-pressed={decision === 'not_a_problem'}
         disabled={busy}
@@ -277,7 +275,7 @@ function DecisionButtons({ decision, onDecide, busy, makeWrong = false }: Decisi
       >
         <X aria-hidden="true" className="size-3.5" />
         Not a problem
-      </button>
+      </button>}
     </span>
   );
 }
@@ -309,9 +307,12 @@ export function FindingCard({ finding, pictureUrl, onOpen, fullPageHref }: {
           <div><dt className="text-xs font-medium text-muted-foreground">{words.vendorLabel}</dt><dd className="break-words">{words.vendor}</dd></div>
           {sum && <div><dt className="text-xs font-medium text-muted-foreground">Code’s sum</dt><dd data-slot="chat-finding-sum" className="break-words tabular-nums">{sum}</dd></div>}
           <div><dt className="text-xs font-medium text-muted-foreground">{words.whyLabel}</dt><dd data-slot="chat-finding-why" className="break-words">{words.why}</dd></div>
-          {finding.status === 'check' && vendorQuestion(finding) ? (
-            <div><dt className="text-xs font-medium text-muted-foreground">Question to the vendor (on the cloud drawing)</dt><dd data-slot="chat-finding-card-question" className="font-medium break-words"><span className="text-outcome-review-fg">Confirm: </span>{vendorQuestion(finding)}</dd></div>
-          ) : finding.status === 'check' && finding.question && finding.question !== finding.decision_help?.confirm?.trim() && <div><dt className="text-xs font-medium text-muted-foreground">Your call</dt><dd data-slot="chat-finding-card-question" className="font-medium break-words">{finding.question}</dd></div>}
+          {finding.status === 'check' && notComparedWords(finding) && (
+            <>
+              <div><dt className="text-xs font-medium text-muted-foreground">Why not compared</dt><dd data-slot="chat-finding-card-question" className="break-words"><span className="font-medium">{notComparedWords(finding)!.label}</span>{notComparedWords(finding)!.why ? `: ${notComparedWords(finding)!.why}` : ''}</dd></div>
+              {notComparedWords(finding)!.settle && <div><dt className="text-xs font-medium text-muted-foreground">What is needed to compare it</dt><dd className="break-words">{notComparedWords(finding)!.settle}</dd></div>}
+            </>
+          )}
           {help.length > 0 && (
             <div data-slot="chat-finding-decision-help" className="grid gap-2 border-l-2 border-border pl-3">
               {help.map((row) => (
@@ -414,7 +415,7 @@ export function SettledGroup({ resolver, decisions }: { resolver: ChatResolver; 
         <span className="text-base font-semibold">Settled automatically</span>
         <span className="font-medium text-muted-foreground tabular-nums">{entries.length}</span>
         <span className="text-[13px] text-muted-foreground">
-          GV Review answered these from the drawings: {decisions + entries.length} to decide became {decisions}
+          GV Review answered these from the drawings: {decisions + entries.length} open became {decisions}
         </span>
       </button>
       {open && <ul id={bodyId} className="mt-3 overflow-hidden rounded-xl border">{entries.map(line)}</ul>}
@@ -463,8 +464,7 @@ interface RowProps {
 
 function FindingRow({ finding, area, open, leaving, onToggle, onOpen, pictureUrl, fullPageHref, decision }: RowProps) {
   const detailId = useId();
-  const vendorView = useContext(VendorView);
-  const asked = vendorView && finding.status === 'check' ? vendorQuestion(finding) : null;
+  const nothing = finding.status === 'check' ? notComparedWords(finding) : null;
   const tag = sourceTag(finding);
   const title = itemTitle(finding.item, area);
   return (
@@ -500,15 +500,16 @@ function FindingRow({ finding, area, open, leaving, onToggle, onOpen, pictureUrl
             <span className="shrink-0 text-xs text-muted-foreground tabular-nums lg:hidden">p.{pageWords(finding)}</span>
           </span>
           <FindingLineText finding={finding} />
-          {asked ? (
-            <span data-slot="chat-finding-question" data-for="vendor" className="line-clamp-3 text-[13px] leading-[1.45]">
-              <span className="font-semibold text-outcome-review-fg">Confirm: </span>
-              {asked}
+          {nothing ? (
+            <span data-slot="chat-finding-question" data-for="not-compared" className="line-clamp-3 text-[13px] leading-[1.45] text-muted-foreground">
+              <span className="font-medium text-foreground">{nothing.label}</span>
+              {nothing.why ? `: ${nothing.why}` : ''}
+              {nothing.settle && <span className="block">Needed: {nothing.settle}</span>}
             </span>
-          ) : finding.status === 'check' && (finding.question?.trim() || finding.why?.trim()) && (
-            <span data-slot="chat-finding-question" className="line-clamp-2 text-[13px] leading-[1.45]">
-              <span className="font-medium text-outcome-review-fg">Your call: </span>
-              {finding.question?.trim() || finding.why}
+          ) : finding.status === 'check' && finding.why?.trim() && (
+            <span data-slot="chat-finding-question" className="line-clamp-2 text-[13px] leading-[1.45] text-muted-foreground">
+              <span className="font-medium text-foreground">Why: </span>
+              {finding.why}
             </span>
           )}
           {finding.settled?.how && (
@@ -531,7 +532,7 @@ function FindingRow({ finding, area, open, leaving, onToggle, onOpen, pictureUrl
           </span>
         </span>
         <EvidencePair finding={finding} pictureUrl={pictureUrl} onOpen={onOpen} />
-        <span className="flex lg:justify-end">{decision && <DecisionButtons {...decision} makeWrong={vendorView && finding.status === 'check'} />}</span>
+        <span className="flex lg:justify-end">{decision && <DecisionButtons {...decision} makeWrong={finding.status === 'check'} />}</span>
       </div>
       {open && !leaving && (
         <div id={detailId} data-slot="chat-finding-detail" data-id={finding.id} className="border-t border-border/60 bg-muted/30 px-4 py-6 lg:pl-[4.5rem]">
@@ -675,8 +676,8 @@ export interface FindingsSectionsProps {
   ids?: Partial<Record<'different' | 'check' | 'same', string>>;
   /** #1554: what GV Review settled by itself (a folded group after Your decision). */
   resolver?: ChatResolver | null;
-  /** #1619: a finished full check: Wrong (proved) · Vendor to confirm · Right, the cloud drawing's words. */
-  vendorView?: boolean;
+  /** #1619: a finished full check: What's wrong (proved) · Right · Nothing to compare, the cloud drawing's words. */
+  architectView?: boolean;
 }
 
 interface SectionDef {
@@ -687,13 +688,12 @@ interface SectionDef {
 
 const SECTIONS: readonly SectionDef[] = [
   { status: 'different', words: 'What’s wrong', hint: null },
-  { status: 'check', words: 'Your decision', hint: 'GV Review could not settle these from the drawings.' },
+  { status: 'check', words: 'Not compared', hint: 'Nothing to compare: each says why.' },
 ];
 
-/** #1619: the same sections in the cloud drawing's words. */
-const VENDOR_SECTIONS: readonly SectionDef[] = [
+/** #1619: a full check's open section: what code proved wrong (Not compared is folded below). */
+const ARCHITECT_SECTIONS: readonly SectionDef[] = [
   { status: 'different', words: 'What’s wrong', hint: 'Proved by code: clouded red on the drawing' },
-  { status: 'check', words: 'Vendor to confirm', hint: 'Each question goes to the vendor on the cloud drawing, in amber. Nothing to answer here.' },
 ];
 
 function SectionHead({ status, words, count, hint, children, id }: { status: RowStatus; words: string; count: number; hint?: string | null; children?: React.ReactNode; id?: string }) {
@@ -734,16 +734,17 @@ function Folded({ status, words, hint, count, children, id }: { status: RowStatu
   );
 }
 
-/** What's wrong · Your decision · Right (folded) · Not compared (folded), each grouped by area. */
-export function FindingsSections({ vendorView = false, ...props }: FindingsSectionsProps) {
+/**
+ * What's wrong · Not compared · Right (folded) · Not looked at (folded), each grouped by area; a full
+ * check (#1619): What's wrong · Right (folded) · Nothing to compare (folded, with the reasons).
+ */
+export function FindingsSections({ architectView = false, ...props }: FindingsSectionsProps) {
   return (
-    <VendorView.Provider value={vendorView}>
-      <Sections {...props} sections={vendorView ? VENDOR_SECTIONS : SECTIONS} />
-    </VendorView.Provider>
+    <Sections {...props} sections={architectView ? ARCHITECT_SECTIONS : SECTIONS} architectView={architectView} />
   );
 }
 
-function Sections({ findings, filter, onFilter, onOpen, pictureUrl, fullPageHref, decisionFor, narrow = false, ids, resolver = null, sections }: Omit<FindingsSectionsProps, 'vendorView'> & { sections: readonly SectionDef[] }) {
+function Sections({ findings, filter, onFilter, onOpen, pictureUrl, fullPageHref, decisionFor, narrow = false, ids, resolver = null, sections, architectView }: Omit<FindingsSectionsProps, 'architectView'> & { sections: readonly SectionDef[]; architectView: boolean }) {
   const isNarrowScreen = useMediaQuery(FINDINGS_NARROW);
   const categories = categoriesPresent(findings);
   const shown = findings.filter((finding) => (filter.category === null || (finding.category ?? 'other') === filter.category) && (filter.page === null || finding.page === filter.page || finding.vs_page === filter.page));
@@ -787,6 +788,8 @@ function Sections({ findings, filter, onFilter, onOpen, pictureUrl, fullPageHref
 
   const right = of('same');
   const unseen = of('not_compared');
+  // #1619: a full check's Not-compared items are a folded section of their own.
+  const notCompared = architectView ? of('check') : [];
   const nothing = sections.every((section) => of(section.status).length === 0);
 
   return (
@@ -795,7 +798,7 @@ function Sections({ findings, filter, onFilter, onOpen, pictureUrl, fullPageHref
         <div className="grid gap-3">
           {filters && <div className="flex">{filters}</div>}
           <p data-slot="chat-findings-empty" className="rounded-xl border border-dashed px-4 py-5 text-center text-sm text-muted-foreground">
-            {findings.length === 0 ? 'No findings yet.' : shown.length === 0 ? 'No findings match this filter.' : 'Nothing wrong and nothing to decide.'}
+            {findings.length === 0 ? 'No findings yet.' : shown.length === 0 ? 'No findings match this filter.' : architectView ? 'Nothing proved wrong.' : 'Nothing wrong and nothing left open.'}
           </p>
         </div>
       )}
@@ -835,9 +838,14 @@ function Sections({ findings, filter, onFilter, onOpen, pictureUrl, fullPageHref
           <FindingsList findings={right} label="Right" onOpen={onOpen} pictureUrl={pictureUrl} fullPageHref={fullPageHref} />
         </Folded>
       )}
+      {architectView && notCompared.length > 0 && (
+        <Folded status="check" words="Nothing to compare" count={notCompared.length} hint="Not on the cloud drawing; each says why and what is needed (the Not-compared list)" id={ids?.check}>
+          <FindingsList findings={notCompared} label="Nothing to compare" onOpen={onOpen} pictureUrl={pictureUrl} fullPageHref={fullPageHref} decisionFor={decisionFor} />
+        </Folded>
+      )}
       {unseen.length > 0 && (
-        <Folded status="not_compared" words="Not compared" count={unseen.length} hint="Not looked at on both sides, so not counted as right">
-          <FindingsList findings={unseen} label="Not compared" onOpen={onOpen} pictureUrl={pictureUrl} fullPageHref={fullPageHref} />
+        <Folded status="not_compared" words="Not looked at" count={unseen.length} hint="Not looked at on both sides, so not counted as right">
+          <FindingsList findings={unseen} label="Not looked at" onOpen={onOpen} pictureUrl={pictureUrl} fullPageHref={fullPageHref} />
         </Folded>
       )}
     </section>
