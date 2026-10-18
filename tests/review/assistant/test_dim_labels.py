@@ -900,3 +900,16 @@ def test_the_pack_adds_eq_parts_once_last_and_never_reuses_an_id(tmp_path: Path)
     assert all(label.get("derived") for label in labels[-2:])
     for snapshot in seen:
         assert all(final.get(key) == value for key, value in snapshot.items())
+
+
+def test_a_line_crossing_an_eq_chain_cuts_no_part(tmp_path: Path) -> None:
+    # The chain has slash ticks at its ends and its middle; a grid line crosses its right part
+    # with no tick. The parts end at the ticks, so the chain still spans the printed overall.
+    body = _dimension(300, 420, 200) + _text(352, 203, '36"')
+    body += _equal_chain([300, 360, 420], 300, ["EQ", "EQ"])
+    for x in (300, 360, 420):
+        body += _line(x - 1.5, 298.5, x + 1.5, 301.5)
+    body += _line(400, 250, 400, 350)  # the grid line
+    parts = [label for label in _vendor_labels(tmp_path, body) if label.get("derived")]
+    assert [p["inches"] for p in parts] == ["18", "18"]
+    assert [p["dim_line"][1][0] for p in parts] == [360, 420]
