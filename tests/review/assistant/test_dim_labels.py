@@ -286,7 +286,7 @@ def test_only_the_vendors_drawn_numbers_with_an_inch_mark_and_room_round_them(
     path = tmp_path / "drawn.pdf"
     path.write_bytes(_pdf([_drawn_page()]))
     assert not _drawn(path, _agreeing(), halves=[{"box": [0, 0, 600, 400], "role": "architect"}])
-    # A drawn number with no inch mark (a tag `B30`, a count, a symbol read as a digit).
+    # A drawn number with no inch mark (a tag `C24`, a count, a symbol read as a digit).
     bare = tmp_path / "bare.pdf"
     bare.write_bytes(_pdf([_drawn_page(_glyphs(300.0, 303.5, inch_mark=False))]))
     assert not _drawn(bare, _agreeing())
