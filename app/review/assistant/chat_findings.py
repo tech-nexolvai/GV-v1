@@ -45,6 +45,7 @@ from app.review.assistant.chat_corrections import parse_ref
 from app.review.assistant.dim_findings import LabelRefused, fill_from_labels, label_for_cite
 from app.review.assistant.dim_index import DimLabels, labels_for
 from app.review.assistant.impact import by_impact
+from app.review.assistant.product_scope import ProductScope, refiled
 from app.review.assistant.sandbox import UPLOADS, ChatWorkspace, SandboxRefused
 from app.review.assistant.tool_schema import box_schema
 from vocabulary.product_registry import registry
@@ -936,6 +937,14 @@ class FindingBook:
     follow-up may correct (#1548, `chat_corrections.earlier_findings`)."""
     corrections: dict[str, dict[str, Any]] = field(default_factory=dict)
     """This answer's corrections of earlier findings, by ref (the update stored)."""
+    product_scope: ProductScope | None = None
+    """The products this message checks (`product_scope`): a finding of another product is never
+    recorded (the hard filter); `None`: every product (tests and older callers)."""
+    out_of_scope: int = 0
+    """The findings refused because their product is not in scope (kept in the trust block)."""
+    page_words: Callable[[int], str] | None = None
+    """A page's printed words and its area's title (the set pack), read to re-file an "other"
+    item to a product before the scope drops it (`product_scope.refiled`)."""
     _cites: int = 0
     """The recorded differences this answer must account for (set by the engine)."""
     _count: int = 0
@@ -1111,6 +1120,27 @@ class FindingBook:
             )
         return out
 
+    def _words_of(self, finding: Mapping[str, Any]) -> Callable[[], str]:
+        """Its page's words, read only when its own words name no product."""
+        page, words = finding.get("page"), self.page_words
+        return lambda: words(page) if words is not None and isinstance(page, int) else ""
+
+    def _in_scope(self, fields: dict[str, Any], created_by: str) -> bool:
+        """Whether a finding's product is in this message's scope. An "other" or unknown item is
+        re-filed to a product first, from its own words, then its page's (`refiled`); a code-made
+        one gets its one product even under All (`category_for`). An out-of-scope one is counted,
+        never recorded."""
+        scope = self.product_scope
+        if scope is None:
+            return True
+        category = refiled({**fields, "created_by": created_by}, scope, self._words_of(fields))
+        if category is not None:
+            fields["category"] = category
+            return True
+        with self._lock:
+            self.out_of_scope += 1
+        return False
+
     def report(self, raw: object, created_by: str) -> tuple[dict[str, Any], list[str]]:
         """A new finding (id, crops made), and the reasons any box has no picture."""
         if not isinstance(raw, Mapping):
@@ -1120,6 +1150,9 @@ class FindingBook:
             raise SandboxRefused(f"unknown argument {min(unknown)!r}")
         raw, dims, label_notes = self._labelled(raw, None)
         fields = self._fields(raw, partial=False)
+        if not self._in_scope(fields, created_by):
+            assert self.product_scope is not None
+            raise SandboxRefused(self.product_scope.refusal(fields["category"]))
         if created_by != "lead":
             fields["verified"] = False
         fields["created_by"] = created_by
@@ -1214,6 +1247,8 @@ class FindingBook:
             except SandboxRefused as refused:
                 _log.warning("assistant chat ledger finding skipped: %s", refused)
                 return None
+        if not self._in_scope(fields, created_by):
+            return None
         with self._lock:
             if len(self.findings) >= MAX_FINDINGS:
                 return None
@@ -1363,6 +1398,14 @@ class FindingBook:
         changes = self._fields(given, partial=True)
         if not changes:
             raise SandboxRefused("give at least one field to change")
+        scope = self.product_scope
+        if "category" in changes and scope is not None:
+            with self._lock:
+                merged = {**self.findings[finding_id], **changes}
+            category = refiled(merged, scope, self._words_of(merged))
+            if category is None:
+                raise SandboxRefused(scope.refusal(changes["category"]))
+            changes["category"] = category
         changes["dims"] = dims
         notes: list[str] = list(label_notes)
         for box, picture, side in (
@@ -1511,6 +1554,20 @@ class FindingBook:
         page = record.get("page")
         if not isinstance(page, int) or page < 1:
             return None
+        category = (
+            record.get("category") if record.get("category") in finding_categories() else "other"
+        )
+        shown = " ".join(str(record.get("what") or "Recorded difference").split())[:_MAX_ITEM]
+        named = {
+            "category": category,
+            "item": shown,
+            "page": page,
+            "architect": record.get("architect"),
+            "vendor": record.get("vendor"),
+            "why": record.get("why"),
+        }
+        if not self._in_scope(named, "gv_review"):
+            return None
         with self._lock:
             self._count += 1
             finding_id = f"F{self._count}"
@@ -1519,12 +1576,8 @@ class FindingBook:
             "id": finding_id,
             "page": page,
             "vs_page": None,
-            "item": " ".join(str(record.get("what") or "Recorded difference").split())[:_MAX_ITEM],
-            "category": (
-                record.get("category")
-                if record.get("category") in finding_categories()
-                else "other"
-            ),
+            "item": shown,
+            "category": named["category"],
             "architect": str(record.get("architect") or "see GV Review's record")[:_MAX_VALUE],
             "vendor": str(record.get("vendor") or "see GV Review's record")[:_MAX_VALUE],
             "status": "different",

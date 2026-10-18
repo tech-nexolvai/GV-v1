@@ -318,10 +318,17 @@ def product_checklist(products: Sequence[str] | None = None) -> str:
         if "global_rules" in product.check_kinds and product.global_rule_hints:
             hints = "; ".join(hint.rstrip(".") for hint in product.global_rule_hints)
             lines.append(f"- GV standards not on the drawing (values in rules.md): {hints}.")
-    lines.append(
-        "An item of no product in focus is category other. report_finding's category is the "
-        "product id."
-    )
+    if {p.id for p in focus} >= set(registry().active_ids()):
+        lines.append(
+            "An item of no product in focus is category other. report_finding's category is the "
+            "product id."
+        )
+    else:
+        # A strict scope (Anant, 2026-10-18): only the picked products are checked.
+        lines.append(
+            f"ONLY {words} are checked: leave out every item of another product or of no product "
+            "(code does not record it). report_finding's category is the product id."
+        )
     return "\n".join(lines)
 
 

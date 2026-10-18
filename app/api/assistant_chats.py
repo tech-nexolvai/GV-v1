@@ -68,6 +68,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.api.dependencies import ARTIFACT_STORE_STATE, get_session
+from app.api.packages import published_products
 from app.auth import Principal
 from app.auth.dependencies import Authenticated
 from app.config import Settings
@@ -161,8 +162,10 @@ from app.review.assistant.consistency_answer import (
     PackNotReady,
     run_check,
 )
+from app.review.assistant.product_scope import ProductScope
 from app.review.assistant.sandbox import ChatWorkspace, Sandbox, open_sandbox
 from app.runs.rates import ModelRates, rates_from_environment
+from vocabulary.semantic_types import ProductType
 
 _log = logging.getLogger(__name__)
 
@@ -1066,9 +1069,33 @@ def _results_loader(
             snapshot = load_snapshot(session, project_id, package_id, revision)
             scoped = snapshot if page is None else _page_snapshot(snapshot, page)
             document["records"] = json.loads(prompt_records(scoped))
+            # Each GV check's product, from its rule in the rulebook: a strict product scope keeps
+            # only the checks of the products picked (`product_scope.scoped_document`).
+            document["record_products"] = _record_products(session, scoped.other_checks)
             return document
 
     return load
+
+
+def _record_products(session: Session, records: Sequence[Any]) -> dict[str, str]:
+    """`{record id ("F3"): product id}` for GV's other checks, by each check's published rule. A
+    rule the rulebook cannot name is left out (its record then belongs to no product)."""
+    from app.verdicts.rulebook import snapshot_store
+
+    try:
+        store = snapshot_store(session)
+    except Exception as failed:  # noqa: BLE001 - the records then belong to no product
+        _log.warning("assistant chat rule products not read: %s", type(failed).__name__)
+        return {}
+    out: dict[str, str] = {}
+    for record in records:
+        try:
+            snapshot = store.latest(str(record.check))
+        except Exception:  # noqa: BLE001 - an unknown rule id is no product
+            snapshot = None
+        if snapshot is not None:
+            out[str(record.id)] = snapshot.rule.product_type.value
+    return out
 
 
 @dataclass(frozen=True, slots=True)
@@ -1109,11 +1136,17 @@ def _message(
     revision_id = _latest_revision_id(session, package.id)
     factory = _factory(session)
     own = package_product(package)
-    products = (
-        tuple(body.products)
-        if body.products is not None
-        else (None if own is None else (own.value,))
-    )
+    # The products are a strict scope (Anant, 2026-10-18): the pick, else the set's own product,
+    # else every active product; always named, so the scope is stored and shown.
+    products = ProductScope.of(body.products, None if own is None else own.value).products
+    # A picked product with no published GV rule yet: the answer says so (never silent).
+    try:
+        published = published_products(session)
+        unruled = tuple(p for p in products if not published.get(ProductType(p)))
+    except Exception as failed:  # noqa: BLE001 - the answer then says nothing about rules
+        _log.warning("assistant chat published rules not read: %s", type(failed).__name__)
+        session.rollback()
+        unruled = ()
     mode: str = body.mode
     continue_from = None if body.continue_from is None else UUID(body.continue_from)
     if continue_from is not None:
@@ -1173,6 +1206,7 @@ def _message(
             sharpen_model=runtime.sharpen,
             sharpen_deadline_seconds=runtime.sharpen_deadline_seconds,
             task_edit=None if body.task is None else body.task.model_dump(),
+            unruled=unruled,
         )
     except BaseException:
         registry.release(run)

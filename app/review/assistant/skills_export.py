@@ -301,8 +301,9 @@ def rules_markdown(
 ) -> str:
     """`rules.md` for one drawing set: the checks that run on it and the settings in force.
 
-    With `products` (the reviewer's pick in the chat, chat v4), the checks of those products come
-    first and every other product's checks are listed after them, under "Other products"."""
+    With `products` (the reviewer's pick in the chat, chat v4), only the checks of those products
+    are listed: the pick is a strict scope (Anant, 2026-10-18), so another product's GV rules are
+    never given to the AI."""
     revision = session.get(PackageRevision, package_revision_id)
     if revision is None:
         raise LookupError(f"no drawing set revision {package_revision_id}")
@@ -317,9 +318,13 @@ def rules_markdown(
             snapshot.rule
             for snapshot in (store.latest(rule_id) for rule_id in store.rule_ids())
             if snapshot is not None
-            and (picked is not None or product is None or snapshot.rule.product_type is product)
+            and (
+                snapshot.rule.product_type in picked
+                if picked is not None
+                else product is None or snapshot.rule.product_type is product
+            )
         ),
-        key=lambda rule: (picked is not None and rule.product_type not in picked, rule.id),
+        key=lambda rule: rule.id,
     )
     in_force = settings_in_force(session, package.project_id, revision.id, rules)
     sink = session.execute(
@@ -333,8 +338,8 @@ def rules_markdown(
     if picked is not None:
         names = " and ".join(registry().ordered(item.value for item in picked))
         lines.append(
-            f"Products picked for this chat: {names}. Their checks come first; the other "
-            'products\' checks follow under "Other products".\n'
+            f"Products picked for this chat: {names}. Only their checks are listed: the other "
+            "products are not checked in this chat.\n"
         )
         covered = {rule.product_type for rule in rules}
         bare = registry().ordered(item.value for item in picked if item not in covered)
@@ -362,11 +367,7 @@ def rules_markdown(
         return without_internal_refs("\n".join(lines))
     lines.extend(_settings_section(rules, in_force, sink))
     lines.append("## The checks\n")
-    other = False
     for rule in rules:
-        if picked is not None and rule.product_type not in picked and not other:
-            other = True
-            lines.append("## Other products (not picked for this chat)\n")
         lines.extend(_rule_section(rule, in_force))
     # The rulebook's notes carry the team's ticket numbers; the agent must never quote one (#1520).
     return without_internal_refs("\n".join(lines))

@@ -74,6 +74,13 @@ def test_the_registry_holds_the_clients_products_two_active() -> None:
     for product in known.active():
         assert product.skill_file.read_text(encoding="utf-8").strip()
         assert product.global_rule_hints, product.id
+        # The strict product scope reads these: specific words, then broad hints, and
+        # no word two active products share.
+        assert product.words and product.hints, product.id
+    # Every product's words are its own, the ones not active yet too (they re-file "other" items).
+    for one, two in ((a, b) for a in known.products for b in known.products if a.id < b.id):
+        assert not set(one.words) & {*two.words, *two.hints}, (one.id, two.id)
+        assert not set(two.words) & {*one.words, *one.hints}, (one.id, two.id)
     assert known.get("lighting") is not None and not known.get("lighting").active  # type: ignore[union-attr]
 
 
@@ -110,6 +117,8 @@ def _broken(tmp_path: Path, change: object) -> Path:
         (lambda d: d["products"][2].update(active=True, id="lamp_post"), "skill file lamp_post"),
         (lambda d: [p.update(active=False) for p in d["products"]], "at least one product"),
         (lambda d: d.update(version=2), "version: 1"),
+        (lambda d: d["products"][0].update(words="countertop"), "`words` must be a list"),
+        (lambda d: d["products"][1].update(hints=[""]), "`hints` must be a list"),
     ],
     ids=[
         "repeated-id",
@@ -122,6 +131,8 @@ def _broken(tmp_path: Path, change: object) -> Path:
         "active-without-skill",
         "none-active",
         "unknown-version",
+        "words-not-a-list",
+        "empty-hint",
     ],
 )
 def test_a_registry_that_does_not_hold_together_is_refused(
