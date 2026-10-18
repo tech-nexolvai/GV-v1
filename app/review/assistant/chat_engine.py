@@ -3475,7 +3475,13 @@ class ChatEngine:
             block = self.blocks[index]
             if block.get("type") != "trust":
                 return
-            trust = {**block["trust"], "timings": timings}
+            # The strict product scope: the products checked and the findings of other products
+            # the book refused (kept for the record, not shown).
+            scope = {
+                **self.product_scope.as_dict(),
+                "dropped_out_of_scope": self.book.out_of_scope,
+            }
+            trust = {**block["trust"], "timings": timings, "product_scope": scope}
             self.blocks[index] = {"type": "trust", "trust": trust}
         self.emit("trust", {"index": index, "trust": json.loads(json.dumps(trust))})
 

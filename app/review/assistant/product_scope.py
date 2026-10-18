@@ -182,8 +182,12 @@ def final_blocks(
     total = refused + dropped
     note = {**scope.as_dict(), "dropped_out_of_scope": total}
     for n, block in enumerate(kept):
-        if block.get("type") == "trust" and isinstance(block.get("trust"), Mapping):
-            kept[n] = {**block, "trust": {**block["trust"], "product_scope": note}}
+        trust = block.get("trust")
+        # The engine wrote the note with the book's count; it is replaced only when this filter
+        # dropped more (or there is none), so the stored trust block matches the streamed one.
+        if block.get("type") == "trust" and isinstance(trust, Mapping):
+            if dropped or not isinstance(trust.get("product_scope"), Mapping):
+                kept[n] = {**block, "trust": {**trust, "product_scope": note}}
     return kept, total
 
 
