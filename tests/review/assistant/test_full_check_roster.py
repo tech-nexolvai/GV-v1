@@ -82,10 +82,14 @@ def test_the_caps_never_add_up_to_more_than_the_price() -> None:
         assert plan.caps["drawn"] * groups <= plan.budgets["drawn"]
         assert plan.caps["gaps"] * full_check_roster.MAX_GAP_CLOSERS <= plan.budgets["gaps"]
         assert plan.caps["provers"] * groups <= plan.budgets["provers"]
-    small = PricePlan.balanced(5 * DOLLARS, 4)
-    assert small.caps["numbers"] == 150_000  # the Balanced cap, when the share allows it
-    big = PricePlan.balanced(5 * DOLLARS, 40)
-    assert big.caps["numbers"] == int(5 * DOLLARS * 0.36) // 40  # shared, never over the price
+    # A page-group helper's cap follows its pages (#1634): a five-page group of a 45-page set gets
+    # five forty-fifths of its phase, with no small fixed cap; the groups together never more.
+    plan = PricePlan.balanced(5 * DOLLARS, 10, 45)
+    assert plan.cap_for("numbers", 5) == int(5 * DOLLARS * 0.40) * 5 // 45
+    assert plan.cap_for("numbers", 5) > 150_000  # more than the old fixed cap that starved them
+    assert plan.cap_for("drawn", 3) == int(5 * DOLLARS * 0.17) * 3 // 45
+    assert sum(plan.cap_for("numbers", n) for n in [5] * 9) <= plan.budgets["numbers"]
+    assert plan.cap_for("tags", 45) == plan.caps["tags"] <= full_check_roster.JOB_CAPS["tags"]
 
 
 # ---- the advocate's code checks -------------------------------------------------------------------------
@@ -715,3 +719,104 @@ def test_the_escalation_spends_only_what_is_left_under_the_price(
     assert found["checks"]["printed_vendor"] == "match"  # the free step still ran
     assert proof.proof_group(found) == "not_compared"  # still not compared, never red
     assert any("stay not compared" in line for line in run.not_done)
+
+
+# ---- every page accounted for within the fixed price (#1634) ------------------------------------
+
+
+def test_pages_a_helper_left_are_found_from_its_coverage() -> None:
+    coverage = {
+        "pages": [
+            {"page": 2, "status": "different", "by": "helper:1"},
+            {"page": 3, "status": "not_opened", "by": "helper:1", "note": "not reached"},
+            {"page": 4, "status": "not_comparable", "by": "helper:2", "note": "Not reached"},
+            {"page": 5, "status": "not_comparable", "by": "helper:2", "note": "brand prototype"},
+            {"page": 6, "status": "not_comparable", "by": "code", "note": "divider page"},
+        ]
+    }
+    left = full_check_roster.unfinished_pages([2, 3, 4, 5, 7], coverage)
+    assert left == {3: "not reached", 4: "Not reached", 7: "no helper set its coverage"}
+
+
+def test_the_gap_closers_take_what_the_price_reaches_records_first() -> None:
+    pages = {page: ["x"] for page in (5, 9, 12, 20)}
+    room = 3 * full_check_roster.MIN_GAP_PAGE_MICROS
+    assert full_check_roster.gap_pages(pages, room, has_record={20}) == ([5, 9, 20], [12])
+    assert full_check_roster.page_runs([3, 4, 5, 9, 12], 2) == [[3, 4, 5], [9, 12]]
+    assert full_check_roster.page_runs([3], 10) == [[3]]
+    assert full_check_roster.page_ranges_words([4, 5, 6]) == "pages 4-6"
+    assert full_check_roster.page_ranges_words([4, 9]) == "pages 4 and 9"
+
+
+def test_the_gap_closers_get_what_p1_left_less_the_later_phases(tmp_path: Path) -> None:
+    harness = _roster(tmp_path, _Roster())
+    run = _run(harness)
+    assert run.plan is not None
+    later = sum(run.plan.budgets[n] for n in ("provers", "advocate", "summary", "reads"))
+    # Nothing spent yet: all but the later phases' money, far more than the gap share alone.
+    assert run._gap_budget() == 5 * DOLLARS - later > run.plan.budgets["gaps"]
+    harness.engine._spent = 5 * DOLLARS - later  # P1 used it all: the gap share stands
+    assert run._gap_budget() == run.plan.budgets["gaps"]
+
+
+class _Lazy(_Roster):
+    """A numbers helper that says its last page was not reached, with money left, twice."""
+
+    def helper(self, params: Mapping[str, Any], brief: str) -> list[dict[str, Any]]:
+        if brief.startswith(full_check_roster.GAP_SCHEMA_NOTE):
+            self._seen("gap", params)
+            return reply(text("Closed."), model=SONNET)
+        drawn = brief.startswith("OBJECTIVE: the drawn things")
+        if drawn or brief.startswith(("TAGS:", "PROVE:")):
+            return super().helper(params, brief)
+        self._seen("numbers", params)
+        pages = [int(n) for n in brief.split("on pages ", 1)[1].split(" of ", 1)[0].split(", ")]
+        lines = [f"CHECKLIST p{pages[0]}: architect 1/1; strings 0/0; not compared: none"]
+        lines += [f"CHECKLIST p{p}: architect 0/1; strings 0/0; not compared: not reached"
+                  for p in pages[1:]]  # fmt: skip
+        return reply(text("Stopped.\n" + "\n".join(lines)), model=SONNET)
+
+
+def test_a_helper_that_stops_short_is_sent_on_then_a_gap_closer_finishes_its_pages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clean_ink(monkeypatch)
+    script = _Lazy()
+    harness = _roster(tmp_path, script)
+
+    harness.run()
+
+    numbers = script.params["numbers"]
+    # The smaller per-call allowance (its money is held per call at that bound).
+    assert {p["max_tokens"] for p in numbers} == {6000}
+    # Each numbers helper stopped short with money left: sent on once to its unread pages.
+    sent_on = [p for p in numbers if "You still have money and tool calls left" in json.dumps(p)]
+    assert len(sent_on) == 2  # one call each for the two numbers helpers, then never again
+    # Still not compared: a gap closer takes those pages with the money P1 left.
+    assert script.calls.get("gap", 0) >= 1
+    gap = script.params["gap"][0]
+    assert "page not compared yet" in _first_text(gap)
+
+
+class _Cut(_Roster):
+    """A numbers helper whose first reply is cut at its length limit."""
+
+    def helper(self, params: Mapping[str, Any], brief: str) -> list[dict[str, Any]]:
+        if brief.startswith(("OBJECTIVE: the drawn things", "TAGS:", "PROVE:")):
+            return super().helper(params, brief)
+        if brief.startswith(full_check_roster.GAP_SCHEMA_NOTE):
+            return reply(text("Closed."), model=SONNET)
+        self._seen("numbers", params)
+        if _steps(params) == 0:
+            return reply(text("Page 2: the vendor's top is"), stop="max_tokens", model=SONNET)
+        return super().helper(params, brief)
+
+
+def test_a_reply_cut_at_the_smaller_allowance_is_sent_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clean_ink(monkeypatch)
+    script = _Cut()
+    _roster(tmp_path, script).run()
+    later = [p for p in script.params["numbers"] if _steps(p) > 0]
+    assert later and all("cut at its length limit" in json.dumps(p) for p in later)
