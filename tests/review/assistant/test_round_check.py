@@ -105,8 +105,8 @@ def _finding(fid: str, text: str, architect: str, page: int = 1, **more: Any) ->
         "trust_level": "confirmed",
         "witnesses": ["printed"],
         "checks": {"printed_architect": "match", "printed_vendor": "match", "lead_checked": True},
-        # Both numbers measure the same thing, proved by code (#1581): so it is clouded.
-        "pairing": {"proved": True, "method": "code_geometry"},
+        # The full check's devil's advocate proved the pairing (#1611): so it is clouded.
+        "critic": {"result": "passed", "answers": {}, "note": "", "model": "devil's advocate"},
         "inches": {"architect": architect.rstrip('"'), "vendor": text.rstrip('"')},
         "vendor_box": {
             "page": page,
