@@ -144,6 +144,28 @@ def test_a_decision_never_joins_a_right_that_only_the_ai_calls_right() -> None:
     assert by_id(result)["F1"]["status"] == "check"
 
 
+def test_one_missing_thing_reported_per_dimension_is_one_item_with_a_clear_reason() -> None:
+    """#1648: the architect's outlet is placed by two dimensions and the vendor shows no outlet;
+    the readings made one item per dimension. They become one Not-compared item naming every
+    value, and its reason says the vendor's drawing does not show it (not "do not settle it")."""
+    from app.review.assistant.proof import classified, proof_group
+
+    absent = {"vendor": "not shown on the vendor", "page": 6, "keep_reason": "other"}
+    height = finding("F1", item="Lobby: outlet CL height AFF", architect="1' - 9\"", **absent)
+    offset = finding("F2", item="Lobby: outlet CL from left edge", architect="1' - 3\"", **absent)
+    other = finding("F3", item="Lobby: shelf height", architect="2' - 0\"", **absent)
+    result = resolve([height, offset, other], ResolverContext(areas=AREAS))
+    assert set(result.absorbed) == {"F2"}
+    carried = by_id(result)["F1"]
+    assert carried["item"] == "Lobby: outlet"
+    assert carried["architect"] == "1' - 9\" (CL height AFF); 1' - 3\" (CL from left edge)"
+    assert carried["inches"]["architect"] is None
+    found = classified(carried)
+    assert proof_group(carried) == "not_compared" and found.reason == "not_proved"
+    assert "the vendor's drawing does not" in (found.why or "")
+    assert "could not confirm the vendor's sheets leave it out" in (found.why or "")
+
+
 def test_different_areas_and_recorded_differences_are_never_folded() -> None:
     here = finding("F1", page=2)
     there = finding("F2", page=7)
@@ -209,6 +231,22 @@ def test_fillers_outside_gvs_limits_are_wrong_and_inside_are_right() -> None:
         by_id(result)["F1"]["settled"]["how"]
     )
     assert by_id(result)["F2"]["status"] == "same"
+
+
+def test_a_run_overall_with_fillers_markup_values_and_helper_notes_are_never_filler_wrongs() -> (
+    None
+):
+    """#1652: the paid run of 2026-10-19 clouded a run's overalls and GV's own noted values as
+    filler widths, both from a helper's unrecorded note."""
+    overall = finding("F1", item='Elevation B overalls 118" (with fillers)', vendor='118" / 111"')
+    noted = finding("F2", item="Area 2: filler widths", vendor='3 1/2" noted by GV', page=7)
+    note = {
+        **finding("F3", item="Area 2: filler widths", vendor='3 1/2"', page=8),
+        "salvaged": True,
+    }
+    result = resolve([overall, noted, note], ResolverContext(areas=AREAS, settings=SETTINGS))
+    assert all(by_id(result).get(i, {"status": "check"})["status"] == "check" for i in ("F1", "F2"))
+    assert "F3" not in by_id(result)  # GV's reviewer only: never settled, never changed
 
 
 def test_a_run_width_that_mentions_its_fillers_is_not_a_filler_item() -> None:
@@ -677,7 +715,11 @@ def test_a_full_check_folds_the_same_decision_item_and_lists_it_in_the_report(
     assert resolver["before"]["decision"] == 2 and resolver["after"]["decision"] == 1
     assert [e["outcome"] for e in resolver["settled"]] == ["merged"]
     dropped = [b for b in outcome.blocks if b["type"] == "finding_dropped"]
-    assert len(dropped) == 1 and dropped[0]["reason"].startswith("Settled by GV Review:")
+    # The recorded difference with no value and no spot ("see GV Review's record" on both sides)
+    # is an internal note, never sent to the vendor (#1650); the same item is folded once.
+    notes = [b for b in dropped if b["reason"].startswith("Internal note, not for the vendor")]
+    folded = [b for b in dropped if b["reason"].startswith("Settled by GV Review:")]
+    assert len(notes) == 1 and len(folded) == 1 and len(dropped) == 2
     kept = [
         b["finding"]
         for b in outcome.blocks
@@ -807,38 +849,46 @@ def test_every_count_shown_comes_from_the_final_list(
     outcome = harness.run()
 
     live = [b["finding"] for b in outcome.blocks if b["type"] == "finding"]
-    final = shown_counts(live)
-    assert final["decision"] == 1 and final["wrong"] == 3  # 2 recorded + the filler
+    from app.review.assistant.proof import proof_counts
+
+    # A full check counts as its cloud drawing does (#1619): Wrong = proved by code (clouded),
+    # Vendor to confirm (amber questions), Right.
+    groups = proof_counts(live)
+    # The recorded difference with no value and no spot is an internal note (#1650), not counted.
+    assert shown_counts(live)["decision"] == 1 and shown_counts(live)["wrong"] == 2
+    final = {
+        "wrong": groups["clouded"],
+        "decision": groups["not_compared"],
+        "right": groups["right"],
+    }
+    assert final == {"wrong": 2, "decision": 1, "right": 0}
     # The AI's words.
     words = " ".join(b["text"] for b in outcome.blocks if b["type"] == "text")
-    assert "Three items are wrong and one needs your decision" in words
-    assert outcome.text.startswith("Three items are wrong and one needs your decision")
-    # The resolver block.
+    assert "Two items are wrong and one needs your decision" in words
+    assert outcome.text.startswith("Two items are wrong and one needs your decision")
+    # The resolver block counts by status, as it settled them.
     resolver = next(b["resolver"] for b in outcome.blocks if b["type"] == "resolver")
-    assert resolver["after"] == {k: final[k] for k in ("wrong", "decision", "right")}
-    assert resolver["before"]["decision"] == resolver["after"]["decision"] + len(
-        resolver["settled"]
-    )
+    assert resolver["after"] == {k: shown_counts(live)[k] for k in ("wrong", "decision", "right")}
     # The report's cover and the cloud drawing's counts line.
     report = "".join(
         page.extract_text()
         for page in PdfReader(str(harness.workspace.files / harness.files[1]["id"])).pages
     )
     assert (
-        f"{final['wrong']} wrong, {final['decision']} need your decision, {final['right']} right"
-        in report
+        f"{final['wrong']} wrong (proved by code), {final['right']} right, {final['decision']} "
+        "with nothing to compare" in " ".join(report.split())
     )
     assert f"What's wrong ({final['wrong']})" in report
-    assert f"Your decision ({final['decision']})" in report
+    assert f"Nothing to compare ({final['decision']})" in report
+    # The zero-click cloud drawing's cover (#1581): the same final list.
     drawing = PdfReader(str(harness.workspace.files / harness.files[0]["id"]))
-    notes = " ".join(page.extract_text() for page in drawing.pages[-2:])
-    found = re.search(r"(\d+) items: (\d+) wrong .*?(\d+) your decision .*?(\d+) right", notes)
-    assert found is not None
-    assert (int(found[2]), int(found[3]), int(found[4])) == (
-        final["wrong"],
-        final["decision"],
-        final["right"],
-    )
+    cover = drawing.pages[0].extract_text()
+    for count, label in (
+        (groups["clouded"], "Wrong"),
+        (groups["right"], "Right"),
+        (groups["not_compared"], "Nothing to compare"),
+    ):
+        assert re.search(rf"\b{count}\s+{label}", cover), (count, label)
 
 
 # ---- trust follows how code settled it (#1554 review) ------------------------------------------
@@ -950,7 +1000,7 @@ def test_a_vendor_string_carries_code_s_sum_for_its_line(tmp_path: Path) -> None
 def test_the_cloud_drawing_marks_every_page_an_item_is_also_on(tmp_path: Path) -> None:
     from pypdf import PdfReader
 
-    from app.review.assistant import decided_drawing
+    from app.review.assistant import proof_drawing
     from tests.review.assistant.test_chat_findings import workspace_with_pdf
 
     workspace = workspace_with_pdf(tmp_path)
@@ -978,5 +1028,8 @@ def test_the_cloud_drawing_marks_every_page_an_item_is_also_on(tmp_path: Path) -
 
     agreed = dict(wrong, decision={"decision": "agree", "by": "R", "at": "2026-10-17T10:00:00Z"})
     out = tmp_path / "decided.pdf"
-    decided_drawing.decided_markup_pdf(pdf, [(1, agreed, 2, placed[0][3], "")], out)
-    assert '45"' in PdfReader(str(out)).pages[2].extract_text()
+    proof_drawing.proof_markup_pdf(
+        pdf, [(1, agreed, 2, placed[0][3], "")], out, set_name="Vendor set.pdf", stamp="Checked"
+    )
+    # The zero-click drawing starts with its cover: the vendor's page 3 is the PDF's fourth.
+    assert '45"' in PdfReader(str(out)).pages[3].extract_text()

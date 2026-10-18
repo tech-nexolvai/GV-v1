@@ -15,7 +15,11 @@ sure of:
 - **heading**: a page with pasted drawings and no heading or area at all.
 
 The Run popover shows at most `MAX_DOUBTS` of them as one-click questions; with none it runs at
-once, so the one-button path stays. Each answer is kept append-only in the pack's
+once, so the one-button path stays. **Nobody has to answer (#1581, owner 2026-10-18: no human
+step)**: a full check lays code's own likely answer (each question's first option) over every
+question left unanswered (`with_assumptions`), runs on, and writes each one on the cloud drawing's
+cover ("Assumed: page 28, the lower drawing is the architect's drawing"). An answer given in the
+popover still wins. Each answer is kept append-only in the pack's
 `plan_answers.jsonl` (the pack is shared by every chat on the same PDFs, so it is never asked
 again) and laid over the page map whenever code reads it (`apply_answers`): the plan, the helpers'
 briefs and their footers all see the answered map. Later, the set notes can carry them.
@@ -40,11 +44,13 @@ __all__ = [
     "Doubt",
     "answer_note",
     "apply_answers",
+    "assumptions",
     "doubts",
     "plan_summary",
     "read_answers",
     "record_answers",
     "valid_answer",
+    "with_assumptions",
 ]
 
 ANSWERS_FILE: Final = "plan_answers.jsonl"
@@ -78,6 +84,8 @@ class Doubt:
     """(value, label) pairs, the likely answer first."""
     box: tuple[float, float, float, float] | None = None
     """The drawing it is about (PDF points, origin top-left), to mark on the page picture."""
+    about: str = ""
+    """What the question is about, for an assumption's words ("page 28, the lower drawing")."""
 
     def out(self) -> dict[str, Any]:
         return {
@@ -230,6 +238,7 @@ def doubts(
                             for value in ("vendor", "architect", "brand_prototype", "general")
                         ),
                         _box(half),
+                        f"page {page}, the {where} drawing (no heading)",
                     )
                 )
             elif role == "brand_prototype" and "architect" not in area_roles:
@@ -246,6 +255,7 @@ def doubts(
                             ("architect", ROLE_WORDS["architect"]),
                         ),
                         _box(half),
+                        f"page {page}, the {where} drawing",
                     )
                 )
             elif role == "vendor" and half.get("round") is None:
@@ -261,6 +271,7 @@ def doubts(
                             f"Page {page}: which round is the {where} vendor drawing?",
                             tuple((str(r), f"Round {r}") for r in rounds),
                             _box(half),
+                            f"page {page}, the {where} vendor drawing",
                         )
                     )
         if (
@@ -284,6 +295,7 @@ def doubts(
                             ("skip", "Skip it"),
                         ),
                         _box(halves[roles.index("vendor")]),
+                        f"page {page} (no architect's drawing found for it)",
                     )
                 )
         if not labelled and _area_key(entry) is None and not entry.get("section"):
@@ -297,6 +309,7 @@ def doubts(
                     "check?",
                     (("vendor", "Yes, check it"), ("skip", "No, skip it")),
                     _box(halves[0]),
+                    f"page {page} (drawings, no heading)",
                 )
             )
     found = [d for d in found if d.id not in done]
@@ -410,15 +423,55 @@ def answer_note(doubt_id: str, value: str) -> tuple[str, int] | None:
     return f"Plan check: on page {page}, {words}.", page
 
 
+# ---- no human step: code's own likely answers (#1581) ---------------------------------------------
+
+
+def assumptions(
+    page_map: Mapping[str, Any] | None, main_file: str | None, answers: Mapping[str, str]
+) -> list[tuple[Doubt, str, str]]:
+    """Every question nobody answered, with code's likely answer (its first option) and the
+    assumption in plain words: (question, answer, words)."""
+    out: list[tuple[Doubt, str, str]] = []
+    for doubt in doubts(page_map, main_file, answers, limit=None):
+        if not doubt.options:
+            continue
+        value, label = doubt.options[0]
+        out.append((doubt, value, _assumed_words(doubt, value, label)))
+    return out
+
+
+def _assumed_words(doubt: Doubt, value: str, label: str) -> str:
+    about = doubt.about or f"page {doubt.page}"
+    if doubt.kind in ("role", "prototype"):
+        return f"{about} is the {ROLE_WORDS.get(value, label).lower()}."
+    if doubt.kind == "round":
+        return f"{about} is {label.lower()}."
+    if doubt.kind == "pair":
+        return f"{about} is compared with {label.removeprefix('Compare with ').lower()}."
+    return f"{about} is the vendor's drawing, checked."
+
+
+def with_assumptions(
+    page_map: Mapping[str, Any], main_file: str | None, answers: Mapping[str, str]
+) -> dict[str, Any]:
+    """The page map with the reviewer's answers and, for every question left, code's likely
+    answer laid over it (a drawing set this way carries `heading_by: code`)."""
+    answered = apply_answers(page_map, answers)
+    assumed = {doubt.id: value for doubt, value, _w in assumptions(answered, main_file, answers)}
+    return apply_answers(answered, assumed, by="code") if assumed else answered
+
+
 def _entry_role(halves: Sequence[Mapping[str, Any]]) -> str:
     roles = sorted({str(h.get("role")) for h in halves} - {"general"})
     return "+".join(roles) if roles else "general"
 
 
-def apply_answers(page_map: Mapping[str, Any], answers: Mapping[str, str]) -> dict[str, Any]:
+def apply_answers(
+    page_map: Mapping[str, Any], answers: Mapping[str, str], *, by: str = "reviewer"
+) -> dict[str, Any]:
     """A copy of the page map with the reviewer's answers laid over it. A drawing's role or round
-    set by the reviewer carries `heading_by: reviewer`; a page paired by hand carries `pair_page`;
-    a page skipped carries `skip` (its reason)."""
+    set by the reviewer carries `heading_by: reviewer` (`by`: `code` for code's own assumption); a
+    page paired by hand carries `pair_page`; a page skipped carries `skip` (its reason)."""
     out = copy.deepcopy(dict(page_map))
     if not answers:
         return out
@@ -453,10 +506,10 @@ def apply_answers(page_map: Mapping[str, Any], answers: Mapping[str, str]) -> di
                 )
             else:
                 halves[index]["role"] = value
-            halves[index]["heading_by"] = "reviewer"
+            halves[index]["heading_by"] = by
             entry["role"] = _entry_role(halves)
         elif value == "skip":
-            entry["skip"] = SKIP_NOTE
+            entry["skip"] = SKIP_NOTE if by == "reviewer" else "code assumed it is not to check"
         elif kind == "pair":
             paired = _PAIR.match(value)
             if paired is not None:
@@ -464,6 +517,6 @@ def apply_answers(page_map: Mapping[str, Any], answers: Mapping[str, str]) -> di
         elif kind == "heading":
             for half in halves:
                 half["role"] = "vendor"
-                half["heading_by"] = "reviewer"
+                half["heading_by"] = by
             entry["role"] = _entry_role(halves)
     return out

@@ -251,7 +251,7 @@ def test_a_tool_turn_runs_the_tool_and_sends_the_reply_back_unchanged(tmp_path: 
     ]
     assert len(harness.ledger.rows) == 2
     assert {row["prompt_id"] for row in harness.ledger.rows} == {
-        "review-assistant-chat-anthropic-chat-v18"
+        "review-assistant-chat-anthropic-chat-v19"
     }
 
 
@@ -448,7 +448,41 @@ def test_helpers_run_together_and_their_reports_go_back_to_the_lead(tmp_path: Pa
         "verify_value",
         "measure_on_drawing",
         "read_under_markup",
+        "drawing_facts",
     ]
+
+
+def test_a_helper_started_with_a_kit_gets_only_that_kits_tools(tmp_path: Path) -> None:
+    started = reply(
+        tool(
+            "ag1",
+            "Agent",
+            {"description": "Notes p13", "prompt": "Find every note", "kit": "notes"},
+        ),
+        tool("ag2", "Agent", {"description": "Bad kit", "prompt": "Other", "kit": "strings"}),
+        stop="tool_use",
+    )
+    provider = ScriptedProvider(
+        lead=[started, reply(text("Done."))],
+        helpers={"Find every note": [reply(text("Two notes."), model=SONNET)]},
+    )
+    harness = Harness(tmp_path, provider)
+
+    harness.run()
+
+    helper_call = _sent(provider.helper_calls["Find every note"][0])
+    assert [t["name"] for t in helper_call["tools"]] == [
+        "view",
+        "zoom",
+        "report_finding",
+        "set_coverage",
+        "drawing_facts",
+    ]
+    # Its prompt names only the tools it has.
+    assert "record_string" not in json.dumps(helper_call["system"])
+    results = _sent(provider.lead_calls[1])["messages"][-1]["content"]
+    refused = next(r for r in results if r["tool_use_id"] == "ag2")
+    assert "kit must be one of compare, rounds, notes" in json.dumps(refused)
 
 
 def test_a_helper_at_its_turn_limit_is_told_to_wrap_up_and_reports(tmp_path: Path) -> None:
@@ -1258,3 +1292,31 @@ def test_a_chats_kept_system_prompt_and_tools_go_out_unchanged(tmp_path: Path) -
     sent = _sent(provider.lead_calls[0])
     assert sent["system"][0]["text"] == "An older lead prompt."
     assert strip_cache_control(sent["tools"]) == kept_tools
+
+
+def test_a_paused_tool_search_is_sent_back_as_it_is_and_the_answer_goes_on(
+    tmp_path: Path,
+) -> None:
+    searched = {
+        "type": "server_tool_use",
+        "id": "srv_1",
+        "name": "tool_search_tool_regex",
+        "input": {"query": "facts"},
+    }
+    paused = reply(text("Searching my tools."), searched, stop="pause_turn")
+    provider = ScriptedProvider(lead=[paused, reply(text("Done."))])
+    harness = Harness(tmp_path, provider)
+
+    outcome = harness.run()
+
+    assert outcome.text.endswith("Done.")
+    second = _sent(provider.lead_calls[1])
+    # The paused turn goes back unchanged, with no turn of ours after it.
+    assert second["messages"][-1]["role"] == "assistant"
+    assert strip_cache_control(second["messages"][-1]["content"]) == [
+        {"type": "text", "text": "Searching my tools."},
+        searched,
+    ]
+    # Anthropic's tool search leads the tools; the deferred tools are sent with their flag.
+    assert second["tools"][0]["type"] == "tool_search_tool_regex_20251119"
+    assert any(tool.get("defer_loading") for tool in second["tools"])

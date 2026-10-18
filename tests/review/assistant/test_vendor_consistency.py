@@ -234,6 +234,42 @@ def test_the_same_span_printed_twice_names_the_value_the_drawing_backs(tmp_path:
     assert finding["arch_box"]["page"] == finding["vendor_box"]["page"] == 1
 
 
+def test_a_part_detail_beside_an_elevation_is_never_the_same_span(tmp_path: Path) -> None:
+    """A side panel drawn beside the cabinet's elevation, its height line ending at the same two
+    heights as the cabinet's overall (by chance), printed smaller than drawn: the panel's own
+    extension lines stop at its own outline, so the two are not proved to be one view, and no
+    finding comes of it (a part detail is not a projection of the elevation)."""
+
+    def detail(x0: float, x1: float, y: float, text: str) -> bytes:
+        # The panel's dimension above its outline: its extension lines go up from the outline
+        # (y - 40 .. y + 3), never down across the elevation's line.
+        return (
+            _line(x0, y, x1, y)
+            + _line(x0, y - 40, x0, y + 3)
+            + _line(x1, y - 40, x1, y + 3)
+            + _line(x0 - 1.5, y - 1.5, x0 + 1.5, y + 1.5)
+            + _line(x1 - 1.5, y - 1.5, x1 + 1.5, y + 1.5)
+            + _text((x0 + x1) / 2 - 5, y + 2, text)
+        )
+
+    body = (
+        # The elevation's overall: extension lines come up to it from below (y 120 .. 213).
+        _line(300, 210, 420, 210)
+        + _line(300, 120, 300, 213)
+        + _line(420, 120, 420, 213)
+        + _line(298.5, 208.5, 301.5, 211.5)
+        + _line(418.5, 208.5, 421.5, 211.5)
+        + _text(355, 212, '60"')
+        # The panel detail above it, the same two ends, printed smaller than drawn.
+        + detail(300, 420, 300, '57"')
+        + _dim(300, 340, 120, '20"')
+        + _dim(450, 500, 150, '25"')
+    )
+    result = _check(tmp_path, body)
+    assert result.contradictions == 0
+    assert [f for f in result.findings if f["source"] == "cross_view"] == []
+
+
 def test_a_label_beside_the_end_of_a_line_is_not_that_lines_value(tmp_path: Path) -> None:
     """A small dimension's text placed at the end of a long line (as drafters do when it does not
     fit) is not a second value for the long line's span."""
@@ -248,6 +284,61 @@ def test_a_label_beside_the_end_of_a_line_is_not_that_lines_value(tmp_path: Path
     )
     result = _check(tmp_path, body)
     assert result.contradictions == 0
+    assert result.findings == []
+
+
+def _sheet_joint(*, gap: float, ticks: str = "one") -> bytes:
+    """A 60" overall over 20" + 39 3/8" (2 pt per inch), the joint between the parts drawn as a
+    doubled extension line `gap` points apart (at x 340 and 340 + gap). `ticks`: "one" slash across
+    both lines (the drafter's one joint), "two" (one on each line: two places)."""
+    y, right = 280, 340 + gap
+    body = (
+        _dim(300, 420, 300, '60"')
+        # The parts' line in two pieces, an extension line down at each of their ends.
+        + _line(300, y, 340, y)
+        + _line(right, y, 420, y)
+        + _line(300, y - 90, 300, y + 3)
+        + _line(340, y - 90, 340, y + 3)
+        + _line(right, y - 90, right, y + 3)
+        + _line(420, y - 90, 420, y + 3)
+        + _line(298.5, y - 1.5, 301.5, y + 1.5)
+        + _line(418.5, y - 1.5, 421.5, y + 1.5)
+        + _text(315, y + 2, '20"')
+        + _text(370, y + 2, '39 3/8"')
+        + _dim(450, 500, 150, '25"')
+    )
+    middle = 340 + gap / 2
+    if ticks == "one":
+        body += _line(middle - 1.5, y - 1.5, middle + 1.5, y + 1.5)
+    else:
+        body += _line(338.5, y - 1.5, 341.5, y + 1.5)
+        body += _line(right - 1.5, y - 1.5, right + 1.5, y + 1.5)
+    return body
+
+
+def test_a_joint_under_one_tick_on_a_doubled_line_is_one_point(tmp_path: Path) -> None:
+    """#1629: the parts meet across a 1.2 pt doubled extension line marked by one slash (within
+    2.5 line weights of 0.5 pt): the string is the overall's, and its sliver is not dimensioned."""
+    result = _check(tmp_path, _sheet_joint(gap=1.2))
+    assert result.strings["does_not_add_up"] == 1
+    (finding,) = result.findings
+    assert finding["parts"] == ['20"', '39 3/8"']
+    assert finding["architect"] == '59 3/8"'  # code's sum
+    assert finding["vendor"] == '60"'
+
+
+@pytest.mark.parametrize(
+    ("gap", "ticks"),
+    [
+        (1.2, "two"),  # a tick on each line: two places, never bridged
+        (3.0, "one"),  # wider than 2.5 line weights: never bridged
+    ],
+)
+def test_a_wider_or_doubly_marked_joint_is_never_bridged(
+    tmp_path: Path, gap: float, ticks: str
+) -> None:
+    result = _check(tmp_path, _sheet_joint(gap=gap, ticks=ticks))
+    assert result.strings["found"] == 0
     assert result.findings == []
 
 
@@ -493,3 +584,103 @@ def test_the_findings_carry_their_code_witnesses_through_the_real_checks(tmp_pat
     assert twice["trust_level"] == "likely"
     assert all(f["created_by"] == "consistency" and f["status"] == "different" for f in findings)
     assert made.blocks[0]["by"] == "code"
+
+
+# ---- strings a reading grouped, against code's geometry (#1639) -----------------------------------
+
+
+def _sheet_two_chains() -> bytes:
+    """A 60" overall over 20" + 40" (it adds up), and a 25" dimension of another chain beside it."""
+    return _sheet_adds_up()
+
+
+def _ledger_string(parts: list[str], printed: str = '60"', **more: Any) -> dict[str, Any]:
+    from app.review.assistant.finding_checks import to_inches
+    from app.review.assistant.ledger import format_inches
+
+    total = sum(to_inches(p) or 0 for p in parts)
+    return {
+        "id": "F7",
+        "page": 1,
+        "status": "different",
+        "source": "vendor_arithmetic",
+        "created_by": "ledger",
+        "item": "Dimension string (elevation)",
+        "architect": format_inches(total),
+        "vendor": printed,
+        "printed_total": printed,
+        "parts": parts,
+        "checks": {"arithmetic": "agrees"},
+        "witnesses": ["arithmetic"],
+        "trust_level": "likely",
+        **more,
+    }
+
+
+def test_a_string_grouped_from_two_chains_is_dropped_when_codes_string_adds_up(
+    tmp_path: Path,
+) -> None:
+    """A paid run's false red, in made-up numbers: a reading put a part of another chain into a string (20" + 25"
+    under the 60" overall, leaving out the 40"), so it "did not add up". Code's own string of that
+    overall is 20" + 40" = 60": the reading's claim is dropped, never red."""
+    result = _check(tmp_path, _sheet_two_chains())
+    grouped = _ledger_string(['20"', '25"'])
+    judged = vc.judge_strings([grouped], result.checks)
+    assert judged.verified == () and list(judged.dropped) == ["F7"]
+    assert "it adds up" in judged.dropped["F7"]
+
+
+def test_a_grouped_string_code_could_not_measure_is_never_red() -> None:
+    """With no string of code's for that overall (no geometry), the reading's sum is Not compared:
+    the arithmetic witness alone never clouds it."""
+    from app.review.assistant import proof
+
+    grouped = _ledger_string(['7 1/2"', '31 1/2"', '4 1/4"'], '58 1/4"')
+    assert vc.judge_strings([grouped], []) == vc.StringJudgement()
+    assert proof.proof_group(grouped) == "not_compared"
+    found = proof.classified(grouped)
+    assert found.label == "Not reviewed: string not verified on the drawing"
+    assert found.why.startswith('parts 7 1/2" + 31 1/2" + 4 1/4" = 43 1/4"; printed 58 1/4"')
+
+
+def test_a_grouped_string_that_is_codes_own_chain_is_verified(tmp_path: Path) -> None:
+    from app.review.assistant import proof
+
+    result = _check(tmp_path, _sheet_wrong())
+    same = _ledger_string(['41"', '20"'])
+    other = {**_ledger_string(['20"', '25"']), "id": "F8"}
+    judged = vc.judge_strings([same, other], result.checks)
+    assert judged.verified == ("F7",)
+    assert "its own finding replaces" in judged.dropped["F8"]
+    assert proof.proof_group({**same, "string_geometry": "verified"}) == "clouded"
+    assert proof.proof_group(same) == "not_compared"
+
+
+def test_two_overalls_of_one_value_and_no_spot_are_left_alone(tmp_path: Path) -> None:
+    result = _check(tmp_path, _sheet_adds_up())
+    twice = result.checks * 2
+    assert vc.judge_strings([_ledger_string(['20"', '25"'])], twice) == vc.StringJudgement()
+
+
+class _FullBook(_Book):
+    def replace(self, finding: dict[str, Any]) -> bool:
+        self._live = [finding if f.get("id") == finding["id"] else f for f in self._live]
+        return True
+
+    def absorb(self, finding_id: str) -> bool:
+        before = len(self._live)
+        self._live = [f for f in self._live if f.get("id") != finding_id]
+        return len(self._live) < before
+
+
+def test_the_hook_drops_a_grouped_string_codes_geometry_refutes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = _check(tmp_path, _sheet_two_chains())
+    monkeypatch.setattr(vc, "check_pack", lambda folder, uploads: result)
+    engine = _Engine("full_check", [])
+    engine.book = _FullBook([_ledger_string(['20"', '25"'])])
+    dropped: list[str] = []
+    engine._show_dropped = lambda finding_id, reason: dropped.append(finding_id)  # type: ignore[attr-defined]
+    vc.add_to_answer(engine)
+    assert dropped == ["F7"] and engine.book.live() == []

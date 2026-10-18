@@ -60,11 +60,19 @@ export async function countPdfPages(file: File): Promise<number> {
  * not downloaded whole to draw one page. Throws when the file cannot be read; the card then keeps
  * its plain icon.
  */
-export async function renderPdfPage(url: string, pageNumber: number, width: number): Promise<string> {
+export async function renderPdfPage(url: string, pageNumber: number, width: number, { byLabel = false }: { byLabel?: boolean } = {}): Promise<string> {
   const task = pdfjs.getDocument({ url, disableAutoFetch: true, disableStream: true, rangeChunkSize: 1 << 20 });
   const document = await task.promise;
   try {
-    const page = await document.getPage(Math.min(Math.max(1, Math.round(pageNumber)), document.numPages));
+    let index = Math.round(pageNumber);
+    if (byLabel) {
+      // #1581: the cloud drawing starts with a cover and labels the vendor's sheets with their own
+      // numbers ("12" is the vendor's page 12); a file without labels keeps the plain number.
+      const labels = await document.getPageLabels().catch(() => null);
+      const found = labels ? labels.indexOf(String(index)) : -1;
+      if (found >= 0) index = found + 1;
+    }
+    const page = await document.getPage(Math.min(Math.max(1, index), document.numPages));
     const base = page.getViewport({ scale: 1 });
     const viewport = page.getViewport({ scale: width / base.width });
     const canvas = window.document.createElement('canvas');

@@ -7,7 +7,7 @@
  * message, which then replaces what was built live: a reload and a live answer end up identical.
  */
 
-import type { ChatAccuracy, ChatAgent, ChatBlock, ChatCite, ChatCoverage, ChatEffort, ChatEvent, ChatFile, ChatFinding, ChatFindingUpdate, ChatMessage, ChatMode, ChatModel, ChatProduct, ChatProgress, ChatResolver, ChatResume, ChatScope, ChatStep, ChatStopped, ChatSummary, ChatTask, ChatTrust, ChatUnderstood, ChatUnknown, ChatFallback } from '@/lib/chat-api';
+import type { ChatAccuracy, ChatAgent, ChatBlock, ChatCite, ChatCoverage, ChatEffort, ChatEvent, ChatFile, ChatFinding, ChatFindingUpdate, ChatMessage, ChatMode, ChatModel, ChatProduct, ChatProgress, ChatResolver, ChatResume, ChatReviewAction, ChatScope, ChatStep, ChatStopped, ChatSummary, ChatTask, ChatTrust, ChatUnderstood, ChatUnknown, ChatFallback } from '@/lib/chat-api';
 import { CHECK_MODEL } from '@/lib/chat-api';
 import { EFFORT_WORDS } from '@/lib/chat-settings';
 
@@ -71,6 +71,8 @@ export interface ViewMessage {
   corrections?: ChatFindingUpdate[];
   /** #1551: how the app understood the question before the work; shown under the question. */
   understood?: ChatUnderstood | null;
+  /** #1622: a full check's review action (server, on read and at `message_end`). */
+  review_action?: ChatReviewAction | null;
   /** #1577: the refusal fallback that answered instead of the model asked (the last switch). */
   fallback?: ChatFallback | null;
   cost_usd: string | null;
@@ -242,6 +244,7 @@ export function fromSaved(message: ChatMessage): ViewMessage {
     resume: message.resume ?? resumeOf(saved),
     corrections: correctionsOf(saved),
     understood: message.understood ?? understoodOf(saved),
+    review_action: message.review_action ?? null,
     fallback: fallbackOf(saved),
     cost_usd: message.cost_usd ?? null,
     stopped: message.stopped ?? null,
@@ -528,6 +531,8 @@ function phraseFor(step: ChatStep): { key: string; phrase: Phrase } {
       return { key: 'agents', phrase: { one: 'ran an agent', many: (n) => `ran ${n} agents` } };
     case 'read_under_markup':
       return { key: 'under', phrase: { one: "read under GV's markup", many: (n) => `read under GV's markup ${n} times` } };
+    case 'drawing_facts':
+      return { key: 'facts', phrase: { one: "read code's facts", many: (n) => `read code's facts ${n} times` } };
     case 'remember':
       return { key: 'remember', phrase: { one: 'kept a note for this set', many: (n) => `kept ${n} notes for this set` } };
     default:
@@ -665,8 +670,14 @@ export function messageCost(value: string | null | undefined): string | null {
 }
 
 /** The small line under a finished answer: "Claude Opus 5.5 · High effort · $1.72". */
-export function footerWords(message: Pick<ViewMessage, 'model' | 'effort' | 'cost_usd'>, models: readonly Pick<ChatModel, 'id' | 'label'>[] | null): string {
+export function footerWords(
+  message: Pick<ViewMessage, 'model' | 'effort' | 'cost_usd'> & Partial<Pick<ViewMessage, 'scope'>>,
+  models: readonly Pick<ChatModel, 'id' | 'label'>[] | null,
+): string {
+  // The products this answer checked (a strict scope), quietly first when not all: "Checked: Countertops".
+  const scope = message.scope?.products?.length && !message.scope.all_products ? `Checked: ${message.scope.products_label ?? message.scope.products.join(', ')}` : null;
   return [
+    scope,
     modelLabel(message.model, models),
     message.effort ? `${EFFORT_WORDS[message.effort]} effort` : null,
     // A code-only answer (#1584) costs nothing; the server's "0.00" would read "<$0.01".

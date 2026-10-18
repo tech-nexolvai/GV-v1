@@ -1,36 +1,59 @@
 import { useEffect, useRef, useState } from 'react';
-import { Download, ExternalLink, FileText, RefreshCw, ScanSearch } from 'lucide-react';
+import { CircleAlert, CircleCheck, CircleX, Download, ExternalLink, FileText, ListX, PencilLine, RefreshCw, RotateCcw, ScanSearch } from 'lucide-react';
 
 import { AccuracyBadge } from '@/components/chat/chat-accuracy';
 import { GVSpark } from '@/components/chat/chat-motion';
 import { PlanCheck } from '@/components/chat/chat-plan-check';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { chatPaths, type ChatAccuracy, type ChatCoverage, type ChatFile, type ChatFullCheckPlan, type ChatPlanAnswer, type ChatProduct } from '@/lib/chat-api';
+import { chatPaths, type ChatAccuracy, type ChatCoverage, type ChatFile, type ChatFullCheckPlan, type ChatPlanAnswer, type ChatProduct, type ChatReviewAction } from '@/lib/chat-api';
 import { coverageCounts, coverageWords, type FindingCounts } from '@/lib/chat-findings';
-import { progressWords } from '@/lib/chat-full-check';
+import { allPicked, progressWords } from '@/lib/chat-full-check';
 import { planAnswers, usePlanCheck } from '@/lib/chat-plan-check';
 import { fileKind, fileSize, type ViewMessage } from '@/lib/chat-messages';
 import { activeProducts, comingLater, useProductCatalog } from '@/lib/products';
+import type { ProofCounts } from '@/lib/chat-proof';
 import { cn } from '@/lib/utils';
 
 /**
  * Chat v4 (CONTRACT4-full-check, #1483): the one-click full check's parts. The Countertop / Cabinet
  * chips (in the composer), the "Run full check" button with its small confirm popover, and the
  * large cloud-drawing card a full-check answer leads with. Read-only: nothing changes the review;
- * the cloud drawing is an AI markup draft made by code, not GV's signed review.
+ * the cloud drawing is made by code with no clicks (#1581): only Wrong values code proved are
+ * clouded, so it is ready to download at once; the reviewer's decisions are optional overrides.
  */
 
 /**
  * The product chips (#1547: the registry's active products, from `GET /products`): multi-select, at
- * least one stays picked. None shown picked = the set's own product. The products not ready yet are
- * one greyed chip, "N coming later", naming them.
+ * least one stays picked. The pick is a strict scope (Anant, 2026-10-18): only the products picked are
+ * checked, ruled, counted and drawn. A quiet "All" chip first picks every active product (pressed when
+ * all are); with one active product it is left out. The products not ready yet are one greyed chip,
+ * "N coming later", naming them.
  */
-export function ProductChips({ products, onToggle, disabled }: { products: readonly ChatProduct[] | null; onToggle: (product: ChatProduct) => void; disabled?: boolean }) {
+export function ProductChips({ products, onToggle, onAll, disabled }: { products: readonly ChatProduct[] | null; onToggle: (product: ChatProduct) => void; onAll?: () => void; disabled?: boolean }) {
   const catalog = useProductCatalog();
   const later = comingLater(catalog);
+  const active = activeProducts(catalog);
+  const every = allPicked(products, catalog);
+  const chip = 'inline-flex h-7 shrink-0 items-center rounded-full border px-2.5 text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-50 motion-reduce:transition-none';
   return (
     <div role="group" aria-label="Products to check" data-slot="chat-products" className="flex min-w-0 items-center gap-1">
-      {activeProducts(catalog).map(({ id: product, label, description }) => {
+      {onAll && active.length > 1 && (
+        <button
+          type="button"
+          data-slot="chat-products-all"
+          aria-pressed={every}
+          disabled={disabled}
+          onClick={onAll}
+          title={`Check every product: ${active.map((product) => product.plural).join(', ')}`}
+          className={cn(
+            chip,
+            every ? 'border-foreground/25 bg-accent text-foreground' : 'border-transparent bg-transparent text-muted-foreground hover:bg-accent hover:text-foreground',
+          )}
+        >
+          All
+        </button>
+      )}
+      {active.map(({ id: product, label, description }) => {
         const on = Boolean(products?.includes(product));
         return (
           <button
@@ -39,11 +62,8 @@ export function ProductChips({ products, onToggle, disabled }: { products: reado
             aria-pressed={on}
             disabled={disabled}
             onClick={() => onToggle(product)}
-            title={products ? description : 'Not picked yet: the drawing set’s own product is used'}
-            className={cn(
-              'inline-flex h-7 items-center rounded-full border px-2.5 text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-50 motion-reduce:transition-none',
-              on ? 'border-foreground bg-foreground text-background' : 'bg-background text-muted-foreground hover:bg-accent hover:text-foreground',
-            )}
+            title={on ? `${description} Checked in this chat.` : `${description} Not checked: press to add it.`}
+            className={cn(chip, on ? 'border-foreground bg-foreground text-background' : 'bg-background text-muted-foreground hover:bg-accent hover:text-foreground')}
           >
             {label}
           </button>
@@ -74,10 +94,12 @@ export interface FullCheckButtonProps {
   variant?: 'primary' | 'bar';
   /** #1569: code's plan and its 0-3 questions, read when the popover opens; absent: none asked. */
   loadPlan?: () => Promise<ChatFullCheckPlan>;
+  /** The product scope in one sentence: "Only countertops are checked; cabinets are left out." */
+  scope?: string | null;
 }
 
 /** "Run full check", confirmed in a small popover that names the products, model, effort and cap. */
-export function FullCheckButton({ summary, onRun, blocked, variant = 'primary', loadPlan }: FullCheckButtonProps) {
+export function FullCheckButton({ summary, onRun, blocked, variant = 'primary', loadPlan, scope }: FullCheckButtonProps) {
   const [open, setOpen] = useState(false);
   const [picked, setPicked] = useState<Record<string, string>>({});
   const plan = usePlanCheck(loadPlan, open);
@@ -101,6 +123,7 @@ export function FullCheckButton({ summary, onRun, blocked, variant = 'primary', 
       </PopoverTrigger>
       <PopoverContent align={variant === 'primary' ? 'center' : 'end'} className="w-[min(24rem,calc(100vw-24px))] gap-3 rounded-xl p-3 font-sans">
         <p data-slot="chat-full-check-summary" className="text-sm font-medium tabular-nums">{summary}</p>
+        {scope && <p data-slot="chat-full-check-scope" className="text-xs font-medium text-foreground">{scope}</p>}
         <p className="text-xs text-muted-foreground">
           Checks every page against the architect and GV’s rules, then code draws the cloud drawing and the check report.
         </p>
@@ -142,7 +165,7 @@ function CloudPreview({ href, page, total }: { href: string; page: number; total
       if (!entries.some((entry) => entry.isIntersecting)) return;
       observer.disconnect();
       import('@/api/pdf')
-        .then(({ renderPdfPage }) => renderPdfPage(href, page, 900))
+        .then(({ renderPdfPage }) => renderPdfPage(href, page, 900, { byLabel: true }))
         .then((src) => { if (!cancelled) setState({ src }); })
         .catch(() => { /* The plain icon stays: a preview is a nicety, the file is the output. */ });
     }, { rootMargin: '200px' });
@@ -170,7 +193,7 @@ function CloudPreview({ href, page, total }: { href: string; page: number; total
  * on the left, Open and Download on the right; the check report as a quiet line inside it.
  */
 export interface CloudReview {
-  /** Items the reviewer has answered, of those needing an answer (Wrong + Your decision). */
+  /** Items the reviewer has overridden, of those it could (Wrong + Not compared). */
   decided: number;
   total: number;
   /** Who answered, once every item is answered: "Reviewed by <name>". */
@@ -181,18 +204,24 @@ export interface CloudReview {
   failed: boolean;
 }
 
-export function FullCheckFiles({ cloud, report, chatId, page = 1, totalPages = null, counts = null, review = null }: {
+export function FullCheckFiles({ cloud, report, notCompared = [], chatId, page = 1, totalPages = null, counts = null, proof = null, review = null, packaged = false }: {
   cloud: ChatFile | null;
   report: ChatFile | null;
+  /** #1619: the Not-compared list, as a PDF and a workbook. */
+  notCompared?: readonly ChatFile[];
   chatId: string;
-  /** The page the preview shows (the first wrong item's). */
+  /** The page the preview shows (the biggest clouded item's, the vendor's own page number). */
   page?: number;
   totalPages?: number | null;
   counts?: Pick<FindingCounts, 'different' | 'check'> | null;
-  /** #1525: the reviewer's answers so far, and "Update cloud drawing". */
+  /** #1581, #1619: the drawing's own groups (clouded / right / not compared), as its cover counts them. */
+  proof?: ProofCounts | null;
+  /** #1525: the reviewer's answers so far, and "Update cloud drawing" (optional overrides since #1581). */
   review?: CloudReview | null;
+  /** #1622: a send-ready package holds the drawing too; its download is then the one primary action. */
+  packaged?: boolean;
 }) {
-  if (!cloud && !report) return null;
+  if (!cloud && !report && !notCompared.length) return null;
   const href = (file: ChatFile) => file.url || chatPaths.file(chatId, file.id);
   const reportLine = report && (
     <div data-slot="chat-check-report" className="flex min-w-0 items-center gap-3 border-t pt-3 text-[13px]">
@@ -205,7 +234,21 @@ export function FullCheckFiles({ cloud, report, chatId, page = 1, totalPages = n
       <a href={href(report)} download={report.name} aria-label={`Download ${report.name}`} className="rounded-md px-1.5 py-1 font-medium text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">Download</a>
     </div>
   );
-  if (!cloud) return <div className="rounded-xl border bg-card px-4 py-3">{reportLine}</div>;
+  const listLine = notCompared.length > 0 && (
+    <div data-slot="chat-not-compared-files" className="flex min-w-0 items-center gap-3 border-t pt-3 text-[13px]">
+      <ListX className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+      <span className="min-w-0 flex-1 truncate">
+        <span className="font-medium">Not-compared list</span>
+        <span className="text-muted-foreground"> · why each item could not be compared, and what is needed</span>
+      </span>
+      {notCompared.map((file) => (
+        <a key={file.id} href={href(file)} download={file.name} aria-label={`Download ${file.name}`} className="rounded-md px-1.5 py-1 font-medium text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
+          {/\.pdf$/i.test(file.name) ? 'PDF' : /\.csv$/i.test(file.name) ? 'CSV' : 'Excel'}
+        </a>
+      ))}
+    </div>
+  );
+  if (!cloud) return <div className="grid gap-3 rounded-xl border bg-card px-4 py-3">{reportLine}{listLine}</div>;
   return (
     <section data-slot="chat-cloud-drawing" aria-label="Cloud drawing" className="chat-rise grid overflow-hidden rounded-xl border border-border/70 bg-card md:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
       <a href={href(cloud)} target="_blank" rel="noopener noreferrer" aria-label="Open the cloud drawing" className="grid border-b border-border/60 bg-muted/40 p-4 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset md:border-r md:border-b-0">
@@ -216,9 +259,14 @@ export function FullCheckFiles({ cloud, report, chatId, page = 1, totalPages = n
           <p className="text-xs font-medium text-muted-foreground">Main output</p>
           <p className="text-[17px] font-semibold tracking-[-0.01em]">Cloud drawing</p>
           <p className="text-[13.5px] text-muted-foreground">
-            The vendor’s drawing with a cloud at every item: what is wrong and what it should be. Draft AI markup, not GV’s signed review.
+            Ready to send: a red cloud at each wrong value code proved, with what it should be in green and the proof for each. The architect’s drawings govern; what could not be compared is listed apart.
           </p>
-          {counts && (counts.different > 0 || counts.check > 0) && (
+          {proof ? (
+            <p data-slot="chat-cloud-counts" className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground tabular-nums">
+              <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="size-2 rounded-full bg-outcome-fail" /><span className="font-medium text-foreground">{proof.clouded}</span> clouded, proved by code</span>
+              {proof.not_compared > 0 && <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="size-2 rounded-full ring-[1.5px] ring-inset ring-muted-foreground/60" />{proof.not_compared} with nothing to compare</span>}
+            </p>
+          ) : counts && (counts.different > 0 || counts.check > 0) && (
             <p className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground tabular-nums">
               {counts.different > 0 && <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="size-2 rounded-full bg-outcome-fail" />{counts.different} wrong</span>}
               {counts.check > 0 && <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="size-2 rounded-full bg-outcome-review" />{counts.check} to decide</span>}
@@ -226,19 +274,24 @@ export function FullCheckFiles({ cloud, report, chatId, page = 1, totalPages = n
           )}
           <p className="text-xs text-muted-foreground"><span className="break-all">{cloud.name}</span> · {[fileKind(cloud), fileSize(cloud.size)].filter(Boolean).join(' · ')}</p>
         </div>
-        {review && review.total > 0 && (
-          <div data-slot="chat-cloud-review" className="grid gap-1.5">
-            <p className="flex flex-wrap items-baseline gap-x-2 text-[13px]">
-              <span className="font-medium tabular-nums">{review.decided} of {review.total} decided</span>
-              {review.reviewedBy && <span className="text-muted-foreground"><span aria-hidden="true">· </span>Reviewed by {review.reviewedBy}</span>}
-            </p>
-            <span aria-hidden="true" className="flex h-1 w-full max-w-xs overflow-hidden rounded-full bg-muted">
-              <span className="h-full rounded-full bg-foreground/70 transition-[width] duration-300 motion-reduce:transition-none" style={{ width: `${(review.decided / review.total) * 100}%` }} />
-            </span>
-            {review.decided === 0 && <p className="text-xs text-muted-foreground">Agree or dismiss each item below; the drawing then clouds only what you agreed with.</p>}
-          </div>
-        )}
         <div className="flex flex-wrap gap-2">
+          <a
+            href={href(cloud)}
+            download={cloud.name}
+            aria-label={`Download ${cloud.name}`}
+            data-slot="chat-cloud-download"
+            className={cn(
+              'inline-flex h-9 items-center gap-1.5 rounded-lg px-3.5 text-sm font-medium focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none',
+              packaged ? 'border bg-background hover:bg-accent' : 'bg-primary text-primary-foreground hover:opacity-90',
+            )}
+          >
+            <Download className="size-4" aria-hidden="true" />
+            Download
+          </a>
+          <a href={href(cloud)} target="_blank" rel="noopener noreferrer" aria-label="Open cloud drawing" className="inline-flex h-9 items-center gap-1.5 rounded-lg border bg-background px-3 text-sm font-medium hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
+            <ExternalLink className="size-4" aria-hidden="true" />
+            Open
+          </a>
           {review?.onUpdate && review.decided > 0 && (
             <button
               type="button"
@@ -246,31 +299,105 @@ export function FullCheckFiles({ cloud, report, chatId, page = 1, totalPages = n
               onClick={review.onUpdate}
               disabled={review.updating}
               aria-busy={review.updating}
-              className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-primary px-3.5 text-sm font-medium text-primary-foreground hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none disabled:cursor-progress disabled:opacity-70"
+              className="inline-flex h-9 items-center gap-1.5 rounded-lg border bg-background px-3 text-sm font-medium hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:cursor-progress disabled:opacity-70"
             >
               <RefreshCw className={cn('size-4', review.updating && 'animate-spin motion-reduce:animate-none')} aria-hidden="true" />
               {review.updating ? 'Updating the cloud drawing…' : 'Update cloud drawing'}
             </button>
           )}
-          <a
-            href={href(cloud)}
-            target="_blank"
-            rel="noopener noreferrer"
-            className={cn(
-              'inline-flex h-9 items-center gap-1.5 rounded-lg px-3.5 text-sm font-medium focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none',
-              review?.onUpdate && review.decided > 0 ? 'border bg-background hover:bg-accent' : 'bg-primary text-primary-foreground hover:opacity-90',
-            )}
-          >
-            <ExternalLink className="size-4" aria-hidden="true" />
-            Open cloud drawing
-          </a>
-          <a href={href(cloud)} download={cloud.name} aria-label={`Download ${cloud.name}`} className="inline-flex h-9 items-center gap-1.5 rounded-lg border bg-background px-3 text-sm font-medium hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
-            <Download className="size-4" aria-hidden="true" />
-            Download
-          </a>
         </div>
+        {review && review.total > 0 && (
+          <p data-slot="chat-cloud-review" className="text-xs text-muted-foreground tabular-nums">
+            {review.decided} of {review.total} overridden{review.reviewedBy ? ` · reviewed by ${review.reviewedBy}` : ''} · optional: Agree, Not a problem or Make it Wrong below changes the drawing
+          </p>
+        )}
         {review?.failed && <p role="alert" className="text-sm text-muted-foreground">The cloud drawing could not be made again right now. Try again.</p>}
         {reportLine}
+        {listLine}
+      </div>
+    </section>
+  );
+}
+
+// ── The send-ready package (#1622, right after the cloud drawing) ─
+
+const ACTION_LOOK: Record<ChatReviewAction['action'], { Icon: typeof RotateCcw; tone: string }> = {
+  revise_resubmit: { Icon: RotateCcw, tone: 'text-outcome-fail-fg' },
+  rejected: { Icon: CircleX, tone: 'text-outcome-fail-fg' },
+  approved_as_noted: { Icon: PencilLine, tone: 'text-outcome-review-fg' },
+  approved: { Icon: CircleCheck, tone: 'text-outcome-pass-fg' },
+  not_for_sending: { Icon: CircleAlert, tone: 'text-muted-foreground' },
+};
+
+/**
+ * One download for the vendor: the GV cloud drawing, the comment letter (the same comment numbers as
+ * the clouds, C-01…), the issue register, the Not-compared list (when made) and the check report,
+ * all made by code from the final list. The review result leads, decided by code (`review_action`,
+ * AWI's words); the letter and the cloud drawing's cover say the same. A check that did not finish
+ * says so plainly: the package is kept, but it is not for sending.
+ */
+export function PackageCard({ pkg, chatId, action, hasReport = true, hasNotCompared = false }: {
+  pkg: ChatFile;
+  chatId: string;
+  action: ChatReviewAction | null;
+  hasReport?: boolean;
+  hasNotCompared?: boolean;
+}) {
+  const href = pkg.url || chatPaths.file(chatId, pkg.id);
+  const look = action ? ACTION_LOOK[action.action] : null;
+  const corrections = action ? `${action.corrections} ${action.corrections === 1 ? 'comment' : 'comments'}, numbered like the clouds` : 'numbered like the clouds';
+  const unsent = action?.action === 'not_for_sending';
+  const inside = [
+    { name: 'GV cloud drawing', note: 'PDF' },
+    { name: 'Comment letter', note: corrections },
+    { name: 'Issue register', note: 'XLSX · one row per item' },
+    ...(hasNotCompared ? [{ name: 'Not-compared list', note: 'PDF and XLSX' }] : []),
+    ...(hasReport ? [{ name: 'Check report', note: 'PDF' }] : []),
+  ];
+  return (
+    <section data-slot="chat-package" aria-label="Send-ready package" className="chat-rise grid gap-5 rounded-xl border border-border/70 bg-card p-5 sm:p-6">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="grid min-w-0 gap-1">
+          <p className="text-xs font-medium text-muted-foreground">Send to the vendor</p>
+          <p className="text-[17px] font-semibold tracking-[-0.01em]">Send-ready package</p>
+          <p className="text-[13.5px] text-muted-foreground">{unsent ? 'Kept for you to look at. The check did not finish, so do not send it yet.' : 'Everything the vendor needs in one file, made by code from the final list. Nothing to edit.'}</p>
+        </div>
+        <a
+          href={href}
+          download={pkg.name}
+          aria-label={`Download package: ${pkg.name}`}
+          data-slot="chat-package-download"
+          className={cn(
+            'inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-lg px-3.5 text-sm font-medium focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none',
+            unsent ? 'border bg-background hover:bg-accent' : 'bg-primary text-primary-foreground hover:opacity-90',
+          )}
+        >
+          <Download className="size-4" aria-hidden="true" />
+          Download package (.zip)
+        </a>
+      </div>
+      {action && look && (
+        <div data-slot="chat-review-action" data-action={action.action} role={unsent ? 'alert' : undefined} className="grid gap-1 rounded-lg bg-muted/50 px-4 py-3">
+          <p className="text-xs font-medium text-muted-foreground">Review result</p>
+          <p className={cn('inline-flex items-center gap-2 text-[15px] font-semibold', look.tone)}>
+            <look.Icon className="size-4 shrink-0" aria-hidden="true" />
+            {action.words}
+          </p>
+          <p className="text-[13px] text-muted-foreground">{[action.reason, action.note].filter(Boolean).join(' ')}</p>
+          <p className="text-[13px]"><span className="text-muted-foreground">Action required by: </span>{action.required_by}</p>
+        </div>
+      )}
+      <div className="grid gap-2">
+        <p className="text-xs font-medium text-muted-foreground">In the package</p>
+        <ul data-slot="chat-package-contents" className="grid gap-x-6 gap-y-1.5 text-[13px] sm:grid-cols-2">
+          {inside.map((part) => (
+            <li key={part.name} className="flex min-w-0 items-baseline gap-2">
+              <FileText className="size-3.5 shrink-0 translate-y-0.5 text-muted-foreground" aria-hidden="true" />
+              <span className="min-w-0"><span className="font-medium">{part.name}</span><span className="text-muted-foreground"> · {part.note}</span></span>
+            </li>
+          ))}
+        </ul>
+        <p className="text-xs text-muted-foreground"><span className="break-all">{pkg.name}</span> · {fileSize(pkg.size)}</p>
       </div>
     </section>
   );
@@ -279,9 +406,9 @@ export function FullCheckFiles({ cloud, report, chatId, page = 1, totalPages = n
 // ── The three numbers (PATH step 4.2) ───────────────────────
 
 const NUMBERS = [
-  { status: 'different', words: 'Wrong', hint: 'Send back to the vendor', dot: 'bg-outcome-fail' },
-  { status: 'check', words: 'Your decision', hint: 'Agree or dismiss each', dot: 'bg-outcome-review' },
-  { status: 'same', words: 'Right', hint: 'Matches the drawings', dot: 'bg-outcome-pass' },
+  { status: 'different', words: 'Wrong', hint: 'Proved by code, clouded red', dot: 'bg-outcome-fail' },
+  { status: 'same', words: 'Right', hint: 'Matches the architect', dot: 'bg-outcome-pass' },
+  { status: 'check', words: 'Nothing to compare', hint: 'Listed apart, with the reason', dot: 'bg-transparent ring-[1.5px] ring-inset ring-muted-foreground/60' },
 ] as const;
 
 export interface ResultNumbersProps {
@@ -293,8 +420,8 @@ export interface ResultNumbersProps {
 }
 
 /**
- * Wrong · Your decision · Right, plus pages checked and the Accuracy % (each shown once on the
- * screen). A number jumps to its section below.
+ * Wrong · Right · Nothing to compare (#1619: as the cloud drawing counts them), plus pages checked
+ * and the Accuracy % (each shown once on the screen). A number jumps to its section below.
  */
 export function ResultNumbers({ counts, coverage, accuracy, onPick }: ResultNumbersProps) {
   const pages = coverage ? coverageCounts(coverage) : null;
@@ -312,7 +439,7 @@ export function ResultNumbers({ counts, coverage, accuracy, onPick }: ResultNumb
             aria-label={`${number.words}: ${count}. Go to them`}
             className="grid min-w-0 gap-1 rounded-xl bg-muted/50 p-3 text-left transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:cursor-default disabled:hover:bg-muted/50 motion-reduce:transition-none sm:p-4"
           >
-            {/* The label wraps instead of cutting "Your decision" short on a phone; two lines are kept
+            {/* The label wraps instead of cutting "Nothing to compare" short on a phone; two lines are kept
                 for every card there, so the three numbers stay on one level. */}
             <span data-slot="chat-kpi-label" className="flex min-h-[2.5em] min-w-0 items-start gap-1.5 text-[13px] leading-[1.25] font-medium text-muted-foreground sm:min-h-0 sm:items-center">
               <span aria-hidden="true" className={cn('mt-[0.3em] size-2 shrink-0 rounded-full sm:mt-0', number.dot)} />

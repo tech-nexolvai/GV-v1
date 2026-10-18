@@ -35,14 +35,19 @@ import json
 import math
 import re
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
 from typing import Any, Final
 
 from app.review.assistant.chat_findings import page_ranges
-from app.review.assistant.plan_check import apply_answers, read_answers
+from app.review.assistant.plan_check import (
+    apply_answers,
+    assumptions,
+    read_answers,
+    with_assumptions,
+)
 
 __all__ = [
     "DRAWN_JOB_CAP_MICROS",
@@ -54,6 +59,7 @@ __all__ = [
     "HelperJob",
     "drawn_job_cap",
     "pack_ready",
+    "plan_assumptions",
     "plan_jobs",
     "read_page_map",
     "rules_summary",
@@ -132,18 +138,44 @@ class _Unit:
 # ---- the page map ---------------------------------------------------------------------------------
 
 
-def read_page_map(folder: Path | None) -> dict[str, Any] | None:
-    """The pack's `page_map.json` with the reviewer's plan-check answers laid over it
-    (`plan_check.apply_answers`), or `None` when it is not there (yet) or not readable."""
-    if folder is None:
-        return None
+def _raw_page_map(folder: Path) -> dict[str, Any] | None:
     try:
         loaded = json.loads((folder / "page_map.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     if not isinstance(loaded, dict) or not isinstance(loaded.get("pages"), list):
         return None
+    return loaded
+
+
+def read_page_map(
+    folder: Path | None, *, assume: bool = False, main_file: str | None = None
+) -> dict[str, Any] | None:
+    """The pack's `page_map.json` with the reviewer's plan-check answers laid over it
+    (`plan_check.apply_answers`), or `None` when it is not there (yet) or not readable. With
+    `assume` (a full check, #1581), code's likely answer is laid over every question nobody
+    answered too (`plan_check.with_assumptions`): the run never waits for a click."""
+    if folder is None:
+        return None
+    loaded = _raw_page_map(folder)
+    if loaded is None:
+        return None
+    if assume:
+        return with_assumptions(loaded, main_file, read_answers(folder))
     return apply_answers(loaded, read_answers(folder))
+
+
+def plan_assumptions(folder: Path | None, main_file: str | None) -> list[str]:
+    """What code assumed about the page map for a full check, one plain line each, for the cloud
+    drawing's cover ("page 28, the lower drawing (no heading) is the vendor's drawing.")."""
+    if folder is None:
+        return []
+    loaded = _raw_page_map(folder)
+    if loaded is None:
+        return []
+    answers = read_answers(folder)
+    answered = apply_answers(loaded, answers)
+    return [words for _doubt, _value, words in assumptions(answered, main_file, answers)]
 
 
 def _pack_state(folder: Path) -> tuple[str | None, list[str]]:
@@ -166,16 +198,20 @@ def wait_for_page_map(
     folder: Path | None,
     stop: threading.Event,
     timeout: float = PAGE_MAP_WAIT_SECONDS,
+    *,
+    assume: bool = False,
+    main_file: str | None = None,
 ) -> dict[str, Any] | None:
     """The page map once the pack has written it (its `page_map` step is done, or the pack is
-    ready); `None` when there is no pack, it failed, `stop` is set or `timeout` passes."""
+    ready); `None` when there is no pack, it failed, `stop` is set or `timeout` passes. `assume`:
+    with code's likely answers over the questions nobody answered (`read_page_map`)."""
     if folder is None or not folder.is_dir():
         return None
     ends = monotonic() + timeout
     while True:
         state, done = _pack_state(folder)
         if state == "ready" or "page_map" in done:
-            return read_page_map(folder)
+            return read_page_map(folder, assume=assume, main_file=main_file)
         if state == "failed" or monotonic() >= ends:
             return None
         if stop.wait(_POLL_SECONDS):
@@ -268,10 +304,15 @@ def _partition(sizes: Sequence[int], groups: int) -> list[int]:
 
 
 def plan_jobs(
-    page_map: Mapping[str, Any] | None, main_file: str | None, parallel: int
+    page_map: Mapping[str, Any] | None,
+    main_file: str | None,
+    parallel: int,
+    outside: Callable[[Sequence[int]], str | None] | None = None,
 ) -> FanOutPlan | None:
     """The full check's helper jobs (see the module's words); `None` when the page map gives no
-    drawing to compare (then the lead plans, as in a chat)."""
+    drawing to compare (then the lead plans, as in a chat). `outside` (a strict product scope,
+    `product_scope.outside_unit`): why an area's pages hold only products the check does not
+    cover; those pages are recorded as not compared, with that reason, and get no helper."""
     if not page_map:
         return None
     entries = _entries(page_map, main_file)
@@ -285,6 +326,15 @@ def plan_jobs(
         for e in entries
         if not e.get("halves") or e.get("skip")
     )
+    if outside is not None:
+        left: dict[int, str] = {}
+        for unit in _units(content):
+            why = outside(tuple(unit.pages))
+            if why is not None:
+                left.update(dict.fromkeys(unit.pages, why))
+        if left and len(left) < len(content):
+            content = [e for e in content if int(e["page"]) not in left]
+            skipped = tuple(sorted((*skipped, *left.items())))
     paired = {
         int(e["page"]): int(e["pair_page"]) for e in content if isinstance(e.get("pair_page"), int)
     }

@@ -64,6 +64,7 @@ from pathlib import Path
 from time import monotonic
 from typing import Any, Final, Literal
 
+from app.review.assistant.classification import internal, missing_on_vendor
 from app.review.assistant.finding_checks import (
     arithmetic_off_by,
     claim_value,
@@ -73,6 +74,7 @@ from app.review.assistant.finding_checks import (
 from app.review.assistant.witness import disagreement, witnesses
 
 __all__ = [
+    "OTHER_TRADE_FAMILIES",
     "PRECISION",
     "RESOLVER_CAP_MICROS",
     "RESOLVER_READ_LIMIT",
@@ -132,7 +134,8 @@ _OTHER_MEASURE: Final = re.compile(
     re.IGNORECASE,
 )
 _GV_MARKUP: Final = re.compile(
-    r"GV'?s? (?:yellow|markup|cloud|box|note|ink)|yellow[- ]box|GV[- ]markup|red ink|coloured ink",
+    r"GV'?s? (?:yellow|markup|cloud|box|note|ink)|yellow[- ]box|GV[- ]markup|red ink|coloured ink"
+    r"|(?:noted|marked|written) by GV",
     re.IGNORECASE,
 )
 _UNREADABLE: Final = re.compile(
@@ -163,6 +166,8 @@ _TAG_CODE: Final = re.compile(r"\b([A-Z]{1,4})-?(\d{1,4})(?:-[A-Z]{2,6})?\b")
 _OTHER_TRADES: Final = frozenset(
     {"TW", "TL", "WT", "PT", "PTW", "P", "V", "VWC", "WC", "TB", "CPT", "LVT", "RB", "ACT", "ACP"}
 )
+#: The same families for other code (`architect_items` leaves these tags out).
+OTHER_TRADE_FAMILIES: Final = _OTHER_TRADES
 #: Tag families of the millwork GV reviews (stone, laminate, wood, solid surface, quartz).
 _MILLWORK: Final = frozenset({"ST", "LA", "WD", "PL", "PLAM", "SS", "QZ", "CT", "MW", "L", "WV"})
 _ROUND_ONE: Final = re.compile(r"\(\s*round\s*1\b[^)]*\)|round\s*1\s*:[^;)]*", re.IGNORECASE)
@@ -171,6 +176,9 @@ _SCALES_ABOUT: Final = re.compile(
 )
 _CONFIRM: Final = re.compile(r"confirm (whether|which|if|what)\b([^.;]+)", re.IGNORECASE)
 _FILLER: Final = re.compile(r"\bfillers?\b", re.IGNORECASE)
+#: An item about a run's overall or its parts that mentions its fillers is not a filler item (the
+#: paid run of 2026-10-19 read "overalls 118\" (with fillers)" as a 118" filler, #1652).
+_RUN_ITEM: Final = re.compile(r"\boveralls?\b|\bsegments?\b|\bstrings?\b", re.IGNORECASE)
 _MEASURE_WORDS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
     ("width", re.compile(r"\b(?:widths?|wide|runs?|lengths?)\b", re.IGNORECASE)),
     ("height", re.compile(r"\b(?:heights?|high|tall)\b", re.IGNORECASE)),
@@ -441,6 +449,8 @@ def _filler_limits(finding: Mapping[str, Any], settings: Mapping[str, str]) -> _
     """GV's filler limits in force for the set (rules.md) against the vendor's filler widths."""
     if not _FILLER.search(str(finding.get("item") or "")):
         return None  # a filler mentioned beside a run's width is not a filler item
+    if _RUN_ITEM.search(str(finding.get("item") or "")):
+        return None  # a run's overall or parts "with fillers" is not a filler width
     low, high = _limit(settings, "filler_min"), _limit(settings, "filler_max")
     if low is None or high is None:
         return None
@@ -826,15 +836,21 @@ def _readable(finding: Mapping[str, Any]) -> bool:
 def _choose_primary(group: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
     """The copy that carries an item: a Wrong or Right one first, else the decision whose vendor
     value is readable and that compares with something, then the one that says why, then the
-    newest round (the same order for every copy, so two copies never point at each other)."""
+    newest round (the same order for every copy, so two copies never point at each other). A copy
+    with a spot on the drawing comes before one without."""
     settled = [f for f in group if f.get("status") != "check"]
     pool = settled or list(group)
+    # A copy for GV's reviewer only never carries an item the vendor may see (#1652).
+    pool = [f for f in pool if not internal(f)] or pool
 
-    def rank(f: Mapping[str, Any]) -> tuple[int, int, int, int, int, str]:
+    def rank(f: Mapping[str, Any]) -> tuple[int, int, int, int, int, int, str]:
         compares = 0 if _NOTHING_PRINTED.search(str(f.get("architect") or "")) else 1
+        # The copy with a spot on the drawing (its picture) carries the item: a copy with none
+        # cannot be shown to anyone (#1650).
+        spotted = 1 if f.get("vendor_box") or f.get("arch_box") else 0
         says_why = 1 if f.get("why") else 0
         readable = 1 if _readable(f) else 0
-        return (readable, compares, says_why, _round(f), _page(f), str(f.get("id")))
+        return (readable, compares, spotted, says_why, _round(f), _page(f), str(f.get("id")))
 
     return max(pool, key=rank)
 
@@ -880,6 +896,56 @@ def _merge_how(duplicate: Mapping[str, Any], primary: Mapping[str, Any]) -> str:
     if primary.get("status") in ("different", "same"):
         return f"the same item as {primary['id']} on {where}, which is {_status_words(primary)}."
     return f"the same item as {primary['id']} on {where}; it is decided there once."
+
+
+#: Words that say where a thing is, not what it is ("outlet CL height AFF": the thing is
+#: "outlet").
+_PLACE_WORDS: Final = re.compile(
+    r"\b(?:cl|c/l|centre|center|centerline|centreline|height|aff|from|to|above|below|width|"
+    r"depth|distance|offset|spacing|left|right|edge|floor|end|top|bottom|location|position)\b",
+    re.IGNORECASE,
+)
+
+
+def _missing_thing(finding: Mapping[str, Any]) -> str:
+    """What a missing item is, without its area and the words that place it ("outlet")."""
+    item = str(finding.get("item") or "")
+    item = item.split(":", 1)[1] if ":" in item else item
+    found = _PLACE_WORDS.search(item)
+    thing = item[: found.start()] if found else item
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", thing.lower()).split())
+
+
+def _place_words(finding: Mapping[str, Any]) -> str:
+    """The words of a missing item that place it ("CL height AFF")."""
+    item = str(finding.get("item") or "")
+    item = item.split(":", 1)[1] if ":" in item else item
+    found = _PLACE_WORDS.search(item)
+    return " ".join(item[found.start() :].split()) if found else ""
+
+
+def missing_together(
+    primary: Mapping[str, Any], others: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
+    """The item that carries one missing thing: named by the thing, with every architect value
+    that places it ("1' - 6\" (CL height AFF); 1' - 2\" (CL from left edge))"."""
+    values = []
+    for finding in [primary, *others]:
+        where = _place_words(finding)
+        value = " ".join(str(finding.get("architect") or "").split())
+        values.append(f"{value} ({where})" if where else value)
+    area = (
+        str(primary.get("item") or "").split(":", 1)[0] if ":" in str(primary.get("item")) else ""
+    )
+    thing = _missing_thing(primary)
+    inches = primary.get("inches")
+    return {
+        **primary,
+        "item": f"{area}: {thing}" if area else thing,
+        "architect": "; ".join(dict.fromkeys(values)),
+        # Several values now: none of them alone is the architect's size.
+        "inches": {**inches, "architect": None} if isinstance(inches, Mapping) else inches,
+    }
 
 
 def _same_value(d: Mapping[str, Any], p: Mapping[str, Any]) -> bool:
@@ -951,6 +1017,23 @@ def _merge(
         primary = _choose_primary([finding, *others])
         if primary is not finding:
             fold(finding, primary)
+
+    # 3. One thing the vendor does not show, reported once per dimension that places it (the
+    # architect's outlet at a height and at a distance from the end): one item (#1648).
+    missing: dict[tuple[Any, str, str], list[dict[str, Any]]] = {}
+    for finding in findings:
+        if finding.get("status") != "check" or finding.get("record_id"):
+            continue
+        if str(finding["id"]) in absorbed or not missing_on_vendor(finding):
+            continue
+        thing = _missing_thing(finding)
+        if thing:
+            missing.setdefault((finding.get("page"), _area(finding, areas), thing), []).append(
+                finding
+            )
+    for group in missing.values():
+        for finding in group[1:]:
+            fold(finding, group[0])
 
     # A primary that was itself folded hands its copies on, to the item that carries it.
     def carrier(finding_id: str) -> str:
@@ -1072,6 +1155,15 @@ def resolve(findings: Sequence[Mapping[str, Any]], ctx: ResolverContext) -> Reso
     for primary_id, entries_also in also.items():
         primary = changed.get(primary_id) or dict(by_id[primary_id])
         primary["also_on"] = [*(primary.get("also_on") or []), *entries_also]
+        together = [
+            by_id[str(e["finding_id"])]
+            for e in entries_also
+            if missing_on_vendor(by_id.get(str(e["finding_id"]), {}))
+            and missing_on_vendor(primary)
+            and _missing_thing(by_id[str(e["finding_id"])]) == _missing_thing(primary)
+        ]
+        if together:
+            primary = missing_together(primary, together)
         changed[primary_id] = primary
 
     kept: list[tuple[dict[str, Any], KeepReason, str | None]] = []
@@ -1079,6 +1171,8 @@ def resolve(findings: Sequence[Mapping[str, Any]], ctx: ResolverContext) -> Reso
         finding_id = str(finding["id"])
         if finding.get("status") != "check" or finding_id in absorbed:
             continue
+        if internal(finding):
+            continue  # GV's reviewer only (#1652): no rule or reading ever settles it
         current = changed.get(finding_id) or dict(finding)
         settle, reason, read_words = _settle_one(current, ctx)
         if settle is not None and settle.outcome == "right" and not _backs_right(current, settle):

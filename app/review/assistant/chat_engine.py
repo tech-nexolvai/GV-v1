@@ -76,6 +76,7 @@ import json
 import logging
 import re
 import threading
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
@@ -87,12 +88,14 @@ from time import monotonic, monotonic_ns
 from typing import Any, Final, Protocol
 from uuid import uuid4
 
+from app.review.assistant import not_compared
 from app.review.assistant.agent import (
     HELPER_PICTURE_EDGE_PX,
     billed_input_tokens,
     estimate_micros,
     prompt_tokens_upper,
 )
+from app.review.assistant.architect_items import add_to_answer as add_architect_items
 from app.review.assistant.chat_context import (
     NEAR_SHARE,
     context_edits,
@@ -112,7 +115,7 @@ from app.review.assistant.chat_findings import (
     decision_help_note,
     helpless_decisions,
     main_upload,
-    make_markup_file,
+    make_proof_file,
     make_report_file,
     markup_base,
     page_ranges,
@@ -164,6 +167,7 @@ from app.review.assistant.chat_scope import (
 from app.review.assistant.chat_summary import code_summary, needs_code_summary
 from app.review.assistant.chat_timings import Timings
 from app.review.assistant.chat_tools import (
+    HELPER_KITS,
     HELPER_SYSTEM_PROMPT,
     HELPER_TOOLS,
     HELPERS_PER_TURN,
@@ -177,6 +181,8 @@ from app.review.assistant.chat_tools import (
     ToolResult,
     arguments,
     helper_footer,
+    helper_system_prompt,
+    helper_tools,
     new_step,
 )
 from app.review.assistant.chat_trust import (
@@ -201,16 +207,20 @@ from app.review.assistant.chat_trust import (
     with_second_read,
 )
 from app.review.assistant.chat_unknowns import refused_from_diff, unknown_records
+from app.review.assistant.classification import not_compared_line
 from app.review.assistant.decision_resolver import recount_words, resolve_answer
 from app.review.assistant.dim_index import labels_for
+from app.review.assistant.escalation import Escalation, escalate_answer
 from app.review.assistant.full_check_brief import (
     LENSES,
     checklist_gaps,
     checklist_send_back,
     helper_brief,
+    unreached_pages,
+    unreached_send_back,
     with_label_gaps,
 )
-from app.review.assistant.full_check_lenses import Fold, lens_folds
+from app.review.assistant.full_check_lenses import Fold, lens_folds, names_apart, same_wrongs
 from app.review.assistant.full_check_plan import (
     FanOutPlan,
     HelperJob,
@@ -222,9 +232,21 @@ from app.review.assistant.full_check_plan import (
 )
 from app.review.assistant.full_check_specialists import specialist_system
 from app.review.assistant.ledger import LEDGER_TOOL_NAMES, ReadingLedger, recorded_results_check
+from app.review.assistant.pair_findings import add_to_answer as add_code_pairs
+from app.review.assistant.product_scope import ProductScope, outside_unit
+from app.review.assistant.proof import proof_counts, vendor_facing
 from app.review.assistant.sandbox import SET_PACK, SKILLS, UPLOADS, SandboxRefused
+from app.review.assistant.send_package import (
+    ZIP_MIME,
+    PackageIdentity,
+    incomplete_reason,
+    make_package_file,
+    package_context,
+)
 from app.review.assistant.sharpen import helper_lines
+from app.review.assistant.spot_guard import dropped as spot_dropped
 from app.review.assistant.vendor_consistency import add_to_answer as add_consistency
+from app.review.assistant.vendor_consistency import page_texts
 from app.runs.rates import ModelRates, call_cost_micros
 
 __all__ = [
@@ -262,10 +284,12 @@ _log = logging.getLogger(__name__)
 #: instructions" in both prompts, tool outputs fenced in <drawing_data>, set notes as escaped data.
 #: chat-v18: the knowledge pack, each full-check helper kind's own system prompt
 #: (`full_check_specialists`), the label-first brief, record_string's part_dims / total_dim, and
-#: structured outputs for the sharpen step, the reads and the critic.) A chat's stored messages
+#: structured outputs for the sharpen step, the reads and the critic. chat-v19: drawing_facts (code's
+#: facts from the set pack), Anthropic tool search with the lead's rarer tools deferred, #1606.)
+#: A chat's stored messages
 #: replay unchanged, and since chat-v16 so do its system prompt and tools: a newer harness reaches
 #: an older chat as one appended note.
-HARNESS_ID: Final = "chat-v18"
+HARNESS_ID: Final = "chat-v19"
 #: Helpers that may run at once, at most, whatever the setting says.
 MAX_PARALLEL_AGENTS_LIMIT: Final = 12
 #: Helpers one lead turn may start. More than run at once wait for a free place in the same turn:
@@ -279,6 +303,17 @@ FULL_CHECK_HELPER_CALLS: Final = 12
 #: More reading calls for a helper sent back once to finish its per-page checklist.
 FULL_CHECK_SEND_BACK_CALLS: Final = 4
 FULL_CHECK_HELPER_MAX_TOKENS: Final = 12000
+#: A roster page helper's or gap closer's output allowance per call (#1634). Its money is held per
+#: call at the upper bound (`_hold`), so with ten helpers at once a 12000-token allowance held about
+#: $1.7 that was never spent and stopped helpers early; a reply of findings and a short report fits
+#: in this, and a reply cut at it is sent on (`_CUT_NOTE`).
+ROSTER_HELPER_MAX_TOKENS: Final = 6000
+#: A roster helper's reading calls per page of its own (at least `FULL_CHECK_HELPER_CALLS`).
+ROSTER_CALLS_PER_PAGE: Final = 3
+_CUT_NOTE: Final = (
+    "Your last reply was cut at its length limit. Go on in shorter steps: one page at a time, "
+    "fewer findings per reply."
+)
 FULL_CHECK_REPORT_WORDS: Final = 200
 #: The lead's output allowance when it only verifies a code-planned full check.
 FULL_CHECK_LEAD_MAX_TOKENS: Final = 32000
@@ -335,14 +370,37 @@ WRAP_UP_NOTE: Final = (
     "Wrap up now ({why}). Do not use any more tools: report what you found, and which pages or "
     "parts you did not get to."
 )
+#: A roster page helper's or gap closer's one turn to record before it wraps up (#1641).
+RECORD_NOTE: Final = (
+    "Record now ({why}). In this one turn call report_finding (and record_string) for every "
+    "difference, Right item and dimension string you have read but not recorded yet: the labels "
+    "where code numbered them, else the value with its box. No more zooms. A reading you do not "
+    "record is lost: your report records nothing. Your report comes after this turn."
+)
+#: The marker of a difference a roster helper read but could not record (#1641): code records each
+#: such line as an AI-only item (Not compared until it is placed), so it is never lost.
+UNRECORDED: Final = "UNRECORDED"
+ROSTER_WRAP_UP_NOTE: Final = (
+    WRAP_UP_NOTE
+    + " For each difference you read but did not record, add one line exactly like: "
+    + UNRECORDED
+    + " p<page> | <area: item> | architect <value> | vendor <value> | different or check | "
+    "<where each end lands, or why>."
+)
+#: A roster helper's report at its wrap-up: short, so it fits the money its share keeps for it.
+ROSTER_WRAP_UP_MAX_TOKENS: Final = 2500
+#: How many times the full check's lead review is sent on to pages it left (#1656).
+LEAD_SEND_ON: Final = 2
+#: A roster helper's record turn (#1654): tool calls that record, no long reply.
+RECORD_MAX_TOKENS: Final = 4000
 
 #: The 5-6 line summary that ends every full check (both instructions below end with it).
 _FULL_CHECK_SUMMARY: Final = """End with a 5-6 line plain-English summary for the reviewer (no tables, no disclaimers: the app draws the cloud drawing, the report and the lists):
 1. What was checked: pages, products, rounds.
-2. The overall verdict in one line (how many items are Wrong, need the reviewer's decision, are Right).
+2. The overall verdict in one line (how many items are Wrong, are Right, could not be compared).
 3. The top 3-5 issues by impact, each with its page, item, and architect vs vendor value.
-4. What needs the reviewer's decision.
-5. The next step (e.g. "send the cloud drawing to the vendor; confirm the 3 items that need your decision").
+4. What could not be compared, in one line, by reason (the app lists them apart; never ask the reviewer to decide).
+5. The next step (e.g. "send the cloud drawing to the vendor").
 If you are told to stop early, still write this summary from what you have."""
 
 #: The full check's own instruction (CONTRACT4): the reviewer presses a button, never types it.
@@ -431,6 +489,12 @@ class EngineSettings:
     pairing_proof: str = "ai_pair_plus_code"
     """What proves that two numbers measure the same thing (`GV_ASSISTANT_PAIRING_PROOF`):
     `ai_pair_plus_code` or `code_only` (`full_check_roster`)."""
+    identity: PackageIdentity = field(default_factory=PackageIdentity)
+    """Who and what the send-ready package is about (#1622): project, vendor, submittal number,
+    date received, products."""
+    numbering: Callable[[Sequence[Mapping[str, Any]]], dict[str, str]] | None = None
+    """This check's stable comment numbers from the set's earlier checks
+    (`package_store.numbering`); `None`: the check numbers its own."""
 
 
 @dataclass(slots=True)
@@ -540,6 +604,11 @@ def _merge_usage(usage: dict[str, Any], update: Mapping[str, Any] | None) -> Non
             usage[key] = value
 
 
+#: Blocks whose input streams as JSON: our tools' calls, and Anthropic's own (tool search), which
+#: run inside its API and are kept in the history as received.
+_CALLS: Final = frozenset({"tool_use", "server_tool_use"})
+
+
 def _accumulate(
     events: Any,
     display: _Display | None,
@@ -600,7 +669,10 @@ def _accumulate(
                 block["citations"] = [*(block["citations"] or []), delta.get("citation")]
         elif kind == "content_block_stop":
             index = int(event.get("index", 0))
-            if index < len(content) and content[index].get("type") == "tool_use":
+            server = index < len(content) and content[index].get("type") == "server_tool_use"
+            if server and index not in buffers:
+                pass  # Its input came whole with the block's start.
+            elif index < len(content) and content[index].get("type") in _CALLS:
                 raw = buffers.pop(index, "")
                 try:
                     parsed = json.loads(raw) if raw.strip() else {}
@@ -691,6 +763,11 @@ class _Agent:
     """A roster specialist's cap is checked on what it has spent (wrap-up at 80%), not on the
     next call's upper-bound estimate; the message's fixed price still holds every estimate, so
     the run never passes it and a specialist passes its own cap by one call at most."""
+    kit: str | None = None
+    """Its fixed tool kit (`chat_tools.HELPER_KITS`), or every helper tool."""
+    phase: str = "helpers"
+    """The timings phase its calls are charged to (#1652: a roster's gap closers, verifiers, lead
+    review and deeper look each show apart from the page helpers)."""
 
 
 @dataclass(slots=True)
@@ -758,6 +835,12 @@ class ChatEngine:
             checker=self._checked,
             extents=tools.extents,
         )
+        # The products this answer checks, a strict scope (`product_scope`, Anant 2026-10-18): a
+        # finding of another product is never recorded.
+        self.product_scope = ProductScope.of(settings.products)
+        self.book.product_scope = self.product_scope
+        self._page_words: dict[int, str] | None = None
+        self.book.page_words = self.page_words
         self._positions: dict[str, int] = {}
         self._coverage_index: int | None = None
         # What this answer is about (#1520): the whole set, or the pages / area the question names.
@@ -769,7 +852,10 @@ class ChatEngine:
             main_file=self.book.main_file,
         )
         self.book.scope_pages = scoped_pages(self._asked_scope)
-        self._started_scope: dict[str, Any] = dict(self._asked_scope)
+        self._started_scope: dict[str, Any] = {
+            **self._asked_scope,
+            **self.product_scope.as_dict(),
+        }
         self._helpers_started = 0
         self._recorded: Recorded | None = None
         self._recorded_document: Mapping[str, Any] | None = None
@@ -777,9 +863,15 @@ class ChatEngine:
         self._unknowns: list[dict[str, Any]] = []
         # The vendor consistency check's grey items (#1584), for the "not checked" list.
         self.consistency_gaps: list[dict[str, Any]] = []
+        #: A full check's Not-compared rows (#1619), once its files are made.
+        self.not_compared: list[Any] = []
         self.consistency_line: str | None = None
+        # The finish check's line (#1623); its Not compared items join `consistency_gaps`.
+        self.items_line: str | None = None
         # The decision items code settled itself (#1554), for the cloud drawing and the report.
         self._settled: list[dict[str, Any]] = []
+        #: The full check's escalation of undecided items (#1619), once it ran.
+        self._escalation: Escalation | None = None
         """What this answer did not check (`chat_unknowns`), set by the trust phase."""
         self.refused_diffs: list[dict[str, Any]] = []
         """Round pairs `compare_rounds` would not line up (an unknown each)."""
@@ -830,6 +922,15 @@ class ChatEngine:
         #: The share of what is left that one delegation's helpers may spend (a roster full check
         #: has no lead to keep money for: each specialist has its own cap instead).
         self.helper_share_percent = HELPER_SHARE_PERCENT
+        #: The most the message may have spent when a delegation's helpers stop (millionths of $),
+        #: or `None`. A roster full check sets it for its page helpers and gap closers, so the
+        #: money kept for the checks after them (the verifier, the devil's advocate, the lead
+        #: review) is never spent by them: the paid run of 2026-10-19 spent $5.31 of a $5 price on
+        #: helpers and its devil's advocate never ran.
+        self.helper_ceiling: int | None = None
+        #: The code findings of the finish (ledger, consistency, finishes, code's pairs) were
+        #: added already (a roster full check adds them before its proof steps).
+        self._code_findings_added = False
         #: A roster full check judges its red candidates with the devil's advocate instead.
         self.critic_off = False
         #: Refusal-fallback switches already shown (#1577), and the thinking blocks the API dropped
@@ -1004,6 +1105,14 @@ class ChatEngine:
                 return False
             share.held += estimate
             return True
+
+    def _final_fits(self, share: _Share, estimate: int | None) -> bool:
+        """A roster specialist's last call (its report) fits the fixed price and its share: the
+        share is what keeps the later checks' money (`helper_ceiling`)."""
+        if not self._fits(estimate):
+            return False
+        with self._lock:
+            return self._spent + share.held + (estimate or 0) <= share.limit
 
     def _release(self, share: _Share, held: int) -> None:
         with self._lock:
@@ -1329,6 +1438,8 @@ class ChatEngine:
             return tools.verify_value(raw, step)
         if name == "measure_on_drawing":
             return tools.measure_on_drawing(raw, step)
+        if name == "drawing_facts":
+            return tools.drawing_facts(raw, step)
         if name == "read_under_markup":
             return tools.read_under_markup(raw, step, by)
         if not helper:
@@ -1342,8 +1453,8 @@ class ChatEngine:
                 return self.task_list.update(raw, step)
             if name == "review_results":
                 return tools.review_results(raw, step)
-            if name == "compare_rounds":
-                return self._compare_rounds(raw, step)
+        if name == "compare_rounds":  # the lead's, and a helper's with the rounds kit
+            return self._compare_rounds(raw, step)
         return ToolResult(
             content=[{"type": "text", "text": f"Refused: there is no tool {name!r}"}],
             step={**step, "ok": False, "output": f"There is no tool {name!r}."},
@@ -1444,7 +1555,7 @@ class ChatEngine:
         }
         scope = widened(self._asked_scope, used)
         book.scope_pages = scoped_pages(scope)
-        return scope
+        return {**scope, **self.product_scope.as_dict()}
 
     def _whole_set_work(self) -> bool:
         """Whole-set work (a full check, or a whole-set answer that used coverage): only it gets
@@ -1500,7 +1611,8 @@ class ChatEngine:
         )
         checked.setdefault("round_status", None)
         checked["second_read_values"] = dict(kept[2]) if kept is not None else None
-        # The resolver's fields (#1554) are set only on the items it touches.
+        # The resolver's fields (#1554) and the escalation's (#1619) are set only on the items
+        # they touch.
         for key in (
             "ledger_ids",
             "reference_side",
@@ -1510,6 +1622,8 @@ class ChatEngine:
             "keep_reason",
             "also_on",
             "parts_sum",
+            "escalation",
+            "string_reads",
         ):
             checked.setdefault(key, None)
         return checked
@@ -2172,15 +2286,7 @@ class ChatEngine:
         book = self.book
         if self._progress is not None:
             self._progress.phase("checking")
-        with self.timings.phase("finish_checks"):
-            try:
-                self._ledger_findings()
-            except Exception:  # noqa: BLE001 - the answer goes on without the ledger's findings
-                _log.exception("assistant chat ledger findings failed")
-            try:
-                add_consistency(self)  # a full check's vendor consistency check (#1584), $0
-            except Exception:  # noqa: BLE001 - the answer goes on without it
-                _log.exception("assistant chat vendor consistency check failed")
+        self.add_code_findings()
         if not book.live() and not book.coverage_used and not self._ledger_used():
             self._close_checks()
             return
@@ -2204,10 +2310,14 @@ class ChatEngine:
         with self.timings.phase("finish_checks"):
             self._finish_trust(skipped)
 
-    def _code_finish(self) -> None:
-        """A stopped full check's finish, by code only: no model call."""
-        self._close_checks()  # second reads started before the stop end at once (cancelled)
-        book = self.book
+    def add_code_findings(self) -> None:
+        """The finish's code findings, $0, once per answer: the reading ledger's, the vendor
+        consistency check's (#1584), the finish check's (#1623) and code's own pairs. A roster
+        full check adds them before its proof steps (#1641), so its blind reads and devil's
+        advocate see them; the trust phase then does not add them again."""
+        if self._code_findings_added:
+            return
+        self._code_findings_added = True
         with self.timings.phase("finish_checks"):
             try:
                 self._ledger_findings()
@@ -2217,6 +2327,21 @@ class ChatEngine:
                 add_consistency(self)  # a full check's vendor consistency check (#1584), $0
             except Exception:  # noqa: BLE001 - the answer goes on without it
                 _log.exception("assistant chat vendor consistency check failed")
+            try:
+                add_architect_items(self)  # missed, changed and added finishes (#1623), $0
+            except Exception:  # noqa: BLE001 - the answer goes on without it
+                _log.exception("assistant chat finish check failed")
+            try:
+                add_code_pairs(self)  # dimensions code paired by itself, Wrong or Right, $0
+            except Exception:  # noqa: BLE001 - the answer goes on without them
+                _log.exception("assistant chat code pairs failed")
+
+    def _code_finish(self) -> None:
+        """A stopped full check's finish, by code only: no model call."""
+        self._close_checks()  # second reads started before the stop end at once (cancelled)
+        book = self.book
+        self.add_code_findings()
+        with self.timings.phase("finish_checks"):
             if self._ledger_used():
                 ledger = self.reading_ledger.as_dict()
                 for finding in book.live():
@@ -2236,7 +2361,10 @@ class ChatEngine:
             self._finish_trust(skipped)
 
     def _finish_trust(self, skipped: int) -> None:
+        self._fold_same_wrongs()
+        self._guard_spots()
         self._resolve_decisions()
+        self._escalate()
         book = self.book
         statuses = round_statuses(book.live())
         with self._lock:
@@ -2288,6 +2416,30 @@ class ChatEngine:
         self._trust_index = index
         self.emit("trust", {"index": index, "trust": json.loads(json.dumps(report))})
 
+    def _fold_same_wrongs(self) -> None:
+        """The same Wrong item reported more than once (two helpers, or a helper and a gap
+        closer): kept once, before the resolver, the counts and the files (#1622,
+        `full_check_lenses.same_wrongs`), so no letter, register or cloud drawing repeats it; then
+        different items left under one name are named apart (`names_apart`)."""
+        try:
+            folds = same_wrongs(self.book.live())
+        except Exception:  # noqa: BLE001 - the answer keeps its findings as they were
+            _log.exception("assistant chat same-item fold failed")
+            return
+        for fold in folds:
+            with self.finding_lock:
+                if not self.book.absorb(fold.drop):
+                    continue
+            self._show_dropped(fold.drop, fold.reason)
+        # Different items left under one name (two strings of one elevation): each named by its
+        # place on the page, so the letter and the register never show two identical lines.
+        with self.finding_lock:
+            live = {str(f["id"]): f for f in self.book.live()}
+            for finding_id, name in names_apart(list(live.values())).items():
+                renamed = {**live[finding_id], "item": name}
+                if self.book.replace(renamed):
+                    self._show_finding(renamed)
+
     def _resolve_decisions(self) -> None:
         """Whole-set work (#1554): code settles the "Your decision" items the drawings answer
         (`decision_resolver`) before the trust report, the files and the summary."""
@@ -2298,13 +2450,64 @@ class ChatEngine:
         except Exception:  # noqa: BLE001 - the answer keeps its decision items as they were
             _log.exception("assistant chat decision resolver failed")
 
+    def _escalate(self) -> None:
+        """A full check (#1619): the free code steps on every item the resolver left undecided
+        (`escalation`), after the resolver and before the trust report and the files; what is
+        still open then is Not compared, with its reason (the Not-compared list)."""
+        if self.settings.mode != "full_check" or not self._whole_set_work():
+            return
+        try:
+            self._escalation = escalate_answer(self)
+        except Exception:  # noqa: BLE001 - the answer keeps its items as they were
+            _log.exception("assistant chat escalation failed")
+
+    def _guard_spots(self) -> None:
+        """A full check (#1650): an item whose values code cannot find printed, or read at a spot
+        on the drawing, never reaches the vendor's files: dropped with its reason as an internal
+        note, before the resolver (so no spotless copy carries an item it folds), the counts and
+        the files (`spot_guard`)."""
+        if self.settings.mode != "full_check" or not self._whole_set_work():
+            return
+        main = self.book.main_file
+        labels = self.book.dim_labels
+
+        def on_page(file: str | None, page: int) -> Any:
+            name = file or main
+            return None if name is None else labels.on_page(name, page, read_now=False)
+
+        try:
+            with self.finding_lock:
+                found = spot_dropped(self.book.live(), on_page)
+        except Exception:  # noqa: BLE001 - the answer keeps its items as they were
+            _log.exception("assistant chat spot guard failed")
+            return
+        for finding_id, reason in found:
+            try:
+                with self.finding_lock:
+                    self.book.drop({"finding_id": finding_id, "reason": reason})
+            except Exception:  # noqa: BLE001 - one refused drop never stops the others
+                _log.exception("assistant chat spot guard could not drop a finding")
+                continue
+            self._show_dropped(finding_id, reason)
+
     def _agree_counts(self, text: str) -> str:
         """Whole-set work (#1554): every count the answer's words state is the final list's. The
         AI wrote its words before code settled its decision items, so code sets them again (its
         own summary already counts the final list) and the resolver block's counts too."""
         if not self._whole_set_work():
             return text
-        counts = shown_counts(self.book.live())
+        listed = shown_counts(self.book.live())
+        counts = listed
+        if self.settings.mode == "full_check":
+            # A full check's words count as its cloud drawing does (#1619): Wrong = proved by
+            # code, the questions to the vendor in the decision's place, then Right.
+            groups = proof_counts([f for f in self.book.live() if vendor_facing(f)])
+            counts = {
+                **listed,
+                "wrong": groups["clouded"],
+                "decision": groups["not_compared"],
+                "right": groups["right"],
+            }
         with self._lock:
             for at, block in enumerate(self.blocks):
                 if block.get("type") == "text" and block.get("by") != "code":
@@ -2312,7 +2515,8 @@ class ChatEngine:
                     if fixed != block.get("text"):
                         self.blocks[at] = {**block, "text": fixed}
                 elif block.get("type") == "resolver" and isinstance(block.get("resolver"), dict):
-                    after = {key: counts[key] for key in ("wrong", "decision", "right")}
+                    # The resolver's own block counts the items by status, as it settled them.
+                    after = {key: listed[key] for key in ("wrong", "decision", "right")}
                     self.blocks[at] = {**block, "resolver": {**block["resolver"], "after": after}}
         return recount_words(text, counts)
 
@@ -2388,8 +2592,15 @@ class ChatEngine:
         if not recorded.readable:
             return []
         self.book.record_ids = frozenset(item["record_id"] for item in recorded.differences)
+        areas = self._page_areas()
         seeded = []
         for item in recorded.differences:
+            area = areas.get(item.get("page")) if item.get("source") == "ai_page_review" else None
+            what = str(item.get("what") or "")
+            if area and not what.lower().startswith(area.lower()):
+                # An AI page review row names only what it measures: its area goes first, as in
+                # every other item's name ("Pantry: Shelf depth, front to back").
+                item = {**item, "what": f"{area}: {what}"}
             finding = self.book.seed(item)
             if finding is None:
                 continue
@@ -2399,6 +2610,25 @@ class ChatEngine:
                 f"{finding['architect']}; vendor {finding['vendor']} ({item['record_id']})"
             )
         return seeded
+
+    def _page_areas(self) -> dict[int, str]:
+        """Each vendor page's area name from the set pack's page map ("Pantry"), else nothing."""
+        folder = self.tools.workspace.set_pack
+        main = self.book.main_file
+        try:
+            page_map = load_page_map(folder) if folder is not None else None
+        except Exception:  # noqa: BLE001 - names then go without their area
+            return {}
+        out: dict[int, str] = {}
+        for entry in (page_map or {}).get("pages") or []:
+            if not isinstance(entry, Mapping) or not isinstance(entry.get("page"), int):
+                continue
+            if main and entry.get("file") and entry.get("file") != main:
+                continue
+            name = re.sub(r"^\s*\d{1,3}\s*[.)]\s*", "", str(entry.get("area") or "")).strip()
+            if name:
+                out[entry["page"]] = name
+        return out
 
     def _start_markup_base(self) -> None:
         """Full check: the cloud drawing's copy of the vendor's PDF, made now in a thread (the
@@ -2414,7 +2644,7 @@ class ChatEngine:
         self._markup_base = pool.submit(make)
         pool.shutdown(wait=False)
 
-    def _full_check_files(self) -> list[str]:
+    def _full_check_files(self, stopped: str | None = None) -> list[str]:
         """Full check: the cloud drawing and the check report, made by code, as chat files (the
         names of those made). The two are written at the same time; the drawing on the copy made
         at the start."""
@@ -2424,13 +2654,16 @@ class ChatEngine:
         if register is None:
             return []
         book, workspace = self.book, self.tools.workspace
-        findings = book.live()
+        # Only what may reach the vendor (#1652): items for GV's reviewer only stay on the screen.
+        findings = [f for f in book.live() if vendor_facing(f)]
         report: dict[str, Any] = next(
             (b["trust"] for b in reversed(self.stored_blocks()) if b.get("type") == "trust"), {}
         )
-        # The same counts as the screen (#1554): one final list, Right only when compared.
-        counts = shown_counts(findings)
-        unseen = f", {counts['not_compared']} not compared" if counts["not_compared"] else ""
+        # The same counts as the screen and the cloud drawing (#1554, #1619): one final list.
+        groups = proof_counts(findings)
+        unseen = (
+            f", {groups['not_compared']} with nothing to compare" if groups["not_compared"] else ""
+        )
         coverage = book.coverage_map()["counts"] if book.coverage_used else None
         trust = report.get("counts") or {}
         products = products_words(self.settings.products)
@@ -2439,8 +2672,7 @@ class ChatEngine:
             "Products": products,
             "Made": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
             "Model": f"{self.settings.model.label}, {self.settings.effort} effort",
-            "Items": f"{counts['wrong']} wrong, {counts['decision']} need your decision, "
-            f"{counts['right']} right{unseen}",
+            "Items": f"{groups['clouded']} wrong (proved by code), {groups['right']} right{unseen}",
             "Coverage": (
                 "not recorded"
                 if coverage is None
@@ -2458,6 +2690,15 @@ class ChatEngine:
             )
         made_base = self._markup_base
         settled = list(self._settled)
+        # The send-ready package's context (#1622): the round-2 check, the stable comment numbers
+        # and the review result's state, worked out once for the drawing and the package.
+        worked: dict[str, Any] = {}
+        # Pages never accounted for (no note why) mean the check did not finish (S0).
+        gaps = book.coverage_gaps() if book.coverage_used else []
+        incomplete = incomplete_reason(stopped, {"not_opened": len(gaps)})
+        # The Not-compared list's rows (#1619): one source for its PDF, its workbook, the cloud
+        # drawing's cover and the summary's line.
+        nothing = self._not_compared_rows(findings)
 
         def drawing(out: Path) -> MarkupFile:
             base = None
@@ -2466,8 +2707,22 @@ class ChatEngine:
                     base = made_base.result()
                 except Exception as failed:  # noqa: BLE001 - the copy is made again below
                     _log.warning("assistant chat markup copy failed: %s", type(failed).__name__)
-            return make_markup_file(
-                workspace, findings, out, "AI cloud drawing", base, settled=settled
+            worked["context"] = package_context(
+                workspace,
+                findings,
+                self.settings.identity,
+                numbers=self._comment_numbers(findings),
+                incomplete=incomplete,
+            )
+            # The zero-click red/green proof drawing (#1581): only code-proved Wrongs clouded.
+            return make_proof_file(
+                workspace,
+                findings,
+                out,
+                base,
+                settled=settled,
+                context=worked["context"],
+                not_compared=len(nothing),
             )
 
         def checked(out: Path) -> MarkupFile:
@@ -2489,6 +2744,7 @@ class ChatEngine:
                     raise
 
         names: list[str] = []
+        kept: list[tuple[str, str, Path]] = []
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix="gv-chat-files") as pool:
             futures = [(what, pool.submit(make, phase, maker)) for what, phase, maker in makers]
             for what, future in futures:
@@ -2497,12 +2753,103 @@ class ChatEngine:
                     file_id, made = future.result()
                     register(file_id, made.name, made.size, "application/pdf", made.sha256)
                     names.append(made.name)
+                    kept.append((what, made.name, workspace.files / file_id))
                 except Exception as failed:  # noqa: BLE001 - told plainly in the answer
                     _log.warning("assistant chat %s failed: %s", what, type(failed).__name__)
                     if file_id is not None:
                         (workspace.files / file_id).unlink(missing_ok=True)
                     self._add_text(f"*The {what} could not be made for this answer.*")
+        # The list also names the set's own gaps code found (the finish check, #1623; the vendor
+        # consistency check), apart from the answer's items.
+        listed = self._not_compared_files([*nothing, *not_compared.gap_rows(self.consistency_gaps)])
+        names += [name for name, _path in listed]
+        # The send-ready package (#1622) holds every file just made, the Not-compared list too.
+        context = worked.get("context")
+        if context is not None and any(what == "cloud drawing" for what, _name, _path in kept):
+            listed_kept = [("not compared", name, path) for name, path in listed]
+            names += self._package_file(findings, [*kept, *listed_kept], context)
         return names
+
+    def _comment_numbers(self, findings: Sequence[Mapping[str, Any]]) -> dict[str, str] | None:
+        """The stable comment numbers of this check's findings (#1622), from the set's earlier
+        checks; `None` (this check numbers its own) when they cannot be read."""
+        numbering = self.settings.numbering
+        if numbering is None:
+            return None
+        try:
+            return numbering(findings)
+        except Exception as failed:  # noqa: BLE001 - numbered from this check alone
+            _log.warning("assistant comment numbers failed: %s", type(failed).__name__)
+            return None
+
+    def _package_file(
+        self,
+        findings: Sequence[Mapping[str, Any]],
+        kept: Sequence[tuple[str, str, Path]],
+        context: Any,
+    ) -> list[str]:
+        """Full check: the send-ready package (#1622): the files just made, the comment letter and
+        the issue register, as one zip chat file. Made only with the cloud drawing; when it fails,
+        the answer says so and the other files stand."""
+        register = self.tools.register_file
+        if register is None:
+            return []
+        workspace = self.tools.workspace
+        file_id = str(uuid4())
+        out = workspace.files / file_id
+        try:
+            with self.timings.phase("package"):
+                made = make_package_file(
+                    workspace,
+                    findings,
+                    [(name, path) for _what, name, path in kept],
+                    out,
+                    context,
+                )
+            register(file_id, made.name, made.size, ZIP_MIME, made.sha256)
+            # What the screen (the review result) and a remade package read again.
+            self._add_block({"type": "package", "package": context.block()})
+        except Exception as failed:  # noqa: BLE001 - told plainly in the answer
+            _log.warning("assistant chat package failed: %s", type(failed).__name__)
+            out.unlink(missing_ok=True)
+            self._add_text("*The send-ready package could not be made for this answer.*")
+            return []
+        return [made.name]
+
+    def _not_compared_rows(self, findings: Sequence[Mapping[str, Any]]) -> list[Any]:
+        """The full check's Not-compared rows (`not_compared.rows`), kept for the summary line."""
+        try:
+            self.not_compared = not_compared.check_rows(
+                self.tools.workspace, findings, list(self.settings.products)
+            )
+        except Exception:  # noqa: BLE001 - counted from the findings alone then
+            _log.exception("assistant chat not-compared rows failed")
+            self.not_compared = not_compared.rows(findings)
+        return self.not_compared
+
+    def _not_compared_files(self, rows: Sequence[Any]) -> list[tuple[str, Path]]:
+        """The Not-compared PDF and workbook (#1619), registered as the answer's files: each one's
+        name and path (the send-ready package holds them too)."""
+        register = self.tools.register_file
+        workspace = self.tools.workspace
+        if register is None:
+            return []
+        ids = (str(uuid4()), str(uuid4()))
+        try:
+            with self.timings.phase("not_compared"):
+                pdf, sheet = not_compared.make_files(
+                    workspace, rows, workspace.files / ids[0], workspace.files / ids[1]
+                )
+        except Exception as failed:  # noqa: BLE001 - told plainly in the answer
+            _log.warning("assistant chat not-compared list failed: %s", type(failed).__name__)
+            for file_id in ids:
+                (workspace.files / file_id).unlink(missing_ok=True)
+            self._add_text("*The Not-compared list could not be made for this answer.*")
+            return []
+        register(ids[0], pdf.name, pdf.size, "application/pdf", pdf.sha256)
+        mime = not_compared.XLSX_MIME if sheet.name.endswith(".xlsx") else "text/csv"
+        register(ids[1], sheet.name, sheet.size, mime, sheet.sha256)
+        return [(pdf.name, workspace.files / ids[0]), (sheet.name, workspace.files / ids[1])]
 
     def _close_full_check(self, text: str, stopped: str | None, cap_hit: str | None) -> str:
         """Full check (#1518): the two files, also when it stopped early with findings; then
@@ -2513,16 +2860,19 @@ class ChatEngine:
             self._progress.stop()
         if stopped not in ("cancelled", "error") or self.book.live():
             try:
-                names = self._full_check_files()
+                names = self._full_check_files(stopped)
             except Exception:  # noqa: BLE001 - the answer still ends, with its summary
                 _log.exception("assistant chat full-check files failed")
-        line = self.consistency_line
+        lines = [x for x in (self.consistency_line, self.items_line) if x]
         if not needs_code_summary(text, stopped):
-            if line:
-                # The vendor consistency check's line (#1584), after the AI's own summary.
-                index = self._add_block({"type": "text", "text": line, "by": "code"})
-                self.emit("text_delta", {"index": index, "text": line, "by": "code"})
-                text = f"{text}\n\n{line}"
+            # The vendor consistency check's line (#1584), the finish check's (#1623) and what
+            # could not be compared (#1619), one line each, after the AI's own summary.
+            nothing = not_compared_line(Counter(row.reason for row in self.not_compared))
+            for words in (*lines, nothing.replace("list.", "list (PDF / Excel).")):
+                if words:
+                    index = self._add_block({"type": "text", "text": words, "by": "code"})
+                    self.emit("text_delta", {"index": index, "text": words, "by": "code"})
+                    text = f"{text}\n\n{words}"
             return text
         book, settings = self.book, self.settings
         summary = code_summary(
@@ -2536,7 +2886,8 @@ class ChatEngine:
             budget_usd=cap_text(settings.package_cap_micros),
             turns=settings.lead_max_turns,
             files=names,
-            also=[line] if line else (),
+            also=lines,
+            reasons=[row.reason for row in self.not_compared] or None,
         )
         index = self._add_block({"type": "text", "text": summary, "by": "code"})
         self.emit("text_delta", {"index": index, "text": summary, "by": "code"})
@@ -2547,9 +2898,12 @@ class ChatEngine:
     def _agent_call(self, call: Mapping[str, Any]) -> _Agent:
         given = arguments(
             call.get("input"),
-            frozenset({"description", "prompt", "model"}),
+            frozenset({"description", "prompt", "model", "kit"}),
             frozenset({"description", "prompt"}),
         )
+        kit = given.get("kit")
+        if kit is not None and kit not in HELPER_KITS:
+            raise SandboxRefused(f"kit must be one of {', '.join(HELPER_KITS)}")
         description = str(given["description"]).strip().replace("\n", " ")[:_MAX_DESCRIPTION]
         prompt = str(given["prompt"]).strip()
         if not description or not prompt:
@@ -2563,7 +2917,7 @@ class ChatEngine:
             model = BY_SHORT[short]
         else:
             raise SandboxRefused("model must be opus, sonnet or haiku")
-        return _Agent(str(call.get("id")), description, prompt, model)
+        return _Agent(str(call.get("id")), description, prompt, model, kit=kit)
 
     def _run_agents(self, calls: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
         results: dict[int, dict[str, Any]] = {}
@@ -2624,7 +2978,10 @@ class ChatEngine:
         thread as soon as it has reported (a full check starts its second reads there)."""
         with self._lock:
             left = max(0, self.settings.message_cap_micros - self._spent)
-            share = _Share(limit=self._spent + left * self.helper_share_percent // 100)
+            limit = self._spent + left * self.helper_share_percent // 100
+            if self.helper_ceiling is not None:
+                limit = min(limit, max(self._spent, self.helper_ceiling))
+            share = _Share(limit=limit)
             for agent in agents:
                 self._helpers_started += 1
                 agent.number = self._helpers_started
@@ -2663,7 +3020,7 @@ class ChatEngine:
             entry = entries[position]
             pages = list(agent.pages or ())
             self.timings.helper_started(agent.number, agent.description, pages)
-            with self.timings.phase("helpers", helper=agent.number):
+            with self.timings.phase(agent.phase, helper=agent.number):
                 try:
                     report, ok, stopped = self._helper(agent, index, entry, share)
                 except Exception as failed:  # noqa: BLE001 - one helper failing never stops others
@@ -2932,13 +3289,21 @@ class ChatEngine:
             self.book.by(f"helper:{numbers.number}"), self.book.by(f"helper:{drawn.number}")
         )
         for fold in folds:
+            if fold.disagree:
+                with self._lock:
+                    self._lens_disagree.append(fold)
             with self.finding_lock:
                 if not self.book.absorb(fold.drop):
                     continue
             self._show_dropped(fold.drop, fold.reason)
-            if fold.disagree:
-                with self._lock:
-                    self._lens_disagree.append(fold)
+        # Different items left under one name (two strings of one elevation): each named by its
+        # place on the page, so the letter and the register never show two identical lines.
+        with self.finding_lock:
+            live = {str(f["id"]): f for f in self.book.live()}
+            for finding_id, name in names_apart(list(live.values())).items():
+                renamed = {**live[finding_id], "item": name}
+                if self.book.replace(renamed):
+                    self._show_finding(renamed)
 
     def _fan_out(self) -> bool:
         """A full check's helpers, planned by code from the set pack's page map and run at once;
@@ -2949,9 +3314,12 @@ class ChatEngine:
         try:
             warm = warm_pool.submit(self._prewarm) if workspace.set_pack is not None else None
             with self.timings.phase("set_pack"):
-                page_map = wait_for_page_map(workspace.set_pack, self.cancel)
+                # No human step (#1581): code's likely answer to any plan-check question left.
+                page_map = wait_for_page_map(
+                    workspace.set_pack, self.cancel, assume=True, main_file=self.book.main_file
+                )
             with self.timings.phase("planning"):
-                plan = plan_jobs(page_map, self.book.main_file, self._max_agents)
+                plan, _pages_all = self.scoped_jobs(page_map)
                 rules = self._rules_summary() if plan is not None else ""
                 pictures = pack_ready(workspace.set_pack)
             if warm is not None:
@@ -3001,6 +3369,63 @@ class ChatEngine:
         self._wait_checks()
         self._lead_message(agents, entries)
         return True
+
+    def scoped_jobs(self, page_map: Mapping[str, Any] | None) -> tuple[FanOutPlan | None, int]:
+        """A full check's helper jobs for the products in scope, and the pages the whole set would
+        have compared: an area whose every page names only out-of-scope products gets no helper
+        (`product_scope.outside_unit`, read from the pages' printed words, $0)."""
+        main = self.book.main_file
+        plan = plan_jobs(page_map, main, self._max_agents)
+        scope = self.product_scope
+        if plan is None or scope.every or self.tools.workspace.set_pack is None:
+            return plan, 0 if plan is None else plan.pages
+        files = [str(name) for name in (page_map or {}).get("files") or [] if name]
+        if not files and main:
+            files = [main]
+        try:
+            read = page_texts(self.tools.workspace.set_pack, files)
+        except Exception as failed:  # noqa: BLE001 - every area is then checked
+            _log.warning("assistant chat page words not read: %s", type(failed).__name__)
+            return plan, plan.pages
+        texts = {page: text for (name, page), text in read.items() if name == main}
+        scoped = plan_jobs(
+            page_map,
+            main,
+            self._max_agents,
+            outside=lambda pages: outside_unit(pages, texts, scope),
+        )
+        return scoped, plan.pages
+
+    def page_words(self, page: int) -> str:
+        """A vendor page's printed words and its area's title (the set pack's page map), read once
+        per message: what re-files an "other" item to a product (`product_scope.refiled`). Empty
+        when the pack has neither."""
+        with self._lock:
+            known = self._page_words
+        if known is None:
+            known = {}
+            folder = self.tools.workspace.set_pack
+            main = self.book.main_file
+            page_map = load_page_map(folder) if folder is not None else None
+            for entry in (page_map or {}).get("pages") or []:
+                if isinstance(entry, Mapping) and isinstance(entry.get("page"), int):
+                    if main and entry.get("file") and entry.get("file") != main:
+                        continue
+                    known[entry["page"]] = str(entry.get("area") or "")
+            files = [str(f) for f in (page_map or {}).get("files") or [] if f] or (
+                [main] if main else []
+            )
+            if folder is not None and main:
+                try:
+                    # The same file list as the planning reads, so the pack's cache is shared.
+                    for (name, number), text in page_texts(folder, files).items():
+                        if name == main:
+                            known[number] = f"{known.get(number, '')} {text}"
+                except Exception as failed:  # noqa: BLE001 - re-filed from its own words only
+                    _log.warning("assistant chat page words not read: %s", type(failed).__name__)
+            with self._lock:
+                self._page_words = known
+        return known.get(page, "")
 
     def _note_coverage(self, page: int, note: str) -> None:
         if self.book.note_coverage(page, note) is not None:
@@ -3112,7 +3537,8 @@ class ChatEngine:
         if name == "set_coverage" and agent.lens == "drawn":
             skipped = self._not_run(call, "the numbers helper records these pages' coverage")
             return lambda: skipped
-        if name in HELPER_FINDING_TOOL_NAMES:
+        if name in HELPER_FINDING_TOOL_NAMES or (name == "update_finding" and agent.lens == "lead"):
+            # The full check's lead review (#1641) places items already recorded.
             return lambda: self._result(call, self._finding_tool(name, call.get("input"), by))
         if name in LEDGER_TOOL_NAMES:
             return lambda: self._result(call, self._ledger_tool(name, call.get("input"), by))
@@ -3144,9 +3570,12 @@ class ChatEngine:
             else helper_effort(self.settings.effort)
         )
         thinking = helper_thinking(model, effort, self.settings.thinking)
-        system = agent.system or HELPER_SYSTEM_PROMPT
-        tools = agent.tools or HELPER_TOOLS
+        system = agent.system or helper_system_prompt(agent.kit)
+        tools = agent.tools or helper_tools(agent.kit)
         allowance = FULL_CHECK_HELPER_MAX_TOKENS if full_check else HELPER_MAX_TOKENS
+        roster_pages = agent.soft_cap and agent.output_format is None and bool(agent.pages)
+        if roster_pages:
+            allowance = ROSTER_HELPER_MAX_TOKENS
         try:
             # A specialist with a reply shape (the roster's verifier, tag reader) has its pages in
             # its brief, and the footer's "report_finding" is not one of its tools.
@@ -3173,7 +3602,13 @@ class ChatEngine:
         ]
         turns = reading = 0
         budget = FULL_CHECK_HELPER_CALLS
+        if roster_pages:
+            # Enough reading calls for every page of its own (#1634), never fewer than before.
+            budget = max(budget, ROSTER_CALLS_PER_PAGE * len(agent.pages or ()))
         sent_back = False
+        sent_on = False
+        lead_sent_on = 0
+        record_turn = False
         wrap: str | None = None
         cached = previous = 0
         while True:
@@ -3185,6 +3620,8 @@ class ChatEngine:
                 )
             final = wrap is not None
             max_tokens = WRAP_UP_MAX_TOKENS if final else allowance
+            if final and roster_pages:
+                max_tokens = ROSTER_WRAP_UP_MAX_TOKENS
             body = self._body(
                 model=model,
                 thinking=thinking,
@@ -3198,7 +3635,7 @@ class ChatEngine:
             if (
                 final
                 and agent.soft_cap
-                and not self._fits(self._estimate(model, body, cached, previous))
+                and not self._final_fits(share, self._estimate(model, body, cached, previous))
             ):
                 # A roster specialist never passes the fixed price, not even to write its report:
                 # code keeps what it recorded, and its report says where it stopped.
@@ -3224,10 +3661,35 @@ class ChatEngine:
                     wrap, why = "cost_cap", "you have used your part of the money"
                 elif not self._hold(share, estimate):
                     wrap, why = "cost_cap", "the helpers have used their share of the money"
-                if why is not None:
-                    _append_note(messages, WRAP_UP_NOTE.format(why=why))
+                record_estimate = None
+                if why is not None and roster_pages and not record_turn:
+                    record_body = {**body, "max_tokens": RECORD_MAX_TOKENS}
+                    record_estimate = self._estimate(model, record_body, cached, previous)
+                if (
+                    why is not None
+                    and roster_pages
+                    and not record_turn
+                    and why != "this message is near its money cap"
+                    and turns < self.settings.helper_max_turns
+                    and self._fits(record_estimate)
+                ):
+                    # One turn to record what it read before its report (the paid run of
+                    # 2026-10-19: gap closers read the pages, then wrapped up with no tools and
+                    # recorded nothing, so their differences were lost).
+                    # The record turn is never refused for the helpers' share (#1654): the paid
+                    # run of 2026-10-19's gap closers hit their shared ceiling, got no record
+                    # turn and recorded nothing. It is one short call within the fixed price.
+                    record_turn = True
+                    wrap = None
+                    _append_note(messages, RECORD_NOTE.format(why=why))
+                    held = 0
+                    max_tokens = RECORD_MAX_TOKENS
+                elif why is not None:
+                    note = ROSTER_WRAP_UP_NOTE if roster_pages else WRAP_UP_NOTE
+                    _append_note(messages, note.format(why=why))
                     continue
-                held = estimate or 0
+                else:
+                    held = estimate or 0
             upper = prompt_tokens_upper(body, picture_sizes(messages))
             try:
                 reply = self._call(
@@ -3272,6 +3734,18 @@ class ChatEngine:
             content = reply.history_content()
             messages.append({"role": "assistant", "content": content})
             calls = reply.tool_uses()
+            if (
+                roster_pages
+                and not calls
+                and not final
+                and (reply.stop_reason == "max_tokens" or not reply.text().strip())
+                and turns < self.settings.helper_max_turns
+            ):
+                # A reply cut at the smaller allowance, or one with only thinking in it (the lead
+                # review of 2026-10-19 ended so, recording nothing): sent on, never the report.
+                _append_note(messages, _CUT_NOTE)
+                turns += 1
+                continue
             if reply.stop_reason == "tool_use" and calls and not final:
                 bad = reply.bad_inputs
 
@@ -3310,8 +3784,46 @@ class ChatEngine:
                     budget += FULL_CHECK_SEND_BACK_CALLS
                     messages.append({"role": "user", "content": [{"type": "text", "text": note}]})
                     continue
+                unreached = unreached_pages(report, agent.pages) if roster_pages else []
+                left_note = unreached_send_back(unreached)
+                if (
+                    left_note is not None
+                    and not sent_on
+                    and wrap is None
+                    and agent.cap_micros is not None
+                    and agent.spent < agent.cap_micros // 2
+                    and turns < self.settings.helper_max_turns
+                ):
+                    # A roster helper that stopped short of pages with half its money unspent
+                    # (#1634) is sent on once to compare them.
+                    sent_on = True
+                    budget += ROSTER_CALLS_PER_PAGE * len(unreached)
+                    messages.append(
+                        {"role": "user", "content": [{"type": "text", "text": left_note}]}
+                    )
+                    continue
                 with self._lock:
                     self._checklist_gaps[agent.number] = gaps
+            elif agent.lens == "lead" and roster_pages:
+                # The full check's lead review (#1656) stops short by itself: the paid runs of
+                # 2026-10-19 ended it with half its money left and pages "not opened". It is sent
+                # on (twice at most) while it has money for them.
+                unreached = unreached_pages(report, agent.pages or ())
+                left_note = unreached_send_back(unreached)
+                if (
+                    left_note is not None
+                    and lead_sent_on < LEAD_SEND_ON
+                    and wrap is None
+                    and agent.cap_micros is not None
+                    and agent.spent < agent.cap_micros * 7 // 10
+                    and turns < self.settings.helper_max_turns
+                ):
+                    lead_sent_on += 1
+                    budget += ROSTER_CALLS_PER_PAGE * len(unreached)
+                    messages.append(
+                        {"role": "user", "content": [{"type": "text", "text": left_note}]}
+                    )
+                    continue
             return report, True, wrap
 
     # ---- the lead --------------------------------------------------------------------------------
@@ -3422,7 +3934,13 @@ class ChatEngine:
             block = self.blocks[index]
             if block.get("type") != "trust":
                 return
-            trust = {**block["trust"], "timings": timings}
+            # The strict product scope: the products checked and the findings of other products
+            # the book refused (kept for the record, not shown).
+            scope = {
+                **self.product_scope.as_dict(),
+                "dropped_out_of_scope": self.book.out_of_scope,
+            }
+            trust = {**block["trust"], "timings": timings, "product_scope": scope}
             self.blocks[index] = {"type": "trust", "trust": trust}
         self.emit("trust", {"index": index, "trust": json.loads(json.dumps(trust))})
 
@@ -3571,6 +4089,11 @@ class ChatEngine:
                 break
             answered = True
             turn.append({"role": "assistant", "content": reply.history_content()})
+            if reply.stop_reason == "pause_turn" and not final:
+                # Anthropic paused its own tool (a long tool search): sent back as it is, it goes on.
+                tool_turns += 1
+                if tool_turns < settings.lead_max_turns:
+                    continue
             calls = reply.tool_uses()
             if reply.stop_reason == "tool_use" and calls and not final:
                 turn.append({"role": "user", "content": self._run_lead_tools(reply)})

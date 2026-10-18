@@ -71,7 +71,7 @@ describe('the plan check before a full check', () => {
     const box = document.querySelector<HTMLElement>('[data-slot="chat-plan-box"]')!;
     expect(box.style.left).toBe('10%');
     expect(box.style.top).toBe('50%');
-    expect(screen.getByText(/1 more place the page map is unsure of/)).toBeTruthy();
+    expect(screen.getByText(/Optional: skip these and GV Review takes the first answer itself, here and in 1 more place/)).toBeTruthy();
 
     const architect = screen.getByRole('button', { name: 'Architect’s drawing' });
     await user.click(architect);
@@ -134,7 +134,7 @@ describe('the plan check before a full check', () => {
     await waitFor(() => expect(stream.send).toHaveBeenCalled());
     expect(plan).toHaveBeenCalledWith('pkg-1');
     expect(stream.send.mock.calls[0][1]).toEqual({
-      text: 'Full check', model: 'claude-opus-5-5', effort: 'high', thinking: true, mode: 'full_check', products: ['countertop'],
+      text: 'Full check', model: 'claude-opus-5-5', effort: 'high', thinking: true, mode: 'full_check', products: ['countertop', 'cabinet'],
       plan_answers: [{ id: 'pair:f0:p41', answer: 'skip' }],
     });
   });

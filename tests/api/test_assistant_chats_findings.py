@@ -13,6 +13,7 @@ import io
 import json
 import re
 import threading
+import zipfile
 from collections.abc import Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, ClassVar
@@ -25,8 +26,11 @@ from pypdf import PdfReader
 from app.review.assistant import chat_engine, chat_trust
 from app.review.assistant.chat_findings import COVERAGE_CHECK_PREFIX
 from tests.api.test_assistant_chats import _events, _held, _named, _running, _until_saved, _world
+from tests.dummy_products import DUMMY, use_dummy_registry
 from tests.review.assistant.chat_fakes import ScriptedProvider, reply, text, tool
 from tests.review.assistant.test_chat_findings import VENDOR_BOX, finding_input, make_pdf
+
+__all__ = ["use_dummy_registry"]  # the fixture, imported so pytest finds it
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -110,7 +114,9 @@ def test_findings_stream_are_stored_and_reload_the_same_with_their_pictures(post
         live = {data["index"]: data["finding"] for data in _named(events, "finding")}
         # The stored answer adds code's impact on read (#1569): the biggest Wrong items first.
         assert finding["impact"]["rank"] == 1
-        assert live[0] == {k: v for k, v in finding.items() if k != "impact"}
+        # ... and where the zero-click cloud drawing puts it (#1581), also worked out on read.
+        assert finding["proof"]["group"] == "not_compared"
+        assert live[0] == {k: v for k, v in finding.items() if k not in ("impact", "proof")}
         assert _named(events, "coverage")[-1]["coverage"] == coverage
         assert _named(events, "trust")[-1]["trust"] == message["blocks"][5]["trust"]
         reloaded = world.client.get(f"/api/v1/chats/{chat_id}").json()["messages"][-1]
@@ -249,7 +255,7 @@ def test_following_a_running_message_replays_its_findings(postgres_engine, tmp_p
         # the stored block.
         assert [data["index"] for data in replayed] == [0, 0]
         assert replayed[-1]["finding"] == {
-            k: v for k, v in stored["blocks"][0]["finding"].items() if k != "impact"
+            k: v for k, v in stored["blocks"][0]["finding"].items() if k not in ("impact", "proof")
         }
         assert [name for name, _ in seen].index("finding") < [n for n, _ in seen].index("trust")
         _until_saved(registry, chat_id)
@@ -394,7 +400,8 @@ def test_a_narrow_answer_asks_for_its_tools_at_once_end_to_end(postgres_engine, 
                 == b"\x89PNG"
             )
             tools = [t["name"] for t in _FakeAnthropic.requests[0]["tools"]]
-            assert tools[:3] == ["bash_tool", "view", "zoom"]
+            # Anthropic's tool search leads the tools; the rarer ones are deferred (#1606).
+            assert tools[:4] == ["tool_search_tool_regex", "bash_tool", "view", "zoom"]
     finally:
         server.shutdown()
         server.server_close()
@@ -417,7 +424,13 @@ def test_a_full_check_through_the_route_shows_its_label_and_ends_with_its_two_fi
         events = _events(response.text)
         message = _named(events, "message_end")[0]["message"]
         names = [f["name"] for f in message["files"]]
-        assert names == ["Vendor set - AI cloud drawing.pdf", "Vendor set - AI check report.pdf"]
+        assert names == [
+            "Vendor set - GV cloud drawing.pdf",
+            "Vendor set - AI check report.pdf",
+            "Vendor set - Not compared.pdf",
+            "Vendor set - Not compared.xlsx",
+            "Vendor set - GV review package.zip",
+        ]
         assert [d["file"]["name"] for d in _named(events, "file")] == names
         assert message["accuracy"] is not None and message["accuracy"]["claims"] == 1
         chat = world.client.get(f"/api/v1/chats/{chat_id}").json()
@@ -428,10 +441,33 @@ def test_a_full_check_through_the_route_shows_its_label_and_ends_with_its_two_fi
         assert chat["messages"][1]["accuracy"]["rescored"] is False
         sent = json.loads(world.provider.lead_calls[0])["messages"][0]["content"]
         words = " ".join(block.get("text", "") for block in sent)
-        assert "Focus for this chat: countertops." in words
+        assert "Products checked in this chat: countertops only." in words
         assert "Full check of this drawing set" in words
-        for file in message["files"]:
-            assert world.client.get(file["url"]).content[:4] == b"%PDF"
+        for file in message["files"][:4]:
+            body = world.client.get(file["url"]).content
+            # The PDFs, and the Not-compared workbook (a zip) (#1619).
+            assert body[:4] == (b"PK\x03\x04" if file["name"].endswith(".xlsx") else b"%PDF")
+        # The send-ready package (#1622): one zip, the result on the message, the same comment
+        # numbers in the letter as on the cloud drawing; the Not-compared list is in it too.
+        package = message["files"][4]
+        assert package["mime"] == "application/zip"
+        with zipfile.ZipFile(io.BytesIO(world.client.get(package["url"]).content)) as archive:
+            inside = archive.namelist()
+            assert inside[:2] == [
+                "Vendor set - GV cloud drawing.pdf",
+                "Vendor set - Comment letter.pdf",
+            ]
+            assert "Vendor set - Not compared.pdf" in inside
+            assert "Vendor set - Not compared.xlsx" in inside
+            assert inside[-1] == "Vendor set - Check report.pdf"
+            letter = "".join(
+                page.extract_text() or ""
+                for page in PdfReader(io.BytesIO(archive.read(inside[1]))).pages
+            )
+        result = message["review_action"]
+        assert result is not None and result["words"] in letter
+        assert result["disclaimer"].split(".")[0] in " ".join(letter.split())
+        assert chat["messages"][1]["review_action"] == result
 
         # A chat message still needs its words; a product at most once.
         empty = world.client.post(f"/api/v1/chats/{chat_id}/messages", json={**ASK, "text": " "})
@@ -440,6 +476,127 @@ def test_a_full_check_through_the_route_shows_its_label_and_ends_with_its_two_fi
             json={**ASK, "text": "hi", "products": ["cabinet", "cabinet"]},
         )
         assert empty.status_code == 422 and twice.status_code == 422
+
+
+def test_a_countertop_only_check_keeps_no_cabinet_item_anywhere(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """The product pick is a strict scope (Anant, 2026-10-18): the lead reports a countertop item
+    and a cabinet item; only the countertop one is recorded (the lead is told why), and none of
+    the cabinet's reaches the stored answer, its scope, its trust block, the CSV or the files."""
+    cabinet = finding_input(item="Sink base cabinet width", category="cabinet")
+    provider = ScriptedProvider(
+        lead=[
+            reply(
+                tool("r1", "report_finding", finding_input()),
+                tool("r2", "report_finding", cabinet),
+                stop="tool_use",
+            ),
+            reply(text("One item is wrong.")),
+        ]
+    )
+    with _world(postgres_engine, tmp_path, provider=provider, pdf=PDF3, pages=3) as world:
+        chat_id = world.chat()
+        response = world.client.post(
+            f"/api/v1/chats/{chat_id}/messages",
+            json={**ASK, "mode": "full_check", "products": ["countertop"]},
+        )
+        assert response.status_code == 200, response.text
+        message = _named(_events(response.text), "message_end")[0]["message"]
+        findings = [b["finding"] for b in message["blocks"] if b["type"] == "finding"]
+        assert [f["category"] for f in findings] == ["countertop"]
+        refused = json.loads(world.provider.lead_calls[1])["messages"][-1]["content"][1]
+        assert refused["is_error"] and "cabinets are outside this check" in str(refused)
+        scope = message["scope"]
+        assert scope["products"] == ["countertop"] and scope["all_products"] is False
+        assert scope["products_label"] == "Countertops"
+        trust = next(b["trust"] for b in message["blocks"] if b["type"] == "trust")
+        assert trust["product_scope"]["dropped_out_of_scope"] == 1
+        csv_text = world.client.get(
+            f"/api/v1/chats/{chat_id}/messages/{message['id']}/findings.csv"
+        ).text
+        assert "Vanity top length" in csv_text and "cabinet" not in csv_text.lower()
+        documents: list[bytes] = []
+        for file in message["files"]:
+            data = world.client.get(file["url"]).content
+            if file["mime"] == "application/zip":
+                # The send-ready package (#1622) keeps the scope too: everything in it.
+                with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                    members = [(name, archive.read(name)) for name in archive.namelist()]
+            else:
+                members = [(file["name"], data)]
+            for name, inside in members:
+                if name.endswith(".pdf"):
+                    documents.append(inside)
+                elif name.endswith(".xlsx"):
+                    book = pytest.importorskip("openpyxl").load_workbook(io.BytesIO(inside))
+                    cells = " ".join(
+                        str(value)
+                        for sheet in book.worksheets
+                        for row in sheet.iter_rows(values_only=True)
+                        for value in row
+                        if value
+                    )
+                    assert "Sink base cabinet" not in cells
+        for data in documents:
+            pdf = PdfReader(io.BytesIO(data))
+            assert "Sink base cabinet" not in " ".join(page.extract_text() for page in pdf.pages)
+
+
+@pytest.mark.usefixtures("use_dummy_registry")
+def test_a_product_with_no_gv_rules_is_checked_alone_and_says_so(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Every product behaves the same (Anant, 2026-10-18): a product added only to the registry,
+    picked alone, is the strict scope (a countertop item is refused), and since GV has published no
+    rule for it the answer says so plainly instead of checking against nothing in silence."""
+    widget = finding_input(item="Sample widget knob count", category=DUMMY)
+    provider = ScriptedProvider(
+        lead=[
+            reply(
+                tool("r1", "report_finding", widget),
+                tool("r2", "report_finding", finding_input()),
+                stop="tool_use",
+            ),
+            reply(text("One widget item differs.")),
+        ]
+    )
+    with _world(postgres_engine, tmp_path, provider=provider, pdf=PDF3, pages=3) as world:
+        chat_id = world.chat()
+        status, events = world.ask(chat_id, "Do the widgets match?", products=[DUMMY])
+        assert status == 200
+        message = _named(events, "message_end")[0]["message"]
+        findings = [b["finding"] for b in message["blocks"] if b["type"] == "finding"]
+        assert [f["category"] for f in findings] == [DUMMY]
+        note = "No GV rules for Dummy widgets yet: compared against the architect only."
+        assert message["text"].endswith(note)
+        assert message["blocks"][-1] == {"type": "text", "text": note, "by": None}
+        assert message["scope"]["products"] == [DUMMY]
+        sent = json.loads(world.provider.lead_calls[0])["messages"][0]["content"]
+        assert note in " ".join(block.get("text", "") for block in sent)
+
+
+def test_a_set_stated_countertop_is_checked_for_every_product_by_default(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """All is the default (2026-10-18): a set stated "countertop" often holds cabinets too, so a
+    message that names no product checks every active product; a cabinet item is kept."""
+    from app.models import Package
+
+    cabinet = finding_input(item="Bussing station: filler width", category="cabinet")
+    provider = ScriptedProvider(
+        lead=[
+            reply(tool("r1", "report_finding", cabinet), stop="tool_use"),
+            reply(text("One cabinet item differs.")),
+        ]
+    )
+    with _world(postgres_engine, tmp_path, provider=provider, pdf=PDF3, pages=3) as world:
+        package = world.session.get(Package, world.package_id)
+        assert package is not None
+        package.product_type = "countertop"
+        world.session.commit()
+        chat_id = world.chat()
+        status, events = world.ask(chat_id, "Do the fillers meet GV's rule?")
+        assert status == 200
+        message = _named(events, "message_end")[0]["message"]
+        assert message["products"] == ["countertop", "cabinet"]
+        assert message["scope"]["all_products"] is True
+        findings = [b["finding"] for b in message["blocks"] if b["type"] == "finding"]
+        assert [f["category"] for f in findings] == ["cabinet"]
 
 
 def test_a_typed_question_keeps_its_mode_and_an_old_badge_is_scored_again(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -544,6 +701,9 @@ def test_a_full_check_with_no_words_is_stored_with_codes_summary_and_its_progres
         progress = [b for b in stored["blocks"] if b["type"] == "progress"]
         assert len(progress) == 1 and progress[0]["progress"]["phase"] == "writing"
         assert [f["name"] for f in stored["files"]] == [
-            "Vendor set - AI cloud drawing.pdf",
+            "Vendor set - GV cloud drawing.pdf",
             "Vendor set - AI check report.pdf",
+            "Vendor set - Not compared.pdf",
+            "Vendor set - Not compared.xlsx",
+            "Vendor set - GV review package.zip",
         ]

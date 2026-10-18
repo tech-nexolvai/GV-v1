@@ -198,3 +198,61 @@ def test_the_tool_measures_an_upload_and_keeps_the_extent_for_the_findings(
         {**raw, "page": 9}, new_step("m3", "measure_on_drawing", raw)
     )
     assert missing.is_error
+
+
+def test_with_no_calibration_the_drawings_measured_scale_is_used(tmp_path: Path) -> None:
+    pdf = sheet(tmp_path / "s.pdf")
+    scale = {"in_per_pt": 1 / 3, "from_labels": ["D1", "D2", "D4"], "spread_percent": 0.4}
+    measured = measure_on_drawing(
+        pdf, 1, {"x": 250, "y": FLOOR + 2}, {"x": 250, "y": UNIT_TOP - 1.5}, None, "v", scale=scale
+    )
+    assert measured.value_in == 89 and measured.calibrations == ()
+    assert "scale measured by code from 3 printed dims of this drawing (D1, D2, D4)" in (
+        measured.words()
+    )
+    with pytest.raises(MeasureRefused, match="no measured scale"):
+        measure_on_drawing(pdf, 1, {"x": 250, "y": FLOOR}, {"x": 250, "y": UNIT_TOP}, None, "v")
+
+
+def test_the_tool_takes_the_scale_from_the_set_pack_when_not_calibrated(tmp_path: Path) -> None:
+    pack = tmp_path / "pack"
+    pack.mkdir()
+    (pack / "scales.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "pages": [
+                    {
+                        "file": "Vendor set.pdf",
+                        "page": 1,
+                        "scales": [
+                            {
+                                "page": 1,
+                                "side": "vendor",
+                                "in_per_pt": 1 / 3,
+                                "from_labels": ["D1", "D2", "D3"],
+                                "spread_percent": 0.2,
+                                "box": [150, 150, 450, 560],
+                            }
+                        ],
+                        "labels": [],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    workspace = ChatWorkspace.open(tmp_path / "chat", set_pack=pack)
+    sheet(workspace.uploads / "Vendor set.pdf")
+    listing = [{"name": "Vendor set.pdf", "pages": 1, "kind": "the vendor's shop drawings"}]
+    (workspace.root / "uploads.json").write_text(json.dumps(listing), encoding="utf-8")
+    tools = ChatTools(workspace, FakeSandbox(workspace), uploads=listing)
+    raw = {"page": 1, "from": {"x": 250, "y": FLOOR}, "to": {"x": 250, "y": UNIT_TOP}, "axis": "v"}
+    result = tools.measure_on_drawing(raw, new_step("m1", "measure_on_drawing", raw))
+    assert not result.is_error
+    text = result.content[0]["text"]
+    assert text.startswith('about 89" (±') and "scale measured by code from 3" in text
+    # Outside every measured scale: code says so and asks for a calibration.
+    away = {**raw, "from": {"x": 700, "y": 50}, "to": {"x": 760, "y": 50}, "axis": "h"}
+    refused = tools.measure_on_drawing(away, new_step("m2", "measure_on_drawing", away))
+    assert refused.is_error and "give calibrate" in refused.content[0]["text"]

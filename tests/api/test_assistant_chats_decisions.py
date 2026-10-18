@@ -157,29 +157,47 @@ def test_the_cloud_drawing_follows_the_decisions_and_keeps_older_files(postgres_
         made = world.client.post(url)
         assert made.status_code == 200, made.text
         first = made.json()
-        assert first["name"] == "Vendor set - AI cloud drawing.pdf"
+        assert first["name"] == "Vendor set - GV cloud drawing.pdf"
         pdf = world.client.get(first["url"]).content
         pages = _text(pdf)
-        assert len(pages) == 4
-        # Only the agreed finding is clouded; F2 is not decided yet: draft stamp, listed only.
-        assert "AI markup: draft, not GV's signed review" in pages[0]
-        # Numbered biggest first (#1569): the sink base (a cut-out) is 1, the vanity top 2.
-        assert "\u00d7 2" in pages[1]
-        assert 'Vanity top length: vendor 3\'-10", make it 37"' in pages[1]
-        assert _red_near(pdf, 2, VENDOR_BOX) > 5
-        assert _red_near(pdf, 3, PAGE3_BOX) == 0
-        notes = pages[3]
-        assert "Agreed: needs correction (1)" in notes
-        assert "Not yet decided (1)" in notes and "Sink base width" in notes
-        assert "Not a problem (not clouded) (0)" in notes
-        assert "Right (not clouded) (1)" in notes
+        # The zero-click drawing (#1581): cover, the 3 sheets, one proof page, notes.
+        assert list(PdfReader(io.BytesIO(pdf)).page_labels) == [
+            "Cover",
+            "1",
+            "2",
+            "3",
+            "Proof 1",
+            "Notes 1",
+        ]
+        cover = pages[0]
+        assert "Checked automatically by GV Review" in cover
+        assert "and reviewed by reviewer-one" in cover and "draft" not in cover.lower()
+        # F1 agreed: clouded, an override (only AI readings back it here). F2 is not decided and
+        # only AI readings back it, F3 was not seen on both sides: Not compared (#1619), never
+        # clouded, not on the drawing: the separate Not-compared list.
+        assert "1\nWrong" in cover and "2\nNothing to compare" in cover
+        sheet = " ".join(pages[2].split())
+        assert "Vendor: 3'-10\"" in sheet and 'Should be: 37"' in sheet
+        assert _red_near(pdf, 3, VENDOR_BOX) > 5
+        assert _red_near(pdf, 4, PAGE3_BOX) == 0
+        assert "Proved by: Agreed by reviewer-one" in pages[4]
+        notes = " ".join(pages[5].split())
+        assert "Nothing to compare (2)" in notes and "Sink base width" not in notes
 
         stored = world.client.get(f"/api/v1/chats/{chat_id}").json()["messages"][-1]
+        found = _findings(stored)
+        assert found["F1"]["proof"]["group"] == "clouded"
+        assert found["F2"]["proof"]["group"] == "not_compared"
+        assert found["F2"]["proof"]["not_compared"] == "unreadable"
+        assert found["F3"]["proof"]["group"] == "not_compared"
+        assert found["F3"]["proof"]["not_compared"] == "not_seen"
         report = next(f for f in stored["files"] if f["name"].endswith("AI check report.pdf"))
         report_text = "".join(_text(world.client.get(report["url"]).content))
-        assert "Not yet decided (1)" in report_text and "What's wrong: agreed (1)" in report_text
+        assert "1 wrong clouded (proved by code), 0 right, 2 with nothing to compare" in " ".join(
+            report_text.split()
+        )
 
-        # F2 dismissed: every item decided, so the drawing is stamped with the reviewer's name.
+        # F2 dismissed: not a problem, still never clouded, listed apart with the note.
         _decide(world, chat_id, answer["id"], "F2", decision="not_a_problem", note="Field fit")
         again = world.client.post(url)
         assert again.status_code == 200
@@ -187,11 +205,10 @@ def test_the_cloud_drawing_follows_the_decisions_and_keeps_older_files(postgres_
         assert second["id"] != first["id"]
         pdf2 = world.client.get(second["url"]).content
         pages2 = _text(pdf2)
-        assert "Reviewed by reviewer-one" in pages2[0]
-        assert _red_near(pdf2, 2, VENDOR_BOX) > 5
-        assert _red_near(pdf2, 3, PAGE3_BOX) == 0
-        assert "Not yet decided (0)" in pages2[3] and "Not a problem (not clouded) (1)" in pages2[3]
-        assert "Field fit" in pages2[3]
+        assert "and reviewed by reviewer-one" in pages2[0]
+        assert _red_near(pdf2, 3, VENDOR_BOX) > 5
+        assert _red_near(pdf2, 4, PAGE3_BOX) == 0
+        assert "Not a problem (reviewer) (1)" in pages2[-1] and "Field fit" in pages2[-1]
 
         # The older pair is kept and still downloads unchanged.
         files = world.client.get(f"/api/v1/chats/{chat_id}").json()["messages"][-1]["files"]
@@ -207,9 +224,23 @@ def test_the_csv_carries_the_decisions(postgres_engine, tmp_path) -> None:  # ty
         assert got.status_code == 200
         rows = list(csv.reader(io.StringIO(got.content.decode("utf-8-sig"))))
         header = rows[0]
-        assert header[-4:] == ["Decision", "Decision note", "Decided by", "Decided at"]
+        assert header[-6:] == [
+            "Decision",
+            "Decision note",
+            "Decided by",
+            "Decided at",
+            "Should be",
+            "Proof",
+        ]
         by_id = {row[1]: dict(zip(header, row, strict=True)) for row in rows[1:]}
         assert by_id["F1"]["Decision"] == "Agreed" and by_id["F1"]["Decided by"] == "reviewer-one"
         assert by_id["F1"]["Decision note"] == "'=SUM(A1)" and by_id["F1"]["Decided at"]
         assert by_id["F2"]["Decision"] == "Not yet decided"
         assert by_id["F3"]["Decision"] == ""
+        # Where the zero-click cloud drawing puts each item (#1581).
+        assert by_id["F1"]["Should be"] == '37" (architect, page 1)'
+        assert by_id["F1"]["Proof"].startswith("Wrong, proved by code (clouded): Agreed by")
+        assert by_id["F2"]["Proof"].startswith(
+            "Not compared: could not read the vendor's value on page 3. Needed:"
+        )
+        assert by_id["F3"]["Proof"].startswith("Not compared")

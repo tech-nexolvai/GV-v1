@@ -410,8 +410,8 @@ def test_second_reads_run_after_the_lead_and_feed_the_trust_report(
         assert call["thinking"] == {"type": "disabled"} and call["max_tokens"] == 1024
         assert "tools" not in call and "tool_choice" not in call
     prompt_ids = [row["prompt_id"] for row in harness.ledger.rows]
-    assert prompt_ids.count("review-assistant-chat-check-anthropic-chat-v18") == 2
-    assert prompt_ids.count("review-assistant-chat-adjudicate-anthropic-chat-v18") == 1
+    assert prompt_ids.count("review-assistant-chat-check-anthropic-chat-v19") == 2
+    assert prompt_ids.count("review-assistant-chat-adjudicate-anthropic-chat-v19") == 1
     assert outcome.cost_micros > 0
 
 
@@ -562,24 +562,34 @@ def test_a_full_check_seeds_recorded_results_and_makes_the_cloud_drawing_and_rep
     ]
     # The two files, made by code, handed over (the service announces each with `file`).
     names = [f["name"] for f in harness.files]
-    assert names == ["Vendor set - AI cloud drawing.pdf", "Vendor set - AI check report.pdf"]
+    assert names == [
+        "Vendor set - GV cloud drawing.pdf",
+        "Vendor set - AI check report.pdf",
+        "Vendor set - Not compared.pdf",
+        "Vendor set - Not compared.xlsx",
+        "Vendor set - GV review package.zip",
+    ]
     from pypdf import PdfReader
 
     workspace = harness.workspace
     drawing = PdfReader(str(workspace.files / harness.files[0]["id"]))
-    # The wrong item's note on its page, its entry on the notes pages.
-    assert "vendor 3'-10\"" in drawing.pages[1].extract_text()
-    assert "Vendor: 3'-10\"" in drawing.pages[-1].extract_text()
-    assert "Right: not clouded." in drawing.pages[-1].extract_text()
+    # The zero-click drawing (#1581): its cover, the code-proved wrong item clouded on its page
+    # (the cover is first, so the vendor's page 2 is the PDF's third), its proof, the Right list.
+    assert "1\nWrong" in drawing.pages[0].extract_text()
+    assert "Vendor: 3'-10\"" in " ".join(drawing.pages[2].extract_text().split())
+    # The run's record id stays off the vendor's drawing (#1622, `vendor_text`).
+    assert "Proved by: GV's rule check fails it" in drawing.pages[-2].extract_text()
+    assert "Right (1)" in drawing.pages[-1].extract_text()
+    assert "Backsplash height" in drawing.pages[-1].extract_text()
     report = "".join(
         page.extract_text()
         for page in PdfReader(str(workspace.files / harness.files[1]["id"])).pages
     )
     for words in (
-        "AI check report: draft, not GV's signed review",
+        "Check report: checked automatically by GV Review",
+        "Should be",
         "Countertop",
         "What's wrong (1)",
-        "Your decision (0)",
         "What's right (1)",
         "Backsplash height",
         "Not checked",

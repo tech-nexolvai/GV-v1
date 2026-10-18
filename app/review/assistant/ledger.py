@@ -1157,15 +1157,22 @@ class ReadingLedger:
         for listed in architect_items:
             if isinstance(listed.get("item"), str):
                 see(architect, listed["item"], listed.get("page"))
+        # Items a finding already reports as shown on one side only: that finding is the item
+        # (with its spots and pictures); a completeness copy of it would carry neither (#1650).
+        reported: set[str] = set()
         for finding in findings:
             item = finding.get("item")
             # Only the lead's architect-vs-vendor findings name items both sides show.
             if not isinstance(item, str) or finding.get("source") not in (None, "architect"):
                 continue
-            if _present(finding.get("architect")):
+            shown_architect = _present(finding.get("architect"))
+            shown_vendor = _present(finding.get("vendor"))
+            if shown_architect:
                 see(architect, item, finding.get("vs_page") or finding.get("page"))
-            if _present(finding.get("vendor")):
+            if shown_vendor:
                 see(vendor, item, finding.get("page"))
+            if shown_architect != shown_vendor:
+                reported.add(item_key(item)[0])
         excused = _excused_pages(coverage)
         result: dict[str, Any] = {
             "compared": bool(architect) and bool(vendor),
@@ -1185,6 +1192,8 @@ class ReadingLedger:
                 result["not_looked_at"].append(seen.name)
                 continue
             result["missing_on_vendor"].append(seen.name)
+            if key in reported:
+                continue
             result["findings"].append(
                 _completeness_finding(
                     seen,
@@ -1196,6 +1205,8 @@ class ReadingLedger:
             if key in architect:
                 continue
             result["extra_on_vendor"].append(seen.name)
+            if key in reported:
+                continue
             result["findings"].append(
                 _completeness_finding(
                     seen,

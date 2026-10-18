@@ -129,11 +129,11 @@ export interface paths {
         put?: never;
         /**
          * The cloud drawing (and check report) made again from the reviewer's decisions
-         * @description Red clouds only at the findings the reviewer agreed with ("✗ Vendor: X — Needs: Y
-         *     (architect Z)"); not-yet-decided, not-a-problem and right items listed on the notes page and in
-         *     the report, never clouded; "Reviewed by <name>" once every item needing a decision was decided,
-         *     else the draft stamp. A new cloud drawing and check report each time (older files are kept);
-         *     returns the cloud drawing.
+         * @description The zero-click cloud drawing made again with the reviewer's decisions as overrides (#1581):
+         *     red clouds at the Wrong items code proved and at every agreed item, none at an item marked not
+         *     a problem; the rest listed in grey; stamped "Checked automatically by GV Review: <date>, and
+         *     reviewed by <name>". A new cloud drawing and check report each time (older files are kept),
+         *     and for a full check a new send-ready package (#1622); returns the cloud drawing.
          */
         post: operations["cloud_drawing_api_v1_chats__chat_id__messages__message_id__cloud_drawing_post"];
         delete?: never;
@@ -4648,6 +4648,11 @@ export interface components {
              */
             second_read: string;
             /**
+             * Text
+             * @description agrees: code read the finish codes in the drawings' own text and searched every vendor sheet and round of the area (#1623); null: not that check's finding.
+             */
+            text?: string | null;
+            /**
              * Units
              * @description agrees | disagrees: millimetres and inches printed together (940 [37]).
              */
@@ -4685,7 +4690,7 @@ export interface components {
         };
         /**
          * ChatFindingDecisionHelpOut
-         * @description A "Your decision" item's reasoning for the reviewer (#1545), in plain words.
+         * @description A not-compared ("check") item's reasoning for the reviewer (#1545), in plain words.
          */
         ChatFindingDecisionHelpOut: {
             /**
@@ -4786,8 +4791,43 @@ export interface components {
             type: "finding_dropped";
         };
         /**
+         * ChatFindingEscalationOut
+         * @description What the full check's escalation did with an item code could not settle at first (#1619).
+         */
+        ChatFindingEscalationOut: {
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "wrong" | "right" | "folded" | "undecided";
+            /** Steps */
+            steps?: components["schemas"]["ChatFindingEscalationStepOut"][];
+        };
+        /**
+         * ChatFindingEscalationStepOut
+         * @description One free code step the escalation tried on an item code could not compare at first
+         *     (#1619).
+         */
+        ChatFindingEscalationStepOut: {
+            /**
+             * How
+             * @description What code did and found, in one plain line.
+             */
+            how: string;
+            /**
+             * Outcome
+             * @description read, proved, folded or no_change.
+             */
+            outcome: string;
+            /**
+             * Step
+             * @description labels, under_markup, same_item, vendor_sums, notes or pairs (cheapest first).
+             */
+            step: string;
+        };
+        /**
          * ChatFindingEstimateOut
-         * @description The AI's best estimate for a "Your decision" item, with how it got it (#1545).
+         * @description The AI's best estimate for a not-compared ("check") item, with how it got it (#1545).
          */
         ChatFindingEstimateOut: {
             /** Method */
@@ -4887,13 +4927,13 @@ export interface components {
             compared?: boolean | null;
             /**
              * Created By
-             * @description "lead", "helper:<n>", "gv_review" (made by code from a recorded result), "ledger" (made by code from the reading ledger), or "consistency" (made by code from the vendor's own drawings: a string that does not add up, a span printed twice).
+             * @description "lead", "helper:<n>", "gv_review" (made by code from a recorded result), "ledger" (made by code from the reading ledger), "consistency" (made by code from the vendor's own drawings: a string that does not add up, a span printed twice), "architect_items" (made by code from the drawings' text: a finish the architect tags that the vendor missed, changed or added), or "pairs" (made by code from a dimension it paired on both drawings by itself: Wrong or Right with that proof).
              */
             created_by: string;
             critic?: components["schemas"]["ChatFindingCriticOut"] | null;
             /** @description The reviewer's latest decision on this finding (#1521); null: not decided. */
             decision?: components["schemas"]["ChatFindingDecisionOut"] | null;
-            /** @description Status check (Your decision): what it measures, the best estimate, how likely it is fine, what to confirm (#1545). */
+            /** @description Status check (not compared): what it measures, the best estimate, how likely it is fine, what to confirm (#1545). */
             decision_help?: components["schemas"]["ChatFindingDecisionHelpOut"] | null;
             /**
              * Dims
@@ -4902,6 +4942,8 @@ export interface components {
             dims?: {
                 [key: string]: components["schemas"]["ChatFindingDimOut"];
             } | null;
+            /** @description A full check (#1619): the free code steps tried on this item when code could not settle it at first, and how it ended. */
+            escalation?: components["schemas"]["ChatFindingEscalationOut"] | null;
             /**
              * Evidence Kind
              * @description observed: printed on the drawing at its spots (text layer); derived: worked out by code (rule, arithmetic, ledger, mm/inch); inferred: AI reading only.
@@ -4934,6 +4976,8 @@ export interface components {
             parts_sum?: string | null;
             /** Printed Total */
             printed_total?: string | null;
+            /** @description Where the zero-click cloud drawing puts it, and why (#1581); worked out on read, so it follows the reviewer's latest decision. */
+            proof?: components["schemas"]["ChatFindingProofOut"] | null;
             /**
              * Question
              * @description Status check: the one question a person answers, written by code (#1554).
@@ -4961,7 +5005,7 @@ export interface components {
             /** Rule Check Id */
             rule_check_id?: string | null;
             second_read_values?: components["schemas"]["ChatSecondReadValuesOut"] | null;
-            /** @description Set when code settled this item, which was Your decision, by itself (#1554). */
+            /** @description Set when code settled this item, which was not compared, by itself (#1554). */
             settled?: components["schemas"]["ChatFindingSettledOut"] | null;
             /**
              * Source
@@ -4974,6 +5018,8 @@ export interface components {
              * @enum {string}
              */
             status: "different" | "check" | "same";
+            /** @description A vendor string (#1641): the blind second reading's outcome, in code's words (proved: the same parts and overall, and code's sum is off; gap: code's lines show a part left out, so no reading was asked; not_verified: the fixed price did not reach it). */
+            string_reads?: components["schemas"]["ChatFindingStringReadsOut"] | null;
             /**
              * Sum Text
              * @description vendor_arithmetic from the ledger: code's sum written out ("12 + 15 1/2 = 27 1/2 ≠ 27 1/4 printed (off 1/4)").
@@ -4996,9 +5042,58 @@ export interface components {
             why?: string | null;
             /**
              * Witnesses
-             * @description The non-AI witnesses behind it: printed, rule, arithmetic, ledger, units.
+             * @description The non-AI witnesses behind it: printed, ocr_ink, text, rule, arithmetic, ledger, units.
              */
             witnesses?: string[] | null;
+        };
+        /**
+         * ChatFindingProofOut
+         * @description Where the zero-click cloud drawing puts a finding (#1581), worked out by code on read
+         *     (`proof.proof_of`): only Wrong items code proved are clouded; the reviewer's Agree / Not a
+         *     problem override.
+         */
+        ChatFindingProofOut: {
+            /**
+             * Group
+             * @description clouded: Wrong, proved by code (red cloud); right; not_compared: could not be compared under the architect-first rules (#1619: listed with its reason in the Not-compared PDF and workbook, never a question to anyone); dismissed: the reviewer marked it not a problem.
+             * @enum {string}
+             */
+            group: "clouded" | "right" | "not_compared" | "dismissed";
+            /**
+             * Label
+             * @description not_compared: the trade's words for the reason (Field verify, RFI to the architect, Not reviewed: <reason>, Illegible).
+             */
+            label?: string | null;
+            /**
+             * Not Compared
+             * @description not_compared: the reason (the list's group).
+             */
+            not_compared?: ("architect_disagrees" | "nothing_to_compare" | "different_reference" | "unreadable" | "missing_setting" | "prototype" | "not_proved" | "not_seen" | "field_verify" | "finish_not_comparable" | "no_sheet" | "no_overall" | "string_not_verified" | "internal") | null;
+            /**
+             * Proof
+             * @description Clouded items: the check that proved it, in plain words.
+             */
+            proof?: string | null;
+            /**
+             * Reason
+             * @description The other groups: why it is not clouded, in one line.
+             */
+            reason?: string | null;
+            /**
+             * Rule
+             * @description The architect-first rule it falls under (#1619): R4 a difference, R5 the vendor's own contradiction, R6 GV's rule; for not_compared R1 (brand prototype), R3 (architect's drawings disagree), R7 (architect gives nothing), R8 (different reference points), R9 (unreadable), R10 (missing job value or setting).
+             */
+            rule?: string | null;
+            /**
+             * Settle
+             * @description not_compared: what is needed to compare it, in plain words.
+             */
+            settle?: string | null;
+            /**
+             * Should Be
+             * @description Wrong items: what the value should be and what governs it, e.g. '37" (architect 3'-1", page 28)'.
+             */
+            should_be?: string | null;
         };
         /**
          * ChatFindingReadOut
@@ -5031,7 +5126,7 @@ export interface components {
         };
         /**
          * ChatFindingSettledOut
-         * @description How code settled a "Your decision" item by itself (#1554), shown as "Settled by GV
+         * @description How code settled a not-compared ("check") item by itself (#1554), shown as "Settled by GV
          *     Review: …".
          */
         ChatFindingSettledOut: {
@@ -5042,16 +5137,30 @@ export interface components {
             how: string;
             /**
              * Method
-             * @description The rule or tool: same_item, gv_limits, vendor_sum, printed_vs_printed, newest_round, prototype_prints_it, legend, sharper_read, other_trades_tags, out_of_scope.
+             * @description The rule or tool: same_item, gv_limits, vendor_sum, printed_vs_printed, newest_round, prototype_prints_it, legend, sharper_read, other_trades_tags, out_of_scope; escalation_<step> when the full check's escalation settled it (#1619).
              */
             method: string;
             outcome: components["schemas"]["ChatSettledOutcome"];
             /**
              * Was
+             * @description check: it was not compared; different: a Wrong code could not prove, settled Right by the escalation (#1619).
              * @default check
-             * @constant
+             * @enum {string}
              */
-            was: "check";
+            was: "check" | "different";
+        };
+        /**
+         * ChatFindingStringReadsOut
+         * @description A full check (#1641, #1652): what the blind second reading of a vendor string gave.
+         */
+        ChatFindingStringReadsOut: {
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "proved" | "adds_up" | "within_rounding" | "disagrees" | "not_found" | "gap" | "not_verified";
+            /** Why */
+            why: string;
         };
         /** ChatFindingUpdateBlock */
         ChatFindingUpdateBlock: {
@@ -5344,7 +5453,7 @@ export interface components {
             plan_answers?: components["schemas"]["ChatPlanAnswerIn"][] | null;
             /**
              * Products
-             * @description Active product ids from `GET /products` (e.g. countertop, cabinet).
+             * @description Active product ids from `GET /products` (e.g. countertop, cabinet): a strict scope, so only these products are checked, ruled, counted and drawn (every active product = All). Not given: every active product (All is the default).
              */
             products?: string[] | null;
             /** @description #1551: the reviewer's correction of how the app understood the question (Edit on the 'Understood as' line); the question's words are sent unchanged in `text`. */
@@ -5365,7 +5474,7 @@ export interface components {
             /** @description The answer's accuracy by code (its `accuracy` block, scored again with today's calibration: see `rescored`); null on older answers. */
             accuracy?: components["schemas"]["ChatAccuracyOut"] | null;
             /** Blocks */
-            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatFindingUpdateBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"] | components["schemas"]["ChatScopeBlock"] | components["schemas"]["ChatProgressBlock"] | components["schemas"]["ChatResumeBlock"] | components["schemas"]["ChatResolverBlock"] | components["schemas"]["ChatUnderstoodBlock"] | components["schemas"]["ChatFallbackBlock"])[] | null;
+            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatFindingUpdateBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"] | components["schemas"]["ChatScopeBlock"] | components["schemas"]["ChatProgressBlock"] | components["schemas"]["ChatResumeBlock"] | components["schemas"]["ChatResolverBlock"] | components["schemas"]["ChatUnderstoodBlock"] | components["schemas"]["ChatFallbackBlock"] | components["schemas"]["ChatPackageBlock"])[] | null;
             /** @description With `stopped: cost_cap`: `message` (this answer's cap) or `package` (the drawing set's budget ran out). */
             cap_hit?: components["schemas"]["ChatCapHit"] | null;
             /** Cost Usd */
@@ -5410,6 +5519,8 @@ export interface components {
             products?: string[] | null;
             /** @description With `stopped: interrupted`: how Continue picks up (its `resume` block). */
             resume?: components["schemas"]["ChatResumeOut"] | null;
+            /** @description #1622: a full check's review result, worked out on read from its findings with the reviewer's latest decisions; null on other messages and before its package. */
+            review_action?: components["schemas"]["ChatReviewActionOut"] | null;
             /**
              * Role
              * @enum {string}
@@ -5485,6 +5596,71 @@ export interface components {
         };
         /** @enum {string} */
         ChatOutputShape: "one_line" | "short" | "findings" | "file";
+        /** ChatPackageBlock */
+        ChatPackageBlock: {
+            package: components["schemas"]["ChatPackageOut"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "package";
+        };
+        /**
+         * ChatPackageOut
+         * @description A full check's send-ready package (#1622): kept with the answer so the screen and a remade
+         *     package read the same state and comment numbers.
+         */
+        ChatPackageOut: {
+            /**
+             * Numbers
+             * @description Finding id -> stable comment number ("C-07").
+             */
+            numbers?: {
+                [key: string]: string;
+            };
+            /**
+             * Round
+             * @description The drawing set's round.
+             * @default 1
+             */
+            round: number;
+            state: components["schemas"]["ChatPackageStateOut"];
+            /**
+             * Submittal
+             * @description The submittal number ("25A"); "" unknown.
+             * @default
+             */
+            submittal: string;
+        };
+        /**
+         * ChatPackageStateOut
+         * @description What the review result needs beyond the findings (#1622, `review_action.CheckState`).
+         */
+        ChatPackageStateOut: {
+            /**
+             * Incomplete
+             * @description Why the check did not finish; null when it did.
+             */
+            incomplete?: string | null;
+            /**
+             * Missing Areas
+             * @description Areas the architect draws with no vendor sheet.
+             * @default 0
+             */
+            missing_areas: number;
+            /**
+             * Still Open
+             * @description Previous comments still wrong in this round.
+             * @default 0
+             */
+            still_open: number;
+            /**
+             * Wrong Product
+             * @description Code proved the vendor drew a different product.
+             * @default false
+             */
+            wrong_product: boolean;
+        };
         /**
          * ChatPlanAnswerIn
          * @description The reviewer's answer to one plan-check question (#1569).
@@ -5536,6 +5712,24 @@ export interface components {
             label: string;
             /** Value */
             value: string;
+        };
+        /**
+         * ChatProductScopeOut
+         * @description The strict product scope (Anant, 2026-10-18): the products checked, and the findings of
+         *     other products code refused or dropped, whoever reported them.
+         */
+        ChatProductScopeOut: {
+            /** All Products */
+            all_products: boolean;
+            /**
+             * Dropped Out Of Scope
+             * @description Findings of products not in scope that code did not keep.
+             */
+            dropped_out_of_scope: number;
+            /** Products */
+            products: string[];
+            /** Products Label */
+            products_label: string;
         };
         /** ChatProgressBlock */
         ChatProgressBlock: {
@@ -5647,7 +5841,7 @@ export interface components {
         };
         /**
          * ChatResolverEntryOut
-         * @description One "Your decision" item code settled by itself (#1554): the folded group's line.
+         * @description One not-compared ("check") item code settled by itself (#1554): the folded group's line.
          */
         ChatResolverEntryOut: {
             /** Architect */
@@ -5731,6 +5925,65 @@ export interface components {
             redo: string;
         };
         /**
+         * ChatReviewActionOut
+         * @description A full check's review result (#1622, `review_action.review_action`, rules S0 to S7),
+         *     decided by code on read from its findings with the reviewer's latest decisions and the state
+         *     kept with its package; the comment letter and the cloud drawing's cover say the same.
+         */
+        ChatReviewActionOut: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "approved" | "approved_as_noted" | "revise_resubmit" | "rejected" | "not_for_sending";
+            /**
+             * Corrections
+             * @description Comments sent (the clouds).
+             */
+            corrections: number;
+            /**
+             * Disclaimer
+             * @description The standard words printed under the result.
+             */
+            disclaimer: string;
+            /**
+             * Fabrication
+             * @description Of them, those that change fabrication.
+             */
+            fabrication: number;
+            /**
+             * Next Step
+             * @description What the vendor does next (the letter's closing line).
+             */
+            next_step: string;
+            /**
+             * Note
+             * @description S6: what was not reviewed.
+             */
+            note?: string | null;
+            /**
+             * Reason
+             * @description Why, in one line: "2 of 5 corrections change fabrication."
+             */
+            reason: string;
+            /**
+             * Required By
+             * @description Who must act now ("Vendor: revise and resubmit").
+             */
+            required_by: string;
+            /**
+             * Rule
+             * @description The rule that decided it (the first that matches wins).
+             * @enum {string}
+             */
+            rule: "S0" | "S1" | "S2" | "S3" | "S4" | "S5" | "S6" | "S7";
+            /**
+             * Words
+             * @description "Approved as noted", "Revise and resubmit", …
+             */
+            words: string;
+        };
+        /**
          * ChatRoundPairOut
          * @description One round pair compared by code (compare_rounds).
          */
@@ -5794,6 +6047,12 @@ export interface components {
          */
         ChatScopeOut: {
             /**
+             * All Products
+             * @description True when every active product was checked (All).
+             * @default false
+             */
+            all_products: boolean;
+            /**
              * Area
              * @description The area named, as typed on the set.
              */
@@ -5813,6 +6072,16 @@ export interface components {
              * @description The scope's pages; empty for the whole set.
              */
             pages?: number[];
+            /**
+             * Products
+             * @description The products checked (product ids, a strict scope: a finding of another product is never kept); empty on older answers.
+             */
+            products?: string[];
+            /**
+             * Products Label
+             * @description The products in plain words: "Countertops".
+             */
+            products_label?: string | null;
             /**
              * Why
              * @enum {string}
@@ -5875,7 +6144,7 @@ export interface components {
             tool: components["schemas"]["ChatStepTool"];
         };
         /** @enum {string} */
-        ChatStepTool: "bash_tool" | "view" | "create_file" | "str_replace" | "present_files" | "TaskCreate" | "TaskUpdate" | "Agent" | "review_results" | "compare_rounds" | "verify_value" | "measure_on_drawing" | "zoom" | "read_under_markup" | "remember";
+        ChatStepTool: "bash_tool" | "view" | "create_file" | "str_replace" | "present_files" | "TaskCreate" | "TaskUpdate" | "Agent" | "review_results" | "compare_rounds" | "verify_value" | "measure_on_drawing" | "zoom" | "read_under_markup" | "remember" | "drawing_facts";
         /** @enum {string} */
         ChatStopped: "cost_cap" | "cancelled" | "error" | "turn_limit" | "interrupted";
         /** ChatSummaryOut */
@@ -5991,7 +6260,7 @@ export interface components {
             label: string;
             /**
              * Phase
-             * @description seeding, set_pack, planning, prewarm, lead, helpers, lead_verification, second_reads, third_reads, critic, finish_checks, cloud_drawing, report
+             * @description seeding, set_pack, planning, prewarm, lead, helpers, lead_verification, second_reads, third_reads, critic, finish_checks, cloud_drawing, report, package
              */
             phase: string;
             /** Seconds */
@@ -6093,6 +6362,8 @@ export interface components {
              * @description "What's right" items not compared (not counted above).
              */
             not_compared?: number | null;
+            /** @description The products checked and how many findings of other products code dropped (for the record, not shown); null on older answers. */
+            product_scope?: components["schemas"]["ChatProductScopeOut"] | null;
             recorded_results?: components["schemas"]["ChatRecordedResultsOut"] | null;
             rounds?: components["schemas"]["ChatRoundsOut"] | null;
             /** @description What the counts above cover (null on older answers). */
@@ -6220,7 +6491,7 @@ export interface components {
              * Why
              * @enum {string}
              */
-            why: "unreadable" | "not_opened" | "missing_job_value" | "pairing_uncertain" | "refused_alignment" | "no_counterpart" | "missing_round" | "not_in_set";
+            why: "unreadable" | "not_opened" | "missing_job_value" | "pairing_uncertain" | "refused_alignment" | "no_counterpart" | "missing_round" | "not_in_set" | "not_comparable";
         };
         /** ChatUnknownsBlock */
         ChatUnknownsBlock: {
@@ -11799,7 +12070,7 @@ export interface components {
             round_status: components["schemas"]["TrackerRoundStatus"] | null;
             /**
              * Status
-             * @description different (Wrong), check (Your decision) or same (Right).
+             * @description different (Wrong), check (Not compared, #1619) or same (Right).
              */
             status: string;
             /** Vendor */

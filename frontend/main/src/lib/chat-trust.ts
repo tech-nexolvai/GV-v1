@@ -10,6 +10,7 @@
 
 import type { ChatCoverage, ChatFinding, ChatTimings, ChatTrust, ChatUnknown, EvidenceKind, FindingRead, LedgerReport, PrintedResult, RoundStatus, TrustLeftOut, TrustLevel, UnknownWhy } from '@/lib/chat-api';
 import { categoryOf, categoryOrderFor, categoryWords, pageWords, sourceTag, STATUS_WORDS, verifiedWords } from '@/lib/chat-findings';
+import { PROOF_WORDS, proofGroup } from '@/lib/chat-proof';
 
 // ── Levels ──────────────────────────────────────────────────
 
@@ -44,6 +45,7 @@ const WITNESS_WORDS: Record<string, string> = {
   ledger: 'code’s reading ledger backs it',
   units: 'the mm and inches printed together agree',
   ocr_ink: 'both values read from the vendor’s drawn ink by two OCR engines',
+  text: 'code read the finish codes in the drawings’ text and searched every vendor sheet',
 };
 
 /** A finding's evidence kind, read safely; null on older answers. */
@@ -83,6 +85,7 @@ export const UNKNOWN_WHY_WORDS: Record<UnknownWhy, string> = {
   no_counterpart: 'on one drawing only',
   missing_round: 'round not in the set',
   not_in_set: 'sheet not in the set',
+  not_comparable: 'not directly comparable',
 };
 
 /** "3 not checked", or null when there are none. */
@@ -693,7 +696,22 @@ const BOM = '﻿';
 export const CSV_HEADER = [
   'Category', 'Page', 'Item', 'Architect (as printed)', 'Vendor (as printed)', 'Architect (in)', 'Vendor (in)', 'Difference (in)',
   'Status', 'Trust', 'Evidence', 'Printed at spot', 'Second read', 'Checked on drawing', 'Rule / arithmetic', 'Compared with', 'Round', 'Why',
+  'Should be', 'Proof',
 ] as const;
+
+/**
+ * #1581: "Should be" (Wrong items: what it should be and what governs it) and "Proof" (where the
+ * zero-click cloud drawing puts it, and the check that proved it or why it is not clouded), as the
+ * server worked them out; the group alone for a finding that came without them.
+ */
+function proofCells(finding: ChatFinding): [string, string] {
+  const group = proofGroup(finding);
+  const sent = finding.proof?.group === group ? finding.proof : null;
+  // #1619: a Not-compared item says why, and what is needed to compare it.
+  const why = sent?.reason ? `${sent.label ? `${sent.label}: ` : ''}${sent.reason}${sent.settle ? `. Needed: ${sent.settle}` : ''}` : null;
+  const detail = sent?.proof ?? why;
+  return [finding.proof?.should_be ?? '', detail ? `${PROOF_WORDS[group]}: ${detail}` : PROOF_WORDS[group]];
+}
 
 /** The findings as a CSV Excel opens (with its byte-order mark), one row per finding, trust columns included. */
 export function findingsCsv(findings: readonly ChatFinding[]): string {
@@ -722,6 +740,7 @@ export function findingsCsv(findings: readonly ChatFinding[]): string {
       sourceTag(finding) ?? 'architect',
       finding.round_status ? ROUND_WORDS[finding.round_status] ?? '' : '',
       finding.why ?? '',
+      ...proofCells(finding),
     ].map(csvCell).join(',');
   });
   return `${BOM}${[CSV_HEADER.map(csvCell).join(','), ...rows].join('\r\n')}\r\n`;

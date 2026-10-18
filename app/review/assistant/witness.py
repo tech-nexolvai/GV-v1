@@ -3,8 +3,9 @@
 A finding is the AI's claim. What backs it is one of three kinds of evidence:
 
 - **observed**: code read both values inside the finding's boxes: the page's text prints them
-  (`printed`), or the vendor's drawn ink reads as them to two OCR engines (`ocr_ink`, #1531); no AI
-  involved;
+  (`printed`), or the vendor's drawn ink reads as them to two OCR engines (`ocr_ink`, #1531); or
+  code read the finish codes in the drawings' own text and searched every vendor sheet of the area
+  for them (`text`, #1623); no AI involved;
 - **derived**: code worked it out from values: GV's rule check, the vendor's own sum adding up (or
   not), the reading ledger (a dimension string that adds up, other views of the item agreeing), or
   the millimetres and inches printed together agreeing;
@@ -57,6 +58,7 @@ WITNESS_WORDS: Final = {
     "ledger": "code's reading ledger backs it (a string that adds up, or other views agree)",
     "units": "the millimetres and inches printed together agree",
     "ocr_ink": "both values read from the vendor's drawn ink by two OCR engines",
+    "text": "code read the codes in the drawings' own text and searched every vendor sheet",
 }
 
 #: Each side's reading by `verify_value` in a finding's checks (#1531).
@@ -142,6 +144,8 @@ def witnesses(checks: Mapping[str, Any], status: object = None) -> list[str]:
         out.append("printed")
     elif _ink_backs(checks):
         out.append("ocr_ink")
+    if checks.get("text") == "agrees":
+        out.append("text")
     if checks.get("rule") == "agrees":
         out.append("rule")
     if _arithmetic_backs(checks, status) is True:
@@ -176,7 +180,7 @@ def evidence_kind(checks: Mapping[str, Any], status: object = None) -> EvidenceK
     """`observed` when the text layer prints both values at their spots, `derived` when code worked
     it out, `inferred` when only AI readings back it."""
     found = witnesses(checks, status)
-    if "printed" in found or "ocr_ink" in found:
+    if "printed" in found or "ocr_ink" in found or "text" in found:
         return "observed"
     return "derived" if found else "inferred"
 

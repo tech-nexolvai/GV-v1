@@ -289,7 +289,7 @@ def test_skill_md_requires_decision_help_and_the_two_status_rules() -> None:
     text_ = SKILL.read_text(encoding="utf-8")
     assert len(text_.splitlines()) <= 260
     for words in (
-        "**Every `check` (Your decision) has `decision_help`**",
+        "**Every `check` (not compared) has `decision_help`**",
         "**Extent first**",
         "`measure_on_drawing` with `dimension`",
         "**Printed vs printed is Wrong**",

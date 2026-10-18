@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * Fewer decisions (#1554): a Your-decision row shows code's one question, an item GV Review settled
+ * Fewer decisions (#1554): an item that could not be compared says why (#1619: never a question), an item GV Review settled
  * says how, the same item on other pages is named, and the folded "Settled automatically" group
  * lists every settled item. The resolver block arrives live as an event too. Synthetic data only.
  */
@@ -57,17 +57,19 @@ function answer(change: Partial<ViewMessage> = {}): ViewMessage {
 }
 
 describe('fewer decisions (#1554)', () => {
-  it('shows the question, how an item was settled, its other pages and the folded settled group', async () => {
+  it('shows why, how an item was settled, its other pages and the folded settled group', async () => {
     const user = userEvent.setup();
     render(<AssistantMessage message={answer({ findings: FINDINGS, resolver: RESOLVER })} chatId="c-1" models={[OPUS]} messageCapUsd="5.00" />);
     const node = screen.getByRole('article', { name: 'Answer' });
     const question = node.querySelector('[data-slot="chat-finding-question"]');
-    expect(question?.textContent).toContain('is the vendor’s 80" right?');
+    // #1619: no question to the reviewer: why it could not be compared.
+    expect(question?.textContent).toBe('Why: nothing to compare');
+    expect(node.textContent).not.toContain('is the vendor’s 80" right?');
     expect(node.querySelector('[data-slot="chat-finding-settled"]')?.textContent).toBe('Settled by GV Review: GV’s filler limits are 1" to 2"; the vendor draws 5" fillers.');
     expect(node.querySelector('[data-slot="chat-finding-also"]')?.textContent).toBe('Also on p.6');
     const group = node.querySelector<HTMLElement>('[data-slot="chat-findings-settled"]')!;
     const toggle = within(group).getByRole('button', { name: /Settled automatically\s*3/ });
-    expect(toggle.textContent).toContain('4 to decide became 1');
+    expect(toggle.textContent).toContain('4 open became 1');
     expect(group.querySelectorAll('[data-slot="chat-settled-row"]')).toHaveLength(0);
     await user.click(toggle);
     const settledRows = [...group.querySelectorAll<HTMLElement>('[data-slot="chat-settled-row"]')];
@@ -76,13 +78,13 @@ describe('fewer decisions (#1554)', () => {
     expect(settledRows[2].textContent).toContain('the architect tags only wall tile here.');
   });
 
-  it('opens the card with the question, the settled line and the same item elsewhere', async () => {
+  it('opens the card with the settled line and the same item elsewhere, never a question', async () => {
     const user = userEvent.setup();
     render(<AssistantMessage message={answer({ findings: FINDINGS, resolver: RESOLVER })} chatId="c-1" models={[OPUS]} messageCapUsd="5.00" />);
     const node = screen.getByRole('article', { name: 'Answer' });
     // A short answer opens its few cards at first; else a click opens it.
-    if (!node.querySelector('[data-slot="chat-finding-card-question"]')) await user.click(within(node).getByRole('button', { name: 'Counter width' }));
-    expect(node.querySelector('[data-slot="chat-finding-card-question"]')?.textContent).toContain('is the vendor’s 80" right?');
+    if (!node.querySelector('[data-slot="chat-finding-card-also"]')) await user.click(within(node).getByRole('button', { name: 'Counter width' }));
+    expect(node.textContent).not.toContain('is the vendor’s 80" right?');
     expect(node.querySelector('[data-slot="chat-finding-card-also"]')?.textContent).toBe('p.6 (round 1): vendor 80"');
   });
 
@@ -94,10 +96,10 @@ describe('fewer decisions (#1554)', () => {
     expect(alsoOnWords({ also_on: null })).toBe('');
   });
 
-  it('lets the stat card labels wrap on a phone instead of cutting "Your decision" short', () => {
+  it('lets the stat card labels wrap on a phone instead of cutting "Nothing to compare" short', () => {
     render(<ResultNumbers counts={{ different: 2, check: 1, same: 0, not_compared: 0, total: 3 } as FindingCounts} coverage={null} accuracy={null} onPick={() => {}} />);
     const labels = [...document.querySelectorAll<HTMLElement>('[data-slot="chat-kpi-label"]')];
-    expect(labels.map((label) => label.textContent)).toEqual(['Wrong', 'Your decision', 'Right']);
+    expect(labels.map((label) => label.textContent)).toEqual(['Wrong', 'Right', 'Nothing to compare']);
     for (const label of labels) {
       expect(label.querySelector('.truncate')).toBeNull();
       expect(label.className).toContain('min-h-[2.5em]');
@@ -118,22 +120,24 @@ describe('fewer decisions (#1554)', () => {
   });
 
   it('shows the same counts in the headline, the cards, the sections and the settled group', () => {
-    render(<AssistantMessage message={answer({ findings: FINDINGS, resolver: RESOLVER, mode: 'full_check', products: ['countertop'] })} chatId="c-1" models={[OPUS]} messageCapUsd="5.00" fullCheck />);
+    // #1619: the server's groups: the two Wrong items code proved, one Not compared.
+    const placed = FINDINGS.map((f) => ({ ...f, proof: { group: f.status === 'check' ? 'not_compared' as const : 'clouded' as const, label: 'Not reviewed: not shown on the architect’s drawings', reason: 'architect gives no size or information for it' } }));
+    render(<AssistantMessage message={answer({ findings: placed, resolver: RESOLVER, mode: 'full_check', products: ['countertop'] })} chatId="c-1" models={[OPUS]} messageCapUsd="5.00" fullCheck />);
     const node = screen.getByRole('article', { name: 'Answer' });
     const wrong = FINDINGS.filter((f) => f.status === 'different').length;
     const decide = FINDINGS.filter((f) => f.status === 'check').length;
     const headline = node.querySelector('[data-slot="chat-summary-headline"]')?.textContent ?? '';
     expect(headline).toContain(`${wrong} wrong`);
-    expect(headline).toContain(`${decide} needs your decision`);
+    expect(headline).toContain(`${decide} with nothing to compare`);
     const card = (kind: string) => node.querySelector(`[data-kpi="${kind}"]`)?.textContent ?? '';
     expect(card('different')).toContain(String(wrong));
     expect(card('check')).toContain(String(decide));
     expect(within(node).getByRole('heading', { name: new RegExp(`^What’s wrong\\s*${wrong}$`) })).toBeTruthy();
-    expect(within(node).getByRole('heading', { name: new RegExp(`^Your decision\\s*${decide}$`) })).toBeTruthy();
+    expect(within(node).getByRole('button', { name: new RegExp(`^Nothing to compare\\s*${decide}`) })).toBeTruthy();
     // The settled group counts the final list too, whatever the block's own numbers say.
     const stale = { ...RESOLVER, before: { wrong: 0, decision: 99, right: 0 }, after: { wrong: 0, decision: 42, right: 0 } };
     render(<AssistantMessage message={answer({ key: 'b', id: 'msg-2', findings: FINDINGS, resolver: stale })} chatId="c-1" models={[OPUS]} messageCapUsd="5.00" />);
     const groups = [...document.querySelectorAll('[data-slot="chat-findings-settled"] button')].map((b) => b.textContent ?? '');
-    for (const text of groups) expect(text).toContain(`${decide + RESOLVER.settled.length} to decide became ${decide}`);
+    for (const text of groups) expect(text).toContain(`${decide + RESOLVER.settled.length} open became ${decide}`);
   });
 });

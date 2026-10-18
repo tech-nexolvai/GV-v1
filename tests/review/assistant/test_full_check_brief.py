@@ -132,6 +132,57 @@ def test_page_lines_name_the_area_the_drawings_and_the_architect_page() -> None:
     ]
 
 
+def test_a_page_with_the_architects_drawing_is_never_sent_to_another_page() -> None:
+    """#1644: a page holding the architect's drawing over a brand prototype, its area titled on
+    the page before, was told "the architect's drawing is on" that page; the helper took the page
+    for the prototype alone. A page whose area title is on a vendor-only page was pointed there."""
+    top, bottom = [40, 40, 560, 380], [40, 420, 560, 780]
+    left, right = [40, 40, 290, 780], [310, 40, 560, 780]
+    page_map = {
+        "pages": [
+            {
+                "page": 1,
+                "area": "4. Vanity",
+                "halves": [
+                    {"role": "vendor", "round": 1, "box": right},
+                    {"role": "architect", "box": left},
+                ],
+            },
+            {
+                "page": 2,
+                "area": None,
+                "area_from_page": 1,
+                "halves": [
+                    {"role": "architect", "box": top},
+                    {"role": "brand_prototype", "box": bottom},
+                ],
+            },
+            {"page": 3, "area": "7. Island", "halves": [{"role": "vendor", "round": 1}]},
+            {
+                "page": 4,
+                "area": None,
+                "area_from_page": 3,
+                "halves": [
+                    {"role": "brand_prototype", "box": right},
+                    {"role": "architect", "box": left},
+                ],
+            },
+        ]
+    }
+    assert page_lines([1, 2, 3, 4], page_map) == [
+        (
+            "- p1: 4. Vanity; vendor round 1 (right) + architect (left); the area's other "
+            "architect drawing is on p2 (the larger scale or the detail governs)"
+        ),
+        (
+            "- p2: area not named; architect (top) + brand prototype (bottom); the area's other "
+            "architect drawing is on p1 (the larger scale or the detail governs)"
+        ),
+        "- p3: 7. Island; vendor round 1; the architect's drawing is on p4",
+        "- p4: area not named; brand prototype (right) + architect (left)",
+    ]
+
+
 def test_a_page_the_map_does_not_know_is_still_listed() -> None:
     assert page_lines([4], PAGE_MAP) == ["- p4: not in the page map; look at it"]
     assert page_lines([4], None) == ["- p4: not in the page map; look at it"]
@@ -146,7 +197,8 @@ def test_recorded_results_are_only_the_helpers_pages() -> None:
     lines = recorded_on_pages(DOCUMENT, [7, 8])
     assert lines == [
         "- p7: Countertop row on page 7 (architect 68 in; vendor 72 in) [C4]",
-        '- p8: air:a1 (architect 3\'-1"; vendor 46") [ai-review:p8:air:a1]',
+        # Named by what it measures (#1634), never by its record id; the id stays in brackets.
+        '- p8: Floor to outlet (architect 3\'-1"; vendor 46") [ai-review:p8:air:a1]',
     ]
     assert recorded_on_pages(DOCUMENT, [9]) == []
     assert recorded_on_pages(None, [7]) == []
@@ -389,9 +441,9 @@ def test_skill_md_says_what_to_compare_beyond_dimensions() -> None:
         "**Construction notes**",
         "metal lining",
         "**ID set vs brand prototype**",
-        "`check_reason:\n  which_governs`",
+        "`check_reason: which_governs`",
         "**Scaled values**",
-        '"about X (±T)": status `check` (Your decision), never `different` (Wrong)',
+        '"about X (±T)": status `check` (not compared), never `different`',
         "**Extent first**",
         "`check_reason: different_extent`",
         "**Printed vs printed is Wrong**",

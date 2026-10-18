@@ -485,19 +485,22 @@ describe('the + menu on the chat page', () => {
     );
   }
 
-  it('fills the composer, sets the chips (remembered per set) and makes the cloud drawing from the last answer', async () => {
+  it('fills the composer, sets the chips (for this chat) and makes the cloud drawing from the last answer', async () => {
     const user = userEvent.setup();
     const api = fakeChatApi({ get: vi.fn(async (id: string) => chatOut(id, [QUESTION, ANSWER], { product_type: 'countertop' })) as never });
     renderPage(api);
     await screen.findByText('Two items differ.');
     const chips = screen.getByRole('group', { name: 'Products to check' });
-    await waitFor(() => expect(within(chips).getByRole('button', { name: 'Countertop' }).getAttribute('aria-pressed')).toBe('true'));
+    // All by default, even for a set stated "countertop" (2026-10-18).
+    await waitFor(() => expect(within(chips).getByRole('button', { name: 'All' }).getAttribute('aria-pressed')).toBe('true'));
+    expect(within(chips).getByRole('button', { name: 'Countertop' }).getAttribute('aria-pressed')).toBe('true');
 
     await user.click(plusButton());
     await user.click(opt('product:cabinet'));
     expect(within(chips).getByRole('button', { name: 'Cabinet' }).getAttribute('aria-pressed')).toBe('true');
     expect(within(chips).getByRole('button', { name: 'Countertop' }).getAttribute('aria-pressed')).toBe('false');
-    expect(window.localStorage.getItem('gv-chat-products:pkg-1')).toBe('["cabinet"]');
+    // The pick lasts for this chat only; nothing is remembered for the set.
+    expect(window.localStorage.getItem('gv-chat-products:pkg-1')).toBeNull();
 
     await user.click(plusButton());
     await user.click(opt('rfi'));
@@ -564,6 +567,6 @@ describe('the + menu on the chat page', () => {
     await user.click(opt('full_check'));
     await user.click(screen.getByRole('button', { name: 'Run full check' }));
     await waitFor(() => expect(api.send).toHaveBeenCalled());
-    expect(api.send.mock.calls[0][1]).toMatchObject({ text: 'Full check', mode: 'full_check', products: ['countertop'], model: OPUS.id, effort: 'high' });
+    expect(api.send.mock.calls[0][1]).toMatchObject({ text: 'Full check', mode: 'full_check', products: ['countertop', 'cabinet'], model: OPUS.id, effort: 'high' });
   });
 });

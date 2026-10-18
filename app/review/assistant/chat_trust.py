@@ -26,7 +26,7 @@ never shows the AI's arithmetic. `trust_level`: `confirmed` / `likely` / `to_che
 
 **Words (#1513).** The API values stay; people read `TRUST_WORDS` and `STATUS_WORDS`. The trust
 level `to_check` reads "AI reading only" (no independent check confirmed the reading), and the
-status `check` reads "Needs your decision" (the AI cannot call it right or wrong; a person decides),
+status `check` reads "Not compared" (#1619: nothing to compare; nobody is asked to decide it),
 so the two never share the words "To check".
 
 The checks themselves live in `finding_checks.py` and `second_read.py` (another builder's modules,
@@ -56,8 +56,9 @@ from types import ModuleType
 from typing import Any, Final
 
 from app.review.assistant import witness
-from app.review.assistant.chat_findings import live_findings, page_ranges
+from app.review.assistant.chat_findings import finding_categories, live_findings, page_ranges
 from app.review.assistant.dim_findings import label_checks
+from app.review.assistant.vendor_text import item_name
 
 __all__ = [
     "ACCURACY_CALIBRATION_LINE",
@@ -114,16 +115,24 @@ TRUST_WORDS: Final[Mapping[str, str]] = {
     "likely": "Likely",
     "to_check": "AI reading only",
 }
-#: What people read for each finding status (#1513): `check` is a person's decision.
+#: What people read for each finding status (#1513): `check` is an item that could not be
+#: compared (#1619: the architect-first rules; nobody is asked to decide it).
 STATUS_WORDS: Final[Mapping[str, str]] = {
     "different": "Wrong",
-    "check": "Needs your decision",
+    "check": "Not compared",
     "same": "Right",
+}
+#: The CSV's Status, by where the cloud drawing puts the item (#1619).
+_GROUP_STATUS: Final[Mapping[str, str]] = {
+    "clouded": "Wrong",
+    "right": "Right",
+    "not_compared": "Not compared",
+    "dismissed": "Not a problem",
 }
 #: The cloud drawing's and check report's words for each `cloud_kind`.
 CLOUD_WORDS: Final[Mapping[str | None, str]] = {
     "wrong": "Wrong",
-    "check": "Your decision",
+    "check": "Not compared",
     None: "Right",
 }
 
@@ -167,6 +176,17 @@ def _evaluated(row: Mapping[str, Any]) -> bool:
     return any(bool(row.get(key)) for key in keys)
 
 
+def _row_name(row: Mapping[str, Any]) -> str:
+    """An AI page review row's item name: what it measures, else its key when that is words, else
+    its reason's first clause."""
+    measures = " ".join(str(row.get("measures") or "").split())
+    if measures:
+        return measures[:1].upper() + measures[1:]
+    # A readable key ("sink centre") names it too; a record id (`air:<id>`) never does.
+    named = item_name({"item": row.get("key"), "why": row.get("why")})
+    return named or "Recorded difference"
+
+
 def recorded_from(document: Mapping[str, Any] | None) -> Recorded:
     """`review_results`' whole-set document, read for what it recorded. Each recorded difference
     has a `record_id`: the code record's id, or `ai-review:p<page>:<key>` for an AI page review
@@ -176,6 +196,10 @@ def recorded_from(document: Mapping[str, Any] | None) -> Recorded:
     differences: list[dict[str, Any]] = []
     waiting: list[dict[str, Any]] = []
     results: dict[str, str] = {}
+    # Each GV check's product, by its rule (the API's `record_products`): a filler check is a
+    # cabinet item, never "other" (the strict product scope keeps it by its product).
+    named = document.get("record_products")
+    products = named if isinstance(named, Mapping) else {}
     records = document.get("records")
     if isinstance(records, Mapping):
         for item in records.get("countertops") or []:
@@ -188,6 +212,7 @@ def recorded_from(document: Mapping[str, Any] | None) -> Recorded:
                         "record_id": str(item["id"]),
                         "page": item.get("page"),
                         "what": str(item.get("label") or "countertop"),
+                        "category": "countertop",
                     }
                 )
             if item.get("outcome") in _FAIL_WORDS:
@@ -202,12 +227,23 @@ def recorded_from(document: Mapping[str, Any] | None) -> Recorded:
                         "architect": item.get("needed_overall"),
                         "vendor": item.get("printed_overall"),
                         "why": item.get("difference") and f"Difference {item['difference']}",
+                        # The width rule's own comparison, for its requirement in plain words
+                        # when no needed overall is recorded (#1622, `vendor_text`).
+                        "comparison": (
+                            (item.get("rule") or {}).get("comparison")
+                            if isinstance(item.get("rule"), Mapping)
+                            else None
+                        ),
                     }
                 )
         for item in records.get("other_checks") or []:
             if not isinstance(item, Mapping) or item.get("id") is None:
                 continue
             results[str(item["id"])] = str(item.get("outcome") or "")
+            product = products.get(str(item["id"]))
+            category = (
+                product if isinstance(product, str) and product in finding_categories() else "other"
+            )
             if item.get("outcome") in _WAITING_WORDS:
                 pages = [p for p in item.get("pages") or [] if isinstance(p, int)]
                 waiting.append(
@@ -215,6 +251,7 @@ def recorded_from(document: Mapping[str, Any] | None) -> Recorded:
                         "record_id": str(item["id"]),
                         "page": pages[0] if pages else None,
                         "what": str(item.get("check") or "GV check"),
+                        "category": category,
                     }
                 )
             if item.get("outcome") in _FAIL_WORDS:
@@ -227,10 +264,11 @@ def recorded_from(document: Mapping[str, Any] | None) -> Recorded:
                         "id": str(item["id"]),
                         "page": pages[0] if pages else None,
                         "what": str(item.get("check") or "GV check"),
-                        "category": "other",
+                        "category": category,
                         "architect": item.get("comparison"),
                         "vendor": "; ".join(values) or None,
                         "why": item.get("reason"),
+                        "comparison": item.get("comparison"),
                     }
                 )
     for sheet in document.get("ai_page_review") or []:
@@ -245,7 +283,9 @@ def recorded_from(document: Mapping[str, Any] | None) -> Recorded:
                         "source": "ai_page_review",
                         "id": None,
                         "page": sheet.get("page"),
-                        "what": key,
+                        # A real name (#1634): what the dimension measures, else the first
+                        # clause of the review's reason; never the row's key (`air:<id>`).
+                        "what": _row_name(row),
                         "category": "other",
                         "architect": row.get("architect_text"),
                         "vendor": row.get("vendor_text"),
@@ -336,6 +376,35 @@ def _number(value: Decimal | None) -> str | None:
     return text if text != "-0" else "0"
 
 
+#: The devil's advocate's verdicts the fixed price stopped: never kept, so it is tried again.
+_UNCHECKED: Final = ("Not checked", "Not verified within the fixed price")
+
+
+def _label_ref(label: object) -> str | None:
+    if not isinstance(label, Mapping) or not label.get("id"):
+        return None
+    return f"p{label.get('page')}.{label.get('id')}"
+
+
+def kept_advocate(finding: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The finding's devil's advocate verdict (`full_check_advocate`), when the labels it judged
+    are still the finding's (`pairing` against `dims`) and the price did not stop it; else
+    `None`."""
+    critic = finding.get("critic")
+    pairing = finding.get("pairing")
+    if not isinstance(critic, Mapping) or critic.get("model") != "devil's advocate":
+        return None
+    if not isinstance(pairing, Mapping) or str(critic.get("note") or "").startswith(_UNCHECKED):
+        return None
+    dims = finding.get("dims") if isinstance(finding.get("dims"), Mapping) else {}
+    assert isinstance(dims, Mapping)
+    if pairing.get("vendor") != _label_ref(dims.get("vendor")):
+        return None
+    if pairing.get("architect") not in (None, _label_ref(dims.get("architect"))):
+        return None
+    return dict(critic)
+
+
 def apply_checks(
     finding: Mapping[str, Any],
     pdf_paths: Mapping[str, Path],
@@ -353,6 +422,7 @@ def apply_checks(
         "arithmetic": None,
         "lead_checked": bool(finding.get("verified")),
         "ledger": _ledger_made(finding),
+        "text": _text_made(finding),
         "units": None,
         "adjudication": None,
         "critic": None,
@@ -382,6 +452,12 @@ def apply_checks(
     # The third read and the critic start again too (#1498): they come after the lead's answer.
     out["reads"] = None
     out["critic"] = None
+    kept = kept_advocate(finding)
+    if kept is not None:
+        # The devil's advocate judged these very labels (#1641): a later code step that changes
+        # nothing it judged (a box, a name, a check) keeps its verdict.
+        out["critic"] = kept
+        checks["critic"] = kept.get("result")
     # Nobody has decided on a finding being written (#1521): the reviewer's decision is added when
     # the stored answer is read.
     out["decision"] = None
@@ -411,6 +487,19 @@ def _parts_sum(finding: Mapping[str, Any]) -> str | None:
     if any(value is None for value in values):
         return None
     return _number(sum((v for v in values if v is not None), Decimal(0)))
+
+
+#: The code check that reads finish codes from the drawings' text (`architect_items`, #1623).
+_TEXT_MADE_BY: Final = "architect_items"
+
+
+def _text_made(finding: Mapping[str, Any]) -> str | None:
+    """A finding the finish check made from the drawings' text (what it read and the vendor
+    sheets it searched are in `text_proof`): an observed code witness."""
+    proof = finding.get("text_proof")
+    if finding.get("created_by") == _TEXT_MADE_BY and isinstance(proof, Mapping) and proof:
+        return "agrees"
+    return None
 
 
 def _ledger_made(finding: Mapping[str, Any]) -> str | None:
@@ -892,7 +981,7 @@ def trust_report(
 
 
 def cloud_kind(finding: Mapping[str, Any]) -> str | None:
-    """`wrong` (red), `check` (amber: needs your decision), or `None` (right: never clouded): the
+    """`wrong` (red), `check` (not compared), or `None` (right: never clouded): the
     finding's status, as the screen counts it (status `different` is Wrong whatever its trust; the
     cloud drawing's note then carries the trust words, #1541). The same count everywhere: screen,
     progress line, summary, cloud drawing and check report."""
@@ -934,7 +1023,7 @@ def inch_words(value: Decimal) -> str:
 
 
 def shown_counts(findings: Iterable[Mapping[str, Any]]) -> dict[str, int]:
-    """The counts every view shows (#1554): Wrong, Your decision, Right and Not compared, from one
+    """The counts every view shows (#1554): Wrong, Not compared (check), Right and Not seen, from one
     final list. Right is a `same` item that was compared; a `same` item not seen on both sides is
     Not compared (`mark_compared`), never Right. The screen counts the same way (`findingCounts`).
     """
@@ -1209,6 +1298,8 @@ CSV_COLUMNS: Final = (
     "Decision note",
     "Decided by",
     "Decided at",
+    "Should be",
+    "Proof",
 )
 #: How the reviewer's decision (#1521) reads in the CSV.
 _DECISION_WORDS: Final = {"agree": "Agreed", "not_a_problem": "Not a problem"}
@@ -1236,6 +1327,24 @@ def _decision_cells(finding: Mapping[str, Any]) -> list[str]:
     ]
 
 
+def _proof_cells(finding: Mapping[str, Any]) -> list[str]:
+    """Should be (Wrong items) and Proof: where the zero-click cloud drawing puts the item and the
+    check that proved it, or why it is not clouded (#1581, `proof.py`)."""
+    proof = import_module("app.review.assistant.proof")
+    found = proof.proof_of(finding)
+    words = proof.GROUP_WORDS[found["group"]]
+    # A Not-compared item (#1619) says why, and what would settle it.
+    settle = f" Needed: {found['settle']}." if found.get("settle") else ""
+    detail = found["proof"] or (f"{found['reason']}.{settle}" if found["reason"] else None)
+    return [_cell(found["should_be"] or ""), _cell(f"{words}: {detail}" if detail else words)]
+
+
+def _status_cell(finding: Mapping[str, Any]) -> str:
+    """Wrong / Right / Not compared / Not a problem, as the cloud drawing places the item."""
+    proof = import_module("app.review.assistant.proof")
+    return _GROUP_STATUS.get(str(proof.proof_group(finding)), "")
+
+
 def findings_csv(findings: Sequence[Mapping[str, Any]]) -> str:
     """The findings with their trust columns, one row each (numbers as code computed them)."""
     out = io.StringIO()
@@ -1257,7 +1366,7 @@ def findings_csv(findings: Sequence[Mapping[str, Any]]) -> str:
                 inches.get("architect") or "",
                 inches.get("vendor") or "",
                 inches.get("difference") or "",
-                STATUS_WORDS.get(str(finding.get("status")), finding.get("status") or ""),
+                _status_cell(finding),
                 TRUST_WORDS.get(str(finding.get("trust_level")), ""),
                 _KIND_WORDS.get(str(finding.get("evidence_kind")), ""),
                 checks.get("printed_architect") or "",
@@ -1272,6 +1381,7 @@ def findings_csv(findings: Sequence[Mapping[str, Any]]) -> str:
                 _cell(finding.get("why")),
                 finding.get("created_by"),
                 *_decision_cells(finding),
+                *_proof_cells(finding),
             ]
         )
     return "﻿" + out.getvalue()

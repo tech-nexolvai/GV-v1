@@ -155,7 +155,7 @@ def earlier_findings(messages: Sequence[_Message]) -> dict[str, Earlier]:
 
 
 def _words(finding: Mapping[str, Any]) -> str:
-    status = {"different": "wrong", "check": "your decision", "same": "right"}.get(
+    status = {"different": "wrong", "check": "not compared", "same": "right"}.get(
         str(finding.get("status")), str(finding.get("status") or "")
     )
     return (

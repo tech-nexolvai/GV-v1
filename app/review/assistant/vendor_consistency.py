@@ -18,9 +18,11 @@ and page map (`page_map.json`). Three checks, each built to report only what cod
    string's dimensions are not drawn to their own values, the labels may belong to other lines (or
    the view is not to scale), so it is not a finding (`doubt`). One that is off names the likely
    wrong number.
-2. **The same span printed twice.** Two of the vendor's dimension lines in one drawing (on the same
-   pasted drawing, e.g. a plan above its front view, which line up in projection) that end on
-   exactly the same two extension lines measure the same span; when they print different values,
+2. **The same span printed twice.** Two of the vendor's dimension lines in one view (on the same
+   pasted drawing, along the same axis, and proved to be in one projection: at each end one
+   extension line runs across both lines, `_one_view`) that end on exactly the same two extension
+   lines measure the same span (a part detail drawn beside an elevation may line up with it by
+   chance, and is never paired); when they print different values,
    one of them is wrong. Code names which one by the drawing's scale (the one drawn to its value is
    the reference, the "should be"); when the scale cannot tell, it is not a finding. Two drawings
    on different pages share no coordinates, so a contradiction across sheets is left to the reading
@@ -89,6 +91,11 @@ TOLERANCE: Final = Fraction(1, 16)
 END_PT: Final = 0.25
 #: Two parts of a string meet within this many points (a tick mark's width is about 0.3 pt).
 GAP_PT: Final = 0.6
+#: Two parts also meet across a wider joint, up to this many line weights, when one tick marks
+#: both ends (#1629: a joint drawn as a double extension line under one slash, 0.9-1.1 pt apart
+#: on lines 0.72 pt wide). The usual rule of vector clean-up: snap ends within a small multiple of
+#: the stroke width, never more than the drawing itself shows to be one point.
+JOINT_WEIGHTS: Final = 2.5
 #: Labels on one dimension line: their lines are this close across (points).
 ROW_PT: Final = 0.6
 #: Two dimension lines are different rows when at least this far apart (points).
@@ -118,6 +125,8 @@ _CLEAN: Final = re.compile(
     r"\d{1,3}' ?-? ?\d{1,2}(?: \d{1,2}/\d{1,2})?\"|\d{1,3}'|"
     r"\d{2,5} \[\d{1,4}(?: \d{1,2}/\d{1,2})?\])$"
 )
+#: An extension line reaches a dimension line (or its end) when within this many points.
+_EXTENSION_PT: Final = 1.0
 #: A label belongs to a drawing on the page when within this of its box (points), as `dim_labels`.
 _HALF_PT: Final = 36.0
 #: The most findings and grey items one set gives (a 300-page set stays readable).
@@ -385,28 +394,33 @@ _MARK_MIN_PT: Final = 0.8
 _MARK_MAX_PT: Final = 8.0
 
 
-def _end_marked(segments: Sequence[Segment], label: _Label, at: float) -> bool:
-    """A tick or an arrowhead on the label's own dimension line at `at` (along its axis): a short
-    piece of line work at a slant to the dimension line that touches the end. An extension line
-    crossing there is not one (it is square to the line): a line cut at another dimension's
-    extension line has no mark of its own, so it is never taken for that span."""
+def _tick_strokes(segments: Sequence[Segment], label: _Label, at: float) -> set[int]:
+    """The end marks (as `_end_marked` finds them) touching the label's line at `at`, by index."""
     flip = label.orientation == "v"
     px, py = (label.across, at) if flip else (at, label.across)
-    for a, b in segments:
+    found: set[int] = set()
+    for index, (a, b) in enumerate(segments):
         (ax, ay), (bx, by) = a, b
         dx, dy = bx - ax, by - ay
         length = (dx * dx + dy * dy) ** 0.5
         if not _MARK_MIN_PT <= length <= _MARK_MAX_PT:
             continue
         along, square = (abs(dy), abs(dx)) if flip else (abs(dx), abs(dy))
-        # Slanted: between about 10 and 80 degrees to the dimension line.
         if square < 0.17 * length or along < 0.17 * length:
             continue
         t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / (length * length)))
         cx, cy = ax + t * dx - px, ay + t * dy - py
         if (cx * cx + cy * cy) ** 0.5 <= _MARK_PT:
-            return True
-    return False
+            found.add(index)
+    return found
+
+
+def _end_marked(segments: Sequence[Segment], label: _Label, at: float) -> bool:
+    """A tick or an arrowhead on the label's own dimension line at `at` (along its axis): a short
+    piece of line work at a slant to the dimension line that touches the end. An extension line
+    crossing there is not one (it is square to the line): a line cut at another dimension's
+    extension line has no mark of its own, so it is never taken for that span."""
+    return bool(_tick_strokes(segments, label, at))
 
 
 def ends_marked(segments: Sequence[Segment] | None, label: _Label) -> bool | None:
@@ -461,9 +475,15 @@ def _rows(labels: Sequence[_Label]) -> list[list[_Label]]:
     return rows
 
 
-def _chain(overall: _Label, row: Sequence[_Label]) -> list[_Label] | None:
+type Joint = Callable[[_Label, _Label], bool]
+
+
+def _chain(
+    overall: _Label, row: Sequence[_Label], joint: Joint | None = None
+) -> list[_Label] | None:
     """The row's labels that tile the overall's span exactly (end to end, from one of its extension
-    lines to the other), or None when the row is not its string."""
+    lines to the other), or None when the row is not its string. `joint` says whether two parts
+    further apart than `GAP_PT` still meet (`_joint`)."""
     lo, hi = overall.start - GAP_PT, overall.end + GAP_PT
     inside = sorted((la for la in row if la.start >= lo and la.end <= hi), key=lambda la: la.start)
     # A dimension of the row that crosses one of the overall's ends: the row runs past it.
@@ -476,9 +496,26 @@ def _chain(overall: _Label, row: Sequence[_Label]) -> list[_Label] | None:
         return None
     if abs(inside[0].start - overall.start) > END_PT or abs(inside[-1].end - overall.end) > END_PT:
         return None
-    if any(abs(a.end - b.start) > GAP_PT for a, b in pairwise(inside)):
-        return None
+    for a, b in pairwise(inside):
+        if abs(a.end - b.start) > GAP_PT and (joint is None or not joint(a, b)):
+            return None
     return inside
+
+
+def _joint(segments: Sequence[Segment], weight: float) -> Joint:
+    """Two consecutive parts meet across a gap wider than `GAP_PT` when the gap is at most
+    `JOINT_WEIGHTS` line weights and ONE tick marks both ends (the drafter's single joint over a
+    doubled extension line). Two ticks, or none, are two places: never bridged."""
+
+    def meets(a: _Label, b: _Label) -> bool:
+        gap = b.start - a.end
+        if gap < 0 or gap > max(GAP_PT, JOINT_WEIGHTS * weight):
+            return False
+        if a.orientation != b.orientation or abs(a.across - b.across) > ROW_PT:
+            return False
+        return bool(_tick_strokes(segments, a, a.end) & _tick_strokes(segments, b, b.start))
+
+    return meets
 
 
 def _judge(
@@ -553,6 +590,17 @@ def find_strings(labels: Sequence[_Label], segments: Segments | None = None) -> 
     `segments` gives a page's line work, read only for a string that does not add up."""
     out: list[StringCheck] = []
     seen: set[tuple[Any, ...]] = set()
+    joints: dict[tuple[str, int], Joint | None] = {}
+
+    def joint_of(file: str, page: int) -> Joint | None:
+        if (file, page) not in joints:
+            lines = segments(file, page) if segments is not None else None
+            weight = segments.weight(file, page) if isinstance(segments, LineWork) else None
+            joints[(file, page)] = (
+                None if lines is None or weight is None else _joint(lines, weight)
+            )
+        return joints[(file, page)]
+
     groups: dict[tuple[str, int, int | None], list[_Label]] = {}
     for label in labels:
         if label.side == "vendor" and label.half is not None:
@@ -566,6 +614,9 @@ def find_strings(labels: Sequence[_Label], segments: Segments | None = None) -> 
                     if abs(row[0].across - overall.across) < ROW_APART_PT:
                         continue
                     parts = _chain(overall, row)
+                    if parts is None:
+                        # A wider joint is looked at only for a row that is otherwise its string.
+                        parts = _chain(overall, row, joint_of(overall.file, overall.page))
                     if parts is None:
                         continue
                     key = (
@@ -591,6 +642,41 @@ class Contradiction:
     odd: _Label
     support: int
     odd_drawn: Fraction
+
+
+def _one_view(a: _Label, b: _Label) -> bool:
+    """Whether two parallel dimension lines are proved to be in one view (one projection): at each
+    end, one of their extension lines runs from one line to the other (a line drawn across both),
+    within `_EXTENSION_PT`. A part detail beside an elevation, whose own extension lines stop at
+    its own outline, lines up with it at most by chance, and is never proved."""
+    if a.orientation != b.orientation:
+        return False
+    low, high = sorted((a.across, b.across))
+    for index, at in ((0, a.start), (1, a.end)):
+        found = False
+        for member in (a, b):
+            ends = member.raw.get("extension")
+            if not isinstance(ends, Sequence) or len(ends) != 2:
+                continue
+            line = ends[index]
+            if not isinstance(line, Sequence) or len(line) != 2:
+                continue
+            try:
+                (fx, fy), (nx, ny) = ((float(p[0]), float(p[1])) for p in line)
+            except (TypeError, ValueError, IndexError):
+                continue
+            along = fx if member.orientation == "h" else fy
+            span = sorted((fy, ny) if member.orientation == "h" else (fx, nx))
+            if (
+                abs(along - at) <= _EXTENSION_PT
+                and span[0] - _EXTENSION_PT <= low
+                and high <= span[1] + _EXTENSION_PT
+            ):
+                found = True
+                break
+        if not found:
+            return False
+    return True
 
 
 def find_contradictions(
@@ -634,7 +720,9 @@ def find_contradictions(
                 if pair in done:
                     continue
                 done.add(pair)  # type: ignore[arg-type]
-                if not (any(a.extensions) or any(b.extensions)):
+                if not _one_view(a, b):
+                    # Not proved to be one projection: a part detail drawn beside an elevation
+                    # can line up with it by chance (no false Wrong from that).
                     unsettled += 1
                     continue
                 scale = _scale([a, b], drawing)
@@ -710,7 +798,7 @@ def _string_finding(
     pieces = " + ".join(p.text for p in parts)
     total = format_inches(check.parts_sum)
     sum_text = (
-        f"{pieces} = {total} ≠ {overall.text} printed " f"(off {format_inches(abs(check.off_by))})"
+        f"{pieces} = {total} ≠ {overall.text} printed (off {format_inches(abs(check.off_by))})"
     )
     place = f"{area}: " if area else ""
     why = (
@@ -1108,23 +1196,38 @@ def page_texts(folder: Path, files: Sequence[str]) -> dict[tuple[str, int], str]
     return out
 
 
-def line_work(uploads: Path) -> Segments:
+class LineWork:
     """A page's line work from the upload (`dim_labels`' own reading, loaded by name), each page
-    read at most once."""
-    read: dict[tuple[str, int], Sequence[Segment] | None] = {}
+    read at most once: its straight pieces (calling it, a `Segments`) and its line weight."""
 
-    def segments(file: str, page: int) -> Sequence[Segment] | None:
+    def __init__(self, uploads: Path) -> None:
+        self.uploads = uploads
+        self._read: dict[tuple[str, int], tuple[Sequence[Segment], float] | None] = {}
+
+    def _page(self, file: str, page: int) -> tuple[Sequence[Segment], float] | None:
         key = (file, page)
-        if key not in read:
+        if key not in self._read:
             try:
                 labels = import_module("app.review.assistant.dim_labels")
-                read[key] = labels._parse(uploads / file, page - 1).segments
+                parsed = labels._parse(self.uploads / file, page - 1)
+                self._read[key] = (parsed.segments, float(parsed.weight))
             except Exception as failed:  # noqa: BLE001 - its ends stay unchecked: no finding
                 _log.warning("vendor consistency: line work not read: %s", type(failed).__name__)
-                read[key] = None
-        return read[key]
+                self._read[key] = None
+        return self._read[key]
 
-    return segments
+    def __call__(self, file: str, page: int) -> Sequence[Segment] | None:
+        found = self._page(file, page)
+        return None if found is None else found[0]
+
+    def weight(self, file: str, page: int) -> float | None:
+        found = self._page(file, page)
+        return None if found is None else found[1]
+
+
+def line_work(uploads: Path) -> LineWork:
+    """A page's line work from the upload, each page read at most once (`LineWork`)."""
+    return LineWork(uploads)
 
 
 def check_pack(
@@ -1169,6 +1272,83 @@ def _already(finding: Mapping[str, Any], live: Sequence[Mapping[str, Any]]) -> b
     return False
 
 
+@dataclass(frozen=True, slots=True)
+class StringJudgement:
+    """What code's geometry says of the strings a reading grouped (#1639)."""
+
+    verified: tuple[str, ...] = ()
+    """Findings whose parts are code's own chain that does not add up: their geometry is proved."""
+    dropped: Mapping[str, str] = field(default_factory=dict)
+    """Findings code's own reading of the same span replaces, with the reason: it adds up, or code
+    found other parts for it (its own finding is then added instead)."""
+
+
+def _overlaps(box: Mapping[str, Any] | None, label: _Label, margin: float = 6.0) -> bool:
+    if not isinstance(box, Mapping):
+        return False
+    try:
+        x0, y0, x1, y1 = (float(box[k]) for k in ("x0", "y0", "x1", "y1"))
+    except (KeyError, TypeError, ValueError):
+        return False
+    lx0, ly0, lx1, ly1 = label.box
+    return not (lx1 < x0 - margin or x1 + margin < lx0 or ly1 < y0 - margin or y1 + margin < ly0)
+
+
+def judge_strings(
+    findings: Sequence[Mapping[str, Any]], checks: Sequence[StringCheck]
+) -> StringJudgement:
+    """Each vendor string a reading grouped (`source: vendor_arithmetic`, not the consistency
+    check's own), against code's strings of the same span: the same page, the same printed overall
+    (at the finding's spot when it has one, else the only one with that value on the page).
+
+    - code's string does not add up and has the same parts: verified (the geometry is code's);
+    - code's string adds up: dropped (the reading grouped dimensions of another chain);
+    - code's string does not add up with other parts: dropped (code's own finding replaces it);
+    - no string of code's, or a doubt: left as it is (never red: Not compared)."""
+    to_inches = import_module("app.review.assistant.finding_checks").to_inches
+    verified: list[str] = []
+    dropped: dict[str, str] = {}
+    for finding in findings:
+        if finding.get("source") != "vendor_arithmetic" or finding.get("created_by") == CREATED_BY:
+            continue
+        if finding.get("status") != "different" or not finding.get("id"):
+            continue
+        printed = to_inches(str(finding.get("printed_total") or finding.get("vendor") or ""))
+        if printed is None:
+            continue
+        same = [
+            check
+            for check in checks
+            if check.overall.page == finding.get("page")
+            and Fraction(printed) == check.overall.inches
+            and check.verdict in ("adds_up", "does_not_add_up")
+        ]
+        placed = [c for c in same if _overlaps(finding.get("vendor_box"), c.overall)]
+        if placed:
+            same = placed
+        elif len(same) != 1:
+            continue  # two strings with that overall and no spot to tell them apart
+        check = same[0]
+        read = [to_inches(str(p)) for p in finding.get("parts") or []]
+        parts = sorted(Fraction(v) for v in read if v is not None)
+        ours = sorted(p.inches for p in check.parts)
+        overall = check.overall.text
+        listed = " + ".join(p.text for p in check.parts)
+        if check.verdict == "adds_up":
+            dropped[str(finding["id"])] = (
+                f"Code measured this string on the drawing: {listed} = {overall} printed, it adds "
+                "up; the reading grouped dimensions of another chain."
+            )
+        elif None not in read and parts == ours:
+            verified.append(str(finding["id"]))
+        else:
+            dropped[str(finding["id"])] = (
+                f"Code measured this string on the drawing as {listed} (printed {overall}); its "
+                "own finding replaces the reading's."
+            )
+    return StringJudgement(tuple(verified), dropped)
+
+
 def add_to_answer(engine: Any) -> ConsistencyResult | None:
     """The engine's hook (a full check, at its finish, $0): the check over the set pack; its Wrong
     items added through the finding book like the ledger's (the same checks and trust rule), unless
@@ -1182,6 +1362,17 @@ def add_to_answer(engine: Any) -> ConsistencyResult | None:
         return None
     book = engine.book
     with engine.finding_lock:
+        # The strings a reading grouped, against code's geometry (#1639): verified, or dropped
+        # for code's own reading of the same span; the rest are never red (Not compared).
+        judged = judge_strings(book.live(), result.checks)
+        for finding in book.live():
+            if str(finding.get("id")) in judged.verified:
+                proved = {**finding, "string_geometry": "verified"}
+                if book.replace(proved):
+                    engine._show_finding(proved)
+        for finding_id, reason in judged.dropped.items():
+            if book.absorb(finding_id):
+                engine._show_dropped(finding_id, reason)
         live = book.live()
         for finding in result.findings:
             if _already(finding, live):

@@ -70,20 +70,24 @@ describe('not seen is not right', () => {
     expect(levelCounts(FINDINGS, null)).toEqual({ confirmed: 1, likely: 2, to_check: 0 });
   });
 
-  it('shows "Not compared" apart in a full check (folded), with why', async () => {
+  it('shows what could not be compared apart in a full check (folded), with why (#1619)', async () => {
     const user = userEvent.setup();
-    render(<AssistantMessage message={answer({ findings: FINDINGS })} chatId="c-1" models={[OPUS]} fullCheck />);
+    const placed = FINDINGS.map((each) => ({
+      ...each,
+      proof: each.id === 'o1' ? { group: 'clouded' as const }
+        : each.id === 'r1' ? { group: 'right' as const }
+          : { group: 'not_compared' as const, label: each.id === 'n1' ? 'Not reviewed: not looked at on both drawings' : 'Not reviewed: not proved by code', reason: 'why it could not be compared' },
+    }));
+    render(<AssistantMessage message={answer({ findings: placed })} chatId="c-1" models={[OPUS]} fullCheck />);
     const node = screen.getByRole('article', { name: 'Answer' });
-    expect([...node.querySelectorAll('[data-slot="chat-kpis"] [data-kpi]')].map((tile) => tile.getAttribute('data-kpi'))).toEqual(['different', 'check', 'same', 'pages', 'accuracy']);
+    expect([...node.querySelectorAll('[data-slot="chat-kpis"] [data-kpi]')].map((tile) => tile.getAttribute('data-kpi'))).toEqual(['different', 'same', 'check', 'pages', 'accuracy']);
     const rows = () => [...node.querySelectorAll<HTMLElement>('[data-slot="chat-finding-row"]')].map((row) => row.dataset.id);
-    expect(rows()).toEqual(['o1', 'i1']);
-    await user.click(within(node).getByRole('button', { name: /^Not compared\s*1/ }));
+    expect(rows()).toEqual(['o1']);
+    await user.click(within(node).getByRole('button', { name: /^Nothing to compare\s*2/ }));
     expect(rows()).toEqual(['o1', 'i1', 'n1']);
-    // The row says Not compared (never Right); its card says why in words.
-    const status = node.querySelector<HTMLElement>('[data-id="n1"] [data-slot="chat-finding-status"]')!;
-    expect([status.dataset.status, status.textContent]).toEqual(['not_compared', 'Not compared']);
-    await user.click(within(node.querySelector<HTMLElement>('[data-id="n1"]')!).getByRole('button', { name: 'Sink model' }));
-    expect(node.querySelector('[data-slot="chat-finding-detail"][data-id="n1"] [data-slot="chat-finding-why"]')?.textContent).toBe('Both sides were not looked at, so this is not counted as right.');
+    // The row says why in the trade's words, and offers only "Make it Wrong".
+    const row = node.querySelector<HTMLElement>('[data-id="n1"]')!;
+    expect(row.querySelector('[data-slot="chat-finding-question"]')?.textContent).toContain('Not reviewed: not looked at on both drawings');
   });
 
   it('has no "Not compared" part when every item was compared', () => {

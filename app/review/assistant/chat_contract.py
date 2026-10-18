@@ -98,6 +98,7 @@ type ChatStepTool = Literal[
     "zoom",
     "read_under_markup",
     "remember",
+    "drawing_facts",
 ]
 type ChatIntent = Literal[
     "fact",
@@ -164,7 +165,9 @@ class ChatMessageIn(BaseModel):
         default=None,
         min_length=1,
         max_length=32,
-        description="Active product ids from `GET /products` (e.g. countertop, cabinet).",
+        description="Active product ids from `GET /products` (e.g. countertop, cabinet): a "
+        "strict scope, so only these products are checked, ruled, counted and drawn (every active "
+        "product = All). Not given: every active product (All is the default).",
     )
     continue_from: str | None = Field(
         default=None,
@@ -342,6 +345,11 @@ class ChatFindingChecksOut(BaseModel):
         description="agrees | disagrees: code's reading ledger (a string that adds up, other "
         "views agreeing); null: the ledger says nothing about it.",
     )
+    text: str | None = Field(
+        default=None,
+        description="agrees: code read the finish codes in the drawings' own text and searched "
+        "every vendor sheet and round of the area (#1623); null: not that check's finding.",
+    )
     units: str | None = Field(
         default=None,
         description="agrees | disagrees: millimetres and inches printed together (940 [37]).",
@@ -435,7 +443,7 @@ class ChatFindingDecisionOut(BaseModel):
 
 
 class ChatFindingEstimateOut(BaseModel):
-    """The AI's best estimate for a "Your decision" item, with how it got it (#1545)."""
+    """The AI's best estimate for a not-compared ("check") item, with how it got it (#1545)."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -445,7 +453,7 @@ class ChatFindingEstimateOut(BaseModel):
 
 
 class ChatFindingDecisionHelpOut(BaseModel):
-    """A "Your decision" item's reasoning for the reviewer (#1545), in plain words."""
+    """A not-compared ("check") item's reasoning for the reviewer (#1545), in plain words."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -469,7 +477,7 @@ type ChatKeepReason = Literal[
 
 
 class ChatFindingSettledOut(BaseModel):
-    """How code settled a "Your decision" item by itself (#1554), shown as "Settled by GV
+    """How code settled a not-compared ("check") item by itself (#1554), shown as "Settled by GV
     Review: …"."""
 
     model_config = ConfigDict(frozen=True)
@@ -477,10 +485,15 @@ class ChatFindingSettledOut(BaseModel):
     outcome: ChatSettledOutcome
     method: str = Field(
         description="The rule or tool: same_item, gv_limits, vendor_sum, printed_vs_printed, "
-        "newest_round, prototype_prints_it, legend, sharper_read, other_trades_tags, out_of_scope."
+        "newest_round, prototype_prints_it, legend, sharper_read, other_trades_tags, out_of_scope; "
+        "escalation_<step> when the full check's escalation settled it (#1619)."
     )
     how: str = Field(description="What code did and found, in one plain sentence.")
-    was: Literal["check"] = "check"
+    was: Literal["check", "different"] = Field(
+        default="check",
+        description="check: it was not compared; different: a Wrong code could not prove, settled "
+        "Right by the escalation (#1619).",
+    )
 
 
 class ChatFindingAlsoOnOut(BaseModel):
@@ -531,6 +544,99 @@ class ChatFindingImpactOut(BaseModel):
         description="Its place among the answer's items of the same status (1 = biggest).",
     )
     why: str = Field(description='Plain words: "changes fabrication (overall size); 9 in off".')
+
+
+class ChatFindingProofOut(BaseModel):
+    """Where the zero-click cloud drawing puts a finding (#1581), worked out by code on read
+    (`proof.proof_of`): only Wrong items code proved are clouded; the reviewer's Agree / Not a
+    problem override."""
+
+    model_config = ConfigDict(frozen=True)
+
+    group: Literal["clouded", "right", "not_compared", "dismissed"] = Field(
+        description="clouded: Wrong, proved by code (red cloud); right; not_compared: could not be "
+        "compared under the architect-first rules (#1619: listed with its reason in the "
+        "Not-compared PDF and workbook, never a question to anyone); dismissed: the reviewer "
+        "marked it not a problem."
+    )
+    should_be: str | None = Field(
+        default=None,
+        description="Wrong items: what the value should be and what governs it, e.g. '37\" "
+        "(architect 3'-1\", page 28)'.",
+    )
+    proof: str | None = Field(
+        default=None, description="Clouded items: the check that proved it, in plain words."
+    )
+    reason: str | None = Field(
+        default=None, description="The other groups: why it is not clouded, in one line."
+    )
+    rule: str | None = Field(
+        default=None,
+        description="The architect-first rule it falls under (#1619): R4 a difference, R5 the "
+        "vendor's own contradiction, R6 GV's rule; for not_compared R1 (brand prototype), R3 "
+        "(architect's drawings disagree), R7 (architect gives nothing), R8 (different reference "
+        "points), R9 (unreadable), R10 (missing job value or setting).",
+    )
+    not_compared: (
+        Literal[
+            "architect_disagrees",
+            "nothing_to_compare",
+            "different_reference",
+            "unreadable",
+            "missing_setting",
+            "prototype",
+            "not_proved",
+            "not_seen",
+            "field_verify",
+            "finish_not_comparable",
+            "no_sheet",
+            "no_overall",
+            "string_not_verified",
+            "internal",
+        ]
+        | None
+    ) = Field(default=None, description="not_compared: the reason (the list's group).")
+    label: str | None = Field(
+        default=None,
+        description="not_compared: the trade's words for the reason (Field verify, RFI to the "
+        "architect, Not reviewed: <reason>, Illegible).",
+    )
+    settle: str | None = Field(
+        default=None, description="not_compared: what is needed to compare it, in plain words."
+    )
+
+
+class ChatFindingEscalationStepOut(BaseModel):
+    """One free code step the escalation tried on an item code could not compare at first
+    (#1619)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    step: str = Field(
+        description="labels, under_markup, same_item, vendor_sums, notes or pairs (cheapest first)."
+    )
+    outcome: str = Field(description="read, proved, folded or no_change.")
+    how: str = Field(description="What code did and found, in one plain line.")
+
+
+class ChatFindingEscalationOut(BaseModel):
+    """What the full check's escalation did with an item code could not settle at first (#1619)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    outcome: Literal["wrong", "right", "folded", "undecided"]
+    steps: list[ChatFindingEscalationStepOut] = Field(default_factory=list)
+
+
+class ChatFindingStringReadsOut(BaseModel):
+    """A full check (#1641, #1652): what the blind second reading of a vendor string gave."""
+
+    model_config = ConfigDict(frozen=True)
+
+    outcome: Literal[
+        "proved", "adds_up", "within_rounding", "disagrees", "not_found", "gap", "not_verified"
+    ]
+    why: str
 
 
 class ChatFindingLaterOut(BaseModel):
@@ -587,8 +693,11 @@ class ChatFindingOut(BaseModel):
     vendor_picture_id: str | None = None
     created_by: str = Field(
         description='"lead", "helper:<n>", "gv_review" (made by code from a recorded result), '
-        '"ledger" (made by code from the reading ledger), or "consistency" (made by code from the '
-        "vendor's own drawings: a string that does not add up, a span printed twice)."
+        '"ledger" (made by code from the reading ledger), "consistency" (made by code from the '
+        "vendor's own drawings: a string that does not add up, a span printed twice), "
+        '"architect_items" (made by code from the drawings\' text: a finish the architect tags '
+        'that the vendor missed, changed or added), or "pairs" (made by code from a dimension '
+        "it paired on both drawings by itself: Wrong or Right with that proof)."
     )
     ledger_ids: list[str] | None = Field(
         default=None, description="The reading ledger's entries (S<n>, R<n>) behind it."
@@ -624,7 +733,8 @@ class ChatFindingOut(BaseModel):
     )
     witnesses: list[str] | None = Field(
         default=None,
-        description="The non-AI witnesses behind it: printed, rule, arithmetic, ledger, units.",
+        description="The non-AI witnesses behind it: printed, ocr_ink, text, rule, arithmetic, "
+        "ledger, units.",
     )
     compared: bool | None = Field(
         default=None,
@@ -642,13 +752,18 @@ class ChatFindingOut(BaseModel):
     )
     decision_help: ChatFindingDecisionHelpOut | None = Field(
         default=None,
-        description="Status check (Your decision): what it measures, the best estimate, how "
+        description="Status check (not compared): what it measures, the best estimate, how "
         "likely it is fine, what to confirm (#1545).",
     )
     impact: ChatFindingImpactOut | None = Field(
         default=None,
         description="Wrong and Your-decision items (#1569): how much it matters, by code; the "
         "screen, the cloud drawing's numbers and the check report follow this order.",
+    )
+    proof: ChatFindingProofOut | None = Field(
+        default=None,
+        description="Where the zero-click cloud drawing puts it, and why (#1581); worked out on "
+        "read, so it follows the reviewer's latest decision.",
     )
     check_reason: (
         Literal["different_extent", "which_governs", "pairing_not_certain", "scaled", "site_verify"]
@@ -670,7 +785,7 @@ class ChatFindingOut(BaseModel):
     )
     settled: ChatFindingSettledOut | None = Field(
         default=None,
-        description="Set when code settled this item, which was Your decision, by itself (#1554).",
+        description="Set when code settled this item, which was not compared, by itself (#1554).",
     )
     question: str | None = Field(
         default=None,
@@ -685,6 +800,17 @@ class ChatFindingOut(BaseModel):
     parts_sum: str | None = Field(
         default=None,
         description="Source vendor_arithmetic: code's sum of the parts, in inches (#1554).",
+    )
+    escalation: ChatFindingEscalationOut | None = Field(
+        default=None,
+        description="A full check (#1619): the free code steps tried on this item when code could "
+        "not settle it at first, and how it ended.",
+    )
+    string_reads: ChatFindingStringReadsOut | None = Field(
+        default=None,
+        description="A vendor string (#1641): the blind second reading's outcome, in code's words "
+        "(proved: the same parts and overall, and code's sum is off; gap: code's lines show a part "
+        "left out, so no reading was asked; not_verified: the fixed price did not reach it).",
     )
 
 
@@ -784,6 +910,17 @@ class ChatScopeOut(BaseModel):
         "full_check", "whole_set_words", "nothing_named", "wide_work", "pages_named", "area_named"
     ]
     label: str = Field(description='In plain words: "page 4 (Pantry)", "the whole set".')
+    products: list[str] = Field(
+        default_factory=list,
+        description="The products checked (product ids, a strict scope: a finding of another "
+        "product is never kept); empty on older answers.",
+    )
+    all_products: bool = Field(
+        default=False, description="True when every active product was checked (All)."
+    )
+    products_label: str | None = Field(
+        default=None, description='The products in plain words: "Countertops".'
+    )
 
 
 class ChatScopeBlock(BaseModel):
@@ -1030,7 +1167,7 @@ class ChatTimingPhaseOut(BaseModel):
 
     phase: str = Field(
         description="seeding, set_pack, planning, prewarm, lead, helpers, lead_verification, "
-        "second_reads, third_reads, critic, finish_checks, cloud_drawing, report"
+        "second_reads, third_reads, critic, finish_checks, cloud_drawing, report, package"
     )
     label: str
     seconds: float
@@ -1063,6 +1200,20 @@ class ChatTimingsOut(BaseModel):
     helpers: list[ChatTimingHelperOut]
 
 
+class ChatProductScopeOut(BaseModel):
+    """The strict product scope (Anant, 2026-10-18): the products checked, and the findings of
+    other products code refused or dropped, whoever reported them."""
+
+    model_config = ConfigDict(frozen=True)
+
+    products: list[str]
+    all_products: bool
+    products_label: str
+    dropped_out_of_scope: int = Field(
+        description="Findings of products not in scope that code did not keep."
+    )
+
+
 class ChatTrustOut(BaseModel):
     """Why the answer can be believed, built by code from its findings and coverage."""
 
@@ -1088,6 +1239,11 @@ class ChatTrustOut(BaseModel):
     timings: ChatTimingsOut | None = None
     scope: ChatScopeOut | None = Field(
         default=None, description="What the counts above cover (null on older answers)."
+    )
+    product_scope: ChatProductScopeOut | None = Field(
+        default=None,
+        description="The products checked and how many findings of other products code dropped "
+        "(for the record, not shown); null on older answers.",
     )
 
 
@@ -1181,6 +1337,7 @@ class ChatUnknownOut(BaseModel):
         "no_counterpart",
         "missing_round",
         "not_in_set",
+        "not_comparable",
     ]
     needs: str
     scope: Literal["page", "item", "set"] = Field(
@@ -1299,7 +1456,7 @@ class ChatResolverCountsOut(BaseModel):
 
 
 class ChatResolverEntryOut(BaseModel):
-    """One "Your decision" item code settled by itself (#1554): the folded group's line."""
+    """One not-compared ("check") item code settled by itself (#1554): the folded group's line."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -1352,6 +1509,46 @@ class ChatFallbackBlock(BaseModel):
     fallback: ChatFallbackOut
 
 
+class ChatPackageStateOut(BaseModel):
+    """What the review result needs beyond the findings (#1622, `review_action.CheckState`)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    incomplete: str | None = Field(
+        default=None, description="Why the check did not finish; null when it did."
+    )
+    missing_areas: int = Field(
+        default=0, ge=0, description="Areas the architect draws with no vendor sheet."
+    )
+    wrong_product: bool = Field(
+        default=False, description="Code proved the vendor drew a different product."
+    )
+    still_open: int = Field(
+        default=0, ge=0, description="Previous comments still wrong in this round."
+    )
+
+
+class ChatPackageOut(BaseModel):
+    """A full check's send-ready package (#1622): kept with the answer so the screen and a remade
+    package read the same state and comment numbers."""
+
+    model_config = ConfigDict(frozen=True)
+
+    state: ChatPackageStateOut
+    numbers: dict[str, str] = Field(
+        default_factory=dict, description='Finding id -> stable comment number ("C-07").'
+    )
+    submittal: str = Field(default="", description='The submittal number ("25A"); "" unknown.')
+    round: int = Field(default=1, ge=1, description="The drawing set's round.")
+
+
+class ChatPackageBlock(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["package"]
+    package: ChatPackageOut
+
+
 ChatBlock = Annotated[
     ChatThinkingBlock
     | ChatTextBlock
@@ -1369,7 +1566,8 @@ ChatBlock = Annotated[
     | ChatResumeBlock
     | ChatResolverBlock
     | ChatUnderstoodBlock
-    | ChatFallbackBlock,
+    | ChatFallbackBlock
+    | ChatPackageBlock,
     Field(discriminator="type"),
 ]
 
@@ -1382,6 +1580,29 @@ class ChatFileOut(BaseModel):
     size: int
     mime: str
     url: str
+
+
+class ChatReviewActionOut(BaseModel):
+    """A full check's review result (#1622, `review_action.review_action`, rules S0 to S7),
+    decided by code on read from its findings with the reviewer's latest decisions and the state
+    kept with its package; the comment letter and the cloud drawing's cover say the same."""
+
+    model_config = ConfigDict(frozen=True)
+
+    action: Literal[
+        "approved", "approved_as_noted", "revise_resubmit", "rejected", "not_for_sending"
+    ]
+    rule: Literal["S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7"] = Field(
+        description="The rule that decided it (the first that matches wins)."
+    )
+    words: str = Field(description='"Approved as noted", "Revise and resubmit", …')
+    reason: str = Field(description='Why, in one line: "2 of 5 corrections change fabrication."')
+    corrections: int = Field(ge=0, description="Comments sent (the clouds).")
+    fabrication: int = Field(ge=0, description="Of them, those that change fabrication.")
+    note: str | None = Field(default=None, description="S6: what was not reviewed.")
+    next_step: str = Field(description="What the vendor does next (the letter's closing line).")
+    required_by: str = Field(description='Who must act now ("Vendor: revise and resubmit").')
+    disclaimer: str = Field(description="The standard words printed under the result.")
 
 
 class ChatMessageOut(BaseModel):
@@ -1439,6 +1660,11 @@ class ChatMessageOut(BaseModel):
         default=None,
         description="#1551: how the app understood the question before the work (its "
         "`understood` block); null when it made no task spec, and on older answers.",
+    )
+    review_action: ChatReviewActionOut | None = Field(
+        default=None,
+        description="#1622: a full check's review result, worked out on read from its findings "
+        "with the reviewer's latest decisions; null on other messages and before its package.",
     )
 
 

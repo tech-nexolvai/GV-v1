@@ -74,6 +74,8 @@ __all__ = [
     "page_lines",
     "product_checklist",
     "recorded_on_pages",
+    "unreached_pages",
+    "unreached_send_back",
     "with_label_gaps",
 ]
 
@@ -103,7 +105,7 @@ LENS_SCOPE: Final[dict[str, str]] = {
         "shelves, hardware, position, extent, the ID set against the brand prototype)."
     ),
     "numbers": (
-        "Yours: every size and dimension string, scaled sizes (only ever Your decision), and what "
+        "Yours: every size and dimension string, scaled sizes (only ever Not compared), and what "
         "each dimension spans."
     ),
     "drawn": (
@@ -147,9 +149,13 @@ DIMENSION LABELS: code numbered every printed dimension it found on your pages (
 {labels}
 Every vendor label on your pages must be handled: matched in a finding (vendor_dim, with architect_dim for the architect's), part of a string (record_string part_dims and total_dim), or named on a line LABELS p<N> not on architect: D3, D9. Code counts the vendor labels left over.
 
-OUTPUT: code, not you, decides what is wrong, and only a value code can find on the drawing can become a red cloud, so give code the spot, not your reading. For every item you compare, the Right ones too, call report_finding with the labels: vendor_dim and architect_dim (p28.D5 for another page). Type a value with its box only when no label covers it; code will try to read it there. For every dimension string, record_string with part_dims and total_dim; code adds them. Before you pair two heights or widths, say in why where each end lands (the spans words of what-dimensions-measure). When the ends differ, or you are not sure two labels measure the same thing, still report it: status check (Your decision) with decision_help and one line why. A miss is never found again; a doubtful item is only listed. Status different = Wrong, check = Your decision, same = Right. Name each item starting with its area from the list above ("<area>: counter height"), the same way on every page, view and round; round on vendor findings; vs_page when the architect is on another page. record_reading for a value you read without a label. set_coverage for each page. verified: false (a separate check verifies).
+OUTPUT: code, not you, decides what is wrong, and only a value code can find on the drawing can become a red cloud, so give code the spot, not your reading. For every item you compare, the Right ones too, call report_finding with the labels: vendor_dim and architect_dim (p28.D5 for another page). Type a value with its box only when no label covers it; code will try to read it there. For every dimension string, record_string with part_dims and total_dim; code adds them. Before you pair two heights or widths, say in why where each end lands (the spans words of what-dimensions-measure). When the ends differ, or you are not sure two labels measure the same thing, still report it: status check (Not compared) with decision_help and one line why. A miss is never found again; a doubtful item is only listed. Status different = Wrong, check = Not compared, same = Right. Name each item starting with its area from the list above ("<area>: counter height"), the same way on every page, view and round; round on vendor findings; vs_page when the architect is on another page. record_reading for a value you read without a label. set_coverage for each page. verified: false (a separate check verifies).
 
-REPORT BACK (short): per page the differences (item, vendor vs architect, finding ids), anything unreadable and where, then one line per page exactly like
+Record each item as soon as you have read it (report_finding, record_string), page by page: a reading only in your report is lost, because your report records nothing.
+
+REPORT BACK (short): per page the differences (item, vendor vs architect, finding ids), anything unreadable and where; for a difference you read but could not record, one line exactly like
+UNRECORDED p<N> | <area: item> | architect <value> | vendor <value> | different or check | <where each end lands, or why>
+then one line per page exactly like
 CHECKLIST p<N>: architect a/b; notes a/b; strings a/b; not compared: <what and why, or none>
 (a/b = items done of items on the page).
 
@@ -203,26 +209,102 @@ def _pages_of(page_map: Mapping[str, Any] | Sequence[Any] | None) -> dict[int, M
     return out
 
 
+def _role_word(half: Mapping[str, Any]) -> str:
+    role = str(half.get("role") or "unlabelled").replace("_", " ")
+    if role == "vendor" and isinstance(half.get("round"), int):
+        role = f"vendor round {half['round']}"
+    return role
+
+
+def _centre(box: object) -> tuple[float, float] | None:
+    if not isinstance(box, Sequence) or isinstance(box, str) or len(box) != 4:
+        return None
+    try:
+        x0, y0, x1, y1 = (float(v) for v in box)
+    except (TypeError, ValueError):
+        return None
+    return (x0 + x1) / 2, (y0 + y1) / 2
+
+
+def _places(entry: Mapping[str, Any]) -> dict[str, str]:
+    """Where each of a page's two kinds of drawing is ("top" / "bottom", "left" / "right"), so a
+    helper never takes one for the other (#1644: a page holding the architect's drawing over a
+    brand prototype was read as the prototype alone). Empty unless the page holds exactly two
+    kinds of drawing, each with its box."""
+    centres: dict[str, list[tuple[float, float]]] = {}
+    for half in entry.get("halves") or []:
+        if not isinstance(half, Mapping):
+            continue
+        centre = _centre(half.get("box"))
+        if centre is None:
+            return {}
+        centres.setdefault(_role_word(half), []).append(centre)
+    if len(centres) != 2:
+        return {}
+    (first, a), (second, b) = (
+        (role, (sum(x for x, _ in c) / len(c), sum(y for _, y in c) / len(c)))
+        for role, c in centres.items()
+    )
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    if abs(dy) >= abs(dx):
+        return {first: "top", second: "bottom"} if dy > 0 else {first: "bottom", second: "top"}
+    return {first: "left", second: "right"} if dx > 0 else {first: "right", second: "left"}
+
+
 def _drawings(entry: Mapping[str, Any]) -> str:
-    """`architect + vendor round 1 + brand prototype`, from the page's labelled drawings."""
+    """`architect (top) + brand prototype (bottom)`, from the page's labelled drawings."""
     words: list[str] = []
     for half in entry.get("halves") or []:
         if not isinstance(half, Mapping):
             continue
-        role = str(half.get("role") or "unlabelled").replace("_", " ")
-        if role == "vendor" and isinstance(half.get("round"), int):
-            role = f"vendor round {half['round']}"
+        role = _role_word(half)
         if role not in words:
             words.append(role)
-    return " + ".join(words) if words else str(entry.get("role") or "no labelled drawing")
+    if not words:
+        return str(entry.get("role") or "no labelled drawing")
+    places = _places(entry)
+    return " + ".join(f"{w} ({places[w]})" if w in places else w for w in words)
+
+
+def _has_architect(entry: Mapping[str, Any] | None) -> bool:
+    return any(
+        isinstance(h, Mapping) and h.get("role") == "architect"
+        for h in (entry or {}).get("halves") or []
+    )
+
+
+def _area_of(entry: Mapping[str, Any], known: Mapping[int, Mapping[str, Any]]) -> str | None:
+    """The page's area within its section: its own title, else the title of the page it takes its
+    area from (two sections may reuse an area's title)."""
+    owner: Mapping[str, Any] = entry
+    if not entry.get("area") and isinstance(entry.get("area_from_page"), int):
+        owner = known.get(entry["area_from_page"]) or {}
+    area = owner.get("area")
+    if not area:
+        return None
+    return " ".join(f"{owner.get('section') or ''} / {area}".split()).lower()
+
+
+def _pages_words(pages: Sequence[int]) -> str:
+    named = [f"p{p}" for p in pages]
+    return named[0] if len(named) == 1 else ", ".join(named[:-1]) + f" and {named[-1]}"
 
 
 def page_lines(
     pages: Iterable[int], page_map: Mapping[str, Any] | Sequence[Any] | None = None
 ) -> list[str]:
-    """One line per page: its area, whose drawings it holds, and where its architect drawing is
-    when it is on another page (`area_from_page`). A page the map does not know is still listed."""
+    """One line per page: its area, whose drawings it holds (and where each is, when two kinds
+    share the page), and where the area's architect drawings are. A page with no architect drawing
+    is pointed to the area's pages that have one (never just to the page its area title came from:
+    that page may hold only the vendor's drawing); a page with one is told of the area's other
+    architect drawings, since the larger scale or detail governs (R5). A page the map does not know
+    is still listed."""
     known = _pages_of(page_map)
+    architect_pages: dict[str, list[int]] = {}
+    for number, listed in sorted(known.items()):
+        key = _area_of(listed, known)
+        if key and _has_architect(listed):
+            architect_pages.setdefault(key, []).append(number)
     lines: list[str] = []
     for page in sorted(set(pages)):
         entry = known.get(page)
@@ -231,9 +313,19 @@ def page_lines(
             continue
         area = entry.get("area") or entry.get("section") or "area not named"
         line = f"- p{page}: {_short(area)}; {_drawings(entry)}"
-        pair = entry.get("pair_page") or entry.get("area_from_page")
+        key = _area_of(entry, known)
+        others = [p for p in architect_pages.get(key or "", []) if p != page]
+        pair = entry.get("pair_page")
         if isinstance(pair, int) and pair != page:
             line += f"; the architect's drawing is on p{pair}"
+        elif _has_architect(entry):
+            if others:
+                line += (
+                    f"; the area's other architect drawing is on {_pages_words(others)} (the "
+                    "larger scale or the detail governs)"
+                )
+        elif others:
+            line += f"; the architect's drawing is on {_pages_words(others)}"
         if entry.get("pair_page") or any(
             isinstance(h, Mapping) and h.get("heading_by") == "reviewer"
             for h in entry.get("halves") or []
@@ -318,10 +410,17 @@ def product_checklist(products: Sequence[str] | None = None) -> str:
         if "global_rules" in product.check_kinds and product.global_rule_hints:
             hints = "; ".join(hint.rstrip(".") for hint in product.global_rule_hints)
             lines.append(f"- GV standards not on the drawing (values in rules.md): {hints}.")
-    lines.append(
-        "An item of no product in focus is category other. report_finding's category is the "
-        "product id."
-    )
+    if {p.id for p in focus} >= set(registry().active_ids()):
+        lines.append(
+            "An item of no product in focus is category other. report_finding's category is the "
+            "product id."
+        )
+    else:
+        # A strict scope (Anant, 2026-10-18): only the picked products are checked.
+        lines.append(
+            f"ONLY {words} are checked: leave out every item of another product or of no product "
+            "(code does not record it). report_finding's category is the product id."
+        )
     return "\n".join(lines)
 
 
@@ -358,7 +457,7 @@ def helper_brief(
         "principle": PRINCIPLE,
         "product_checklist": product_checklist(products),
         "labels": (
-            "\n".join(label_summary(pages, labels))
+            "\n".join(label_summary(pages, labels, page_map))
             if labels is not None
             else "- not listed yet: zoom with marks: true to see them"
         ),
@@ -377,9 +476,16 @@ def helper_brief(
 
 
 def label_summary(
-    pages: Iterable[int], labels: Mapping[int, Sequence[Mapping[str, Any]] | None]
+    pages: Iterable[int],
+    labels: Mapping[int, Sequence[Mapping[str, Any]] | None],
+    page_map: Mapping[str, Any] | Sequence[Any] | None = None,
 ) -> list[str]:
-    """One line per page: how many dimension labels code found on each drawing (#1558)."""
+    """One line per page: how many dimension labels code found on each drawing (#1558), and
+    (#1641) each architect or vendor drawing of the page where code found none: its numbers are
+    pen strokes or a picture, to read from the picture and give with their box. The paid run of
+    2026-10-19 left such pages alone ("the vendor's values are unlabelled, I did not compare
+    them"; a page whose architect half had no labels was taken for a brand prototype)."""
+    entries = _pages_of(page_map)
     lines: list[str] = []
     for page in sorted(set(pages)):
         found = labels.get(page)
@@ -391,8 +497,44 @@ def label_summary(
             side = str(label.get("side") or "unknown")
             counts[side] = counts.get(side, 0) + 1
         words = ", ".join(f"{side} {count}" for side, count in sorted(counts.items()))
-        lines.append(f"- p{page}: {len(found)} labels ({words or 'none'})")
+        line = f"- p{page}: {len(found)} labels ({words or 'none'})"
+        bare = _unlabelled_halves(entries.get(page), found)
+        if bare:
+            line += (
+                f"; NO labels on the {' and the '.join(bare)}: pen strokes or a picture, still "
+                "to compare (read each number from the zoom, report it with its tight box)"
+            )
+        lines.append(line)
     return lines
+
+
+def _unlabelled_halves(
+    entry: Mapping[str, Any] | None, labels: Sequence[Mapping[str, Any]]
+) -> list[str]:
+    """The page's architect and vendor drawings (from the page map) with no label inside."""
+    out: list[str] = []
+    for half in (entry or {}).get("halves") or []:
+        if not isinstance(half, Mapping) or half.get("role") not in ("architect", "vendor"):
+            continue
+        box = half.get("box")
+        if not isinstance(box, Sequence) or len(box) != 4:
+            continue
+        x0, y0, x1, y1 = (float(v) for v in box)
+        inside = False
+        for label in labels:
+            lx0, ly0, lx1, ly1 = (float(v) for v in label.get("box") or (0, 0, 0, 0))
+            cx, cy = (lx0 + lx1) / 2, (ly0 + ly1) / 2
+            if x0 <= cx <= x1 and y0 <= cy <= y1:
+                inside = True
+                break
+        if inside:
+            continue
+        heading = str(half.get("heading") or "").strip()
+        name = "architect's drawing" if half["role"] == "architect" else "vendor's drawing"
+        if half.get("round"):
+            name += f" (round {half['round']})"
+        out.append(f"{name}{f' {heading!r}' if heading else ''}")
+    return out
 
 
 def with_label_gaps(
@@ -464,6 +606,41 @@ _LEFT: Final = {
     "numbers": "each architect dimension segment by segment, each vendor string",
     "drawn": "each architect note and tag, each door, drawer, bin and shelf, each piece of hardware",
 }
+
+
+#: A checklist's "not compared" reason that says the page was never compared (not a reason the
+#: drawing gives: a prototype, nothing on the architect's side).
+_UNREACHED: Final = re.compile(
+    r"not reached|not opened|budget|ran out|out of (?:money|time)|did not (?:get|reach|open|zoom)",
+    re.IGNORECASE,
+)
+
+
+def unreached_pages(report: str, pages: Iterable[int]) -> list[int]:
+    """The pages whose CHECKLIST line (or none at all) says the helper never got to them."""
+    found: dict[int, str] = {}
+    for match in _LINE.finditer(report or ""):
+        found[int(match.group(1))] = match.group(2)
+    out = []
+    for page in sorted(set(pages)):
+        body = found.get(page)
+        said = _NOT_COMPARED.search(body) if body is not None else None
+        if body is None or (said is not None and _UNREACHED.search(said.group(1))):
+            out.append(page)
+    return out
+
+
+def unreached_send_back(pages: Sequence[int]) -> str | None:
+    """The message that sends a roster helper back to pages it stopped short of while its money
+    and tool calls were not used up (#1634: helpers stopped at a fifth of their money)."""
+    if not pages:
+        return None
+    listed = ", ".join(f"p{page}" for page in pages)
+    return (
+        f"You still have money and tool calls left for your pages: {listed} are not compared yet. "
+        "Compare them now, one page at a time (zoom the labels, record the findings and strings), "
+        "set_coverage for them, then report with an updated CHECKLIST line for every page."
+    )
 
 
 def checklist_send_back(gaps: Mapping[int, str], lens: str = "both") -> str | None:

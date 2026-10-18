@@ -74,7 +74,25 @@ def test_the_registry_holds_the_clients_products_two_active() -> None:
     for product in known.active():
         assert product.skill_file.read_text(encoding="utf-8").strip()
         assert product.global_rule_hints, product.id
+        # The strict product scope reads these: specific words, then broad hints, and
+        # no word two active products share.
+        assert product.words and product.hints, product.id
+    # Every product's words are its own, the ones not active yet too (they re-file "other" items).
+    for one, two in ((a, b) for a in known.products for b in known.products if a.id < b.id):
+        assert not set(one.words) & {*two.words, *two.hints}, (one.id, two.id)
+        assert not set(two.words) & {*one.words, *one.hints}, (one.id, two.id)
     assert known.get("lighting") is not None and not known.get("lighting").active  # type: ignore[union-attr]
+
+
+def test_each_active_product_names_its_own_tag_families() -> None:
+    """The finish check (#1623) compares and files codes by these families."""
+    known = registry()
+    countertop, cabinet = known.get("countertop"), known.get("cabinet")
+    assert countertop is not None and cabinet is not None
+    assert "CT" in countertop.tag_families and "LA" in cabinet.tag_families
+    assert not set(countertop.tag_families) & set(cabinet.tag_families)
+    # A family that names a plumbing fixture in some sets is never one.
+    assert "PL" not in {f for p in known.products for f in p.tag_families}
 
 
 def test_product_type_is_the_registry() -> None:
@@ -110,6 +128,10 @@ def _broken(tmp_path: Path, change: object) -> Path:
         (lambda d: d["products"][2].update(active=True, id="lamp_post"), "skill file lamp_post"),
         (lambda d: [p.update(active=False) for p in d["products"]], "at least one product"),
         (lambda d: d.update(version=2), "version: 1"),
+        (lambda d: d["products"][0].update(words="countertop"), "`words` must be a list"),
+        (lambda d: d["products"][1].update(hints=[""]), "`hints` must be a list"),
+        (lambda d: d["products"][0].update(tag_families=["qz-1"]), "tag_families"),
+        (lambda d: d["products"][1].update(tag_families=["CT"]), "given to two products"),
     ],
     ids=[
         "repeated-id",
@@ -122,6 +144,10 @@ def _broken(tmp_path: Path, change: object) -> Path:
         "active-without-skill",
         "none-active",
         "unknown-version",
+        "words-not-a-list",
+        "empty-hint",
+        "bad-tag-family",
+        "tag-family-twice",
     ],
 )
 def test_a_registry_that_does_not_hold_together_is_refused(

@@ -153,6 +153,39 @@ export interface ChatMessage {
   resume?: ChatResume | null;
   /** #1551: how the app understood the question (the answer's `understood` block); null when none. */
   understood?: ChatUnderstood | null;
+  /** #1622: a full check's review action, decided by code on read; null on other messages. */
+  review_action?: ChatReviewAction | null;
+}
+
+/**
+ * #1622: the review result a full check's send-ready package carries, decided by code (rules S0 to
+ * S7, the first that matches wins) from the comments it sends the vendor (the clouded Wrong items).
+ * The comment letter and the cloud drawing's cover say the same words.
+ */
+export interface ChatReviewAction {
+  action: 'approved' | 'approved_as_noted' | 'revise_resubmit' | 'rejected' | 'not_for_sending';
+  rule: 'S0' | 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6' | 'S7';
+  /** "Approved", "Approved as noted", "Revise and resubmit", "Rejected", "Check incomplete: not for sending". */
+  words: string;
+  /** Why, in one line: "2 of 5 corrections change fabrication." */
+  reason: string;
+  corrections: number;
+  fabrication: number;
+  /** S6: what was not reviewed. */
+  note?: string | null;
+  /** What the vendor does next (the letter's closing line). */
+  next_step: string;
+  /** Who must act now: "Vendor: revise and resubmit". */
+  required_by: string;
+  disclaimer: string;
+}
+
+/** #1622: what a full check's package kept with the answer (the result's state, the comment numbers). */
+export interface ChatPackageState {
+  state: { incomplete?: string | null; missing_areas?: number; wrong_product?: boolean; still_open?: number };
+  numbers?: Record<string, string>;
+  submittal?: string;
+  round?: number;
 }
 
 /** A full check's progress, by code (#1524): the last one is stored as a block. */
@@ -177,6 +210,10 @@ export interface ChatScope {
   area?: string | null;
   why?: string | null;
   label?: string | null;
+  /** The products checked: a strict scope (Anant, 2026-10-18). Absent on older answers. */
+  products?: string[] | null;
+  all_products?: boolean | null;
+  products_label?: string | null;
 }
 
 /** #1551: what a typed question asks for, as the app's sharpen step read it. */
@@ -245,6 +282,7 @@ export type ChatBlock =
   | { type: 'unknowns'; unknowns: ChatUnknown[] }
   | { type: 'resume'; resume: ChatResume }
   | { type: 'resolver'; resolver: ChatResolver }
+  | { type: 'package'; package: ChatPackageState }
   | { type: 'understood'; understood: ChatUnderstood }
   | { type: 'fallback'; fallback: ChatFallback };
 
@@ -378,6 +416,34 @@ export interface ChatFinding {
   impact?: FindingImpact | null;
   /** #1548: set when a later message of the chat corrected it; this is its newest version. */
   updated_in?: FindingLater | null;
+  /**
+   * #1581: where the zero-click cloud drawing puts it, by code (`proof.py`): only Wrong items code
+   * proved are clouded. Added on a stored answer (not while it streams); follows the decision.
+   */
+  proof?: FindingProof | null;
+  /** #1611: `code` when code paired the architect's and the vendor's labels by itself. */
+  paired_by?: string | null;
+}
+
+/** #1581: the zero-click cloud drawing's group for a finding, and its words. */
+export type ProofGroup = 'clouded' | 'right' | 'not_compared' | 'dismissed';
+
+export interface FindingProof {
+  group: ProofGroup;
+  /** Wrong items: what it should be and what governs it: '37" (architect 3'-1", page 28)'. */
+  should_be?: string | null;
+  /** Clouded items: the check that proved it, in plain words. */
+  proof?: string | null;
+  /** The other groups: why it is not clouded, in one line. */
+  reason?: string | null;
+  /** #1619, not_compared: the architect-first rule (R1-R10) it falls under. */
+  rule?: string | null;
+  /** #1619, not_compared: the reason (the Not-compared list's group). */
+  not_compared?: string | null;
+  /** #1619, not_compared: the trade's words for it ("Field verify", "RFI to the architect", "Illegible", "Not reviewed: …"). */
+  label?: string | null;
+  /** #1619, not_compared: what is needed to compare it. */
+  settle?: string | null;
 }
 
 /** #1569: code's impact score (0-100), its place among the items of its status, and why. */
@@ -487,7 +553,9 @@ export type EvidenceKind = 'observed' | 'derived' | 'inferred';
 export type UnknownWhy =
   | 'unreadable' | 'not_opened' | 'missing_job_value' | 'pairing_uncertain' | 'refused_alignment'
   /** #1584, the vendor consistency check: an area on one side only, a round or an indexed sheet the set lacks. */
-  | 'no_counterpart' | 'missing_round' | 'not_in_set';
+  | 'no_counterpart' | 'missing_round' | 'not_in_set'
+  /** #1623, the finish check: different tag systems, a prototype-only finish, a note naming a part. */
+  | 'not_comparable';
 
 /** One thing the answer did not check, and what would settle it (built by code). */
 export interface ChatUnknown {
@@ -790,7 +858,8 @@ export type ChatTool =
   | 'measure_on_drawing'
   | 'zoom'
   | 'read_under_markup'
-  | 'remember';
+  | 'remember'
+  | 'drawing_facts';
 
 /** One tool the assistant used. `step_start` sends it without its output; `step_end` sends it whole. */
 export interface ChatStep {

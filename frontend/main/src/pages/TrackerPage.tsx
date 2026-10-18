@@ -184,7 +184,7 @@ function Numbers({ tracker }: { tracker: Tracker }) {
       sub: (
         <>
           <span aria-hidden="true" className="mr-1 inline-block size-1.5 translate-y-[-1px] rounded-full bg-outcome-fail" />
-          <span className="num">{totals.open_wrong}</span> wrong · <span className="num">{totals.open_decision}</span> your decision
+          <span className="num">{totals.open_wrong}</span> wrong · <span className="num">{totals.open_decision}</span> not compared
         </>
       ),
     },

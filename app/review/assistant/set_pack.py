@@ -21,6 +21,16 @@ that set-up once per upload, in the background, and the agent sees it read-only 
   value, inches, box, whose drawing it is on, and its dimension and extension lines when found
   (`dim_labels.py`). The `zoom` tool draws these ids on a crop; findings name them. Written as
   it grows, page by page, after the pictures; a page not in it yet is read when it is asked for.
+  Every page's text labels come first; then the vendor's drawn numbers (pen strokes, read by two
+  OCR engines) are added page by page within `DIMS_DRAWN_BUDGET_S`, after the text ids.
+- `scales.json`: each drawing's scale measured from its own printed dimensions
+  (`view_scales.py`; printed scale notes are wrong where GV resized a pasted drawing), written
+  with `dims.json`. `measure_on_drawing` uses it when no calibration is given.
+- `notes.json`: each drawing's printed tags and notes (`drawing_notes.py`, from the phrases
+  `dims.json` keeps), and the architect's tags the vendor's drawing does not print.
+- `pairs.json`: architect against vendor dimensions paired by drawn position (`dim_pairs.py`,
+  wrapping `extraction/architect/pairing.py`) or by anchors, what both ends land on (`dim_anchors.py`:
+  the same wall, floor or outlet on both drawings, no scale used), each `same` or `different`.
 - `status.json`: `building`, `ready` or `failed`, and the steps done. The agent can work before
   the pack is ready (the first message never waits); the `zoom` tool makes the drawings-only copy
   it needs at once if the pack has not made it yet.
@@ -82,13 +92,13 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 #: Changes when what the pack holds changes: an older pack is built again.
-PACK_VERSION: Final = 2
+PACK_VERSION: Final = 5
 RENDER_DPI: Final = 100
-#: Seconds the dimension labels' drawn-ink route (OCR) may spend on one set
-#: (`GV_DIM_LABELS_DRAWN_BUDGET_S`). Off by default: measured on a real set, reading drawn numbers
-#: with no expected value found almost none in 100 s a page (#1558); drawn values keep the typed
-#: path and `verify_value`.
-DIMS_DRAWN_BUDGET_S: Final = 0.0
+#: Seconds the dimension labels' drawn-ink route (OCR) may spend on one set, after every page's
+#: text labels (`GV_DIM_LABELS_DRAWN_BUDGET_S`; 0 turns it off). It reads the vendor's drawn
+#: numbers label by label in the labels' own low-priority process (#1571); pages it does not reach
+#: stay `not_run`, and their drawn values keep `verify_value`.
+DIMS_DRAWN_BUDGET_S: Final = 1200.0
 #: The hi-res page cache's folder inside the pack (`page_cache`, #1548): 300-dpi tiles of each page
 #: a crop was cut from, made on first need.
 HIRES: Final = "hires"
@@ -534,6 +544,19 @@ pages/<name>/p-NNN.png every page at 100 dpi (drawings only). Zoom to read numbe
 contact/*.png          nine pages per picture, page numbers stamped: the whole set at a glance.
 dims.json              every printed dimension code found, numbered per page (D17): value,
                        inches, box, side, dimension line. zoom marks: true draws the ids.
+                       route "drawn": the vendor's drawn numbers read by two OCR engines
+                       (added later; check one with zoom before you rely on it).
+scales.json            each drawing's scale measured from its own printed dimensions (labels
+                       that agree within 1%), its box, and the printed scale note beside it
+                       (note_agrees false: GV resized the drawing; trust the measured scale).
+                       Per label: drawn_in, off_by, drawn_to_value.
+notes.json             per drawing: the tags (FN-01, FX-101-CUST) and notes it prints, and per
+                       page the architect's tags the vendor's drawing does not print.
+pairs.json             architect against vendor dimensions paired by drawn position (both
+                       ends on each other's ticks at each drawing's measured scale, never by
+                       value) or by anchors (method anchors: both ends land on the same wall,
+                       floor or outlet on both drawings, no scale used), each same or different;
+                       and why a row could not be paired.
 status.json            building / ready / failed.
 hires/                 code's 300-dpi tiles of the pages zoom has cut from (not for reading:
                        zoom gives you any area sharp).
@@ -594,8 +617,9 @@ def _drawn_budget() -> float:
         return DIMS_DRAWN_BUDGET_S
 
 
-#: The most seconds the labels' own process may take for one set.
-DIMS_TIMEOUT_S: Final = 1800
+#: The most seconds the labels' own process may take for one set: the text route and the drawn
+#: route's budget, with room to spare.
+DIMS_TIMEOUT_S: Final = 2400
 
 
 #: What the labels' own process gets of the server's environment: enough to run Python, find this
@@ -666,14 +690,41 @@ def write_dims(
     server's process id; the labels' own process stops when the server is gone."""
     labels = import_module("app.review.assistant.dim_labels")
 
+    scales = import_module("app.review.assistant.view_scales")
+    notes = import_module("app.review.assistant.drawing_notes")
+    pairs = import_module("app.review.assistant.dim_pairs")
+    anchors = import_module("app.review.assistant.dim_anchors")
+    pages = {"pages": list(page_map)}
+    line_work: dict[tuple[str, int], Any] = {}
+    anchored_memo: dict[Any, Any] = {}
+
+    def segments_of(name: str, page: int) -> Any:
+        if (name, page) not in line_work:
+            line_work[(name, page)] = anchors.page_segments(uploads / name, page - 1)
+        return line_work[(name, page)]
+
     def written(document: dict[str, Any]) -> None:
         if parent is not None and os.getppid() != parent:
             raise SystemExit(0)
         _write_json(folder / "dims.json", document)
+        # Each drawing's scale, measured from its printed dimensions (a few milliseconds).
+        measured = scales.set_scales(document)
+        _write_json(folder / scales.SCALES_FILE, measured)
+        # Architect against vendor dimensions paired by what both ends land on (walls, the floor,
+        # the same outlet), where no single scale holds; never allowed to stop the pack.
+        try:
+            anchored = anchors.set_anchor_pairs(document, pages, segments_of, cache=anchored_memo)
+        except Exception:  # noqa: BLE001 - a fact the pack can do without
+            _log.exception("anchor pairing failed; pairs.json keeps the positional pairs only")
+            anchored = {}
+        # Architect against vendor dimensions paired by drawn position, compared exactly.
+        _write_json(folder / pairs.PAIRS_FILE, pairs.set_pairs(document, measured, anchored))
+        # Each drawing's printed notes and tags (from the phrases dims.json keeps).
+        _write_json(folder / notes.NOTES_FILE, notes.set_notes(document, pages))
 
     labels.build_dims(
         {name: uploads / name for name in names},
-        {"pages": list(page_map)},
+        pages,
         drawn_budget_s=_drawn_budget(),
         on_page=written,
     )

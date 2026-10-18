@@ -82,10 +82,19 @@ def test_the_caps_never_add_up_to_more_than_the_price() -> None:
         assert plan.caps["drawn"] * groups <= plan.budgets["drawn"]
         assert plan.caps["gaps"] * full_check_roster.MAX_GAP_CLOSERS <= plan.budgets["gaps"]
         assert plan.caps["provers"] * groups <= plan.budgets["provers"]
-    small = PricePlan.balanced(5 * DOLLARS, 4)
-    assert small.caps["numbers"] == 150_000  # the Balanced cap, when the share allows it
-    big = PricePlan.balanced(5 * DOLLARS, 40)
-    assert big.caps["numbers"] == int(5 * DOLLARS * 0.36) // 40  # shared, never over the price
+    # A page-group helper's cap follows its pages (#1634): a five-page group of a 45-page set gets
+    # five forty-fifths of its phase, with no small fixed cap; the groups together never more.
+    plan = PricePlan.balanced(5 * DOLLARS, 10, 45)
+    assert (
+        plan.cap_for("numbers", 5)
+        == int(5 * DOLLARS * full_check_roster.SHARES["numbers"]) * 5 // 45
+    )
+    assert plan.cap_for("numbers", 5) > 150_000  # more than the old fixed cap that starved them
+    assert (
+        plan.cap_for("drawn", 3) == int(5 * DOLLARS * full_check_roster.SHARES["drawn"]) * 3 // 45
+    )
+    assert sum(plan.cap_for("numbers", n) for n in [5] * 9) <= plan.budgets["numbers"]
+    assert plan.cap_for("tags", 45) == plan.caps["tags"] <= full_check_roster.JOB_CAPS["tags"]
 
 
 # ---- the advocate's code checks -------------------------------------------------------------------------
@@ -225,7 +234,8 @@ def test_decision_d1_needs_every_condition_and_code_only_needs_code() -> None:
          "land in different places"),
         (agree, ("different_extent", "the ends land apart"), "the ends land apart"),
         (agree, ("cannot_tell", "too few dimensions"), "too few dimensions"),
-        (None, None, "the fixed price ran out"),
+        (None, same, "Not verified within the fixed price"),
+        (None, ("cannot_tell", "no line"), "no line"),  # geometry first: no AI call is needed
         ({**agree, "vendor_ink_black": "no"}, same, "in colour"),
     ):  # fmt: skip
         verdict = decide(mode="ai_pair_plus_code", advocate=advocate, extent=extent, **common)  # type: ignore[arg-type]
@@ -257,6 +267,25 @@ def test_which_items_need_their_pairing_proved() -> None:
     assert not needs_pairing({"source": "gv_review", "rule_check_id": "CT-WIDTH-001"})
     assert not needs_pairing({"source": "vendor_arithmetic"})
     assert not needs_pairing({"source": "architect", "paired_by": "code"})
+
+
+def test_an_areas_tags_of_different_kinds_are_not_compared() -> None:
+    """Tags filed under an area's name alone: a fixture tag against a finish tag labels two
+    different things (no kind in common), so it is never a Wrong; tags of one kind still are, and
+    a named piece is compared as before."""
+    table = {
+        "tags": [
+            {"page": 3, "side": "architect", "item": "2. Lobby", "tag": "PL-191A", "box": None},
+            {"page": 3, "side": "vendor", "item": "2. Lobby", "tag": "LA-097", "box": None},
+            {"page": 4, "side": "architect", "item": "5. Bar", "tag": "LA-091", "box": None},
+            {"page": 4, "side": "architect", "item": "5. Bar", "tag": "CT-099", "box": None},
+            {"page": 4, "side": "vendor", "item": "5. Bar", "tag": "LA-092", "box": None},
+            {"page": 6, "side": "architect", "item": "6. Desk: top", "tag": "CT-099", "box": None},
+            {"page": 6, "side": "vendor", "item": "6. Desk: top", "tag": "ST-094", "box": None},
+        ]
+    }  # fmt: skip
+    found = {f["item"]: f["status"] for f in compare_tags(json.dumps(table))}
+    assert found == {"5. Bar: tag": "different", "6. Desk: top: tag": "different"}
 
 
 def test_code_compares_the_tag_table_by_piece() -> None:
@@ -346,11 +375,17 @@ class _Roster:
 
     def helper(self, params: Mapping[str, Any], brief: str) -> list[dict[str, Any]]:
         step = _steps(params)
+        if brief.startswith("LEAD REVIEW"):
+            self._seen("lead", params)
+            return reply(text("Nothing left to place."), model=params["model"])
         if brief.startswith("TAGS:"):
             self._seen("tags", params)
+            # Each tag with its box, as the brief asks: a tag with no spot never reaches the
+            # vendor (#1650).
+            spot = {"page": 2, "x0": 10, "y0": 10, "x1": 30, "y1": 16}
             table = {"tags": [
-                {"page": 2, "side": "architect", "item": "Area 1: top", "tag": "ST-1", "box": None},
-                {"page": 2, "side": "vendor", "item": "Area 1: top", "tag": "ST-2", "box": None},
+                {"page": 2, "side": "architect", "item": "Area 1: top", "tag": "ST-1", "box": spot},
+                {"page": 2, "side": "vendor", "item": "Area 1: top", "tag": "ST-2", "box": spot},
             ]}  # fmt: skip
             return reply(text(json.dumps(table)), model=SONNET)
         if brief.startswith("PROVE:"):
@@ -626,3 +661,198 @@ def test_a_typed_value_at_a_labelled_spot_stands_for_its_label(tmp_path: Path) -
     # Another value at the spot, or no box: no label stands for it.
     assert run._label_at({**finding, "vendor": '45"'}, "vendor_box", "vendor") is None
     assert run._label_at({**finding, "vendor_box": None}, "vendor_box", "vendor") is None
+
+
+# ---- the escalation's one deeper look (#1619) ------------------------------------------------------
+
+
+def _typed_wrong(harness: Harness) -> str:
+    """A Wrong a helper typed with its boxes, at code's labelled spots, that no code check has
+    read yet (so the devil's advocate passed it by in P4): a question to the vendor today."""
+    engine = harness.engine
+    finding, _notes = engine.book.report(
+        {
+            "page": 3,
+            "item": "Top on page 3",
+            "category": "countertop",
+            "architect": '37"',
+            "vendor": '46"',
+            "status": "different",
+            "verified": False,
+            "source": "architect",
+            "arch_box": _box(3, 100),
+            "vendor_box": _box(3, 300),
+        },
+        "helper:1",
+    )
+    typed = {
+        **finding,
+        "checks": {"printed_architect": "not_found", "printed_vendor": "not_found"},
+        "inches": {"architect": "37", "vendor": "46", "difference": "9"},
+        "trust_level": "to_check",
+        "witnesses": [],
+    }
+    assert engine.book.replace(typed)
+    return str(finding["id"])
+
+
+def _run(harness: Harness) -> Any:
+    run = full_check_roster._Run(harness.engine)
+    run.plan = PricePlan.balanced(harness.engine.settings.message_cap_micros, 2)
+    return run
+
+
+def test_the_escalation_reads_the_labels_then_gives_one_deeper_look_within_the_price(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from app.review.assistant import proof
+
+    _clean_ink(monkeypatch)
+    script = _Roster()
+    harness = _roster(tmp_path, script)
+    finding_id = _typed_wrong(harness)
+    run = _run(harness)
+
+    run._escalate(SimpleNamespace(jobs=[]), None)
+
+    found = next(f for f in harness.engine.book.live() if f["id"] == finding_id)
+    # The free step read both values at code's labels; then the advocate's one blind pick agreed.
+    assert found["checks"]["printed_vendor"] == "match" and found["dims"]["vendor"]["id"] == "D1"
+    assert script.calls.get("advocate") == 1
+    assert found["critic"]["result"] == "passed" and found["pairing"]["architect"] == "p3.D2"
+    assert proof.proof_group(found) == "clouded"
+    assert run.spent.get("escalation", 0) > 0 and "advocate" not in run.spent
+    # One look only: a second escalation asks nothing again.
+    run._escalate(SimpleNamespace(jobs=[]), None)
+    assert script.calls.get("advocate") == 1
+
+
+def test_the_escalation_spends_only_what_is_left_under_the_price(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from app.review.assistant import proof
+
+    _clean_ink(monkeypatch)
+    script = _Roster()
+    harness = _roster(tmp_path, script)
+    finding_id = _typed_wrong(harness)
+    run = _run(harness)
+    monkeypatch.setattr(full_check_roster._Run, "_left", lambda self: 0)
+
+    run._escalate(SimpleNamespace(jobs=[]), None)
+
+    found = next(f for f in harness.engine.book.live() if f["id"] == finding_id)
+    assert "advocate" not in script.calls  # no money left: no AI call
+    assert found["checks"]["printed_vendor"] == "match"  # the free step still ran
+    assert proof.proof_group(found) == "not_compared"  # still not compared, never red
+    # Said on the item (#1641): the check it needed was not reached within the fixed price.
+    assert found["critic"]["note"].startswith("Not verified within the fixed price")
+    assert str(proof.classified(found).why).startswith("not verified within the fixed price")
+    assert any("not verified" in line for line in run.not_done)
+
+
+# ---- every page accounted for within the fixed price (#1634) ------------------------------------
+
+
+def test_pages_a_helper_left_are_found_from_its_coverage() -> None:
+    coverage = {
+        "pages": [
+            {"page": 2, "status": "different", "by": "helper:1"},
+            {"page": 3, "status": "not_opened", "by": "helper:1", "note": "not reached"},
+            {"page": 4, "status": "not_comparable", "by": "helper:2", "note": "Not reached"},
+            {"page": 5, "status": "not_comparable", "by": "helper:2", "note": "brand prototype"},
+            {"page": 6, "status": "not_comparable", "by": "code", "note": "divider page"},
+        ]
+    }
+    left = full_check_roster.unfinished_pages([2, 3, 4, 5, 7], coverage)
+    assert left == {3: "not reached", 4: "Not reached", 7: "no helper set its coverage"}
+
+
+def test_the_gap_closers_take_what_the_price_reaches_records_first() -> None:
+    pages = {page: ["x"] for page in (5, 9, 12, 20)}
+    room = 3 * full_check_roster.MIN_GAP_PAGE_MICROS
+    assert full_check_roster.gap_pages(pages, room, has_record={20}) == ([5, 9, 20], [12])
+    assert full_check_roster.page_runs([3, 4, 5, 9, 12], 2) == [[3, 4, 5], [9, 12]]
+    assert full_check_roster.page_runs([3], 10) == [[3]]
+    assert full_check_roster.page_ranges_words([4, 5, 6]) == "pages 4-6"
+    assert full_check_roster.page_ranges_words([4, 9]) == "pages 4 and 9"
+
+
+def test_the_gap_closers_get_what_p1_left_less_the_later_phases(tmp_path: Path) -> None:
+    harness = _roster(tmp_path, _Roster())
+    run = _run(harness)
+    assert run.plan is not None
+    later = sum(run.plan.budgets[n] for n in full_check_roster.PROTECTED)
+    assert later == run.plan.protected()
+    # Nothing spent yet: all but the later phases' money, far more than the gap share alone.
+    assert run._gap_budget() == 5 * DOLLARS - later > run.plan.budgets["gaps"]
+    # P1 used it all: nothing for the gap closers, the protected money stays (#1641).
+    harness.engine._spent = 5 * DOLLARS - later
+    assert run._gap_budget() == 0
+
+
+class _Lazy(_Roster):
+    """A numbers helper that says its last page was not reached, with money left, twice."""
+
+    def helper(self, params: Mapping[str, Any], brief: str) -> list[dict[str, Any]]:
+        if brief.startswith(full_check_roster.GAP_SCHEMA_NOTE):
+            self._seen("gap", params)
+            return reply(text("Closed."), model=SONNET)
+        drawn = brief.startswith("OBJECTIVE: the drawn things")
+        if drawn or brief.startswith(("TAGS:", "PROVE:")):
+            return super().helper(params, brief)
+        self._seen("numbers", params)
+        pages = [int(n) for n in brief.split("on pages ", 1)[1].split(" of ", 1)[0].split(", ")]
+        lines = [f"CHECKLIST p{pages[0]}: architect 1/1; strings 0/0; not compared: none"]
+        lines += [f"CHECKLIST p{p}: architect 0/1; strings 0/0; not compared: not reached"
+                  for p in pages[1:]]  # fmt: skip
+        return reply(text("Stopped.\n" + "\n".join(lines)), model=SONNET)
+
+
+def test_a_helper_that_stops_short_is_sent_on_then_a_gap_closer_finishes_its_pages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clean_ink(monkeypatch)
+    script = _Lazy()
+    harness = _roster(tmp_path, script)
+
+    harness.run()
+
+    numbers = script.params["numbers"]
+    # The smaller per-call allowance (its money is held per call at that bound).
+    assert {p["max_tokens"] for p in numbers} == {6000}
+    # Each numbers helper stopped short with money left: sent on once to its unread pages.
+    sent_on = [p for p in numbers if "You still have money and tool calls left" in json.dumps(p)]
+    assert len(sent_on) == 2  # one call each for the two numbers helpers, then never again
+    # Still not compared: a gap closer takes those pages with the money P1 left.
+    assert script.calls.get("gap", 0) >= 1
+    gap = script.params["gap"][0]
+    assert "page not compared yet" in _first_text(gap)
+
+
+class _Cut(_Roster):
+    """A numbers helper whose first reply is cut at its length limit."""
+
+    def helper(self, params: Mapping[str, Any], brief: str) -> list[dict[str, Any]]:
+        if brief.startswith(("OBJECTIVE: the drawn things", "TAGS:", "PROVE:")):
+            return super().helper(params, brief)
+        if brief.startswith(full_check_roster.GAP_SCHEMA_NOTE):
+            return reply(text("Closed."), model=SONNET)
+        self._seen("numbers", params)
+        if _steps(params) == 0:
+            return reply(text("Page 2: the vendor's top is"), stop="max_tokens", model=SONNET)
+        return super().helper(params, brief)
+
+
+def test_a_reply_cut_at_the_smaller_allowance_is_sent_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clean_ink(monkeypatch)
+    script = _Cut()
+    _roster(tmp_path, script).run()
+    later = [p for p in script.params["numbers"] if _steps(p) > 0]
+    assert later and all("cut at its length limit" in json.dumps(p) for p in later)

@@ -57,8 +57,11 @@ describe('the reading ledger in words', () => {
   });
 
   it('names a cross-view finding’s columns by view', () => {
-    expect(sideLabels(CROSS)).toEqual({ architect: 'Reference view', vendor: 'This view' });
-    expect(sideLabels(SUM)).toEqual({ architect: 'Architect', vendor: 'Vendor' });
+    expect(sideLabels(CROSS)).toMatchObject({ architect: 'Reference view', vendor: 'This view' });
+    // #1581: the vendor's own string is the vendor's on both sides, never "Architect".
+    expect(sideLabels(SUM)).toEqual({ architect: 'Vendor: the parts', vendor: 'Vendor: the printed total', architectTag: 'V', vendorTag: 'V' });
+    expect(sideLabels({ source: 'cross_view', reference_side: 'vendor', created_by: 'consistency' })).toMatchObject({ architect: 'Vendor: the same span, elsewhere', architectTag: 'V' });
+    expect(sideLabels({ source: 'architect' })).toEqual({ architect: 'Architect', vendor: 'Vendor', architectTag: 'A', vendorTag: 'V' });
   });
 
   it('reads GV Review’s own checks in the server’s shape, with the ledger’s extra left-out ones', () => {
