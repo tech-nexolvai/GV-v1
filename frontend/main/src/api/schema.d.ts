@@ -4927,7 +4927,7 @@ export interface components {
             compared?: boolean | null;
             /**
              * Created By
-             * @description "lead", "helper:<n>", "gv_review" (made by code from a recorded result), "ledger" (made by code from the reading ledger), "consistency" (made by code from the vendor's own drawings: a string that does not add up, a span printed twice), or "architect_items" (made by code from the drawings' text: a finish the architect tags that the vendor missed, changed or added).
+             * @description "lead", "helper:<n>", "gv_review" (made by code from a recorded result), "ledger" (made by code from the reading ledger), "consistency" (made by code from the vendor's own drawings: a string that does not add up, a span printed twice), "architect_items" (made by code from the drawings' text: a finish the architect tags that the vendor missed, changed or added), or "pairs" (made by code from a dimension it paired on both drawings by itself: Wrong or Right with that proof).
              */
             created_by: string;
             critic?: components["schemas"]["ChatFindingCriticOut"] | null;

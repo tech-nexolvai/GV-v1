@@ -62,7 +62,7 @@ __all__ = [
 #: Who makes a finding by code (not an AI that was told the products): their "other" items may get a
 #: product's category from their words (`category_for`).
 CODE_MADE: Final = frozenset(
-    {"ledger", "consistency", "tag_reader", "gv_review", "code", "architect_items"}
+    {"ledger", "consistency", "tag_reader", "gv_review", "code", "architect_items", "pairs"}
 )
 _NOT_WORD: Final = re.compile(r"[^0-9a-z]+")
 

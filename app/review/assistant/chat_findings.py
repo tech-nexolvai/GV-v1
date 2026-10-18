@@ -602,9 +602,9 @@ def coverage_note(gaps: Sequence[int], file_name: str | None) -> str:
 # ---- "Your decision" items -------------------------------------------------------------------------
 
 #: Findings code made itself (GV Review's records, the reading ledger, the vendor consistency
-#: check, the finish check): their words are code's, so the lead is never sent back for their
+#: check, the finish check, code's pairs): their words are code's, so the lead is never sent back for their
 #: decision help.
-_CODE_MADE: Final = ("gv_review", "ledger", "consistency", "architect_items")
+_CODE_MADE: Final = ("gv_review", "ledger", "consistency", "architect_items", "pairs")
 
 
 def helpless_decisions(findings: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -1210,7 +1210,8 @@ class FindingBook:
         self, given: Mapping[str, Any], *, created_by: str = "ledger"
     ) -> dict[str, Any] | None:
         """A finding code made (the reading ledger's: `created_by: "ledger"`; the vendor
-        consistency check's: `"consistency"`; the finish check's: `"architect_items"`), added like
+        consistency check's: `"consistency"`; the finish check's: `"architect_items"`; code's
+        pairs: `"pairs"`), added like
         a lead finding (id, crops, checks). Its `ledger_ids`, `reference_side`, `dims` (the labels
         its values came from), `paired_by` (code paired the two sides) and `text_proof` (what the
         finish check read and searched) are kept. A box that is not on an upload is left out; a
@@ -1611,6 +1612,26 @@ class FindingBook:
     def by(self, created_by: str) -> list[dict[str, Any]]:
         with self._lock:
             return [dict(f) for f in self.findings.values() if f["created_by"] == created_by]
+
+    def prove_by_code(self, finding_id: str, changes: Mapping[str, Any]) -> dict[str, Any] | None:
+        """An answer's finding re-proved by code's own pair of the same item (`pair_findings`):
+        code's values, status, labels and `paired_by: code` laid over it, a new picture for a box
+        it gains, then its checks again. None when it was dropped meanwhile."""
+        update = dict(changes)
+        for box, picture in (("arch_box", "arch_picture_id"), ("vendor_box", "vendor_picture_id")):
+            if box in update:
+                update[picture], _why = self._picture(update[box])
+        with self._lock:
+            if finding_id not in self.findings:
+                return None
+            finding = {**self.findings[finding_id], **update}
+        if self.checker is not None:
+            finding = self.checker(finding)
+        with self._lock:
+            if finding_id not in self.findings:
+                return None
+            self.findings[finding_id] = finding
+        return dict(finding)
 
     def live(self) -> list[dict[str, Any]]:
         """The findings not dropped, in the order they were reported."""
