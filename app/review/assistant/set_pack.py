@@ -93,7 +93,7 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 #: Changes when what the pack holds changes: an older pack is built again.
-PACK_VERSION: Final = 6
+PACK_VERSION: Final = 7
 RENDER_DPI: Final = 100
 #: Seconds the dimension labels' drawn-ink route (OCR) may spend on one set, after every page's
 #: text labels (`GV_DIM_LABELS_DRAWN_BUDGET_S`; 0 turns it off). It reads the vendor's drawn
@@ -591,7 +591,8 @@ pages/<name>/p-NNN.png every page at 100 dpi (drawings only). Zoom to read numbe
 contact/*.png          nine pages per picture, page numbers stamped: the whole set at a glance.
 dims.json              every printed dimension code found, numbered per page (D17): value,
                        inches, box, side, dimension line. zoom marks: true draws the ids.
-                       route "drawn": the vendor's drawn numbers read by two OCR engines
+                       route "drawn": numbers drawn as pen strokes (the vendor's, and an
+                       architect's hand lettering such as 2'-6 1/2") read by two OCR engines
                        (added later; check one with zoom before you rely on it).
 scales.json            each drawing's scale measured from its own printed dimensions (labels
                        that agree within 1%), its box, and the printed scale note beside it
