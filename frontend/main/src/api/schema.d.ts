@@ -5375,7 +5375,7 @@ export interface components {
             plan_answers?: components["schemas"]["ChatPlanAnswerIn"][] | null;
             /**
              * Products
-             * @description Active product ids from `GET /products` (e.g. countertop, cabinet).
+             * @description Active product ids from `GET /products` (e.g. countertop, cabinet): a strict scope, so only these products are checked, ruled, counted and drawn (every active product = All). Not given: the drawing set's own product, else every active product.
              */
             products?: string[] | null;
             /** @description #1551: the reviewer's correction of how the app understood the question (Edit on the 'Understood as' line); the question's words are sent unchanged in `text`. */
@@ -5634,6 +5634,24 @@ export interface components {
             label: string;
             /** Value */
             value: string;
+        };
+        /**
+         * ChatProductScopeOut
+         * @description The strict product scope (Anant, 2026-10-18): the products checked, and the findings of
+         *     other products code refused or dropped, whoever reported them.
+         */
+        ChatProductScopeOut: {
+            /** All Products */
+            all_products: boolean;
+            /**
+             * Dropped Out Of Scope
+             * @description Findings of products not in scope that code did not keep.
+             */
+            dropped_out_of_scope: number;
+            /** Products */
+            products: string[];
+            /** Products Label */
+            products_label: string;
         };
         /** ChatProgressBlock */
         ChatProgressBlock: {
@@ -5951,6 +5969,12 @@ export interface components {
          */
         ChatScopeOut: {
             /**
+             * All Products
+             * @description True when every active product was checked (All).
+             * @default false
+             */
+            all_products: boolean;
+            /**
              * Area
              * @description The area named, as typed on the set.
              */
@@ -5970,6 +5994,16 @@ export interface components {
              * @description The scope's pages; empty for the whole set.
              */
             pages?: number[];
+            /**
+             * Products
+             * @description The products checked (product ids, a strict scope: a finding of another product is never kept); empty on older answers.
+             */
+            products?: string[];
+            /**
+             * Products Label
+             * @description The products in plain words: "Countertops".
+             */
+            products_label?: string | null;
             /**
              * Why
              * @enum {string}
@@ -6250,6 +6284,8 @@ export interface components {
              * @description "What's right" items not compared (not counted above).
              */
             not_compared?: number | null;
+            /** @description The products checked and how many findings of other products code dropped (for the record, not shown); null on older answers. */
+            product_scope?: components["schemas"]["ChatProductScopeOut"] | null;
             recorded_results?: components["schemas"]["ChatRecordedResultsOut"] | null;
             rounds?: components["schemas"]["ChatRoundsOut"] | null;
             /** @description What the counts above cover (null on older answers). */

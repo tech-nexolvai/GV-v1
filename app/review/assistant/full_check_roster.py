@@ -68,6 +68,7 @@ from app.review.assistant.full_check_advocate import (
     same_extent,
 )
 from app.review.assistant.full_check_specialists import HELPER_CORE, knowledge_text
+from app.review.assistant.product_scope import scaled_price
 from app.review.assistant.untrusted import fence
 
 if TYPE_CHECKING:
@@ -565,7 +566,6 @@ class _Run:
         settings = engine.settings
         from app.review.assistant.full_check_plan import (
             pack_ready,
-            plan_jobs,
             wait_for_page_map,
             with_lenses,
         )
@@ -578,7 +578,8 @@ class _Run:
             with engine.timings.phase("set_pack"):
                 page_map = wait_for_page_map(workspace.set_pack, engine.cancel)
             with engine.timings.phase("planning"):
-                plan = plan_jobs(page_map, engine.book.main_file, engine._max_agents)
+                # Only the areas of the products in scope get helpers (`product_scope`).
+                plan, pages_all = engine.scoped_jobs(page_map)
                 rules = engine._rules_summary() if plan is not None else ""
                 pictures = pack_ready(workspace.set_pack)
             warm.result()
@@ -601,7 +602,9 @@ class _Run:
             plan = with_lenses(plan)
         engine._plan = plan
         groups = len({job.pages for job in plan.jobs})
-        self.plan = PricePlan.balanced(settings.message_cap_micros, groups)
+        # The fixed price shrinks with the pages the product scope leaves to compare (never grows).
+        price = scaled_price(settings.message_cap_micros, plan.pages, pages_all)
+        self.plan = PricePlan.balanced(price, groups)
         engine._started_scope = engine.scope()
         engine.emit(
             "scope", {"index": None, "scope": json.loads(json.dumps(engine._started_scope))}
@@ -1149,7 +1152,8 @@ class _Run:
         ).strip()
         reworded = self._reword(text)
         lines = [reworded or text]
-        price = cap_text(settings.message_cap_micros)
+        # The price for the products in scope (`scaled_price`), else the whole price.
+        price = cap_text(self.plan.price if self.plan is not None else settings.message_cap_micros)
         lines.append(f"Fixed price ${price}: this check used {_dollars(engine.spent)}.")
         if self.not_done:
             lines.append(

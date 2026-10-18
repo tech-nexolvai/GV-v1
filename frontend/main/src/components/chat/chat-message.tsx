@@ -13,7 +13,7 @@ import { ChatMarkdown } from '@/components/chat/chat-markdown';
 import { Collapse, CopyButton, GVSpark, Shimmer, Spark, Spinner, type SparkState } from '@/components/chat/chat-motion';
 import { chatPaths, type ChatEffort, type ChatFile, type ChatFinding, type ChatFindingUpdate, type ChatModel, type FindingDecision, type FindingDecisionValue } from '@/lib/chat-api';
 import { coverageCounts, findingCounts, isNarrowAnswer, isShortAnswer, NO_FILTER, sectionOrder, type FindingFilter } from '@/lib/chat-findings';
-import { fullCheckBubble, fullCheckFiles, previewPage, productsWords, withoutCodeNote } from '@/lib/chat-full-check';
+import { checkedWords, fullCheckBubble, fullCheckFiles, previewPage, productsWords, withoutCodeNote } from '@/lib/chat-full-check';
 import { useReducedMotion } from '@/lib/chat-motion';
 import { proofCounts } from '@/lib/chat-proof';
 import { EFFORT_WORDS } from '@/lib/chat-settings';
@@ -502,7 +502,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
         <div data-slot="chat-full-check-lead" className="chat-wide grid min-w-0 gap-7">
           {/* PATH 4.1: the summary, prominent. */}
           <section data-slot="chat-summary" aria-label="Summary" className="grid max-w-3xl min-w-0 gap-2.5">
-            <p className="flex items-center gap-2 text-xs font-medium text-muted-foreground"><GVSpark size={16} />{['Full check', productsWords(message.products)].filter(Boolean).join(' · ')}</p>
+            <p className="flex items-center gap-2 text-xs font-medium text-muted-foreground"><GVSpark size={16} />{['Full check', checkedWords(message.products ?? message.scope?.products) ?? productsWords(message.products)].filter(Boolean).join(' · ')}</p>
             <h2 data-slot="chat-summary-headline" className="text-xl leading-snug font-semibold tracking-[-0.015em]">
               {counts.different > 0 ? <span className="text-outcome-fail-fg">{counts.different} wrong</span> : 'Nothing wrong'} on the vendor’s drawings
               {counts.check > 0 ? `, ${counts.check} ${counts.check === 1 ? 'needs' : 'need'} your decision.` : '.'}

@@ -14,7 +14,7 @@ import { AssistantMessage, UserMessage } from '@/components/chat/chat-message';
 import { ShellSlotsContext } from '@/components/shell/shellSlots';
 import type { ChatApi, ChatFile } from '@/lib/chat-api';
 import { accuracyTone, accuracyWords } from '@/lib/chat-accuracy';
-import { confirmWords, effectiveProducts, fullCheckBubble, fullCheckFiles, isFullCheck, matchesWords, productsWords, progressWords, readProducts, saveProducts, toggleProduct } from '@/lib/chat-full-check';
+import { allPicked, checkedWords, confirmWords, effectiveProducts, fullCheckBubble, fullCheckFiles, isFullCheck, matchesWords, productsWords, progressWords, readProducts, saveProducts, scopeSentence, toggleProduct } from '@/lib/chat-full-check';
 import { applyChatEvent, localAnswer, type ViewMessage } from '@/lib/chat-messages';
 import { ChatPage } from '@/pages/ChatPage';
 import { drivenStream, fakeChatApi, finding, OPUS } from './fixtures/chat';
@@ -38,11 +38,19 @@ const CLOUD: ChatFile = { id: 'f-c', kind: 'cloud_drawing', name: 'vendor-cloude
 const REPORT: ChatFile = { id: 'f-r', kind: 'check_report', name: 'check-report.pdf', size: 90_000, mime: 'application/pdf', url: '/api/v1/chats/c-1/files/f-r' };
 
 describe('products and the full check, without React', () => {
-  it('picks products: the reviewer’s, else remembered, else the set’s; never none', () => {
+  it('picks products: the reviewer’s, else remembered, else the set’s, else all; never none', () => {
     expect(effectiveProducts(null, null, 'cabinet')).toEqual(['cabinet']);
     expect(effectiveProducts(null, ['countertop'], 'cabinet')).toEqual(['countertop']);
     expect(effectiveProducts(['countertop', 'cabinet'], ['countertop'], 'cabinet')).toEqual(['countertop', 'cabinet']);
-    expect(effectiveProducts(null, null, null)).toBeNull();
+    // A set with no product stated is checked for every active product, shown picked (a strict scope).
+    expect(effectiveProducts(null, null, null)).toEqual(['countertop', 'cabinet']);
+    expect(effectiveProducts(null, null, null, [])).toBeNull(); // the products not loaded yet
+    expect(allPicked(['cabinet', 'countertop'])).toBe(true);
+    expect(allPicked(['cabinet'])).toBe(false);
+    expect(checkedWords(['countertop'])).toBe('Checked: Countertops');
+    expect(checkedWords(['countertop', 'cabinet'])).toBe('Checked: All products');
+    expect(scopeSentence(['countertop'])).toBe('Only countertops are checked; cabinets are left out.');
+    expect(scopeSentence(['cabinet', 'countertop'])).toBe('Every product is checked: countertops and cabinets.');
     expect(toggleProduct(['countertop'], 'cabinet')).toEqual(['countertop', 'cabinet']);
     expect(toggleProduct(['countertop', 'cabinet'], 'countertop')).toEqual(['cabinet']);
     expect(toggleProduct(['countertop'], 'countertop')).toEqual(['countertop']);
@@ -118,7 +126,7 @@ describe('a full-check answer', () => {
     const summary = within(node).getByRole('region', { name: 'Summary' });
     expect(summary.querySelector('[data-slot="chat-summary-headline"]')?.textContent).toBe('2 wrong on the vendor’s drawings, 1 needs your decision.');
     expect(within(summary).getByText('Two values are wrong; one to check.')).toBeTruthy();
-    expect(within(summary).getByText('Full check · Countertops + Cabinets')).toBeTruthy();
+    expect(within(summary).getByText('Full check · Checked: All products')).toBeTruthy();
 
     // 2. The three numbers, pages and accuracy: each once on the screen.
     const kpis = node.querySelector<HTMLElement>('[data-slot="chat-kpis"]')!;

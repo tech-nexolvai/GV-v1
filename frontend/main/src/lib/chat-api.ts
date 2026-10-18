@@ -210,6 +210,10 @@ export interface ChatScope {
   area?: string | null;
   why?: string | null;
   label?: string | null;
+  /** The products checked: a strict scope (Anant, 2026-10-18). Absent on older answers. */
+  products?: string[] | null;
+  all_products?: boolean | null;
+  products_label?: string | null;
 }
 
 /** #1551: what a typed question asks for, as the app's sharpen step read it. */

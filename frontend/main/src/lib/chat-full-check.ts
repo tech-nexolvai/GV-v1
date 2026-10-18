@@ -63,7 +63,9 @@ export function saveProducts(storage: Pick<Storage, 'setItem'> | null, packageId
 
 /**
  * The chips' products: the reviewer's pick, else what this set remembered, else the set's own
- * product type. Null when none of these is known (the server then uses the set's product type).
+ * product type, else every active product (a set with no product stated is checked for all, as the
+ * server does). The pick is a strict scope (Anant, 2026-10-18), so it is always shown. Null only
+ * while the products have not loaded and nothing else is known.
  */
 export function effectiveProducts(
   picked: readonly ChatProduct[] | null,
@@ -73,8 +75,40 @@ export function effectiveProducts(
 ): ChatProduct[] | null {
   if (picked?.length) return [...picked];
   if (remembered?.length) return [...remembered];
-  // The set's own product, when it can be picked (an inactive or retired one is left to the server).
-  return productType && (!catalog.length || pickable(catalog).includes(productType)) ? [productType] : null;
+  // The set's own product, when it can be picked.
+  if (productType && (!catalog.length || pickable(catalog).includes(productType))) return [productType];
+  const every = pickable(catalog);
+  return every.length ? every : null;
+}
+
+/** True when every active product is picked ("All"). */
+export function allPicked(products: readonly ChatProduct[] | null | undefined, catalog: ProductCatalog = productCatalog()): boolean {
+  const every = pickable(catalog);
+  return every.length > 0 && every.every((product) => products?.includes(product));
+}
+
+/**
+ * The scope as the result header says it: "Checked: Countertops", "Checked: All products".
+ * Null when the products are not known (an older answer).
+ */
+export function checkedWords(products: readonly ChatProduct[] | null | undefined, catalog: ProductCatalog = productCatalog()): string | null {
+  if (!products?.length) return null;
+  const words = productsWords(products, catalog);
+  return allPicked(products, catalog) && pickable(catalog).length > 1 ? 'Checked: All products' : `Checked: ${words}`;
+}
+
+/**
+ * The scope in one sentence for the Run popover: "Only countertops are checked; cabinets are left
+ * out." or "Every product is checked: countertops and cabinets."
+ */
+export function scopeSentence(products: readonly ChatProduct[] | null | undefined, catalog: ProductCatalog = productCatalog()): string | null {
+  if (!products?.length) return null;
+  const lower = (ids: readonly ChatProduct[]) => inRegistryOrder(ids, catalog).map((id) => productPlural(id, catalog).toLowerCase());
+  const listed = (words: string[]) => (words.length < 2 ? words.join('') : `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}`);
+  const left = pickable(catalog).filter((product) => !products.includes(product));
+  if (!left.length) return `Every product is checked: ${listed(lower(products))}.`;
+  // Product names are plural ("countertops"), so "are" either way.
+  return `Only ${listed(lower(products))} are checked; ${listed(lower(left))} are left out.`;
 }
 
 /** A chip pressed: on or off, but never the last one off (at least one product stays picked). */

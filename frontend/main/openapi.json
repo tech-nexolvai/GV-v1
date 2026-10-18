@@ -6218,7 +6218,7 @@
                 "type": "null"
               }
             ],
-            "description": "Active product ids from `GET /products` (e.g. countertop, cabinet).",
+            "description": "Active product ids from `GET /products` (e.g. countertop, cabinet): a strict scope, so only these products are checked, ruled, counted and drawn (every active product = All). Not given: the drawing set's own product, else every active product.",
             "title": "Products"
           },
           "task": {
@@ -6914,6 +6914,39 @@
           "label"
         ],
         "title": "ChatPlanOptionOut",
+        "type": "object"
+      },
+      "ChatProductScopeOut": {
+        "description": "The strict product scope (Anant, 2026-10-18): the products checked, and the findings of\nother products code refused or dropped, whoever reported them.",
+        "properties": {
+          "all_products": {
+            "title": "All Products",
+            "type": "boolean"
+          },
+          "dropped_out_of_scope": {
+            "description": "Findings of products not in scope that code did not keep.",
+            "title": "Dropped Out Of Scope",
+            "type": "integer"
+          },
+          "products": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Products",
+            "type": "array"
+          },
+          "products_label": {
+            "title": "Products Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "products",
+          "all_products",
+          "products_label",
+          "dropped_out_of_scope"
+        ],
+        "title": "ChatProductScopeOut",
         "type": "object"
       },
       "ChatProgressBlock": {
@@ -7619,6 +7652,12 @@
       "ChatScopeOut": {
         "description": "What the answer is about, worked out by code (#1520): the whole set, or some pages or an\narea. Only a whole-set answer gets the whole-set panels (all pages' coverage, every recorded\ndifference); a page or area answer's coverage, recorded results and trust counts cover its\npages only.",
         "properties": {
+          "all_products": {
+            "default": false,
+            "description": "True when every active product was checked (All).",
+            "title": "All Products",
+            "type": "boolean"
+          },
           "area": {
             "anyOf": [
               {
@@ -7652,6 +7691,26 @@
             },
             "title": "Pages",
             "type": "array"
+          },
+          "products": {
+            "description": "The products checked (product ids, a strict scope: a finding of another product is never kept); empty on older answers.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Products",
+            "type": "array"
+          },
+          "products_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The products in plain words: \"Countertops\".",
+            "title": "Products Label"
           },
           "why": {
             "enum": [
@@ -8428,6 +8487,17 @@
             ],
             "description": "\"What's right\" items not compared (not counted above).",
             "title": "Not Compared"
+          },
+          "product_scope": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatProductScopeOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The products checked and how many findings of other products code dropped (for the record, not shown); null on older answers."
           },
           "recorded_results": {
             "anyOf": [

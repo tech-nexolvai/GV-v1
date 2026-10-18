@@ -21,12 +21,14 @@ import hashlib
 import io
 import json
 import threading
+from collections import Counter
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -42,6 +44,7 @@ from tests.review.assistant.chat_fakes import (
     thinking,
     tool,
 )
+from vocabulary.semantic_types import ProductType
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -141,6 +144,7 @@ def _world(  # type: ignore[no-untyped-def]
     command.upgrade(config, "head")
 
     scripted = provider or ScriptedProvider()
+    stack = ExitStack()
     store = LocalStore(tmp_path / "store")
     project_id = uuid4()
     session: Session = session_factory(postgres_engine)()
@@ -230,6 +234,12 @@ def _world(  # type: ignore[no-untyped-def]
             skill_builder=lambda: skill,
             rates=lambda _key: rates,
         )
+        # The test database publishes no GV rule; the chats here are about the two products GV
+        # has rules for (a product with none says so: `test_a_product_with_no_gv_rules...`).
+        published = Counter({ProductType("countertop"): 8, ProductType("cabinet"): 2})
+        stack.enter_context(
+            patch("app.api.assistant_chats.published_products", lambda _session: published)
+        )
         yield World(
             client=TestClient(app, raise_server_exceptions=False),
             app=app,
@@ -243,6 +253,7 @@ def _world(  # type: ignore[no-untyped-def]
             sandbox_ready=ready,
         )
     finally:
+        stack.close()
         session.close()
 
 
@@ -350,7 +361,12 @@ def test_a_message_streams_and_ends_with_the_stored_message(postgres_engine, tmp
         listing = first["messages"][0]["content"][0]["text"]
         assert listing.startswith("<uploaded_files>")
         assert 'path="/mnt/user-data/uploads/Vendor set.pdf"' in listing and 'pages="62"' in listing
-        assert first["messages"][0]["content"][1]["text"].startswith("Which items")
+        # The products are always named (a strict scope): a set with none stated checks every
+        # active product, and the model is told so before the question.
+        assert first["messages"][0]["content"][1]["text"].startswith(
+            "Products checked in this chat: countertops and cabinets (all of them)."
+        )
+        assert first["messages"][0]["content"][-1]["text"].startswith("Which items")
         # The set's PDF and the skill are in the chat's folder.
         folder = world.root / chat_id
         assert (folder / "uploads" / "Vendor set.pdf").read_bytes() == PDF
@@ -1076,4 +1092,4 @@ def test_with_no_sandbox_the_message_says_so_and_the_next_one_lists_the_files(po
         # The unanswered first message is not in the history; the files are listed now.
         assert len(first) == 1
         assert first[0]["content"][0]["text"].startswith("<uploaded_files>")
-        assert first[0]["content"][1]["text"] == "Second try"
+        assert first[0]["content"][-1]["text"] == "Second try"
