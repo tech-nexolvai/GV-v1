@@ -145,6 +145,35 @@ _POINTS_TO_PROTOTYPE: Final = re.compile(
 )
 #: "Verify in field" on the architect's side.
 _VIF: Final = re.compile(r"\bV\.?I\.?F\b|verify in field|field verify", re.IGNORECASE)
+#: The vendor's side says the item is not there ("not shown on the vendor", "missing", "none").
+VENDOR_ABSENT: Final = re.compile(
+    r"^\s*(?:not (?:shown|drawn|on|found|in)\b|missing\b|absent\b|none\b|no\b|-+\s*$)",
+    re.IGNORECASE,
+)
+
+
+def missing_on_vendor(finding: Mapping[str, Any]) -> bool:
+    """The architect shows something and the vendor's side says it is not there."""
+    architect = _flat(finding.get("architect"))
+    return (
+        bool(VENDOR_ABSENT.match(_flat(finding.get("vendor"))))
+        and bool(architect)
+        and not (VENDOR_ABSENT.match(architect))
+    )
+
+
+def _missing(finding: Mapping[str, Any]) -> Classified:
+    """The architect shows it and the vendor's drawing does not, by the readings, but code did not
+    prove the vendor's sheets leave it out (#1648: code does not recognise every vendor's symbol
+    for an outlet, so a symbol it does not find may still be drawn)."""
+    return _not(
+        "not_proved",
+        f"the architect shows it ({_short(finding.get('architect'), 90)}); the vendor's drawing "
+        "does not, by the AI's reading; code could not confirm the vendor's sheets leave it out",
+        "the vendor to show {thing} as the architect draws it, or to note that it is by others",
+    )
+
+
 #: Words of a scaled value (R2): context only.
 _SCALES: Final = re.compile(r"scales? (?:about|approx\w*|~)?\s*([0-9][0-9 /'\-\"]*)", re.IGNORECASE)
 _SPAN_WORDS: Final[Mapping[str, str]] = {
@@ -273,6 +302,8 @@ def _unproved(finding: Mapping[str, Any]) -> Classified:
             f"vendor dimensions to {spans[0]}, architect to {spans[1]}",
             "the printed offset between the two points (for example the top's thickness)",
         )
+    if missing_on_vendor(finding):
+        return _missing(finding)
     if not _vendor_read(finding):
         return _not(
             "unreadable",
@@ -348,6 +379,9 @@ def _check_item(finding: Mapping[str, Any]) -> Classified:
             "the architect's drawing says verify in field (VIF)",
             "the vendor's field-measured value for {thing}, shown on the drawing",
         )
+    if missing_on_vendor(finding) and finding.get("source") != "completeness":
+        # Missing on the vendor's drawing: said so, whatever the reading's own reason was.
+        return _missing(finding)
     if reason in ("architect_prints_nothing",) or named == "pairing_not_certain":
         why = f"architect gives no size or information for it{_scaled_about(finding)}"
         return _not("nothing_to_compare", why, "the architect's size or note for {thing}")
