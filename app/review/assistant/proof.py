@@ -72,6 +72,7 @@ __all__ = [
     "stated_requirement",
     "string_verified",
     "unproved_reason",
+    "vendor_facing",
     "vendor_own",
     "vendor_value",
 ]
@@ -278,6 +279,8 @@ def code_proved(finding: Mapping[str, Any]) -> bool:
     dimensions, a pairing proof (`needs_pairing`, `pairing_proved`): reading the vendor's number
     right (its millimetres and inches agreeing) does not prove the architect's number measures the
     same thing."""
+    if classification.internal(finding):
+        return False  # read by the AI only, never at its spot (#1653)
     if finding.get("architect_parts"):
         return False  # a total the architect never prints (code's summed chain) is never proof
     if finding.get("source") == "vendor_arithmetic" and not string_verified(finding):
@@ -285,6 +288,13 @@ def code_proved(finding: Mapping[str, Any]) -> bool:
     if not _read_by_code(finding):
         return False
     return not needs_pairing(finding) or pairing_proved(finding)
+
+
+def vendor_facing(finding: Mapping[str, Any]) -> bool:
+    """Whether an item may reach the vendor (the cloud drawing, the check report, the letter, the
+    register, the Not-compared list): never one for GV's reviewer only
+    (`classification.internal`, #1653)."""
+    return not classification.internal(finding)
 
 
 def stated_requirement(finding: Mapping[str, Any]) -> str | None:
@@ -335,6 +345,8 @@ def _governing_known(finding: Mapping[str, Any], found: Sequence[str]) -> bool:
 def proof_group(finding: Mapping[str, Any]) -> ProofGroup:
     """Where the finding goes on the zero-click drawing (see the module's rule). The reviewer's
     decision, when there is one, overrides: agreed = clouded, not a problem = dismissed."""
+    if classification.internal(finding):
+        return "not_compared"  # GV's reviewer only (#1653): never clouded, whoever clicks
     status = finding.get("status")
     decided = _decided(finding)
     if status in ("different", "check"):

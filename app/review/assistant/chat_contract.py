@@ -592,6 +592,7 @@ class ChatFindingProofOut(BaseModel):
             "no_sheet",
             "no_overall",
             "string_not_verified",
+            "internal",
         ]
         | None
     ) = Field(default=None, description="not_compared: the reason (the list's group).")
