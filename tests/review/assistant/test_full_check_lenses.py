@@ -24,6 +24,7 @@ import pytest
 
 from app.review.assistant import finding_critic, full_check_plan
 from app.review.assistant.chat_engine import FULL_CHECK_INSTRUCTION
+from app.review.assistant.chat_findings import FindingBook
 from app.review.assistant.chat_tools import HELPER_SYSTEM_PROMPT
 from app.review.assistant.full_check_brief import (
     LENS_FIELDS,
@@ -322,6 +323,49 @@ def test_a_full_check_runs_two_helpers_per_group_and_folds_their_duplicates(tmp_
     coverage = _blocks(outcome, "coverage")[-1]
     helpers = {entry["by"] for entry in coverage["pages"] if entry["by"] != "code"}
     assert helpers <= {"helper:1", "helper:2", "helper:3", "helper:4"}
+
+
+def test_coverage_two_helpers_record_at_once_shows_both(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Helpers record coverage from their own threads. A map read before another helper's must
+    never land after it on the screen: that helper's pages would show as not opened (`by` None).
+    Helper 1 is held between recording and showing until helper 2 has recorded and shown."""
+    harness = Harness(tmp_path, ScriptedProvider(lead=[reply(text("Done."))]))
+    engine = harness.engine
+    engine.book.page_count = 4
+    record = FindingBook.set_coverage
+    first_recorded = threading.Event()
+    second_shown = threading.Event()
+
+    def held(book: FindingBook, raw: object, by: str) -> dict[str, Any]:
+        coverage = record(book, raw, by)
+        if by == "helper:1":
+            first_recorded.set()
+            assert second_shown.wait(5)
+        return coverage
+
+    monkeypatch.setattr(FindingBook, "set_coverage", held)
+
+    def pages(*numbers: int) -> dict[str, Any]:
+        return {"pages": [{"page": page, "status": "same"} for page in numbers]}
+
+    first = threading.Thread(
+        target=engine._finding_tool, args=("set_coverage", pages(1, 2), "helper:1")
+    )
+    first.start()
+    assert first_recorded.wait(5)
+    engine._finding_tool("set_coverage", pages(3, 4), "helper:2")
+    second_shown.set()
+    first.join(5)
+    assert not first.is_alive()
+
+    both = ["helper:1", "helper:1", "helper:2", "helper:2"]
+    shown = [block["coverage"] for block in engine.blocks if block["type"] == "coverage"]
+    assert len(shown) == 1
+    assert [entry["by"] for entry in shown[0]["pages"]] == both
+    sent = [data["coverage"] for event, data in harness.events if event == "coverage"]
+    assert [entry["by"] for entry in sent[-1]["pages"]] == both
 
 
 def test_helpers_queue_past_the_parallel_limit(tmp_path: Path) -> None:

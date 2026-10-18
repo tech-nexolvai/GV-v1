@@ -14,6 +14,7 @@ import logging
 import threading
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 from typing import Any
 
 import httpx2
@@ -25,6 +26,7 @@ from app.review.assistant.chat_provider import (
     AnthropicSdkProvider,
     ProviderChoice,
     ProviderFailure,
+    _SdkStream,
     choose_provider,
     failure_from,
 )
@@ -596,9 +598,11 @@ def test_the_system_prompt_carries_the_answer_style_rules() -> None:
 
 
 class _QuietHandler(BaseHTTPRequestHandler):
-    """Streams the start of an answer over a real socket, then says nothing (a long think)."""
+    """Streams the start of an answer over a real socket, then says nothing (a long think) until
+    its test's own `release` (a class-wide one, once set, would let a rerun's server end at once).
+    """
 
-    release = threading.Event()
+    release: threading.Event
 
     def log_message(self, format: str, *args: Any) -> None:
         pass
@@ -619,7 +623,8 @@ def test_closing_a_stream_from_another_thread_stops_its_read_at_once(
     """Cancel closes the stream from another thread while the message's thread waits on the
     socket. Closing alone left that read waiting (until the call's 15-minute read timeout), so a
     cancelled message never ended and its chat answered 409 to every later message."""
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _QuietHandler)
+    handler = type("_Held", (_QuietHandler,), {"release": threading.Event()})
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     monkeypatch.setenv("ANTHROPIC_BASE_URL", f"http://127.0.0.1:{server.server_address[1]}")
@@ -629,31 +634,93 @@ def test_closing_a_stream_from_another_thread_stops_its_read_at_once(
         )
         stream = provider.open_stream(_params("claude-haiku-5-5", "high", True))
         got: list[Any] = []
+        started = threading.Event()
 
         def read() -> None:
             try:
                 for event in stream:
                     got.append(event["type"])
+                    if len(got) == 3:
+                        started.set()
             except ProviderFailure as failure:
                 got.append(failure)
 
         reader = threading.Thread(target=read, daemon=True)
         reader.start()
-        for _ in range(200):
-            if len(got) >= 3:
-                break
-            threading.Event().wait(0.01)
+        assert started.wait(10)
         assert got == ["message_start", "content_block_start", "content_block_delta"]
 
         stream.close()
-        reader.join(timeout=3)
+        # Far below the call's 60-second read timeout: a read left waiting still fails here; the
+        # margin is only for a loaded machine.
+        reader.join(timeout=10)
 
         assert not reader.is_alive()
+        # Stopped, never a clean end: the shut connection must not read as a finished answer.
         assert isinstance(got[-1], ProviderFailure)
     finally:
-        _QuietHandler.release.set()
+        handler.release.set()
         server.shutdown()
         server.server_close()
+
+
+class _HeldRaw:
+    """An SDK raw stream whose read waits on its connection: `shutdown` wakes it to a clean end
+    of the body. Records the order of shutdown, the read's return and close."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.reading = threading.Event()
+        self.woken = threading.Event()
+        self.closed = threading.Event()
+        self.response = SimpleNamespace(extensions={"network_stream": self})
+
+    def get_extra_info(self, name: str) -> Any:
+        return self if name == "socket" else None
+
+    def shutdown(self, how: int) -> None:
+        self.calls.append("shutdown")
+        self.woken.set()
+
+    def __iter__(self) -> Iterator[Any]:
+        yield SimpleNamespace(type="message_start", to_dict=lambda mode: {"type": "message_start"})
+        self.reading.set()
+        assert self.woken.wait(5)
+        # A close that does not wait for this read gets in here (and closes under it).
+        self.closed.wait(0.2)
+        self.calls.append("read returned")
+
+    def close(self) -> None:
+        self.calls.append("close")
+        self.closed.set()
+
+
+def test_a_stream_is_closed_only_after_the_read_it_woke_has_returned() -> None:
+    """Closing the connection right after shutting it down can leave the woken read waiting again
+    on a dead connection (macOS: until the read timeout); and a shut connection can end the body
+    cleanly. So close waits for the read, and the read stops with a failure, not an answer."""
+    raw = _HeldRaw()
+    stream = _SdkStream(raw)
+    got: list[Any] = []
+
+    def read() -> None:
+        try:
+            for event in stream:
+                got.append(event["type"])
+        except ProviderFailure as failure:
+            got.append(failure)
+
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    assert raw.reading.wait(5)
+
+    stream.close()
+    reader.join(timeout=5)
+
+    assert not reader.is_alive()
+    assert raw.calls == ["shutdown", "read returned", "close"]
+    assert got[0] == "message_start" and isinstance(got[-1], ProviderFailure)
+    assert "stopped" in str(got[-1]) and not got[-1].retryable
 
 
 def _lead_params(provider: str, tools: Any = LEAD_TOOLS) -> dict[str, Any]:

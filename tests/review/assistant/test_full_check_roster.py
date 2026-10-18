@@ -527,6 +527,29 @@ def test_a_roster_full_check_runs_its_specialists_with_no_lead(
     assert outcome.api_content[-1]["role"] == "assistant"
 
 
+def test_the_divider_pages_code_skips_are_shown_on_the_coverage_map(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Code records the pages it leaves out (the two dividers) and shows the map at once, before
+    any helper records (the coverage map is read under the engine's lock, #1612)."""
+    _clean_ink(monkeypatch)
+    harness = _roster(tmp_path, _Roster())
+
+    with caplog.at_level("WARNING", logger="app.review.assistant.full_check_roster"):
+        outcome = harness.run()
+
+    assert "could not record the divider pages" not in caplog.text
+
+    shown = [b["coverage"] for b in outcome.blocks if b["type"] == "coverage"]
+    assert len(shown) == 1
+    by_code = {e["page"]: e for e in shown[0]["pages"] if e["by"] == "code"}
+    assert set(by_code) == {1, 6}
+    assert all(entry["status"] == "not_comparable" for entry in by_code.values())
+    sent = [data["coverage"] for event, data in harness.events if event == "coverage"]
+    # The first map sent is code's alone: the dividers, before any helper has recorded.
+    assert {(e["page"], e["by"]) for e in sent[0]["pages"] if e["by"]} == {(1, "code"), (6, "code")}
+
+
 def test_a_blind_pick_that_differs_keeps_the_item_grey(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

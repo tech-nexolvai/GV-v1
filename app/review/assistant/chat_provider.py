@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import socket
+import threading
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any, Final, Literal, Protocol
@@ -216,6 +217,10 @@ def failure_from(error: BaseException) -> ProviderFailure:
     )
 
 
+# How long `close` waits for a read it woke to return before closing the connection.
+_WAKE_SECONDS: Final = 5.0
+
+
 def _shut_down(raw: Any) -> None:
     """Shut the stream's connection down, so a read waiting on it in another thread returns at
     once. Closing the response alone does not wake that read (on macOS it waits until the call's
@@ -235,26 +240,51 @@ class _SdkStream:
     def __init__(self, raw: Any) -> None:
         self._raw = raw
         self._finished = False
+        self._closed = False
+        # Clear while a thread waits on the raw stream for its next event.
+        self._idle = threading.Event()
+        self._idle.set()
 
     def __iter__(self) -> Iterator[dict[str, Any]]:
+        events = iter(self._raw)
         try:
-            for event in self._raw:
-                kind = getattr(event, "type", None)
-                if kind in _RAW_EVENTS:
+            while True:
+                self._idle.clear()
+                try:
+                    event = next(events, None)
+                finally:
+                    self._idle.set()
+                if event is None:
+                    break
+                if getattr(event, "type", None) in _RAW_EVENTS:
                     yield event.to_dict(mode="json")
-            self._finished = True
         except Exception as error:  # noqa: BLE001 - every provider failure is told plainly
-            raise failure_from(error) from None
+            raise (_stopped() if self._closed else failure_from(error)) from None
+        if self._closed:
+            # A shut connection can read as the body's clean end: still a stop, never an answer.
+            raise _stopped()
+        self._finished = True
 
     def close(self) -> None:
         """Close the stream; one not read to its end (a cancel, from another thread) has its
-        connection shut down first, so the read waiting on it stops now."""
+        connection shut down first, so the read waiting on it stops now. The connection is closed
+        only once that read has returned: closed under a read just woken, the read can wait again
+        on the dead connection until the call's read timeout."""
         if not self._finished:
+            self._closed = True
             _shut_down(self._raw)
+            self._idle.wait(_WAKE_SECONDS)
         try:
             self._raw.close()
         except Exception:  # noqa: BLE001 - closing a finished or broken stream is harmless
             _log.debug("assistant chat stream did not close cleanly")
+
+
+def _stopped() -> ProviderFailure:
+    """A stream closed before its end (a cancel): it stopped, it did not answer."""
+    return ProviderFailure(
+        "Claude's answer was stopped before its end.", status=None, retryable=False
+    )
 
 
 class AnthropicSdkProvider:

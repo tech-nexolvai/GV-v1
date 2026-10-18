@@ -896,17 +896,16 @@ class _Run:
         )
         if plan.skipped:
             try:
-                engine._show_coverage(
-                    engine.book.set_coverage(
-                        {
-                            "pages": [
-                                {"page": page, "status": "not_comparable", "note": why}
-                                for page, why in plan.skipped
-                            ]
-                        },
-                        "code",
-                    )
+                engine.book.set_coverage(
+                    {
+                        "pages": [
+                            {"page": page, "status": "not_comparable", "note": why}
+                            for page, why in plan.skipped
+                        ]
+                    },
+                    "code",
                 )
+                engine._show_coverage()
             except Exception:  # noqa: BLE001 - recorded as unknown pages instead
                 _log.warning("assistant roster could not record the divider pages")
         # P1: pickers and readers per group, the tag reader for the set.
