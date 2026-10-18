@@ -287,6 +287,61 @@ def test_a_label_beside_the_end_of_a_line_is_not_that_lines_value(tmp_path: Path
     assert result.findings == []
 
 
+def _sheet_joint(*, gap: float, ticks: str = "one") -> bytes:
+    """A 60" overall over 20" + 39 3/8" (2 pt per inch), the joint between the parts drawn as a
+    doubled extension line `gap` points apart (at x 340 and 340 + gap). `ticks`: "one" slash across
+    both lines (the drafter's one joint), "two" (one on each line: two places)."""
+    y, right = 280, 340 + gap
+    body = (
+        _dim(300, 420, 300, '60"')
+        # The parts' line in two pieces, an extension line down at each of their ends.
+        + _line(300, y, 340, y)
+        + _line(right, y, 420, y)
+        + _line(300, y - 90, 300, y + 3)
+        + _line(340, y - 90, 340, y + 3)
+        + _line(right, y - 90, right, y + 3)
+        + _line(420, y - 90, 420, y + 3)
+        + _line(298.5, y - 1.5, 301.5, y + 1.5)
+        + _line(418.5, y - 1.5, 421.5, y + 1.5)
+        + _text(315, y + 2, '20"')
+        + _text(370, y + 2, '39 3/8"')
+        + _dim(450, 500, 150, '25"')
+    )
+    middle = 340 + gap / 2
+    if ticks == "one":
+        body += _line(middle - 1.5, y - 1.5, middle + 1.5, y + 1.5)
+    else:
+        body += _line(338.5, y - 1.5, 341.5, y + 1.5)
+        body += _line(right - 1.5, y - 1.5, right + 1.5, y + 1.5)
+    return body
+
+
+def test_a_joint_under_one_tick_on_a_doubled_line_is_one_point(tmp_path: Path) -> None:
+    """#1629: the parts meet across a 1.2 pt doubled extension line marked by one slash (within
+    2.5 line weights of 0.5 pt): the string is the overall's, and its sliver is not dimensioned."""
+    result = _check(tmp_path, _sheet_joint(gap=1.2))
+    assert result.strings["does_not_add_up"] == 1
+    (finding,) = result.findings
+    assert finding["parts"] == ['20"', '39 3/8"']
+    assert finding["architect"] == '59 3/8"'  # code's sum
+    assert finding["vendor"] == '60"'
+
+
+@pytest.mark.parametrize(
+    ("gap", "ticks"),
+    [
+        (1.2, "two"),  # a tick on each line: two places, never bridged
+        (3.0, "one"),  # wider than 2.5 line weights: never bridged
+    ],
+)
+def test_a_wider_or_doubly_marked_joint_is_never_bridged(
+    tmp_path: Path, gap: float, ticks: str
+) -> None:
+    result = _check(tmp_path, _sheet_joint(gap=gap, ticks=ticks))
+    assert result.strings["found"] == 0
+    assert result.findings == []
+
+
 # ---- completeness --------------------------------------------------------------------------------
 
 

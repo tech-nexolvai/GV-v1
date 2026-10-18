@@ -175,6 +175,9 @@ class _Parsed:
     """`verify_value._Page`: characters, character-sized ink paths, pictures."""
     segments: tuple[Segment, ...]
     """Every straight piece of the page's black or grey line work (shown points)."""
+    weight: float = 0.3
+    """The line work's usual stroke width (the median, points): how far apart two line ends may be
+    and still meet (`vendor_consistency`'s joints)."""
 
 
 def _parse(pdf: Path, page_index: int) -> _Parsed:
@@ -186,6 +189,7 @@ def _parse(pdf: Path, page_index: int) -> _Parsed:
     chars: list[Any] = []
     paths: list[Any] = []
     segments: list[Segment] = []
+    widths: list[float] = []
     with pdfplumber.open(io.BytesIO(vendor)) as document:
         page = document.pages[0]
         shown = vv._placement(page)
@@ -202,6 +206,9 @@ def _parse(pdf: Path, page_index: int) -> _Parsed:
                 paths.append(made_path)
             if not path_ink(dict(item)):
                 continue
+            width = float(item.get("linewidth") or 0)
+            if width > 0:
+                widths.append(width)
             for piece in _pieces(item):
                 points = [shown(x, y) for x, y in piece]
                 segments.extend((a, b) for a, b in pairwise(points) if a != b)
@@ -210,7 +217,8 @@ def _parse(pdf: Path, page_index: int) -> _Parsed:
             for image in page.images
         )
     parsed = vv._Page(key, vendor, tuple(chars), tuple(paths), pictures, size)
-    return _Parsed(parsed, tuple(segments))
+    weight = float(np.median(widths)) if widths else 0.3
+    return _Parsed(parsed, tuple(segments), weight)
 
 
 # ---- the text route ------------------------------------------------------------------------------
@@ -480,6 +488,11 @@ def _boundaries(
             if min(a[1], b[1]) - 1.5 <= y <= max(a[1], b[1]) + 1.5:
                 uprights.append((mx, length))
         elif length <= 3 * font and 0.4 <= abs(dy / dx) <= 2.5 and abs(my - y) <= 1.5:
+            if drawn and not _crosses(a[1], b[1], y):
+                # A slash tick crosses its line. A drawn `1`'s foot beside the line (its stroke
+                # touching an extension-like stroke) only meets it, on one side (#1629: a tall
+                # overall was cut at its neighbours' `1`s).
+                continue
             ticks.append(mx)
     if drawn:
         # A tick cuts the line where an extension line crosses it too: a character's slanted
@@ -494,6 +507,18 @@ def _boundaries(
             continue
         out.append(mx)
     return sorted(out + ticks)
+
+
+#: A tick crosses its line when its two ends lie on either side of it, each at least this share of
+#: the tick's height away (the line's place across is known to half a point: rows are rounded).
+_CROSS_SHARE: Final = 0.25
+
+
+def _crosses(a: float, b: float, y: float) -> bool:
+    """A stroke from `a` to `b` (across the line) crosses the line at `y`."""
+    low, high = min(a, b), max(a, b)
+    margin = _CROSS_SHARE * (high - low)
+    return low <= y - margin and high >= y + margin
 
 
 def _extension(x: float, y: float, segments: Sequence[Segment], font: float) -> list[Point] | None:
@@ -1644,6 +1669,39 @@ type _Taken = tuple[str, float, float, float]
 """A span another label is centred on: `(orientation, across, start, end)`."""
 
 
+def _stroke_key(a: Point, b: Point) -> tuple[tuple[float, float], tuple[float, float]]:
+    """A straight stroke, either way round, to a tenth of a point."""
+    p = (round(a[0], 1), round(a[1], 1))
+    q = (round(b[0], 1), round(b[1], 1))
+    return (p, q) if p <= q else (q, p)
+
+
+def _own_strokes(label: ink_labels.Label) -> set[tuple[tuple[float, float], tuple[float, float]]]:
+    """The straight strokes of a drawn label's own glyphs (its paths' polylines)."""
+    own: set[tuple[tuple[float, float], tuple[float, float]]] = set()
+    for glyph in label.glyphs:
+        for path in glyph.paths:
+            for line in getattr(path, "polylines", ()):
+                own.update(_stroke_key(a, b) for a, b in pairwise(line) if a != b)
+    return own
+
+
+def _without_own(
+    segments: Sequence[Segment],
+    own: set[tuple[tuple[float, float], tuple[float, float]]],
+    orientation: str,
+) -> list[Segment]:
+    """`segments` without the label's own strokes that run along `orientation` (h or v)."""
+    out: list[Segment] = []
+    for a, b in segments:
+        dx, dy = abs(b[0] - a[0]), abs(b[1] - a[1])
+        along = dy <= 0.02 * dx if orientation == "h" else dx <= 0.02 * dy
+        if along and _stroke_key(a, b) in own:
+            continue
+        out.append((a, b))
+    return out
+
+
 def _line_of(
     parsed: _Parsed, part: _Part, taken: Sequence[_Taken] = ()
 ) -> tuple[dict[str, Any], str] | None:
@@ -1670,13 +1728,16 @@ def _line_of(
                 x0 - 0.3 <= q[0] <= x1 + 0.3 and y0 - 0.3 <= q[1] <= y1 + 0.3 for q in (a, b)
             )
         ]
+    # A label's own strokes along a line are never that line (#1629: a drawn `4"`'s upright, a
+    # few points long, was taken for its chain's line); its ticks and crossings still cut it.
+    own = _own_strokes(part.label) if part.kind != "mm" else set()
     spot = part.spot or box
     for orientation, axis in ways:
         font = spot[axis] - spot[axis - 2]
         found = dimension_line(
             spot,
             orientation,
-            segments,
+            _without_own(segments, own, orientation) if own else segments,
             font,
             drawn=True,
             taken=[(t[1], t[2], t[3]) for t in taken if t[0] == orientation],
@@ -1707,7 +1768,10 @@ def _settle_lines(
 ) -> list[dict[str, Any]]:
     """One dimension line, one label: when two labels found the same line, the one centred on it
     keeps it and the other looks again past it (a chain's `3/4"` stacked over its ticks finds the
-    overall's line first). A drawn label left with no line of its own is dropped."""
+    overall's line first). A drawn label left with no line of its own is dropped. A label never
+    takes back a line it has given up (#1629: a `3/4"` between a chain's line and its overall's
+    swung from one to the other each round and kept a neighbour's)."""
+    ceded: dict[int, list[_Taken]] = {}
     for _round in range(3):
         spans = [(_span(label), label) for label in [*others, *(f[0] for f in found)]]
         moved = False
@@ -1730,7 +1794,8 @@ def _settle_lines(
             if not rivals:
                 kept.append((label, part))
                 continue
-            taken: list[_Taken] = [(s[0], s[1], s[2], s[3]) for s, _ in rivals]
+            taken = ceded.setdefault(id(label), [])
+            taken += [(s[0], s[1], s[2], s[3]) for s, _ in rivals]
             again = _line_of(parsed, part, taken)
             moved = True
             if again is None:
