@@ -596,6 +596,23 @@ def _item_key(item: str) -> str:
     return " ".join(re.sub(r"[^a-z0-9 ]", " ", item.lower()).split())
 
 
+def _family(tag: str) -> str:
+    """A tag's kind: its letters (`LA-002-CUST` is a laminate `LA`, `PL-604B` a `PL`)."""
+    found = re.match(r"[A-Z]+", _tag_key(tag))
+    return found.group(0) if found else ""
+
+
+def _unrelated(sides: Mapping[str, Sequence[Mapping[str, Any]]]) -> bool:
+    """Tags filed under an area's name alone (no piece after it: the brief asks for
+    "<area>: <piece>") that share no kind on the two sides label different things (a sink's
+    fixture tag against a finish), so they are not one piece's tag to compare (#1646: an area's
+    fixture tag was called Wrong against the vendor's laminate)."""
+    if any(":" in str(row.get("item")) for rows in sides.values() for row in rows):
+        return False
+    kinds = [{_family(str(row["tag"])) for row in sides[side]} for side in ("architect", "vendor")]
+    return not (kinds[0] & kinds[1])
+
+
 def compare_tags(report: str) -> list[dict[str, Any]]:
     """Code compares the tag table by piece: for each piece both sides tag, Right when the tags
     are the same, else Wrong. Returns `report_finding`-shaped inputs."""
@@ -614,7 +631,7 @@ def compare_tags(report: str) -> list[dict[str, Any]]:
             pieces.setdefault(key, {}).setdefault(str(row["side"]), []).append(row)
     out: list[dict[str, Any]] = []
     for sides in pieces.values():
-        if "architect" not in sides or "vendor" not in sides:
+        if "architect" not in sides or "vendor" not in sides or _unrelated(sides):
             continue
         architect, vendor = sides["architect"][0], sides["vendor"][0]
         same = {_tag_key(r["tag"]) for r in sides["architect"]} == {

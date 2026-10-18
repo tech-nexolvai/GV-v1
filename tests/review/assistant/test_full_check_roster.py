@@ -269,6 +269,25 @@ def test_which_items_need_their_pairing_proved() -> None:
     assert not needs_pairing({"source": "architect", "paired_by": "code"})
 
 
+def test_an_areas_tags_of_different_kinds_are_not_compared() -> None:
+    """Tags filed under an area's name alone: a fixture tag against a finish tag labels two
+    different things (no kind in common), so it is never a Wrong; tags of one kind still are, and
+    a named piece is compared as before."""
+    table = {
+        "tags": [
+            {"page": 3, "side": "architect", "item": "2. Lobby", "tag": "PL-191A", "box": None},
+            {"page": 3, "side": "vendor", "item": "2. Lobby", "tag": "LA-097", "box": None},
+            {"page": 4, "side": "architect", "item": "5. Bar", "tag": "LA-091", "box": None},
+            {"page": 4, "side": "architect", "item": "5. Bar", "tag": "CT-099", "box": None},
+            {"page": 4, "side": "vendor", "item": "5. Bar", "tag": "LA-092", "box": None},
+            {"page": 6, "side": "architect", "item": "6. Desk: top", "tag": "CT-099", "box": None},
+            {"page": 6, "side": "vendor", "item": "6. Desk: top", "tag": "ST-094", "box": None},
+        ]
+    }  # fmt: skip
+    found = {f["item"]: f["status"] for f in compare_tags(json.dumps(table))}
+    assert found == {"5. Bar: tag": "different", "6. Desk: top: tag": "different"}
+
+
 def test_code_compares_the_tag_table_by_piece() -> None:
     table = {
         "tags": [
