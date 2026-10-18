@@ -33,6 +33,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import logging
 import re
 import zipfile
 from collections.abc import Mapping, Sequence
@@ -44,12 +45,14 @@ from typing import Any, Final, Literal
 from app.review.assistant.impact import by_impact
 from app.review.assistant.proof import (
     AI_ONLY_REASON,
+    NO_REQUIREMENT_REASON,
     PAIRING_REASON,
     governs,
     proof_group,
     proof_line,
     proof_of,
     should_be_value,
+    stated_requirement,
     vendor_own,
     vendor_value,
 )
@@ -62,6 +65,7 @@ from app.review.assistant.review_action import (
     review_action,
     stamp_words,
 )
+from app.review.assistant.vendor_text import vendor_text
 
 __all__ = [
     "LETTER_KIND",
@@ -98,6 +102,8 @@ __all__ = [
     "submittal_label",
     "submittal_rows",
 ]
+
+_log = logging.getLogger(__name__)
 
 type Status = Literal["wrong", "right", "not_compared"]
 #: The register's status words.
@@ -269,8 +275,9 @@ def labelled(
 
 def requires_words(finding: Mapping[str, Any]) -> str:
     """The letter's line: "Architect requires 37"", "GV rule requires 1" to 2"", "The vendor's own
-    parts add up to 80 1/8""."""
-    value = should_be_value(finding)
+    parts add up to 80 1/8"". Only ever a stated requirement (`proof.stated_requirement`, through
+    the guard on internal words): a comment without one is never made (`proof_group`)."""
+    value = stated_requirement(finding) or "the value on the cloud drawing's note"
     own = vendor_own(finding)
     if own == "sum":
         return f"The vendor's own parts add up to {value}"
@@ -280,14 +287,7 @@ def requires_words(finding: Mapping[str, Any]) -> str:
     settled = finding.get("settled")
     if isinstance(settled, Mapping) and settled.get("method") == "gv_limits":
         source = "rules"
-    who = _WHO.get(source, "Architect")
-    if not any(ch.isdigit() for ch in value):
-        # No value code can print (the rule's own words): say which check it fails instead.
-        check = finding.get("rule_check_id")
-        if source == "rules":
-            return f"Does not meet GV rule {check}" if check else "Does not meet GV's rule"
-        return f"Does not match the {who.lower()}'s drawing"
-    return f"{who} requires {value}"
+    return f"{_WHO.get(source, 'Architect')} requires {value}"
 
 
 def set_round(page_map: Mapping[str, Any] | None, findings: Sequence[Mapping[str, Any]]) -> int:
@@ -399,6 +399,15 @@ def package_context(
     pack = workspace.set_pack
     page_map = plan.read_page_map(pack, assume=True, main_file=name) if pack is not None else None
     rounds = chat.full_check_rounds(workspace, findings)
+    unstated = [
+        str(f.get("id")) for f in findings if proof_of(f).get("reason") == NO_REQUIREMENT_REASON
+    ]
+    if unstated:
+        _log.warning(
+            "send-ready package: %d GV rule results without a stated requirement, not comments: %s",
+            len(unstated),
+            ", ".join(unstated[:20]),
+        )
     return PackageContext(
         identity=identity,
         date=today or datetime.now(UTC).strftime("%Y-%m-%d"),
@@ -479,6 +488,13 @@ class Letter:
         return line
 
 
+def _item(finding: Mapping[str, Any]) -> str:
+    """An item's name as the vendor reads it (the guard), else "Item on page N"."""
+    page = _page_of(finding)
+    fallback = f"Item on page {page}" if page is not None else "Item"
+    return vendor_text(finding.get("item"), fallback) or fallback
+
+
 def _page_of(finding: Mapping[str, Any]) -> int | None:
     page = finding.get("page")
     return page if isinstance(page, int) and not isinstance(page, bool) else None
@@ -505,10 +521,10 @@ def corrections_of(
             Correction(
                 label=labels.get(finding_id, ""),
                 page=_page_of(finding),
-                item=" ".join(str(finding.get("item") or "Item").split()),
-                vendor_shows=vendor_value(finding),
+                item=_item(finding),
+                vendor_shows=vendor_text(vendor_value(finding), "see the cloud drawing") or "",
                 requires=requires_words(finding),
-                source=governs(finding),
+                source=vendor_text(governs(finding), "GV") or "GV",
                 action=item_action(finding),
                 round_word=round_word,
                 fabrication=changes_fabrication(finding),
@@ -535,9 +551,9 @@ def _previous(rounds: Any, labels: Mapping[str, str]) -> list[Previous]:
         out.append(
             Previous(
                 label=labels.get(item.finding_id, ""),
-                item=" ".join(str(item.item or "").split()),
+                item=vendor_text(item.item, "Previous comment") or "Previous comment",
                 words=ROUND_WORDS[item.status],
-                detail=detail,
+                detail=vendor_text(detail, "") or "",
             )
         )
     return out
@@ -694,6 +710,11 @@ def register_rows(
     rows = [*groups["wrong"], *groups["not_compared"], *groups["right"]]
     for rank, row in enumerate(rows[: len(groups["wrong"]) + len(groups["not_compared"])], start=1):
         row[11] = str(rank)
+    # The guard on internal words (#1622): every cell is vendor-facing.
+    for row in rows:
+        row[4] = _item({"item": row[4], "page": int(row[1]) if row[1] else None})
+        for at in (7, 8, 9, 10, 12):
+            row[at] = vendor_text(row[at], "") or ""
     return rows
 
 

@@ -14,6 +14,7 @@ from typing import Any, Final
 from app.review.assistant.chat_findings import products_words
 from app.review.assistant.chat_trust import cloud_kind, shown_counts
 from app.review.assistant.impact import by_impact
+from app.review.assistant.vendor_text import vendor_text
 
 #: The small note under a summary code wrote (the screen shows it as written).
 CODE_SUMMARY_NOTE: Final = "*Summary written by GV Review: the AI did not finish its own.*"
@@ -53,10 +54,12 @@ def _issue_words(findings: Sequence[Mapping[str, Any]]) -> list[str]:
     """The top issues, the same item and values on several pages said once."""
     groups: dict[tuple[str, str, str], list[int]] = {}
     for finding in top_issues(findings, limit=len(findings)):
+        # The guard on internal words (#1622, `vendor_text`): no record id or "see GV Review's
+        # record" in the summary either.
         key = (
-            str(finding.get("item") or "Item").strip(),
-            str(finding.get("vendor") or "?").strip(),
-            str(finding.get("architect") or "?").strip(),
+            vendor_text(finding.get("item"), f"Item on page {finding.get('page')}") or "Item",
+            vendor_text(finding.get("vendor"), "?") or "?",
+            vendor_text(finding.get("architect"), "no stated value") or "no stated value",
         )
         groups.setdefault(key, []).append(int(finding.get("page") or 0))
         if len(groups) > TOP_ISSUES:

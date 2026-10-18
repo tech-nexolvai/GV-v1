@@ -502,14 +502,113 @@ def test_the_register_speaks_to_the_vendor() -> None:
     assert all("before sending" not in cell for row in rows for cell in row)
 
 
-def test_a_rule_with_no_printable_value_names_the_check() -> None:
-    from app.review.assistant.send_package import requires_words
+#: Words that must never reach the vendor (#1622, `vendor_text`).
+FORBIDDEN = re.compile(
+    r"see GV Review'?s record|recorded check|rule_check_id|\bair:|\bhelpers?\b|\bthe lead\b|"
+    r"check (?:it )?before sending|(?<![\w-])AI(?![\w-])",
+    re.IGNORECASE,
+)
 
-    rule = _proved(
-        source="rules",
-        rule_check_id="C1",
-        architect="see GV Review's record",
-        inches={"architect": None, "vendor": "39.5", "difference": None},
+
+def _c10(**changes: Any) -> dict[str, Any]:
+    """The C-10 case from the real run: a GV width rule result seeded with no needed overall."""
+    given: dict[str, Any] = {
+        "id": "F10",
+        "page": 1,
+        "item": "Countertop row on page 3",
+        "category": "countertop",
+        "architect": "see GV Review's record",
+        "vendor": '39 1/2"',
+        "source": "rules",
+        "created_by": "gv_review",
+        "rule_check_id": "C1",
+        "record_id": "C1",
+        "witnesses": ["rule"],
+        "inches": {"architect": None, "vendor": "39.5", "difference": None},
+        "vendor_box": _box(VENDOR_12),
+        "arch_box": None,
+        "critic": None,
+    }
+    return _proved(**{**given, **changes})
+
+
+def test_a_gv_rule_result_without_a_stated_requirement_is_never_a_comment(
+    workspace: ChatWorkspace,
+) -> None:
+    """C-10: "GV rule requires see GV Review's record" must never reach the vendor. With no
+    requirement it can state, the item is Not compared ("GV rule result without a stated
+    requirement") and logged; it is no comment on the letter, the register or the cloud drawing."""
+    from app.review.assistant.proof import NO_REQUIREMENT_REASON, proof_group, proof_of
+
+    c10 = _c10()
+    assert proof_group(c10) == "not_verified"
+    assert proof_of(c10)["reason"] == NO_REQUIREMENT_REASON
+    # Even the reviewer's Agree cannot make it a comment with nothing to require.
+    assert proof_group({**c10, "decision": {"decision": "agree", "by": "R"}}) != "clouded"
+    findings = [_proved(), c10, _right()]
+    assert review_action(findings).corrections == 1
+    context = package_context(workspace, findings, IDENTITY, today="2026-10-18")
+    drawing = workspace.files / "drawing.pdf"
+    made = make_proof_file(workspace, findings, drawing, context=context)
+    out = workspace.files / "package.zip"
+    make_package_file(workspace, findings, [(made.name, drawing)], out, context)
+    with zipfile.ZipFile(out) as archive:
+        letter = _text(archive.read("sheet - Comment letter.pdf"))
+        cloud = _text(archive.read("sheet - GV cloud drawing.pdf"))
+        register = archive.read("sheet - Issue register.xlsx")
+    for words in (letter, cloud.split("Notes")[0]):
+        assert FORBIDDEN.search(words) is None, FORBIDDEN.search(words)
+    assert "Comments (1)" in letter and "Countertop row on page 3" not in letter
+    openpyxl = pytest.importorskip("openpyxl")
+    rows = list(
+        openpyxl.load_workbook(io.BytesIO(register))["Comments"].iter_rows(values_only=True)
     )
-    assert requires_words(rule) == "Does not meet GV rule C1"
-    assert requires_words(_proved()) == 'Architect requires 37"'
+    row = next(r for r in rows if r[4] == "Countertop row on page 3")
+    assert row[0] in (None, "") and row[5] == "Not compared"
+    assert row[10] == NO_REQUIREMENT_REASON
+    assert not any(FORBIDDEN.search(str(c or "")) for r in rows for c in r)
+
+
+def test_a_gv_rule_states_its_requirement_from_its_own_comparison(tmp_path: Path) -> None:
+    """The width rule's comparison gives the requirement with its computed value: the seeded
+    finding says what it should be, and the letter prints it."""
+    from app.review.assistant.chat_findings import FindingBook
+    from app.review.assistant.chat_trust import recorded_from
+    from app.review.assistant.send_package import requires_words
+    from app.review.assistant.vendor_text import rule_requirement, vendor_text
+
+    assert rule_requirement("|39.5 - 41.625| = 2.125 > 0 in") == '41 5/8"'
+    assert rule_requirement("|72 - 68| = 4 > 1/8 in") == '68" (± 1/8")'
+    assert rule_requirement("30 < 34 in") == 'at least 34"'
+    assert rule_requirement("3 > 2 in") == 'at most 2"'
+    assert rule_requirement("0.5 <= 3 <= 2 in is False") == 'between 1/2" and 2"'
+    assert rule_requirement("count = 3 != 4") is None
+    assert vendor_text("see GV Review's record") is None
+    assert vendor_text("air:f719074f-1b4e-48f8-8e04-47c34 Buffet top", "x") == "Buffet top"
+    assert vendor_text("AI reading only", "fallback") == "fallback"
+    assert vendor_text("AI_Set_3 sheet") == "AI_Set_3 sheet"
+
+    document = {
+        "records": {
+            "countertops": [
+                {
+                    "id": "C1",
+                    "page": 2,
+                    "label": "Countertop row on page 3",
+                    "outcome": "Needs correction",
+                    "printed_overall": '39 1/2"',
+                    "rule": {"comparison": "|39.5 - 41.625| = 2.125 > 0 in"},
+                }
+            ]
+        }
+    }
+    recorded = recorded_from(document)
+    workspace = ChatWorkspace.open(tmp_path / "chat")
+    _sheet(workspace.uploads / "sheet.pdf", pages=3)
+    listing = [{"name": "sheet.pdf", "pages": 3, "kind": "the vendor's shop drawings"}]
+    seeded = FindingBook(workspace=workspace, listing=listing, page_count=3).seed(
+        recorded.differences[0]
+    )
+    assert seeded is not None and seeded["architect"] == '41 5/8"'
+    proved = _c10(architect=seeded["architect"], inches={"architect": "41.625", "vendor": "39.5"})
+    assert requires_words(proved) == 'GV rule requires 41 5/8"'

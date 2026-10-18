@@ -101,6 +101,7 @@ from app.review.assistant.proof import (
     vendor_own,
     vendor_value,
 )
+from app.review.assistant.vendor_text import vendor_text
 
 __all__ = [
     "GREEN",
@@ -109,6 +110,7 @@ __all__ = [
     "STAMP_WORDS",
     "ProofCounts",
     "contrast",
+    "item_words",
     "proof_markup_pdf",
     "stamp_line",
     "tag",
@@ -234,11 +236,11 @@ def note_lines(mark: Mark) -> list[list[_Run]]:
     "Fixed in round 2: was 46", now 37"" in green, "Still wrong in round 2: now 46"" in red, or
     the item headed "NEW" in red."""
     finding = mark.finding
-    vendor = vendor_value(finding)
-    value = should_be_value(finding)
-    source = governs(finding)
+    vendor = vendor_text(vendor_value(finding), "") or ""
+    value = vendor_text(should_be_value(finding), "") or ""
+    source = vendor_text(governs(finding), "") or ""
     room = NOTE_WIDTH_PT - 2 * _NOTE_PAD - _NOTE_BAR - _prefix_width(mark)
-    item = str(finding.get("item") or "Item")
+    item = item_words(finding)
     rounds = _round(mark)
     head: list[_Run] = [(item, _NOTE_BOLD, _DARK)]
     if rounds is not None and rounds.status == "fixed":
@@ -282,6 +284,13 @@ def note_lines(mark: Mark) -> list[list[_Run]]:
             room,
         ),
     ]
+
+
+def item_words(finding: Mapping[str, Any]) -> str:
+    """A clouded item's name as the vendor reads it (`vendor_text`: never a record id or internal
+    words), else "Item on page N"."""
+    fallback = f"Item on page {finding.get('page')}" if finding.get("page") else "Item"
+    return vendor_text(finding.get("item"), fallback) or fallback
 
 
 def tag(finding: Mapping[str, Any], number: int) -> str:
@@ -724,9 +733,9 @@ def _cover(
         [
             Paragraph(f"<b>{escape(tag(item.finding, item.number))}</b>", body),
             Paragraph(escape(str(item.finding.get("page") or "")), body),
-            Paragraph(escape(str(item.finding.get("item") or "")), body),
-            Paragraph(_coloured("", vendor_value(item.finding), RED), body),
-            Paragraph(_coloured("", should_be(item.finding), GREEN), body),
+            Paragraph(escape(item_words(item.finding)), body),
+            Paragraph(_coloured("", vendor_text(vendor_value(item.finding), "") or "", RED), body),
+            Paragraph(_coloured("", vendor_text(should_be(item.finding), "") or "", GREEN), body),
         ]
         for item in clouded
     ]
@@ -854,7 +863,7 @@ def _proof_entries(
         head = Paragraph(
             f'<font color="{_hex(RED)}"><b>{escape(tag(item.finding, item.number))}</b></font>'
             "&nbsp;&nbsp;"
-            f"<b>{escape(str(finding.get('item') or ''))}</b>",
+            f"<b>{escape(item_words(finding))}</b>",
             styles["head"],
         )
         left: list[Any] = [Paragraph(_coloured("Governs: ", governs(finding), GREEN), small)]

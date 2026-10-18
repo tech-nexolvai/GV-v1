@@ -48,6 +48,7 @@ from app.review.assistant.impact import by_impact
 from app.review.assistant.product_scope import ProductScope, refiled
 from app.review.assistant.sandbox import UPLOADS, ChatWorkspace, SandboxRefused
 from app.review.assistant.tool_schema import box_schema
+from app.review.assistant.vendor_text import rule_requirement
 from vocabulary.product_registry import registry
 
 __all__ = [
@@ -1580,13 +1581,21 @@ class FindingBook:
             self._count += 1
             finding_id = f"F{self._count}"
         code = record.get("source") == "code"
+        architect = record.get("architect")
+        if code:
+            # A GV rule's requirement in plain words with its computed value (#1622): the rule's
+            # comparison ("|39.5 - 41.625| = 2.125 > 0 in") read as `41 5/8"`, never the raw
+            # comparison or "see GV Review's record" when no value is recorded.
+            stated = rule_requirement(record.get("comparison"))
+            if stated is not None and (not architect or architect == record.get("comparison")):
+                architect = stated
         finding: dict[str, Any] = {
             "id": finding_id,
             "page": page,
             "vs_page": None,
             "item": shown,
             "category": named["category"],
-            "architect": str(record.get("architect") or "see GV Review's record")[:_MAX_VALUE],
+            "architect": str(architect or "see GV Review's record")[:_MAX_VALUE],
             "vendor": str(record.get("vendor") or "see GV Review's record")[:_MAX_VALUE],
             "status": "different",
             "why": (str(record["why"])[:_MAX_WHY] if record.get("why") else None),
