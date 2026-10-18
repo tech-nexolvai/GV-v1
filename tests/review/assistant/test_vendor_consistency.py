@@ -529,3 +529,103 @@ def test_the_findings_carry_their_code_witnesses_through_the_real_checks(tmp_pat
     assert twice["trust_level"] == "likely"
     assert all(f["created_by"] == "consistency" and f["status"] == "different" for f in findings)
     assert made.blocks[0]["by"] == "code"
+
+
+# ---- strings a reading grouped, against code's geometry (#1639) -----------------------------------
+
+
+def _sheet_two_chains() -> bytes:
+    """A 60" overall over 20" + 40" (it adds up), and a 25" dimension of another chain beside it."""
+    return _sheet_adds_up()
+
+
+def _ledger_string(parts: list[str], printed: str = '60"', **more: Any) -> dict[str, Any]:
+    from app.review.assistant.finding_checks import to_inches
+    from app.review.assistant.ledger import format_inches
+
+    total = sum(to_inches(p) or 0 for p in parts)
+    return {
+        "id": "F7",
+        "page": 1,
+        "status": "different",
+        "source": "vendor_arithmetic",
+        "created_by": "ledger",
+        "item": "Dimension string (elevation)",
+        "architect": format_inches(total),
+        "vendor": printed,
+        "printed_total": printed,
+        "parts": parts,
+        "checks": {"arithmetic": "agrees"},
+        "witnesses": ["arithmetic"],
+        "trust_level": "likely",
+        **more,
+    }
+
+
+def test_a_string_grouped_from_two_chains_is_dropped_when_codes_string_adds_up(
+    tmp_path: Path,
+) -> None:
+    """A paid run's false red, in made-up numbers: a reading put a part of another chain into a string (20" + 25"
+    under the 60" overall, leaving out the 40"), so it "did not add up". Code's own string of that
+    overall is 20" + 40" = 60": the reading's claim is dropped, never red."""
+    result = _check(tmp_path, _sheet_two_chains())
+    grouped = _ledger_string(['20"', '25"'])
+    judged = vc.judge_strings([grouped], result.checks)
+    assert judged.verified == () and list(judged.dropped) == ["F7"]
+    assert "it adds up" in judged.dropped["F7"]
+
+
+def test_a_grouped_string_code_could_not_measure_is_never_red() -> None:
+    """With no string of code's for that overall (no geometry), the reading's sum is Not compared:
+    the arithmetic witness alone never clouds it."""
+    from app.review.assistant import proof
+
+    grouped = _ledger_string(['7 1/2"', '31 1/2"', '4 1/4"'], '58 1/4"')
+    assert vc.judge_strings([grouped], []) == vc.StringJudgement()
+    assert proof.proof_group(grouped) == "not_compared"
+    found = proof.classified(grouped)
+    assert found.label == "Not reviewed: string not verified on the drawing"
+    assert found.why.startswith('parts 7 1/2" + 31 1/2" + 4 1/4" = 43 1/4"; printed 58 1/4"')
+
+
+def test_a_grouped_string_that_is_codes_own_chain_is_verified(tmp_path: Path) -> None:
+    from app.review.assistant import proof
+
+    result = _check(tmp_path, _sheet_wrong())
+    same = _ledger_string(['41"', '20"'])
+    other = {**_ledger_string(['20"', '25"']), "id": "F8"}
+    judged = vc.judge_strings([same, other], result.checks)
+    assert judged.verified == ("F7",)
+    assert "its own finding replaces" in judged.dropped["F8"]
+    assert proof.proof_group({**same, "string_geometry": "verified"}) == "clouded"
+    assert proof.proof_group(same) == "not_compared"
+
+
+def test_two_overalls_of_one_value_and_no_spot_are_left_alone(tmp_path: Path) -> None:
+    result = _check(tmp_path, _sheet_adds_up())
+    twice = result.checks * 2
+    assert vc.judge_strings([_ledger_string(['20"', '25"'])], twice) == vc.StringJudgement()
+
+
+class _FullBook(_Book):
+    def replace(self, finding: dict[str, Any]) -> bool:
+        self._live = [finding if f.get("id") == finding["id"] else f for f in self._live]
+        return True
+
+    def absorb(self, finding_id: str) -> bool:
+        before = len(self._live)
+        self._live = [f for f in self._live if f.get("id") != finding_id]
+        return len(self._live) < before
+
+
+def test_the_hook_drops_a_grouped_string_codes_geometry_refutes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = _check(tmp_path, _sheet_two_chains())
+    monkeypatch.setattr(vc, "check_pack", lambda folder, uploads: result)
+    engine = _Engine("full_check", [])
+    engine.book = _FullBook([_ledger_string(['20"', '25"'])])
+    dropped: list[str] = []
+    engine._show_dropped = lambda finding_id, reason: dropped.append(finding_id)  # type: ignore[attr-defined]
+    vc.add_to_answer(engine)
+    assert dropped == ["F7"] and engine.book.live() == []
