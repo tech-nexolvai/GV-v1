@@ -3,8 +3,9 @@
 - which items code clouds by itself (only Wrong items code proved), and where the rest go;
 - the colours: red and green legible on white and in greyscale print;
 - the words: "Vendor: 46"" in red, "Should be: 37" (architect 3'-1", page 2)" in green;
-- the rendered PDF: cover counts, stamp, assumptions, the sheet's note, the proof entry, the grey
-  lists, the page labels; the reviewer's decisions as overrides;
+- the rendered PDF: cover counts (Wrong / Right / Nothing to compare), stamp, assumptions, the
+  sheet's note, the proof entry, the page labels; the reviewer's decisions as overrides; what could
+  not be compared is never on the drawing (#1619): it is the separate Not-compared list;
 - the plan check never waits: code's likely answers, written on the cover.
 """
 
@@ -190,12 +191,13 @@ def _right(**changes: Any) -> dict[str, Any]:
         (_proved(), "clouded"),
         (_proved(trust_level="likely", checks=_checks(second_read="not_run")), "clouded"),
         (_proved(witnesses=["rule"], source="rules", rule_check_id="C1"), "clouded"),
-        (_ai_only(), "not_verified"),
+        # What code could not prove or compare is Not compared (#1619), never a question.
+        (_ai_only(), "not_compared"),
         # Two AI readings agreeing are Likely, but no code witness: never clouded alone.
-        (_ai_only(trust_level="likely"), "not_verified"),
+        (_ai_only(trust_level="likely"), "not_compared"),
         # A check that disagrees makes it "AI reading only".
-        (_proved(trust_level="to_check"), "not_verified"),
-        (_decision(), "could_not_compare"),
+        (_proved(trust_level="to_check"), "not_compared"),
+        (_decision(), "not_compared"),
         (_right(), "right"),
         (_right(compared=False), "not_compared"),
         # The reviewer's decision overrides, both ways.
@@ -231,10 +233,10 @@ def test_an_architect_comparison_needs_a_pairing_proof_a_rule_or_sum_does_not() 
     its top). The one signal is the full check's (#1611): code paired the two itself, or the
     devil's advocate passed the item. Without it the item is grey, with the reason."""
     unpaired = _proved(witnesses=["units"], critic=None)
-    assert proof_group(unpaired) == "not_verified"
-    assert proof_of(unpaired)["reason"] == PAIRING_REASON
+    assert proof_group(unpaired) == "not_compared"
+    assert proof_of(unpaired)["not_compared"] == "different_reference"
     assert unproved_reason(unpaired) == PAIRING_REASON
-    assert proof_of(_ai_only())["reason"] == AI_ONLY_REASON
+    assert unproved_reason(_ai_only()) == AI_ONLY_REASON
     # The advocate objecting: grey with its own reason.
     objects = {
         **ADVOCATE_PASSED,
@@ -242,14 +244,15 @@ def test_an_architect_comparison_needs_a_pairing_proof_a_rule_or_sum_does_not() 
         "note": "Not proved: a blind second pick chose p23.D12, not p23.D10.",
     }
     objected = _proved(critic=objects, trust_level="to_check")
-    assert proof_group(objected) == "not_verified"
+    assert proof_group(objected) == "not_compared"
     assert unproved_reason(objected).startswith("Not proved: a blind second pick chose p23.D12")
     # Another model's critic passing is not the advocate's proof.
     other = _proved(critic={**ADVOCATE_PASSED, "model": "critic"})
-    assert proof_group(other) == "not_verified"
+    assert proof_group(other) == "not_compared"
     assert proof_group(_proved(critic=None, paired_by="code")) == "clouded"
-    assert proof_group(_proved(source="brand_prototype", critic=None)) == "not_verified"
-    assert proof_group(_proved(source="gv_review", critic=None)) == "not_verified"
+    # R1: the brand prototype is reference only; a difference from it alone is never red.
+    assert proof_of(_proved(source="brand_prototype", critic=None))["not_compared"] == "prototype"
+    assert proof_group(_proved(source="gv_review", critic=None)) == "not_compared"
     # GV's rule, GV's limits and the vendor's own sum compare nothing drawn by someone else.
     rule = _proved(source="rules", witnesses=["rule"], rule_check_id="C1", critic=None)
     assert not needs_pairing(rule) and proof_group(rule) == "clouded"
@@ -275,14 +278,7 @@ def test_an_architect_comparison_needs_a_pairing_proof_a_rule_or_sum_does_not() 
 
 def test_counts_split_the_screen_counts_and_follow_decisions() -> None:
     findings = [_proved(), _ai_only(), _decision(), _right(), _right(compared=False)]
-    assert proof_counts(findings) == {
-        "clouded": 1,
-        "not_verified": 1,
-        "could_not_compare": 1,
-        "right": 1,
-        "not_compared": 1,
-        "dismissed": 0,
-    }
+    assert proof_counts(findings) == {"clouded": 1, "right": 1, "not_compared": 3, "dismissed": 0}
     decided = [_proved(decision={"decision": "not_a_problem", "by": "R"}), _ai_only()]
     assert proof_counts(decided)["dismissed"] == 1 and proof_counts(decided)["clouded"] == 0
 
@@ -336,7 +332,12 @@ def test_the_words_say_what_is_wrong_and_what_it_should_be() -> None:
     assert should_be(filler) == '1" to 2" (GV filler rule)'
     assert governs(filler) == "GV filler rule"
     assert proof_line(filler).startswith("Settled by GV Review: GV's filler limits")
-    assert proof_of(_decision())["reason"] == "the architect prints no size here"
+    nothing = proof_of(_decision())
+    assert nothing["group"] == "not_compared" and nothing["rule"] == "R7"
+    assert nothing["not_compared"] == "nothing_to_compare"
+    assert nothing["reason"] == "architect gives no size or information for it"
+    assert nothing["settle"] == "the architect's size or note for the counter overall width"
+    assert nothing["should_be"] is None
     assert proof_of(_right())["should_be"] is None
     assert stamp_line("2026-10-18") == f"{STAMP_WORDS}: 2026-10-18"
     assert stamp_line("2026-10-18", ["Ann", "Ann", "Bo"]).endswith("and reviewed by Ann, Bo")
@@ -402,10 +403,9 @@ def test_the_drawing_clouds_only_what_code_proved_in_red_and_green(tmp_path: Pat
     cover = reader.pages[0].extract_text()
     for words in (
         "Checked automatically by GV Review: 2026-10-18",
-        "1\nWrong, clouded",
-        "1\nNot verified by code",
-        "1\nCould not compare",
+        "1\nWrong",
         "1\nRight",
+        "2\nNothing to compare",
         RULE_LINE[:60],
         "Buffet outlet height",
     ):
@@ -427,12 +427,14 @@ def test_the_drawing_clouds_only_what_code_proved_in_red_and_green(tmp_path: Pat
     assert "Vendor page 1 (architect's drawing on the same sheet)" in proof
     proof_picture = _render(out, 2)
     assert _count(proof_picture, GREEN) > 50 and _count(proof_picture, RED) > 50  # the boxes
-    notes = reader.pages[3].extract_text()
-    assert "Not verified by code: check before sending (1)" in notes
-    assert "Base cabinet height" in notes
-    assert "Could not be compared (1)" in notes
-    assert "Why: the architect prints no size here" in notes
+    notes = " ".join(reader.pages[3].extract_text().split())
+    # What could not be compared is not on the drawing: the notes point to the separate list.
+    assert "Nothing to compare (2): listed with the reason" in notes
+    assert "Base cabinet height" not in notes
     assert "Right (1)" in notes and "Toe kick height" in notes
+    words = "".join(page.extract_text() for page in reader.pages)
+    for gone in ("check before sending", "Your decision", "Vendor to confirm", "Confirm:"):
+        assert gone not in words, gone
 
 
 def test_decisions_override_and_the_stamp_names_the_reviewer(tmp_path: Path) -> None:
@@ -567,3 +569,77 @@ def test_the_vendor_s_own_string_or_span_is_not_labelled_architect(tmp_path: Pat
     assert LEFT_CAPTIONS["span"] in proof
     assert "Architect / rule" not in proof
     assert "the vendor's own other dimension of the same span" in proof
+
+
+# ---- the Not-compared list (#1619) -----------------------------------------------------------------
+
+
+def test_the_not_compared_list_has_the_same_rows_as_the_workbook_and_the_screen(
+    tmp_path: Path,
+) -> None:
+    import io as stdio
+
+    import openpyxl
+
+    from app.review.assistant import not_compared
+    from app.review.assistant.proof_drawing import not_compared_pdf
+
+    findings = [_proved(), _ai_only(), _decision(), _right(), _right(id="F5", compared=False)]
+    rows = not_compared.rows(findings, areas={1: "Lobby"})
+    # The screen counts the same rows: every Not-compared item (the proof group).
+    assert len(rows) == proof_counts(findings)["not_compared"] == 3
+    assert [r.reason for r in rows] == ["nothing_to_compare", "unreadable", "not_seen"]
+    sheet = _sheet(tmp_path / "sheet.pdf")
+    out = tmp_path / "list.pdf"
+    listed = not_compared_pdf(sheet, rows, out, set_name="sheet.pdf", stamp="Checked")
+    assert listed == len(rows)
+    words = " ".join("".join(p.extract_text() for p in PdfReader(str(out)).pages).split())
+    assert "3 items could not be compared" in words
+    # The trade's words next to ours (industry review, topic 5).
+    assert "Not reviewed: not shown on the architect's drawings (1)" in words
+    assert "architect gives no size or information" in words and "Illegible (1)" in words
+    assert "Counter overall width" in words and "the architect's size or note for" in words
+    book = openpyxl.load_workbook(stdio.BytesIO(not_compared.xlsx(rows)))
+    assert book.sheetnames == ["Not compared", "Summary"]
+    table = [[c.value for c in row] for row in book["Not compared"].iter_rows()]
+    assert table[0] == list(not_compared.COLUMNS)
+    assert [line[4] for line in table[1:]] == [r.item for r in rows]
+    assert table[1][2] == "Lobby" and table[1][6] == "no width printed"
+    assert book["Not compared"]["A2"].number_format == "@"  # text, so 1/8 stays 1/8
+    summary = [[c.value for c in row] for row in book["Summary"].iter_rows()]
+    assert ["Total", "items of this check", "3"] in summary
+    # The set's own gaps code found (#1623 finish check, #1584) are listed apart, never counted as
+    # items: the screen's count stays the item rows'.
+    gaps = not_compared.gap_rows(
+        [
+            {
+                "page": 4,
+                "what": "Lobby: architect's QZ-1 against the vendor's SL-2",
+                "why": "not_comparable",
+                "needs": "a printed legend",
+            },
+            {
+                "page": 9,
+                "what": "Lobby: round 2 does not include this area",
+                "why": "missing_round",
+                "needs": "the round-2 sheet",
+            },
+        ]
+    )
+    assert [(g.reason, g.level) for g in gaps] == [
+        ("finish_not_comparable", "set"),
+        ("no_sheet", "set"),
+    ]
+    out2 = tmp_path / "list2.pdf"
+    assert not_compared_pdf(sheet, [*rows, *gaps], out2, set_name="sheet.pdf", stamp="Checked") == 3
+    words2 = " ".join("".join(p.extract_text() for p in PdfReader(str(out2)).pages).split())
+    assert "Found by code across the set (2)" in words2
+    assert "Not reviewed: finish codes not comparable (1)" in words2
+    assert not_compared.csv_text(rows).count("\r\n") == 4
+    # The product scope: an item of a product the check was not run for is left out.
+    scoped = not_compared.rows(
+        [_decision(category="cabinet"), _decision(id="F9", category="countertop")],
+        products=["countertop"],
+        known_products=["countertop", "cabinet", "other"],
+    )
+    assert [r.finding_id for r in scoped] == ["F9"]

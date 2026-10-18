@@ -571,7 +571,7 @@ def test_the_system_prompt_is_short_and_names_the_skill_and_the_three_facts() ->
         "drawing_facts",
     ]
     # The reviewer's words, once, in the lead's prompt.
-    for words in ("Wrong, Your decision or Right", "Not compared", "AI reading only"):
+    for words in ("Wrong, Not compared or Right", "The architect governs", "AI reading only"):
         assert words in LEAD_SYSTEM_PROMPT, words
 
 

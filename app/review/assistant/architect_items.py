@@ -937,7 +937,10 @@ def check_pack(
 
 
 def _already(finding: Mapping[str, Any], live: Sequence[Mapping[str, Any]]) -> bool:
-    """The answer already has this item: a finding on one of its pages naming its code."""
+    """The answer already has this item: a finding on one of its pages naming its code, that is
+    itself a proven Wrong (#1619): an AI item naming the code that code could not prove does not
+    keep code's own proof out of the answer."""
+    proof_rule = import_module("app.review.assistant.proof")
     proof = finding.get("text_proof") or {}
     key = str(proof.get("code") or "")
     pages = {finding.get("page"), finding.get("vs_page")} - {None}
@@ -945,7 +948,8 @@ def _already(finding: Mapping[str, Any], live: Sequence[Mapping[str, Any]]) -> b
         if not pages & ({other.get("page"), other.get("vs_page")} - {None}):
             continue
         words = " ".join(str(other.get(name) or "") for name in ("item", "architect", "vendor"))
-        if key and any(found == key for _printed, _family, found in tag_codes(words)):
+        named = key and any(found == key for _printed, _family, found in tag_codes(words))
+        if named and proof_rule.proof_group(other) == "clouded":
             return True
     return False
 

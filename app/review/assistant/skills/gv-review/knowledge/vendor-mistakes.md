@@ -42,7 +42,7 @@ collar smaller is not. Cut-out = the sink's inside size less GV's clearance each
 compare round 2 with the architect again, not only with round 1.
 
 **A scaled size.** Where the architect prints no size, a measured size is "about X" and only ever
-Your decision, never Wrong.
+Not compared, never Wrong.
 
 ## Drawn and written
 
@@ -73,7 +73,9 @@ centre line) is not; a piece collides with a neighbour or misses its opening. Gr
 **Extent.** A section the architect draws is missing; the vendor adds pieces; an island faces the
 wrong way. Grey.
 
-**The ID set against the brand prototype.** Where they conflict: Your decision (which governs).
+**The ID set against the brand prototype.** The ID set governs (never a question of which
+governs); the prototype is reference only unless the ID set points to the brand standard. A
+prototype-only difference: not compared.
 
 **GV's own note taken as the vendor's.** A coloured value, or a callout ending "by GV", is GV's
 markup. Never report it as the vendor's value or tag.

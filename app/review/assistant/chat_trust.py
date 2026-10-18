@@ -26,7 +26,7 @@ never shows the AI's arithmetic. `trust_level`: `confirmed` / `likely` / `to_che
 
 **Words (#1513).** The API values stay; people read `TRUST_WORDS` and `STATUS_WORDS`. The trust
 level `to_check` reads "AI reading only" (no independent check confirmed the reading), and the
-status `check` reads "Needs your decision" (the AI cannot call it right or wrong; a person decides),
+status `check` reads "Not compared" (#1619: nothing to compare; nobody is asked to decide it),
 so the two never share the words "To check".
 
 The checks themselves live in `finding_checks.py` and `second_read.py` (another builder's modules,
@@ -114,16 +114,24 @@ TRUST_WORDS: Final[Mapping[str, str]] = {
     "likely": "Likely",
     "to_check": "AI reading only",
 }
-#: What people read for each finding status (#1513): `check` is a person's decision.
+#: What people read for each finding status (#1513): `check` is an item that could not be
+#: compared (#1619: the architect-first rules; nobody is asked to decide it).
 STATUS_WORDS: Final[Mapping[str, str]] = {
     "different": "Wrong",
-    "check": "Needs your decision",
+    "check": "Not compared",
     "same": "Right",
+}
+#: The CSV's Status, by where the cloud drawing puts the item (#1619).
+_GROUP_STATUS: Final[Mapping[str, str]] = {
+    "clouded": "Wrong",
+    "right": "Right",
+    "not_compared": "Not compared",
+    "dismissed": "Not a problem",
 }
 #: The cloud drawing's and check report's words for each `cloud_kind`.
 CLOUD_WORDS: Final[Mapping[str | None, str]] = {
     "wrong": "Wrong",
-    "check": "Your decision",
+    "check": "Not compared",
     None: "Right",
 }
 
@@ -916,7 +924,7 @@ def trust_report(
 
 
 def cloud_kind(finding: Mapping[str, Any]) -> str | None:
-    """`wrong` (red), `check` (amber: needs your decision), or `None` (right: never clouded): the
+    """`wrong` (red), `check` (not compared), or `None` (right: never clouded): the
     finding's status, as the screen counts it (status `different` is Wrong whatever its trust; the
     cloud drawing's note then carries the trust words, #1541). The same count everywhere: screen,
     progress line, summary, cloud drawing and check report."""
@@ -958,7 +966,7 @@ def inch_words(value: Decimal) -> str:
 
 
 def shown_counts(findings: Iterable[Mapping[str, Any]]) -> dict[str, int]:
-    """The counts every view shows (#1554): Wrong, Your decision, Right and Not compared, from one
+    """The counts every view shows (#1554): Wrong, Not compared (check), Right and Not seen, from one
     final list. Right is a `same` item that was compared; a `same` item not seen on both sides is
     Not compared (`mark_compared`), never Right. The screen counts the same way (`findingCounts`).
     """
@@ -1268,8 +1276,16 @@ def _proof_cells(finding: Mapping[str, Any]) -> list[str]:
     proof = import_module("app.review.assistant.proof")
     found = proof.proof_of(finding)
     words = proof.GROUP_WORDS[found["group"]]
-    detail = found["proof"] or found["reason"]
+    # A Not-compared item (#1619) says why, and what would settle it.
+    settle = f" Needed: {found['settle']}." if found.get("settle") else ""
+    detail = found["proof"] or (f"{found['reason']}.{settle}" if found["reason"] else None)
     return [_cell(found["should_be"] or ""), _cell(f"{words}: {detail}" if detail else words)]
+
+
+def _status_cell(finding: Mapping[str, Any]) -> str:
+    """Wrong / Right / Not compared / Not a problem, as the cloud drawing places the item."""
+    proof = import_module("app.review.assistant.proof")
+    return _GROUP_STATUS.get(str(proof.proof_group(finding)), "")
 
 
 def findings_csv(findings: Sequence[Mapping[str, Any]]) -> str:
@@ -1293,7 +1309,7 @@ def findings_csv(findings: Sequence[Mapping[str, Any]]) -> str:
                 inches.get("architect") or "",
                 inches.get("vendor") or "",
                 inches.get("difference") or "",
-                STATUS_WORDS.get(str(finding.get("status")), finding.get("status") or ""),
+                _status_cell(finding),
                 TRUST_WORDS.get(str(finding.get("trust_level")), ""),
                 _KIND_WORDS.get(str(finding.get("evidence_kind")), ""),
                 checks.get("printed_architect") or "",

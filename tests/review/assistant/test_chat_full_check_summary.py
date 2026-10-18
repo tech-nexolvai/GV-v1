@@ -26,7 +26,12 @@ from tests.review.assistant.test_chat_engine import DOLLARS, Harness
 from tests.review.assistant.test_chat_engine_findings import _full_check, _modules
 from tests.review.assistant.test_chat_findings import finding_input, workspace_with_pdf
 
-FILES = ["Vendor set - GV cloud drawing.pdf", "Vendor set - AI check report.pdf"]
+FILES = [
+    "Vendor set - GV cloud drawing.pdf",
+    "Vendor set - AI check report.pdf",
+    "Vendor set - Not compared.pdf",
+    "Vendor set - Not compared.xlsx",
+]
 
 
 def _finding(
@@ -64,7 +69,7 @@ def test_the_full_check_instruction_asks_for_the_5_to_6_line_summary() -> None:
         "overall verdict in one line",
         "top 3-5 issues by impact",
         "architect vs vendor",
-        "needs the reviewer's decision",
+        "could not be compared",
         "next step",
         "send the cloud drawing to the vendor",
         "stop early, still write this summary",
@@ -107,15 +112,38 @@ def test_code_writes_the_summary_only_when_the_ai_did_not() -> None:
     assert not needs_code_summary("Checked 3 pages. All good.", None)
 
 
+def _proved(finding: dict[str, Any]) -> dict[str, Any]:
+    """A Wrong item code proved by itself (GV's rule check fails it): clouded."""
+    return {
+        **finding,
+        "source": "rules",
+        "rule_check_id": "C1",
+        "witnesses": ["rule"],
+        "checks": {"rule": "agrees"},
+    }
+
+
 def _summary(stopped: str | None, cap_hit: str | None = None) -> str:
     findings = [
-        _finding(
-            "Market area height", page=39, difference="17.5", vendor='107"', architect='89 1/2"'
+        _proved(
+            _finding(
+                "Market area height",
+                page=39,
+                difference="17.5",
+                vendor='107"',
+                architect='89 1/2"',
+            )
         ),
-        _finding(
-            "Market area height", page=40, difference="17.5", vendor='107"', architect='89 1/2"'
+        _proved(
+            _finding(
+                "Market area height",
+                page=40,
+                difference="17.5",
+                vendor='107"',
+                architect='89 1/2"',
+            )
         ),
-        _finding("Buffet outlets", page=4, difference="9"),
+        _proved(_finding("Buffet outlets", page=4, difference="9")),
         _finding("Bay sizes", "check", page=7),
         _finding("Backsplash", "same", page=2),
     ]
@@ -152,17 +180,21 @@ def test_the_code_summary_for_each_kind_of_stop(
 
     assert 5 <= len(lines) <= 6
     assert lines[0] == "Checked 60 of 60 pages (countertops and cabinets, 1 round)."
-    assert lines[1] == "3 things look wrong, 1 needs your decision, 1 match."
+    # The cloud drawing's own counts (#1619): Wrong = proved by code, Right, nothing to compare.
+    assert lines[1] == "3 wrong (proved by code), 1 match, 1 with nothing to compare."
     # The same item and values on two pages is said once, with its pages.
     assert lines[2] == (
         'Biggest issues: Market area height: vendor 107", architect 89 1/2" (p39-40); '
-        'Buffet outlets: vendor 46", architect 37" (p4); Bay sizes: vendor 46", architect 37" '
-        "(p7)."
+        'Buffet outlets: vendor 46", architect 37" (p4).'
     )
-    assert lines[3] == "Your decision: p7 Bay sizes."
-    assert lines[-1] == (
-        "Next: send the cloud drawing to the vendor; confirm the 1 item that needs your decision."
+    # Always one line on what could not be compared, by reason (#1619).
+    assert lines[3] == (
+        "1 item had nothing to compare (difference not proved by code: 1). See the Not-compared "
+        "list (PDF / Excel)."
     )
+    assert lines[-1] == "Next: send the cloud drawing to the vendor."
+    for gone in ("your decision", "Your decision", "Vendor to confirm", "check before sending"):
+        assert gone not in summary
     if words is None:
         assert len(lines) == 5
     else:
@@ -177,7 +209,7 @@ def test_a_summary_with_nothing_found_and_no_coverage_still_says_what_was_done()
     )
     lines = summary.split("\n\n")[0].split("\n")
     assert lines[0].startswith("Checked items on 0 of 12 pages (countertops, 1 round)")
-    assert lines[2] == "No issues were found so far."
+    assert lines[2] == "No wrong value was proved by code so far."
     assert lines[-1] == "Next: look over the report before signing off."
 
 
@@ -300,10 +332,16 @@ def test_the_ai_s_own_summary_is_kept_and_code_writes_none(
 
     outcome = harness.run()
 
-    # Its words are kept; the count it states is the final list's (#1554): GV Review recorded two.
-    assert outcome.text == own.replace("1 wrong", "2 wrong")
-    assert [b["text"] for b in outcome.blocks if b["type"] == "text"] == [outcome.text]
-    assert not [b for b in outcome.blocks if b.get("by") == "code"]
+    # Its words are kept; the count it states is the cloud drawing's (#1554, #1619): GV Review
+    # recorded two differences, code proved one. Code adds only the one line on what could not be
+    # compared (#1619), after the AI's own summary.
+    nothing = (
+        "1 item had nothing to compare (vendor's value could not be read: 1). See the "
+        "Not-compared list (PDF / Excel)."
+    )
+    assert outcome.text == f"{own}\n\n{nothing}"
+    assert [b["text"] for b in outcome.blocks if b["type"] == "text"] == [own, nothing]
+    assert [b["text"] for b in outcome.blocks if b.get("by") == "code"] == [nothing]
     assert [f["name"] for f in harness.files] == FILES
 
 

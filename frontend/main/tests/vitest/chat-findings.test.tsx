@@ -64,14 +64,14 @@ beforeEach(() => {
 });
 
 describe('the findings (#1522 redesign)', () => {
-  it('shows What’s wrong, then Your decision, then Right folded, each grouped by area, one plain line per item', async () => {
+  it('shows What’s wrong, then Not compared, then Right folded, each grouped by area, one plain line per item', async () => {
     const user = userEvent.setup();
     const { node } = show(answer({ findings: FINDINGS }));
     expect(node.querySelectorAll('[data-slot="chat-findings"]')).toHaveLength(1);
     // Not inside the work fold: a direct part of the answer.
     expect(node.querySelector('[data-slot="chat-activity"] [data-slot="chat-findings"]')).toBeNull();
     expect(within(node).getByRole('heading', { name: /^What’s wrong\s*2$/ })).toBeTruthy();
-    expect(within(node).getByRole('heading', { name: /^Your decision\s*1$/ })).toBeTruthy();
+    expect(within(node).getByRole('heading', { name: /^Not compared\s*1$/ })).toBeTruthy();
     // "Vanity top depth" names an area; "Base cabinet B3 width" names none, so it is grouped by page.
     const wrong = node.querySelector<HTMLElement>('[data-slot="chat-findings-different"]')!;
     expect([...wrong.querySelectorAll('[data-slot="chat-findings-group-toggle"]')].map((toggle) => toggle.textContent)).toEqual(['Vanityp.31', 'Page 71']);
@@ -87,7 +87,7 @@ describe('the findings (#1522 redesign)', () => {
     expect(within(vanity).getByText('Compared with the brand prototype')).toBeTruthy();
     expect(within(vanity).getByRole('img', { name: 'Architect evidence' }).getAttribute('src')).toBe('/api/v1/chats/c-1/pictures/arch-f3');
     expect(within(vanity).getByText('Vendor: no evidence picture')).toBeTruthy();
-    // The question to answer, on a "Your decision" row.
+    // What the architect shows, on a Not-compared row.
     expect(node.querySelector('[data-id="f2"] [data-slot="chat-finding-line"]')?.textContent).toContain('architect shows');
   });
 
@@ -170,14 +170,15 @@ describe('the item card', () => {
     expect(within(card).getByRole('img', { name: 'Architect drawing, page 3' }).getAttribute('src')).toBe('/api/v1/chats/c-1/pictures/arch-c1');
   });
 
-  it('asks the question on a "Your decision" item, never shows internal check names, and opens the viewer', async () => {
+  it('says why on a Not-compared item (never a question), never shows internal check names, and opens the viewer', async () => {
     const user = userEvent.setup();
     const { node } = show(answer({ findings: [sink, filler, finding('x', { page: 9 }), finding('y', { page: 12 })] }));
     const row = node.querySelector<HTMLElement>('[data-id="c2"]')!;
-    expect(row.querySelector('[data-slot="chat-finding-question"]')?.textContent).toBe('Your call: The architect gives no filler: confirm the 3" filler');
+    expect(row.querySelector('[data-slot="chat-finding-question"]')?.textContent).toMatch(/^Why: /);
+    expect(row.textContent).not.toMatch(/Your call|your decision/i);
     await user.click(within(row).getByRole('button', { name: 'Filler' }));
     const card = node.querySelector<HTMLElement>('[data-slot="chat-finding-detail"][data-id="c2"]')!;
-    expect([...card.querySelectorAll('dt')].map((term) => term.textContent)).toEqual(['Architect shows', 'Vendor drew', 'What you need to decide']);
+    expect([...card.querySelectorAll('dt')].map((term) => term.textContent)).toEqual(['Architect shows', 'Vendor drew', 'Why it could not be compared']);
     expect(card.textContent).not.toMatch(/not a number|2nd read|Helper lead|Printed at this spot/);
     expect(within(card).getByText('A second, separate AI reading disagrees.')).toBeTruthy();
     expect(within(card).getByText('The vendor’s numbers are drawn as pen strokes, so code could not read them.')).toBeTruthy();
@@ -248,7 +249,7 @@ describe('the evidence viewer', () => {
     expect(within(viewer).getByText('1 of 4')).toBeTruthy();
     expect(within(viewer).getByRole('link', { name: 'Open in review screen' }).getAttribute('href')).toBe('#/review/pkg-1');
 
-    // The arrows follow the screen's order: Wrong by area, then Your decision, then Right.
+    // The arrows follow the screen's order: Wrong by area, then Not compared, then Right.
     await user.keyboard('{ArrowRight}');
     expect(within(screen.getByRole('dialog')).getByRole('heading', { name: /^Base cabinet B3 width\s*· page 7$/ })).toBeTruthy();
     await user.keyboard('{ArrowRight}');

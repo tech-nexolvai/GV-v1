@@ -488,6 +488,8 @@ def test_a_full_check_starts_every_job_at_once_and_the_lead_only_verifies(
     assert [f["name"] for f in harness.files] == [
         "Vendor set - GV cloud drawing.pdf",
         "Vendor set - AI check report.pdf",
+        "Vendor set - Not compared.pdf",
+        "Vendor set - Not compared.xlsx",
     ]
 
 
@@ -734,6 +736,8 @@ def test_a_stopped_full_check_still_gets_codes_finish_and_its_files(tmp_path: Pa
     assert [f["name"] for f in harness.files] == [
         "Vendor set - GV cloud drawing.pdf",
         "Vendor set - AI check report.pdf",
+        "Vendor set - Not compared.pdf",
+        "Vendor set - Not compared.xlsx",
     ]
 
 
@@ -829,4 +833,6 @@ def test_a_full_check_of_a_product_added_only_to_the_registry(
     assert [f["name"] for f in harness.files] == [
         "Vendor set - GV cloud drawing.pdf",
         "Vendor set - AI check report.pdf",
+        "Vendor set - Not compared.pdf",
+        "Vendor set - Not compared.xlsx",
     ]

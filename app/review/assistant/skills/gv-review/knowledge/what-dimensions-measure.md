@@ -48,7 +48,7 @@ not a width: the item is "outlet not shown on the vendor", with both architect v
   a difference. Only the same two end points compare.
 - When the ends are not obvious, follow each extension line to the edge it starts from (zoom with
   guides on the label).
-- When you cannot tell where an end lands, still report the item, as Your decision, and say which
+- When you cannot tell where an end lands, still report the item, as not compared (status check), and say which
   end is unclear. A doubt is listed for a person; an item left out is never found again.
 
 ## The spans words

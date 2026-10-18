@@ -707,7 +707,9 @@ export const CSV_HEADER = [
 function proofCells(finding: ChatFinding): [string, string] {
   const group = proofGroup(finding);
   const sent = finding.proof?.group === group ? finding.proof : null;
-  const detail = sent?.proof ?? sent?.reason ?? null;
+  // #1619: a Not-compared item says why, and what is needed to compare it.
+  const why = sent?.reason ? `${sent.label ? `${sent.label}: ` : ''}${sent.reason}${sent.settle ? `. Needed: ${sent.settle}` : ''}` : null;
+  const detail = sent?.proof ?? why;
   return [finding.proof?.should_be ?? '', detail ? `${PROOF_WORDS[group]}: ${detail}` : PROOF_WORDS[group]];
 }
 

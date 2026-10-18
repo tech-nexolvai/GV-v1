@@ -1,7 +1,7 @@
 /**
  * The job tracker's words and filters (#1578), kept out of the page so they are tested on their own.
  *
- * One meaning per word: "Open · Wrong" (red), "Open · Your decision" (grey: amber is not used here),
+ * One meaning per word: "Open · Wrong" (red), "Open · Not compared" (grey: #1619, nothing to compare),
  * "Fixed · round N" (green), "Not a problem" (grey, with the person), "Right on a later check" (grey:
  * the AI's reading changed, not the drawing). Colour only for Wrong and Right, always beside the word.
  */
@@ -23,7 +23,7 @@ export function stateWords(item: Pick<TrackerItem, 'state' | 'open_kind' | 'fixe
     case 'open':
       return item.open_kind === 'wrong'
         ? { word: 'Open · Wrong', tone: 'wrong', detail: null }
-        : { word: 'Open · Your decision', tone: 'neutral', detail: null };
+        : { word: 'Open · Not compared', tone: 'neutral', detail: null };
     case 'fixed':
       return { word: item.fixed_round ? `Fixed · round ${item.fixed_round}` : 'Fixed', tone: 'right', detail: null };
     case 'not_a_problem':

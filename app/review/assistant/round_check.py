@@ -27,6 +27,12 @@ that round 1 did not have. Code decides each status from the printed values, nev
 4. **New**: a round-2 item code proved wrong is **new** when round 1 printed a different value at
    the same place (or none); when round 1 printed the same value it was already wrong there
    (`also_in_round_1`).
+5. **What round 1 could not compare (#1619)** is re-checked: a round-1 Not-compared item is
+   **now_right** when round 2 now prints what it should be (the architect's value, GV's limits,
+   code's sum), or prints a size where round 1 printed none at that spot (the vendor added the
+   missing information); **still_not_compared** when round 2 prints the same value, or still
+   prints nothing there; else not compared (grey): round 2 changed it to a value code cannot
+   judge, or the fit was refused, as above.
 
 Both values are printed text read by code at their spots and the fit is code's arithmetic, so a
 Fixed or Still wrong status is code-proved (the same witness rule as the clouds, #1581). Pure code
@@ -62,7 +68,15 @@ __all__ = [
 ]
 
 type Box = tuple[float, float, float, float]
-type Status = Literal["fixed", "still_wrong", "new", "also_in_round_1", "not_compared"]
+type Status = Literal[
+    "fixed",
+    "still_wrong",
+    "new",
+    "also_in_round_1",
+    "now_right",
+    "still_not_compared",
+    "not_compared",
+]
 #: Zones of changed ink for (round-1 page, its box, round-2 page, its box): each zone's round-1
 #: box, or `None` when the ink could not be lined up (`revision_diff.diff_pages`).
 type InkZones = Callable[[int, Box, int, Box], list[Box] | None]
@@ -154,7 +168,17 @@ class RoundReport:
 
     def counts(self) -> dict[str, int]:
         found = Counter(item.status for item in self.items)
-        return {key: found.get(key, 0) for key in ("fixed", "still_wrong", "new", "not_compared")}
+        return {
+            key: found.get(key, 0)
+            for key in (
+                "fixed",
+                "still_wrong",
+                "new",
+                "now_right",
+                "still_not_compared",
+                "not_compared",
+            )
+        }
 
     def line(self) -> str | None:
         """The cover's summary, or `None` when the set has no round 2 to compare."""
@@ -165,6 +189,11 @@ class RoundReport:
             f"Round 2: {counts['fixed']} fixed, {counts['still_wrong']} still wrong, "
             f"{counts['new']} new"
         )
+        if counts["now_right"] or counts["still_not_compared"]:
+            line += (
+                f"; of what round 1 could not compare, {counts['now_right']} now right, "
+                f"{counts['still_not_compared']} still not compared"
+            )
         if counts["not_compared"]:
             line += f"; {counts['not_compared']} could not be compared by code"
         return line + "."
@@ -479,6 +508,20 @@ def round_two(
 
     live = [f for f in findings if proof_group(f) == "clouded" and f.get("status") == "different"]
     main_file = next((str(d.file) for drawings in by_area.values() for d in drawings), None)
+    drawings_all = [d for ds in by_area.values() for d in ds]
+    for finding in findings:
+        # What round 1 could not compare: re-checked on round 2.
+        if proof_group(finding) != "not_compared" or finding.get("status") == "same":
+            continue
+        where = _vendor_box(finding)
+        if where is None:
+            continue
+        drawing = _drawing_of(where[0] or main_file or "", where[1], where[2], drawings_all)
+        if drawing is None or drawing.round != 1:
+            continue
+        following = best_next(drawing)
+        if following[0] is not None:
+            report.items.append(_round_one_recheck(finding, drawing, following, labels, zones))
 
     for finding in live:
         where = _vendor_box(finding)
@@ -551,6 +594,109 @@ def _round_two_item(
         )
     return RoundItem(
         finding_id, "not_compared", item, value, value, should, drawing.page, None, None, why
+    )
+
+
+def _round_one_recheck(
+    finding: Mapping[str, Any],
+    drawing: _Drawing,
+    found: tuple[_Drawing | None, Fit | None, str | None],
+    labels: Mapping[tuple[str, int], list[Label]],
+    zones: InkZones | None,
+) -> RoundItem:
+    """A round-1 item that could not be compared (#1619), re-checked: now right, still not
+    compared, or not compared (grey)."""
+    finding_id, item = str(finding.get("id")), str(finding.get("item") or "")
+    governs = _governs(finding)
+    should = "" if governs is None else should_be_value(finding)
+    second, lined, refused = found
+    vendor = _vendor_box(finding)
+    box = vendor[2] if vendor is not None else drawing.box
+    first_labels = _on(drawing, labels)
+    near = [label for label in first_labels if _inside(label.centre, box, _BOX_SLACK_PT)]
+    label = _label_at(finding, first_labels, box)
+    was = _words(label.inches, label.text) if label is not None else "no size printed"
+
+    def item_of(
+        status: Status,
+        now: str | None,
+        page: int | None,
+        spot: Box | None,
+        file: str | None,
+        why: str | None = None,
+    ) -> RoundItem:
+        return RoundItem(finding_id, status, item, was, now, should, page, spot, file, why)
+
+    if second is None or lined is None:
+        return item_of(
+            "not_compared",
+            None,
+            None if second is None else second.page,
+            None,
+            None,
+            refused or "the set has no round 2 of this drawing",
+        )
+    later = _on(second, labels)
+    if label is None:
+        if near:
+            return item_of(
+                "not_compared",
+                None,
+                second.page,
+                None,
+                None,
+                "code did not find the vendor's value as printed text in round 1",
+            )
+        # Round 1 printed no size at the item's spot: has round 2 added one?
+        a = lined.place((box[0], box[1]))
+        b = lined.place((box[2], box[3]))
+        spot = (min(a[0], b[0]), min(a[1], b[1]), max(a[0], b[0]), max(a[1], b[1]))
+        added = [lab for lab in later if _inside(lab.centre, spot, _BOX_SLACK_PT)]
+        if len(added) == 1:
+            now = _words(added[0].inches, added[0].text)
+            return item_of("now_right", now, second.page, added[0].box, second.file)
+        if not added:
+            return item_of("still_not_compared", None, second.page, None, None)
+        return item_of(
+            "not_compared",
+            None,
+            second.page,
+            None,
+            None,
+            "round 2 prints more than one size at the spot",
+        )
+    after = _nearest(lined.place(label.centre), later, label.orientation)
+    if after is None:
+        return item_of(
+            "not_compared",
+            None,
+            second.page,
+            None,
+            None,
+            "round 2 prints nothing at the same place",
+        )
+    now = _words(after.inches, after.text)
+    changed = not _same(after.inches, label.inches)
+    if _ink_disagrees(zones, drawing, second, label, changed):
+        return item_of(
+            "not_compared",
+            None,
+            second.page,
+            None,
+            None,
+            "the drawing's ink and its printed value disagree at this spot",
+        )
+    if _right(after.inches, governs) is True and changed:
+        return item_of("now_right", now, second.page, after.box, second.file)
+    if not changed:
+        return item_of("still_not_compared", now, second.page, after.box, second.file)
+    return item_of(
+        "not_compared",
+        now,
+        second.page,
+        None,
+        None,
+        f"round 2 changed it to {now}; code does not know the value it should be",
     )
 
 

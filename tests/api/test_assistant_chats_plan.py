@@ -354,6 +354,8 @@ def test_a_two_lens_full_check_end_to_end_against_a_fake_anthropic_server(postgr
             assert [f["name"] for f in message["files"]] == [
                 "Vendor set - GV cloud drawing.pdf",
                 "Vendor set - AI check report.pdf",
+                "Vendor set - Not compared.pdf",
+                "Vendor set - Not compared.xlsx",
             ]
             rows = (pack / ANSWERS_FILE).read_text(encoding="utf-8").splitlines()
             assert [json.loads(row)["answer"] for row in rows] == ["architect"]

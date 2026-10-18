@@ -114,7 +114,7 @@ def test_findings_stream_are_stored_and_reload_the_same_with_their_pictures(post
         # The stored answer adds code's impact on read (#1569): the biggest Wrong items first.
         assert finding["impact"]["rank"] == 1
         # ... and where the zero-click cloud drawing puts it (#1581), also worked out on read.
-        assert finding["proof"]["group"] == "not_verified"
+        assert finding["proof"]["group"] == "not_compared"
         assert live[0] == {k: v for k, v in finding.items() if k not in ("impact", "proof")}
         assert _named(events, "coverage")[-1]["coverage"] == coverage
         assert _named(events, "trust")[-1]["trust"] == message["blocks"][5]["trust"]
@@ -423,7 +423,12 @@ def test_a_full_check_through_the_route_shows_its_label_and_ends_with_its_two_fi
         events = _events(response.text)
         message = _named(events, "message_end")[0]["message"]
         names = [f["name"] for f in message["files"]]
-        assert names == ["Vendor set - GV cloud drawing.pdf", "Vendor set - AI check report.pdf"]
+        assert names == [
+            "Vendor set - GV cloud drawing.pdf",
+            "Vendor set - AI check report.pdf",
+            "Vendor set - Not compared.pdf",
+            "Vendor set - Not compared.xlsx",
+        ]
         assert [d["file"]["name"] for d in _named(events, "file")] == names
         assert message["accuracy"] is not None and message["accuracy"]["claims"] == 1
         chat = world.client.get(f"/api/v1/chats/{chat_id}").json()
@@ -437,7 +442,9 @@ def test_a_full_check_through_the_route_shows_its_label_and_ends_with_its_two_fi
         assert "Products checked in this chat: countertops only." in words
         assert "Full check of this drawing set" in words
         for file in message["files"]:
-            assert world.client.get(file["url"]).content[:4] == b"%PDF"
+            body = world.client.get(file["url"]).content
+            # The PDFs, and the Not-compared workbook (a zip) (#1619).
+            assert body[:4] == (b"PK\x03\x04" if file["name"].endswith(".xlsx") else b"%PDF")
 
         # A chat message still needs its words; a product at most once.
         empty = world.client.post(f"/api/v1/chats/{chat_id}/messages", json={**ASK, "text": " "})
@@ -485,7 +492,21 @@ def test_a_countertop_only_check_keeps_no_cabinet_item_anywhere(postgres_engine,
         ).text
         assert "Vanity top length" in csv_text and "cabinet" not in csv_text.lower()
         for file in message["files"]:
-            pdf = PdfReader(io.BytesIO(world.client.get(file["url"]).content))
+            body = world.client.get(file["url"]).content
+            if file["name"].endswith((".xlsx", ".csv")):
+                # The Not-compared workbook (#1619): no cabinet item in it either.
+                import openpyxl
+
+                book = openpyxl.load_workbook(io.BytesIO(body))
+                cells = " ".join(
+                    str(c or "")
+                    for sheet in book
+                    for row in sheet.iter_rows(values_only=True)
+                    for c in row
+                )
+                assert "Sink base cabinet" not in cells
+                continue
+            pdf = PdfReader(io.BytesIO(body))
             assert "Sink base cabinet" not in " ".join(page.extract_text() for page in pdf.pages)
 
 
@@ -624,4 +645,6 @@ def test_a_full_check_with_no_words_is_stored_with_codes_summary_and_its_progres
         assert [f["name"] for f in stored["files"]] == [
             "Vendor set - GV cloud drawing.pdf",
             "Vendor set - AI check report.pdf",
+            "Vendor set - Not compared.pdf",
+            "Vendor set - Not compared.xlsx",
         ]

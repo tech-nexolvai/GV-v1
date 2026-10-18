@@ -443,7 +443,7 @@ class ChatFindingDecisionOut(BaseModel):
 
 
 class ChatFindingEstimateOut(BaseModel):
-    """The AI's best estimate for a "Your decision" item, with how it got it (#1545)."""
+    """The AI's best estimate for a not-compared ("check") item, with how it got it (#1545)."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -453,7 +453,7 @@ class ChatFindingEstimateOut(BaseModel):
 
 
 class ChatFindingDecisionHelpOut(BaseModel):
-    """A "Your decision" item's reasoning for the reviewer (#1545), in plain words."""
+    """A not-compared ("check") item's reasoning for the reviewer (#1545), in plain words."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -477,7 +477,7 @@ type ChatKeepReason = Literal[
 
 
 class ChatFindingSettledOut(BaseModel):
-    """How code settled a "Your decision" item by itself (#1554), shown as "Settled by GV
+    """How code settled a not-compared ("check") item by itself (#1554), shown as "Settled by GV
     Review: …"."""
 
     model_config = ConfigDict(frozen=True)
@@ -485,10 +485,15 @@ class ChatFindingSettledOut(BaseModel):
     outcome: ChatSettledOutcome
     method: str = Field(
         description="The rule or tool: same_item, gv_limits, vendor_sum, printed_vs_printed, "
-        "newest_round, prototype_prints_it, legend, sharper_read, other_trades_tags, out_of_scope."
+        "newest_round, prototype_prints_it, legend, sharper_read, other_trades_tags, out_of_scope; "
+        "escalation_<step> when the full check's escalation settled it (#1619)."
     )
     how: str = Field(description="What code did and found, in one plain sentence.")
-    was: Literal["check"] = "check"
+    was: Literal["check", "different"] = Field(
+        default="check",
+        description="check: it was not compared; different: a Wrong code could not prove, settled "
+        "Right by the escalation (#1619).",
+    )
 
 
 class ChatFindingAlsoOnOut(BaseModel):
@@ -548,12 +553,11 @@ class ChatFindingProofOut(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    group: Literal[
-        "clouded", "not_verified", "could_not_compare", "right", "not_compared", "dismissed"
-    ] = Field(
-        description="clouded: Wrong, proved by code (red cloud); not_verified: Wrong that only AI "
-        "readings back (grey, check before sending); could_not_compare: Your decision (grey, with "
-        "the reason); right; not_compared; dismissed: the reviewer marked it not a problem."
+    group: Literal["clouded", "right", "not_compared", "dismissed"] = Field(
+        description="clouded: Wrong, proved by code (red cloud); right; not_compared: could not be "
+        "compared under the architect-first rules (#1619: listed with its reason in the "
+        "Not-compared PDF and workbook, never a question to anyone); dismissed: the reviewer "
+        "marked it not a problem."
     )
     should_be: str | None = Field(
         default=None,
@@ -566,6 +570,59 @@ class ChatFindingProofOut(BaseModel):
     reason: str | None = Field(
         default=None, description="The other groups: why it is not clouded, in one line."
     )
+    rule: str | None = Field(
+        default=None,
+        description="The architect-first rule it falls under (#1619): R4 a difference, R5 the "
+        "vendor's own contradiction, R6 GV's rule; for not_compared R1 (brand prototype), R3 "
+        "(architect's drawings disagree), R7 (architect gives nothing), R8 (different reference "
+        "points), R9 (unreadable), R10 (missing job value or setting).",
+    )
+    not_compared: (
+        Literal[
+            "architect_disagrees",
+            "nothing_to_compare",
+            "different_reference",
+            "unreadable",
+            "missing_setting",
+            "prototype",
+            "not_proved",
+            "not_seen",
+            "field_verify",
+            "finish_not_comparable",
+            "no_sheet",
+        ]
+        | None
+    ) = Field(default=None, description="not_compared: the reason (the list's group).")
+    label: str | None = Field(
+        default=None,
+        description="not_compared: the trade's words for the reason (Field verify, RFI to the "
+        "architect, Not reviewed: <reason>, Illegible).",
+    )
+    settle: str | None = Field(
+        default=None, description="not_compared: what is needed to compare it, in plain words."
+    )
+
+
+class ChatFindingEscalationStepOut(BaseModel):
+    """One free code step the escalation tried on an item code could not compare at first
+    (#1619)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    step: str = Field(
+        description="labels, under_markup, same_item, vendor_sums, notes or pairs (cheapest first)."
+    )
+    outcome: str = Field(description="read, proved, folded or no_change.")
+    how: str = Field(description="What code did and found, in one plain line.")
+
+
+class ChatFindingEscalationOut(BaseModel):
+    """What the full check's escalation did with an item code could not settle at first (#1619)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    outcome: Literal["wrong", "right", "folded", "undecided"]
+    steps: list[ChatFindingEscalationStepOut] = Field(default_factory=list)
 
 
 class ChatFindingLaterOut(BaseModel):
@@ -680,7 +737,7 @@ class ChatFindingOut(BaseModel):
     )
     decision_help: ChatFindingDecisionHelpOut | None = Field(
         default=None,
-        description="Status check (Your decision): what it measures, the best estimate, how "
+        description="Status check (not compared): what it measures, the best estimate, how "
         "likely it is fine, what to confirm (#1545).",
     )
     impact: ChatFindingImpactOut | None = Field(
@@ -713,7 +770,7 @@ class ChatFindingOut(BaseModel):
     )
     settled: ChatFindingSettledOut | None = Field(
         default=None,
-        description="Set when code settled this item, which was Your decision, by itself (#1554).",
+        description="Set when code settled this item, which was not compared, by itself (#1554).",
     )
     question: str | None = Field(
         default=None,
@@ -728,6 +785,11 @@ class ChatFindingOut(BaseModel):
     parts_sum: str | None = Field(
         default=None,
         description="Source vendor_arithmetic: code's sum of the parts, in inches (#1554).",
+    )
+    escalation: ChatFindingEscalationOut | None = Field(
+        default=None,
+        description="A full check (#1619): the free code steps tried on this item when code could "
+        "not settle it at first, and how it ended.",
     )
 
 
@@ -1373,7 +1435,7 @@ class ChatResolverCountsOut(BaseModel):
 
 
 class ChatResolverEntryOut(BaseModel):
-    """One "Your decision" item code settled by itself (#1554): the folded group's line."""
+    """One not-compared ("check") item code settled by itself (#1554): the folded group's line."""
 
     model_config = ConfigDict(frozen=True)
 
