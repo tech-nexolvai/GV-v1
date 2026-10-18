@@ -70,6 +70,8 @@ __all__ = [
     "is_slip",
     "needs_pairing",
     "same_extent",
+    "string_extent",
+    "string_extras",
     "string_gap",
 ]
 
@@ -749,3 +751,89 @@ def string_gap(
                 )
             return None
     return None
+
+
+#: How far across its own line another label may sit and still be in the overall's run (points).
+_RUN_BAND_PT: Final = 40.0
+
+
+def _line(label: Mapping[str, Any]) -> tuple[float, float, float] | None:
+    """(start, end, across) of a label's dimension line along its own axis."""
+    line = label.get("dim_line")
+    if not line or len(line) != 2:
+        return None
+    along = 0 if label.get("orientation") == "h" else 1
+    ends = sorted(float(point[along]) for point in line)
+    return ends[0], ends[1], float(line[0][1 - along])
+
+
+def string_extent(
+    printed: object, labels: Sequence[Mapping[str, Any]], box: Sequence[float]
+) -> tuple[Mapping[str, Any], tuple[float, float, float, float]] | str:
+    """The printed overall's label near a vendor string whose whole dimension line code found,
+    and the box that line spans; else why not (#1656). Whole means drawn to its value at the
+    view's measured scale (`scale_ok`): a line cut short where another line crosses it (the paid
+    run of 2026-10-19, p40: the overall's line stopped at a leader, so a reading of the run's top
+    two parts "tiled" it and missed the two pieces below) never shows the whole run."""
+    total = _inches_of(printed)
+    if total is None:
+        return "the printed overall is not a size code can read"
+    near = [
+        label
+        for label in labels
+        if label.get("side") == "vendor" and _inches(label) == total and _centre_in(label, box)
+    ]
+    if not near:
+        return "code found no printed label of the overall near the string, so its run is unknown"
+    whole = [label for label in near if label.get("scale_ok") is True and _line(label)]
+    if not whole:
+        return (
+            "code could not find the overall's whole dimension line (it is not drawn to its "
+            "value at the drawing's scale), so the whole run cannot be seen"
+        )
+    label = whole[0]
+    (x0, y0), (x1, y1) = label["dim_line"]
+    return label, (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
+
+
+def _centre_in(label: Mapping[str, Any], box: Sequence[float]) -> bool:
+    x0, y0, x1, y1 = (float(v) for v in label.get("box") or (0, 0, 0, 0))
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    return box[0] <= cx <= box[2] and box[1] <= cy <= box[3]
+
+
+def string_extras(
+    parts: Sequence[object], overall: Mapping[str, Any], labels: Sequence[Mapping[str, Any]]
+) -> list[str]:
+    """Other vendor dimensions printed along the overall's run, beside it, that the reading's
+    parts do not account for (#1656): any one means the reading left a part out."""
+    found = _line(overall)
+    total = _inches(overall)
+    if found is None or total is None:
+        return []
+    start, end, across = found
+    left = [v for v in (_inches_of(p) for p in parts) if v is not None]
+    along = 0 if overall.get("orientation") == "h" else 1
+    extras: list[str] = []
+    for label in labels:
+        value = _inches(label)
+        if (
+            label is overall
+            or label.get("id") == overall.get("id")
+            or label.get("side") != "vendor"
+            or label.get("orientation") != overall.get("orientation")
+            or value is None
+            or value >= total
+        ):
+            continue
+        x0, y0, x1, y1 = (float(v) for v in label.get("box") or (0, 0, 0, 0))
+        centre = ((x0 + x1) / 2, (y0 + y1) / 2)
+        if not start - _TOUCH_PT <= centre[along] <= end + _TOUCH_PT:
+            continue
+        if abs(centre[1 - along] - across) > _RUN_BAND_PT:
+            continue
+        if value in left:
+            left.remove(value)
+            continue
+        extras.append(str(label.get("text") or value))
+    return extras

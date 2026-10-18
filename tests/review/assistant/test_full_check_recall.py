@@ -353,9 +353,33 @@ class _Strings(_Roster):
         return super().__call__(params)
 
 
-def _string(harness: Any, parts: list[str], total: str) -> str:
+def _overall(harness: Any, total: str, *, whole: bool = True, extra: str | None = None) -> None:
+    """The string's printed overall as code's label on page 3 (its whole line found, or cut
+    short), and another vendor dimension along its run when `extra` is given."""
     from app.review.assistant.finding_checks import to_inches
 
+    folder = harness.engine.tools.workspace.set_pack
+    dims = json.loads((folder / "dims.json").read_text())
+    page = next(e for e in dims["pages"] if e["page"] == 3)
+    page["labels"].append(
+        {"id": "D9", "text": total, "inches": str(to_inches(total)), "side": "vendor",
+         "orientation": "h", "route": "text", "box": [312, 120, 330, 128],
+         "dim_line": [[300, 170], [360, 170]], "scale_ok": whole}
+    )  # fmt: skip
+    if extra is not None:
+        page["labels"].append(
+            {"id": "D10", "text": extra, "inches": str(to_inches(extra)), "side": "vendor",
+             "orientation": "h", "route": "drawn", "box": [352, 150, 358, 157],
+             "dim_line": [[350, 158], [360, 158]]}
+        )  # fmt: skip
+    (folder / "dims.json").write_text(json.dumps(dims))
+
+
+def _string(harness: Any, parts: list[str], total: str, *, overall: bool = True) -> str:
+    from app.review.assistant.finding_checks import to_inches
+
+    if overall:
+        _overall(harness, total)
     summed = sum((to_inches(p) or Decimal(0) for p in parts), Decimal(0))
     added = harness.engine.book.add_code_finding(
         {
@@ -703,3 +727,79 @@ def test_an_absence_claim_with_no_spot_on_the_architect_is_internal() -> None:
     assert internal(claim) and not proof.vendor_facing(claim)
     spotted = {**claim, "arch_box": _box(53, 100)}
     assert not internal(spotted)  # the architect's side is at its spot: it may be listed
+
+
+# ---- #1656: what the paid run of 2026-10-19 (test 7) showed -----------------------------------
+
+
+def test_a_string_whose_overall_line_is_cut_short_gets_no_reading_and_no_red(
+    tmp_path: Path,
+) -> None:
+    """The p40 shape: the overall's line was cut where a leader crosses it, so the top two parts
+    "tiled" it, and both readings saw only that cut view (9 1/2 + 74 of 89 1/2)."""
+    script = _Strings(_chains((['9 1/2"', '74"'], '89 1/2"')))
+    harness = _roster(tmp_path, script)
+    _overall(harness, '89 1/2"', whole=False)
+    finding_id = _string(harness, ['9 1/2"', '74"'], '89 1/2"', overall=False)
+
+    _strings_run(harness)._strings()
+
+    assert "string" not in script.calls  # no reading of a cut view
+    found = next(f for f in harness.engine.book.live() if f["id"] == finding_id)
+    assert found["string_reads"]["outcome"] == "gap"
+    assert "whole dimension line" in found["string_reads"]["why"]
+    assert proof.proof_group(found) == "not_compared"
+
+
+def test_another_dimension_along_the_overalls_run_vetoes_the_reading(tmp_path: Path) -> None:
+    script = _Strings(_chains((['9 1/2"', '74"'], '89 1/2"')))
+    harness = _roster(tmp_path, script)
+    _overall(harness, '89 1/2"', extra='5 1/4"')
+    finding_id = _string(harness, ['9 1/2"', '74"'], '89 1/2"', overall=False)
+
+    _strings_run(harness)._strings()
+
+    assert "string" not in script.calls
+    found = next(f for f in harness.engine.book.live() if f["id"] == finding_id)
+    assert found["string_reads"]["outcome"] == "gap" and '5 1/4"' in found["string_reads"]["why"]
+    assert proof.proof_group(found) == "not_compared"
+
+
+def test_the_blind_reading_sees_the_overalls_whole_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.review.assistant.chat_tools import ChatTools
+
+    script = _Strings(_chains((FIVE, '38 1/2"')))
+    harness = _roster(tmp_path, script)
+    finding = _string(harness, FIVE, '38 1/2"')
+    harness.engine.book.replace(
+        {**next(f for f in harness.engine.book.live() if f["id"] == finding),
+         "vendor_box": {"page": 3, "x0": 300, "y0": 100, "x1": 320, "y1": 116}}
+    )  # fmt: skip
+
+    asked: list[Any] = []
+    zoom = ChatTools.zoom
+
+    def seen(self: Any, raw: Any, step: Any, by: str = "lead") -> Any:
+        asked.append(raw)
+        return zoom(self, raw, step, by)
+
+    monkeypatch.setattr(ChatTools, "zoom", seen)
+    _strings_run(harness)._strings()
+
+    assert script.calls.get("string") == 1
+    box = asked[-1]["crops"][0]["box"]
+    # The string's own box ends at x 320 and y 116; the overall's whole line runs to x 360, y 170.
+    assert box["x1"] >= 360 and box["y1"] >= 170
+
+
+def test_a_right_that_codes_own_check_contradicts_is_never_right() -> None:
+    same = {"id": "F29", "page": 34, "status": "same", "source": "vendor_arithmetic",
+            "created_by": "helper:5", "architect": '72"', "vendor": "30+18+18",
+            "parts": ["30", "18", "18"], "printed_total": "72", "item": "Area 8: overall",
+            "checks": {"arithmetic": "does_not_add_up"}}  # fmt: skip
+    assert proof.proof_group(same) == "not_compared"
+    assert "does not add up" in str(proof.classified(same).why)
+    agreeing = {**same, "checks": {"arithmetic": "adds_up"}, "compared": True}
+    assert proof.proof_group(agreeing) == "right"
