@@ -230,6 +230,7 @@ from app.review.assistant.full_check_plan import (
 )
 from app.review.assistant.full_check_specialists import specialist_system
 from app.review.assistant.ledger import LEDGER_TOOL_NAMES, ReadingLedger, recorded_results_check
+from app.review.assistant.pair_findings import add_to_answer as add_code_pairs
 from app.review.assistant.product_scope import ProductScope, outside_unit
 from app.review.assistant.proof import proof_counts
 from app.review.assistant.sandbox import SET_PACK, SKILLS, UPLOADS, SandboxRefused
@@ -2235,6 +2236,10 @@ class ChatEngine:
                 add_architect_items(self)  # missed, changed and added finishes (#1623), $0
             except Exception:  # noqa: BLE001 - the answer goes on without it
                 _log.exception("assistant chat finish check failed")
+            try:
+                add_code_pairs(self)  # dimensions code paired by itself, Wrong or Right, $0
+            except Exception:  # noqa: BLE001 - the answer goes on without them
+                _log.exception("assistant chat code pairs failed")
         if not book.live() and not book.coverage_used and not self._ledger_used():
             self._close_checks()
             return
@@ -2275,6 +2280,10 @@ class ChatEngine:
                 add_architect_items(self)  # missed, changed and added finishes (#1623), $0
             except Exception:  # noqa: BLE001 - the answer goes on without it
                 _log.exception("assistant chat finish check failed")
+            try:
+                add_code_pairs(self)  # dimensions code paired by itself, Wrong or Right, $0
+            except Exception:  # noqa: BLE001 - the answer goes on without them
+                _log.exception("assistant chat code pairs failed")
             if self._ledger_used():
                 ledger = self.reading_ledger.as_dict()
                 for finding in book.live():

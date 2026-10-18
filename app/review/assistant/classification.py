@@ -24,7 +24,9 @@ The rules, in the order they are applied:
 - **R5, the vendor's own contradictions** (a string that does not add up, one span printed twice):
   Wrong when code proved it.
 - **R6, GV's rule** (from GV's rulebook) broken: Wrong.
-- **R7, the architect gives no information** (no size, no layout, no drawing of the area).
+- **R7, the architect gives no information** (no size, no layout, no drawing of the area), or only
+  parts where the vendor prints an overall: a total the architect never prints is never Wrong
+  (`no_overall`, code's pairs: "architect's parts add to 110\"; vendor shows 107 3/4\"").
 - **R8, different reference points** (the underside against the top of the counter): not directly
   comparable.
 - **R9, the vendor's value is unreadable** after the whole escalation ladder.
@@ -65,12 +67,14 @@ type Reason = Literal[
     "field_verify",
     "finish_not_comparable",
     "no_sheet",
+    "no_overall",
 ]
 
 #: The Not-compared reasons, in the order the list and the summary give them.
 REASONS: Final[tuple[Reason, ...]] = (
     "field_verify",
     "nothing_to_compare",
+    "no_overall",
     "different_reference",
     "unreadable",
     "architect_disagrees",
@@ -94,6 +98,7 @@ REASON_WORDS: Final[Mapping[str, str]] = {
     "field_verify": "the drawing says verify in field",
     "finish_not_comparable": "finish codes not comparable (the finish check)",
     "no_sheet": "no sheet of the area or round to compare",
+    "no_overall": "architect gives only parts, no overall",
 }
 #: The trade's own words for each reason (industry review, topic 5), shown next to ours on the
 #: Not-compared list, the workbook and the screen.
@@ -109,6 +114,7 @@ TRADE_WORDS: Final[Mapping[str, str]] = {
     "prototype": "Not reviewed: brand prototype (reference only)",
     "finish_not_comparable": "Not reviewed: finish codes not comparable",
     "no_sheet": "Not reviewed: no sheet to compare",
+    "no_overall": "Not reviewed: architect gives no overall",
 }
 #: The rule each reason comes from.
 _RULES: Final[Mapping[str, str]] = {
@@ -123,6 +129,7 @@ _RULES: Final[Mapping[str, str]] = {
     "field_verify": "R7",
     "finish_not_comparable": "R4",
     "no_sheet": "R7",
+    "no_overall": "R7",
 }
 #: The architect's drawing points to the brand standard: the prototype is then its intent (R1).
 _POINTS_TO_PROTOTYPE: Final = re.compile(
@@ -375,6 +382,13 @@ def classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
 def _classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
     status = finding.get("status")
     source = str(finding.get("source") or "")
+    parts = finding.get("architect_parts")
+    if status in ("different", "check") and isinstance(parts, Mapping):
+        return _not(
+            "no_overall",
+            f"architect's parts add to {parts.get('total')}; vendor shows {parts.get('vendor')}",
+            "the architect's printed overall for {thing}",
+        )
     if status == "different" and proved:
         if source in ("vendor_arithmetic", "cross_view"):
             return Classified("wrong", "R5")

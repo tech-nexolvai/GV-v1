@@ -590,6 +590,7 @@ class ChatFindingProofOut(BaseModel):
             "field_verify",
             "finish_not_comparable",
             "no_sheet",
+            "no_overall",
         ]
         | None
     ) = Field(default=None, description="not_compared: the reason (the list's group).")
@@ -680,9 +681,10 @@ class ChatFindingOut(BaseModel):
     created_by: str = Field(
         description='"lead", "helper:<n>", "gv_review" (made by code from a recorded result), '
         '"ledger" (made by code from the reading ledger), "consistency" (made by code from the '
-        "vendor's own drawings: a string that does not add up, a span printed twice), or "
+        "vendor's own drawings: a string that does not add up, a span printed twice), "
         '"architect_items" (made by code from the drawings\' text: a finish the architect tags '
-        "that the vendor missed, changed or added)."
+        'that the vendor missed, changed or added), or "pairs" (made by code from a dimension '
+        "it paired on both drawings by itself: Wrong or Right with that proof)."
     )
     ledger_ids: list[str] | None = Field(
         default=None, description="The reading ledger's entries (S<n>, R<n>) behind it."

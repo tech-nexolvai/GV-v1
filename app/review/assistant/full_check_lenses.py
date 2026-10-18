@@ -182,7 +182,8 @@ def same_wrongs(findings: Sequence[Mapping[str, Any]]) -> list[SameWrong]:
     same value it should be, and the same vendor dimension label (or overlapping vendor boxes and the
     same item words). Each
     group is folded into one finding: a recorded difference first (it is never folded away), then
-    the best trust, then the one reported first. So the letter, the register, the clouds and the
+    one code paired by itself (`pair_findings`: its pairing proof is kept), then the best trust,
+    then the one reported first. So the letter, the register, the clouds and the
     counts never repeat an item (the resolver's same-item fold, #1554, settles only "Your decision"
     items and never a Wrong one)."""
     wrong = [f for f in findings if f.get("status") == "different" and f.get("id")]
@@ -207,6 +208,7 @@ def same_wrongs(findings: Sequence[Mapping[str, Any]]) -> list[SameWrong]:
             group,
             key=lambda f: (
                 0 if f.get("record_id") else 1,
+                0 if f.get("paired_by") == "code" else 1,  # code's own pair keeps its proof
                 _TRUST_ORDER.get(str(f.get("trust_level") or ""), 3),
                 _number(str(f["id"])),
             ),
