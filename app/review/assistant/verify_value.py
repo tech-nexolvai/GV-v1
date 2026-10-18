@@ -1086,15 +1086,49 @@ def _digit_string(value: Decimal) -> str:
     return (str(whole) if whole else "") + (f"{rest.numerator}{rest.denominator}" if rest else "")
 
 
+#: A plain number larger than this is no length a drawing prints in inches (as `dim_labels`).
+_PLAIN_MAX_IN: Final = 600
+
+
+def impossible_fraction(expected: Decimal, digits: str) -> bool:
+    """Whether `digits` (a reading's digits, its spaces and slash lost) can be no dimension at all
+    while keeping `expected`'s whole number: set out as `expected`'s digits are (whole number,
+    numerator, denominator), the fraction is one no drawing prints (a denominator other than 2, 4,
+    8, 16, 32 or 64, or a numerator not below it), and read as one plain number they are more
+    inches than a drawing prints.
+
+    `63 1/2"` is the digits 6312; one engine pass reading 6317 read the fraction `1/7`. That is a
+    misread of the fraction's digits, never another value: `63 1/7"` is no fraction a drawing
+    prints and 6317" no length. A reading that also changes the whole number (6417), or whose
+    digits are a real number (317 for `3 1/2"`, 17 for `1/2"`), stays a rival."""
+    exact = Fraction(expected)
+    whole = exact.numerator // exact.denominator
+    rest = exact - whole
+    if not rest or not whole:
+        return False
+    head = str(whole)
+    top_digits = len(str(rest.numerator))
+    if len(digits) != len(_digit_string(expected)) or not digits.startswith(head):
+        return False
+    if not digits.isdigit() or int(digits) <= _PLAIN_MAX_IN:
+        return False
+    tail = digits[len(head) :]
+    return not _fraction_ok(tail[:top_digits], tail[top_digits:])
+
+
 def near_miss(expected: Decimal, read: Decimal) -> bool:
     """Whether `read` is a near-miss of `expected`: the same number of digits with one different,
-    or `expected`'s digits inside a longer number (`5"` inside `56"`)."""
+    or `expected`'s digits inside a longer number (`5"` inside `56"`). A reading whose one different
+    digit makes a fraction no drawing prints (`impossible_fraction`: 6317 for `63 1/2"`) is no
+    near-miss: it is a misread of the fraction, not another number."""
     if read == expected:
         return False
     want, got = _digit_string(expected), _digit_string(read)
     if len(got) > len(want) and want in got:
         return True
-    return len(got) == len(want) and sum(a != b for a, b in zip(got, want, strict=True)) == 1
+    if len(got) != len(want) or sum(a != b for a, b in zip(got, want, strict=True)) != 1:
+        return False
+    return not impossible_fraction(expected, got)
 
 
 @dataclass(slots=True)
