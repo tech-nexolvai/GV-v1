@@ -807,45 +807,45 @@ def test_every_count_shown_comes_from_the_final_list(
     outcome = harness.run()
 
     live = [b["finding"] for b in outcome.blocks if b["type"] == "finding"]
-    final = shown_counts(live)
-    assert final["decision"] == 1 and final["wrong"] == 3  # 2 recorded + the filler
+    from app.review.assistant.proof import proof_counts
+
+    # A full check counts as its cloud drawing does (#1619): Wrong = proved by code (clouded),
+    # Vendor to confirm (amber questions), Right.
+    groups = proof_counts(live)
+    assert shown_counts(live)["decision"] == 1 and shown_counts(live)["wrong"] == 3
+    final = {
+        "wrong": groups["clouded"],
+        "decision": groups["vendor_confirm"],
+        "right": groups["right"],
+    }
+    assert final == {"wrong": 2, "decision": 2, "right": 0}
     # The AI's words.
     words = " ".join(b["text"] for b in outcome.blocks if b["type"] == "text")
-    assert "Three items are wrong and one needs your decision" in words
-    assert outcome.text.startswith("Three items are wrong and one needs your decision")
-    # The resolver block.
+    assert "Two items are wrong and two need your decision" in words
+    assert outcome.text.startswith("Two items are wrong and two need your decision")
+    # The resolver block counts by status, as it settled them.
     resolver = next(b["resolver"] for b in outcome.blocks if b["type"] == "resolver")
-    assert resolver["after"] == {k: final[k] for k in ("wrong", "decision", "right")}
-    assert resolver["before"]["decision"] == resolver["after"]["decision"] + len(
-        resolver["settled"]
-    )
+    assert resolver["after"] == {k: shown_counts(live)[k] for k in ("wrong", "decision", "right")}
     # The report's cover and the cloud drawing's counts line.
     report = "".join(
         page.extract_text()
         for page in PdfReader(str(harness.workspace.files / harness.files[1]["id"])).pages
     )
     assert (
-        f"{final['wrong']} wrong, {final['decision']} need your decision, {final['right']} right"
-        in report
+        f"{final['wrong']} wrong (proved by code), {final['decision']} for the vendor to "
+        f"confirm, {final['right']} right" in " ".join(report.split())
     )
     assert f"What's wrong ({final['wrong']})" in report
-    assert f"Your decision ({final['decision']})" in report
-    # The zero-click cloud drawing's cover (#1581): its groups split the same final list.
-    from app.review.assistant.proof import proof_counts
-
-    groups = proof_counts(live)
-    assert groups["clouded"] + groups["not_verified"] == final["wrong"]
-    assert groups["could_not_compare"] == final["decision"]
-    assert groups["right"] == final["right"]
+    assert f"Vendor to confirm ({final['decision']})" in report
+    # The zero-click cloud drawing's cover (#1581): the same final list.
     drawing = PdfReader(str(harness.workspace.files / harness.files[0]["id"]))
     cover = drawing.pages[0].extract_text()
-    for count, words in (
-        (groups["clouded"], "Wrong, clouded"),
-        (groups["not_verified"], "Not verified by code"),
-        (groups["could_not_compare"], "Could not compare"),
+    for count, label in (
+        (groups["clouded"], "Wrong"),
+        (groups["vendor_confirm"], "Vendor to confirm"),
         (groups["right"], "Right"),
     ):
-        assert re.search(rf"\b{count}\s+{words}", cover), (count, words)
+        assert re.search(rf"\b{count}\s+{label}", cover), (count, label)
 
 
 # ---- trust follows how code settled it (#1554 review) ------------------------------------------

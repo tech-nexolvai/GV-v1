@@ -478,10 +478,15 @@ class ChatFindingSettledOut(BaseModel):
     outcome: ChatSettledOutcome
     method: str = Field(
         description="The rule or tool: same_item, gv_limits, vendor_sum, printed_vs_printed, "
-        "newest_round, prototype_prints_it, legend, sharper_read, other_trades_tags, out_of_scope."
+        "newest_round, prototype_prints_it, legend, sharper_read, other_trades_tags, out_of_scope; "
+        "escalation_<step> when the full check's escalation settled it (#1619)."
     )
     how: str = Field(description="What code did and found, in one plain sentence.")
-    was: Literal["check"] = "check"
+    was: Literal["check", "different"] = Field(
+        default="check",
+        description="check: it was Your decision; different: a Wrong code could not prove, settled "
+        "Right by the escalation (#1619).",
+    )
 
 
 class ChatFindingAlsoOnOut(BaseModel):
@@ -541,12 +546,13 @@ class ChatFindingProofOut(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    group: Literal[
-        "clouded", "not_verified", "could_not_compare", "right", "not_compared", "dismissed"
-    ] = Field(
-        description="clouded: Wrong, proved by code (red cloud); not_verified: Wrong that only AI "
-        "readings back (grey, check before sending); could_not_compare: Your decision (grey, with "
-        "the reason); right; not_compared; dismissed: the reviewer marked it not a problem."
+    group: Literal["clouded", "vendor_confirm", "right", "info", "not_compared", "dismissed"] = (
+        Field(
+            description="clouded: Wrong, proved by code (red cloud); vendor_confirm: what code "
+            "could not settle (#1619), one question to the vendor (amber marker, no cloud); right; "
+            "info: undecided with nothing to ask (not applicable / no information); not_compared; "
+            "dismissed: the reviewer marked it not a problem."
+        )
     )
     should_be: str | None = Field(
         default=None,
@@ -559,6 +565,32 @@ class ChatFindingProofOut(BaseModel):
     reason: str | None = Field(
         default=None, description="The other groups: why it is not clouded, in one line."
     )
+    question: str | None = Field(
+        default=None,
+        description="vendor_confirm: the one question to the vendor, written by code (shown after "
+        '"Confirm: "): plain, cites the page and the values, never accuses, never says AI.',
+    )
+
+
+class ChatFindingEscalationStepOut(BaseModel):
+    """One free code step the escalation tried on an undecided item (#1619)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    step: str = Field(
+        description="labels, under_markup, same_item, vendor_sums, notes or pairs (cheapest first)."
+    )
+    outcome: str = Field(description="read, proved, folded or no_change.")
+    how: str = Field(description="What code did and found, in one plain line.")
+
+
+class ChatFindingEscalationOut(BaseModel):
+    """What the full check's escalation did with an item code could not settle at first (#1619)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    outcome: Literal["wrong", "right", "folded", "undecided"]
+    steps: list[ChatFindingEscalationStepOut] = Field(default_factory=list)
 
 
 class ChatFindingLaterOut(BaseModel):
@@ -718,6 +750,11 @@ class ChatFindingOut(BaseModel):
     parts_sum: str | None = Field(
         default=None,
         description="Source vendor_arithmetic: code's sum of the parts, in inches (#1554).",
+    )
+    escalation: ChatFindingEscalationOut | None = Field(
+        default=None,
+        description="A full check (#1619): the free code steps tried on this item when code could "
+        "not settle it at first, and how it ended.",
     )
 
 

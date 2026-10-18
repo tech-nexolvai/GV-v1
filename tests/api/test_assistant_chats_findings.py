@@ -111,7 +111,7 @@ def test_findings_stream_are_stored_and_reload_the_same_with_their_pictures(post
         # The stored answer adds code's impact on read (#1569): the biggest Wrong items first.
         assert finding["impact"]["rank"] == 1
         # ... and where the zero-click cloud drawing puts it (#1581), also worked out on read.
-        assert finding["proof"]["group"] == "not_verified"
+        assert finding["proof"]["group"] == "vendor_confirm"
         assert live[0] == {k: v for k, v in finding.items() if k not in ("impact", "proof")}
         assert _named(events, "coverage")[-1]["coverage"] == coverage
         assert _named(events, "trust")[-1]["trust"] == message["blocks"][5]["trust"]

@@ -206,6 +206,7 @@ from app.review.assistant.chat_trust import (
 from app.review.assistant.chat_unknowns import refused_from_diff, unknown_records
 from app.review.assistant.decision_resolver import recount_words, resolve_answer
 from app.review.assistant.dim_index import labels_for
+from app.review.assistant.escalation import Escalation, escalate_answer
 from app.review.assistant.full_check_brief import (
     LENSES,
     checklist_gaps,
@@ -225,6 +226,7 @@ from app.review.assistant.full_check_plan import (
 )
 from app.review.assistant.full_check_specialists import specialist_system
 from app.review.assistant.ledger import LEDGER_TOOL_NAMES, ReadingLedger, recorded_results_check
+from app.review.assistant.proof import proof_counts
 from app.review.assistant.sandbox import SET_PACK, SKILLS, UPLOADS, SandboxRefused
 from app.review.assistant.sharpen import helper_lines
 from app.review.assistant.vendor_consistency import add_to_answer as add_consistency
@@ -795,6 +797,8 @@ class ChatEngine:
         self.consistency_line: str | None = None
         # The decision items code settled itself (#1554), for the cloud drawing and the report.
         self._settled: list[dict[str, Any]] = []
+        #: The full check's escalation of undecided items (#1619), once it ran.
+        self._escalation: Escalation | None = None
         """What this answer did not check (`chat_unknowns`), set by the trust phase."""
         self.refused_diffs: list[dict[str, Any]] = []
         """Round pairs `compare_rounds` would not line up (an unknown each)."""
@@ -1516,7 +1520,8 @@ class ChatEngine:
         )
         checked.setdefault("round_status", None)
         checked["second_read_values"] = dict(kept[2]) if kept is not None else None
-        # The resolver's fields (#1554) are set only on the items it touches.
+        # The resolver's fields (#1554) and the escalation's (#1619) are set only on the items
+        # they touch.
         for key in (
             "ledger_ids",
             "reference_side",
@@ -1526,6 +1531,7 @@ class ChatEngine:
             "keep_reason",
             "also_on",
             "parts_sum",
+            "escalation",
         ):
             checked.setdefault(key, None)
         return checked
@@ -2249,6 +2255,7 @@ class ChatEngine:
 
     def _finish_trust(self, skipped: int) -> None:
         self._resolve_decisions()
+        self._escalate()
         book = self.book
         statuses = round_statuses(book.live())
         with self._lock:
@@ -2310,13 +2317,35 @@ class ChatEngine:
         except Exception:  # noqa: BLE001 - the answer keeps its decision items as they were
             _log.exception("assistant chat decision resolver failed")
 
+    def _escalate(self) -> None:
+        """A full check (#1619): the free code steps on every item the resolver left undecided
+        (`escalation`), after the resolver and before the trust report and the files; what is
+        still undecided then is a question to the vendor (amber) on the cloud drawing."""
+        if self.settings.mode != "full_check" or not self._whole_set_work():
+            return
+        try:
+            self._escalation = escalate_answer(self)
+        except Exception:  # noqa: BLE001 - the answer keeps its items as they were
+            _log.exception("assistant chat escalation failed")
+
     def _agree_counts(self, text: str) -> str:
         """Whole-set work (#1554): every count the answer's words state is the final list's. The
         AI wrote its words before code settled its decision items, so code sets them again (its
         own summary already counts the final list) and the resolver block's counts too."""
         if not self._whole_set_work():
             return text
-        counts = shown_counts(self.book.live())
+        listed = shown_counts(self.book.live())
+        counts = listed
+        if self.settings.mode == "full_check":
+            # A full check's words count as its cloud drawing does (#1619): Wrong = proved by
+            # code, the questions to the vendor in the decision's place, then Right.
+            groups = proof_counts(self.book.live())
+            counts = {
+                **listed,
+                "wrong": groups["clouded"],
+                "decision": groups["vendor_confirm"],
+                "right": groups["right"],
+            }
         with self._lock:
             for at, block in enumerate(self.blocks):
                 if block.get("type") == "text" and block.get("by") != "code":
@@ -2324,7 +2353,8 @@ class ChatEngine:
                     if fixed != block.get("text"):
                         self.blocks[at] = {**block, "text": fixed}
                 elif block.get("type") == "resolver" and isinstance(block.get("resolver"), dict):
-                    after = {key: counts[key] for key in ("wrong", "decision", "right")}
+                    # The resolver's own block counts the items by status, as it settled them.
+                    after = {key: listed[key] for key in ("wrong", "decision", "right")}
                     self.blocks[at] = {**block, "resolver": {**block["resolver"], "after": after}}
         return recount_words(text, counts)
 
@@ -2440,9 +2470,10 @@ class ChatEngine:
         report: dict[str, Any] = next(
             (b["trust"] for b in reversed(self.stored_blocks()) if b.get("type") == "trust"), {}
         )
-        # The same counts as the screen (#1554): one final list, Right only when compared.
-        counts = shown_counts(findings)
-        unseen = f", {counts['not_compared']} not compared" if counts["not_compared"] else ""
+        # The same counts as the screen and the cloud drawing (#1554, #1619): one final list.
+        groups = proof_counts(findings)
+        nothing = groups["info"] + groups["not_compared"]
+        unseen = f", {nothing} not applicable or not compared" if nothing else ""
         coverage = book.coverage_map()["counts"] if book.coverage_used else None
         trust = report.get("counts") or {}
         products = products_words(self.settings.products)
@@ -2451,8 +2482,8 @@ class ChatEngine:
             "Products": products,
             "Made": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
             "Model": f"{self.settings.model.label}, {self.settings.effort} effort",
-            "Items": f"{counts['wrong']} wrong, {counts['decision']} need your decision, "
-            f"{counts['right']} right{unseen}",
+            "Items": f"{groups['clouded']} wrong (proved by code), {groups['vendor_confirm']} for "
+            f"the vendor to confirm, {groups['right']} right{unseen}",
             "Coverage": (
                 "not recorded"
                 if coverage is None
@@ -2479,7 +2510,9 @@ class ChatEngine:
                 except Exception as failed:  # noqa: BLE001 - the copy is made again below
                     _log.warning("assistant chat markup copy failed: %s", type(failed).__name__)
             # The zero-click red/green proof drawing (#1581): only code-proved Wrongs clouded.
-            return make_proof_file(workspace, findings, out, base, settled=settled)
+            return make_proof_file(
+                workspace, findings, out, base, settled=settled, gaps=list(self.consistency_gaps)
+            )
 
         def checked(out: Path) -> MarkupFile:
             return make_report_file(workspace, summary, findings, not_checked, out, settled=settled)

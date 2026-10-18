@@ -53,6 +53,7 @@ _ALWAYS: Final = (
     "keep_reason",
     "also_on",
     "parts_sum",
+    "escalation",
     "round_status",
     "second_read_values",
 )

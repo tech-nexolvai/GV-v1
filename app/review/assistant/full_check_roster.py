@@ -21,8 +21,14 @@ checkers decide what may be red:
 - **P4.** The **devil's advocate** (`full_check_advocate`): code checks on every red candidate and
   a blind second pick of the architect label; it writes `passed` or `objects` through the
   finding's critic fields, so the trust rule and the red/green drawing pick it up.
-- **P5.** Code's finish (the reading ledger, the resolver, the trust report, the files), then the
-  **summary writer**: code's 5-6 lines, reworded by Haiku only when every number survives.
+- **P4b, the escalation (#1619).** Every Wrong still not proved gets ONE deeper look, the biggest
+  first, with only the money left under the fixed price: the free code steps first
+  (`escalation`: code's labels, its pairs), then a sharper verifier pass (tight crops from the
+  hi-res cache) for an item no code witness backs, and the devil's advocate for one code now reads
+  on both sides. What stays undecided is asked of the vendor (amber), never clouded.
+- **P5.** Code's finish (the reading ledger, the resolver, the free escalation steps on every
+  undecided item, the trust report, the files), then the **summary writer**: code's 5-6 lines,
+  reworded by Haiku only when every number survives.
 
 **The fixed price.** `assistant_full_check_cap_usd` (default $5) is the message's whole cap. Each
 phase has its share of it and each specialist its own cap within that share (`PricePlan`); at 80%
@@ -48,10 +54,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 from uuid import uuid4
 
+from app.review.assistant import proof as proof_rule
 from app.review.assistant import witness
 from app.review.assistant.chat_request import BY_SHORT, thinking_config
 from app.review.assistant.chat_summary import CODE_SUMMARY_NOTE, code_summary
 from app.review.assistant.chat_tools import HELPER_TOOLS, new_step
+from app.review.assistant.chat_trust import judged
 from app.review.assistant.full_check_advocate import (
     ADVOCATE_SCHEMA,
     ADVOCATE_SYSTEM,
@@ -68,6 +76,7 @@ from app.review.assistant.full_check_advocate import (
     same_extent,
 )
 from app.review.assistant.full_check_specialists import HELPER_CORE, knowledge_text
+from app.review.assistant.impact import by_impact
 from app.review.assistant.untrusted import fence
 
 if TYPE_CHECKING:
@@ -245,6 +254,14 @@ ITEMS:
 {items}
 
 Reply with the proofs for every item, in the order given."""
+
+
+#: The escalation's sharper look (#1619): the same job, on items a first look could not prove.
+SHARPER_NOTE: Final = (
+    "A first look could not prove these items. Look again, sharper: zoom each claimed spot on "
+    "its own with a tight box (at most about 150 points across) so the printed number fills the "
+    "picture, on both drawings, and read the label code numbered there."
+)
 
 
 def _near(labels: Sequence[Mapping[str, Any]], box: Mapping[str, Any] | None) -> list[str]:
@@ -525,13 +542,25 @@ class _Run:
     stopped_for_money: bool = False
     pairs: dict[str, str] = field(default_factory=dict)
     agents: list[Any] = field(default_factory=list)
+    #: The phase whose budget the devil's advocate's blind picks are charged to: its own (P4), or
+    #: what is left under the fixed price (the escalation, #1619).
+    pick_phase: str = "advocate"
+    #: Items the escalation already gave their one deeper look.
+    escalated: set[str] = field(default_factory=set)
 
     # -- money --
 
     def _phase_room(self, phase: str, estimate: int) -> bool:
         assert self.plan is not None
+        if phase == "escalation":
+            # The escalation spends only what is left under the fixed price.
+            return self._left() >= estimate and self.engine._fits(estimate)
         used = self.spent.get(phase, 0)
         return used + estimate <= self.plan.budgets[phase] and self.engine._fits(estimate)
+
+    def _left(self) -> int:
+        """What is left under the fixed price (millionths of $)."""
+        return max(0, self.engine.settings.message_cap_micros - self.engine.spent)
 
     def _charge(self, phase: str, cost: int) -> None:
         self.spent[phase] = self.spent.get(phase, 0) + cost
@@ -664,6 +693,9 @@ class _Run:
         if not engine.cancel.is_set():
             with engine.timings.phase("advocate"):
                 self._advocate(page_map)
+        if not engine.cancel.is_set():
+            with engine.timings.phase("escalation"):
+                self._escalate(plan, page_map)
         return self._finish("cancelled" if engine.cancel.is_set() else None)
 
     # -- P1: tags --
@@ -854,21 +886,8 @@ class _Run:
         with ThreadPoolExecutor(max_workers=_ADVOCATE_WORKERS) as pool:
             verdicts = list(pool.map(lambda f: self._judge(f, page_map, annotations), jobs))
         for finding, verdict in zip(jobs, verdicts, strict=True):
-            if verdict is None:
-                continue
-            critic, pairing = verdict
-
-            def change(
-                current: dict[str, Any],
-                critic: dict[str, Any] = critic,
-                pairing: dict[str, Any] = pairing,
-            ) -> dict[str, Any]:
-                current["checks"] = {**(current.get("checks") or {}), "critic": critic["result"]}
-                current["critic"] = critic
-                current["pairing"] = pairing
-                return current
-
-            engine._update_finding(str(finding["id"]), change)
+            if verdict is not None:
+                self._write_verdict(str(finding["id"]), verdict)
 
     def _label(self, provenance: object) -> dict[str, Any] | None:
         if not isinstance(provenance, Mapping) or not provenance.get("id"):
@@ -1054,7 +1073,7 @@ class _Run:
         engine = self.engine
         model = BY_SHORT["sonnet"]
         estimate = engine._price(model, _ADVOCATE_PROMPT_TOKENS, _ADVOCATE_MAX_TOKENS) or 0
-        if not self._phase_room("advocate", estimate):
+        if not self._phase_room(self.pick_phase, estimate):
             return None
         tools = engine.tools
 
@@ -1108,7 +1127,7 @@ class _Run:
             _log.warning("assistant roster advocate call failed: %s", type(failed).__name__)
             return None
         finally:
-            self._charge("advocate", max(0, engine.spent - before))
+            self._charge(self.pick_phase, max(0, engine.spent - before))
         try:
             answer = json.loads(reply.text())
         except ValueError:
@@ -1121,6 +1140,136 @@ class _Run:
             f"p{found.group(1) or architect['page']}.{found.group(2).upper()}" if found else "none"
         )
         return answer
+
+    # -- P4b: the escalation's one deeper look (#1619) --
+
+    def _escalate(self, plan: Any, page_map: Mapping[str, Any] | None) -> None:
+        """Every Wrong still not proved, the biggest first, gets ONE deeper look within what is
+        left under the fixed price: the free code steps first (code's labels and pairs, $0), then
+        a sharper verifier pass for the items no code witness backs, and the devil's advocate on
+        each item code now reads on both sides that it has not judged. Nothing is repeated: an
+        item gets its look once. What the money does not reach stays amber, and is said so."""
+        engine = self.engine
+        from app.review.assistant.escalation import escalate_answer
+
+        try:
+            escalate_answer(engine)
+        except Exception:  # noqa: BLE001 - the deeper look goes on without the free steps
+            _log.exception("assistant roster escalation's free steps failed")
+        waiting = self._unproved()
+        if not waiting:
+            return
+        if self._left() <= 0:
+            self._note(f"the escalation's deeper look: {len(waiting)} items stay to confirm")
+            return
+        unread = [f for f in waiting if not self._read_by_code(f)]
+        if unread and not engine.cancel.is_set():
+            self._sharper(plan, unread)
+            engine._wait_checks()
+        self.pick_phase = "escalation"
+        try:
+            for finding in self._unproved():
+                if engine.cancel.is_set():
+                    break
+                if not self._read_by_code(finding) or _judged(finding):
+                    continue
+                if self._left() <= 0:
+                    self._note("the escalation's deeper look: the fixed price ran out (amber)")
+                    break
+                self.escalated.add(str(finding["id"]))
+                verdict = self._judge(finding, page_map, _annotations(engine))
+                if verdict is not None:
+                    self._write_verdict(str(finding["id"]), verdict)
+        finally:
+            self.pick_phase = "advocate"
+
+    def _unproved(self) -> list[dict[str, Any]]:
+        """The Wrongs still not proved (amber today), the biggest first, not looked at again yet."""
+        live = [judged(f) for f in self.engine.book.live()]
+        return [
+            dict(f)
+            for f in by_impact(live)
+            if f.get("status") == "different"
+            and proof_rule.proof_group(f) == "vendor_confirm"
+            and str(f["id"]) not in self.escalated
+        ]
+
+    @staticmethod
+    def _read_by_code(finding: Mapping[str, Any]) -> bool:
+        found = witness.witnesses(finding.get("checks") or {}, finding.get("status"))
+        return "printed" in found or "ocr_ink" in found
+
+    def _sharper(self, plan: Any, findings: Sequence[Mapping[str, Any]]) -> None:
+        """One sharper verifier pass per page group over the items no code witness backs (the
+        prover's own brief, with the note to zoom tight), capped by what is left."""
+        engine = self.engine
+        assert self.plan is not None
+        from app.review.assistant.sandbox import UPLOADS
+
+        groups: dict[tuple[int, ...], list[Mapping[str, Any]]] = {}
+        for finding in findings:
+            pages = next(
+                (
+                    tuple(job.pages)
+                    for job in plan.jobs
+                    if job.lens != "drawn" and finding["page"] in job.pages
+                ),
+                (int(finding["page"]),),
+            )
+            groups.setdefault(pages, []).append(finding)
+        system = self._system(
+            PROVER_JOB, [("what-dimensions-measure.md", None), ("reading-drawings.md", None)]
+        )
+        agents, asked = [], []
+        cap = min(self.plan.caps["provers"], self._left() // max(1, len(groups)))
+        if cap <= 0:
+            return
+        for pages, items in groups.items():
+            self.escalated.update(str(f["id"]) for f in items)
+            agents.append(
+                self._agent(
+                    call_id=f"sharper-{pages[0]}",
+                    description=f"Look again, pages {pages[0]}-{pages[-1]}",
+                    prompt=SHARPER_NOTE
+                    + "\n\n"
+                    + PROVER_BRIEF.format(
+                        pages=", ".join(str(p) for p in pages),
+                        file=f"{UPLOADS}/{engine.book.main_file}",
+                        items=prover_items(engine, items),
+                    ),
+                    model=BY_SHORT["sonnet"],
+                    pages=pages,
+                    lens="prover",
+                    effort="medium",
+                    cap_micros=cap,
+                    soft_cap=True,
+                    system=system,
+                    tools=self._tools(_PROVER_TOOLS),
+                    output_format=PROVER_SCHEMA,
+                )
+            )
+            asked.append([str(f["id"]) for f in items])
+        entries = engine._launch(agents)
+        for agent, entry, ids in zip(agents, entries, asked, strict=True):
+            done = apply_proofs(engine, str(entry.get("report") or ""), ids)
+            if entry.get("stopped") == "cost_cap":
+                self._note(f"{agent.description}: stopped at its cap (the rest stay to confirm)")
+            engine._queue_second_reads(
+                [f for f in engine.book.live() if f["id"] in done and f.get("status") != "same"]
+            )
+
+    def _write_verdict(
+        self, finding_id: str, verdict: tuple[dict[str, Any], dict[str, Any]]
+    ) -> None:
+        critic, pairing = verdict
+
+        def change(current: dict[str, Any]) -> dict[str, Any]:
+            current["checks"] = {**(current.get("checks") or {}), "critic": critic["result"]}
+            current["critic"] = critic
+            current["pairing"] = pairing
+            return current
+
+        self.engine._update_finding(finding_id, change)
 
     # -- P5: the finish --
 
@@ -1256,6 +1405,15 @@ def _annotations(engine: ChatEngine) -> list[Mapping[str, Any]]:
     except (OSError, ValueError):
         return []
     return [a for a in found if isinstance(a, Mapping)] if isinstance(found, list) else []
+
+
+def _judged(finding: Mapping[str, Any]) -> bool:
+    """The devil's advocate already gave its verdict (one it could make, not one the price
+    stopped)."""
+    critic = finding.get("critic")
+    if not isinstance(critic, Mapping) or critic.get("model") != "devil's advocate":
+        return False
+    return not str(critic.get("note") or "").startswith("Not checked: the fixed price")
 
 
 def _same_inches(label: Mapping[str, Any], want: object) -> bool:

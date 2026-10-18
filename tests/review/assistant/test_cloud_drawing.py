@@ -385,7 +385,7 @@ def test_the_remade_drawing_clouds_agreed_items_and_leaves_ai_only_ones_grey(
     )
     words = "".join(page.extract_text() for page in PdfReader(str(out)).pages)
     assert "Agreed by Reviewer One" in words
-    assert "Not verified by code: check before sending (1)" in words
+    assert "Vendor to confirm (1)" in words and "check before sending" not in words
 
 
 # ---- a clean copy --------------------------------------------------------------------------------

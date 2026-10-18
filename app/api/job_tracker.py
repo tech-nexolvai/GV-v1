@@ -218,7 +218,7 @@ def state_words(item: Mapping[str, Any]) -> str:
     """'Open · Wrong', 'Fixed · round 2', 'Not a problem · <name>'."""
     state = str(item["state"])
     if state == "open":
-        return "Open · Wrong" if item.get("open_kind") == "wrong" else "Open · Your decision"
+        return "Open · Wrong" if item.get("open_kind") == "wrong" else "Open · Vendor to confirm"
     if state == "fixed" and item.get("fixed_round"):
         return f"Fixed · round {item['fixed_round']}"
     if state == "not_a_problem" and item.get("decided_by"):

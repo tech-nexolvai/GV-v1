@@ -72,7 +72,9 @@ __all__ = [
 NEAR_PT: Final = 18.0
 
 type State = Literal["open", "fixed", "not_a_problem", "right_later"]
-type RoundStatus = Literal["fixed", "still_wrong", "new", "not_in_later_round", "single_round"]
+type RoundStatus = Literal[
+    "fixed", "still_wrong", "new", "not_in_later_round", "single_round", "answered", "still_open"
+]
 
 #: A finding's stored `round_status`, in today's words and the automatic round-2 check's.
 ROUND_STATUS_WORDS: Final[Mapping[str, RoundStatus]] = {
@@ -83,6 +85,9 @@ ROUND_STATUS_WORDS: Final[Mapping[str, RoundStatus]] = {
     "new": "new",
     "not_in_later_round": "not_in_later_round",
     "single_round": "single_round",
+    # The automatic round-2 check of the questions to the vendor (#1619).
+    "answered": "answered",
+    "still_open": "still_open",
 }
 
 #: What a finding was checked against (its `source`), in the reviewer's words.
@@ -488,7 +493,8 @@ def _judge(item: _Item, first_round_of_set: int) -> None:
     fixed_round: int | None = None
     if current.status == "same" and wrong_rounds and wrong_rounds[-1] < current.round:
         fixed_round = min(r for r in rounds if r > wrong_rounds[-1])
-    elif current.status in _OPEN_STATUSES and stored == "fixed":
+    elif current.status in _OPEN_STATUSES and stored in ("fixed", "answered"):
+        # Fixed in the next round, or (a question to the vendor, #1619) answered there.
         fixed_round = current.round + 1
 
     if decision is not None and decision.get("decision") == "not_a_problem":
@@ -510,6 +516,8 @@ def _judge(item: _Item, first_round_of_set: int) -> None:
         or stored == "still_wrong"
     ):
         item.tags.append("Still wrong")
+    if item.standing == "open" and stored == "still_open":
+        item.tags.append("Still open")
 
 
 def _item_out(item: _Item, sets: Mapping[UUID, TrackerSet]) -> dict[str, Any]:

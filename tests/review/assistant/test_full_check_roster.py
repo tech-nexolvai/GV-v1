@@ -626,3 +626,92 @@ def test_a_typed_value_at_a_labelled_spot_stands_for_its_label(tmp_path: Path) -
     # Another value at the spot, or no box: no label stands for it.
     assert run._label_at({**finding, "vendor": '45"'}, "vendor_box", "vendor") is None
     assert run._label_at({**finding, "vendor_box": None}, "vendor_box", "vendor") is None
+
+
+# ---- the escalation's one deeper look (#1619) ------------------------------------------------------
+
+
+def _typed_wrong(harness: Harness) -> str:
+    """A Wrong a helper typed with its boxes, at code's labelled spots, that no code check has
+    read yet (so the devil's advocate passed it by in P4): a question to the vendor today."""
+    engine = harness.engine
+    finding, _notes = engine.book.report(
+        {
+            "page": 3,
+            "item": "Top on page 3",
+            "category": "countertop",
+            "architect": '37"',
+            "vendor": '46"',
+            "status": "different",
+            "verified": False,
+            "source": "architect",
+            "arch_box": _box(3, 100),
+            "vendor_box": _box(3, 300),
+        },
+        "helper:1",
+    )
+    typed = {
+        **finding,
+        "checks": {"printed_architect": "not_found", "printed_vendor": "not_found"},
+        "inches": {"architect": "37", "vendor": "46", "difference": "9"},
+        "trust_level": "to_check",
+        "witnesses": [],
+    }
+    assert engine.book.replace(typed)
+    return str(finding["id"])
+
+
+def _run(harness: Harness) -> Any:
+    run = full_check_roster._Run(harness.engine)
+    run.plan = PricePlan.balanced(harness.engine.settings.message_cap_micros, 2)
+    return run
+
+
+def test_the_escalation_reads_the_labels_then_gives_one_deeper_look_within_the_price(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from app.review.assistant import proof
+
+    _clean_ink(monkeypatch)
+    script = _Roster()
+    harness = _roster(tmp_path, script)
+    finding_id = _typed_wrong(harness)
+    run = _run(harness)
+
+    run._escalate(SimpleNamespace(jobs=[]), None)
+
+    found = next(f for f in harness.engine.book.live() if f["id"] == finding_id)
+    # The free step read both values at code's labels; then the advocate's one blind pick agreed.
+    assert found["checks"]["printed_vendor"] == "match" and found["dims"]["vendor"]["id"] == "D1"
+    assert script.calls.get("advocate") == 1
+    assert found["critic"]["result"] == "passed" and found["pairing"]["architect"] == "p3.D2"
+    assert proof.proof_group(found) == "clouded"
+    assert run.spent.get("escalation", 0) > 0 and "advocate" not in run.spent
+    # One look only: a second escalation asks nothing again.
+    run._escalate(SimpleNamespace(jobs=[]), None)
+    assert script.calls.get("advocate") == 1
+
+
+def test_the_escalation_spends_only_what_is_left_under_the_price(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from app.review.assistant import proof
+
+    _clean_ink(monkeypatch)
+    script = _Roster()
+    harness = _roster(tmp_path, script)
+    finding_id = _typed_wrong(harness)
+    run = _run(harness)
+    monkeypatch.setattr(full_check_roster._Run, "_left", lambda self: 0)
+
+    run._escalate(SimpleNamespace(jobs=[]), None)
+
+    found = next(f for f in harness.engine.book.live() if f["id"] == finding_id)
+    assert "advocate" not in script.calls  # no money left: no AI call
+    assert found["checks"]["printed_vendor"] == "match"  # the free step still ran
+    assert proof.proof_group(found) == "vendor_confirm"  # still a question, never red
+    assert any("stay to confirm" in line for line in run.not_done)

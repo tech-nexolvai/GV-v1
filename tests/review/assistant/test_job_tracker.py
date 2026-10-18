@@ -226,6 +226,33 @@ def test_a_stored_round_status_wins_in_both_spellings() -> None:
     assert "New in round 2" in items["Drawer count"]["tags"]
 
 
+def test_the_questions_round_two_statuses_are_read_as_they_are() -> None:
+    """The round-2 check of the questions to the vendor (#1619): answered closes the item in the
+    next round; still open keeps it open and says so."""
+    package, sets = one_set()
+    built = build_tracker(
+        sets,
+        [
+            answer(
+                package,
+                [
+                    finding(
+                        "F1", "Counter overall width", 2, status="check", round_status="answered"
+                    ),
+                    finding(
+                        "F2", "Upper door layout", 3, status="check", round_status="still_open"
+                    ),
+                ],
+            )
+        ],
+    )
+    items = by_item(built)
+    assert items["Counter overall width"]["state"] == "fixed"
+    assert items["Counter overall width"]["fixed_round"] == 2
+    assert items["Upper door layout"]["state"] == "open"
+    assert items["Upper door layout"]["tags"] == ["Still open"]
+
+
 def test_a_folded_round_one_page_and_a_right_round_two_carrier_is_fixed() -> None:
     package, sets = one_set()
     carrier = finding(

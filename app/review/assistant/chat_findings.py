@@ -1756,11 +1756,14 @@ def make_proof_file(
     *,
     settled: Sequence[Mapping[str, Any]] = (),
     today: str | None = None,
+    gaps: Sequence[Mapping[str, Any]] = (),
 ) -> MarkupFile:
     """The zero-click red/green proof drawing of a full check (#1581,
     `proof_drawing.proof_markup_pdf`), written to `out`: a red cloud and a red/green note at each
     Wrong item code proved, a proof entry each, a cover with the counts, the rule, the stamp and
-    what code assumed about the page map, and the rest listed in grey. The reviewer's decisions
+    what code assumed about the page map, an amber question at each item code could not settle
+    (#1619), and the set's gaps with nothing to ask (`gaps`: the vendor consistency check's areas
+    with no vendor sheet or round) listed as "Not applicable / no information". The reviewer's decisions
     (on `findings`, when there are any) override: agreed = clouded, not a problem = left out.
     Raises `LookupError` when the chat has no copy of the set's PDFs."""
     ordered = by_impact(findings)
@@ -1788,6 +1791,7 @@ def make_proof_file(
         assumptions=plan.plan_assumptions(pack, name),
         settled=settled,
         rounds=rounds,
+        gaps=gaps,
     )
     data = out.read_bytes()
     return MarkupFile(

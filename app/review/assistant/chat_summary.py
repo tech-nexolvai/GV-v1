@@ -12,8 +12,9 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
 from app.review.assistant.chat_findings import products_words
-from app.review.assistant.chat_trust import cloud_kind, shown_counts
+from app.review.assistant.chat_trust import cloud_kind
 from app.review.assistant.impact import by_impact
+from app.review.assistant.proof import proof_counts, proof_group
 
 #: The small note under a summary code wrote (the screen shows it as written).
 CODE_SUMMARY_NOTE: Final = "*Summary written by GV Review: the AI did not finish its own.*"
@@ -116,13 +117,16 @@ def code_summary(
     files: Sequence[str] = (),
     also: Sequence[str] = (),
 ) -> str:
-    """The 5-6 line summary: what was checked, the verdict, the biggest issues, what needs the
-    reviewer's decision, why it stopped (if it did) and the next step; then the small note.
-    `also`: code's own lines to add before the next step (the vendor consistency check's, #1584)."""
-    # The same counts as the screen and the files (#1554): one final list, Right only when compared.
-    counts = shown_counts(findings)
-    wrong, to_check, right = counts["wrong"], counts["decision"], counts["right"]
-    unseen = f", {counts['not_compared']} not compared" if counts["not_compared"] else ""
+    """The 5-6 line summary: what was checked, the verdict, the biggest issues, what goes to the
+    vendor to confirm, why it stopped (if it did) and the next step; then the small note.
+    `also`: code's own lines to add before the next step (the vendor consistency check's, #1584).
+    """
+    # The cloud drawing's own counts (#1581, #1619): Wrong = proved by code (clouded), Vendor to
+    # confirm (amber questions), Right; the screen and the files count the same final list.
+    counts = proof_counts(findings)
+    wrong, to_check, right = counts["clouded"], counts["vendor_confirm"], counts["right"]
+    nothing = counts["info"] + counts["not_compared"]
+    unseen = f", {nothing} not applicable or not compared" if nothing else ""
     rounds = len({int(f.get("round") or 1) for f in findings}) or 1
     scope = f"{products_words(products).lower()}, {_plural(rounds, 'round', 'rounds')}"
     if coverage is not None:
@@ -136,36 +140,36 @@ def code_summary(
     lines = [
         first,
         (
-            f"{_plural(wrong, 'thing looks', 'things look')} wrong, "
-            f"{_plural(to_check, 'needs', 'need')} your decision, {right} match{unseen}."
+            f"{wrong} wrong (proved by code), {to_check} for the vendor to confirm, "
+            f"{right} match{unseen}."
         ),
     ]
-    issues = _issue_words(findings)
+    issues = _issue_words([f for f in findings if proof_group(f) == "clouded"])
     lines.append(
-        f"Biggest issues: {'; '.join(issues)}." if issues else "No issues were found so far."
+        f"Biggest issues: {'; '.join(issues)}."
+        if issues
+        else "No wrong value was proved by code so far."
     )
     if to_check:
-        decide = [
+        confirm = [
             f"p{f.get('page')} {str(f.get('item') or 'item').strip()}"
-            for f in findings
-            if cloud_kind(f) == "check"
+            for f in by_impact(findings)
+            if proof_group(f) == "vendor_confirm"
         ]
-        more = f" and {len(decide) - 5} more" if len(decide) > 5 else ""
-        lines.append(f"Your decision: {', '.join(decide[:5])}{more}.")
+        more = f" and {len(confirm) - 5} more" if len(confirm) > 5 else ""
+        lines.append(f"Vendor to confirm: {', '.join(confirm[:5])}{more}.")
     stop = _stop_words(stopped, cap_hit, cap_usd, budget_usd, turns)
     if stop is not None:
         lines.append(stop)
     lines += [line for line in also if line]
     steps: list[str] = []
     drawing = any("cloud" in name.lower() for name in files)
-    if wrong and drawing:
-        steps.append("send the cloud drawing to the vendor")
-    elif wrong:
-        steps.append("send the wrong items to the vendor")
-    if to_check:
+    if (wrong or to_check) and drawing:
         steps.append(
-            f"confirm the {_plural(to_check, 'item that needs', 'items that need')} your decision"
+            "send the cloud drawing to the vendor (red: corrections; amber: questions to confirm)"
         )
+    elif wrong or to_check:
+        steps.append("send the wrong items and the questions to the vendor")
     if not steps:
         steps.append("look over the report before signing off")
     lines.append(f"Next: {'; '.join(steps)}.")

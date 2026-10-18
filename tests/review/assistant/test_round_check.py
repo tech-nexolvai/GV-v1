@@ -145,7 +145,6 @@ def test_fixed_still_wrong_and_new_are_decided_by_the_printed_values() -> None:
         _finding("F1", '46"', '37"'),  # round 2 prints 37": fixed
         _finding("F2", '12"', '14"'),  # round 2 prints 12" again: still wrong
         _finding("F3", '8"', '6"', page=2),  # round 2 only: new
-        _finding("F4", '30"', '31"', trust_level="to_check", witnesses=[]),  # not clouded
     ]
     report = round_two(findings, _dims(), _page_map())
     by = report.by_finding()
@@ -153,9 +152,65 @@ def test_fixed_still_wrong_and_new_are_decided_by_the_printed_values() -> None:
     assert by["F1"].page == 2 and by["F1"].spot is not None
     assert by["F2"].status == "still_wrong" and by["F2"].now == '12"'
     assert by["F3"].status == "new" and by["F3"].reason == "round 1 printed nothing here"
-    assert "F4" not in by  # only what code clouded is followed
-    assert report.counts() == {"fixed": 1, "still_wrong": 1, "new": 1, "not_compared": 0}
+    assert report.counts() == {
+        "fixed": 1,
+        "still_wrong": 1,
+        "new": 1,
+        "answered": 0,
+        "still_open": 0,
+        "not_compared": 0,
+    }
     assert report.line() == "Round 2: 1 fixed, 1 still wrong, 1 new."
+
+
+def _asked(fid: str, text: str, architect: str, **more: Any) -> dict[str, Any]:
+    """A round-1 item code could not prove: a question to the vendor (amber, #1619)."""
+    return _finding(fid, text, architect, trust_level="to_check", witnesses=[], **more)
+
+
+def test_round_one_questions_are_answered_or_still_open_by_the_printed_values() -> None:
+    blank = (520.0, 520.0)  # round 1 prints no size here
+    x, y = blank
+    missing = _asked(
+        "Q3",
+        '30"',
+        '31"',
+        vendor="no size printed",
+        inches={"architect": "31", "vendor": None},
+        vendor_box={
+            "page": 1,
+            "x0": x - 10,
+            "y0": y - 8,
+            "x1": x + 10,
+            "y1": y + 8,
+            "file": "sheet.pdf",
+        },
+        status="check",
+        keep_reason="unreadable",
+    )
+    findings = [
+        _asked("Q1", '46"', '37"'),  # round 2 prints 37", the architect's value: answered
+        _asked("Q2", '30"', '31"'),  # round 2 prints 30" again: still open
+        missing,  # round 2 adds a size where round 1 had none: answered
+    ]
+    second = {ROUND_TWO_VALUES.get(t, t): _moved(at) for t, at in ROUND_ONE.items()}
+    second['29"'] = _moved(blank)
+    report = round_two(findings, _dims(second), _page_map())
+    by = report.by_finding()
+    assert by["Q1"].status == "answered" and by["Q1"].now == '37"' and by["Q1"].spot is not None
+    assert by["Q2"].status == "still_open" and by["Q2"].now == '30"'
+    assert by["Q3"].status == "answered" and by["Q3"].now == '29"'
+    assert by["Q3"].was == "no size printed"
+    assert report.line() == (
+        "Round 2: 0 fixed, 0 still wrong, 0 new; of the questions, 2 answered, 1 still open."
+    )
+    # A change code cannot judge is refused (grey), never called answered.
+    second['36"'] = second.pop('37"')
+    item = round_two([_asked("Q1", '46"', '37"')], _dims(second), _page_map()).items[0]
+    assert item.status == "not_compared" and "cannot tell" in str(item.reason)
+    # Still nothing printed in round 2: still open.
+    item = round_two([missing], _dims(), _page_map()).items[0]
+    assert item.status == "still_open"
 
 
 def test_a_change_that_is_still_not_right_is_still_wrong() -> None:
@@ -291,3 +346,29 @@ def test_the_full_check_reads_the_set_pack_for_round_two(tmp_path: Path) -> None
     assert report is not None
     assert {i.finding_id: i.status for i in report.items} == {"F1": "fixed", "F2": "still_wrong"}
     assert round_two_report(workspace, "sheet.pdf", findings, None) is None  # type: ignore[arg-type]
+
+
+def test_the_drawing_marks_round_two_answers_to_the_questions(tmp_path: Path) -> None:
+    from app.review.assistant.proof_drawing import AMBER
+
+    sheet = _sheet(tmp_path / "sheet.pdf")
+    findings = [_asked("Q1", '46"', '37"'), _asked("Q2", '12"', '14"')]
+    report = round_two(findings, _dims(), _page_map())
+    assert {i.finding_id: i.status for i in report.items} == {"Q1": "answered", "Q2": "still_open"}
+    placed = []
+    for n, f in enumerate(findings, start=1):
+        box = f["vendor_box"]
+        coords = tuple(float(box[k]) for k in ("x0", "y0", "x1", "y1"))
+        placed.append((n, f, int(box["page"]), coords, f"Marked on page {box['page']}."))
+    out = tmp_path / "proof.pdf"
+    proof_markup_pdf(sheet, placed, out, set_name="sheet.pdf", stamp="Checked", rounds=report)
+    reader = PdfReader(str(out))
+    cover = " ".join(reader.pages[0].extract_text().split())
+    assert "of the questions, 1 answered, 1 still open" in cover
+    round_two_page = " ".join(reader.pages[2].extract_text().split())
+    assert 'Answered in round 2: 37"' in round_two_page
+    assert "Still open in round 2" in round_two_page
+    answered_at, open_at = _moved(ROUND_ONE['46"']), _moved(ROUND_ONE['12"'])
+    assert _colour_near(out, 2, answered_at, GREEN) > 10  # the green box: answered
+    assert _colour_near(out, 2, answered_at, RED) == 0 and _colour_near(out, 2, open_at, RED) == 0
+    assert _colour_near(out, 2, open_at, AMBER) > 3  # still open: amber, never a red cloud

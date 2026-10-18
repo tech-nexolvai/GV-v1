@@ -1244,7 +1244,9 @@ def _proof_cells(finding: Mapping[str, Any]) -> list[str]:
     proof = import_module("app.review.assistant.proof")
     found = proof.proof_of(finding)
     words = proof.GROUP_WORDS[found["group"]]
-    detail = found["proof"] or found["reason"]
+    # An amber item says the question that goes to the vendor (#1619).
+    asked = f"Confirm: {found['question']}" if found.get("question") else None
+    detail = found["proof"] or asked or found["reason"]
     return [_cell(found["should_be"] or ""), _cell(f"{words}: {detail}" if detail else words)]
 
 

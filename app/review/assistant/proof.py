@@ -14,10 +14,14 @@ a false red cloud goes straight to the vendor, so **only what code proved is clo
   numbers measure the same thing (`pairing_proved`: the full check's devil's advocate passed it,
   #1611, under the setting `assistant_pairing_proof`); GV's rule, GV's limits and the vendor's own
   sum need none. Red cloud at the vendor's value, green "Should be", and a proof entry.
-- **not_verified**: a Wrong item only AI readings back ("AI reading only", or Likely from two AI
-  readings with no code witness), or one code read right whose pairing is not proved: listed in
-  grey, "Not verified by code: check before sending", with the reason (`unproved_reason`).
-- **could_not_compare**: a "Your decision" item: listed in grey with its one-line reason.
+- **vendor_confirm** (amber, #1619): what code could not settle after the full check's escalation
+  (`escalation.py`): a Wrong item only AI readings back, or one code read right whose pairing is
+  not proved (`unproved_reason`), and a "Your decision" item the resolver kept. Nobody at GV has to
+  look: the item becomes ONE question to the vendor (`vendor_confirm.question_of`), an amber
+  marker and note "Confirm: …" on the vendor's sheet (never a cloud: red stays for proven
+  Wrongs), and round 2 says whether the vendor answered it.
+- **info**: an undecided item with nothing to ask the vendor (an area with no vendor sheet, no
+  values on either side): "Not applicable / no information", listed apart.
 - **right**: a Right item that was compared: a short green list.
 - **not_compared**: a Right item not seen on both sides (`mark_compared`): listed apart.
 
@@ -38,7 +42,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Final, Literal
 
 from app.review.assistant import full_check_advocate as advocate
-from app.review.assistant import witness
+from app.review.assistant import vendor_confirm, witness
 from app.review.assistant.chat_trust import inch_words
 
 __all__ = [
@@ -60,49 +64,54 @@ __all__ = [
     "proof_group",
     "proof_line",
     "proof_of",
+    "question",
     "scaled",
     "should_be",
     "should_be_value",
+    "undecided_reason",
     "unproved_reason",
     "vendor_own",
     "vendor_value",
 ]
 
-type ProofGroup = Literal[
-    "clouded", "not_verified", "could_not_compare", "right", "not_compared", "dismissed"
-]
+type ProofGroup = Literal["clouded", "vendor_confirm", "right", "info", "not_compared", "dismissed"]
 GROUPS: Final[tuple[ProofGroup, ...]] = (
     "clouded",
-    "not_verified",
-    "could_not_compare",
+    "vendor_confirm",
     "right",
+    "info",
     "not_compared",
     "dismissed",
 )
 #: Each group as the drawing, the report, the CSV and the screen name it.
 GROUP_WORDS: Final[Mapping[str, str]] = {
     "clouded": "Wrong, proved by code (clouded)",
-    "not_verified": "Not verified by code: check before sending",
-    "could_not_compare": "Could not be compared",
+    "vendor_confirm": "Vendor to confirm",
     "right": "Right",
+    "info": "Not applicable / no information",
     "not_compared": "Not compared",
     "dismissed": "Not a problem (reviewer)",
 }
 #: The rule, in one line, on the drawing's cover and the report.
 RULE_LINE: Final = (
-    "Only items code proved are clouded (GV's rule, the vendor's own sum, or two dimensions code "
-    "proved measure the same thing), so no unchecked AI reading reaches the vendor; the rest are "
-    "listed in grey."
+    "Only items code proved are clouded in red (GV's rule, the vendor's own sum, or two dimensions "
+    "code proved measure the same thing); what code could not settle is asked of the vendor in "
+    'amber ("Confirm: …"), never clouded.'
 )
 #: Words saying a value was measured off the drawing or taken from a scale note, not printed.
 _SCALED: Final = re.compile(
     r"\bscal(?:e|es|ed|ing)\b|\bmeasured (?:off|on) the drawing\b",
     re.IGNORECASE,
 )
-#: Why a Wrong item code read right is still grey: nothing proves both numbers measure the same.
-PAIRING_REASON: Final = "What each number measures is not proved by code; check it before sending."
-#: Why a Wrong item only AI readings back is grey.
-AI_ONLY_REASON: Final = "Only AI readings back it; check it before sending."
+#: Why a Wrong item code read right is amber, not red: nothing proves both numbers measure the same.
+PAIRING_REASON: Final = (
+    "Not clouded: code read both values, but what each measures is not proved; the vendor is "
+    "asked to confirm."
+)
+#: Why a Wrong item only AI readings back is amber, not red.
+AI_ONLY_REASON: Final = (
+    "Not clouded: code could not read both values at their spots; the vendor is asked to confirm."
+)
 #: The full check's devil's advocate (`full_check_advocate`, #1611) signs its verdict so.
 _ADVOCATE: Final = "devil's advocate"
 #: Trust levels a clouded item may have (with a code witness).
@@ -267,11 +276,11 @@ def code_proved(finding: Mapping[str, Any]) -> bool:
 
 
 def unproved_reason(finding: Mapping[str, Any]) -> str:
-    """Why a Wrong item is in the grey "Not verified by code" list, in one plain line."""
+    """Why a Wrong item is amber (Vendor to confirm), not red, in one plain line."""
     verdict = _advocate(finding)
     if verdict is not None and verdict.get("result") == "objects" and verdict.get("note"):
         # The advocate's own reason ("Not proved: a blind second pick chose p23.D12, ...").
-        return f"{_short(verdict.get('note'), 200)} Check it before sending."
+        return f"{_short(verdict.get('note'), 200)} The vendor is asked to confirm."
     if _read_by_code(finding) and needs_pairing(finding) and not pairing_proved(finding):
         return PAIRING_REASON
     return AI_ONLY_REASON
@@ -299,10 +308,11 @@ def proof_group(finding: Mapping[str, Any]) -> ProofGroup:
             return "clouded"
         if decided == "not_a_problem":
             return "dismissed"
-    if status == "different":
-        return "clouded" if code_proved(finding) else "not_verified"
-    if status == "check":
-        return "could_not_compare"
+    if status == "different" and code_proved(finding):
+        return "clouded"
+    if status in ("different", "check"):
+        # Undecided after the escalation: one question to the vendor, else nothing to ask.
+        return "vendor_confirm" if vendor_confirm.has_question(finding) else "info"
     return "not_compared" if finding.get("compared") is False else "right"
 
 
@@ -461,8 +471,8 @@ def proof_line(finding: Mapping[str, Any]) -> str:
 
 
 def could_not_compare_reason(finding: Mapping[str, Any]) -> str:
-    """Why a "Your decision" item could not be compared, in one line ("architect prints no
-    size"): the resolver's reason, else the check reason, else its question or why."""
+    """Why a "Your decision" item could not be settled by code, in one line ("the architect prints
+    no size here"): the resolver's reason, else the check reason, else its question or why."""
     reason = finding.get("keep_reason")
     if isinstance(reason, str) and reason in KEEP_WORDS and reason != "other":
         return KEEP_WORDS[reason]
@@ -477,16 +487,30 @@ def could_not_compare_reason(finding: Mapping[str, Any]) -> str:
     return KEEP_WORDS["other"]
 
 
+def undecided_reason(finding: Mapping[str, Any]) -> str:
+    """Why an amber or info item is not settled, in one line (for the reviewer, never the
+    vendor): a Wrong's missing proof, else why a decision item stays."""
+    if finding.get("status") == "different":
+        return unproved_reason(finding)
+    return could_not_compare_reason(finding)
+
+
+def question(finding: Mapping[str, Any]) -> str | None:
+    """The question to the vendor for an amber item (`vendor_confirm.question_of`), else `None`."""
+    if proof_group(finding) != "vendor_confirm":
+        return None
+    return vendor_confirm.question_of(finding)
+
+
 def proof_of(finding: Mapping[str, Any]) -> dict[str, Any]:
     """A finding's `proof` for the screen and the CSV: its group, the green "Should be" (Wrong
-    items), the proof line (clouded items) or the grey reason."""
+    items), the proof line (clouded items), the question to the vendor (amber items) and the
+    reason it is not settled."""
     group = proof_group(finding)
     wrong = finding.get("status") == "different" or group == "clouded"
     reason: str | None = None
-    if group == "not_verified":
-        reason = unproved_reason(finding)
-    elif group == "could_not_compare":
-        reason = could_not_compare_reason(finding)
+    if group in ("vendor_confirm", "info"):
+        reason = undecided_reason(finding)
     elif group == "dismissed":
         reason = "The reviewer marked it not a problem."
     elif group == "not_compared":
@@ -496,6 +520,7 @@ def proof_of(finding: Mapping[str, Any]) -> dict[str, Any]:
         "should_be": should_be(finding) if wrong else None,
         "proof": proof_line(finding) if group == "clouded" else None,
         "reason": reason,
+        "question": vendor_confirm.question_of(finding) if group == "vendor_confirm" else None,
     }
 
 
