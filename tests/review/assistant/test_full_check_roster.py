@@ -215,6 +215,35 @@ def test_the_drawn_extents_must_land_together_after_lining_the_drawings_up() -> 
     assert same_extent(vendor, no_line, anchors_v, anchors_a)[0] == "cannot_tell"
 
 
+def test_a_line_off_its_drawings_scale_is_no_proof_of_different_points() -> None:
+    """A label printed beside its own short dimension line, across from it (a horizontal value
+    next to a vertical offset), may be given a nearby drawing edge as its line: the label reader
+    then marks it off its drawing's scale (`scale_ok: False`). Two such lines landing apart prove
+    nothing about the points the two values measure: code cannot tell, never 'different'."""
+    vendor = _label("D1", "vendor", "46", (300, 392))
+    anchors_v = [
+        _label("D3", "vendor", "24", (380, 428)),
+        _label("D4", "vendor", "12", (440, 464)),
+    ]
+    anchors_a = [
+        _label("D5", "architect", "24", (180, 228)),
+        _label("D6", "architect", "12", (240, 264)),
+    ]
+    neighbour = _label("D2", "architect", "37", (130, 204))
+    labels_v, labels_a = [vendor, *anchors_v], [neighbour, *anchors_a]
+    assert same_extent(vendor, neighbour, labels_v, labels_a)[0] == "different_extent"
+    for v, a in (
+        ({**vendor, "scale_ok": False}, neighbour),
+        (vendor, {**neighbour, "scale_ok": False}),
+    ):
+        state, why = same_extent(v, a, labels_v, labels_a)
+        assert state == "cannot_tell" and "off its drawing's scale" in why, why
+    # On the drawing's scale (or not measured): the lines still decide.
+    for flag in (True, None):
+        v = {**vendor, "scale_ok": flag}
+        assert same_extent(v, neighbour, labels_v, labels_a)[0] == "different_extent"
+
+
 def _passing() -> list[Check]:
     return [Check(name, "pass") for name in ("ink", "annotation", "roles", "axis", "round")]
 

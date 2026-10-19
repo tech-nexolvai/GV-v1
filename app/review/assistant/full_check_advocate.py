@@ -432,10 +432,20 @@ def same_extent(
     dimensions of the same orientation printed exactly once on each drawing with the same value
     (never the pair itself). A least-squares fit of the anchors' line ends maps the architect's
     line into the vendor's drawing; its ends must land on the vendor line's ends, allowing only
-    the claimed difference at the vendor's own scale. Fewer than two anchors, a poor fit, or a
-    line with no ends found: `cannot_tell` (so the item stays grey)."""
+    the claimed difference at the vendor's own scale. Fewer than two anchors, a poor fit, a
+    line with no ends found, or a line the label reader marks off its drawing's scale
+    (`scale_ok: False`, likely another line than the label's, #1760): `cannot_tell` (so the item
+    stays grey)."""
     if vendor.get("orientation") != architect.get("orientation"):
         return "different_extent", "one is a width and the other a height"
+    if vendor.get("scale_ok") is False or architect.get("scale_ok") is False:
+        # The label reader's own warning (`dim_labels._scale_checks`): this line is likely not
+        # the label's (a value printed beside a short line across from it is given a nearby
+        # drawing edge, #1760), so where its ends land proves nothing either way.
+        return (
+            "cannot_tell",
+            "a dimension line is off its drawing's scale (likely not the label's own line)",
+        )
     v_ends, a_ends = _axis(vendor), _axis(architect)
     v_in, a_in = _inches(vendor), _inches(architect)
     if v_ends is None or a_ends is None or not v_in or not a_in:
