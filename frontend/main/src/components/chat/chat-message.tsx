@@ -513,7 +513,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
             <h2 data-slot="chat-summary-headline" className="text-xl leading-snug font-semibold tracking-[-0.015em]">
               {counts.different > 0 ? <span className="text-outcome-fail-fg">{counts.different} wrong</span> : 'Nothing proved wrong'} on the vendor’s drawings
               {counts.same > 0 ? `, ${counts.same} right` : ''}
-              {counts.check > 0 ? <span className="text-muted-foreground">, {counts.check} with nothing to compare</span> : null}.
+              {counts.check > 0 ? <span className="text-muted-foreground">, {counts.check} not compared</span> : null}.
             </h2>
             {textItems.map((item) => {
               const block = blocks[item.index] as Extract<ViewBlock, { type: 'text' }>;

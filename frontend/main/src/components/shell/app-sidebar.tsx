@@ -2,13 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { BarChart2, BookOpen, Files, History as HistoryIcon, ListChecks, Moon, SlidersHorizontal, SquarePen, Sun } from 'lucide-react';
 
 import { listPackages } from '@/api/client';
-import { liveReviewItemsApi } from '@/api/review-items';
 import type { PackagePage } from '@/api/client';
 import { projectId } from '@/api/config';
 import { useAsync } from '@/api/useAsync';
+import { setStatusWords } from '@/lib/words';
 import type { Page } from '@/app/route';
 import type { Theme } from '@/app/theme';
-import { PackageStatusBadge } from '@/components/ui/package-status-badge';
 import {
   Sidebar,
   SidebarContent,
@@ -31,9 +30,6 @@ type PackageItem = PackagePage['items'][number];
 
 const PAGE_SIZE = 50;
 
-/** Package states in which someone may still need to decide something. */
-const IN_REVIEW = new Set(['AWAITING_REVIEW', 'NEEDS_INPUT', 'CHANGES_REQUESTED']);
-
 const PRIMARY_NAV: { id: Page; label: string; icon: typeof Files }[] = [
   { id: 'documents', label: 'Documents', icon: Files },
   // Every item across the project's sets, rounds and checks, and the vendor scorecard (#1578).
@@ -53,8 +49,6 @@ export interface AppSidebarProps {
   theme: Theme;
   /** Bumped after an upload or a sign-off, so the list reloads without a page refresh. */
   refreshKey: number;
-  /** The open review's own, newest optional count (`header.open`), which wins over the list's copy. */
-  liveNeedYou: { packageId: string; count: number } | null;
   /**
    * The open review's `reading.retrying` (#1249): its badge says "Restarting after a problem" like
    * the review's header and Reading step. Other reviews have no reading line here, so keep "Stopped".
@@ -89,7 +83,6 @@ export function AppSidebar({
   activePackage,
   theme,
   refreshKey,
-  liveNeedYou,
   liveRestarting = null,
   onNavigate,
   onOpenPackage,
@@ -141,7 +134,6 @@ export function AppSidebar({
       })
     : [];
   const nextCursor = more ? more.cursor : first.status === 'ready' ? first.data.next_cursor ?? null : null;
-  const needYou = useNeedYouCounts(items, refreshKey);
 
   async function loadMore() {
     if (!nextCursor || loadingMore) return;
@@ -225,7 +217,6 @@ export function AppSidebar({
                 {group.map((pkg) => {
                   // Open here: its review or its chats (#1464).
                   const active = (activePage === 'review' || activePage === 'chat') && activePackage === pkg.id;
-                  const count = liveNeedYou?.packageId === pkg.id ? liveNeedYou.count : needYou.get(pkg.id);
                   return (
                     <SidebarMenuItem key={pkg.id}>
                       <SidebarMenuButton
@@ -238,18 +229,11 @@ export function AppSidebar({
                       >
                         {/* Packages carry only a vendor; there is no human package name yet. */}
                         <span className="w-full truncate font-medium">{pkg.vendor ?? 'Untitled document set'}</span>
-                        <span className="flex w-full flex-wrap items-center gap-1.5">
-                          <PackageStatusBadge status={pkg.state} restarting={liveRestarting?.packageId === pkg.id && liveRestarting.restarting} />
-                          {/* Every question is optional (owner, 2026-10-16): the open count is "3 optional",
-                              in grey, never an amber "needs you". */}
-                          {count !== undefined && count > 0 && (
-                            <span data-slot="need-you" className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                              <span className="num">{count}</span> optional
-                            </span>
-                          )}
-                          {pkg.current_revision_number > 1 && (
-                            <span className="text-xs text-muted-foreground">Rev <span className="num">{pkg.current_revision_number}</span></span>
-                          )}
+                        {/* #1712: a set's state in plain grey words (no pill: a state is not an outcome); no
+                            "N optional" count, as every question is optional. */}
+                        <span data-slot="set-status" data-status={pkg.state} className="w-full truncate text-xs text-muted-foreground">
+                          {setStatusWords(pkg.state, { restarting: liveRestarting?.packageId === pkg.id && liveRestarting.restarting })}
+                          {pkg.current_revision_number > 1 && <> · Rev <span className="num">{pkg.current_revision_number}</span></>}
                         </span>
                       </SidebarMenuButton>
                       {active && activePage === 'chat' && chatsSlotRef && <div ref={chatsRef} data-slot="sidebar-chats" className="group-data-[collapsible=icon]:hidden" />}
@@ -307,36 +291,6 @@ export function AppSidebar({
       </SidebarFooter>
     </Sidebar>
   );
-}
-
-/**
- * How many findings still need someone, per package under review, from the same readiness answer
- * the review screen uses. A package whose answer failed is simply absent (shown without a count),
- * never 0 — "nothing needs you" is a claim this list may only make from the server.
- */
-function useNeedYouCounts(items: readonly PackageItem[], refreshKey: number): Map<string, number> {
-  const [counts, setCounts] = useState<Map<string, number>>(new Map());
-  const wanted = items.filter((item) => IN_REVIEW.has(item.state)).map((item) => item.id).join(',');
-
-  useEffect(() => {
-    if (!wanted) return;
-    let current = true;
-    const ids = wanted.split(',');
-    // The same count the review page shows: its list's open items (`header.open`), never a second count.
-    void Promise.allSettled(ids.map((id) => liveReviewItemsApi.load(projectId(), id))).then((answers) => {
-      if (!current) return;
-      const next = new Map<string, number>();
-      answers.forEach((answer, index) => {
-        if (answer.status === 'fulfilled') next.set(ids[index], answer.value.header.open);
-      });
-      setCounts(next);
-    });
-    return () => {
-      current = false;
-    };
-  }, [wanted, refreshKey]);
-
-  return counts;
 }
 
 /** Today / Yesterday / Previous 7 days / Previous 30 days / then by month — newest first. */

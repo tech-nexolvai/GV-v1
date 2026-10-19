@@ -40,8 +40,6 @@ export default function App() {
   const [reviewTitle, setReviewTitle] = useState<{ packageId: string; title: string; revision: number | null } | null>(null);
   // The drawing set whose chats are open, named by the chat page once its chat has loaded (#1464).
   const [chatName, setChatName] = useState<{ packageId: string; name: string } | null>(null);
-  // The open review's newest open count (shown as "N optional"), so the sidebar's copy is never stale.
-  const [liveNeedYou, setLiveNeedYou] = useState<{ packageId: string; count: number } | null>(null);
   // Whether the open review's failed reading is restarting now (`reading.retrying`, #1249), so the
   // sidebar's badge says the same as the review's header.
   const [liveRestarting, setLiveRestarting] = useState<{ packageId: string; restarting: boolean } | null>(null);
@@ -141,7 +139,6 @@ export default function App() {
     <AppShell
       title={title}
       crumbs={crumbs}
-      liveNeedYou={liveNeedYou}
       liveRestarting={packageId !== null && liveRestarting?.packageId === packageId ? liveRestarting : null}
       activePage={route.page}
       activePackage={packageId ?? chatPackageId}
@@ -177,7 +174,6 @@ export default function App() {
           onOpenAdvanced={() => navigate({ page: 'review', packageId, advanced: true })}
           onOpenChat={() => openChats(packageId)}
           onTitleChange={(vendor, revisionNumber) => setReviewTitle({ packageId, title: vendor, revision: revisionNumber })}
-          onNeedYouChange={(count) => setLiveNeedYou(count === null ? null : { packageId, count })}
           onPackageChanged={() => setSidebarRefreshKey((key) => key + 1)}
         />
       )}
@@ -192,7 +188,6 @@ export default function App() {
           sessionId={packageId}
           onEvidenceChange={setEvidencePanel}
           onTitleChange={(vendor, revisionNumber) => setReviewTitle({ packageId, title: vendor, revision: revisionNumber })}
-          onNeedYouChange={(count) => setLiveNeedYou(count === null ? null : { packageId, count })}
           onRestartingChange={(restarting) => setLiveRestarting({ packageId, restarting })}
           onBackToDocuments={() => go('documents')}
           onPackageChanged={() => setSidebarRefreshKey((key) => key + 1)}

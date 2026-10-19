@@ -108,7 +108,7 @@ export function FullCheckButton({ summary, onRun, blocked, variant = 'primary', 
     <Popover open={open} onOpenChange={(next) => { setOpen(next); if (next) setPicked({}); }}>
       <PopoverTrigger
         disabled={Boolean(blocked)}
-        title={blocked ?? 'Check the whole drawing set: what is wrong, what to check, what is right'}
+        title={blocked ?? 'Check the whole drawing set: Wrong, Right and Not compared, with the cloud drawing'}
         data-slot="chat-full-check"
         data-variant={variant}
         className={cn(
@@ -266,7 +266,7 @@ export function FullCheckFiles({ cloud, report, notCompared = [], chatId, page =
           {proof ? (
             <p data-slot="chat-cloud-counts" className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground tabular-nums">
               <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="size-2 rounded-full bg-outcome-fail" /><span className="font-medium text-foreground">{proof.clouded}</span> clouded, proved by code</span>
-              {proof.not_compared > 0 && <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="size-2 rounded-full ring-[1.5px] ring-inset ring-muted-foreground/60" />{proof.not_compared} with nothing to compare</span>}
+              {proof.not_compared > 0 && <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="size-2 rounded-full ring-[1.5px] ring-inset ring-muted-foreground/60" />{proof.not_compared} not compared</span>}
             </p>
           ) : counts && (counts.different > 0 || counts.check > 0) && (
             <p className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground tabular-nums">
@@ -410,7 +410,7 @@ export function PackageCard({ pkg, chatId, action, hasReport = true, hasNotCompa
 const NUMBERS = [
   { status: 'different', words: 'Wrong', hint: 'Proved by code, clouded red', dot: 'bg-outcome-fail' },
   { status: 'same', words: 'Right', hint: 'Matches the architect', dot: 'bg-outcome-pass' },
-  { status: 'check', words: 'Nothing to compare', hint: 'Listed apart, with the reason', dot: 'bg-transparent ring-[1.5px] ring-inset ring-muted-foreground/60' },
+  { status: 'check', words: 'Not compared', hint: 'Each with its reason and what is needed', dot: 'bg-transparent ring-[1.5px] ring-inset ring-muted-foreground/60' },
 ] as const;
 
 export interface ResultNumbersProps {

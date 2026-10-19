@@ -242,9 +242,9 @@ describe('trust', () => {
       finding('d', { round_status: 'still_wrong' }), finding('e', { round_status: 'still_wrong' }), finding('f', { round_status: 'still_wrong' }),
       finding('g', { round_status: 'still_wrong' }), finding('h', { round_status: 'still_wrong' }), finding('i', { round_status: 'new_in_later_round' }),
     ], null);
-    expect(rounds && roundWords(rounds)).toBe('Vendor fixed 3 of 8 round-1 items · 5 still wrong · 1 new');
+    expect(rounds && roundWords(rounds)).toBe('Closed 3 of 8 round-1 items · 5 previous comments not addressed · 1 new');
     expect(roundCounts([finding('a', { round_status: 'single_round' })], null)).toBeNull();
-    expect(roundWords({ fixed: 1, still_wrong: 0, new: 0, not_in_later: 1 })).toBe('Vendor fixed 1 of 2 round-1 items · 1 not in the later round');
+    expect(roundWords({ fixed: 1, still_wrong: 0, new: 0, not_in_later: 1 })).toBe('Closed 1 of 2 round-1 items · 1 not in the later round');
   });
 
   it('says why a finding is AI reading only, from its checks', () => {

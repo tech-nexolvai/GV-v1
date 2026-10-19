@@ -16,8 +16,6 @@ interface AppShellProps {
   activePackage: string | null;
   theme: Theme;
   sidebarRefreshKey: number;
-  /** The open review's newest open count (shown as "N optional"), so the sidebar never shows a stale one. */
-  liveNeedYou: { packageId: string; count: number } | null;
   /** Whether the open review's failed reading is restarting now, so its sidebar badge says so (#1249). */
   liveRestarting?: { packageId: string; restarting: boolean } | null;
   /** The evidence for the finding the reviewer opened, or nothing. Never open on its own. */
@@ -57,7 +55,6 @@ export function AppShell({
   activePackage,
   theme,
   sidebarRefreshKey,
-  liveNeedYou,
   liveRestarting = null,
   evidencePanel,
   onNavigate,
@@ -98,7 +95,6 @@ export function AppShell({
           activePackage={activePackage}
           theme={theme}
           refreshKey={sidebarRefreshKey}
-          liveNeedYou={liveNeedYou}
           liveRestarting={liveRestarting}
           onNavigate={onNavigate}
           onOpenPackage={onOpenPackage}

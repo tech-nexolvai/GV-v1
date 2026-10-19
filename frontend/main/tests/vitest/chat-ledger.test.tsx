@@ -77,7 +77,8 @@ describe('the reading ledger in words', () => {
   it('uses the rounds line code wrote for compare_rounds', () => {
     const line = 'Vendor fixed 1 of 3 round-1 items · 2 still wrong · 2 changes nobody asked for';
     expect(roundWords({ fixed: 1, still_wrong: 2, new: 0, unrequested: 2, line })).toBe(line);
-    expect(roundWords({ fixed: 1, still_wrong: 2, new: 0, unrequested: 2 })).toBe(line);
+    // Without code's line, the screen says it in the comment letter's round words (#1712).
+    expect(roundWords({ fixed: 1, still_wrong: 2, new: 0, unrequested: 2 })).toBe('Closed 1 of 3 round-1 items · 2 previous comments not addressed · 2 changes nobody asked for');
   });
 });
 
