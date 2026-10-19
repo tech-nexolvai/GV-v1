@@ -27,6 +27,10 @@ ruled, counted and drawn, for a full check and for a typed question alike:
   answer, its counts, the cloud drawing, the report, the CSV, the tracker or the grey and amber
   lists, even when a helper ignores its brief. `other` and an unknown category are in scope only
   when every product is. The count dropped is kept in the trust block (`product_scope`), not shown.
+  The Not-compared rows that are not findings (the sheet gaps, the finish check's notes, the simple
+  full check's labels with no architect size) are cut the same way (`scoped_gaps`).
+- **The longest phrase wins** when a text is read for its products: "vanity top" is a countertop's
+  phrase, so the "vanity" inside it does not also name a cabinet (`named_products`).
 - **Cost.** An area whose every page names only out-of-scope products (by the registry's `words`,
   read from the pages' printed text) is not sent to a helper (`outside_unit`); a page that names
   no product, or even hints at one in scope (its `hints`: "sink" for countertops), still goes. The
@@ -49,20 +53,32 @@ __all__ = [
     "CODE_MADE",
     "ProductScope",
     "category_for",
+    "filed_under",
     "final_blocks",
+    "main_product",
     "named_products",
     "no_rules_note",
     "outside_unit",
     "refiled",
     "scaled_price",
     "scoped_document",
+    "scoped_gaps",
     "scoped_loader",
 ]
 
 #: Who makes a finding by code (not an AI that was told the products): their "other" items may get a
 #: product's category from their words (`category_for`).
 CODE_MADE: Final = frozenset(
-    {"ledger", "consistency", "tag_reader", "gv_review", "code", "architect_items", "pairs"}
+    {
+        "ledger",
+        "consistency",
+        "tag_reader",
+        "gv_review",
+        "code",
+        "architect_items",
+        "pairs",
+        "simple_check",
+    }
 )
 _NOT_WORD: Final = re.compile(r"[^0-9a-z]+")
 
@@ -127,11 +143,31 @@ class ProductScope:
 # ---- which product a text names ----------------------------------------------------------------
 
 
-def _uses(plain: str, words: Iterable[str]) -> bool:
+def _spans(plain: str, word: str) -> list[tuple[int, int]]:
+    """Where a registry word or phrase stands in the plain text, as (start, end) of its spaced
+    form (" vanity top ")."""
+    spaced = _plain(word)
+    if spaced.strip() == "":
+        return []
+    out: list[tuple[int, int]] = []
+    at = plain.find(spaced)
+    while at >= 0:
+        out.append((at, at + len(spaced)))
+        at = plain.find(spaced, at + 1)
+    return out
+
+
+def _uses(plain: str, words: Iterable[str], shadows: Sequence[tuple[int, int]] = ()) -> bool:
+    """Whether the text uses one of the words. A word standing only inside a LONGER phrase of
+    another product (`shadows`) does not count: "vanity top" is a countertop's, so the "vanity"
+    in it is not a cabinet's (the longest phrase wins)."""
     joined = plain.replace(" ", "")
     for word in words:
         spaced = _plain(word)
-        if spaced in plain or (" " in spaced.strip() and spaced.replace(" ", "") in joined):
+        for start, end in _spans(plain, word):
+            if not any(s <= start and end <= e and e - s > end - start for s, e in shadows):
+                return True
+        if " " in spaced.strip() and spaced.replace(" ", "") in joined:
             return True
     return False
 
@@ -140,25 +176,102 @@ def named_products(text: object, *, hints: bool = False, every: bool = False) ->
     """The active products whose registry `words` the text uses ("toe kick", "toekick" and "Toe-
     kick" all count); with `hints`, their `hints` too ("sink": maybe a countertop); with `every`,
     the products not active yet too (a pendant light is lighting, never a cabinet). A product
-    with no words is never named."""
+    with no words is never named. The longest phrase wins: a word that stands only inside a
+    longer phrase of another product names that product alone ("vanity top" is a countertop's,
+    not also a cabinet's "vanity")."""
     plain = _plain(text)
     known = registry()
-    return {
-        product.id
-        for product in (known.products if every else known.active())
-        if _uses(plain, product.words) or (hints and _uses(plain, product.hints))
+    products = list(known.products if every else known.active())
+
+    def phrases(product: Any) -> list[str]:
+        return [*product.words, *(product.hints if hints else ())]
+
+    found: dict[str, list[tuple[int, int]]] = {
+        product.id: [span for word in phrases(product) for span in _spans(plain, word)]
+        for product in products
     }
+    named: set[str] = set()
+    for product in products:
+        shadows = [span for other, spans in found.items() if other != product.id for span in spans]
+        if _uses(plain, product.words, shadows) or (hints and _uses(plain, product.hints, shadows)):
+            named.add(product.id)
+    return named
 
 
-def category_for(finding: Mapping[str, Any]) -> str:
-    """A finding's category for the scope: its own when it is an active product; for a code-made
-    `other` item (`CODE_MADE`), the one product its name's words name (two or none: `other`)."""
+def main_product(text: object) -> str | None:
+    """The one active product a drawing's or a page's printed words are mostly about: the product
+    whose registry `words` stand there most often (each phrase counted where it stands, the longest
+    phrase winning), when one has strictly the most; else `None`. A run of base cabinets with its
+    fillers and drawers is a cabinet run even when its top is named once; hints never count."""
+    plain = _plain(text)
+    known = registry()
+    products = list(known.active())
+    found = {p.id: [span for word in p.words for span in _spans(plain, word)] for p in products}
+    counts: dict[str, int] = {}
+    for product in products:
+        shadows = [span for other, spans in found.items() if other != product.id for span in spans]
+        counts[product.id] = sum(
+            1
+            for start, end in found[product.id]
+            if not any(s <= start and end <= e and e - s > end - start for s, e in shadows)
+        )
+    ranked = sorted(counts.items(), key=lambda kv: -kv[1])
+    if not ranked or ranked[0][1] == 0 or (len(ranked) > 1 and ranked[1][1] == ranked[0][1]):
+        return None
+    return ranked[0][0]
+
+
+def _own_name(item: object) -> str:
+    """An item's own words: its name after the area's "Area: " (the area is the page's words)."""
+    name = " ".join(str(item or "").split())
+    _head, sep, rest = name.partition(": ")
+    return rest if sep and rest else name
+
+
+def _words_of(page_text: str | Callable[[], str]) -> str:
+    return page_text() if callable(page_text) else page_text
+
+
+def filed_under(finding: Mapping[str, Any], page_text: str | Callable[[], str] = "") -> set[str]:
+    """The products an item's words file it under (orchestrator, 2026-10-18 and 2026-10-19: an
+    outlet or a string on a cabinet run is a cabinet item), the first step that names any:
+
+    1. its own name, after the area ("Vanity top width" is a countertop's, whatever the area is
+       called): the registry's words and hints ("upper outlet", "top of counter"; "counter /
+       cabinets tags" names both);
+    2. its whole name's words ("Countertop: overall length");
+    3. its other words (why, both values, the question and help it gives);
+    4. the main product of its page's printed words and area title (`main_product`: a page of
+       base cabinets with fillers and drawers is a cabinet run);
+    5. its page's words and hints (several products may stand there).
+
+    Products not active yet count too (a pendant light is lighting). Empty: no product."""
+    own = _own_name(finding.get("item"))
+    for text, hints in (
+        (own, True),
+        (str(finding.get("item") or ""), False),
+        (_own_text(finding), True),
+    ):
+        named = named_products(text, hints=hints, every=True)
+        if named:
+            return named
+    words = _words_of(page_text)
+    main = main_product(words)
+    if main is not None:
+        return {main}
+    return named_products(words, hints=True, every=True)
+
+
+def category_for(finding: Mapping[str, Any], page_text: str | Callable[[], str] = "") -> str:
+    """A finding's category when every product is in scope: its own when it is an active product;
+    for a code-made `other` item (`CODE_MADE`), the one product its words, else its page's main
+    product, file it under (`filed_under`; two or none: `other`)."""
     category = str(finding.get("category") or OTHER_CATEGORY)
     if category in registry().active_ids():
         return category
     if str(finding.get("created_by") or "") not in CODE_MADE:
         return category
-    named = named_products(finding.get("item"))
+    named = filed_under(finding, page_text)
     return next(iter(named)) if len(named) == 1 else category
 
 
@@ -193,12 +306,9 @@ def refiled(
     A finding of an active product is kept when that product is in scope. With every product in
     scope nothing is dropped (a code-made "other" item still gets its one product: `category_for`).
     Otherwise an "other" or unknown item is re-filed before it is dropped (orchestrator,
-    2026-10-18: a pull size or a finish tag the AI filed as "other" is a cabinet item). Code reads
-    the registry's `words` and `hints` of every product, in order, until something matches:
-
-    1. the item's name ("Pendant light count" is lighting, "Pull size" a cabinet item);
-    2. its other words (why, both values, the question and help it gives);
-    3. the words printed on its page and its area's title (`page_text`, read only then).
+    2026-10-18: a pull size or a finish tag the AI filed as "other" is a cabinet item; 2026-10-19:
+    an outlet or a string on a cabinet run is a cabinet item), by `filed_under`: its own name after
+    the area, its whole name, its other words, its page's main product, its page's words.
 
     One product matched: filed there, kept only when it is in scope (a product not active yet never
     is). Several matched: kept, under the first one in scope, when one is ("counter / cabinets
@@ -207,13 +317,8 @@ def refiled(
     if category in registry().active_ids():
         return category if scope.allows(category) else None
     if scope.every:
-        return category_for(finding)
-    matched = named_products(finding.get("item"), hints=True, every=True)
-    if not matched:
-        matched = named_products(_own_text(finding), hints=True, every=True)
-    if not matched:
-        words = page_text() if callable(page_text) else page_text
-        matched = named_products(words, hints=True, every=True)
+        return category_for(finding, page_text)
+    matched = filed_under(finding, page_text)
     picked = [product for product in scope.products if product in matched]
     return picked[0] if picked else None
 
@@ -249,6 +354,55 @@ def final_blocks(
         ):
             kept[n] = {**block, "trust": {**trust, "product_scope": note}}
     return kept, total
+
+
+#: A finish or material code in a row's words ("LA-002", "QZ 1"): its family is the capital letters.
+_TAG_CODE: Final = re.compile(r"\b([A-Z]{2,5})\s?-?\s?\d{1,4}[A-Z]?\b")
+
+
+def _family_product(text: str) -> str | None:
+    """The one product the finish codes in the words belong to (the registry's `tag_families`:
+    LA-002 and WD-01 are a cabinet's), or `None` when they name none or several."""
+    families = {found.group(1) for found in _TAG_CODE.finditer(text)}
+    owners = {
+        product.id
+        for product in registry().products
+        for family in product.tag_families
+        if family in families
+    }
+    return next(iter(owners)) if len(owners) == 1 else None
+
+
+def scoped_gaps(
+    gaps: Iterable[Mapping[str, Any]],
+    scope: ProductScope,
+    page_words: Callable[[int], str] | None = None,
+) -> tuple[list[dict[str, Any]], int]:
+    """The set's Not-compared rows that are not findings (the vendor consistency check's sheet
+    gaps, the finish check's notes and codes, the simple full check's labels the architect gives
+    no size for), cut to the products in scope exactly as a finding is (`refiled`): a row's own
+    product when it has one (`category`), else the one its finish codes belong to, else re-filed
+    from its item, then its words, then its page's words. All: every row. Returns the rows kept
+    and how many were left out."""
+    rows = [dict(gap) for gap in gaps if isinstance(gap, Mapping)]
+    if scope.every:
+        return rows, 0
+    kept: list[dict[str, Any]] = []
+    dropped = 0
+    for gap in rows:
+        what = str(gap.get("what") or "")
+        item = str(gap.get("item") or what)
+        category = str(gap.get("category") or "") or _family_product(what) or OTHER_CATEGORY
+        page = gap.get("page")
+        words: str | Callable[[], str] = ""
+        if page_words is not None and isinstance(page, int):
+            words = lambda page=page: page_words(page)
+        finding = {"category": category, "item": item, "why": what, "question": gap.get("needs")}
+        if refiled(finding, scope, words) is None:
+            dropped += 1
+            continue
+        kept.append(gap)
+    return kept, dropped
 
 
 # ---- GV Review's recorded results -----------------------------------------------------------------

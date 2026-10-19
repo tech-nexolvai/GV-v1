@@ -233,7 +233,7 @@ from app.review.assistant.full_check_plan import (
 from app.review.assistant.full_check_specialists import specialist_system
 from app.review.assistant.ledger import LEDGER_TOOL_NAMES, ReadingLedger, recorded_results_check
 from app.review.assistant.pair_findings import add_to_answer as add_code_pairs
-from app.review.assistant.product_scope import ProductScope, outside_unit
+from app.review.assistant.product_scope import ProductScope, outside_unit, scoped_gaps
 from app.review.assistant.proof import proof_counts, vendor_facing
 from app.review.assistant.sandbox import SET_PACK, SKILLS, UPLOADS, SandboxRefused
 from app.review.assistant.send_package import (
@@ -2779,10 +2779,14 @@ class ChatEngine:
                         (workspace.files / file_id).unlink(missing_ok=True)
                     self._add_text(f"*The {what} could not be made for this answer.*")
         # The list also names the set's own gaps code found (the finish check, #1623; the vendor
-        # consistency check), apart from the answer's items.
-        listed = self._not_compared_files(
-            [*nothing, *not_compared.gap_rows([*self.consistency_gaps, *self.extra_gaps])]
+        # consistency check), apart from the answer's items: those of the products in scope only
+        # (the strict scope: a cabinet note is not listed in a countertop check).
+        set_gaps, left_out = scoped_gaps(
+            [*self.consistency_gaps, *self.extra_gaps], self.product_scope, self.page_words
         )
+        if left_out:
+            _log.info("assistant chat: %d set gaps outside the product scope left out", left_out)
+        listed = self._not_compared_files([*nothing, *not_compared.gap_rows(set_gaps)])
         names += [name for name, _path in listed]
         # The send-ready package (#1622) holds every file just made, the Not-compared list too.
         context = worked.get("context")
