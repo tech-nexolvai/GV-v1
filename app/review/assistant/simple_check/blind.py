@@ -35,6 +35,7 @@ import json
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 from uuid import uuid4
@@ -369,9 +370,13 @@ def look_all(
     """Every red candidate after its blind look (`verify.with_blind`), in the order given; a few
     at once. A candidate the look could not reach stays Not compared with the reason."""
 
+    timings = getattr(engine, "timings", None)
+
     def one(pair: tuple[Verified, Item]) -> Verified:
         verified, item = pair
-        answer, why = look(engine, verified, item, settings)
+        # Timed and charged to the blind phase on this worker thread (the timings are per thread).
+        with timings.phase("blind") if timings is not None else nullcontext():
+            answer, why = look(engine, verified, item, settings)
         done = with_blind(verified, answer, why)
         if on_done is not None:
             try:

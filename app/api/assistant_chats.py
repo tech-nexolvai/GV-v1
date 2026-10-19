@@ -433,6 +433,7 @@ def assistant_models(
         message_cap_usd=cost_text(int(settings.assistant_message_cap_usd * _MICROS)),
         package_cap_usd=cost_text(int(settings.assistant_package_cap_usd * _MICROS)),
         package_spent_usd=cost_text(spent),
+        full_check_mode=settings.assistant_full_check_mode,
     )
 
 
@@ -1138,6 +1139,30 @@ def _record_products(session: Session, records: Sequence[Any]) -> dict[str, str]
     return out
 
 
+def _simple_options(settings: Settings, body: ChatMessageIn) -> dict[str, Any] | None:
+    """The simple full check's options as plain data (`simple_check.run.SimpleOptions.of`): this
+    module never imports the check itself (it draws pictures). The message's own compare model and
+    effort, when given, are this run's for every drawing (the hard ones too: a paid pilot)."""
+    if settings.assistant_full_check_mode != "simple":
+        return None
+    model = body.compare_model or settings.assistant_simple_compare_model
+    effort = body.compare_effort or settings.assistant_simple_compare_effort
+    return {
+        "compare": {
+            "model": model,
+            "effort": effort,
+            "hard_model": body.compare_model or settings.assistant_simple_hard_model,
+            "hard_effort": body.compare_effort or settings.assistant_simple_hard_effort,
+            "parallel": settings.assistant_simple_parallel,
+            "max_tokens": settings.assistant_simple_max_tokens,
+            "retries": settings.assistant_simple_retries,
+        },
+        "blind_model": settings.assistant_simple_blind_model,
+        "blind_effort": settings.assistant_simple_blind_effort,
+        "pilot": body.pilot,
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class _Message:
     job: MessageJob
@@ -1172,6 +1197,14 @@ def _message(
         # The reason is in `GET /assistant/models`; a 5xx body never carries details.
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=runtime.choice.reason
+        )
+    simple_only = body.pilot is not None or body.compare_model or body.compare_effort
+    if simple_only and settings.assistant_full_check_mode != "simple":
+        raise CodedHTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "invalid_request",
+            "pilot, compare_model and compare_effort go only with the simple full check "
+            "(GV_ASSISTANT_FULL_CHECK_MODE=simple).",
         )
     revision_id = _latest_revision_id(session, package.id)
     factory = _factory(session)
@@ -1242,6 +1275,8 @@ def _message(
             roster=settings.assistant_full_check_roster,
             full_check_cap_micros=int(settings.assistant_full_check_cap_usd * _MICROS),
             pairing_proof=settings.assistant_pairing_proof,
+            full_check_mode=settings.assistant_full_check_mode,
+            simple=_simple_options(settings, body) if mode == "full_check" else None,
             plan_answers=(
                 None
                 if mode != "full_check" or not body.plan_answers

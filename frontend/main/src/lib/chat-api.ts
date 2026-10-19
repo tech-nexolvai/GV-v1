@@ -198,6 +198,9 @@ export interface ChatProgress {
   right_so_far: number;
   /** Time left at the pace so far; null before any page is done. */
   eta_seconds: number | null;
+  /** The simple full check (#1665): vendor drawings compared so far, of its work list. */
+  drawings_done?: number | null;
+  drawings_total?: number | null;
 }
 
 /**

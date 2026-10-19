@@ -154,12 +154,17 @@ def _workers() -> int:
 
 
 def _executor() -> ThreadPoolExecutor:
-    global _pool, _pool_size
     with _pool_lock:
-        if _pool is None:
-            _pool_size = _workers()
-            _pool = ThreadPoolExecutor(max_workers=_pool_size, thread_name_prefix="gv-page-cache")
-        return _pool
+        return _executor_locked()
+
+
+def _executor_locked() -> ThreadPoolExecutor:
+    """The pool, made now when there is none; the caller holds `_pool_lock`."""
+    global _pool, _pool_size
+    if _pool is None:
+        _pool_size = _workers()
+        _pool = ThreadPoolExecutor(max_workers=_pool_size, thread_name_prefix="gv-page-cache")
+    return _pool
 
 
 def pdf_key(pdf: Path) -> str:
@@ -310,20 +315,30 @@ def render_page(folder: Path, pdf: Path, page: int) -> Path | None:
     return _submit(folder, pdf, page).result()
 
 
+def _stored(stored: Path) -> Future[Path | None]:
+    done: Future[Path | None] = Future()
+    done.set_result(stored)
+    return done
+
+
 def _submit(folder: Path, pdf: Path, page: int) -> Future[Path | None]:
+    """The page's drawing: stored already, the one running, or started now. Looking for a running
+    one and starting it are one step under the lock: two askers at once used to both find none
+    and both start a drawing of the same page (the second only replaced in `_jobs`, its drawing
+    still made: the page drawn twice, a 300-dpi render each)."""
     stored = _page_folder(folder, pdf, page)
     if (stored / "meta.json").is_file():
-        done: Future[Path | None] = Future()
-        done.set_result(stored)
-        return done
+        return _stored(stored)
     job_key = (folder.resolve(), pdf_key(pdf), page)
     with _pool_lock:
         running = _jobs.get(job_key)
         if running is not None:
             return running
-    job = _executor().submit(_render, folder, pdf, page)
-    with _pool_lock:
-        running = _jobs.setdefault(job_key, job)
+        if (stored / "meta.json").is_file():
+            # Drawn and forgotten since the first look.
+            return _stored(stored)
+        job = _executor_locked().submit(_render, folder, pdf, page)
+        _jobs[job_key] = job
 
     def forget(_: Future[Path | None]) -> None:
         with _pool_lock:
@@ -331,7 +346,7 @@ def _submit(folder: Path, pdf: Path, page: int) -> Future[Path | None]:
                 del _jobs[job_key]
 
     job.add_done_callback(forget)
-    return running
+    return job
 
 
 def prefetch(folder: Path, pdf: Path, pages: Iterable[int]) -> None:

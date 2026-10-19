@@ -2535,6 +2535,16 @@
             "title": "Available",
             "type": "boolean"
           },
+          "full_check_mode": {
+            "default": "roster",
+            "description": "Which full check runs (`GV_ASSISTANT_FULL_CHECK_MODE`): the roster of specialists, or the simple check (one compare call per vendor drawing, #1665).",
+            "enum": [
+              "roster",
+              "simple"
+            ],
+            "title": "Full Check Mode",
+            "type": "string"
+          },
           "message_cap_usd": {
             "title": "Message Cap Usd",
             "type": "string"
@@ -6329,6 +6339,41 @@
         "additionalProperties": false,
         "description": "One message from the reviewer, with the model, effort and thinking they picked.\n\n`mode: full_check` (CONTRACT4) runs the app's own fixed whole-set check instead of a typed\nquestion (`text` is then not needed: the question shown is \"Full check \u00b7 Countertops \u00b7 High\neffort\"). `products`: the products picked in the composer (default: the set's own), each an\nACTIVE product id of the product registry (`GET /products`, #1547).",
         "properties": {
+          "compare_effort": {
+            "anyOf": [
+              {
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The simple full check only: this run's compare call effort, for every drawing.",
+            "title": "Compare Effort"
+          },
+          "compare_model": {
+            "anyOf": [
+              {
+                "enum": [
+                  "claude-sonnet-5-5",
+                  "claude-opus-5-5"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The simple full check only (#1665): this run's compare call model, for every drawing (the hard ones too); none: the settings' (`GV_ASSISTANT_SIMPLE_COMPARE_MODEL`).",
+            "title": "Compare Model"
+          },
           "continue_from": {
             "anyOf": [
               {
@@ -6367,6 +6412,20 @@
             "minLength": 1,
             "title": "Model",
             "type": "string"
+          },
+          "pilot": {
+            "anyOf": [
+              {
+                "maximum": 200.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The simple full check only (#1665): compare only the first N drawings of the work list (a paid pilot); the rest are listed as left out on purpose.",
+            "title": "Pilot"
           },
           "plan_answers": {
             "anyOf": [
@@ -6470,7 +6529,8 @@
                       "thinking": "#/components/schemas/ChatThinkingBlock",
                       "trust": "#/components/schemas/ChatTrustBlock",
                       "understood": "#/components/schemas/ChatUnderstoodBlock",
-                      "unknowns": "#/components/schemas/ChatUnknownsBlock"
+                      "unknowns": "#/components/schemas/ChatUnknownsBlock",
+                      "work_items": "#/components/schemas/ChatWorkItemsBlock"
                     },
                     "propertyName": "type"
                   },
@@ -6513,6 +6573,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ChatProgressBlock"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChatWorkItemsBlock"
                     },
                     {
                       "$ref": "#/components/schemas/ChatResumeBlock"
@@ -7155,6 +7218,30 @@
           "decision_so_far": {
             "title": "Decision So Far",
             "type": "integer"
+          },
+          "drawings_done": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The simple full check (#1665): vendor drawings compared so far ('Comparing drawing 12 of 36'); null in the roster check.",
+            "title": "Drawings Done"
+          },
+          "drawings_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The simple full check: drawings in its work list.",
+            "title": "Drawings Total"
           },
           "eta_seconds": {
             "anyOf": [
@@ -9122,6 +9209,98 @@
           "words"
         ],
         "title": "ChatVerifiedValueOut",
+        "type": "object"
+      },
+      "ChatWorkItemOut": {
+        "description": "One vendor drawing of the simple full check's work list (#1665): compared (`answered`),\n`failed` with the reason (never dropped), or `skipped` by code with its reason.",
+        "properties": {
+          "cost_usd": {
+            "default": "0",
+            "description": "Its compare call's estimated cost.",
+            "title": "Cost Usd",
+            "type": "string"
+          },
+          "id": {
+            "description": "The drawing's id, `p23.v1` (page 23, round 1).",
+            "title": "Id",
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The model that answered.",
+            "title": "Model"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "round": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Round"
+          },
+          "status": {
+            "enum": [
+              "answered",
+              "failed",
+              "skipped"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "page",
+          "status"
+        ],
+        "title": "ChatWorkItemOut",
+        "type": "object"
+      },
+      "ChatWorkItemsBlock": {
+        "properties": {
+          "type": {
+            "const": "work_items",
+            "title": "Type",
+            "type": "string"
+          },
+          "work_items": {
+            "items": {
+              "$ref": "#/components/schemas/ChatWorkItemOut"
+            },
+            "title": "Work Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "type",
+          "work_items"
+        ],
+        "title": "ChatWorkItemsBlock",
         "type": "object"
       },
       "CheckOut": {

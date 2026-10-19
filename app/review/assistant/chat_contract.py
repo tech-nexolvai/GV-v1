@@ -78,6 +78,8 @@ __all__ = [
     "ChatUnderstoodScopeOut",
     "ChatUnknownOut",
     "ChatUnknownsBlock",
+    "ChatWorkItemOut",
+    "ChatWorkItemsBlock",
 ]
 
 MAX_MESSAGE_TEXT = 8000
@@ -187,11 +189,31 @@ class ChatMessageIn(BaseModel):
         description="#1551: the reviewer's correction of how the app understood the question "
         "(Edit on the 'Understood as' line); the question's words are sent unchanged in `text`.",
     )
+    pilot: int | None = Field(
+        default=None,
+        ge=1,
+        le=200,
+        description="The simple full check only (#1665): compare only the first N drawings of the "
+        "work list (a paid pilot); the rest are listed as left out on purpose.",
+    )
+    compare_model: Literal["claude-sonnet-5-5", "claude-opus-5-5"] | None = Field(
+        default=None,
+        description="The simple full check only (#1665): this run's compare call model, for every "
+        "drawing (the hard ones too); none: the settings' (`GV_ASSISTANT_SIMPLE_COMPARE_MODEL`).",
+    )
+    compare_effort: Literal["low", "medium", "high", "xhigh", "max"] | None = Field(
+        default=None,
+        description="The simple full check only: this run's compare call effort, for every drawing.",
+    )
 
     @model_validator(mode="after")
     def _a_question_or_a_full_check(self) -> ChatMessageIn:
         if self.mode == "chat" and not self.text.strip():
             raise ValueError("text is needed for a chat message")
+        if self.pilot is not None and self.mode != "full_check":
+            raise ValueError("pilot goes with a full check only")
+        if (self.compare_model or self.compare_effort) and self.mode != "full_check":
+            raise ValueError("compare_model and compare_effort go with a full check only")
         if self.plan_answers is not None:
             if self.mode != "full_check":
                 raise ValueError("plan_answers go with a full check only")
@@ -1369,6 +1391,36 @@ class ChatProgressOut(BaseModel):
     eta_seconds: int | None = Field(
         default=None, description="Time left at the pace so far; null before any page is done."
     )
+    drawings_done: int | None = Field(
+        default=None,
+        description="The simple full check (#1665): vendor drawings compared so far "
+        "('Comparing drawing 12 of 36'); null in the roster check.",
+    )
+    drawings_total: int | None = Field(
+        default=None, description="The simple full check: drawings in its work list."
+    )
+
+
+class ChatWorkItemOut(BaseModel):
+    """One vendor drawing of the simple full check's work list (#1665): compared (`answered`),
+    `failed` with the reason (never dropped), or `skipped` by code with its reason."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str = Field(description="The drawing's id, `p23.v1` (page 23, round 1).")
+    page: int
+    round: int | None = None
+    status: Literal["answered", "failed", "skipped"]
+    reason: str | None = None
+    model: str | None = Field(default=None, description="The model that answered.")
+    cost_usd: str = Field(default="0", description="Its compare call's estimated cost.")
+
+
+class ChatWorkItemsBlock(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["work_items"]
+    work_items: list[ChatWorkItemOut]
 
 
 class ChatProgressBlock(BaseModel):
@@ -1563,6 +1615,7 @@ ChatBlock = Annotated[
     | ChatUnknownsBlock
     | ChatScopeBlock
     | ChatProgressBlock
+    | ChatWorkItemsBlock
     | ChatResumeBlock
     | ChatResolverBlock
     | ChatUnderstoodBlock
@@ -1780,6 +1833,11 @@ class AssistantModelsOut(BaseModel):
     message_cap_usd: str
     package_cap_usd: str
     package_spent_usd: str
+    full_check_mode: Literal["roster", "simple"] = Field(
+        default="roster",
+        description="Which full check runs (`GV_ASSISTANT_FULL_CHECK_MODE`): the roster of "
+        "specialists, or the simple check (one compare call per vendor drawing, #1665).",
+    )
 
 
 class ChatCancelOut(BaseModel):

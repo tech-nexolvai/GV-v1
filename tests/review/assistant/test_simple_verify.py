@@ -269,7 +269,6 @@ def test_a_candidate_is_never_red_without_the_blind_look() -> None:
         ({"pick": None}, "chose no architect dimension"),
         ({"verdict": "different_points"}, "measure different points"),
         ({"verdict": "unsure"}, "not sure"),
-        ({"vendor_ink_black": "no"}, "in colour"),
         ({"vendor_to": "underside of counter", "architect_to": "top of counter"}, "different"),
         ({"vendor_to": "ceiling"}, "room context"),
     ],
@@ -406,14 +405,25 @@ def test_the_architect_label_must_be_on_the_items_architect_drawing() -> None:
     assert "other areas" in found.reason
 
 
-def test_view_types_that_differ_block_red() -> None:
+def test_view_titles_never_block_the_ends_decide() -> None:
+    """A drawing's titles do not say which view a dimension is in (a vendor drawing titled only
+    "SECTION AT" holds a plan): they are information; different ends block instead."""
     plan = Item(
         "p2.v2",
         Region(FILE, 2, tuple(R2_HALF), 2, "plan"),  # type: ignore[arg-type]
         (Region(FILE, 1, tuple(ARCH_HALF), None, "elevation"),),  # type: ignore[arg-type]
     )
     found = _one(_pair("p2.D1", "p1.D1"), plan)
-    assert found.outcome == "not_compared" and "a plan against a elevation" in found.reason
+    view = next(c for c in found.checks if c.name == "view")
+    assert found.outcome == "candidate" and view.why == "titled plan and elevation: the ends decide"
+    depth = _one(
+        _pair("p2.D3", "p1.D4", ends=("back wall", "front edge of top", "floor", "top of counter")),
+        plan,
+    )
+    assert depth.outcome == "not_compared" and depth.reason_code in (
+        "different_reference",
+        "not_proved",
+    )
 
 
 def test_the_newest_round_printing_the_same_value_lets_round_1_through() -> None:
@@ -427,10 +437,20 @@ def test_the_newest_round_printing_the_same_value_lets_round_1_through() -> None
 
 
 def test_gv_ink_blocks_red_only_by_the_labels_own_ink() -> None:
-    coloured = _one(_pair("p2.D1", "p1.D1"), ink=lambda label: (120, 0.6))
+    # A label code read from the vendor's black or grey layer is the vendor's, whatever GV drew
+    # over it (a coloured note covering it looks coloured in a picture).
+    covered = _one(_pair("p2.D1", "p1.D1"), ink=lambda label: (120, 1.0))
+    assert covered.outcome == "candidate"
+    # Any other label's own spot is looked at.
+    docs = _documents()
+    docs["dims"]["pages"][1]["labels"][0]["route"] = "derived"
+    pack = Pack.from_documents(main_file=FILE, **docs)
+    coloured = _one(_pair("p2.D1", "p1.D1"), pack=pack, ink=lambda label: (120, 0.6))
     assert coloured.outcome == "not_compared" and "GV's colour" in coloured.reason
-    unknown = _one(_pair("p2.D1", "p1.D1"), ink=None)
+    unknown = _one(_pair("p2.D1", "p1.D1"), pack=pack, ink=None)
     assert unknown.outcome == "not_compared" and "could not be looked at" in unknown.reason
+    black = _one(_pair("p2.D1", "p1.D1"), pack=pack, ink=lambda label: BLACK)
+    assert black.outcome == "candidate"
 
 
 def test_a_label_inside_a_gv_note_box_is_no_longer_blocked() -> None:

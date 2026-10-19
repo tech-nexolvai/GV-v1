@@ -692,6 +692,10 @@ class MessageJob:
     """The roster full check's fixed price (its whole cap); `None`: the message cap."""
     pairing_proof: str = "ai_pair_plus_code"
     """What proves a pairing for a red cloud (`full_check_roster`)."""
+    full_check_mode: str = "roster"
+    """Which full check runs: `roster` or `simple` (`simple_check/`, #1665)."""
+    simple: Mapping[str, Any] | None = None
+    """The simple check's options (`simple_check.run.SimpleOptions.of`), with the pilot's size."""
     plan_answers: Mapping[str, str] | None = None
     """The reviewer's answers to the plan check (#1569), kept with the set pack before the run."""
     sharpen_model: bool = False
@@ -1084,9 +1088,14 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             lead_max_turns=job.lead_max_turns,
             helper_max_turns=job.helper_max_turns,
             max_parallel_agents=job.max_parallel_agents,
+            # The roster's fixed price is its whole cap; the simple check has no fixed price, only
+            # the per-answer runaway guard (Anant, 2026-10-19).
             message_cap_micros=(
                 job.full_check_cap_micros
-                if job.mode == "full_check" and job.roster and job.full_check_cap_micros
+                if job.mode == "full_check"
+                and job.roster
+                and job.full_check_cap_micros
+                and job.full_check_mode != "simple"
                 else job.message_cap_micros
             ),
             package_cap_micros=job.package_cap_micros,
@@ -1096,6 +1105,8 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             drawn_helpers=job.drawn_helpers,
             roster=job.roster,
             pairing_proof=job.pairing_proof,
+            full_check_mode=job.full_check_mode,
+            simple=job.simple,
             identity=job.identity,
             numbering=numbering(job.factory, job.package_id, job.chat_id, run.message_id),
         ),

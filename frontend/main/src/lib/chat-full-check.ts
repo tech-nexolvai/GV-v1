@@ -184,9 +184,11 @@ export function progressWords(
   // #1524: the server's own progress when it sends it.
   const live = message.progress;
   if (live) {
-    if (live.phase === 'reading' && !live.pages_done) return 'Reading the drawings…';
+    if (live.phase === 'reading' && !live.pages_done && !live.drawings_total) return 'Reading the drawings…';
     if (live.phase === 'writing') return `Writing the summary and the cloud drawing · ${live.wrong_so_far} wrong · ${live.decision_so_far} to decide`;
-    const at = live.pages_total ? `Checking page ${Math.min(live.pages_done + 1, live.pages_total)} of ${live.pages_total}` : `Checking · ${live.pages_done} pages done`;
+    // #1665: the simple full check counts drawings, not pages.
+    const drawings = live.drawings_total ? `Comparing drawing ${Math.min((live.drawings_done ?? 0) + 1, live.drawings_total)} of ${live.drawings_total}` : null;
+    const at = drawings ?? (live.pages_total ? `Checking page ${Math.min(live.pages_done + 1, live.pages_total)} of ${live.pages_total}` : `Checking · ${live.pages_done} pages done`);
     const left = live.eta_seconds == null ? null : live.eta_seconds < 60 ? 'under a minute left' : `about ${Math.ceil(live.eta_seconds / 60)} min left`;
     return [at, `${live.wrong_so_far} wrong so far`, left].filter(Boolean).join(' · ');
   }
