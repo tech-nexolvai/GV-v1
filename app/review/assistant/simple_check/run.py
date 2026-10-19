@@ -87,15 +87,15 @@ _ORDER: Final = {"red": 0, "not_compared": 1, "right": 2}
 #: Who made a finding the run judges with the code checks (everything but its own).
 _SKIP_JUDGING: Final = frozenset({CREATED_BY})
 _MICROS: Final = 1_000_000
+#: How long the run waits for the set pack to be made (its labels are read by OCR at upload).
+PACK_WAIT_SECONDS: Final = 1800.0
+_PACK_POLL_SECONDS: Final = 2.0
 #: The words a pilot's left-out drawings are skipped with (`_scope_and_pilot`).
 _PILOT: Final = "a pilot run compares only the first"
 #: The next step of a check that did not finish: never "send it to the vendor".
 NOT_FINISHED_NEXT: Final = (
     "Next: finish the check (compare the drawings left) before anything is sent to the vendor."
 )
-#: How long the run waits for the set pack to be made (its labels are read by OCR at upload).
-PACK_WAIT_SECONDS: Final = 1800.0
-_PACK_POLL_SECONDS: Final = 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,12 +194,12 @@ class _Run:
     refused: set[str] = field(default_factory=set)
     """Drawings not started because the runaway guard would have been passed."""
     saved_blind: dict[str, dict[str, Any]] = field(default_factory=dict)
-    blind_skipped: str | None = None
-    """Why the red candidates got no blind look (a stop, no money), when they did not."""
-    blind_skipped_count: int = 0
     blind_failed: int = 0
     """Red candidates whose blind look was asked for but could not be made (the call failed, the
     reply was cut short or not the form): Not compared, said in the summary."""
+    blind_skipped: str | None = None
+    """Why the red candidates got no blind look (a stop, no money), when they did not."""
+    blind_skipped_count: int = 0
 
     # -- the run --
 
