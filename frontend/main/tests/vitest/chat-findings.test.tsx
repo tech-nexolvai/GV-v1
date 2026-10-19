@@ -397,7 +397,7 @@ describe('short answers', () => {
     expect(within(node).queryByText('Thought for 2s')).toBeNull();
     expect(node.querySelector('[data-slot="chat-thinking"]')).toBeNull();
     expect(node.querySelector('[data-slot="chat-markdown"]')?.className).toContain('gap-2');
-    expect(node.querySelector('[data-slot="chat-meta"]')?.textContent).toBe('Claude Opus 5.5 · High effort · $1.72');
+    expect(node.querySelector('[data-slot="chat-meta"]')?.textContent).toBe('Opus 5.5 · High effort · $1.72');
     expect(node.querySelector('[data-slot="chat-findings"], [data-slot="chat-coverage"], [data-slot="chat-trust"]')).toBeNull();
   });
 

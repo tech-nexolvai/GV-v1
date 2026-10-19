@@ -151,7 +151,8 @@ def code_summary(
         first = f"Checked items on {pages}{of} pages ({scope}); pages were not all recorded."
     lines = [
         first,
-        f"{wrong} wrong (proved by code), {right} match, {nothing} with nothing to compare.",
+        # #1717: the screen's words (one meaning each): Wrong / Right / Not compared.
+        f"{wrong} wrong (proved by code), {right} right, {nothing} not compared.",
     ]
     issues = _issue_words([f for f in findings if proof_group(f) == "clouded"])
     lines.append(

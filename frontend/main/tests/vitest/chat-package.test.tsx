@@ -81,7 +81,7 @@ describe('the send-ready package', () => {
     expect(card.textContent).not.toContain('Check report');
   });
 
-  it('comes right after the cloud drawing card in a full-check answer', () => {
+  it('is downloaded from the result head in a full-check answer, once (#1717)', () => {
     const findings = [finding('w1', { item: 'Sink base width', status: 'different' })];
     render(
       <AssistantMessage
@@ -92,9 +92,9 @@ describe('the send-ready package', () => {
       />,
     );
     const node = screen.getByRole('article', { name: 'Answer' });
-    const cloud = node.querySelector('[data-slot="chat-cloud-drawing"]')!;
-    const pkg = node.querySelector('[data-slot="chat-package"]')!;
-    expect(cloud.nextElementSibling).toBe(pkg);
+    const head = within(node).getByRole('region', { name: 'Review result' });
+    expect(head.querySelector('[data-slot="chat-review-action"]')?.textContent).toBe(RESUBMIT.words);
+    expect(head.querySelector('[data-slot="chat-package-download"]')?.getAttribute('href')).toBe(PACKAGE.url);
     // The zip is not shown again as a plain file card.
     expect(node.querySelectorAll(`a[href="${PACKAGE.url}"]`)).toHaveLength(1);
   });

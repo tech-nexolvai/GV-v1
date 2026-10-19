@@ -78,6 +78,7 @@ CODE_MADE: Final = frozenset(
         "architect_items",
         "pairs",
         "simple_check",
+        "filler_range",
     }
 )
 _NOT_WORD: Final = re.compile(r"[^0-9a-z]+")

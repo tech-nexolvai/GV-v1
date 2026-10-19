@@ -970,10 +970,10 @@ def test_every_count_shown_comes_from_the_final_list(
     )
     assert (
         f"{final['wrong']} wrong (proved by code), {final['right']} right, {final['decision']} "
-        "with nothing to compare" in " ".join(report.split())
+        "not compared" in " ".join(report.split())
     )
-    assert f"What's wrong ({final['wrong']})" in report
-    assert f"Nothing to compare ({final['decision']})" in report
+    assert f"Wrong ({final['wrong']})" in report
+    assert f"Not compared ({final['decision']})" in report
     # The zero-click cloud drawing's cover (#1581): the same final list.
     drawing = PdfReader(str(harness.workspace.files / harness.files[0]["id"]))
     cover = drawing.pages[0].extract_text()

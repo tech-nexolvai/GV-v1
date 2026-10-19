@@ -7,7 +7,7 @@
  * message, which then replaces what was built live: a reload and a live answer end up identical.
  */
 
-import type { ChatAccuracy, ChatAgent, ChatBlock, ChatCite, ChatCoverage, ChatEffort, ChatEvent, ChatFile, ChatFinding, ChatFindingUpdate, ChatMessage, ChatMode, ChatModel, ChatProduct, ChatProgress, ChatResolver, ChatResume, ChatReviewAction, ChatScope, ChatStep, ChatStopped, ChatSummary, ChatTask, ChatTrust, ChatUnderstood, ChatUnknown, ChatFallback } from '@/lib/chat-api';
+import type { ChatAccuracy, ChatAgent, ChatBlock, ChatCite, ChatCoverage, ChatEffort, ChatEvent, ChatFile, ChatFinding, ChatFindingUpdate, ChatMessage, ChatMode, ChatModel, ChatPackageState, ChatProduct, ChatProgress, ChatResolver, ChatResume, ChatReviewAction, ChatScope, ChatStep, ChatStopped, ChatSummary, ChatTask, ChatTrust, ChatUnderstood, ChatUnknown, ChatFallback } from '@/lib/chat-api';
 import { CHECK_MODEL } from '@/lib/chat-api';
 import { EFFORT_WORDS } from '@/lib/chat-settings';
 
@@ -73,6 +73,8 @@ export interface ViewMessage {
   understood?: ChatUnderstood | null;
   /** #1622: a full check's review action (server, on read and at `message_end`). */
   review_action?: ChatReviewAction | null;
+  /** #1717: what the full check's package kept (the comment numbers C-01…); from the saved `package` block. */
+  package_state?: ChatPackageState | null;
   /** #1577: the refusal fallback that answered instead of the model asked (the last switch). */
   fallback?: ChatFallback | null;
   cost_usd: string | null;
@@ -207,6 +209,15 @@ export function resumeOf(blocks: readonly ChatBlock[]): ChatResume | null {
 }
 
 /** A saved message, as the screen shows it. A saved answer with words but no blocks shows its words. */
+/** #1717: the newest `package` block of a saved full check (its comment numbers), else null. */
+export function packageStateOf(blocks: readonly ChatBlock[]): ChatPackageState | null {
+  for (let at = blocks.length - 1; at >= 0; at -= 1) {
+    const block = blocks[at];
+    if (block.type === 'package') return block.package ?? null;
+  }
+  return null;
+}
+
 export function fromSaved(message: ChatMessage): ViewMessage {
   const saved = message.blocks ?? [];
   // Findings and coverage are drawn by the screen in their own places, not in the order of the work.
@@ -245,6 +256,7 @@ export function fromSaved(message: ChatMessage): ViewMessage {
     corrections: correctionsOf(saved),
     understood: message.understood ?? understoodOf(saved),
     review_action: message.review_action ?? null,
+    package_state: packageStateOf(saved),
     fallback: fallbackOf(saved),
     cost_usd: message.cost_usd ?? null,
     stopped: message.stopped ?? null,
@@ -694,6 +706,11 @@ export function messageCost(value: string | null | undefined): string | null {
 }
 
 /** The small line under a finished answer: "Claude Opus 5.5 · High effort · $1.72". */
+/** "Claude Opus 5.5" → "Opus 5.5": a model said without the maker's name. */
+function shortName(label: string): string {
+  return label.replace(/^Claude\s+/i, '') || label;
+}
+
 export function footerWords(
   message: Pick<ViewMessage, 'model' | 'effort' | 'cost_usd'> & Partial<Pick<ViewMessage, 'scope'>>,
   models: readonly Pick<ChatModel, 'id' | 'label'>[] | null,
@@ -702,7 +719,8 @@ export function footerWords(
   const scope = message.scope?.products?.length && !message.scope.all_products ? `Checked: ${message.scope.products_label ?? message.scope.products.join(', ')}` : null;
   return [
     scope,
-    modelLabel(message.model, models),
+    // #1717: the model's short name ("Opus 5.5"): the product is GV Review, never "Claude".
+    shortName(modelLabel(message.model, models)),
     message.effort ? `${EFFORT_WORDS[message.effort]} effort` : null,
     // A code-only answer (#1584) costs nothing; the server's "0.00" would read "<$0.01".
     message.model === CHECK_MODEL ? '$0' : messageCost(message.cost_usd),

@@ -7,15 +7,16 @@ import { ActivityRow, TaskChecklist } from '@/components/chat/chat-activity';
 import { CoverageStrip } from '@/components/chat/chat-coverage';
 import { EvidenceViewer } from '@/components/chat/chat-evidence';
 import { FindingsSections, type DecisionProps } from '@/components/chat/chat-findings';
-import { FullCheckFiles, FullCheckProgress, PackageCard, ResultNumbers, type CloudReview } from '@/components/chat/chat-full-check';
+import { FullCheckProgress, type CloudReview } from '@/components/chat/chat-full-check';
+import { FullCheckResult } from '@/components/chat/chat-result';
 import { ConfidenceLine, HowChecked } from '@/components/chat/chat-trust';
 import { ChatMarkdown } from '@/components/chat/chat-markdown';
 import { Collapse, CopyButton, GVSpark, Shimmer, Spark, Spinner, type SparkState } from '@/components/chat/chat-motion';
 import { chatPaths, type ChatEffort, type ChatFile, type ChatFinding, type ChatFindingUpdate, type ChatModel, type FindingDecision, type FindingDecisionValue } from '@/lib/chat-api';
-import { coverageCounts, findingCounts, isNarrowAnswer, isShortAnswer, NO_FILTER, sectionOrder, type FindingFilter } from '@/lib/chat-findings';
-import { checkedWords, fullCheckBubble, fullCheckFiles, previewPage, productsWords, withoutCodeNote } from '@/lib/chat-full-check';
-import { useReducedMotion } from '@/lib/chat-motion';
-import { asShown, proofCounts, proofGroup } from '@/lib/chat-proof';
+import { coverageCounts, isNarrowAnswer, isShortAnswer, NO_FILTER, sectionOrder, type FindingFilter } from '@/lib/chat-findings';
+import { fullCheckBubble, fullCheckFiles, withoutCodeNote } from '@/lib/chat-full-check';
+import { commentNumber, resultGroups } from '@/lib/chat-result';
+import { asShown, proofGroup } from '@/lib/chat-proof';
 import { EFFORT_WORDS } from '@/lib/chat-settings';
 import { downloadFile, downloadFindingsCsv, markupFailureWords } from '@/lib/chat-exports';
 import { hasTrust, roundCounts } from '@/lib/chat-trust';
@@ -25,6 +26,7 @@ import {
   fileSize,
   fallbackWords,
   footerWords,
+  openHref,
   shownBlocks,
   stoppedWords,
   textStreaming,
@@ -294,6 +296,8 @@ export interface AssistantMessageProps {
   makeMarkupPdf?: (messageId: string) => Promise<ChatFile>;
   /** Chat v2: where the evidence viewer's "Open in review screen" goes; left out when absent. */
   fullPageHref?: string | null;
+  /** #1717: the vendor's page picture (the set pack's, 100 dpi), for the evidence panel's boxed spot. */
+  pagePicture?: ((page: number) => string) | null;
   /**
    * Chat v4: the answer to a full check. Since #1508 it renders as the work fold → the summary strip
    * (Wrong · To check · Right · Not compared · Pages · Accuracy) → the cloud drawing (large) and the
@@ -309,9 +313,8 @@ export interface AssistantMessageProps {
   focusFindingId?: string | null;
 }
 
-export function AssistantMessage({ message, chatId, models, onReload, onRetry, onContinue, latest = false, makeMarkupPdf, fullPageHref, fullCheck = false, decide, remakeCloud, focusFindingId = null }: AssistantMessageProps) {
+export function AssistantMessage({ message, chatId, models, onReload, onRetry, onContinue, latest = false, makeMarkupPdf, fullPageHref, pagePicture = null, fullCheck = false, decide, remakeCloud, focusFindingId = null }: AssistantMessageProps) {
   const running = message.status === 'running';
-  const reduced = useReducedMotion();
   const pictureUrl = (pictureId: string) => chatPaths.picture(chatId, pictureId);
   const [filter, setFilter] = useState<FindingFilter>(NO_FILTER);
   const [viewing, setViewing] = useState<string | null>(focusFindingId);
@@ -372,9 +375,11 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
   // by code, Right, Nothing to compare), the reviewer's newest click laid over.
   const architectView = fullCheck && !running;
   const shown = architectView ? findings.map((finding) => asShown(finding, decisionOf(finding))) : findings;
-  const counts = findingCounts(shown);
   // The viewer's arrows step through the findings in the order the sections show them.
-  const ordered = sectionOrder(shown, filter);
+  const ordered = architectView ? (() => {
+    const groups = resultGroups(findings, decisionOf);
+    return [...groups.wrong, ...groups.dismissed, ...groups.notCompared, ...groups.right];
+  })() : sectionOrder(shown, filter);
   const decisionFor = finished && !decisionsOff && decide && messageId ? (finding: ChatFinding): DecisionProps => ({
     decision: decisionOf(finding)?.decision ?? null,
     onDecide: (decision) => {
@@ -424,9 +429,6 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
     failed: cloudState === 'failed',
   } : null;
 
-  const jumpTo = (status: 'different' | 'check' | 'same') => {
-    document.getElementById(sectionIds[status])?.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
-  };
   // The task list sits inside the activity timeline, at its newest update (the last task step);
   // the list from the newest `tasks` event wins over the one that step carried.
   const lastTaskAt = blocks.reduce((last, block, at) => (block.type === 'step' && (block.step.tool === 'TaskCreate' || block.step.tool === 'TaskUpdate') ? at : last), -1);
@@ -488,9 +490,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
     <HowChecked findings={findings} trust={message.trust} coverage={coverage} coverageStrip={coverageStrip} unknowns={message.unknowns} />
   ) : null;
   const hasResult = fullCheck && (findings.length > 0 || coverage !== null || made.cloud !== null || made.report !== null);
-  // A full check stopped by the reviewer says so once, quietly, in its summary (not as a floating "Stopped").
-  // An interrupted answer says so (with Continue) under the answer, not here as well.
-  const stopNote = message.stopped === 'cancelled' ? 'You stopped this check before the end, so some items may be missing.' : message.stopped === 'interrupted' ? null : stopped;
+  const resultShown = hasResult && !running;
   const textItems = items.filter((item) => item.kind === 'text');
 
   return (
@@ -503,45 +503,46 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
       aria-label="Answer"
       className={cn('group/message chat-rise flex min-w-0 flex-col', short ? 'gap-1' : 'gap-3')}
     >
-      {(fullCheck ? items.filter((item) => item.kind === 'activity') : items).map((item) => renderItem(item, items.indexOf(item)))}
+      {(fullCheck ? (resultShown ? [] : items.filter((item) => item.kind === 'activity')) : items).map((item) => renderItem(item, items.indexOf(item)))}
       {fullCheck && running && <div className="chat-wide grid min-w-0"><FullCheckProgress message={message} /></div>}
-      {hasResult && !running && (
+      {resultShown && (
         <div data-slot="chat-full-check-lead" className="chat-wide grid min-w-0 gap-7">
-          {/* PATH 4.1: the summary, prominent. */}
-          <section data-slot="chat-summary" aria-label="Summary" className="grid max-w-3xl min-w-0 gap-2.5">
-            <p className="flex items-center gap-2 text-xs font-medium text-muted-foreground"><GVSpark size={16} />{['Full check', checkedWords(message.products ?? message.scope?.products) ?? productsWords(message.products)].filter(Boolean).join(' · ')}</p>
-            <h2 data-slot="chat-summary-headline" className="text-xl leading-snug font-semibold tracking-[-0.015em]">
-              {counts.different > 0 ? <span className="text-outcome-fail-fg">{counts.different} wrong</span> : 'Nothing proved wrong'} on the vendor’s drawings
-              {counts.same > 0 ? `, ${counts.same} right` : ''}
-              {counts.check > 0 ? <span className="text-muted-foreground">, {counts.check} not compared</span> : null}.
-            </h2>
-            {textItems.map((item) => {
-              const block = blocks[item.index] as Extract<ViewBlock, { type: 'text' }>;
-              if (block.by !== 'code') return renderItem(item, items.indexOf(item));
-              const words = withoutCodeNote(block.text);
-              return (
-                <div key={`text-${item.index}`} className="grid min-w-0 gap-1.5">
-                  <ChatMarkdown text={words.text} />
-                  <p data-slot="chat-summary-by-code" className="text-[12.5px] text-muted-foreground">{words.note ?? 'Summary written by GV Review: the AI did not finish its own.'}</p>
-                </div>
-              );
-            })}
-            {stopNote && message.stopped !== 'error' && <p data-slot="chat-stopped" data-stopped={message.stopped ?? undefined} className="text-[12.5px] text-muted-foreground">{stopNote}</p>}
-          </section>
-          {/* PATH 4.2: the three numbers, pages and accuracy (each once). */}
-          {(findings.length > 0 || coverage) && <ResultNumbers counts={counts} coverage={coverage} accuracy={message.accuracy} onPick={jumpTo} />}
-          {/* PATH 4.3: the cloud drawing, the main output. */}
-          <FullCheckFiles cloud={made.cloud} report={made.report} notCompared={made.notCompared} chatId={chatId} page={previewPage(findings)} totalPages={coverage ? coverageCounts(coverage).total : null} counts={counts} proof={findings.length ? proofCounts(findings, decisionOf) : null} review={review} packaged={made.pkg !== null} unsent={message.review_action?.action === 'not_for_sending'} />
-          {/* #1622: the send-ready package, right after the cloud drawing. */}
-          {made.pkg && <PackageCard pkg={made.pkg} chatId={chatId} action={message.review_action ?? null} hasReport={made.report !== null} hasNotCompared={made.notCompared.length > 0} />}
-          {/* PATH 4.4 to 4.6: What's wrong, Right (folded), Nothing to compare (folded, #1619). */}
+          {/* #1717: summary first, each number in one place, the evidence beside each item. */}
+          <FullCheckResult
+            findings={findings}
+            decisionOf={decisionOf}
+            chatId={chatId}
+            files={{ cloud: made.cloud, report: made.report, notCompared: made.notCompared, pkg: made.pkg }}
+            reviewAction={message.review_action ?? null}
+            packageState={message.package_state ?? null}
+            work={{
+              drawingsDone: message.progress?.drawings_done ?? null,
+              drawingsTotal: message.progress?.drawings_total ?? null,
+              pagesTotal: message.progress?.pages_total || (coverage ? coverageCounts(coverage).total : null),
+              seconds: message.trust?.timings?.total_seconds ?? null,
+              stopped: message.stopped === 'cancelled',
+              timings: message.trust?.timings ?? null,
+            }}
+            pictureUrl={pictureUrl}
+            onOpen={setViewing}
+            onRunAgain={retry ?? null}
+            review={review}
+            activity={items.some((item) => item.kind === 'activity') ? <div className="grid min-w-0 gap-3">{items.filter((item) => item.kind === 'activity').map((item) => renderItem(item, items.indexOf(item)))}</div> : null}
+            summary={textItems.length ? (
+              <div className="grid min-w-0 gap-2">
+                {textItems.map((item) => {
+                  const block = blocks[item.index] as Extract<ViewBlock, { type: 'text' }>;
+                  return <ChatMarkdown key={`summary-${item.index}`} text={block.by === 'code' ? withoutCodeNote(block.text).text : block.text} />;
+                })}
+              </div>
+            ) : null}
+          />
           {decideError}
-          {sections}
           {/* PATH 4.7: everything else, folded. */}
           {howChecked}
         </div>
       )}
-      {fullCheck && !(hasResult && !running) && textItems.map((item) => renderItem(item, items.indexOf(item)))}
+      {fullCheck && !resultShown && textItems.map((item) => renderItem(item, items.indexOf(item)))}
       {looseTasks}
 
       {(message.cites?.length ?? 0) > 0 && <CiteChips cites={message.cites ?? []} pictureUrl={pictureUrl} />}
@@ -551,9 +552,20 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
       {!fullCheck && howChecked}
       {!fullCheck && !howChecked && coverageStrip}
       {findings.length > 0 && (
-        <EvidenceViewer findings={ordered} openId={viewing} onOpen={setViewing} pictureUrl={pictureUrl} fullPageHref={fullPageHref} />
+        <EvidenceViewer
+          findings={ordered}
+          openId={viewing}
+          onOpen={setViewing}
+          pictureUrl={pictureUrl}
+          fullPageHref={resultShown ? null : fullPageHref}
+          pagePicture={pagePicture}
+          cloudAt={resultShown && made.cloud ? () => openHref(made.cloud!, made.cloud!.url || chatPaths.file(chatId, made.cloud!.id)) : null}
+          decisionFor={resultShown ? decisionFor : null}
+          numberOf={resultShown ? (finding) => commentNumber(finding, message.package_state) : null}
+          notice={decideFailed}
+        />
       )}
-      {finished && (
+      {finished && !resultShown && (
         <div data-slot="chat-exports" className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
           {canMarkup && (
             <MarkupButton
@@ -601,7 +613,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
         </div>
       )}
 
-      {stopped && message.stopped !== 'error' && message.stopped !== 'interrupted' && !(hasResult && !running) && (
+      {stopped && message.stopped !== 'error' && message.stopped !== 'interrupted' && !resultShown && (
         <p data-slot="chat-stopped" data-stopped={message.stopped ?? undefined} className="text-sm text-muted-foreground">{stopped}</p>
       )}
 
@@ -661,7 +673,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
           <span className="flex min-w-0 flex-wrap items-center justify-end gap-x-3 gap-y-1">
             <span data-slot="chat-meta" className="min-w-0 text-xs text-muted-foreground">{footerWords(message, models)}</span>
             {/* Chat v5: code's accuracy closes every answer that has one (older answers show none). */}
-            {message.accuracy && !(hasResult && !running && (findings.length > 0 || coverage)) && <AccuracyBadge accuracy={message.accuracy} />}
+            {message.accuracy && <AccuracyBadge accuracy={message.accuracy} />}
           </span>
         </div>
       )}

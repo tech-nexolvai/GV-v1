@@ -193,7 +193,7 @@ def test_the_cloud_drawing_follows_the_decisions_and_keeps_older_files(postgres_
         assert found["F3"]["proof"]["not_compared"] == "not_seen"
         report = next(f for f in stored["files"] if f["name"].endswith("AI check report.pdf"))
         report_text = "".join(_text(world.client.get(report["url"]).content))
-        assert "1 wrong clouded (proved by code), 0 right, 2 with nothing to compare" in " ".join(
+        assert "1 wrong clouded (proved by code), 0 right, 2 not compared" in " ".join(
             report_text.split()
         )
 
