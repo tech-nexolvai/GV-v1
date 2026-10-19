@@ -122,6 +122,7 @@ __all__ = [
     "STACK_REACH",
     "MissingSpace",
     "PageContents",
+    "PlumberFrame",
     "SetAsideLabel",
     "SetAsideReason",
     "TextItem",
@@ -601,7 +602,7 @@ def read_page_contents(
                     f"page {page_index} is beyond the {len(document.pages)} pages in this document"
                 ) from error
 
-            transform, height = page_frame(page, dpi)
+            transform, frame = page_frame(page, dpi)
             if keep_char is not None or keep_path is not None:
                 page = page.filter(lambda obj: _kept(obj, keep_char, keep_path))
             # **Text printed twice in one place is read once.** Measured on `AI_Set_2`: a label drawn
@@ -640,7 +641,7 @@ def read_page_contents(
             # same behaviour that once recorded `984 mm` as 984 inches. Recovering the token here
             # means the corroboration lane sees the drawing's own second reading (#528); leaving the
             # fragments in as well would record one dimension four times.
-            dual = _dual_tokens(page, words, transform, height, document_version_id, page_index)
+            dual = _dual_tokens(page, words, transform, frame, document_version_id, page_index)
             runs = [merged for _, _, merged in dual] + [
                 word for word in words if not _inside_any(word, dual)
             ]
@@ -681,16 +682,16 @@ def read_page_contents(
             texts = tuple(
                 item
                 for run in kept_runs
-                if (item := _text_item(run, transform, height, document_version_id, page_index))
+                if (item := _text_item(run, transform, frame, document_version_id, page_index))
                 is not None
             )
             labels = tuple(
                 SetAsideLabel(extent=item.extent, image_extent=item.image_extent, reason=reason)
                 for run, reason in set_aside
-                if (item := _text_item(run, transform, height, document_version_id, page_index))
+                if (item := _text_item(run, transform, frame, document_version_id, page_index))
                 is not None
             )
-            segments = _segments(page, transform, height, document_version_id, page_index)
+            segments = _segments(page, transform, frame, document_version_id, page_index)
     except UnreadablePdf:
         raise
     except Exception as error:
@@ -707,9 +708,69 @@ def read_page_contents(
     )
 
 
-def page_frame(page: Any, dpi: int) -> tuple[PageTransform, Decimal]:
-    """A pdfplumber page's transform at `dpi`, and the height its `top` is measured down from: the
-    frame `read_page_contents` places every text run in."""
+@dataclass(frozen=True, slots=True)
+class PlumberFrame:
+    """Where a pdfplumber `(x, top)` is in PDF user space: the exact inverse of how it was placed.
+
+    **pdfplumber's coordinates are the page as displayed, with `/Rotate` already applied.** pdfminer
+    reads every page through a matrix that turns it by its `/Rotate` and moves its media box to the
+    origin (`PDFPageInterpreter.process_page`); pdfplumber then adds its own media box's corner back
+    and measures `top` down from the rotated page's height. So a label on a `/Rotate 90` page comes
+    back where a reader sees it, not where the content stream draws it.
+
+    Treating `(x, height - top)` as a PDF point, as this module once did, is exact on an unrotated
+    page and rotates every rotated page a **second** time when `PageTransform` applies `/Rotate`
+    (#1724): measured on a 612 x 792 page at `/Rotate 90`, a label at (200, 100) on the shown page
+    was placed at (505, 198). `to_pdf` undoes pdfplumber's placement and pdfminer's matrix exactly,
+    for any quarter turn and any media box offset, so `/Rotate` is applied once, by `PageTransform`.
+    """
+
+    rotation: int
+    """The page's `/Rotate`, normalised to a quarter turn."""
+    media_box: PageBox
+    """The media box pdfminer built its matrix from, in PDF space."""
+    left: Decimal
+    """What pdfplumber added to every `x`: its own media box's left edge."""
+    top: Decimal
+    """What pdfplumber added to every `top`: its own (flipped) media box's top edge."""
+    height: Decimal
+    """The height pdfplumber measured `top` down from: the page as shown."""
+
+    def to_pdf(self, x: object, top: object) -> PdfPoint:
+        """A pdfplumber `(x, top)` as the point in PDF user space it was drawn at."""
+        across = _decimal(x) - self.left
+        up = self.height - (_decimal(top) - self.top)
+        left, bottom, right, upper = self.media_box
+        if self.rotation == 90:
+            return PdfPoint(x=right - up, y=bottom + across)
+        if self.rotation == 180:
+            return PdfPoint(x=right - across, y=upper - up)
+        if self.rotation == 270:
+            return PdfPoint(x=left + up, y=upper - across)
+        return PdfPoint(x=left + across, y=bottom + up)
+
+
+def plumber_frame(page: Any) -> PlumberFrame:
+    """How a pdfplumber page placed its objects (`PlumberFrame`)."""
+    rotation = _rotation(page.rotation)
+    media = getattr(getattr(page, "page_obj", None), "mediabox", None)
+    if media is None:
+        media_box, _ = page_boxes_in_pdf_space(page)
+    else:
+        media_box = _box(_resolved(media))
+    return PlumberFrame(
+        rotation=rotation,
+        media_box=media_box,
+        left=_decimal(page.mediabox[0]),
+        top=_decimal(page.mediabox[1]),
+        height=_decimal(page.height),
+    )
+
+
+def page_frame(page: Any, dpi: int) -> tuple[PageTransform, PlumberFrame]:
+    """A pdfplumber page's transform at `dpi`, and how its `(x, top)` goes back to PDF space: the
+    frame `read_page_contents` places every text run in. A pdfplumber point is placed by
+    `transform.to_image(frame.to_pdf(x, top))`, which applies the page's `/Rotate` once."""
     media_box, crop_box = page_boxes_in_pdf_space(page)
     transform = PageTransform(
         dpi=dpi,
@@ -717,7 +778,7 @@ def page_frame(page: Any, dpi: int) -> tuple[PageTransform, Decimal]:
         media_box=media_box,
         crop_box=crop_box,
     )
-    return transform, _decimal(page.height)
+    return transform, plumber_frame(page)
 
 
 def pixel_placement(page: Any, dpi: int) -> Callable[[object, object], ImagePoint]:
@@ -728,8 +789,8 @@ def pixel_placement(page: Any, dpi: int) -> Callable[[object, object], ImagePoin
     and the pasted stamps that `extraction/stamp_text.py` finds for the GV-mark check (#929), which
     holds them to the same crops as the coloured text.
     """
-    transform, height = page_frame(page, dpi)
-    return lambda x, top: _image(x, top, transform, height)
+    transform, frame = page_frame(page, dpi)
+    return lambda x, top: _image(x, top, transform, frame)
 
 
 #: A digit's place in its own text frame: `(along_low, along_high, across_low, across_high, up)`.
@@ -1923,11 +1984,12 @@ def _is_fragment(run: dict[str, Any], digits: _DigitGrid, partners: set[int]) ->
     return found_partner
 
 
-def _image(x: object, top: object, transform: PageTransform, height: Decimal) -> ImagePoint:
+def _image(x: object, top: object, transform: PageTransform, frame: PlumberFrame) -> ImagePoint:
     """A pdfplumber `(x, top)` as an integer image point.
 
-    pdfplumber measures `top` downward from the top of the page while PDF user space measures upward
-    from the bottom, so the y is flipped against the page height before the transform sees it.
+    pdfplumber measures on the page as shown (`top` down, `/Rotate` applied) while PDF user space is
+    the content stream's (up from the bottom, unrotated), so the point goes back to PDF space
+    (`PlumberFrame.to_pdf`) before the transform, which applies the rotation once, sees it.
 
     **Kept rather than discarded, because it cannot be recovered later.** `observation_candidates`
     stores its polygon in image space, and going back from stored space needs the `dpi`, `media_box`
@@ -1935,17 +1997,17 @@ def _image(x: object, top: object, transform: PageTransform, height: Decimal) ->
     version computed this on the way to stored space and threw it away, which made a persisted
     candidate's geometry unreconstructable from anything the system had written down.
     """
-    return transform.to_image(PdfPoint(x=_decimal(x), y=height - _decimal(top)))
+    return transform.to_image(frame.to_pdf(x, top))
 
 
-def _stored(x: object, top: object, transform: PageTransform, height: Decimal) -> StoredPoint:
+def _stored(x: object, top: object, transform: PageTransform, frame: PlumberFrame) -> StoredPoint:
     """A pdfplumber `(x, top)` as a stored point.
 
     Reached through integer image space, because that is the only route `PageTransform` offers — and
     going through it rather than normalising directly keeps this agreeing with every other consumer
     of stored coordinates.
     """
-    return transform.to_stored(_image(x, top, transform, height))
+    return transform.to_stored(_image(x, top, transform, frame))
 
 
 #: The most words a dual token can be split into.
@@ -1963,7 +2025,7 @@ def _dual_tokens(
     page: Any,
     words: list[dict[str, Any]],
     transform: PageTransform,
-    height: Decimal,
+    frame: PlumberFrame,
     document_version_id: UUID,
     page_index: int,
 ) -> tuple[tuple[TextItem, _Box, dict[str, Any]], ...]:
@@ -2005,15 +2067,13 @@ def _dual_tokens(
                 )
             )
         )
-    _join_lines(upright_lines, found, transform, height, document_version_id, page_index)
+    _join_lines(upright_lines, found, transform, frame, document_version_id, page_index)
     sideways = [
         word
         for word in words
         if not word.get("upright", True) and not _inside_any(word, tuple(found))
     ]
-    _join_lines(
-        _sideways_lines(sideways), found, transform, height, document_version_id, page_index
-    )
+    _join_lines(_sideways_lines(sideways), found, transform, frame, document_version_id, page_index)
     return tuple(found)
 
 
@@ -2021,7 +2081,7 @@ def _join_lines(
     lines: list[list[dict[str, Any]]],
     found: list[tuple[TextItem, _Box, dict[str, Any]]],
     transform: PageTransform,
-    height: Decimal,
+    frame: PlumberFrame,
     document_version_id: UUID,
     page_index: int,
 ) -> None:
@@ -2075,7 +2135,7 @@ def _join_lines(
                     # still one a reviewer must confirm (#726).
                     "stacked": any(word.get("stacked", False) for word in run),
                 }
-                item = _text_item(merged, transform, height, document_version_id, page_index)
+                item = _text_item(merged, transform, frame, document_version_id, page_index)
                 if item is not None:
                     found.append((item, box, merged))
                     taken.update(id(char) for char in chars)
@@ -2247,7 +2307,7 @@ def _inside_any(
 def _text_item(
     word: dict[str, Any],
     transform: PageTransform,
-    height: Decimal,
+    frame: PlumberFrame,
     document_version_id: UUID,
     page_index: int,
 ) -> TextItem | None:
@@ -2274,8 +2334,8 @@ def _text_item(
         (word["x1"], word["bottom"]),
         (word["x0"], word["bottom"]),
     )
-    corners = tuple(_stored(x, top, transform, height) for x, top in box)
-    image_corners = tuple(_image(x, top, transform, height) for x, top in box)
+    corners = tuple(_stored(x, top, transform, frame) for x, top in box)
+    image_corners = tuple(_image(x, top, transform, frame) for x, top in box)
     try:
         extent = Polygon(
             points=corners,
@@ -2317,7 +2377,7 @@ def _text_rotation(char: dict[str, Any]) -> int:
 def _segments(
     page: Any,
     transform: PageTransform,
-    height: Decimal,
+    frame: PlumberFrame,
     document_version_id: UUID,
     page_index: int,
 ) -> tuple[DimensionExtent, ...]:
@@ -2336,8 +2396,8 @@ def _segments(
     def add(x0: object, top0: object, x1: object, top1: object) -> None:
         try:
             extent = DimensionExtent(
-                start=_stored(x0, top0, transform, height),
-                end=_stored(x1, top1, transform, height),
+                start=_stored(x0, top0, transform, frame),
+                end=_stored(x1, top1, transform, frame),
                 document_version_id=document_version_id,
                 page=page_index,
             )
@@ -2361,6 +2421,8 @@ def _segments(
         # straight runs; the curved parts come back as short chords, which is a faithful reading of
         # what was drawn rather than an interpolation of what was meant.
         for start, end in pairwise(points):
-            add(start[0], height - _decimal(start[1]), end[0], height - _decimal(end[1]))
+            add(
+                start[0], frame.height - _decimal(start[1]), end[0], frame.height - _decimal(end[1])
+            )
 
     return tuple(found)
