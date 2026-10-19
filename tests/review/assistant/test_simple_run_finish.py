@@ -8,6 +8,7 @@ model call, no money."""
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -142,3 +143,73 @@ def test_pages_that_are_not_combined_sheets_are_never_a_review_result(
     )
     assert SEND not in outcome.text and "Approved" not in outcome.text
     assert _state(outcome).get("incomplete")
+
+
+def _uncombined(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+    check = _Run(tmp_path)
+    page_map = json.loads((check.pack / "page_map.json").read_text())
+    for entry in page_map["pages"]:
+        entry["halves"] = []
+    (check.pack / "page_map.json").write_text(json.dumps(page_map), encoding="utf-8")
+    monkeypatch.setattr(compare_module, "compare_all", lambda items, **_: list(items))
+    monkeypatch.setattr(compare_module, "PictureSource", _Pictures)
+    return check
+
+
+def test_nothing_compared_is_one_honest_sentence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A $0 run on a client's plain CAD set (2026-10-19) printed "Checked 6 of 6 pages", "0 wrong,
+    0 match" and "Every item could be compared." next to "Nothing was compared": the summary must
+    say once, first, that nothing was compared, and nothing that reads as a finished check."""
+    outcome = _uncombined(tmp_path, monkeypatch).engine.run()
+    text = outcome.text
+    first = text.strip().splitlines()[0]
+    assert first.startswith("**Nothing was compared: no vendor drawing was found")
+    assert text.count("Nothing was compared") == 1
+    for misleading in ("Every item could be compared", "Checked ", "0 wrong", "so far"):
+        assert misleading not in text, misleading
+    assert SEND not in text and "Next: nothing can be sent to the vendor" in text
+
+
+def test_code_findings_with_nothing_compared_keep_their_counts_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Code's own checks may still find something with no drawing compared (a GV rule on a
+    vendor-only sheet): their counts stay, under the one sentence, never "every item compared"."""
+    engine = _uncombined(tmp_path, monkeypatch).engine
+    added: list[str] = []
+
+    def with_code_finding(self: Any) -> None:
+        made = self.book.add_code_finding(
+            {
+                "page": 1,
+                "item": "Filler width",
+                "category": "cabinet",
+                "architect": '1" to 2"',
+                "vendor": '4"',
+                "status": "check",
+                "why": "made up",
+                "verified": False,
+                "source": "rules",
+            },
+            created_by="consistency",
+        )
+        if made is not None:
+            added.append(made["id"])
+
+    monkeypatch.setattr(type(engine), "add_code_findings", with_code_finding)
+    # A made-up item has no printed spot: the spot guard would take it out.
+    from app.review.assistant import chat_engine
+
+    monkeypatch.setattr(chat_engine, "spot_dropped", lambda *_a: [])
+    text = engine.run().text
+    assert added
+    lines = text.strip().splitlines()
+    assert lines[0].startswith("**Nothing was compared")
+    assert "Every item could be compared" not in text and "Checked " not in text
+    # Its counts stay (the made-up hook runs at each place code adds its findings).
+    assert any(
+        re.fullmatch(r"0 wrong \(proved by code\), 0 right, \d+ not compared\.", x) for x in lines
+    )
+    assert SEND not in text
