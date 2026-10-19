@@ -43,8 +43,12 @@ from typing import Any, Final, Literal
 import pdfplumber
 
 from app.review.assistant.finding_checks import to_inches
-from app.review.assistant.verify_value import _placement, _vendor_page
-from extraction.stamp_text import path_ink
+from app.review.assistant.verify_value import (
+    _placement,
+    _vendor_page,
+    combined_sheet,
+    path_shown,
+)
 
 __all__ = [
     "MAX_SPREAD_PERCENT",
@@ -214,13 +218,14 @@ def _segments(pdf: Path, page_index: int) -> tuple[Segment, ...]:
             _CACHE.move_to_end(key)
             return _CACHE[key]
     data = pdf.read_bytes()
+    colour_rule = combined_sheet(data)  # the colour rule: GV's combined sheets only
     one_page = _vendor_page(data, page_index)
     segments: list[Segment] = []
     with pdfplumber.open(io.BytesIO(one_page)) as document:
         page = document.pages[0]
         shown: Callable[[float, float], tuple[float, float]] = _placement(page)
         for item in (*page.lines, *page.rects, *page.curves):
-            if not path_ink(dict(item)):
+            if not path_shown(item, colour_rule=colour_rule):
                 continue
             for piece in _pieces(item):
                 points = [shown(x, y) for x, y in piece]

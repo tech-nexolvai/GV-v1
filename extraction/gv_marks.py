@@ -30,6 +30,7 @@ __all__ = [
     "LAYER_NAME",
     "PIECE_KEY",
     "RESERVED_NAMES",
+    "gv_combined",
     "gv_layer",
     "is_gv_mark",
     "sign",
@@ -44,6 +45,30 @@ LAYER_NAME: Final = "GV Review markup"
 RESERVED_NAMES: Final = frozenset({"/GVCloudDrawing", "/GVRedline939"})
 #: A fixed date, so the same marks always make the same bytes.
 _SIGNED_ON: Final = "D:20261019000000Z"
+
+
+def gv_combined(pdf: pikepdf.Pdf) -> bool:
+    """Whether a file is one of GV's combined review sheets: the architect's and the vendor's
+    drawings pasted onto its pages as snapshots (`stamp_text.carries_drawing`), with GV's headings
+    and its reviewers' markup beside them. It is the format the set pack reads by its pasted
+    drawings (`set_pack.upload_roles`), and GV's acceptance sets (Set 3 and the others) use it.
+
+    **The colour rule (orchestrator's decision of 2026-10-19, applying Anant's intent: vendors may
+    draw in any colour; GV's marks are recognised by what they are):**
+
+    - a file that is **not** a combined sheet (every ordinary architect or shop drawing upload) is
+      read in **every colour**; only annotations (but AutoCAD's SHX text) and GV Review's own
+      signed marks are left out;
+    - a combined sheet keeps the black-or-grey rule inside its pasted snapshots, because there the
+      coloured ink may be a reviewer's mark baked into the snapshot and code cannot tell.
+    """
+    from extraction.stamp_text import carries_drawing
+
+    for page in pdf.pages:
+        for annotation in page.obj.get("/Annots") or []:
+            if isinstance(annotation, pikepdf.Dictionary) and carries_drawing(annotation):
+                return True
+    return False
 
 
 def sign(pdf: pikepdf.Pdf, form: Any) -> None:
