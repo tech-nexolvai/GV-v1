@@ -363,6 +363,15 @@ class Pack:
     """The set's page numbering (#1722): every fact above is keyed by `(file, set page)`; a
     separate file's labels also carry their own `file_page`."""
 
+    rounds: Mapping[tuple[str, int], str] = field(default_factory=dict)
+    """{(file, set page): group} for the vendor drawings of separate files that are rounds of one
+    drawing (#1728, `WorkList.round_groups`): their area for the round checks."""
+
+    def with_rounds(self, groups: Iterable[Sequence[Any]]) -> Pack:
+        """The pack with the work list's round groups (`WorkList.round_groups`)."""
+        found = {(str(g[0]), int(g[2])): str(g[3]) for g in groups if len(g) >= 4}
+        return replace(self, rounds=found) if found else self
+
     def own_page(self, file: str, page: int) -> int:
         """The file's own page of set page `page` (what a PDF is read at)."""
         return page if self.pages is None else self.pages.own_page(file, page)
@@ -470,7 +479,11 @@ class Pack:
         return self.half_at(file, int(label.get("page") or 0), _box(label.get("box")))
 
     def area_key(self, file: str, page: int) -> tuple[str, int] | None:
-        """The page's area: the page that names it (the page map's `area_from_page` chain)."""
+        """The page's area: the page that names it (the page map's `area_from_page` chain); a
+        separate file's vendor drawing, its round group (#1728)."""
+        group = self.rounds.get((file, page))
+        if group is not None:
+            return (f"rounds of {group}", 0)
         entry = self.entries.get((file, page))
         if entry is None or entry.get("skip") or not str(entry.get("area") or "").strip():
             return None

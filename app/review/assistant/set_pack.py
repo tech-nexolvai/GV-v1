@@ -96,6 +96,7 @@ __all__ = [
     "pack_key",
     "trim_hires",
     "upload_roles",
+    "upload_rounds",
 ]
 
 _log = logging.getLogger(__name__)
@@ -200,6 +201,33 @@ def _is_architect_kind(item: Mapping[str, Any]) -> bool:
 def _is_vendor_kind(item: Mapping[str, Any]) -> bool:
     kind = str(item.get("kind") or "").strip().lower()
     return kind.startswith("the vendor") or "shop drawing" in kind
+
+
+#: An earlier round of the vendor's shop drawings uploaded beside its re-issued ones (#1728:
+#: `app/api/assistant_chats.PREVIOUS_ROUND_WORDS`): its round.
+_PREVIOUS_ROUND: Final = re.compile(
+    r"^the vendor's previous round\b.*\bround (\d+)\b", re.IGNORECASE
+)
+
+
+def upload_rounds(listing: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    """The round each upload's kind gives its vendor drawings (#1728): an earlier round uploaded
+    beside the vendor's re-issued file says its own number, and then the re-issued file is the next
+    round. A set with no earlier file gives none (its drawings' rounds come from GV's captions)."""
+    earlier: dict[str, int] = {}
+    for item in listing:
+        found = _PREVIOUS_ROUND.match(str(item.get("kind") or "").strip())
+        if found is not None:
+            earlier[str(item.get("name"))] = int(found.group(1))
+    if not earlier:
+        return {}
+    latest = max(earlier.values()) + 1
+    rounds = dict(earlier)
+    for item in listing:
+        name = str(item.get("name"))
+        if name not in earlier and _is_vendor_kind(item):
+            rounds[name] = latest
+    return rounds
 
 
 def upload_roles(listing: Sequence[Mapping[str, Any]]) -> dict[str, str]:
@@ -477,12 +505,14 @@ def _page_entries(
     *,
     upload_role: str | None = None,
     sizes: Sequence[tuple[float, float]] = (),
+    upload_round: int | None = None,
 ) -> list[dict[str, Any]]:
     """Each page's entry of `page_map.json`. `upload_role` (#1719): the role the upload's kind
     gives (`upload_roles`). In the architect's file a pasted drawing with no GV heading is the
     architect's; in a file with no pasted drawing at all (a plain CAD file, architect's or
     vendor's), every page printing dimensions is one whole-page drawing (`sizes`: each page's
-    shown size), its role from `_whole_page_role`."""
+    shown size), its role from `_whole_page_role`. `upload_round` (#1728): the round the upload's
+    kind gives such a whole-page vendor drawing (`upload_rounds`)."""
     by_page: dict[int, list[dict[str, Any]]] = {}
     for item in annotations:
         by_page.setdefault(int(item["page"]), []).append(item)
@@ -554,6 +584,8 @@ def _page_entries(
                     found = caption["round"]
                 elif len(one_round) == 1:
                     found = next(iter(one_round))
+            if found is None and from_upload and role == "vendor" and upload_round is not None:
+                found = upload_round
             half: dict[str, Any] = {
                 "box": stamp["box"],
                 "role": role,
@@ -735,6 +767,7 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
         annotations: list[dict[str, Any]] = []
         page_map: list[dict[str, Any]] = []
         roles = upload_roles(listing)
+        rounds = upload_rounds(listing)
         used: dict[str, str] = {}
         for name in names:
             logging.getLogger("pypdf").setLevel(logging.ERROR)
@@ -748,6 +781,7 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
                 len(reader.pages),
                 upload_role=roles.get(name),
                 sizes=[_shown_size(page) for page in reader.pages],
+                upload_round=rounds.get(name),
             )
             if any(h.get("from_upload") for e in entries for h in e["halves"]):
                 used[name] = roles[name]

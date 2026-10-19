@@ -1962,8 +1962,19 @@ def round_two_report(
         return seen[(first, second)]
 
     try:
+        # Separate files (#1728): the rounds of one drawing are the vendor drawings the simple
+        # check's work list paired with one architect drawing.
+        work = import_module("app.review.assistant.simple_check.worklist")
+        groups = {
+            (str(group[0]), int(group[1])): str(group[3])
+            for group in work.build_worklist(pack, main_file).round_groups
+        }
+    except Exception:  # noqa: BLE001 - GV's typed areas still give the combined sheets' rounds
+        _log.warning("assistant round-2 check: no round groups for separate files")
+        groups = {}
+    try:
         checker = import_module("app.review.assistant.round_check")
-        return checker.round_two(findings, dims, page_map, zones=zones)
+        return checker.round_two(findings, dims, page_map, zones=zones, groups=groups)
     except Exception as failed:  # noqa: BLE001 - the drawing is made without the round-2 check
         _log.warning("assistant round-2 check failed: %s", type(failed).__name__)
         return None

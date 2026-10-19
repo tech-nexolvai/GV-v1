@@ -348,6 +348,10 @@ class WorkList(_Frozen):
     uncovered: tuple[int, ...] = ()
     """Pages with a drawing that no item covers and no skip explains (always empty when the
     work list is right; a test holds it so)."""
+    round_groups: tuple[tuple[str, int, int, str], ...] = ()
+    """Vendor drawings of separate files that are rounds of one drawing (#1728): (file, its own
+    page, set page, the group: the architect drawing all of them were paired with). GV's combined
+    sheets say this with their typed areas instead; verify and the round-2 check read it."""
 
 
 # ---- the compare call's answer -----------------------------------------------------------------

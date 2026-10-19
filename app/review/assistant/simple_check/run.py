@@ -261,7 +261,9 @@ class _Run:
                 worklist = import_module(
                     "app.review.assistant.simple_check.worklist"
                 ).build_worklist(folder, engine.book.main_file)
-                self.pack = Pack.from_folder(folder, engine.book.main_file)
+                self.pack = Pack.from_folder(folder, engine.book.main_file).with_rounds(
+                    worklist.round_groups
+                )
             except Exception as failed:  # noqa: BLE001 - said plainly, nothing compared
                 _log.exception("simple check: work list failed")
                 return self._finish("error", f"the work list could not be made ({failed})")
@@ -1177,9 +1179,11 @@ class _Run:
             for f in live
             if f.get("created_by") == CREATED_BY and f.get("status") == "different"
         }
-        failing = {item.page: (self.outcomes.get(item.id)) for item in failed}
+        main = engine.book.main_file
+        # The coverage map is the vendor's file's pages: an earlier round's file (#1728) is not.
+        failing = {item.page: (self.outcomes.get(item.id)) for item in failed if item.file == main}
         pages: list[dict[str, Any]] = []
-        for page in sorted({item.page for item in self.compared}):
+        for page in sorted({item.page for item in self.compared if item.file == main}):
             if page in failing:
                 outcome = failing[page]
                 reason = (outcome.reason if outcome is not None else None) or "not reached"
@@ -1501,6 +1505,12 @@ def own_pages(finding: Mapping[str, Any], pack: Pack | None) -> dict[str, Any]:
             )
             for side, label in dims.items()
         }
+    vendor_spot = fields.get("vendor_box")
+    if isinstance(vendor_spot, Mapping) and isinstance(vendor_spot.get("page"), int):
+        # An earlier round's file (#1728) is numbered after the others: its own page.
+        fields["page"] = int(vendor_spot["page"])
+    elif isinstance(fields.get("page"), int) and fields["page"] > pack.pages.files[0][2]:
+        fields["page"] = pack.pages.file_of(int(fields["page"]))[1]
     spot = fields.get("arch_box")
     if isinstance(fields.get("vs_page"), int):
         if isinstance(spot, Mapping) and isinstance(spot.get("page"), int):
@@ -1638,8 +1648,9 @@ def replay(
     compared). The same code as the run: the pack's work list and facts, `verify_answer`, the
     markup-free copy's ink and `verify_value` readings unless others are given."""
     worklist = import_module("app.review.assistant.simple_check.worklist")
-    items = worklist.build_worklist(pack_dir, main_file).items
-    pack = Pack.from_folder(pack_dir, main_file)
+    work = worklist.build_worklist(pack_dir, main_file)
+    items = work.items
+    pack = Pack.from_folder(pack_dir, main_file).with_rounds(work.round_groups)
     outcomes = load_outcomes(run_dir)
     saved = load_blind(run_dir)
     looks = ink if ink is not None else pack_ink(pack_dir, main_file)
