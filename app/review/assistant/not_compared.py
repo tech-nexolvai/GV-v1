@@ -204,7 +204,10 @@ _GAP_REASONS: Final[Mapping[str, str]] = {
     "not_comparable": "finish_not_comparable",
     "unreadable": "unreadable",
     # The simple full check's rows that are not findings (#1665): its reason by name.
-    **{reason: reason for reason in ("nothing_to_compare", "not_proved", "different_reference")},
+    **{
+        reason: reason
+        for reason in ("nothing_to_compare", "not_proved", "different_reference", "ai_unsure")
+    },
 }
 
 
