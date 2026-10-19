@@ -330,6 +330,17 @@ def _has_spot(finding: Mapping[str, Any], side: str) -> bool:
     return bool(finding.get("vendor_box" if side == "vendor" else "arch_box")) or bool(label)
 
 
+def _unread_detail(finding: Mapping[str, Any]) -> str:
+    """Why `read_number` (#1746) could not read the vendor's value, as `: <reason>`, or nothing
+    when it did not run: its reason is the Not-compared reason (cut off in the file, the readers
+    disagree, ...)."""
+    checks = finding.get("checks")
+    verify = checks.get("verify_vendor") if isinstance(checks, Mapping) else None
+    if isinstance(verify, Mapping) and verify.get("read_number") and verify.get("reason"):
+        return f": {_short(verify.get('reason'), 140)}"
+    return ""
+
+
 def _unproved(finding: Mapping[str, Any]) -> Classified:
     """A difference (status different) code could not prove: the closest reason."""
     page = _page(finding)
@@ -374,7 +385,7 @@ def _unproved(finding: Mapping[str, Any]) -> Classified:
     if not _vendor_read(finding):
         return _not(
             "unreadable",
-            f"could not read the vendor's value on page {page}",
+            f"could not read the vendor's value on page {page}{_unread_detail(finding)}",
             f"a legible value on page {page} (or on the next round)",
         )
     critic = finding.get("critic")
@@ -474,9 +485,15 @@ def _check_item(finding: Mapping[str, Any]) -> Classified:
             "the architect's printed size for {thing}",
         )
     if reason == "unreadable":
+        if not _has_spot(finding, "vendor"):
+            return _not(
+                "no_spot",
+                f"the vendor's value: the value has no spot on the drawing (page {page})",
+                f"the label the vendor's value is printed at on page {page}",
+            )
         return _not(
             "unreadable",
-            f"could not read the vendor's value on page {page}",
+            f"could not read the vendor's value on page {page}{_unread_detail(finding)}",
             f"a legible value on page {page} (or on the next round)",
         )
     if reason == "needs_job_value":

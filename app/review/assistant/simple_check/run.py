@@ -216,6 +216,8 @@ class _Run:
     blind_skipped_count: int = 0
     out_of_scope: int = 0
     """Items of products outside the check's scope: never looked at again, never shown."""
+    number: Any = None
+    """`read_number.NumberReader` for the set pack (`_number`)."""
 
     # -- the run --
 
@@ -537,6 +539,16 @@ class _Run:
             _log.info("simple check ink not looked at: %s", label.get("id"))
             return None
 
+    def _number(self) -> Any:
+        """`read_number` bound to the set pack (#1746), made once: a value without a label that
+        `verify_value` could not read, or that the AI could not read, is read again by it."""
+        if self.number is None:
+            workspace = self.engine.tools.workspace
+            self.number = import_module("app.review.assistant.read_number").reader_for_pack(
+                workspace.set_pack, workspace.uploads
+            )
+        return self.number
+
     def _read(self, file: str, page: int, box: Sequence[float], expected: str) -> dict[str, Any]:
         """`verify_value` at a spot (the printed text, then the drawn ink by two OCR engines)."""
         verify_value = import_module("app.review.assistant.verify_value")
@@ -697,6 +709,7 @@ class _Run:
                     ink=self._ink,
                     read=self._read,
                     products=products,
+                    number=self._number(),
                 )
             except Exception as failed:  # noqa: BLE001 - the item fails, with the reason
                 _log.exception("simple check: verify failed on %s", item.id)
@@ -1483,11 +1496,14 @@ def replay(
     products: Sequence[str] | None = None,
     read: ValueReader | None = None,
     ink: Any = None,
+    number: Any = None,
 ) -> dict[str, list[Verified]]:
     """A saved run verified again at $0 (no model call): each answered work item's items, by
     work item id, after the run's own saved blind looks (a candidate with none saved stays Not
     compared). The same code as the run: the pack's work list and facts, `verify_answer`, the
-    markup-free copy's ink and `verify_value` readings unless others are given."""
+    markup-free copy's ink, `verify_value` readings and `read_number` (its readings cached in the
+    pack) unless others are given (a given `read` comes with no `read_number` unless one is given
+    too)."""
     worklist = import_module("app.review.assistant.simple_check.worklist")
     items = worklist.build_worklist(pack_dir, main_file).items
     pack = Pack.from_folder(pack_dir, main_file)
@@ -1495,13 +1511,21 @@ def replay(
     saved = load_blind(run_dir)
     looks = ink if ink is not None else pack_ink(pack_dir, main_file)
     reader = read if read is not None else pack_reader(pack_dir)
+    if number is None and read is None:
+        number = import_module("app.review.assistant.read_number").reader_for_pack(pack_dir)
     out: dict[str, list[Verified]] = {}
     for item in items:
         outcome = outcomes.get(item.id)
         if outcome is None or outcome.status != "ok" or outcome.result is None:
             continue
         found = verify_module.verify_answer(
-            outcome.result, Item.of(item), pack, ink=looks, read=reader, products=products
+            outcome.result,
+            Item.of(item),
+            pack,
+            ink=looks,
+            read=reader,
+            products=products,
+            number=number,
         )
         out[item.id] = [
             _with_saved(v, saved.get(v.key)) if v.needs_blind else v for v in found.items

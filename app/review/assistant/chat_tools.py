@@ -138,6 +138,8 @@ PARALLEL_TOOLS: Final = frozenset(
         "record_reading",
         # Code's ruler: reads the page and adds its extent check to a locked list.
         "measure_on_drawing",
+        # Code reads a number ($0); its readings are cached in the set pack under a lock.
+        "read_number",
     }
 )
 #: Labels one marked crop lists in words (the picture shows them all).
@@ -172,6 +174,7 @@ HELPER_TOOL_NAMES: Final = (
     "record_string",
     "record_reading",
     "verify_value",
+    "read_number",
     "measure_on_drawing",
     "read_under_markup",
     "drawing_facts",
@@ -191,6 +194,7 @@ HELPER_KITS: Final[Mapping[str, tuple[str, ...]]] = {
         "record_string",
         "record_reading",
         "verify_value",
+        "read_number",
         "read_under_markup",
         "drawing_facts",
     ),
@@ -674,6 +678,45 @@ VERIFY_VALUE: Final[Mapping[str, Any]] = {
         },
     },
 }
+#: `read_number` (#1746): code reads a number nobody could read, by independent routes, $0.
+READ_NUMBER: Final[Mapping[str, Any]] = {
+    "name": "read_number",
+    "description": (
+        "Read a number you cannot read (pen strokes, a sideways or crossed-out digit), by code "
+        "($0, no AI): the drawing's text, else its strokes read by two OCR engines, matched to "
+        "known fonts' digits, and measured by its dimension line at the drawing's scale. Code "
+        "accepts a value only when two routes of different kinds agree; otherwise it says why it "
+        "stays unread (for example cut off in the file, or read two ways). Call it whenever you "
+        "cannot read a value, instead of guessing; its answer stands. Name the label (D17) when "
+        "code numbered it, else give a tight box round the number; add the value you think it is "
+        "to have it checked. When several labels print that value it lists them: call again "
+        "with the one you mean. "
+        'Example: {"page": 4, "box": {"x0": 345, "y0": 702, "x1": 354, "y1": 716}}'
+    ),
+    "input_schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["page"],
+        "properties": {
+            "page": {"type": "integer", "minimum": 1, "description": "Page (from 1)"},
+            "label": {"type": "string", "description": "A label id of the page (D17)"},
+            "box": box_schema("Tight round the one number."),
+            "value": {
+                "type": "string",
+                "description": 'The value you think it is, as printed (46", 1168 [46])',
+            },
+            "side": {
+                "type": "string",
+                "enum": ["vendor", "architect"],
+                "description": "Whose drawing it is on (default vendor)",
+            },
+            "file": {
+                "type": "string",
+                "description": "The upload's file name, when the set has more than one",
+            },
+        },
+    },
+}
 _POINT: Final[Mapping[str, Any]] = point_schema("A point on the page")
 _SPAN: Final[Mapping[str, Any]] = {
     "type": "object",
@@ -851,6 +894,7 @@ LEAD_TOOLS: Final[tuple[Mapping[str, Any], ...]] = tuple(
         *LEDGER_TOOLS,
         COMPARE_ROUNDS,
         VERIFY_VALUE,
+        READ_NUMBER,
         MEASURE_ON_DRAWING,
         READ_UNDER_MARKUP,
         REMEMBER,
@@ -867,6 +911,7 @@ HELPER_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     SET_COVERAGE,
     *LEDGER_TOOLS,
     VERIFY_VALUE,
+    READ_NUMBER,
     MEASURE_ON_DRAWING,
     READ_UNDER_MARKUP,
     DRAWING_FACTS,
@@ -905,6 +950,7 @@ _DEFAULT_LABELS: Final[Mapping[str, str]] = {
     "review_results": "Read the recorded results",
     "compare_rounds": "Compared two rounds",
     "verify_value": "Checked a printed value",
+    "read_number": "Read a number by code",
     "measure_on_drawing": "Measured on the drawing",
     "drawing_facts": "Read code's facts",
     "read_under_markup": "Read under GV's markup",
@@ -1223,6 +1269,70 @@ class ChatTools:
                 started,
                 ok=True,
                 label=f"Checked {expected.strip()[:40]} on page {page}",
+                output=_shown(text),
+            ),
+        )
+
+    # ---- read_number (#1746) -----------------------------------------------------------------------
+
+    def read_number(self, raw: object, step: dict[str, Any]) -> ToolResult:
+        """Code reads one number by independent routes ($0, no AI): `read_number.NumberReader`."""
+        started = monotonic()
+        try:
+            given = arguments(
+                raw,
+                frozenset({"page", "label", "box", "value", "side", "file"}),
+                frozenset({"page"}),
+            )
+            side = given.get("side", "vendor")
+            if side not in ("vendor", "architect"):
+                raise SandboxRefused("side must be vendor or architect")
+            label = given.get("label")
+            value = given.get("value")
+            if label is not None and not isinstance(label, str):
+                raise SandboxRefused("label must be a label id (D17)")
+            if value is not None and not isinstance(value, str):
+                raise SandboxRefused("value must be the value as printed, as text")
+            if label is None and given.get("box") is None and value is None:
+                raise SandboxRefused("give the label (D17), a box round the number, or a value")
+            spot = {k: given[k] for k in ("page", "file") if k in given}
+            spot["box"] = given.get("box") or {"x0": 0, "y0": 0, "x1": 1, "y1": 1}
+            name, page, box, _label = self._crop_request(spot, 0)
+        except SandboxRefused as refused:
+            return _refused(step, started, str(refused).replace("crops[0].", ""))
+        module = import_module("app.review.assistant.read_number")
+        request = module.Request(
+            name,
+            page,
+            side,
+            label=label.strip() if isinstance(label, str) and label.strip() else None,
+            box=tuple(box) if given.get("box") is not None else None,
+            claim=value.strip() if isinstance(value, str) and value.strip() else None,
+        )
+        try:
+            found = module.reader_for_pack(self.workspace.set_pack, self.workspace.uploads)(request)
+        except Exception as failed:  # noqa: BLE001 - told plainly, never a crash
+            _log_failure(failed)
+            return _refused(step, started, "the number could not be read just now")
+        if found.outcome == "read":
+            text = f"read: {found.text} ({found.reason})."
+            if request.claim is not None and not found.matches(request.claim):
+                text = f"read: {found.text}, not {request.claim} ({found.reason})."
+        elif found.outcome == "choose":
+            listed = "; ".join(f"{c.get('id')} {c.get('text')}" for c in found.candidates)
+            text = f"several spots print it ({listed}): call again with the label you mean."
+        else:
+            text = f"unread: {found.reason}. Code's answer stands: report it as not readable."
+        routes = found.routes_words()
+        if routes:
+            text += "\nRoutes:\n" + fence(routes, "read_number")
+        return ToolResult(
+            content=[{"type": "text", "text": text}],
+            step=_done(
+                step,
+                started,
+                ok=True,
+                label=f"Read a number on page {page}",
                 output=_shown(text),
             ),
         )
