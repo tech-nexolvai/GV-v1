@@ -32,6 +32,7 @@ from app.review.assistant.workbook import write_xlsx
 
 __all__ = [
     "COLUMNS",
+    "SET_SHEET",
     "Row",
     "csv_text",
     "rows",
@@ -279,12 +280,21 @@ def summary_rows(found: Sequence[Row]) -> list[list[str]]:
     return out
 
 
+#: The workbook's sheet of the set's own gaps code found (the PDF's section of the same name).
+SET_SHEET: Final = "Found across the set"
+
+
 def xlsx(found: Sequence[Row]) -> bytes:
-    """The workbook: "Not compared" (the rows) and "Summary" (the counts). Raises
-    `ModuleNotFoundError` when openpyxl is not installed (`csv_text` then)."""
+    """The workbook: "Not compared" (the items: as many rows as the screen and the cloud drawing
+    count), "Found across the set" (the set's own gaps code found: sheet gaps, finish notes, the
+    labels the architect gives no size for; the PDF lists them apart too) and "Summary" (the
+    counts). Raises `ModuleNotFoundError` when openpyxl is not installed (`csv_text` then)."""
+    items = [row for row in found if row.level == "item"]
+    gaps = [row for row in found if row.level != "item"]
     return write_xlsx(
         [
-            ("Not compared", COLUMNS, _table(found)),
+            ("Not compared", COLUMNS, _table(items)),
+            (SET_SHEET, COLUMNS, _table(gaps)),
             ("Summary", ("Counted", "What", "Items"), summary_rows(found)),
         ]
     )

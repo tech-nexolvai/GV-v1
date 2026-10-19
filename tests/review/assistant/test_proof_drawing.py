@@ -607,7 +607,7 @@ def test_the_not_compared_list_has_the_same_rows_as_the_workbook_and_the_screen(
     assert "architect gives no size or information" in words and "Illegible (1)" in words
     assert "Counter overall width" in words and "the architect's size or note for" in words
     book = openpyxl.load_workbook(stdio.BytesIO(not_compared.xlsx(rows)))
-    assert book.sheetnames == ["Not compared", "Summary"]
+    assert book.sheetnames == ["Not compared", "Found across the set", "Summary"]
     table = [[c.value for c in row] for row in book["Not compared"].iter_rows()]
     assert table[0] == list(not_compared.COLUMNS)
     assert [line[4] for line in table[1:]] == [r.item for r in rows]
@@ -643,6 +643,11 @@ def test_the_not_compared_list_has_the_same_rows_as_the_workbook_and_the_screen(
     assert "Found by code across the set (2)" in words2
     assert "Not reviewed: finish codes not comparable (1)" in words2
     assert not_compared.csv_text(rows).count("\r\n") == 4
+    # The workbook's first sheet holds the items only (the screen's count); the set's gaps are a
+    # sheet of their own (the app test: 46 on screen against 1,232 rows in one sheet).
+    both = openpyxl.load_workbook(stdio.BytesIO(not_compared.xlsx([*rows, *gaps])))
+    assert both["Not compared"].max_row == 1 + 3
+    assert both["Found across the set"].max_row == 1 + 2
     # The product scope: an item of a product the check was not run for is left out.
     scoped = not_compared.rows(
         [_decision(category="cabinet"), _decision(id="F9", category="countertop")],
