@@ -578,6 +578,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
             onOpen={setViewing}
             onRunAgain={retry ?? null}
             review={review}
+            rounds={roundCounts(findings, message.trust)}
             activity={items.some((item) => item.kind === 'activity') ? <div className="grid min-w-0 gap-3">{items.filter((item) => item.kind === 'activity').map((item) => renderItem(item, items.indexOf(item)))}</div> : null}
             summary={textItems.length ? (
               <div className="grid min-w-0 gap-2">

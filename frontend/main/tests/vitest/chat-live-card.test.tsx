@@ -134,6 +134,12 @@ describe('the live card', () => {
     expect(screen.getByRole('button', { name: 'Stop' }).hasAttribute('disabled')).toBe(true);
   });
 
+  it('Stop pressed here says "Stopping…" at once, before the server says so', () => {
+    render(<LiveCheck live={liveState()} onStop={vi.fn()} stopping />);
+    expect(screen.getByRole('heading', { name: 'Stopping…' })).toBeTruthy();
+    expect(document.querySelector('[data-slot="chat-live-now"]')?.textContent).toBe('Finishing the 2 drawings already being compared; nothing new starts');
+  });
+
   it('when the AI service stops every call it says so plainly, with no Stop', () => {
     render(<LiveCheck live={liveState({ service: 'The AI service refused the key.' })} onStop={vi.fn()} />);
     expect(screen.getByRole('heading', { name: 'The check could not go on' })).toBeTruthy();
