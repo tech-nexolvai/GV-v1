@@ -53,7 +53,9 @@ __all__ = [
     "CODE_MADE",
     "ProductScope",
     "category_for",
+    "filed_under",
     "final_blocks",
+    "main_product",
     "named_products",
     "no_rules_note",
     "outside_unit",
@@ -67,7 +69,16 @@ __all__ = [
 #: Who makes a finding by code (not an AI that was told the products): their "other" items may get a
 #: product's category from their words (`category_for`).
 CODE_MADE: Final = frozenset(
-    {"ledger", "consistency", "tag_reader", "gv_review", "code", "architect_items", "pairs"}
+    {
+        "ledger",
+        "consistency",
+        "tag_reader",
+        "gv_review",
+        "code",
+        "architect_items",
+        "pairs",
+        "simple_check",
+    }
 )
 _NOT_WORD: Final = re.compile(r"[^0-9a-z]+")
 
@@ -187,15 +198,80 @@ def named_products(text: object, *, hints: bool = False, every: bool = False) ->
     return named
 
 
-def category_for(finding: Mapping[str, Any]) -> str:
-    """A finding's category for the scope: its own when it is an active product; for a code-made
-    `other` item (`CODE_MADE`), the one product its name's words name (two or none: `other`)."""
+def main_product(text: object) -> str | None:
+    """The one active product a drawing's or a page's printed words are mostly about: the product
+    whose registry `words` stand there most often (each phrase counted where it stands, the longest
+    phrase winning), when one has strictly the most; else `None`. A run of base cabinets with its
+    fillers and drawers is a cabinet run even when its top is named once; hints never count."""
+    plain = _plain(text)
+    known = registry()
+    products = list(known.active())
+    found = {p.id: [span for word in p.words for span in _spans(plain, word)] for p in products}
+    counts: dict[str, int] = {}
+    for product in products:
+        shadows = [span for other, spans in found.items() if other != product.id for span in spans]
+        counts[product.id] = sum(
+            1
+            for start, end in found[product.id]
+            if not any(s <= start and end <= e and e - s > end - start for s, e in shadows)
+        )
+    ranked = sorted(counts.items(), key=lambda kv: -kv[1])
+    if not ranked or ranked[0][1] == 0 or (len(ranked) > 1 and ranked[1][1] == ranked[0][1]):
+        return None
+    return ranked[0][0]
+
+
+def _own_name(item: object) -> str:
+    """An item's own words: its name after the area's "Area: " (the area is the page's words)."""
+    name = " ".join(str(item or "").split())
+    _head, sep, rest = name.partition(": ")
+    return rest if sep and rest else name
+
+
+def _words_of(page_text: str | Callable[[], str]) -> str:
+    return page_text() if callable(page_text) else page_text
+
+
+def filed_under(finding: Mapping[str, Any], page_text: str | Callable[[], str] = "") -> set[str]:
+    """The products an item's words file it under (orchestrator, 2026-10-18 and 2026-10-19: an
+    outlet or a string on a cabinet run is a cabinet item), the first step that names any:
+
+    1. its own name, after the area ("Vanity top width" is a countertop's, whatever the area is
+       called): the registry's words and hints ("upper outlet", "top of counter"; "counter /
+       cabinets tags" names both);
+    2. its whole name's words ("Countertop: overall length");
+    3. its other words (why, both values, the question and help it gives);
+    4. the main product of its page's printed words and area title (`main_product`: a page of
+       base cabinets with fillers and drawers is a cabinet run);
+    5. its page's words and hints (several products may stand there).
+
+    Products not active yet count too (a pendant light is lighting). Empty: no product."""
+    own = _own_name(finding.get("item"))
+    for text, hints in (
+        (own, True),
+        (str(finding.get("item") or ""), False),
+        (_own_text(finding), True),
+    ):
+        named = named_products(text, hints=hints, every=True)
+        if named:
+            return named
+    words = _words_of(page_text)
+    main = main_product(words)
+    if main is not None:
+        return {main}
+    return named_products(words, hints=True, every=True)
+
+
+def category_for(finding: Mapping[str, Any], page_text: str | Callable[[], str] = "") -> str:
+    """A finding's category when every product is in scope: its own when it is an active product;
+    for a code-made `other` item (`CODE_MADE`), the one product its words, else its page's main
+    product, file it under (`filed_under`; two or none: `other`)."""
     category = str(finding.get("category") or OTHER_CATEGORY)
     if category in registry().active_ids():
         return category
     if str(finding.get("created_by") or "") not in CODE_MADE:
         return category
-    named = named_products(finding.get("item"))
+    named = filed_under(finding, page_text)
     return next(iter(named)) if len(named) == 1 else category
 
 
@@ -230,12 +306,9 @@ def refiled(
     A finding of an active product is kept when that product is in scope. With every product in
     scope nothing is dropped (a code-made "other" item still gets its one product: `category_for`).
     Otherwise an "other" or unknown item is re-filed before it is dropped (orchestrator,
-    2026-10-18: a pull size or a finish tag the AI filed as "other" is a cabinet item). Code reads
-    the registry's `words` and `hints` of every product, in order, until something matches:
-
-    1. the item's name ("Pendant light count" is lighting, "Pull size" a cabinet item);
-    2. its other words (why, both values, the question and help it gives);
-    3. the words printed on its page and its area's title (`page_text`, read only then).
+    2026-10-18: a pull size or a finish tag the AI filed as "other" is a cabinet item; 2026-10-19:
+    an outlet or a string on a cabinet run is a cabinet item), by `filed_under`: its own name after
+    the area, its whole name, its other words, its page's main product, its page's words.
 
     One product matched: filed there, kept only when it is in scope (a product not active yet never
     is). Several matched: kept, under the first one in scope, when one is ("counter / cabinets
@@ -244,13 +317,8 @@ def refiled(
     if category in registry().active_ids():
         return category if scope.allows(category) else None
     if scope.every:
-        return category_for(finding)
-    matched = named_products(finding.get("item"), hints=True, every=True)
-    if not matched:
-        matched = named_products(_own_text(finding), hints=True, every=True)
-    if not matched:
-        words = page_text() if callable(page_text) else page_text
-        matched = named_products(words, hints=True, every=True)
+        return category_for(finding, page_text)
+    matched = filed_under(finding, page_text)
     picked = [product for product in scope.products if product in matched]
     return picked[0] if picked else None
 

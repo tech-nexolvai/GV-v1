@@ -20,7 +20,14 @@ from app.review.assistant import not_compared
 from app.review.assistant.chat_engine import ChatEngine, EngineSettings
 from app.review.assistant.chat_request import MODELS
 from app.review.assistant.chat_tools import ChatTools
-from app.review.assistant.product_scope import ProductScope, named_products, scoped_gaps
+from app.review.assistant.product_scope import (
+    ProductScope,
+    category_for,
+    main_product,
+    named_products,
+    refiled,
+    scoped_gaps,
+)
 from app.review.assistant.sandbox import ChatWorkspace
 from app.review.assistant.simple_check import blind as blind_module
 from app.review.assistant.simple_check import compare as compare_module
@@ -65,6 +72,33 @@ def test_an_answers_item_is_filed_by_its_own_words_first() -> None:
     assert verify_module._category(one, "countertop overall length") == "countertop"
 
 
+def test_an_item_with_no_product_words_is_filed_under_its_runs_product() -> None:
+    """Orchestrator, 2026-10-19: an outlet or a string on a cabinet run is a cabinet item (under
+    All, 25 of 29 items were "other"). The run's product is the one its printed words name most
+    (hints never count); its own words still come first."""
+    run = "2. Kitchen  BASE CABINET  FILLER  3 DRAWERS  FILLER  STONE TOP"
+    assert main_product(run) == "cabinet"
+    assert main_product("QUARTZ COUNTERTOP  BACKSPLASH  FILLER") == "countertop"
+    assert main_product("CABINET  QUARTZ") is None  # a tie names none
+    assert main_product("SINK  COUNTER") is None  # hints never count
+    outlet = {"category": "other", "item": "Kitchen with cooktop: outlet 1 to the left wall"}
+    string = {"category": "other", "item": "Kitchen: dimension string (across, round 1)"}
+    for item in (outlet, string):
+        code = {**item, "created_by": "pairs"}
+        assert category_for(code, run) == "cabinet"
+        assert refiled(code, ProductScope.of(("cabinet",)), run) == "cabinet"
+        assert refiled(code, ProductScope.of(("countertop",)), run) is None
+    # Its own words win over the run's: a top's size on a cabinet run is a countertop item.
+    top = {"category": "other", "item": "Kitchen: floor to top of counter", "created_by": "pairs"}
+    assert category_for(top, run) == "countertop"
+    # The simple check files by the drawing's main product too.
+    both = verify_module.Item(
+        "p1.v1", ROUND_1.vendor, products=("cabinet", "countertop"), main_product="cabinet"
+    )
+    assert verify_module._category(both, "the left wall to outlet 1") == "cabinet"
+    assert verify_module._category(both, "vanity top width") == "countertop"
+
+
 # ---- the set's rows that are not findings ------------------------------------------------------
 
 
@@ -86,11 +120,12 @@ def test_the_sets_rows_are_cut_to_the_scope() -> None:
         rows, _dropped = scoped_gaps(gaps, ProductScope.of(products), lambda p: words(p) or "")
         return [row["page"] for row in rows]
 
-    assert kept(("countertop",)) == [34, 36]
+    # The lobby's page is a cabinet run (its words name a cabinet; "stone" only hints at a top).
+    assert kept(("countertop",)) == [34]
     assert kept(("cabinet",)) == [13, 19, 36]
     assert kept(()) == [13, 19, 34, 36]  # All: every row
     _rows, dropped = scoped_gaps(gaps, ProductScope.of(("countertop",)), lambda p: words(p) or "")
-    assert dropped == 2
+    assert dropped == 3
     # A row that names no product, on a page whose words name none either, is no product's.
     _rows, dropped = scoped_gaps(gaps, ProductScope.of(("countertop",)), None)
     assert dropped == 3
