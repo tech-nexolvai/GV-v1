@@ -136,3 +136,18 @@ describe('the work line (#1717)', () => {
     expect(boxOnPicture(null)).toBeNull();
   });
 });
+
+describe('areaWords (#1741 review)', () => {
+  it('drops the drawing list\'s own numbering, and keeps names that only start like it', async () => {
+    const { areaWords, itemParts } = await import('@/lib/chat-result');
+    expect(areaWords('2.Standard Kitchenette')).toBe('Standard Kitchenette');
+    expect(areaWords('2. Coffee station')).toBe('Coffee station');
+    expect(areaWords('B. Bar')).toBe('Bar');
+    expect(areaWords('12) Reception desk')).toBe('Reception desk');
+    expect(areaWords('B.O.H. corridor')).toBe('B.O.H. corridor');
+    expect(areaWords('3.5 m wall')).toBe('3.5 m wall');
+    expect(areaWords('Bar')).toBe('Bar');
+    expect(areaWords('  ')).toBeNull();
+    expect(itemParts('1. Connection Centre: overall width').area).toBe('Connection Centre');
+  });
+});

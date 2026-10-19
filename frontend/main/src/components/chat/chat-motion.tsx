@@ -53,11 +53,11 @@ export function Spark({ label, className, state = 'thinking' }: { label: string;
 }
 
 /** Words with a light sweeping across them while `active` (and the system allows motion). */
-export function Shimmer({ active, children, className }: { active: boolean; children: React.ReactNode; className?: string }) {
+export function Shimmer({ active, children, className, tone = 'brand' }: { active: boolean; children: React.ReactNode; className?: string; tone?: 'brand' | 'ink' }) {
   const reduced = useReducedMotion();
   const moving = active && !reduced;
   return (
-    <span data-slot="chat-shimmer" data-active={moving ? 'true' : 'false'} className={cn(moving && 'chat-shimmer', className)}>
+    <span data-slot="chat-shimmer" data-active={moving ? 'true' : 'false'} data-tone={tone} className={cn(moving && 'chat-shimmer', moving && tone === 'ink' && 'chat-shimmer-ink', className)}>
       {children}
     </span>
   );

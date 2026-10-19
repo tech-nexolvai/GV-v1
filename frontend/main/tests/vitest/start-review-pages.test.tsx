@@ -83,7 +83,7 @@ describe('one page header (#1125)', () => {
     const onOpenReview = vi.fn();
     render(<WelcomePage onCreated={() => {}} onOpenReview={onOpenReview} />);
     // No aria-label: the name is the row's own text, so the status and date are not hidden.
-    const recent = await screen.findByRole('button', { name: /^Synthetic vendor\s*Revision 2 · \S+.*Awaiting Review$/ });
+    const recent = await screen.findByRole('button', { name: /^Synthetic vendor\s*Round 2 · \S+.*Drawings read$/ });
     await userEvent.setup().click(recent);
     expect(onOpenReview).toHaveBeenCalledWith('pkg');
   });

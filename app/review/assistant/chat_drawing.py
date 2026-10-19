@@ -72,6 +72,7 @@ from app.review.assistant.cloud_layout import (
 )
 from app.review.assistant.finding_checks import to_inches
 from app.review.assistant.impact import BIGGEST_FIRST, biggest_line
+from extraction import gv_marks
 from extraction.stamp_text import carries_drawing, pasted_picture
 from vocabulary.product_registry import registry
 
@@ -690,9 +691,15 @@ def _overlay(pdf: pikepdf.Pdf, page: Any, draw: Any) -> None:
     c.save()
     with pikepdf.open(io.BytesIO(buffer.getvalue())) as drawn:
         form = pdf.copy_foreign(drawn.pages[0].as_form_xobject())
+    # Signed and in its own layer (`extraction/gv_marks.py`): a round-2 upload that still carries
+    # these marks is never read as the vendor's drawing, and a viewer can switch them off.
+    gv_marks.sign(pdf, form)
     name = page.add_resource(form, pikepdf.Name.XObject, name=pikepdf.Name(_OVERLAY_NAME))
+    layer = page.add_resource(
+        gv_marks.gv_layer(pdf), pikepdf.Name.Properties, name=pikepdf.Name("/GVReviewMarkup")
+    )
     page.contents_add(b"q\n", prepend=True)
-    page.contents_add(b"Q\nq " + name.unparse() + b" Do Q\n")
+    page.contents_add(b"Q\n/OC " + layer.unparse() + b" BDC q " + name.unparse() + b" Do Q EMC\n")
 
 
 def _thumbnails(data: bytes, wanted: Mapping[int, list[tuple[int, Box]]]) -> dict[int, bytes]:

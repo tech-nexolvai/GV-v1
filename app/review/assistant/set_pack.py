@@ -357,10 +357,32 @@ def drawings_only(folder: Path, uploads: Path, name: str) -> Path:
                     annotations: Any = page["/Annots"]
                     keep = [a for a in annotations if a.get_object().get("/Subtype") == "/Stamp"]
                     page[NameObject("/Annots")] = ArrayObject(keep)
+                _hide_gv_marks(page)
             buffer = io.BytesIO()
             writer.write(buffer)
             _write_bytes(out, buffer.getvalue())
     return out
+
+
+def _hide_gv_marks(page: Any) -> None:
+    """Empty GV Review's own overlays on a page of the drawings-only copy (`extraction/gv_marks`:
+    signed with `/PieceInfo /GVReview`, or by an older overlay's reserved name)."""
+    resources = page.get("/Resources")
+    resources = resources.get_object() if resources is not None else None
+    xobjects = resources.get("/XObject") if resources is not None else None
+    xobjects = xobjects.get_object() if xobjects is not None else None
+    if xobjects is None:
+        return
+    for name in list(xobjects.keys()):
+        form = xobjects[name].get_object()
+        piece = form.get("/PieceInfo")
+        signed = piece is not None and "/GVReview" in piece.get_object()
+        if form.get("/Subtype") == "/Form" and (signed or name in _GV_RESERVED):
+            form.set_data(b"")
+
+
+#: The resource names GV's overlays used before they were signed (`gv_marks.RESERVED_NAMES`).
+_GV_RESERVED: Final = frozenset({"/GVCloudDrawing", "/GVRedline939"})
 
 
 # ---- annotations and the page map ----------------------------------------------------------------
