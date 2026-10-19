@@ -22,16 +22,17 @@ outputs read (the cloud drawing, the package, the Not-compared PDF and workbook,
   slip (10x, 12x) or one drawn digit easy to misread;
 - `gv_ink`: the vendor value's OWN ink is not GV's colour. This replaces the old GV-note box check,
   which blocked a label that merely sat inside a GV note's box: it stopped four true items and no
-  false one (PIPELINE-AUDIT.md). A label code read is the vendor's layer by construction; its ink is
-  looked at once more on the markup-free copy (`run.py` measures it);
+  false one (PIPELINE-AUDIT.md). A label code read from the vendor's black or grey layer (the text
+  and drawn routes never read GV's colours) is the vendor's, whatever GV drew over it; any other
+  label's own spot is looked at (`run.py` measures it on the markup-free copy);
 - `trade`: no end runs to the ceiling, a soffit or bulkhead, a door or another trade's work;
 - `ends`: the model's "from / to" ends name the same two points on both drawings;
 - `geometry`: code's drawn extents (`full_check_advocate.same_extent`) do not show different
   points. "Cannot tell" never blocks: it is extra evidence only.
 
 A candidate turns red only when the blind second look agrees (`with_blind`, `blind.py`): it picks
-the same architect label, says the two measure the same thing, names the same ends on both
-drawings and sees the vendor value in black.
+the same architect label, says the two measure the same thing and names the same ends on both
+drawings.
 
 **Everything else**, with its reason (`classification`'s reasons, so the Not-compared list words it):
 
@@ -813,13 +814,17 @@ def _area_check(
 
 
 def _view_check(item: Item, a_file: str, a_page: int) -> Check:
+    """The view types, as information only. A drawing's printed titles do not say which view a
+    dimension is in: on Set 3 a vendor drawing titled only "SECTION AT" and an architect drawing
+    titled "ELEVATION" both hold the plan whose top width and depth are compared (s3-48, s3-49),
+    so a title-based block stops true items, and a title-based pass is luck. What two dimensions
+    measure is checked by their ends (`ends`) and the blind look's own ends instead."""
     theirs = next(
         (r.view for r in item.architect if r.file == a_file and r.page == a_page and r.view), None
     )
-    if item.vendor.view and theirs and item.vendor.view != theirs:
-        return Check(
-            "view", "fail", f"the vendor's is a {item.vendor.view} view, the architect's a {theirs}"
-        )
+    ours = item.vendor.view
+    if ours and theirs and ours != theirs:
+        return Check("view", "pass", f"titled {ours} and {theirs}: the ends decide")
     return Check("view", "pass")
 
 
@@ -834,10 +839,23 @@ def _roles_check(vendor: Mapping[str, Any], architect: Mapping[str, Any]) -> Che
     return Check("roles", "pass")
 
 
-def _ink_check(ink: tuple[int, float] | None) -> Check:
-    if ink is None:
+#: Label routes whose characters code read from the vendor's black or grey ink only: the text
+#: route reads black or grey characters, the drawn route black or grey strokes (`dim_labels`); GV's
+#: coloured markup is never read as a label.
+_VENDOR_INK_ROUTES: Final = frozenset({"text", "drawn"})
+
+
+def _ink_check(label: Mapping[str, Any], ink: Ink | None) -> Check:
+    """Whether the vendor value is GV's markup: only by the label's OWN ink. A label code read
+    from the vendor's black or grey layer is the vendor's, whatever GV drew over or around it
+    (a yellow note covering it, a note box round it: the old box check stopped four true items).
+    Any other label's own spot is looked at (`ink`, its coloured share)."""
+    if label.get("route") in _VENDOR_INK_ROUTES:
+        return Check("gv_ink", "pass", "read from the vendor's black or grey ink")
+    measured = ink(label) if ink is not None else None
+    if measured is None:
         return Check("gv_ink", "unknown", "the vendor value's own ink could not be looked at")
-    if ink[1] > GV_INK_SHARE:
+    if measured[1] > GV_INK_SHARE:
         return Check("gv_ink", "fail", "the vendor value's own ink is GV's colour (GV's markup)")
     return Check("gv_ink", "pass")
 
@@ -1097,7 +1115,7 @@ def _verify_pair(pair: Mapping[str, Any], item: Item, pack: Pack, ink: Ink | Non
         return _right(one, checks, matched, v_in, a_in, said_different=verdict == "different")
     checks.append(_round_check(pack, item, vendor))
     checks.append(_slip_check(v_in, a_in, "drawn" in (vendor.get("route"), architect.get("route"))))
-    checks.append(_ink_check(ink(vendor) if ink is not None else None))
+    checks.append(_ink_check(vendor, ink))
     failed = _first_failure(checks)
     if failed is not None:
         return _blocked(one, failed, matched, checks)
@@ -1849,8 +1867,6 @@ def _pair_disagrees(verified: Verified, answer: BlindAnswer | None, failed: str)
         return f"a blind second look says {DIFFERENT_POINTS}"
     if answer.verdict != "same_thing":
         return "not proved: a blind second look is not sure the two measure the same thing"
-    if answer.vendor_ink_black == "no":
-        return "not proved: a blind second look sees the vendor value in colour (GV's markup)"
     state, why = ends_match(
         answer.vendor_from, answer.vendor_to, answer.architect_from, answer.architect_to
     )

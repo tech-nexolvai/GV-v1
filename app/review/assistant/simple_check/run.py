@@ -374,7 +374,9 @@ class _Run:
             None if code_paired else architect,
             annotations=(),  # the GV-note fix: only the value's own ink says it is GV's markup
             page_map=self.page_map,
-            vendor_ink=self._ink(vendor),
+            # A label read from the vendor's black or grey layer is the vendor's, whatever GV
+            # drew over it (`verify._ink_check`); any other label's own spot is looked at.
+            vendor_ink=(1, 0.0) if vendor.get("route") in ("text", "drawn") else self._ink(vendor),
             newer_same=same,
         )
         if not code_paired and not any(c.outcome != "pass" for c in checks):
