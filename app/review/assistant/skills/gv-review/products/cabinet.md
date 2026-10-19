@@ -21,6 +21,10 @@ view to read: the **elevation** for widths, fillers and tags; the **plan** for w
 - **Material tags**: finish and material of fronts, carcass and panels match the architect's.
 
 ## GV's standards (not on the drawing)
-GV fits a run to the site by **adjusting fillers first**; equipment cabinets are never resized. The
+GV fits a run to the site so: **fillers and the drawer bank keep their design size; the door
+cabinets all change by the same amount** (the site's overall less the architect's, shared equally),
+so the run still adds up to the site's overall; the height stack keeps its design sizes; equipment
+cabinets are never resized. Code checks this on every run it can read (its items say "GV's site-fit
+rule"); a door cabinet narrower or wider than the architect's by that share is right. The
 filler limits and the cabinet width limits per kind (single door, double door, drawer) are in
 `rules.md` with where each comes from. A value nobody entered is missing: say so, never assume one.

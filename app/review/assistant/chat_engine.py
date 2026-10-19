@@ -238,6 +238,7 @@ from app.review.assistant.ledger import LEDGER_TOOL_NAMES, ReadingLedger, record
 from app.review.assistant.pair_findings import add_to_answer as add_code_pairs
 from app.review.assistant.product_scope import ProductScope, outside_unit, scoped_gaps
 from app.review.assistant.proof import proof_counts, vendor_facing
+from app.review.assistant.run_fit import add_to_answer as add_run_fit
 from app.review.assistant.sandbox import SET_PACK, SKILLS, UPLOADS, SandboxRefused
 from app.review.assistant.send_package import (
     ZIP_MIME,
@@ -2421,8 +2422,9 @@ class ChatEngine:
 
     def add_code_findings(self) -> None:
         """The finish's code findings, $0, once per answer: the reading ledger's, the vendor
-        consistency check's (#1584), the finish check's (#1623), code's own pairs and GV's filler
-        range on the vendor's fillers (`filler_range`). A roster
+        consistency check's (#1584), the finish check's (#1623), code's own pairs, GV's site-fit rule
+        on the vendor's runs (`run_fit`) and GV's filler range on the vendor's fillers
+        (`filler_range`). A roster
         full check adds them before its proof steps (#1641), so its blind reads and devil's
         advocate see them; the trust phase then does not add them again."""
         if self._code_findings_added:
@@ -2445,6 +2447,10 @@ class ChatEngine:
                 add_code_pairs(self)  # dimensions code paired by itself, Wrong or Right, $0
             except Exception:  # noqa: BLE001 - the answer goes on without them
                 _log.exception("assistant chat code pairs failed")
+            try:
+                add_run_fit(self)  # GV's site-fit rule on the vendor's runs (`run_fit`), $0
+            except Exception:  # noqa: BLE001 - the answer goes on without it
+                _log.exception("assistant chat run fit check failed")
             try:
                 add_filler_range(self)  # GV's filler range on the vendor's fillers, $0
             except Exception:  # noqa: BLE001 - the answer goes on without it

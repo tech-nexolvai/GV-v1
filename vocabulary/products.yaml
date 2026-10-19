@@ -46,6 +46,20 @@
 #                      laminate in one set and a plumbing fixture in another): a wrong family gives a
 #                      false "missed finish". Other trades' families (tile, paint, wall covering)
 #                      are never listed.
+#   run_fit            optional: GV's rule for fitting a run of this product to the site (#1763),
+#                      checked by code ($0) on every vendor run paired with its architect run:
+#                        source        where the rule comes from (the rulebook cites it);
+#                        distribution  how the flex parts share the site difference: equally;
+#                        parts         each kind of part: kind (GV's word), role (fixed: keeps
+#                                      its design size; flex: absorbs the site difference),
+#                                      words (printed with a part's dimension, they name it),
+#                                      drawn (the look code tells it by inside its column:
+#                                      plain, stacked or crossed) and place (ends or any: a
+#                                      plain look is told only at the ends);
+#                        height_stack  true: the run's heights keep their design sizes and add
+#                                      up to their printed total.
+#                      A product with none gets no such check. A new product's rule is an entry
+#                      here, no code.
 
 version: 1
 # Where each product's skill file `<id>.md` lives, relative to this file.
@@ -130,7 +144,9 @@ products:
           Finish and material tags of fronts, carcass and panels match the architect's.
     global_rule_hints:
       - Filler width limits (smallest and largest filler).
-      - Fit to the site by adjusting fillers first; equipment cabinets are never resized.
+      - >-
+        Fit to the site: fillers and the drawer bank keep their design size; the door cabinets
+        share the site difference equally; equipment cabinets are never resized.
       - Cabinet width limits per kind (single door, double door, drawer) for this job.
     words: [cabinet, cabinets, filler, fillers, drawer, drawers, toe kick, toekick, shelf,
             shelves, end panel, end panels]
@@ -138,6 +154,28 @@ products:
             vanity, cab, toe]
     # Laminate, plastic laminate, wood, wood veneer, metal.
     tag_families: [LA, PLAM, WD, WV, MT]
+    run_fit:
+      source: >-
+        The client lead's worked cabinet sheets (2026-10-19): one base run drawn as designed, then
+        fitted to a smaller and a larger site, with 3, 4 and 5 door cabinets. Fillers and the
+        drawer bank keep their design size; the door cabinets all change by the same amount, so
+        the run still adds up to the site's overall; the height stack keeps its design sizes.
+      distribution: equally
+      parts:
+        - kind: filler
+          role: fixed
+          words: [filler, fillers, scribe]
+          drawn: plain
+          place: ends
+        - kind: drawer bank
+          role: fixed
+          words: [drawer, drawers, drawer bank]
+          drawn: stacked
+        - kind: door cabinet
+          role: flex
+          words: [door, doors]
+          drawn: crossed
+      height_stack: true
 
   - id: lighting
     label: Lighting

@@ -35,10 +35,16 @@ __all__ = [
     "DEFAULT_REGISTRY",
     "OTHER_CATEGORY",
     "REGISTRY_VARIABLE",
+    "RUN_FIT_DISTRIBUTIONS",
+    "RUN_FIT_LOOKS",
+    "RUN_FIT_PLACES",
+    "RUN_FIT_ROLES",
     "ChecklistItem",
     "Product",
     "ProductRegistry",
     "RegistryError",
+    "RunFit",
+    "RunPartKind",
     "load_registry",
     "registry",
     "reset_registry",
@@ -71,8 +77,22 @@ _PRODUCT_FIELDS: Final = frozenset(
         "words",
         "hints",
         "tag_families",
+        "run_fit",
     }
 )
+#: How a run's flex parts share the site difference (`run_fit.distribution`). Only `equally` so far:
+#: a new way is a new word here and its arithmetic in `app/review/assistant/run_fit.py`.
+RUN_FIT_DISTRIBUTIONS: Final = ("equally",)
+#: A run part's role: `fixed` keeps its design size on site, `flex` absorbs the site difference.
+RUN_FIT_ROLES: Final = ("fixed", "flex")
+#: The drawn looks code can tell inside a part's column (`run_fit`): `plain` (no lines inside: a
+#: strip), `stacked` (two or more full-width lines inside and no diagonals: stacked fronts) and
+#: `crossed` (diagonals both ways: door swings or a cross).
+RUN_FIT_LOOKS: Final = ("plain", "stacked", "crossed")
+#: Where a part kind may be told by its look alone: at either `ends` of the run, or `any` place.
+RUN_FIT_PLACES: Final = ("ends", "any")
+_RUN_FIT_FIELDS: Final = frozenset({"source", "distribution", "parts", "height_stack"})
+_RUN_PART_FIELDS: Final = frozenset({"kind", "role", "words", "drawn", "place"})
 #: A tag family: the letters before a finish or material code's number (`QZ` in `QZ-12`).
 _FAMILY: Final = re.compile(r"^[A-Z]{1,4}$")
 
@@ -87,6 +107,40 @@ class ChecklistItem:
 
     name: str
     text: str
+
+
+@dataclass(frozen=True, slots=True)
+class RunPartKind:
+    """One kind of part in a product's run (`run_fit`): a filler, a drawer bank, a door cabinet."""
+
+    kind: str
+    """Its name in GV's words, as the findings say it ("filler", "door cabinet")."""
+    role: str
+    """`fixed` (keeps its design size on site) or `flex` (absorbs the site difference)."""
+    words: tuple[str, ...] = ()
+    """Words that, printed with a part's own dimension, say it is this kind (lower case)."""
+    drawn: str | None = None
+    """The look code can tell it by inside its column (`RUN_FIT_LOOKS`), or `None`: words only."""
+    place: str = "any"
+    """`ends`: told by its look only at either end of the run; `any`: anywhere."""
+
+
+@dataclass(frozen=True, slots=True)
+class RunFit:
+    """GV's rule for fitting a product's run to the site (#1763): which parts keep their design
+    size and how the others share the difference. Data, so a new product needs no code."""
+
+    source: str
+    """Where the rule comes from (the rulebook cites it)."""
+    distribution: str
+    """How the flex parts share the site difference (`RUN_FIT_DISTRIBUTIONS`)."""
+    parts: tuple[RunPartKind, ...]
+    height_stack: bool = False
+    """The run's height stack (its heights from the floor up) keeps its design sizes and adds up
+    to its printed total."""
+
+    def kind(self, name: str) -> RunPartKind | None:
+        return next((part for part in self.parts if part.kind == name), None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +170,9 @@ class Product:
     """The tag families that name this product's finishes and materials (`QZ` for `QZ-12`): code
     compares the architect's and the vendor's codes of these families (`architect_items`) and
     files what it finds under this product. None: code compares no tags for it."""
+    run_fit: RunFit | None = None
+    """GV's rule for fitting this product's runs to the site (`run_fit`), or `None`: no such rule
+    until GV gives one."""
 
     @property
     def has_skill(self) -> bool:
@@ -183,6 +240,78 @@ def _flag(entry: Mapping[str, Any], name: str, where: str, *, default: bool | No
     return value
 
 
+def _run_fit(given: object, where: str) -> RunFit | None:
+    """A product's `run_fit` entry, checked (see `products.yaml`)."""
+    if given is None:
+        return None
+    where = f"{where} run_fit"
+    if not isinstance(given, Mapping):
+        raise RegistryError(f"{where}: must be a mapping")
+    unknown = sorted(set(given) - _RUN_FIT_FIELDS)
+    if unknown:
+        raise RegistryError(f"{where}: unknown field(s) {', '.join(unknown)}")
+    distribution = given.get("distribution", "equally")
+    if distribution not in RUN_FIT_DISTRIBUTIONS:
+        raise RegistryError(
+            f"{where}: `distribution` must be one of {', '.join(RUN_FIT_DISTRIBUTIONS)}"
+        )
+    height = given.get("height_stack", False)
+    if not isinstance(height, bool):
+        raise RegistryError(f"{where}: `height_stack` must be true or false")
+    raw_parts = given.get("parts")
+    if not isinstance(raw_parts, list) or not raw_parts:
+        raise RegistryError(f"{where}: `parts` must be a non-empty list")
+    parts: list[RunPartKind] = []
+    for raw in raw_parts:
+        if not isinstance(raw, Mapping):
+            raise RegistryError(f"{where}: each part must be a mapping")
+        extra = sorted(set(raw) - _RUN_PART_FIELDS)
+        if extra:
+            raise RegistryError(f"{where}: unknown part field(s) {', '.join(extra)}")
+        kind = _text(raw, "kind", where).lower()
+        if any(part.kind == kind for part in parts):
+            raise RegistryError(f"{where}: part kind {kind!r} is listed twice")
+        role = raw.get("role")
+        if role not in RUN_FIT_ROLES:
+            raise RegistryError(f"{where}: part {kind!r} `role` must be fixed or flex")
+        words = raw.get("words", [])
+        if not isinstance(words, list) or not all(isinstance(w, str) and w.strip() for w in words):
+            raise RegistryError(f"{where}: part {kind!r} `words` must be a list of text")
+        drawn = raw.get("drawn")
+        if drawn is not None and drawn not in RUN_FIT_LOOKS:
+            raise RegistryError(
+                f"{where}: part {kind!r} `drawn` must be one of {', '.join(RUN_FIT_LOOKS)}"
+            )
+        place = raw.get("place", "any")
+        if place not in RUN_FIT_PLACES:
+            raise RegistryError(f"{where}: part {kind!r} `place` must be ends or any")
+        if drawn == "plain" and place != "ends":
+            # A plain rectangle mid-run may be a door drawn without its swing: never told by look.
+            raise RegistryError(f"{where}: part {kind!r}: a `plain` look is told only at the ends")
+        if not words and drawn is None:
+            raise RegistryError(f"{where}: part {kind!r} needs `words` or `drawn` to be told")
+        parts.append(
+            RunPartKind(
+                kind=kind,
+                role=str(role),
+                words=tuple(dict.fromkeys(" ".join(w.lower().split()) for w in words)),
+                drawn=drawn,
+                place=str(place),
+            )
+        )
+    if not any(part.role == "flex" for part in parts):
+        raise RegistryError(f"{where}: at least one part kind must be flex")
+    looks = [part.drawn for part in parts if part.drawn is not None]
+    if len(looks) != len(set(looks)):
+        raise RegistryError(f"{where}: two part kinds share one `drawn` look")
+    return RunFit(
+        source=_text(given, "source", where),
+        distribution=str(distribution),
+        parts=tuple(parts),
+        height_stack=height,
+    )
+
+
 def _product(entry: object, skills_folder: Path, n: int) -> Product:
     if not isinstance(entry, Mapping):
         raise RegistryError(f"product {n}: must be a mapping")
@@ -247,6 +376,7 @@ def _product(entry: object, skills_folder: Path, n: int) -> Product:
         words=tuple(dict.fromkeys(" ".join(w.lower().split()) for w in words)),
         hints=tuple(dict.fromkeys(" ".join(w.lower().split()) for w in maybe)),
         tag_families=tuple(dict.fromkeys(families)),
+        run_fit=_run_fit(entry.get("run_fit"), where),
     )
     if product.active:
         if not product.checklist:

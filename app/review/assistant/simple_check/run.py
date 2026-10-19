@@ -50,6 +50,7 @@ from app.review.assistant.filler_range import covered_labels
 from app.review.assistant.finding_checks import to_inches
 from app.review.assistant.full_check_advocate import code_checks, decide, ink_colour, needs_pairing
 from app.review.assistant.product_scope import refiled
+from app.review.assistant.run_fit import covered_labels as run_fit_labels
 from app.review.assistant.simple_check import resolve as resolve_module
 from app.review.assistant.simple_check import verify as verify_module
 from app.review.assistant.simple_check.blind import BlindSettings, look_all
@@ -340,6 +341,7 @@ class _Run:
         # every answered drawing is verified and recorded; only the blind looks wait for money.
         with engine.timings.phase("verify"):
             verified = self._verify_all()
+            verified = self._without_run_fit(verified)
         with engine.timings.phase("resolve"):
             verified = self._resolve(verified)
         with engine.timings.phase("blind"):
@@ -1184,6 +1186,18 @@ class _Run:
                 }
             )
         engine.extra_gaps = list(self.rows)
+
+    def _without_run_fit(
+        self, verified: list[tuple[Verified, Item]]
+    ) -> list[tuple[Verified, Item]]:
+        """The compare answer's items less those on a vendor label GV's site-fit rule decided
+        (`run_fit`, code's own items, Right or Wrong): the rule governs that label, so a door the
+        site made narrower than designed is never red against the architect's size, and no blind
+        look is paid for it."""
+        decided = run_fit_labels(self.engine.book.live(), self.engine.book.main_file)
+        if not decided:
+            return verified
+        return [pair for pair in verified if self._label_key(pair[0]) not in decided]
 
     def _label_key(self, one: Verified) -> tuple[str, int, str] | None:
         vendor = one.vendor
