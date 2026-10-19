@@ -72,30 +72,40 @@ def test_an_answers_item_is_filed_by_its_own_words_first() -> None:
     assert verify_module._category(one, "countertop overall length") == "countertop"
 
 
-def test_an_item_with_no_product_words_is_filed_under_its_runs_product() -> None:
-    """Orchestrator, 2026-10-19: an outlet or a string on a cabinet run is a cabinet item (under
-    All, 25 of 29 items were "other"). The run's product is the one its printed words name most
-    (hints never count); its own words still come first."""
-    run = "2. Kitchen  BASE CABINET  FILLER  3 DRAWERS  FILLER  STONE TOP"
+def test_an_item_with_no_product_words_counts_for_every_product_its_drawing_shows() -> None:
+    """Orchestrator, 2026-10-19 (the inclusive rule, replacing "the most-shown product"): an
+    outlet or a string on a drawing of several products counts for EACH of them, so a one-product
+    pick never loses an item that may be its own (a keyed countertop string on a page of fillers
+    and drawers was dropped under Countertop only). Under All it is one finding, filed under the
+    product its page shows most. An item named by its own words stays strict."""
+    run = "1. Connection  FILLER  2 DRAWERS  FILLER  COUNTER"  # cabinet words, a countertop hint
     assert main_product(run) == "cabinet"
-    assert main_product("QUARTZ COUNTERTOP  BACKSPLASH  FILLER") == "countertop"
-    assert main_product("CABINET  QUARTZ") is None  # a tie names none
-    assert main_product("SINK  COUNTER") is None  # hints never count
     outlet = {"category": "other", "item": "Kitchen with cooktop: outlet 1 to the left wall"}
-    string = {"category": "other", "item": "Kitchen: dimension string (across, round 1)"}
+    string = {"category": "other", "item": "Connection: dimension string (across, round 1)"}
     for item in (outlet, string):
-        code = {**item, "created_by": "pairs"}
-        assert category_for(code, run) == "cabinet"
+        code = {**item, "created_by": "consistency"}
+        assert refiled(code, ProductScope.of(("countertop",)), run) == "countertop"
         assert refiled(code, ProductScope.of(("cabinet",)), run) == "cabinet"
-        assert refiled(code, ProductScope.of(("countertop",)), run) is None
-    # Its own words win over the run's: a top's size on a cabinet run is a countertop item.
-    top = {"category": "other", "item": "Kitchen: floor to top of counter", "created_by": "pairs"}
+        assert category_for(code, run) == "cabinet"  # All: once, under the most-shown product
+    # A page that shows one product only: the item is that product's alone.
+    lonely = {**string, "created_by": "consistency"}
+    assert refiled(lonely, ProductScope.of(("countertop",)), "FILLER  DRAWER") is None
+    # Its own words stay strict: a top's size is a countertop item, a toe kick a cabinet item.
+    top = {
+        "category": "other",
+        "item": "Connection: floor to top of counter",
+        "created_by": "pairs",
+    }
+    assert refiled(top, ProductScope.of(("cabinet",)), run) is None
     assert category_for(top, run) == "countertop"
-    # The simple check files by the drawing's main product too.
-    both = verify_module.Item(
-        "p1.v1", ROUND_1.vendor, products=("cabinet", "countertop"), main_product="cabinet"
-    )
-    assert verify_module._category(both, "the left wall to outlet 1") == "cabinet"
+    kick = {"category": "other", "item": "Connection: toe kick height", "created_by": "pairs"}
+    assert refiled(kick, ProductScope.of(("countertop",)), run) is None
+    # The simple check: own words strict; none on a drawing of several products: "other", for
+    # the finding book to file under each; a drawing of one product keeps it.
+    both = verify_module.Item("p1.v1", ROUND_1.vendor, products=("cabinet", "countertop"))
+    one = verify_module.Item("p1.v1", ROUND_1.vendor, products=("cabinet",))
+    assert verify_module._category(both, "the left wall to outlet 1") == "other"
+    assert verify_module._category(one, "the left wall to outlet 1") == "cabinet"
     assert verify_module._category(both, "vanity top width") == "countertop"
 
 
@@ -120,12 +130,12 @@ def test_the_sets_rows_are_cut_to_the_scope() -> None:
         rows, _dropped = scoped_gaps(gaps, ProductScope.of(products), lambda p: words(p) or "")
         return [row["page"] for row in rows]
 
-    # The lobby's page is a cabinet run (its words name a cabinet; "stone" only hints at a top).
-    assert kept(("countertop",)) == [34]
+    # The lobby's page shows a cabinet and (by "stone") a top: its row counts for both.
+    assert kept(("countertop",)) == [34, 36]
     assert kept(("cabinet",)) == [13, 19, 36]
     assert kept(()) == [13, 19, 34, 36]  # All: every row
     _rows, dropped = scoped_gaps(gaps, ProductScope.of(("countertop",)), lambda p: words(p) or "")
-    assert dropped == 3
+    assert dropped == 2
     # A row that names no product, on a page whose words name none either, is no product's.
     _rows, dropped = scoped_gaps(gaps, ProductScope.of(("countertop",)), None)
     assert dropped == 3
