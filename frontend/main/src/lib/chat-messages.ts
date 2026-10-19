@@ -698,7 +698,7 @@ function capWords(value: string | null | undefined): string | null {
  * limit": today's setting may differ from the cap it ran under (#1483: a $5 stop read "$15").
  */
 export function stoppedWords(
-  message: Pick<ViewMessage, 'stopped'> & Partial<Pick<ViewMessage, 'cap_hit' | 'message_cap_usd' | 'package_cap_usd'>>,
+  message: Pick<ViewMessage, 'stopped'> & Partial<Pick<ViewMessage, 'cap_hit' | 'message_cap_usd' | 'package_cap_usd' | 'error'>>,
 ): string | null {
   switch (message.stopped) {
     case 'cost_cap': {
@@ -716,7 +716,9 @@ export function stoppedWords(
     case 'interrupted':
       return 'Interrupted by a server restart';
     case 'error':
-      return 'Something went wrong. Try again.';
+      // #1683: the server saves why in plain words, never the provider's own ("Claude is busy right
+      // now…", "…Tell your admin."): said as it is, so "try again" and "tell your admin" differ.
+      return message.error?.trim() || 'Something went wrong. Try again.';
     default:
       return null;
   }
