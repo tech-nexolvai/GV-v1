@@ -163,7 +163,7 @@ _HOW_SUM: Final = re.compile(r"\bparts to (.+?);")
 _AI_WORDS: Final[Mapping[str, str]] = {
     "read": "a second reading agrees",
     "lead": "checked on the drawing",
-    "critic": "the critic passed it",
+    "critic": "a second, independent check passed it",
 }
 
 

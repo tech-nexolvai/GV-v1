@@ -386,7 +386,7 @@ def test_the_remade_drawing_clouds_agreed_items_and_leaves_ai_only_ones_grey(
     words = "".join(page.extract_text() for page in PdfReader(str(out)).pages)
     assert "Agreed by Reviewer One" in words
     # #1619: what code could not prove is not on the drawing: the separate Not-compared list.
-    assert "Nothing to compare (1)" in " ".join(words.split()) and "Bay sizes" not in words
+    assert "Not compared (1)" in " ".join(words.split()) and "Bay sizes" not in words
     assert "check before sending" not in words
 
 
