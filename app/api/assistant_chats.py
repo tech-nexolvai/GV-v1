@@ -336,7 +336,11 @@ def chat_runtime(request: Request) -> ChatRuntime:
     )
 
     def provider() -> ChatProvider:
-        return AnthropicSdkProvider(choice, timeout_seconds=settings.assistant_call_timeout_seconds)
+        return AnthropicSdkProvider(
+            choice,
+            timeout_seconds=settings.assistant_call_timeout_seconds,
+            idle_seconds=settings.assistant_stream_idle_seconds,
+        )
 
     def sandbox(workspace: ChatWorkspace) -> Sandbox | None:
         return open_sandbox(

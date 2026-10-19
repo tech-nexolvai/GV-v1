@@ -3,7 +3,7 @@
 - which items code clouds by itself (only Wrong items code proved), and where the rest go;
 - the colours: red and green legible on white and in greyscale print;
 - the words: "Vendor: 46"" in red, "Should be: 37" (architect 3'-1", page 2)" in green;
-- the rendered PDF: cover counts (Wrong / Right / Nothing to compare), stamp, assumptions, the
+- the rendered PDF: cover counts (Wrong / Right / Not compared), stamp, assumptions, the
   sheet's note, the proof entry, the page labels; the reviewer's decisions as overrides; what could
   not be compared is never on the drawing (#1619): it is the separate Not-compared list;
 - the plan check never waits: code's likely answers, written on the cover.
@@ -411,7 +411,7 @@ def test_the_drawing_clouds_only_what_code_proved_in_red_and_green(tmp_path: Pat
         "Checked automatically by GV Review: 2026-10-18",
         "1\nWrong",
         "1\nRight",
-        "2\nNothing to compare",
+        "2\nNot compared",
         RULE_LINE[:60],
         "Buffet outlet height",
     ):
@@ -435,7 +435,7 @@ def test_the_drawing_clouds_only_what_code_proved_in_red_and_green(tmp_path: Pat
     assert _count(proof_picture, GREEN) > 50 and _count(proof_picture, RED) > 50  # the boxes
     notes = " ".join(reader.pages[3].extract_text().split())
     # What could not be compared is not on the drawing: the notes point to the separate list.
-    assert "Nothing to compare (2): listed with the reason" in notes
+    assert "Not compared (2): listed with the reason" in notes
     assert "Base cabinet height" not in notes
     assert "Right (1)" in notes and "Toe kick height" in notes
     words = "".join(page.extract_text() for page in reader.pages)
@@ -607,7 +607,7 @@ def test_the_not_compared_list_has_the_same_rows_as_the_workbook_and_the_screen(
     assert "architect gives no size or information" in words and "Illegible (1)" in words
     assert "Counter overall width" in words and "the architect's size or note for" in words
     book = openpyxl.load_workbook(stdio.BytesIO(not_compared.xlsx(rows)))
-    assert book.sheetnames == ["Not compared", "Summary"]
+    assert book.sheetnames == ["Not compared", "Found across the set", "Summary"]
     table = [[c.value for c in row] for row in book["Not compared"].iter_rows()]
     assert table[0] == list(not_compared.COLUMNS)
     assert [line[4] for line in table[1:]] == [r.item for r in rows]
@@ -643,6 +643,11 @@ def test_the_not_compared_list_has_the_same_rows_as_the_workbook_and_the_screen(
     assert "Found by code across the set (2)" in words2
     assert "Not reviewed: finish codes not comparable (1)" in words2
     assert not_compared.csv_text(rows).count("\r\n") == 4
+    # The workbook's first sheet holds the items only (the screen's count); the set's gaps are a
+    # sheet of their own (the app test: 46 on screen against 1,232 rows in one sheet).
+    both = openpyxl.load_workbook(stdio.BytesIO(not_compared.xlsx([*rows, *gaps])))
+    assert both["Not compared"].max_row == 1 + 3
+    assert both["Found across the set"].max_row == 1 + 2
     # The product scope: an item of a product the check was not run for is left out.
     scoped = not_compared.rows(
         [_decision(category="cabinet"), _decision(id="F9", category="countertop")],
