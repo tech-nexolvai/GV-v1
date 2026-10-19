@@ -217,7 +217,7 @@ describe('files, Copy and Retry', () => {
     expect(within(node).getByRole('button', { name: 'Copied' })).toBeTruthy();
     await user.click(within(node).getByRole('button', { name: 'Retry' }));
     expect(onRetry).toHaveBeenCalledTimes(1);
-    expect(node.querySelector('[data-slot="chat-meta"]')?.textContent).toBe('Claude Opus 5.5 · High effort · $1.72');
+    expect(node.querySelector('[data-slot="chat-meta"]')?.textContent).toBe('Opus 5.5 · High effort · $1.72');
   });
 
   it('older answers show their actions on hover; no Retry without the page’s callback, or while running', () => {
