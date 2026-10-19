@@ -9,7 +9,7 @@ import { chatPaths, type ChatAccuracy, type ChatCoverage, type ChatFile, type Ch
 import { coverageCounts, coverageWords, type FindingCounts } from '@/lib/chat-findings';
 import { allPicked, progressWords } from '@/lib/chat-full-check';
 import { planAnswers, usePlanCheck } from '@/lib/chat-plan-check';
-import { fileKind, fileSize, type ViewMessage } from '@/lib/chat-messages';
+import { fileKind, fileSize, openHref, type ViewMessage } from '@/lib/chat-messages';
 import { activeProducts, comingLater, useProductCatalog } from '@/lib/products';
 import type { ProofCounts } from '@/lib/chat-proof';
 import { cn } from '@/lib/utils';
@@ -204,7 +204,7 @@ export interface CloudReview {
   failed: boolean;
 }
 
-export function FullCheckFiles({ cloud, report, notCompared = [], chatId, page = 1, totalPages = null, counts = null, proof = null, review = null, packaged = false }: {
+export function FullCheckFiles({ cloud, report, notCompared = [], chatId, page = 1, totalPages = null, counts = null, proof = null, review = null, packaged = false, unsent = false }: {
   cloud: ChatFile | null;
   report: ChatFile | null;
   /** #1619: the Not-compared list, as a PDF and a workbook. */
@@ -220,6 +220,8 @@ export function FullCheckFiles({ cloud, report, notCompared = [], chatId, page =
   review?: CloudReview | null;
   /** #1622: a send-ready package holds the drawing too; its download is then the one primary action. */
   packaged?: boolean;
+  /** #1684: the review result is "not for sending" (the check did not finish): never "Ready to send". */
+  unsent?: boolean;
 }) {
   if (!cloud && !report && !notCompared.length) return null;
   const href = (file: ChatFile) => file.url || chatPaths.file(chatId, file.id);
@@ -230,7 +232,7 @@ export function FullCheckFiles({ cloud, report, notCompared = [], chatId, page =
         <span className="font-medium">Check report</span>
         <span className="text-muted-foreground" title={report.name}> · {fileSize(report.size)}</span>
       </span>
-      <a href={href(report)} target="_blank" rel="noopener noreferrer" aria-label={`Open ${report.name}`} className="rounded-md px-1.5 py-1 font-medium text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">Open</a>
+      <a href={openHref(report, href(report))} target="_blank" rel="noopener noreferrer" aria-label={`Open ${report.name}`} className="rounded-md px-1.5 py-1 font-medium text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">Open</a>
       <a href={href(report)} download={report.name} aria-label={`Download ${report.name}`} className="rounded-md px-1.5 py-1 font-medium text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">Download</a>
     </div>
   );
@@ -251,7 +253,7 @@ export function FullCheckFiles({ cloud, report, notCompared = [], chatId, page =
   if (!cloud) return <div className="grid gap-3 rounded-xl border bg-card px-4 py-3">{reportLine}{listLine}</div>;
   return (
     <section data-slot="chat-cloud-drawing" aria-label="Cloud drawing" className="chat-rise grid overflow-hidden rounded-xl border border-border/70 bg-card md:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
-      <a href={href(cloud)} target="_blank" rel="noopener noreferrer" aria-label="Open the cloud drawing" className="grid border-b border-border/60 bg-muted/40 p-4 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset md:border-r md:border-b-0">
+      <a href={openHref(cloud, href(cloud))} target="_blank" rel="noopener noreferrer" aria-label="Open the cloud drawing" className="grid border-b border-border/60 bg-muted/40 p-4 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset md:border-r md:border-b-0">
         <CloudPreview href={href(cloud)} page={page} total={totalPages} />
       </a>
       <div className="grid content-center gap-4 p-6">
@@ -259,7 +261,7 @@ export function FullCheckFiles({ cloud, report, notCompared = [], chatId, page =
           <p className="text-xs font-medium text-muted-foreground">Main output</p>
           <p className="text-[17px] font-semibold tracking-[-0.01em]">Cloud drawing</p>
           <p className="text-[13.5px] text-muted-foreground">
-            Ready to send: a red cloud at each wrong value code proved, with what it should be in green and the proof for each. The architect’s drawings govern; what could not be compared is listed apart.
+            {unsent ? 'Kept for you to look at. The check did not finish, so do not send it yet. It has a red cloud' : 'Ready to send: a red cloud'} at each wrong value code proved, with what it should be in green and the proof for each. The architect’s drawings govern; what could not be compared is listed apart.
           </p>
           {proof ? (
             <p data-slot="chat-cloud-counts" className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground tabular-nums">
@@ -288,7 +290,7 @@ export function FullCheckFiles({ cloud, report, notCompared = [], chatId, page =
             <Download className="size-4" aria-hidden="true" />
             Download
           </a>
-          <a href={href(cloud)} target="_blank" rel="noopener noreferrer" aria-label="Open cloud drawing" className="inline-flex h-9 items-center gap-1.5 rounded-lg border bg-background px-3 text-sm font-medium hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
+          <a href={openHref(cloud, href(cloud))} target="_blank" rel="noopener noreferrer" aria-label="Open cloud drawing" className="inline-flex h-9 items-center gap-1.5 rounded-lg border bg-background px-3 text-sm font-medium hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
             <ExternalLink className="size-4" aria-hidden="true" />
             Open
           </a>

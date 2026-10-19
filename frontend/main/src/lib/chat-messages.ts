@@ -698,7 +698,7 @@ function capWords(value: string | null | undefined): string | null {
  * limit": today's setting may differ from the cap it ran under (#1483: a $5 stop read "$15").
  */
 export function stoppedWords(
-  message: Pick<ViewMessage, 'stopped'> & Partial<Pick<ViewMessage, 'cap_hit' | 'message_cap_usd' | 'package_cap_usd'>>,
+  message: Pick<ViewMessage, 'stopped'> & Partial<Pick<ViewMessage, 'cap_hit' | 'message_cap_usd' | 'package_cap_usd' | 'error'>>,
 ): string | null {
   switch (message.stopped) {
     case 'cost_cap': {
@@ -716,7 +716,9 @@ export function stoppedWords(
     case 'interrupted':
       return 'Interrupted by a server restart';
     case 'error':
-      return 'Something went wrong. Try again.';
+      // #1683: the server saves why in plain words, never the provider's own ("Claude is busy right
+      // now…", "…Tell your admin."): said as it is, so "try again" and "tell your admin" differ.
+      return message.error?.trim() || 'Something went wrong. Try again.';
     default:
       return null;
   }
@@ -728,6 +730,15 @@ export function thoughtFor(seconds: number | null): string {
   const whole = Math.max(1, Math.round(seconds));
   if (whole < 60) return `Thought for ${whole}s`;
   return `Thought for ${Math.floor(whole / 60)}m ${whole % 60}s`;
+}
+
+/**
+ * Open (#1684): a PDF is asked for inline, so the browser shows it instead of saving it again (the
+ * server serves only PDFs inline; anything else still downloads). Download keeps the plain link.
+ */
+export function openHref(file: { mime?: string | null; name: string }, href: string): string {
+  const pdf = file.mime === 'application/pdf' || /\.pdf$/i.test(file.name);
+  return pdf ? `${href}${href.includes('?') ? '&' : '?'}inline=true` : href;
 }
 
 /** A file's size in words: "820 KB", "1.2 MB". */

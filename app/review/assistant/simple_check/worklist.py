@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from app.review.assistant.full_check_plan import DIVIDER_NOTE, read_page_map
-from app.review.assistant.product_scope import named_products
+from app.review.assistant.product_scope import main_product, named_products
 from app.review.assistant.simple_check.schema import (
     Box,
     Drawing,
@@ -586,6 +586,7 @@ def worklist_from(
                 earlier_rounds=tuple(earlier),
                 later_rounds=tuple(later),
                 products=products,
+                main_product=main_product(text),
                 architect_only_tags=tuple(t for t in only_tags if t),
                 hard=tuple(hard),
             )

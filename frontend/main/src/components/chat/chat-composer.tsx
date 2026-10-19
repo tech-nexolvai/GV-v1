@@ -173,38 +173,41 @@ export function ChatComposer({
           Fill in {blank} to send · <kbd className="font-sans">Tab</kbd> moves to the next blank
         </p>
       )}
-      <div className="flex min-w-0 items-center gap-1 px-2.5 pt-1 pb-2.5">
+      {/* #1685: the row wraps at phone width, so the product chips never run under the model menu;
+          the model menu and Send stay together at the end of whichever line they land on. */}
+      <div data-slot="chat-composer-tools" className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-1.5 px-2.5 pt-1 pb-2.5">
         {plus}
         {leading}
-        <span className="flex-1" />
-        {value.length > MESSAGE_MAX - 500 && (
-          <span className="mr-1 text-xs text-muted-foreground">
-            <span className="num">{value.length}</span>/<span className="num">{MESSAGE_MAX}</span>
-          </span>
-        )}
-        {model && choice && <ModelMenu models={models} model={model} choice={choice} onChoice={onChoice} footnote={menuFootnote} />}
-        {running ? (
-          <button
-            type="button"
-            onClick={onStop}
-            disabled={stopping}
-            aria-label="Stop response"
-            title={stopping ? 'Stopping…' : 'Stop response'}
-            className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground transition-[opacity,transform] duration-150 hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none active:scale-95 disabled:opacity-50 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:zoom-in-90"
-          >
-            <Square className="size-3 fill-current" aria-hidden="true" />
-          </button>
-        ) : (
-          <button
-            type="submit"
-            aria-label="Send message"
-            title={blocked ?? (blank ? `Fill in ${blank} first` : 'Send message')}
-            disabled={!canSend}
-            className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground transition-[opacity,transform,background-color] duration-150 hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none active:scale-95 disabled:cursor-default disabled:bg-muted-foreground/40 disabled:opacity-60 disabled:active:scale-100"
-          >
-            <ArrowUp className="size-4" aria-hidden="true" />
-          </button>
-        )}
+        <div data-slot="chat-composer-end" className="ml-auto flex shrink-0 items-center gap-1">
+          {value.length > MESSAGE_MAX - 500 && (
+            <span className="mr-1 text-xs text-muted-foreground">
+              <span className="num">{value.length}</span>/<span className="num">{MESSAGE_MAX}</span>
+            </span>
+          )}
+          {model && choice && <ModelMenu models={models} model={model} choice={choice} onChoice={onChoice} footnote={menuFootnote} />}
+          {running ? (
+            <button
+              type="button"
+              onClick={onStop}
+              disabled={stopping}
+              aria-label="Stop response"
+              title={stopping ? 'Stopping…' : 'Stop response'}
+              className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground transition-[opacity,transform] duration-150 hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none active:scale-95 disabled:opacity-50 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:zoom-in-90"
+            >
+              <Square className="size-3 fill-current" aria-hidden="true" />
+            </button>
+          ) : (
+            <button
+              type="submit"
+              aria-label="Send message"
+              title={blocked ?? (blank ? `Fill in ${blank} first` : 'Send message')}
+              disabled={!canSend}
+              className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground transition-[opacity,transform,background-color] duration-150 hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none active:scale-95 disabled:cursor-default disabled:bg-muted-foreground/40 disabled:opacity-60 disabled:active:scale-100"
+            >
+              <ArrowUp className="size-4" aria-hidden="true" />
+            </button>
+          )}
+        </div>
       </div>
     </form>
   );
