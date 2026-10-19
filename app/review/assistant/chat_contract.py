@@ -532,6 +532,7 @@ type ChatKeepReason = Literal[
     "layout",
     "vendor_disagrees",
     "architect_outside_gv_rule",
+    "outside_gv_rule",
     "other",
 ]
 
@@ -656,6 +657,7 @@ class ChatFindingProofOut(BaseModel):
             "no_overall",
             "string_not_verified",
             "architect_outside_gv_rule",
+            "outside_gv_rule",
             "internal",
         ]
         | None

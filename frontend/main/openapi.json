@@ -5488,6 +5488,7 @@
                   "no_overall",
                   "string_not_verified",
                   "architect_outside_gv_rule",
+                  "outside_gv_rule",
                   "internal"
                 ],
                 "type": "string"
@@ -5905,6 +5906,7 @@
           "layout",
           "vendor_disagrees",
           "architect_outside_gv_rule",
+          "outside_gv_rule",
           "other"
         ],
         "type": "string"
