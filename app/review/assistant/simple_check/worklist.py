@@ -18,8 +18,8 @@ the set pack alone ($0, no PDF opened, no picture drawn):
   vendor drawing whose area has no architect drawing, an architect drawing of an area the vendor did
   not submit, a page of another upload. Nothing is skipped for money.
 - **Separate files** (#1722): a file whose drawings took their role from its upload (the architect's
-  own PDF, #1719) is numbered after the vendor's file (`set_pages`: its page 1 is set page 6 after a
-  5-page vendor file), so its drawings and labels have ids of their own (`p6.a1`, `p6.D3`). Each
+  own PDF, #1719) is numbered after the vendor's file from a round thousand (`set_pages`: its page 1
+  is set page 1001), so its drawings and labels have ids of their own (`p1001.a1`, `p1001.D3`). Each
   `Drawing` keeps its file and its own page (`file_page`) for its pictures. Its architect drawings
   are the candidates a plain vendor drawing (one whole page, no GV area) is paired with
   (`_pair_across`).

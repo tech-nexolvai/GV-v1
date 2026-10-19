@@ -7,9 +7,12 @@ uploaded as separate files (the vendor's PDF and the architect's PDF, #1719) has
 
 **The numbering.** The vendor's file (the work list's file) keeps its own page numbers; each separate
 file whose drawings took their role from its upload (`page_map.json`'s `upload_roles`, #1719) is
-numbered after it, in the page map's file order: a 5-page vendor file and a 1-page architect file
-make set pages 1-5 (the vendor's) and 6 (the architect's page 1). A combined set has no other file
-read so, and every set page is its own page: nothing changes for it. The numbering is fixed by the
+numbered after it from a round thousand, in the page map's file order: the first separate file's
+page 1 is set page 1001, the second's 2001 (`BLOCK`). So an architect file keeps the same ids
+whatever the vendor's file holds: a round-2 vendor file with more pages, checked against the same
+architect file, names the architect's labels as round 1 did. Only a vendor file of 1000 pages or
+more (or a separate file that long) moves the next block up. A combined set has no other file read
+so, and every set page is its own page: nothing changes for it. The numbering is fixed by the
 pack, so a replay of saved answers reads the same ids.
 
 **Where it is used.** Everywhere a PDF or a per-file fact of the pack (`dims.json`, `scales.json`,
@@ -25,7 +28,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-__all__ = ["SetPages", "set_pages"]
+__all__ = ["BLOCK", "SetPages", "set_pages"]
+
+#: Each separate file's pages start after a round thousand (set page 1001, 2001...).
+BLOCK = 1000
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +99,8 @@ def set_pages(page_map: Mapping[str, Any] | None, main_file: str | None) -> SetP
     for name in files:
         if name == main or name not in separate or not counts.get(name):
             continue
-        numbered.append((name, end, counts[name]))
-        end += counts[name]
+        offset = -(-end // BLOCK) * BLOCK if end % BLOCK else end
+        offset = max(offset, BLOCK)
+        numbered.append((name, offset, counts[name]))
+        end = offset + counts[name]
     return SetPages.of(main, tuple(numbered))
