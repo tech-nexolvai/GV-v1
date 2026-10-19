@@ -701,6 +701,7 @@ def to_result(
         pairs=tuple(pairs),
         other_items=tuple(others),
         unaccounted_labels=tuple(dict.fromkeys(unaccounted)),
+        same_drawing=reply.same_drawing,
     )
     problems += check_result(result, item)
     return result, problems
