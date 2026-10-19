@@ -13,19 +13,19 @@ product's rule is an entry there, never code here.
 **The checks** (code's arithmetic, exact to 1/16"):
 
 - the architect's parts add up to the architect's overall (else the run is not judged);
-- each fixed part = the architect's part ("the filler should stay 2"");
+- each fixed part = the architect's part ("the filler should stay 3"");
 - the vendor's parts add up to the vendor's overall; when they do not, the run's string is Wrong
   (the vendor's own sum, with the drawing checks of `vendor_consistency`) and its flex parts are
   not judged (which number is wrong is not known);
 - each flex part = the architect's part + (vendor overall - architect overall) / the number of
-  flex parts ("the door cabinet should be 15" = (85" - 2" - 21" - 2") / 4"); a share that is not
+  flex parts ("the door cabinet should be 14" = (72" - 3" - 24" - 3") / 3"); a share that is not
   a whole 1/16" is not judged;
 - the height stack (when the product's rule has one): each height = the architect's, and the
   stack adds up to its printed total.
 
 Every Wrong carries the arithmetic as its proof; the green "should be" is the value the rule
 gives. A part that is right is a Right item, so the architect comparison's red on a door the site
-made smaller (18" designed, 15" drawn) is not raised: the rule, not the drawing, governs it.
+made smaller (16" designed, 14" drawn) is not raised: the rule, not the drawing, governs it.
 
 **Reading the run, proved or nothing** (zero false reds):
 
@@ -138,7 +138,7 @@ class Judged:
     outcome: Outcome
     should_be: Fraction
     proof: str
-    """The rule's arithmetic in one line ("door cabinet should be 15" = (85" - 2" - 21" - 2") / 4")."""
+    """The rule's arithmetic in one line ("door cabinet should be 14" = (72" - 3" - 24" - 3") / 3")."""
 
 
 @dataclass(frozen=True, slots=True)

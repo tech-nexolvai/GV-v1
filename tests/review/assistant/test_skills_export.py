@@ -358,7 +358,9 @@ def test_each_product_in_focus_gets_its_file_and_a_set_with_none_gets_every_acti
     every = sorted(name for name in _files(tmp_path / "all") if name.startswith("products/"))
     assert every == ["products/cabinet.md", "products/countertop.md"]
     both = _files(tmp_path / "both")
-    assert "fillers and the drawer bank keep their design size" in both["products/cabinet.md"].decode()
+    assert (
+        "fillers and the drawer bank keep their design size" in both["products/cabinet.md"].decode()
+    )
     assert "Sink front offset" in both["products/countertop.md"].decode()
 
 

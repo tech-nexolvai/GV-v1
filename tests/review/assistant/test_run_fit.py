@@ -645,3 +645,23 @@ def test_the_hook_replaces_an_item_on_a_label_the_rule_decided(
     assert rf.add_to_answer(engine) == {"added": len(found), "replaced": 1}
     assert engine.dropped[0][0] == "F7" and 'should be 14"' in engine.dropped[0][1]
     assert (VENDOR, 1, label["id"]) in rf.covered_labels(engine.book.live())
+
+
+def test_the_simple_check_drops_its_compare_items_on_a_label_the_rule_decided() -> None:
+    """A door the site made narrower is never red against the architect's size in the simple
+    check either: its compare item on that label is left out (and no blind look is paid)."""
+    from types import SimpleNamespace
+
+    from app.review.assistant.simple_check import run as run_module
+
+    design = cabinet_run(F(3), F(24), [F(16)] * 3)
+    site = cabinet_run(F(3), F(24), [F(14)] * 3)
+    found = _findings(run_sheet(VENDOR, "vendor", site), run_sheet(ARCHITECT, "architect", design))
+    door = next(f for f in found if "door cabinet 1" in f["item"])
+    book = _Book([{**door, "id": "P1"}])
+    fake = SimpleNamespace(engine=SimpleNamespace(book=book))
+    fake._label_key = lambda one: run_module._Run._label_key(fake, one)
+    decided = SimpleNamespace(vendor={"id": door["dims"]["vendor"]["id"], "page": 1})
+    other = SimpleNamespace(vendor={"id": "D99", "page": 1})
+    kept = run_module._Run._without_run_fit(fake, [(decided, "a"), (other, "b")])
+    assert kept == [(other, "b")]
