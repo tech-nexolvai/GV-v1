@@ -113,7 +113,7 @@ def test_the_architect_files_drawings_and_labels_get_set_page_ids(
 ) -> None:
     page_map, dims = separate_set()
 
-    def pair_first(vendor: Any, candidates: Any) -> tuple[list[Any], str]:
+    def pair_first(vendor: Any, candidates: Any, *_: Any) -> tuple[list[Any], str]:
         return list(candidates[:1]), "paired for the test"
 
     monkeypatch.setattr(worklist_module, "_pair_across", pair_first)
@@ -221,7 +221,7 @@ def test_a_separate_files_picture_says_which_file_and_page_it_is(
     )
     page_map, dims = separate_set()
     monkeypatch.setattr(
-        worklist_module, "_pair_across", lambda vendor, found: (list(found[:1]), "test")
+        worklist_module, "_pair_across", lambda vendor, found, *_: (list(found[:1]), "test")
     )
     item = worklist_module.worklist_from(page_map, dims=dims, main_file=VENDOR).items[0]
     words = _caption(picture, item)
