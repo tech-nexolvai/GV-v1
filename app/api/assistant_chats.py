@@ -1164,6 +1164,13 @@ def _simple_options(settings: Settings, body: ChatMessageIn) -> dict[str, Any] |
     }
 
 
+def _lowered(cap_micros: int, asked_usd: float | None) -> int:
+    """A cap, lowered to the message's own `cap_usd` when that is lower; never raised."""
+    if asked_usd is None:
+        return cap_micros
+    return min(cap_micros, int(Decimal(str(asked_usd)) * _MICROS))
+
+
 @dataclass(frozen=True, slots=True)
 class _Message:
     job: MessageJob
@@ -1253,7 +1260,9 @@ def _message(
             lead_max_turns=settings.assistant_lead_max_turns,
             helper_max_turns=settings.assistant_helper_max_turns,
             max_parallel_agents=settings.assistant_max_parallel_agents,
-            message_cap_micros=int(settings.assistant_message_cap_usd * _MICROS),
+            message_cap_micros=_lowered(
+                int(settings.assistant_message_cap_usd * _MICROS), body.cap_usd
+            ),
             package_cap_micros=int(settings.assistant_package_cap_usd * _MICROS),
             rates=runtime.rates,
             uploads=_upload_sources(
@@ -1274,7 +1283,9 @@ def _message(
             page_cache_workers=settings.assistant_page_cache_workers,
             page_cache_memory_mb=settings.assistant_page_cache_memory_mb,
             roster=settings.assistant_full_check_roster,
-            full_check_cap_micros=int(settings.assistant_full_check_cap_usd * _MICROS),
+            full_check_cap_micros=_lowered(
+                int(settings.assistant_full_check_cap_usd * _MICROS), body.cap_usd
+            ),
             pairing_proof=settings.assistant_pairing_proof,
             full_check_mode=settings.assistant_full_check_mode,
             simple=_simple_options(settings, body) if mode == "full_check" else None,

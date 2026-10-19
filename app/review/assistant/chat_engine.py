@@ -1226,6 +1226,24 @@ class ChatEngine:
                     self._cancelled_call(model, prompt_id, started, usage)
                     raise _Cancelled from None
                 failure = failure_from(raised)
+                if usage:
+                    # It broke after its stream started: its prompt is billed already (harness
+                    # audit 2026-10-19: such calls were recorded as $0 and the guard missed them).
+                    partial = _Reply([], None, None, usage, None)
+                    self._record(model, prompt_id, started, partial, failure)
+                    self._charge(model, usage)
+                    if shown is not None:
+                        self._discard_attempt()
+                    if failure.retryable and attempts == 0:
+                        attempts += 1
+                        _log.warning(
+                            "assistant chat call failed mid-stream, asking once more: %s",
+                            failure.status,
+                        )
+                        if self._sleep(_RETRY_WAIT_SECONDS):
+                            raise _Cancelled from None
+                        continue
+                    raise failure from None
             if reply is not None and not _names_model(reply, model, self.provider.name):
                 failure = ProviderFailure(
                     "The AI service answered with a different model than the one asked, so the "
