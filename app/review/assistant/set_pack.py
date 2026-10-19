@@ -159,10 +159,14 @@ _ROLES: Final = {
     HeadingMeaning.REFERENCE: "brand_prototype",
 }
 _SAFE: Final = re.compile(r"[^A-Za-z0-9._-]+")
-#: A printed dimension in a page's text (`24"`, `3'-0"`, `35 3/4"`): a page of a separate file
-#: shows a drawing when it prints at least `_DRAWING_DIMS` of them (#1719).
-_DIMENSION: Final = re.compile(r"\d\s*(?:\"|''|\u201d)|\d\s*['\u2019]\s*-?\s*\d")
-_DRAWING_DIMS: Final = 2
+#: A printed dimension in a page's text, read whole (`24"`, `3'-0"`, `3'-10 1/2"`, `35 3/4"`): a
+#: page of a separate file shows a drawing when it prints at least `_DRAWING_DIMS` of them (#1719);
+#: a title block or a notes sheet prints one or two at most.
+_DIMENSION: Final = re.compile(
+    r"\d+\s*['\u2019]\s*-?\s*\d+(?:\s+\d+/\d+)?\s*(?:\"|\u201d)?"
+    r"|\d+(?:\s+\d+/\d+)?\s*(?:\"|''|\u201d)"
+)
+_DRAWING_DIMS: Final = 3
 
 #: Builds running in this process, by pack folder (a second chat on the same set waits for none).
 _running: dict[Path, threading.Thread] = {}
