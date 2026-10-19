@@ -87,9 +87,6 @@ _ORDER: Final = {"red": 0, "not_compared": 1, "right": 2}
 #: Who made a finding the run judges with the code checks (everything but its own).
 _SKIP_JUDGING: Final = frozenset({CREATED_BY})
 _MICROS: Final = 1_000_000
-#: The note under the simple check's summary (the screen reads a last line "*Summary written by
-#: GV Review…*" as its note).
-SIMPLE_SUMMARY_NOTE: Final = "*Summary written by GV Review from code's own checks.*"
 #: How long the run waits for the set pack to be made (its labels are read by OCR at upload).
 PACK_WAIT_SECONDS: Final = 1800.0
 _PACK_POLL_SECONDS: Final = 2.0
@@ -99,6 +96,9 @@ _PILOT: Final = "a pilot run compares only the first"
 NOT_FINISHED_NEXT: Final = (
     "Next: finish the check (compare the drawings left) before anything is sent to the vendor."
 )
+#: The note under the simple check's summary (the screen reads a last line "*Summary written by
+#: GV Review…*" as its note).
+SIMPLE_SUMMARY_NOTE: Final = "*Summary written by GV Review from code's own checks.*"
 
 
 @dataclass(frozen=True, slots=True)
