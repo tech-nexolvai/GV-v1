@@ -1111,7 +1111,7 @@ def markup_pdf(
 # ---- the check report ----------------------------------------------------------------------------
 
 REPORT_TITLE: Final = "Check report: checked automatically by GV Review"
-#: Under What's wrong (#1569): how the list is ordered, in plain words.
+#: Under Wrong (#1569, #1717): how the list is ordered, in plain words.
 IMPACT_NOTE: Final = (
     "checked items before AI readings only, then what changes fabrication (overall sizes, "
     "cut-outs, heights, missing parts) and the size of the difference; tags and labels last."
@@ -1292,7 +1292,7 @@ def check_report_pdf(
         )
     for title, header, rows, widths in sections:
         story += [Spacer(1, 10), Paragraph(escape(title), styles["Heading2"])]
-        if rows and title.startswith("What's wrong"):
+        if rows and title.startswith("Wrong ("):
             story.append(p(f"{BIGGEST_FIRST}: {IMPACT_NOTE}", small))
         story.append(table(header, rows, widths) if rows else p("None.", body))
     story += [Spacer(1, 10), Paragraph("Not checked", styles["Heading2"])]
