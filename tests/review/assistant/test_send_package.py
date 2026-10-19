@@ -297,6 +297,12 @@ def test_a_comment_number_names_one_item_across_checks() -> None:
             "category": "cabinet",
             "source": "architect",
             "vendor_box": spot,
+            # Code proved (both values printed at their spots, paired by code): a comment.
+            "trust_level": "confirmed",
+            "witnesses": ["printed"],
+            "paired_by": "code",
+            "checks": {"printed_architect": "match", "printed_vendor": "match"},
+            "inches": {"architect": "14", "vendor": "16", "difference": "2"},
         }
 
     def spot(x: float) -> dict[str, Any]:
