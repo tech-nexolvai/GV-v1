@@ -194,7 +194,7 @@ def test_the_code_summary_for_each_kind_of_stop(
     assert 5 <= len(lines) <= 6
     assert lines[0] == "Checked 60 of 60 pages (countertops and cabinets, 1 round)."
     # The cloud drawing's own counts (#1619): Wrong = proved by code, Right, nothing to compare.
-    assert lines[1] == "3 wrong (proved by code), 1 match, 1 with nothing to compare."
+    assert lines[1] == "3 wrong (proved by code), 1 right, 1 not compared."
     # The same item and values on two pages is said once, with its pages.
     assert lines[2] == (
         'Biggest issues: Market area height: vendor 107", architect 89 1/2" (p39-40); '
@@ -202,7 +202,7 @@ def test_the_code_summary_for_each_kind_of_stop(
     )
     # Always one line on what could not be compared, by reason (#1619).
     assert lines[3] == (
-        "1 item had nothing to compare (difference not proved by code: 1). See the Not-compared "
+        "1 item not compared (difference not proved by code: 1). See the Not-compared "
         "list (PDF / Excel)."
     )
     assert lines[-1] == "Next: send the cloud drawing to the vendor."

@@ -2773,7 +2773,7 @@ class ChatEngine:
         # The same counts as the screen and the cloud drawing (#1554, #1619): one final list.
         groups = proof_counts(findings)
         unseen = (
-            f", {groups['not_compared']} with nothing to compare" if groups["not_compared"] else ""
+            f", {groups['not_compared']} not compared" if groups["not_compared"] else ""
         )
         coverage = book.coverage_map()["counts"] if book.coverage_used else None
         trust = report.get("counts") or {}

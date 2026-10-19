@@ -706,6 +706,11 @@ export function messageCost(value: string | null | undefined): string | null {
 }
 
 /** The small line under a finished answer: "Claude Opus 5.5 · High effort · $1.72". */
+/** "Claude Opus 5.5" → "Opus 5.5": a model said without the maker's name. */
+function shortName(label: string): string {
+  return label.replace(/^Claude\s+/i, '') || label;
+}
+
 export function footerWords(
   message: Pick<ViewMessage, 'model' | 'effort' | 'cost_usd'> & Partial<Pick<ViewMessage, 'scope'>>,
   models: readonly Pick<ChatModel, 'id' | 'label'>[] | null,
@@ -714,7 +719,8 @@ export function footerWords(
   const scope = message.scope?.products?.length && !message.scope.all_products ? `Checked: ${message.scope.products_label ?? message.scope.products.join(', ')}` : null;
   return [
     scope,
-    modelLabel(message.model, models),
+    // #1717: the model's short name ("Opus 5.5"): the product is GV Review, never "Claude".
+    shortName(modelLabel(message.model, models)),
     message.effort ? `${EFFORT_WORDS[message.effort]} effort` : null,
     // A code-only answer (#1584) costs nothing; the server's "0.00" would read "<$0.01".
     message.model === CHECK_MODEL ? '$0' : messageCost(message.cost_usd),

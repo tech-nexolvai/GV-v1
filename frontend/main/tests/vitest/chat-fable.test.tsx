@@ -61,6 +61,6 @@ describe('an answer the refusal fallback wrote', () => {
     const line = document.querySelector('[data-slot="chat-fallback"]');
     expect(line?.textContent).toBe('Claude Fable 5.1 declined this request, so Claude Opus 4.8 answered it instead.');
     expect(line?.className).toContain('text-muted-foreground');
-    expect(screen.getByText(/Claude Fable 5\.1 · High effort/)).toBeTruthy();
+    expect(screen.getByText(/Fable 5\.1 · High effort/)).toBeTruthy();
   });
 });
