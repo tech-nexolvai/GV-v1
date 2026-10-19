@@ -156,7 +156,9 @@ def _inside(point: tuple[float, float], box: Sequence[float], slack: float = _SL
 
 def undecided(finding: Mapping[str, Any]) -> bool:
     """An item the escalation works on: Not compared today (a Right item not looked at on both
-    sides aside), never one the reviewer decided."""
+    sides aside), never one the reviewer decided, nor GV's filler-range note (`filler_range`)."""
+    if finding.get("created_by") == "filler_range":
+        return False  # GV's filler range decided it, the architect first: nothing to climb
     return proof.proof_group(finding) == "not_compared" and finding.get("status") != "same"
 
 
