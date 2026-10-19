@@ -31,7 +31,11 @@ The rules, in the order they are applied:
   (`no_overall`, code's pairs: "architect's parts add to 110\"; vendor shows 107 3/4\"").
 - **R8, different reference points** (the underside against the top of the counter): not directly
   comparable.
-- **R9, the vendor's value is unreadable** after the whole escalation ladder.
+- **R9, the vendor's value is unreadable** after the whole escalation ladder: code looked at its
+  spot and could not read it. A value with no spot on the drawing (an older stored record that
+  carries a value but no box or label, which `spot_locate` could not place) was never looked at:
+  it is Not compared as `no_spot` ("the value has no spot on the drawing"), never "Illegible"
+  (#1738).
 - **R10, a job value or GV setting is missing.**
 
 The escalation ladder (`escalation.py`, then the roster's one deeper look) runs BEFORE an item
@@ -45,6 +49,8 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Final, Literal
+
+from app.review.assistant.spot_locate import spot_words
 
 __all__ = [
     "REASONS",
@@ -62,6 +68,7 @@ type Reason = Literal[
     "nothing_to_compare",
     "different_reference",
     "unreadable",
+    "no_spot",
     "ai_unsure",
     "missing_setting",
     "prototype",
@@ -84,6 +91,7 @@ REASONS: Final[tuple[Reason, ...]] = (
     "string_not_verified",
     "different_reference",
     "unreadable",
+    "no_spot",
     "ai_unsure",
     "architect_disagrees",
     "missing_setting",
@@ -100,6 +108,7 @@ REASON_WORDS: Final[Mapping[str, str]] = {
     "nothing_to_compare": "architect gives no size or information",
     "different_reference": "not directly comparable (different reference points)",
     "unreadable": "vendor's value could not be read",
+    "no_spot": "the value has no spot on the drawing",
     # The list goes to the vendor: no "AI" in it (`vendor_text.internal`); GV's screen keeps the
     # reading's own words ("the AI was unsure and no printed value was found").
     "ai_unsure": "not settled from the drawings (no printed architect value found)",
@@ -123,6 +132,7 @@ TRADE_WORDS: Final[Mapping[str, str]] = {
     "nothing_to_compare": "Not reviewed: not shown on the architect's drawings",
     "different_reference": "Not reviewed: not directly comparable",
     "unreadable": "Illegible",
+    "no_spot": "Not reviewed: no spot on the drawing",
     "ai_unsure": "Not reviewed: not settled from the drawings",
     "architect_disagrees": "RFI to the architect",
     "missing_setting": "Not reviewed: project value not set",
@@ -141,6 +151,7 @@ _RULES: Final[Mapping[str, str]] = {
     "nothing_to_compare": "R7",
     "different_reference": "R8",
     "unreadable": "R9",
+    "no_spot": "R4",
     "ai_unsure": "R4",
     "architect_disagrees": "R3",
     "missing_setting": "R10",
@@ -319,6 +330,13 @@ def _vendor_read(finding: Mapping[str, Any]) -> bool:
     )
 
 
+def _has_spot(finding: Mapping[str, Any], side: str) -> bool:
+    """Whether a side has a spot on the drawing: a box, or a numbered label it was built from."""
+    dims = finding.get("dims")
+    label = dims.get(side) if isinstance(dims, Mapping) else None
+    return bool(finding.get("vendor_box" if side == "vendor" else "arch_box")) or bool(label)
+
+
 def _unproved(finding: Mapping[str, Any]) -> Classified:
     """A difference (status different) code could not prove: the closest reason."""
     page = _page(finding)
@@ -351,6 +369,15 @@ def _unproved(finding: Mapping[str, Any]) -> Classified:
         )
     if missing_on_vendor(finding):
         return _missing(finding)
+    if not _vendor_read(finding) and not _has_spot(finding, "vendor"):
+        # A value with no spot was never looked for on the drawing (#1738): said so, never
+        # "Illegible" (`spot_locate` found no single label that prints it).
+        return _not(
+            "no_spot",
+            f"the vendor's value {_short(finding.get('vendor'), 30)}: "
+            f"{spot_words(finding, 'vendor')} (page {page})",
+            f"the label the vendor's value is printed at on page {page}",
+        )
     if not _vendor_read(finding):
         return _not(
             "unreadable",

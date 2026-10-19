@@ -125,6 +125,7 @@ EXAMPLE_REPLY: Final = {
         },
     ],
     "unaccounted_labels": ["p12.D9"],
+    "same_drawing": "yes",
 }
 
 _EXAMPLE_INPUT: Final = """Work item p12.v2 (vendor round 2). Image 1: the vendor drawing. Image 2: the architect drawing p11.a1.
@@ -157,6 +158,7 @@ Rules:
    Boxes are [x0, y0, x1, y1] in pixels on the picture you name (vendor_image, architect_image: the image numbers). Every item has at least one box.
    millwork is true for the millwork itself (cabinets, tops, splashes, panels, shelves, fronts, sinks, appliance openings, and outlets or cut-outs in the millwork); false for room features (ceilings, soffits, walls, doors, artwork, switches, lights, fixtures outside the unit).
 6. The blue tags are code's. The vendor's drawing is its black and grey ink: coloured ink inside a drawing (red, yellow or highlighted notes and dimensions) is earlier review markup, never a vendor value.
+7. same_drawing: yes when the architect drawing(s) show the same thing as the vendor drawing (the same unit, run or elevation, whatever differs in its sizes); no when they plainly show something else (another room, another unit or wall); unsure when you cannot tell.
 Keep notes short; reason before you answer.
 
 Example (made-up values):
@@ -228,6 +230,12 @@ def item_text(item: WorkItem, pictures: Sequence[Picture]) -> str:
         lines.append(
             f"Architect drawing {drawing.ref}, {role} ({', '.join(about)}; images "
             f"{_images_of(pictures, drawing.ref)}). Labels: {_labels(drawing.labels)}"
+        )
+    if item.paired_by:
+        lines.append(
+            "The vendor's and the architect's drawings are separate files: code paired this "
+            f"architect drawing with the vendor drawing ({item.paired_by}). If it plainly shows "
+            "something else, answer same_drawing no."
         )
     if item.architect_only_tags:
         lines.append(
