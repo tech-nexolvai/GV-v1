@@ -184,11 +184,14 @@ type Box = tuple[float, float, float, float]
 def pack_key(listing: Sequence[Mapping[str, Any]]) -> str:
     """The pack's name: a hash of the uploads' names and SHA-256, in order. A separate architect
     file adds its role (#1719): its pages are read as the architect's, so a pack made before that
-    is made again; a set with no separate architect file keeps its name."""
+    is made again; a set with no separate architect file keeps its name. A file the front door
+    changed (`working_sha256`, #1724) adds its working copy's, so its pack is made from that copy;
+    a file it left as it was keeps the name its pack always had."""
     roles = upload_roles(listing)
     text = "\n".join(
         f"{item.get('name')}:{item.get('sha256')}"
         + (":architect" if roles.get(str(item.get("name"))) == "architect" else "")
+        + (f":{item['working_sha256']}" if item.get("working_sha256") else "")
         for item in listing
     )
     return hashlib.sha256(f"v{PACK_VERSION}\n{text}".encode()).hexdigest()[:32]

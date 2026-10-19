@@ -407,7 +407,7 @@ def _read_page(path: Path, page_index: int) -> _Page:
             size = (abs(corner[0] - start[0]), abs(corner[1] - start[1]))
             for char in page.chars:
                 made = _char(char, shown)
-                if made is not None:
+                if made is not None and _on_page(made.box, size):
                     chars.append(made)
             for item in (*page.curves, *page.lines, *page.rects):
                 made_path = _path(item, shown)
@@ -424,6 +424,13 @@ def _read_page(path: Path, page_index: int) -> _Page:
                 old, _ = _PAGE_CACHE.popitem(last=False)
                 _PAGE_LOCKS.pop(old, None)
         return result
+
+
+def _on_page(box: tuple[float, float, float, float], size: tuple[float, float]) -> bool:
+    """Whether a character's middle is on the page as shown: text the file keeps outside its
+    visible area (cropped away) is not on the drawing (#1724)."""
+    x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+    return 0 <= x <= size[0] and 0 <= y <= size[1]
 
 
 def _char(

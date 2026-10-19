@@ -47,6 +47,7 @@ from app.review.assistant.dim_index import DimLabels, labels_for
 from app.review.assistant.impact import by_impact
 from app.review.assistant.product_scope import ProductScope, refiled
 from app.review.assistant.sandbox import UPLOADS, ChatWorkspace, SandboxRefused
+from app.review.assistant.spot_locate import relocate
 from app.review.assistant.tool_schema import box_schema
 from app.review.assistant.vendor_text import rule_requirement
 from vocabulary.product_registry import registry
@@ -1615,11 +1616,31 @@ class FindingBook:
             "vendor_picture_id": None,
             "created_by": "gv_review",
         }
+        if not code:
+            # An AI page review's row has a value but no spot (#1738): its printed label, found
+            # by code, so code's checks read it there instead of calling it unreadable.
+            finding = self._relocated(finding)
         if self.checker is not None:
             finding = self.checker(finding)
         with self._lock:
             self.findings[finding_id] = finding
         return dict(finding)
+
+    def _relocated(self, finding: dict[str, Any]) -> dict[str, Any]:
+        """A recorded row with each side's spot from the set pack's labels on its page, when one
+        label prints the value (`spot_locate.relocate`; code never guesses between several)."""
+        file = self.main_file
+        if file is None:
+            return finding
+        labels = self.dim_labels
+        page = int(finding["page"])
+        try:
+            found = labels.on_page(file, page, read_now=False)
+            halves = labels.halves(file, page)
+        except Exception:  # noqa: BLE001 - no labels: the row keeps no spot, said so
+            _log.warning("assistant chat: recorded row %s not located", finding.get("id"))
+            return finding
+        return relocate(finding, found, file=file, halves=halves)
 
     def by(self, created_by: str) -> list[dict[str, Any]]:
         with self._lock:

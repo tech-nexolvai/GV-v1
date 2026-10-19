@@ -68,7 +68,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from enum import StrEnum
-from typing import Final, Literal
+from typing import TYPE_CHECKING, Final, Literal
 
 from evidence.coordinates import PageTransform, PdfPoint
 from evidence.crop import decode_rgb_png, encode_png
@@ -82,6 +82,9 @@ from extraction.geometry.rows import (
 )
 from extraction.slot_reader.bedrock import ROW_BOX_COLOURS
 from extraction.slot_reader.claude_output import picture_fits, visual_tokens
+
+if TYPE_CHECKING:
+    from extraction.reader import PlumberFrame
 
 __all__ = [
     "ITEM_PICTURES_ENV",
@@ -918,6 +921,10 @@ class ItemPage:
     """The page's transform at any dpi; its own dpi is replaced for each picture."""
     page_height: Decimal
     """pdfplumber's page height, which its `top` is measured down from."""
+    frame: PlumberFrame | None = None
+    """How pdfplumber's `(x, top)` goes back to PDF space (`reader.page_frame`), which a rotated
+    page needs (#1724). `None` places by `page_height` alone: right only on an unrotated page whose
+    media box starts at the origin."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -966,10 +973,12 @@ class PictureTooLarge(ValueError):
 def _place(page: ItemPage, dpi: int) -> Callable[[float, float], tuple[int, int]]:
     transform = replace(page.transform, dpi=dpi)
     height = page.page_height
+    frame = page.frame
 
     def place(x: float, top: float) -> tuple[int, int]:
+        across, down = Decimal(str(round(x, 4))), Decimal(str(round(top, 4)))
         point = transform.to_image(
-            PdfPoint(x=Decimal(str(round(x, 4))), y=height - Decimal(str(round(top, 4))))
+            frame.to_pdf(across, down) if frame is not None else PdfPoint(x=across, y=height - down)
         )
         return (point.x, point.y)
 
@@ -1419,8 +1428,8 @@ def pdf_item_pictures(
     from extraction.reader import page_frame
 
     with pdfplumber.open(io.BytesIO(data)) as document:
-        transform, height = page_frame(document.pages[page_index], 72)
-    page = ItemPage(page_index, rows, ink, transform, height)
+        transform, frame = page_frame(document.pages[page_index], 72)
+    page = ItemPage(page_index, rows, ink, transform, frame.height, frame)
     item_map = build_item_map(page_index, rows, ink, item_frames(ink), settings)
 
     def render(box: PixelBox, dpi: int) -> bytes:
