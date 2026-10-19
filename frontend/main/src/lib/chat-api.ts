@@ -329,6 +329,8 @@ export interface FindingBox {
   y0: number;
   x1: number;
   y1: number;
+  /** The upload the box is on (the server sends it): two boxes on one page of one file share a picture. */
+  file?: string | null;
 }
 
 /**
@@ -1046,6 +1048,8 @@ export const chatPaths = {
   cloudDrawing: (chatId: string, messageId: string) => `${BASE}/chats/${id(chatId)}/messages/${id(messageId)}/cloud-drawing`,
   /** #1584: the vendor consistency check, by code ($0, POST). */
   consistency: (chatId: string) => `${BASE}/chats/${id(chatId)}/consistency`,
+  /** #1717: the vendor's page picture in the set pack (100 dpi), for the evidence panel's boxed spot. */
+  planPage: (packageId: string, page: number) => `${BASE}/packages/${id(packageId)}/plan-pages/${page}`,
   /** #1569: code's plan for a full check of the set, and where it is unsure (no AI call). */
   fullCheckPlan: (packageId: string) => `${BASE}/packages/${id(packageId)}/full-check-plan`,
   /** #1522: the reviewer's Agree / Not a problem on one finding (POST). */

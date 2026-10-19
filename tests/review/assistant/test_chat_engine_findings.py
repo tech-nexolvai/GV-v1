@@ -589,8 +589,8 @@ def test_a_full_check_seeds_recorded_results_and_makes_the_cloud_drawing_and_rep
         "Check report: checked automatically by GV Review",
         "Should be",
         "Countertop",
-        "What's wrong (1)",
-        "What's right (1)",
+        "Wrong (1)",
+        "Right (1)",
         "Backsplash height",
         "Not checked",
     ):
