@@ -16,8 +16,8 @@ when code finds them, its dimension line (`dim_line`, two points) and the far en
 extension lines (`extension`).
 
 **The text route** reads the drawing's characters exactly as `verify_value` does (the vendor
-layer: black or grey characters of the page's own content and its pasted drawings; GV's markup is
-never read): rows read the longest way first, stacked fractions composed from the characters'
+layer: the characters of the page's own content and its pasted drawings, in every colour except on
+GV's combined sheets, where only black or grey is read; GV's markup is never read): rows read the longest way first, stacked fractions composed from the characters'
 places, the symbol font decoded. On top of that:
 
 - a millimetre value over its inches in brackets (`457` over `[18]`) is one label, `457 [18]`;
@@ -100,7 +100,6 @@ from app.review.assistant import hand_labels, ink_labels
 from app.review.assistant import verify_value as vv
 from app.review.assistant.finding_checks import to_inches, units_check
 from app.review.assistant.measure import _pieces
-from extraction.stamp_text import path_ink
 
 __all__ = [
     "LABELS_VERSION",
@@ -211,7 +210,9 @@ def _parse(pdf: Path, page_index: int) -> _Parsed:
     `measure`'s line work (both from the same pass)."""
     stat = pdf.stat()
     key = (str(pdf.resolve()), stat.st_mtime_ns, stat.st_size, page_index)
-    vendor = vv._vendor_page(pdf.read_bytes(), page_index)
+    data = pdf.read_bytes()
+    colour_rule = vv.combined_sheet(data)  # the colour rule: GV's combined sheets only
+    vendor = vv._vendor_page(data, page_index)
     chars: list[Any] = []
     paths: list[Any] = []
     segments: list[Segment] = []
@@ -224,14 +225,14 @@ def _parse(pdf: Path, page_index: int) -> _Parsed:
         start = shown(0.0, 0.0)
         size = (abs(corner[0] - start[0]), abs(corner[1] - start[1]))
         for char in page.chars:
-            made = vv._char(char, shown)
+            made = vv._char(char, shown, colour_rule=colour_rule)
             if made is not None and vv._on_page(made.box, size):
                 chars.append(made)
         for item in (*page.curves, *page.lines, *page.rects):
-            made_path = vv._path(item, shown)
+            made_path = vv._path(item, shown, colour_rule=colour_rule)
             if made_path is not None:
                 paths.append(made_path)
-            if not path_ink(dict(item)):
+            if not vv.path_shown(item, colour_rule=colour_rule):
                 continue
             width = float(item.get("linewidth") or 0)
             if width > 0:
@@ -246,7 +247,7 @@ def _parse(pdf: Path, page_index: int) -> _Parsed:
             vv._shown_box(shown, *(float(image[k]) for k in ("x0", "top", "x1", "bottom")))
             for image in page.images
         )
-    parsed = vv._Page(key, vendor, tuple(chars), tuple(paths), pictures, size)
+    parsed = vv._Page(key, vendor, tuple(chars), tuple(paths), pictures, size, colour_rule)
     weight = float(np.median(widths)) if widths else 0.3
     return _Parsed(parsed, tuple(segments), weight, tuple(rings))
 

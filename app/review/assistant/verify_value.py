@@ -8,7 +8,9 @@ it read, and why, in plain words. The same answer every time for the same file.
 **Route 1: the drawing's text.** Most numbers in GV's pasted drawings are real text characters
 inside the `/Stamp` annotations. A private copy of the page keeps its own content and its pasted
 drawings (merged in, `stamp_text.carries_drawing`), and drops every other annotation: GV's markup.
-Only black or grey characters are read (`stamp_text.drawing_ink`, the vendor-layer rule). The
+**Colour decides nothing, except on GV's combined sheets** (`gv_marks.gv_combined`, the colour
+rule): an ordinary drawing is read in every colour; on a combined sheet only black or grey ink is
+read (`stamp_text.drawing_ink`), because there a coloured mark may be a reviewer's. The
 characters are put back together by position, whichever way they turn:
 
 - one line of text is read the longest way first (`1'-9"` never also yields `9`);
@@ -85,7 +87,7 @@ import pikepdf
 
 from app.review.assistant import ink_labels
 from app.review.assistant.finding_checks import claim_value, dimension_tokens, to_inches
-from extraction.gv_marks import without_gv_marks
+from extraction.gv_marks import gv_combined, without_gv_marks
 from extraction.reader import pixel_placement
 from extraction.stamp_text import carries_drawing, drawing_ink, path_ink
 
@@ -285,6 +287,9 @@ class _Page:
     """Where the page shows a pasted picture (shown points): only OCR can read one."""
     size: tuple[float, float]
     """Shown width and height (points)."""
+    colour_rule: bool = True
+    """Whether only black or grey ink is read: on GV's combined sheets only (`gv_marks.gv_combined`,
+    the colour rule); every other file is read in every colour."""
 
 
 _CACHE_LOCK: Final = threading.Lock()
@@ -399,7 +404,9 @@ def _read_page(path: Path, page_index: int) -> _Page:
             cached = _PAGE_CACHE.get(key)
             if cached is not None:
                 return cached
-        vendor = _vendor_page(path.read_bytes(), page_index)
+        data = path.read_bytes()
+        colour_rule = combined_sheet(data)
+        vendor = _vendor_page(data, page_index)
         chars: list[_Char] = []
         paths: list[_Path] = []
         with pdfplumber.open(io.BytesIO(vendor)) as document:
@@ -409,18 +416,18 @@ def _read_page(path: Path, page_index: int) -> _Page:
             start = shown(0.0, 0.0)
             size = (abs(corner[0] - start[0]), abs(corner[1] - start[1]))
             for char in page.chars:
-                made = _char(char, shown)
+                made = _char(char, shown, colour_rule=colour_rule)
                 if made is not None and _on_page(made.box, size):
                     chars.append(made)
             for item in (*page.curves, *page.lines, *page.rects):
-                made_path = _path(item, shown)
+                made_path = _path(item, shown, colour_rule=colour_rule)
                 if made_path is not None:
                     paths.append(made_path)
             pictures = tuple(
                 _shown_box(shown, *(float(image[k]) for k in ("x0", "top", "x1", "bottom")))
                 for image in page.images
             )
-        result = _Page(key, vendor, tuple(chars), tuple(paths), pictures, size)
+        result = _Page(key, vendor, tuple(chars), tuple(paths), pictures, size, colour_rule)
         with _CACHE_LOCK:
             _PAGE_CACHE[key] = result
             while len(_PAGE_CACHE) > _PAGE_CACHE_SIZE:
@@ -436,11 +443,39 @@ def _on_page(box: tuple[float, float, float, float], size: tuple[float, float]) 
     return 0 <= x <= size[0] and 0 <= y <= size[1]
 
 
+#: Whether each file version is one of GV's combined sheets (`combined_sheet`).
+_COMBINED: dict[str, bool] = {}
+
+
+def combined_sheet(data: bytes) -> bool:
+    """Whether `data` is one of GV's combined review sheets (`gv_marks.gv_combined`): only then
+    is coloured ink left unread (the colour rule). Cached by the file's hash."""
+    key = hashlib.sha256(data).hexdigest()
+    with _CACHE_LOCK:
+        if key in _COMBINED:
+            return _COMBINED[key]
+    try:
+        with pikepdf.open(io.BytesIO(data)) as pdf:
+            found = gv_combined(pdf)
+    except pikepdf.PdfError:
+        found = True  # unreadable here: the strict rule
+    with _CACHE_LOCK:
+        _COMBINED[key] = found
+    return found
+
+
 def _char(
-    char: Mapping[str, Any], shown: Callable[[float, float], tuple[float, float]]
+    char: Mapping[str, Any],
+    shown: Callable[[float, float], tuple[float, float]],
+    *,
+    colour_rule: bool = True,
 ) -> _Char | None:
+    """One character as read, or `None`. With `colour_rule` (GV's combined sheets only) a
+    character set in colour is not read; otherwise its colour decides nothing."""
     text = _plain(str(char.get("text", "")))
-    if not text.strip() or text.startswith("(cid:") or not drawing_ink(dict(char)):
+    if not text.strip() or text.startswith("(cid:"):
+        return None
+    if colour_rule and not drawing_ink(dict(char)):
         return None
     matrix = char.get("matrix")
     if not isinstance(matrix, (tuple, list)) or len(matrix) != 6:
@@ -464,10 +499,21 @@ def _char(
     )
 
 
+def path_shown(item: Mapping[str, Any], *, colour_rule: bool = True) -> bool:
+    """Whether a line, rectangle or curve is drawn ink the readers use: stroked or filled, and on
+    GV's combined sheets (`colour_rule`) only in black or grey (`stamp_text.path_ink`)."""
+    if colour_rule:
+        return path_ink(dict(item))
+    return bool(item.get("stroke") or item.get("fill"))
+
+
 def _path(
-    item: Mapping[str, Any], shown: Callable[[float, float], tuple[float, float]]
+    item: Mapping[str, Any],
+    shown: Callable[[float, float], tuple[float, float]],
+    *,
+    colour_rule: bool = True,
 ) -> _Path | None:
-    if not path_ink(dict(item)):
+    if not path_shown(item, colour_rule=colour_rule):
         return None
     x0, x1, top, bot = (float(item[k]) for k in ("x0", "x1", "top", "bottom"))
     longest = max(x1 - x0, bot - top)
@@ -1033,7 +1079,8 @@ def _cached_layer(
 
 
 def _picture(page: _Page, spot: tuple[float, float, float, float]) -> np.ndarray | None:
-    """The vendor's layer at the spot as a grey picture, coloured pixels whitened (GV's marks)."""
+    """The vendor's layer at the spot as a grey picture; on GV's combined sheets its coloured
+    pixels whitened (GV's marks, the colour rule)."""
     pdfium = import_module("pypdfium2")
     lock = import_module("app.review.assistant.chat_drawing").PDFIUM_LOCK
     width, height = page.size
@@ -1066,8 +1113,9 @@ def _picture(page: _Page, spot: tuple[float, float, float, float]) -> np.ndarray
                 rgb = np.array(rendered.to_pil().convert("RGB"))
             finally:
                 document.close()
-    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
-    rgb[(hsv[:, :, 1] > 60) & (hsv[:, :, 2] > 60)] = 255
+    if page.colour_rule:  # GV's combined sheets only: their coloured pixels may be GV's marks
+        hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+        rgb[(hsv[:, :, 1] > 60) & (hsv[:, :, 2] > 60)] = 255
     grey: np.ndarray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
     return grey
 
