@@ -293,6 +293,37 @@ def history(session: Session, chat_id: UUID) -> list[dict[str, Any]]:
     for message in messages_of(session, chat_id):
         if message.role == "assistant" and message.api_content:
             replay.extend(message.api_content)
+    return replayable_messages(replay)
+
+
+def replayable_messages(messages: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Stored API messages as they may be sent again. Answers stored before the harness audit of
+    2026-10-19 could hold what the API refuses in a request, so every later question of that chat
+    failed: an empty message (an empty reply), an empty text block, or a thinking block with no
+    signature (a stream cut in the middle). Those parts are left out; every other message goes
+    back exactly as stored (nothing changes for a chat without them)."""
+    replay: list[dict[str, Any]] = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, list):
+            kept = [
+                block
+                for block in content
+                if not (
+                    isinstance(block, Mapping)
+                    and (
+                        (block.get("type") == "text" and not block.get("text"))
+                        or (block.get("type") == "thinking" and not block.get("signature"))
+                    )
+                )
+            ]
+            if not kept:
+                continue
+            if len(kept) != len(content):
+                message = {**message, "content": kept}
+        elif not content:
+            continue
+        replay.append(dict(message))
     return replay
 
 

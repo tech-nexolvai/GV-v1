@@ -13,7 +13,8 @@ anything else is a 404 that says nothing. The routes, under `/api/v1`:
 - `GET  /chats/{chat_id}/messages/{message_id}/events`: follow a message (#1479): the running
   message's events so far, then live until `message_end`; a finished one's `message_end` at once.
 - `POST /chats/{chat_id}/cancel`: stop the message being answered (the only way to stop it).
-- `GET  /chats/{chat_id}/files/{file_id}`, `GET /chats/{chat_id}/pictures/{picture_id}`.
+- `GET  /chats/{chat_id}/files/{file_id}`, `GET /chats/{chat_id}/pictures/{picture_id}`. A file
+  downloads as an attachment; `?inline=true` shows a PDF in the browser's viewer (Open, #1684).
 - `POST /chats/{chat_id}/messages/{message_id}/markup-pdf`: the answer's findings drawn by code on a
   copy of the vendor's PDF (clouds, notes, the draft stamp, a notes page), kept as a chat file; the
   same file every time for the same answer. `GET .../findings.csv`: the findings with their checks
@@ -545,7 +546,11 @@ def download_file(
     file_id: UUID,
     principal: Authenticated,
     session: Annotated[Session, Depends(get_session)],
+    inline: Annotated[bool, Query()] = False,
 ) -> FileResponse:
+    """The file as an attachment (Download). `inline=true` (Open, #1684) shows a PDF in the
+    browser's own viewer instead of saving it; every other kind of file stays an attachment, so
+    nothing the agent wrote (an HTML or SVG file, say) is ever rendered on the app's own origin."""
     _chat(session, chat_id, principal)
     row = session.get(AssistantChatFile, file_id)
     if row is None or row.chat_id != chat_id:
@@ -553,8 +558,13 @@ def download_file(
     path = ChatWorkspace(_chat_folder(request, chat_id)).files / str(file_id)
     if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != row.sha256:
         raise _not_found()
+    shown = inline and row.mime == "application/pdf"
     return FileResponse(
-        path, media_type=row.mime, filename=row.name, content_disposition_type="attachment"
+        path,
+        media_type=row.mime,
+        filename=row.name,
+        content_disposition_type="inline" if shown else "attachment",
+        headers={"X-Content-Type-Options": "nosniff"},
     )
 
 
@@ -1164,6 +1174,13 @@ def _simple_options(settings: Settings, body: ChatMessageIn) -> dict[str, Any] |
     }
 
 
+def _lowered(cap_micros: int, asked_usd: float | None) -> int:
+    """A cap, lowered to the message's own `cap_usd` when that is lower; never raised."""
+    if asked_usd is None:
+        return cap_micros
+    return min(cap_micros, int(Decimal(str(asked_usd)) * _MICROS))
+
+
 @dataclass(frozen=True, slots=True)
 class _Message:
     job: MessageJob
@@ -1253,7 +1270,9 @@ def _message(
             lead_max_turns=settings.assistant_lead_max_turns,
             helper_max_turns=settings.assistant_helper_max_turns,
             max_parallel_agents=settings.assistant_max_parallel_agents,
-            message_cap_micros=int(settings.assistant_message_cap_usd * _MICROS),
+            message_cap_micros=_lowered(
+                int(settings.assistant_message_cap_usd * _MICROS), body.cap_usd
+            ),
             package_cap_micros=int(settings.assistant_package_cap_usd * _MICROS),
             rates=runtime.rates,
             uploads=_upload_sources(
@@ -1274,7 +1293,9 @@ def _message(
             page_cache_workers=settings.assistant_page_cache_workers,
             page_cache_memory_mb=settings.assistant_page_cache_memory_mb,
             roster=settings.assistant_full_check_roster,
-            full_check_cap_micros=int(settings.assistant_full_check_cap_usd * _MICROS),
+            full_check_cap_micros=_lowered(
+                int(settings.assistant_full_check_cap_usd * _MICROS), body.cap_usd
+            ),
             pairing_proof=settings.assistant_pairing_proof,
             full_check_mode=settings.assistant_full_check_mode,
             simple=_simple_options(settings, body) if mode == "full_check" else None,

@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
+from app.review.assistant.finding_checks import to_inches
 from app.review.assistant.job_tracker import (
     TrackerAnswer,
     TrackerSet,
@@ -35,9 +36,10 @@ def finding(
     architect: str = '37"',
     category: str = "cabinet",
     source: str = "architect",
+    proved: bool = True,
     **extra: Any,
 ) -> dict[str, Any]:
-    return {
+    out = {
         "id": fid,
         "item": item,
         "page": page,
@@ -48,8 +50,22 @@ def finding(
         "category": category,
         "source": source,
         "vendor_box": box(page),
-        **extra,
     }
+    if status == "different" and proved:
+        # A Wrong the tracker counts is one code proved (both values printed, paired by code),
+        # as the files count it.
+        out |= {
+            "trust_level": "confirmed",
+            "witnesses": ["printed"],
+            "paired_by": "code",
+            "checks": {"printed_architect": "match", "printed_vendor": "match"},
+            "inches": {
+                "architect": str(to_inches(architect)),
+                "vendor": str(to_inches(vendor)),
+                "difference": str((to_inches(vendor) or 0) - (to_inches(architect) or 0)),
+            },
+        }
+    return {**out, **extra}
 
 
 def answer(
@@ -306,6 +322,31 @@ def test_a_right_that_was_not_compared_proves_nothing() -> None:
     assert item["state"] == "open" and item["round_now"] == 1
 
 
+def test_a_wrong_code_did_not_prove_is_not_compared_and_unnumbered() -> None:
+    """The pipeline audit (2026-10-19): the tracker counted a finding's raw `different` as Wrong
+    (a check row said 17 wrong where the files said 10), and numbered it. The files count Wrong
+    only when code proved it; the tracker and the comment numbers count the same."""
+    package, sets = one_set()
+    check = answer(
+        package,
+        [
+            finding("F1", "Sink centre line", 25, vendor="EQ", proved=False),
+            finding("F2", "Filler at wall end", 3),
+        ],
+    )
+    built = build_tracker(sets, [check])
+    items = by_item(built)
+    assert items["Sink centre line"]["open_kind"] == "decision"  # Open · Not compared
+    assert items["Filler at wall end"]["open_kind"] == "wrong"
+    row = built["sets"][0]["checks"][0]
+    assert (row["wrong"], row["decision"]) == (1, 1)
+    from app.review.assistant.job_tracker import comment_numbers
+
+    numbers = comment_numbers([check])
+    assert (str(check.message_id), "F1") not in numbers
+    assert numbers[(str(check.message_id), "F2")] == "C-01"
+
+
 def test_a_finding_with_no_round_takes_its_pages_round() -> None:
     package, sets = one_set()
     built = build_tracker(
@@ -402,3 +443,40 @@ def test_nothing_found_is_an_empty_tracker() -> None:
     assert built["totals"]["checks"] == 0
     only_right = build_tracker(sets, [answer(package, [finding("F1", "Width", 2, "same")])])
     assert only_right["items"] == [] and only_right["sets"][0]["items"] == 0
+
+
+def test_a_big_box_never_links_different_items_and_one_check_keeps_its_items_apart() -> None:
+    """A finding drawn round a whole elevation (a layout) is near every spot on it: it must not
+    tie the items on that elevation into one (the pipeline audit, 2026-10-19: a layout finding of
+    an early check joined an outlet, a J-box and a fridge outlet into one item, so they shared a
+    comment number). And two different findings of one check and round are never one item."""
+    package, sets = one_set()
+    whole = {"page": 23, "x0": 300.0, "y0": 50.0, "x1": 900.0, "y1": 400.0}
+    layout = answer(
+        package, [finding("L1", "Kitchen layout: drawers and uppers", 23, vendor_box=whole)]
+    )
+    first = answer(
+        package,
+        [
+            finding("F1", "Fridge outlet to right wall", 23, vendor_box=box(23, 700, 300)),
+            finding("F2", "Floor to the J-box", 23, vendor_box=box(23, 400, 300)),
+        ],
+        minutes=30,
+    )
+    second = answer(
+        package,
+        [
+            finding(
+                "G1", "Refrigerator outlet centre to the wall", 23, vendor_box=box(23, 702, 301)
+            ),
+            finding("G2", "J-box height in the fixed panel", 23, vendor_box=box(23, 401, 302)),
+        ],
+        minutes=60,
+    )
+    built = build_tracker(sets, [layout, first, second])
+    seen = sorted((i["item"], i["checks_seen"]) for i in built["items"])
+    assert seen == [
+        ("J-box height in the fixed panel", 2),
+        ("Kitchen layout: drawers and uppers", 1),
+        ("Refrigerator outlet centre to the wall", 2),
+    ]

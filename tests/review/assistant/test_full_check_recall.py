@@ -26,7 +26,7 @@ from typing import Any
 
 import pytest
 
-from app.review.assistant import full_check_roster, proof
+from app.review.assistant import chat_engine, full_check_roster, proof
 from app.review.assistant.chat_engine import RECORD_NOTE, ROSTER_WRAP_UP_NOTE
 from app.review.assistant.chat_trust import apply_checks, kept_advocate
 from app.review.assistant.full_check_advocate import (
@@ -605,14 +605,17 @@ def test_each_kind_of_specialist_is_timed_in_its_own_phase(
 
 
 class _Thinker(_Lead):
-    """A lead that first answers with nothing but thinking, then places the item."""
+    """A lead that first answers with nothing but thinking, then places the item. The empty reply
+    is never sent back (harness audit 2026-10-19: the API refuses an empty message in a history):
+    the note that sends the lead on joins its brief's message."""
 
     def helper(self, params: Mapping[str, Any], brief: str) -> list[dict[str, Any]]:
-        if brief.startswith("LEAD REVIEW") and _steps(params) == 0:
+        sent_on = chat_engine._CUT_NOTE in json.dumps(params["messages"])
+        if brief.startswith("LEAD REVIEW") and not sent_on:
             self._seen("empty", params)
             return reply(text(""), model=OPUS)
         if brief.startswith("LEAD REVIEW"):
-            params = {**params, "messages": params["messages"][2:]}
+            assert all(m["content"] for m in params["messages"]), "an empty message was sent back"
         return super().helper(params, brief)
 
 

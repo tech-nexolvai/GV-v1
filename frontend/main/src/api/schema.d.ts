@@ -86,7 +86,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** A file the assistant handed over */
+        /**
+         * A file the assistant handed over
+         * @description The file as an attachment (Download). `inline=true` (Open, #1684) shows a PDF in the
+         *     browser's own viewer instead of saving it; every other kind of file stays an attachment, so
+         *     nothing the agent wrote (an HTML or SVG file, say) is ever rendered on the app's own origin.
+         */
         get: operations["download_file_api_v1_chats__chat_id__files__file_id__get"];
         put?: never;
         post?: never;
@@ -5435,6 +5440,11 @@ export interface components {
          *     ACTIVE product id of the product registry (`GET /products`, #1547).
          */
         ChatMessageIn: {
+            /**
+             * Cap Usd
+             * @description This answer's per-answer cap in dollars, when lower than the server's (`GV_ASSISTANT_MESSAGE_CAP_USD`, and a roster full check's fixed price); it never raises them. The runaway guard holds what the calls in flight may cost against it, so a paid run's money stop is kept before calls start (harness audit 2026-10-19).
+             */
+            cap_usd?: number | null;
             /**
              * Compare Effort
              * @description The simple full check only: this run's compare call effort, for every drawing.
@@ -12892,7 +12902,9 @@ export interface operations {
     };
     download_file_api_v1_chats__chat_id__files__file_id__get: {
         parameters: {
-            query?: never;
+            query?: {
+                inline?: boolean;
+            };
             header?: never;
             path: {
                 chat_id: string;

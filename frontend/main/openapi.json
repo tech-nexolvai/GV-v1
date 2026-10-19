@@ -6339,6 +6339,20 @@
         "additionalProperties": false,
         "description": "One message from the reviewer, with the model, effort and thinking they picked.\n\n`mode: full_check` (CONTRACT4) runs the app's own fixed whole-set check instead of a typed\nquestion (`text` is then not needed: the question shown is \"Full check \u00b7 Countertops \u00b7 High\neffort\"). `products`: the products picked in the composer (default: the set's own), each an\nACTIVE product id of the product registry (`GET /products`, #1547).",
         "properties": {
+          "cap_usd": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 1000.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "This answer's per-answer cap in dollars, when lower than the server's (`GV_ASSISTANT_MESSAGE_CAP_USD`, and a roster full check's fixed price); it never raises them. The runaway guard holds what the calls in flight may cost against it, so a paid run's money stop is kept before calls start (harness audit 2026-10-19).",
+            "title": "Cap Usd"
+          },
           "compare_effort": {
             "anyOf": [
               {
@@ -22718,6 +22732,7 @@
     },
     "/api/v1/chats/{chat_id}/files/{file_id}": {
       "get": {
+        "description": "The file as an attachment (Download). `inline=true` (Open, #1684) shows a PDF in the\nbrowser's own viewer instead of saving it; every other kind of file stays an attachment, so\nnothing the agent wrote (an HTML or SVG file, say) is ever rendered on the app's own origin.",
         "operationId": "download_file_api_v1_chats__chat_id__files__file_id__get",
         "parameters": [
           {
@@ -22738,6 +22753,16 @@
               "format": "uuid",
               "title": "File Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "inline",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Inline",
+              "type": "boolean"
             }
           }
         ],
