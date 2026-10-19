@@ -1290,7 +1290,7 @@ CSV_COLUMNS: Final = (
     "Second read",
     "GV rule check",
     "Arithmetic",
-    "Checked on drawing by Claude",
+    "Checked on drawing by the AI",
     "Source",
     "Round",
     "Round status",

@@ -9,7 +9,7 @@
 
 import type { ChatAccuracy, ChatAgent, ChatBlock, ChatCite, ChatCoverage, ChatEffort, ChatEvent, ChatFile, ChatFinding, ChatFindingUpdate, ChatMessage, ChatMode, ChatModel, ChatPackageState, ChatProduct, ChatProgress, ChatResolver, ChatResume, ChatReviewAction, ChatScope, ChatStep, ChatStopped, ChatSummary, ChatTask, ChatTrust, ChatUnderstood, ChatUnknown, ChatFallback } from '@/lib/chat-api';
 import { CHECK_MODEL } from '@/lib/chat-api';
-import { EFFORT_WORDS } from '@/lib/chat-settings';
+import { EFFORT_WORDS, shortName } from '@/lib/chat-settings';
 import { applyLive, caughtUp, isLiveEvent, type LiveEvent, type LiveState } from '@/lib/chat-live';
 
 /** A helper agent while its Agent step runs: `running` until its `agent_end`. */
@@ -200,8 +200,8 @@ export function fallbackOf(blocks: readonly ChatBlock[]): ChatFallback | null {
 }
 
 /**
- * The quiet line under an answer a refusal fallback wrote (#1577): "Claude Fable 5.1 declined this
- * request, so Claude Opus 4.8 answered it instead."
+ * The quiet line under an answer a refusal fallback wrote (#1577): "Fable 5.1 declined this
+ * request, so Opus 4.8 answered it instead."
  */
 export function fallbackWords(fallback: ChatFallback, models: readonly Pick<ChatModel, 'id' | 'label'>[] | null): string {
   return `${modelLabel(fallback.from_model, models)} declined this request, so ${modelLabel(fallback.to_model, models)} answered it instead.`;
@@ -708,14 +708,17 @@ export function chatRunWords(chat: Pick<ChatSummary, 'id' | 'running' | 'mode' |
   return { running, count: total ? `${done ?? 0}/${total}` : null };
 }
 
-/** A model id in words: the server's label, else made from the id ("claude-opus-5-5" → "Claude Opus 5.5"). */
+/**
+ * A model in words, by its short name (#1756: the product is GV Review, a model is "Opus 5.5"): the
+ * server's label, else made from the id ("claude-opus-5-5" → "Opus 5.5"); empty when not known.
+ */
 export function modelLabel(id: string | null, models: readonly Pick<ChatModel, 'id' | 'label'>[] | null): string {
-  if (!id) return 'Claude';
+  if (!id) return '';
   const known = models?.find((model) => model.id === id);
-  if (known) return known.label;
+  if (known) return shortName(known.label);
   const words: string[] = [];
   let version: string[] = [];
-  for (const part of id.replace(/^anthropic[./]/, '').split(/[-_.]/)) {
+  for (const part of id.replace(/^anthropic[./]/, '').replace(/^claude[-_.]/i, '').split(/[-_.]/)) {
     if (/^\d+$/.test(part)) version.push(part);
     else {
       if (version.length) words.push(version.join('.'));
@@ -749,16 +752,12 @@ export function messageCost(value: string | null | undefined): string | null {
   return `$${amount.toFixed(2)}`;
 }
 
-/** The small line under a finished answer: "Claude Opus 5.5 · High effort · $1.72". */
-/** "Claude Opus 5.5" → "Opus 5.5": a model said without the maker's name. */
-function shortName(label: string): string {
-  return label.replace(/^Claude\s+/i, '') || label;
-}
-
 /** The model's short name for a message ("Sonnet 5.5"), or null when not known yet. */
 export function shortModelWords(id: string | null, models: readonly Pick<ChatModel, 'id' | 'label'>[] | null): string | null {
-  return id ? shortName(modelLabel(id, models)) : null;
+  return id ? modelLabel(id, models) : null;
 }
+
+/** The small line under a finished answer: "Opus 5.5 · High effort · $1.72". */
 
 export function footerWords(
   message: Pick<ViewMessage, 'model' | 'effort' | 'cost_usd'> & Partial<Pick<ViewMessage, 'scope'>>,
@@ -769,7 +768,7 @@ export function footerWords(
   return [
     scope,
     // #1717: the model's short name ("Opus 5.5"): the product is GV Review, never "Claude".
-    shortName(modelLabel(message.model, models)),
+    modelLabel(message.model, models),
     message.effort ? `${EFFORT_WORDS[message.effort]} effort` : null,
     // A code-only answer (#1584) costs nothing; the server's "0.00" would read "<$0.01".
     message.model === CHECK_MODEL ? '$0' : messageCost(message.cost_usd),

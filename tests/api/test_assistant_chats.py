@@ -630,7 +630,7 @@ def test_the_models_offered_and_the_caps(postgres_engine, tmp_path) -> None:  # 
     assert models["package_spent_usd"] == "0.00"
     assert models["models"][0] == {
         "id": "claude-opus-5-5",
-        "label": "Claude Opus 5.5",
+        "label": "Opus 5.5",
         "default": True,
         "efforts": ["low", "medium", "high", "xhigh", "max"],
         "default_effort": "high",
@@ -647,7 +647,7 @@ def test_the_models_offered_and_the_caps(postgres_engine, tmp_path) -> None:  # 
     # #1577: Fable 5.1 always thinks, takes every effort, and is not the default.
     assert models["models"][3] == {
         "id": "claude-fable-5-1",
-        "label": "Claude Fable 5.1",
+        "label": "Fable 5.1",
         "default": False,
         "efforts": ["low", "medium", "high", "xhigh", "max"],
         "default_effort": "high",
@@ -666,7 +666,7 @@ def test_fable_is_not_offered_on_the_openrouter_route(postgres_engine, tmp_path)
             json={"text": "hi", "model": "claude-fable-5-1", "effort": "high", "thinking": True},
         )
         assert response.status_code == 422 and response.json()["error"] == "choice_refused"
-        assert "Pick Claude Opus 5.5" in response.json()["message"]
+        assert "Pick Opus 5.5" in response.json()["message"]
         assert world.provider.calls == []
 
 

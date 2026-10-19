@@ -1070,7 +1070,7 @@ def _loop(
             ledger.before_call()
         except Exception:  # noqa: BLE001 - only ends a read transaction
             _log.exception("review assistant could not end the read transaction")
-        yield _stage(label + ("Asking Claude" if turn == 0 else "Thinking"), "model")
+        yield _stage(label + ("Asking the AI" if turn == 0 else "Thinking"), "model")
         started = monotonic_ns()
         payload: Mapping[str, Any] | None = None
         error: BaseException | None = None

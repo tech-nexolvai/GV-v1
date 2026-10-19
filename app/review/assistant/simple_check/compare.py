@@ -862,7 +862,7 @@ def compare_item(
         if answer.stop_reason == "refusal":
             return outcome(
                 status="failed",
-                reason="Claude declined to compare this drawing",
+                reason="The AI declined to compare this drawing",
                 partial=last,
                 repaired=repaired,
             )

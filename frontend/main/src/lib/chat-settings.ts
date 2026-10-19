@@ -33,9 +33,14 @@ export function effortRank(effort: ChatEffort): number {
   return EFFORTS.indexOf(effort);
 }
 
-/** The model's name without "Claude " ("Opus 5.5"), for the composer's small menu button. */
+/** A model's label without its maker's assistant name (an older server label said it in full). */
+export function shortName(label: string): string {
+  return label.replace(/^claude\s+/i, '') || label;
+}
+
+/** The model's short name ("Opus 5.5", #1756), for the composer's small menu button. */
 export function shortModelLabel(model: Pick<ChatModel, 'label'>): string {
-  return model.label.replace(/^Claude\s+/, '');
+  return shortName(model.label);
 }
 
 /** The words beside a locked Thinking switch: "Opus 5.5 always thinks". */

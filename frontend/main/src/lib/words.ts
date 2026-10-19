@@ -87,4 +87,6 @@ export const BANNED_WORDS: readonly { pattern: RegExp; instead: string }[] = [
   { pattern: /what to check(?:,| and)/i, instead: 'there is no "to check": say Wrong / Right / Not compared' },
   { pattern: /your decision/i, instead: 'there is no "Your decision": say "Not compared"' },
   { pattern: /['"`]Still wrong['"`]|Fixed · round|['"`]Fixed in a later round['"`]/, instead: 'say the round-2 words: Closed / Previous comment not addressed / New' },
+  // #1756: the product is GV Review; a model is named only by its short name ("Opus 5.5").
+  { pattern: /\bClaude\b/, instead: 'say "the AI", or the model\'s short name ("Opus 5.5")' },
 ];

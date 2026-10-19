@@ -128,8 +128,8 @@ def choose_provider(
 #: Claude Fable 5.1 on an account without 30-day data retention (a zero-data-retention account gets
 #: a 400 on every request; an early draft of Anthropic's docs said 404).
 RETENTION_WORDS: Final = (
-    "Claude Fable 5.1 needs 30-day data retention on this Anthropic account, and this account "
-    "does not have it. Pick Claude Opus 5.5, or ask your admin to turn on data retention."
+    "Fable 5.1 needs 30-day data retention on this Anthropic account, and this account "
+    "does not have it. Pick Opus 5.5, or ask your admin to turn on data retention."
 )
 
 
@@ -256,20 +256,20 @@ def failure_from(error: BaseException) -> ProviderFailure:
         )
     if isinstance(error, anthropic.AuthenticationError | anthropic.PermissionDeniedError):
         return ProviderFailure(
-            "The AI service refused this server's key, so Claude did not answer. Tell your admin.",
+            "The AI service refused this server's key, so the AI did not answer. Tell your admin.",
             status=status,
             retryable=False,
             kind="key",
         )
     if isinstance(error, anthropic.RateLimitError):
         return ProviderFailure(
-            "Claude is busy right now (too many requests). Please ask again in a minute.",
+            "The AI is busy right now (too many requests). Please ask again in a minute.",
             status=status,
             retryable=False,
         )
     if status == 402:
         return ProviderFailure(
-            "The AI service account needs attention (payment), so Claude did not answer. Tell "
+            "The AI service account needs attention (payment), so the AI did not answer. Tell "
             "your admin.",
             status=status,
             retryable=False,
@@ -303,7 +303,7 @@ def failure_from(error: BaseException) -> ProviderFailure:
             retryable=True,
         )
     return ProviderFailure(
-        "Claude's answer could not be read. Please ask again.", status=None, retryable=False
+        "The AI's answer could not be read. Please ask again.", status=None, retryable=False
     )
 
 
@@ -414,7 +414,7 @@ class _SdkStream:
 def _stopped() -> ProviderFailure:
     """A stream closed before its end (a cancel): it stopped, it did not answer."""
     return ProviderFailure(
-        "Claude's answer was stopped before its end.", status=None, retryable=False
+        "The AI's answer was stopped before its end.", status=None, retryable=False
     )
 
 

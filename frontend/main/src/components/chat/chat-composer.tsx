@@ -245,7 +245,7 @@ function ModelMenu({
   return (
     <DropdownMenu onOpenChange={(open) => !open && setEffortOpen(false)}>
       <DropdownMenuTrigger
-        aria-label={`Model: ${model.label}`}
+        aria-label={`Model: ${shortModelLabel(model)}`}
         className="inline-flex h-8 shrink-0 items-center gap-1 rounded-lg px-2 text-[13.5px] text-foreground/80 transition-colors duration-150 hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none data-[state=open]:bg-accent data-[state=open]:text-foreground"
       >
         <span className="max-w-[9rem] truncate">{shortModelLabel(model)}</span>

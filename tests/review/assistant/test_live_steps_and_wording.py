@@ -167,5 +167,5 @@ def test_ai_review_rows_reach_the_model_with_clouded_spelled_out() -> None:
 
 
 def test_model_labels_name_the_model() -> None:
-    assert model_label("anthropic.claude-opus-5-5") == "Claude Opus 5.5"
-    assert model_label("anthropic.claude-sonnet-5-5") == "Claude Sonnet 5.5"
+    assert model_label("anthropic.claude-opus-5-5") == "Opus 5.5"
+    assert model_label("anthropic.claude-sonnet-5-5") == "Sonnet 5.5"

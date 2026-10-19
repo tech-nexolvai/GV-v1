@@ -41,7 +41,7 @@ import { inlinePieces, markdownBlocks } from '@/lib/chat-markdown';
 import { OPUS, SONNET } from './fixtures/chat';
 
 // A Haiku that offers only the lower efforts, to test a model's own effort list.
-const HAIKU: ChatModel = { id: 'claude-haiku-5-5', label: 'Claude Haiku 5.5', default: false, efforts: ['low', 'medium', 'high'], default_effort: 'medium', thinking: 'optional', thinking_off_max_effort: 'high' };
+const HAIKU: ChatModel = { id: 'claude-haiku-5-5', label: 'Haiku 5.5', default: false, efforts: ['low', 'medium', 'high'], default_effort: 'medium', thinking: 'optional', thinking_off_max_effort: 'high' };
 const MODELS = [OPUS, SONNET, HAIKU];
 
 describe('chat routes', () => {
@@ -312,7 +312,7 @@ describe('the answer’s words', () => {
     expect(messageCost('0.002')).toBe('<$0.01');
     expect(messageCost('0.01')).toBe('$0.01');
     expect(messageCost('junk')).toBeNull();
-    expect(modelLabel('claude-sonnet-5-5', [])).toBe('Claude Sonnet 5.5');
+    expect(modelLabel('claude-sonnet-5-5', [])).toBe('Sonnet 5.5');
     expect(dollars('0.001')).toBe('under $0.01');
     expect(dollars('3')).toBe('$3.00');
   });
@@ -329,8 +329,8 @@ describe('the answer’s words', () => {
     expect(stoppedWords({ stopped: 'cancelled' })).toBe('Stopped');
     expect(stoppedWords({ stopped: 'error' })).toBe('Something went wrong. Try again.');
     // #1683: the server's own plain reason, when it saved one ("tell your admin" is not "try again").
-    expect(stoppedWords({ stopped: 'error', error: 'Claude is busy right now (too many requests). Please ask again in a minute.' }))
-      .toBe('Claude is busy right now (too many requests). Please ask again in a minute.');
+    expect(stoppedWords({ stopped: 'error', error: 'The AI is busy right now (too many requests). Please ask again in a minute.' }))
+      .toBe('The AI is busy right now (too many requests). Please ask again in a minute.');
     expect(stoppedWords({ stopped: 'error', error: '  ' })).toBe('Something went wrong. Try again.');
     expect(stoppedWords({ stopped: 'turn_limit' })).toBe('Stopped after the maximum number of steps');
     expect(stoppedWords({ stopped: null })).toBeNull();

@@ -115,7 +115,7 @@ DISABLED_TEXT: Final = (
     "from the records."
 )
 BUDGET_TEXT: Final = (
-    "This package has used its assistant budget, so Claude Sonnet was not asked. The suggested "
+    "This package has used its assistant budget, so the AI was not asked. The suggested "
     "questions still work from the records."
 )
 NO_SANDBOX_TEXT: Final = (
@@ -128,19 +128,18 @@ COST_CAP_TEXT: Final = (
 )
 _BUSY: Final = ErrorEvent(
     code="model_busy",
-    message="Claude Sonnet is busy right now and did not answer. Please ask again in a minute.",
+    message="The AI is busy right now and did not answer. Please ask again in a minute.",
 )
 _UNAVAILABLE: Final = ErrorEvent(
     code="model_unavailable",
     message=(
-        "Claude Sonnet could not be reached or did not answer in time. Please ask again; the "
+        "The AI could not be reached or did not answer in time. Please ask again; the "
         "suggested questions work from the records."
     ),
 )
 _ACCOUNT: Final = ErrorEvent(
     code="model_account",
-    message="The AI service account needs attention, so Claude Sonnet did not answer. "
-    "Tell your admin.",
+    message="The AI service account needs attention, so the AI did not answer. Tell your admin.",
 )
 _RECORDS_UNAVAILABLE: Final = ErrorEvent(
     code="records_unavailable",

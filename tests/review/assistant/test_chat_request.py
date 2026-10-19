@@ -117,7 +117,7 @@ def test_fable_always_thinks_with_the_summary_shown_the_fallback_and_the_binding
     for banned in ("budget_tokens", "temperature", "top_p", '"disabled"', "between_tools"):
         assert banned not in flat
     fable = MODELS["claude-fable-5-1"]
-    assert fable.label == "Claude Fable 5.1" and fable.thinking == "always"
+    assert fable.label == "Fable 5.1" and fable.thinking == "always"
     assert fable.thinking_off is None and fable.thinking_off_max_effort is None
     assert fable.rates_key == "anthropic.claude-fable-5-1" and fable.providers == ("anthropic",)
 
@@ -463,7 +463,7 @@ def test_a_refused_key_is_told_plainly_without_the_key(caplog: pytest.LogCapture
 
     assert raised.value.retryable is False and raised.value.status == 401
     assert str(raised.value) == (
-        "The AI service refused this server's key, so Claude did not answer. Tell your admin."
+        "The AI service refused this server's key, so the AI did not answer. Tell your admin."
     )
     assert raised.value.__cause__ is None
     assert ANTHROPIC_KEY not in caplog.text and ANTHROPIC_KEY not in repr(provider)
@@ -504,7 +504,7 @@ def test_failures_are_plain_and_say_whether_to_ask_again() -> None:
         )
     )
     assert not retention.retryable and str(retention) == RETENTION_WORDS
-    assert "Pick Claude Opus 5.5" in str(retention) and words not in str(retention)
+    assert "Pick Opus 5.5" in str(retention) and words not in str(retention)
 
 
 def test_dropped_thinking_is_read_from_the_stream() -> None:

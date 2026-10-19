@@ -107,7 +107,7 @@ def test_a_guarded_model_answer_streams_in_step_order() -> None:
     assert _stages(events) == ["records", "model", "guard", "answer"]
     assert [data.label for _, data in events[:3]] == [
         "Reading this review's records",
-        "Asking Claude Sonnet",
+        "Asking the AI",
         "Checking the answer against the records",
     ]
     answer = events[-1][1]
