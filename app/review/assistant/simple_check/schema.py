@@ -83,6 +83,7 @@ type OtherKind = Literal[
     "dimension_without_label",
 ]
 type Role = Literal["vendor", "architect", "brand_prototype"]
+type SameDrawing = Literal["yes", "no", "unsure"]
 
 VERDICTS: Final[tuple[str, ...]] = (
     "same",
@@ -395,6 +396,11 @@ class CompareResult(_Frozen):
     pairs: tuple[Pair, ...]
     other_items: tuple[OtherItem, ...]
     unaccounted_labels: tuple[str, ...]
+    same_drawing: SameDrawing = "unsure"
+    """Whether the architect drawing(s) show the same thing as the vendor drawing (#1723): a
+    "no" on a drawing code paired across separate files makes it Not compared (`run.py`)."""
+
+    _same = field_validator("same_drawing", mode="before")(lambda v: _lower(v) or "unsure")
 
     _refs = field_validator("unaccounted_labels")(
         lambda values: tuple(_check_ref(v) for v in values)
@@ -441,6 +447,10 @@ class Reply(_Frozen):
     pairs: tuple[ReplyPair, ...]
     other_items: tuple[ReplyItem, ...]
     unaccounted_labels: tuple[str, ...]
+    same_drawing: SameDrawing = "unsure"
+    """An older answer (saved before #1723) has none: `unsure` changes nothing."""
+
+    _same = field_validator("same_drawing", mode="before")(lambda v: _lower(v) or "unsure")
 
 
 def _nullable(schema: dict[str, Any]) -> dict[str, Any]:
@@ -504,6 +514,11 @@ REPLY_SCHEMA: Final[dict[str, Any]] = _object(
             ),
         },
         "unaccounted_labels": {"type": "array", "items": {"type": "string"}},
+        "same_drawing": {
+            "type": "string",
+            "enum": ["yes", "no", "unsure"],
+            "description": "Do the architect drawing(s) show the same thing as the vendor drawing?",
+        },
     }
 )
 

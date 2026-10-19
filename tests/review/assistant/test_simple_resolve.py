@@ -762,3 +762,94 @@ def test_live_web_search_is_off_by_default_and_fenced_when_on() -> None:
     # The query is built from fixed topics only: never a drawing's words or values.
     asked = call["messages"][0]["content"][0]["text"]
     assert all(topic in asked for topic in (resolve.WEB_TOPICS["ends"], resolve.WEB_TOPICS["read"]))
+
+
+# ---- separate files (#1722): the loop uses the set's file-aware label ids ----------------------
+
+
+def _separate() -> tuple[Pack, Item]:
+    """The vendor's own file (page 1, its drawing) and a separate architect file, numbered from a
+    round thousand: its page 1 is set page 1001, its labels `p1001.D1`..."""
+    vendor = [
+        _label("D1", '42"', "42", (100, 500, 130, 510), "vendor", "h", ((100, 515), (300, 515))),
+        _label("D2", '18"', "18", (20, 600, 30, 630), "vendor", "v"),
+    ]
+    architect = [
+        _label("D1", "3' - 8\"", "44", (100, 100, 130, 110), "architect"),
+        _label(
+            "D2", "1' - 8\"", "20", (110, 300, 130, 310), "architect", "h", ((100, 315), (200, 315))
+        ),
+        _label(
+            "D3", "2' - 0\"", "24", (230, 300, 260, 310), "architect", "h", ((200, 315), (320, 315))
+        ),
+    ]
+    pack = Pack.from_documents(
+        main_file=FILE,
+        dims={
+            "files": [FILE, "arch.pdf"],
+            "pages": [
+                {"file": FILE, "page": 1, "labels": vendor, "phrases": []},
+                {"file": "arch.pdf", "page": 1, "labels": architect, "phrases": []},
+            ],
+        },
+        page_map={
+            "files": [FILE, "arch.pdf"],
+            "upload_roles": {"arch.pdf": "architect"},
+            "pages": [
+                {
+                    "file": FILE,
+                    "page": 1,
+                    "area": "1. Kitchen",
+                    "area_from_page": None,
+                    "halves": [{"box": VEND, "role": "vendor", "round": 1}],
+                },
+                {
+                    "file": "arch.pdf",
+                    "page": 1,
+                    "area": "1. Kitchen",
+                    "area_from_page": None,
+                    "halves": [{"box": ARCH, "role": "architect", "round": None}],
+                },
+            ],
+        },
+        pairs={"pairs": []},
+        page_texts={"pages": []},
+    )
+    item = Item(
+        "p1.v1",
+        Region(FILE, 1, tuple(VEND), 1),  # type: ignore[arg-type]
+        (Region("arch.pdf", 1001, tuple(ARCH), None, None, 1),),  # type: ignore[arg-type]
+    )
+    return pack, item
+
+
+def test_the_loop_uses_a_separate_files_set_page_ids() -> None:
+    pack, item = _separate()
+    assert pack.label("p1001.D1", "arch.pdf", 1001) is not None
+    raw = _pair("p1.D1", "p1001.D1", "unsure")
+    v = _one(raw, pack=pack, item=item)
+    assert v.outcome == "not_compared" and v.architect is not None
+    assert v.architect["page"] == 1001 and v.architect["file_page"] == 1
+    entry = resolve.eligible(v, raw, item, pack)
+    assert isinstance(entry, resolve.Failure) and entry.route == "unsure"
+    sure = resolve.Proposal(kind="ends", verdict="different", **WALLS)
+    done = _run(v, raw, [sure], pack=pack, item=item)
+    assert done.verified.outcome == "candidate", done.verified.reason
+    assert done.verified.finding["arch_box"]["page"] == 1001
+    # An architect string on the separate file, named by its set-page ids.
+    other = _unlabelled('42"', '44" (sum of the string)', (100, 500, 130, 510), (95, 295, 325, 320))
+    other["architect_page"] = 1001
+    v2 = _one(other, pack=pack, item=item, pair=False)
+    chain = resolve.Proposal(
+        kind="architect_chain",
+        vendor_label="p1.D1",
+        labels=("p1001.D2", "p1001.D3"),
+        verdict="different",
+        **WALLS,
+    )
+    done = _run(v2, other, [chain], pack=pack, item=item)
+    assert done.verified.outcome == "candidate", done.verified.reason
+    assert done.verified.architect is not None
+    assert done.verified.architect["chain"] == ["p1001.D2", "p1001.D3"]
+    assert done.verified.architect["file"] == "arch.pdf"
+    assert done.verified.architect["file_page"] == 1

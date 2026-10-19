@@ -750,6 +750,20 @@ def _whole_chain(parts: Sequence[_Line], row: Sequence[_Line]) -> str | None:
     return None
 
 
+def _region_of(
+    pack: Pack,
+    label: Mapping[str, Any],
+    box: tuple[float, float, float, float],
+    round_: int | None,
+    view: str | None = None,
+) -> Region:
+    """The drawing a label is on, with its file's own page when the set numbers a separate file's
+    pages from a round thousand (#1722): pictures are cut at the file's own page."""
+    file, page = str(label.get("file") or pack.main_file), int(label.get("page") or 0)
+    own = pack.own_page(file, page)
+    return Region(file, page, box, round_, view, own if own != page else None)
+
+
 def _same_drawing(pack: Pack, a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
     if (a.get("file"), a.get("page")) != (b.get("file"), b.get("page")):
         return False
@@ -994,12 +1008,7 @@ def gather(
                 first = newer[0]
                 half = pack.half_of(first)
                 if half is not None:
-                    region = Region(
-                        str(first.get("file") or pack.main_file),
-                        int(first.get("page") or 0),
-                        half.box,
-                        half.round,
-                    )
+                    region = _region_of(pack, first, half.box, half.round)
                     picture(
                         "the vendor's newest round, every dimension numbered",
                         region,
@@ -1355,13 +1364,7 @@ def _check_newer_round(
         return Step("gap", "code cannot place the newest round's drawing", facts=facts)
     newest_item = replace(
         item,
-        vendor=Region(
-            str(newer.get("file") or pack.main_file),
-            int(newer.get("page") or 0),
-            half.box,
-            half.round,
-            item.vendor.view,
-        ),
+        vendor=_region_of(pack, newer, half.box, half.round, item.vendor.view),
         vendor_labels=(),
     )
     ends = proposal.ends if _known_ends(proposal) else _ends(raw)
@@ -1559,6 +1562,7 @@ def _check_architect_chain(
         "extension": [_extension(first[0], 0), _extension(last[0], 1)],
         "chain": chain_refs,
         "area_ref": chain_refs[0],
+        **({"file_page": first[0]["file_page"]} if first[0].get("file_page") else {}),
     }
     if synthetic["inches"] is None:
         return Step("gap", "the parts' sum is not a whole sixteenth", facts=facts)
@@ -1810,7 +1814,8 @@ def resolve_one(
     return Resolved(_not_settled(v, rounds, last), item, tuple(rounds))
 
 
-#: The read-number tool at a spot: (file, page, box in PDF points) -> its result
+#: The read-number tool at a spot: (file, the set's page number (#1722: a separate file's pages
+#: from a round thousand, as label ids use), box in PDF points) -> its result
 #: (`{value, routes, agreed, reason}`, the interface agreed with its builder), or None.
 type ReadAt = Callable[[str, int, tuple[float, float, float, float]], Mapping[str, Any] | None]
 
