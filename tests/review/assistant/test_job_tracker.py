@@ -443,3 +443,40 @@ def test_nothing_found_is_an_empty_tracker() -> None:
     assert built["totals"]["checks"] == 0
     only_right = build_tracker(sets, [answer(package, [finding("F1", "Width", 2, "same")])])
     assert only_right["items"] == [] and only_right["sets"][0]["items"] == 0
+
+
+def test_a_big_box_never_links_different_items_and_one_check_keeps_its_items_apart() -> None:
+    """A finding drawn round a whole elevation (a layout) is near every spot on it: it must not
+    tie the items on that elevation into one (the pipeline audit, 2026-10-19: a layout finding of
+    an early check joined an outlet, a J-box and a fridge outlet into one item, so they shared a
+    comment number). And two different findings of one check and round are never one item."""
+    package, sets = one_set()
+    whole = {"page": 23, "x0": 300.0, "y0": 50.0, "x1": 900.0, "y1": 400.0}
+    layout = answer(
+        package, [finding("L1", "Kitchen layout: drawers and uppers", 23, vendor_box=whole)]
+    )
+    first = answer(
+        package,
+        [
+            finding("F1", "Fridge outlet to right wall", 23, vendor_box=box(23, 700, 300)),
+            finding("F2", "Floor to the J-box", 23, vendor_box=box(23, 400, 300)),
+        ],
+        minutes=30,
+    )
+    second = answer(
+        package,
+        [
+            finding(
+                "G1", "Refrigerator outlet centre to the wall", 23, vendor_box=box(23, 702, 301)
+            ),
+            finding("G2", "J-box height in the fixed panel", 23, vendor_box=box(23, 401, 302)),
+        ],
+        minutes=60,
+    )
+    built = build_tracker(sets, [layout, first, second])
+    seen = sorted((i["item"], i["checks_seen"]) for i in built["items"])
+    assert seen == [
+        ("J-box height in the fixed panel", 2),
+        ("Kitchen layout: drawers and uppers", 1),
+        ("Refrigerator outlet centre to the wall", 2),
+    ]

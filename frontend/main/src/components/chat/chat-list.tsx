@@ -6,7 +6,8 @@ import { SidebarMenuSub, SidebarMenuSubButton, SidebarMenuSubItem } from '@/comp
 import type { ChatSummary } from '@/lib/chat-api';
 import { chatTitle } from '@/lib/chat-messages';
 
-export type ChatListState = { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready'; chats: ChatSummary[] };
+/** `missing` (#1685): the drawing set itself was not found (404), not merely its list. */
+export type ChatListState = { status: 'loading' } | { status: 'error'; message: string; missing?: boolean } | { status: 'ready'; chats: ChatSummary[] };
 
 /** How many chats show before "Show all". */
 export const CHATS_SHOWN = 10;
