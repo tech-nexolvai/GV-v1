@@ -44,6 +44,7 @@ from uuid import uuid4
 from app.review.assistant.chat_request import MODELS, ChatModel
 from app.review.assistant.chat_summary import CODE_SUMMARY_NOTE, code_summary
 from app.review.assistant.chat_trust import judged
+from app.review.assistant.filler_range import covered_labels
 from app.review.assistant.finding_checks import to_inches
 from app.review.assistant.full_check_advocate import code_checks, decide, ink_colour, needs_pairing
 from app.review.assistant.product_scope import refiled
@@ -918,6 +919,15 @@ class _Run:
 
     def _record(self, verified: list[tuple[Verified, Item]]) -> None:
         engine = self.engine
+        # A vendor filler GV's filler range already decided (`filler_range`, code's own finding):
+        # the compare answer's Right or Not-compared item on the same label is not listed again
+        # (a red from the architect comparison still is).
+        decided = covered_labels(engine.book.live(), engine.book.main_file)
+        verified = [
+            pair
+            for pair in verified
+            if pair[0].outcome == "red" or self._label_key(pair[0]) not in decided
+        ]
         ordered = sorted(
             (pair for pair in verified if pair[0].finding),
             key=lambda pair: _ORDER.get(pair[0].outcome, 3),
@@ -955,6 +965,17 @@ class _Run:
         for (item_id, filed, _reason), labels in no_size.items():
             self.rows.append(_no_size_row(item_id, filed, labels))
         engine.extra_gaps = list(self.rows)
+
+    def _label_key(self, one: Verified) -> tuple[str, int, str] | None:
+        vendor = one.vendor
+        if not isinstance(vendor, Mapping) or not vendor.get("id"):
+            return None
+        try:
+            page = int(vendor.get("page") or 0)
+        except (TypeError, ValueError):
+            return None
+        file = str(vendor.get("file") or self.engine.book.main_file or "")
+        return (file, page, str(vendor["id"]))
 
     def _add(self, one: Verified) -> bool | None:
         """The item as a finding: merged onto GV Review's recorded row of the same item (same page,

@@ -72,6 +72,7 @@ type Reason = Literal[
     "no_sheet",
     "no_overall",
     "string_not_verified",
+    "architect_outside_gv_rule",
     "internal",
 ]
 
@@ -86,6 +87,7 @@ REASONS: Final[tuple[Reason, ...]] = (
     "ai_unsure",
     "architect_disagrees",
     "missing_setting",
+    "architect_outside_gv_rule",
     "not_proved",
     "not_seen",
     "finish_not_comparable",
@@ -111,6 +113,7 @@ REASON_WORDS: Final[Mapping[str, str]] = {
     "no_sheet": "no sheet of the area or round to compare",
     "no_overall": "architect gives only parts, no overall",
     "string_not_verified": "vendor's string not verified on the drawing",
+    "architect_outside_gv_rule": "the architect's size is outside a GV rule (GV note)",
     "internal": "read by the AI only, never at its spot (GV's reviewer only)",
 }
 #: The trade's own words for each reason (industry review, topic 5), shown next to ours on the
@@ -130,6 +133,7 @@ TRADE_WORDS: Final[Mapping[str, str]] = {
     "no_sheet": "Not reviewed: no sheet to compare",
     "no_overall": "Not reviewed: architect gives no overall",
     "string_not_verified": "Not reviewed: string not verified on the drawing",
+    "architect_outside_gv_rule": "Not reviewed: per architect (outside GV's rule)",
     "internal": "Internal: read but not recorded at its spot",
 }
 #: The rule each reason comes from.
@@ -148,6 +152,7 @@ _RULES: Final[Mapping[str, str]] = {
     "no_sheet": "R7",
     "no_overall": "R7",
     "string_not_verified": "R5",
+    "architect_outside_gv_rule": "R1",
     "internal": "R9",
 }
 #: The architect's drawing points to the brand standard: the prototype is then its intent (R1).
@@ -384,6 +389,15 @@ def _check_item(finding: Mapping[str, Any]) -> Classified:
     page = _page(finding)
     reason = str(finding.get("keep_reason") or "")
     named = str(finding.get("check_reason") or "")
+    if reason == "architect_outside_gv_rule":
+        # The vendor follows the architect, whose size is outside a GV rule (`filler_range`): the
+        # architect governs, so never red; a GV note (Anant's architect-first rule, 2026-10-18).
+        return _not(
+            "architect_outside_gv_rule",
+            _short(finding.get("gv_note") or finding.get("why"), 120)
+            or "the architect's size is outside a GV rule",
+            "GV's own call on the architect's size (an RFI to the architect if it matters)",
+        )
     if finding.get("source") == "cross_view":
         side = finding.get("reference_side")
         if side == "architect":
