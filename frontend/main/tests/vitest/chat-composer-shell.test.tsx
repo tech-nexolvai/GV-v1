@@ -95,6 +95,21 @@ describe('the composer', () => {
     expect(box()).toHaveProperty('value', '');
   });
 
+  it('at phone width the tools row wraps: the model menu and Send keep their own place, never under the product chips (#1685)', () => {
+    render(<Composer />);
+    const send = screen.getByRole('button', { name: 'Send message' });
+    const model = screen.getByRole('button', { name: /^Model:/ });
+    const row = send.closest('[data-slot="chat-composer-tools"]') as HTMLElement;
+    expect(row).toBeTruthy();
+    expect(row.className).toContain('flex-wrap');
+    // Model and Send stay together, pushed to the end of whichever line they land on.
+    const end = send.parentElement as HTMLElement;
+    expect(end.getAttribute('data-slot')).toBe('chat-composer-end');
+    expect(end.contains(model)).toBe(true);
+    expect(end.className).toContain('ml-auto');
+    expect(end.className).toContain('shrink-0');
+  });
+
   it('while a message runs, Send becomes Stop ("Stop response")', async () => {
     const onStop = vi.fn();
     const { rerender } = render(<Composer onStop={onStop} />);
