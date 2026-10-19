@@ -475,7 +475,8 @@ def test_failures_are_plain_and_say_whether_to_ask_again() -> None:
     request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
     timeout = failure_from(anthropic.APITimeoutError(request=request))
     connection = failure_from(anthropic.APIConnectionError(request=request))
-    assert timeout.retryable and connection.retryable
+    # A time-out comes after the SDK's own 3 tries: the chat does not ask a fourth time (#1708).
+    assert not timeout.retryable and connection.retryable
     overloaded = failure_from(
         anthropic.APIStatusError(
             "overloaded", response=httpx2.Response(529, request=request), body=None
