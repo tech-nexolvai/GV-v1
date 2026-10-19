@@ -213,7 +213,7 @@ def _parse(pdf: Path, page_index: int) -> _Parsed:
         size = (abs(corner[0] - start[0]), abs(corner[1] - start[1]))
         for char in page.chars:
             made = vv._char(char, shown)
-            if made is not None:
+            if made is not None and vv._on_page(made.box, size):
                 chars.append(made)
         for item in (*page.curves, *page.lines, *page.rects):
             made_path = vv._path(item, shown)
