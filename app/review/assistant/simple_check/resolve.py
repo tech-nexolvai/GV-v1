@@ -109,7 +109,6 @@ __all__ = [
     "Proposal",
     "Proposer",
     "ReadAt",
-    "ReadNumber",
     "Refusal",
     "ResolveSettings",
     "Resolved",
@@ -118,9 +117,9 @@ __all__ = [
     "check",
     "conventions",
     "eligible",
-    "find_read_number",
     "gather",
     "load_rounds",
+    "reader_at",
     "resolve_one",
     "web_proposals",
 ]
@@ -264,40 +263,34 @@ def _convention_lines() -> str:
 # ---- the read-number hook -----------------------------------------------------------------------
 
 
-class ReadNumber(Protocol):
-    """The read-number tool's interface (built beside this loop, `read_number.py`): the value at a
-    label or a box, read by more than one kind of route; `{value, routes, agreed, reason}`."""
+def reader_at(number: Any, pack: Pack) -> ReadAt:
+    """The real read-number tool (`read_number.NumberReader`, #1746) as the loop's hook: the
+    set's page is turned into the file's own page first (`Pack.own_page`, #1722), and the tool
+    answers its `Reading` (`as_dict`)."""
+    from app.review.assistant.read_number import Request
 
-    def __call__(
-        self, pack: Any, page: int, target: str | Sequence[float]
-    ) -> Mapping[str, Any]: ...
+    def read_at(
+        file: str, page: int, box: tuple[float, float, float, float], side: str
+    ) -> Mapping[str, Any]:
+        found = number(Request(file, pack.own_page(file, page), side, box=box))
+        return dict(found.as_dict())
 
-
-def find_read_number() -> ReadNumber | None:
-    """The read-number tool, when the repository has it (`app.review.assistant.read_number`); None
-    until it lands (the loop then says the value is still not read)."""
-    try:
-        from importlib import import_module
-
-        module = import_module("app.review.assistant.read_number")
-    except ImportError:
-        return None
-    found = getattr(module, "read_number", None)
-    return found if callable(found) else None
+    return read_at
 
 
 def _reading(found: Mapping[str, Any] | None) -> Fraction | None:
-    """A read-number result's value, only when two different kinds of route agreed."""
-    if not isinstance(found, Mapping) or found.get("agreed") is not True:
-        return None
-    routes = found.get("routes")
-    kinds = {str(r.get("kind") if isinstance(r, Mapping) else r) for r in routes or ()}
-    if len(kinds) < 2:
+    """A read-number answer's value in inches, only when the tool says read: its own agreement
+    rule (the text layer; or two kinds of route; or one seconded by the ruler) decides, and code's
+    answer stands."""
+    if not isinstance(found, Mapping) or found.get("outcome") != "read":
         return None
     value = found.get("value")
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
+    if value is None or isinstance(value, bool):
+        return None
+    try:
         return Fraction(str(value))
-    return _inches_of(str(value)) if value is not None else None
+    except (ValueError, ZeroDivisionError):
+        return None
 
 
 # ---- who may enter ------------------------------------------------------------------------------
@@ -1815,9 +1808,9 @@ def resolve_one(
 
 
 #: The read-number tool at a spot: (file, the set's page number (#1722: a separate file's pages
-#: from a round thousand, as label ids use), box in PDF points) -> its result
-#: (`{value, routes, agreed, reason}`, the interface agreed with its builder), or None.
-type ReadAt = Callable[[str, int, tuple[float, float, float, float]], Mapping[str, Any] | None]
+#: from a round thousand, as label ids use), box in PDF points, side) -> its `Reading` as a dict
+#: (`outcome`, `value`, `agreed`, `reason`...), or None (`reader_at` wraps the real tool).
+type ReadAt = Callable[[str, int, tuple[float, float, float, float], str], Mapping[str, Any] | None]
 
 
 def _code_read(
@@ -1830,8 +1823,8 @@ def _code_read(
     read_number: ReadAt,
 ) -> tuple[dict[str, Any], Step]:
     """The read-number tool at both spots of a value code has no label for. Its readings count
-    only when two different kinds of route agree AND they are the values the answer quoted (the
-    pair is fixed); then the item is verified again, every check, with those readings."""
+    only when the tool says read (its agreement rule) AND they are the values the answer quoted
+    (the pair is fixed); then the item is verified again, every check, with those readings."""
     v_box, a_box = _box(raw.get("vendor_box")), _box(raw.get("architect_box"))
     a_page = raw.get("architect_page")
     a_file = next((r.file for r in item.architect if r.page == a_page), item.vendor.file)
@@ -1844,7 +1837,7 @@ def _code_read(
             found[side] = None
             continue
         try:
-            got = read_number(file, page, box)
+            got = read_number(file, page, box, side)
         except Exception:  # noqa: BLE001 - not read
             _log.info("resolve: read-number failed on %s", v.key)
             got = None
@@ -1855,7 +1848,12 @@ def _code_read(
     }
     agreed = {side: _reading(found.get(side)) for side in ("vendor", "architect")}
     if any(agreed[side] is None for side in agreed):
-        return found, Step("gap", "the read-number tool did not read both values by two routes")
+        why = "; ".join(
+            f"{side}: {(found.get(side) or {}).get('reason') or 'not read'}"
+            for side in ("vendor", "architect")
+            if agreed[side] is None
+        )
+        return found, Step("gap", f"the read-number tool did not read both values ({why})")
     if any(agreed[side] != quoted[side] for side in agreed):
         return found, Step("no", "the read-number tool reads other values than the ones compared")
 
@@ -1866,7 +1864,7 @@ def _code_read(
             "result": "match",
             "route": "read_number",
             "read": expected,
-            "reason": "two routes agree",
+            "reason": "read by the read-number tool",
         }
 
     from app.review.assistant.simple_check.verify import verify_answer

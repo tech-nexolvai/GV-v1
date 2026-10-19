@@ -30,7 +30,7 @@ from typing import Any
 
 import pdfplumber
 
-from evidence.coordinates import PdfPoint, StoredPoint
+from evidence.coordinates import StoredPoint
 from extraction.geometry.rows import (
     Box,
     InkCharacter,
@@ -245,7 +245,7 @@ def page_rows_and_ink(
     try:
         with pdfplumber.open(io.BytesIO(flattened)) as document:
             page = document.pages[page_index]
-            transform, height = page_frame(page, dpi)
+            transform, frame = page_frame(page, dpi)
             ink = ink_from_page(page, drawing_boxes=drawings, architect_boxes=architect_boxes)
             pixel = pixel_placement(page, dpi)
     except UnreadablePdf:
@@ -256,7 +256,7 @@ def page_rows_and_ink(
         ) from error
 
     def place(x: Decimal, top: Decimal) -> StoredPoint:
-        return transform.to_stored(transform.to_image(PdfPoint(x=x, y=height - top)))
+        return transform.to_stored(transform.to_image(frame.to_pdf(x, top)))
 
     def to_pixels(x: Decimal, top: Decimal) -> tuple[int, int]:
         point = pixel(x, top)

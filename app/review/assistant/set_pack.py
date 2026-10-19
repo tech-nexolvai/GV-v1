@@ -96,6 +96,7 @@ __all__ = [
     "pack_key",
     "trim_hires",
     "upload_roles",
+    "upload_rounds",
 ]
 
 _log = logging.getLogger(__name__)
@@ -183,11 +184,14 @@ type Box = tuple[float, float, float, float]
 def pack_key(listing: Sequence[Mapping[str, Any]]) -> str:
     """The pack's name: a hash of the uploads' names and SHA-256, in order. A separate architect
     file adds its role (#1719): its pages are read as the architect's, so a pack made before that
-    is made again; a set with no separate architect file keeps its name."""
+    is made again; a set with no separate architect file keeps its name. A file the front door
+    changed (`working_sha256`, #1724) adds its working copy's, so its pack is made from that copy;
+    a file it left as it was keeps the name its pack always had."""
     roles = upload_roles(listing)
     text = "\n".join(
         f"{item.get('name')}:{item.get('sha256')}"
         + (":architect" if roles.get(str(item.get("name"))) == "architect" else "")
+        + (f":{item['working_sha256']}" if item.get("working_sha256") else "")
         for item in listing
     )
     return hashlib.sha256(f"v{PACK_VERSION}\n{text}".encode()).hexdigest()[:32]
@@ -200,6 +204,33 @@ def _is_architect_kind(item: Mapping[str, Any]) -> bool:
 def _is_vendor_kind(item: Mapping[str, Any]) -> bool:
     kind = str(item.get("kind") or "").strip().lower()
     return kind.startswith("the vendor") or "shop drawing" in kind
+
+
+#: An earlier round of the vendor's shop drawings uploaded beside its re-issued ones (#1728:
+#: `app/api/assistant_chats.PREVIOUS_ROUND_WORDS`): its round.
+_PREVIOUS_ROUND: Final = re.compile(
+    r"^the vendor's previous round\b.*\bround (\d+)\b", re.IGNORECASE
+)
+
+
+def upload_rounds(listing: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    """The round each upload's kind gives its vendor drawings (#1728): an earlier round uploaded
+    beside the vendor's re-issued file says its own number, and then the re-issued file is the next
+    round. A set with no earlier file gives none (its drawings' rounds come from GV's captions)."""
+    earlier: dict[str, int] = {}
+    for item in listing:
+        found = _PREVIOUS_ROUND.match(str(item.get("kind") or "").strip())
+        if found is not None:
+            earlier[str(item.get("name"))] = int(found.group(1))
+    if not earlier:
+        return {}
+    latest = max(earlier.values()) + 1
+    rounds = dict(earlier)
+    for item in listing:
+        name = str(item.get("name"))
+        if name not in earlier and _is_vendor_kind(item):
+            rounds[name] = latest
+    return rounds
 
 
 def upload_roles(listing: Sequence[Mapping[str, Any]]) -> dict[str, str]:
@@ -326,10 +357,32 @@ def drawings_only(folder: Path, uploads: Path, name: str) -> Path:
                     annotations: Any = page["/Annots"]
                     keep = [a for a in annotations if a.get_object().get("/Subtype") == "/Stamp"]
                     page[NameObject("/Annots")] = ArrayObject(keep)
+                _hide_gv_marks(page)
             buffer = io.BytesIO()
             writer.write(buffer)
             _write_bytes(out, buffer.getvalue())
     return out
+
+
+def _hide_gv_marks(page: Any) -> None:
+    """Empty GV Review's own overlays on a page of the drawings-only copy (`extraction/gv_marks`:
+    signed with `/PieceInfo /GVReview`, or by an older overlay's reserved name)."""
+    resources = page.get("/Resources")
+    resources = resources.get_object() if resources is not None else None
+    xobjects = resources.get("/XObject") if resources is not None else None
+    xobjects = xobjects.get_object() if xobjects is not None else None
+    if xobjects is None:
+        return
+    for name in list(xobjects.keys()):
+        form = xobjects[name].get_object()
+        piece = form.get("/PieceInfo")
+        signed = piece is not None and "/GVReview" in piece.get_object()
+        if form.get("/Subtype") == "/Form" and (signed or name in _GV_RESERVED):
+            form.set_data(b"")
+
+
+#: The resource names GV's overlays used before they were signed (`gv_marks.RESERVED_NAMES`).
+_GV_RESERVED: Final = frozenset({"/GVCloudDrawing", "/GVRedline939"})
 
 
 # ---- annotations and the page map ----------------------------------------------------------------
@@ -477,12 +530,14 @@ def _page_entries(
     *,
     upload_role: str | None = None,
     sizes: Sequence[tuple[float, float]] = (),
+    upload_round: int | None = None,
 ) -> list[dict[str, Any]]:
     """Each page's entry of `page_map.json`. `upload_role` (#1719): the role the upload's kind
     gives (`upload_roles`). In the architect's file a pasted drawing with no GV heading is the
     architect's; in a file with no pasted drawing at all (a plain CAD file, architect's or
     vendor's), every page printing dimensions is one whole-page drawing (`sizes`: each page's
-    shown size), its role from `_whole_page_role`."""
+    shown size), its role from `_whole_page_role`. `upload_round` (#1728): the round the upload's
+    kind gives such a whole-page vendor drawing (`upload_rounds`)."""
     by_page: dict[int, list[dict[str, Any]]] = {}
     for item in annotations:
         by_page.setdefault(int(item["page"]), []).append(item)
@@ -554,6 +609,8 @@ def _page_entries(
                     found = caption["round"]
                 elif len(one_round) == 1:
                     found = next(iter(one_round))
+            if found is None and from_upload and role == "vendor" and upload_round is not None:
+                found = upload_round
             half: dict[str, Any] = {
                 "box": stamp["box"],
                 "role": role,
@@ -691,6 +748,9 @@ pages/<name>/p-NNN.png every page at 100 dpi (drawings only). Zoom to read numbe
                        <name> is the upload's name without ".pdf" (A.pdf: pages/A/p-003.png);
                        NNN is the page with three digits.
 contact/*.png          nine pages per picture, page numbers stamped: the whole set at a glance.
+health.json            per page: what kind of page it is and what was or was not read (typed or
+                       drawn lettering, hidden text not used, AutoCAD SHX text used, layers off,
+                       scanned, straightened, markups not read), with a plain sentence each.
 dims.json              every printed dimension code found, numbered per page (D17): value,
                        inches, box, side, dimension line. zoom marks: true draws the ids.
                        route "drawn": numbers drawn as pen strokes (the vendor's, and an
@@ -735,6 +795,7 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
         annotations: list[dict[str, Any]] = []
         page_map: list[dict[str, Any]] = []
         roles = upload_roles(listing)
+        rounds = upload_rounds(listing)
         used: dict[str, str] = {}
         for name in names:
             logging.getLogger("pypdf").setLevel(logging.ERROR)
@@ -748,6 +809,7 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
                 len(reader.pages),
                 upload_role=roles.get(name),
                 sizes=[_shown_size(page) for page in reader.pages],
+                upload_round=rounds.get(name),
             )
             if any(h.get("from_upload") for e in entries for h in e["halves"]):
                 used[name] = roles[name]
@@ -759,6 +821,11 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
         )
         done.append("page_map")
         _set_status(folder, "building", done, files=names)
+        try:
+            _health(folder, uploads, listing)
+            done.append("health")
+        except Exception as failed:  # noqa: BLE001 - the pack works without the health check
+            _log.warning("assistant set pack health check failed: %s", type(failed).__name__)
         for name in names:
             pages = _render_pages(copies[name], folder / "pages" / stem(name), RENDER_DPI)
             _contact_sheets(name, pages, folder / "contact")
@@ -773,6 +840,23 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
         _set_status(folder, "failed", done, files=names, error=type(failed).__name__)
         raise
     _set_status(folder, "ready", done, files=names)
+
+
+def _health(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]) -> None:
+    """`health.json`: each page's facts and plain sentences (`extraction/page_health`, #1745)."""
+    health = import_module("extraction.page_health")
+    pages: list[dict[str, Any]] = []
+    for item in listing:
+        name = str(item["name"])
+        data = (uploads / name).read_bytes()
+        with PDFIUM_LOCK:
+            document = pdfium.PdfDocument(data)
+            count = len(document)
+            document.close()
+        for number in range(1, count + 1):
+            with PDFIUM_LOCK:
+                pages.append(health.page_health(data, name, number, item))
+    _write_json(folder / "health.json", {"version": PACK_VERSION, "pages": pages})
 
 
 def _drawn_budget() -> float:

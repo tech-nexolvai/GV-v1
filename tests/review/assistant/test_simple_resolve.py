@@ -346,42 +346,63 @@ def test_an_architect_string_counts_only_as_one_proved_chain_and_the_blind_look_
     assert done.verified.outcome == "not_compared"
 
 
-def test_the_read_number_tool_counts_only_when_two_kinds_of_route_agree_on_the_values_quoted() -> (
-    None
-):
+def test_the_read_number_tool_reads_both_spots_and_its_answer_stands() -> None:
+    """The loop's hook is the real tool (`read_number.NumberReader`, #1746) through
+    `resolve.reader_at`: asked at each spot, by the file's own page; counted only when it says
+    read and reads the values quoted (the pair is fixed); its reason said when it cannot."""
+    from app.review.assistant.read_number import Reading
+
     item = Item("p2.v2", Region(FILE, 2, tuple(WHOLE), 2), (Region(FILE, 1, tuple(ARCH)),))  # type: ignore[arg-type]
     raw = _unlabelled('42"', "3' - 8\"", (100, 100, 130, 110), (100, 100, 130, 110))
     v = _one(raw, item=item, pair=False)
-    reads: list[tuple[str, int]] = []
+    asked: list[Any] = []
 
-    def agreed(file: str, page: int, box: Any) -> dict[str, Any]:
-        reads.append((file, page))
-        value = '42"' if page == 2 else "44"
-        return {
-            "value": value,
-            "routes": [{"kind": "text"}, {"kind": "ocr_pair"}],
-            "agreed": True,
-            "reason": "",
-        }
+    def tool(value_of: Any) -> Any:
+        def number(request: Any) -> Reading:
+            asked.append(request)
+            return value_of(request)
 
-    done = _run(v, raw, [], item=item, read_number=agreed)
+        return resolve.reader_at(number, MINI)
+
+    def read(request: Any) -> Reading:
+        value = "42" if request.page == 2 else "44"
+        return Reading("read", value, f'{value}"', agreed=("ocr", "shape"), code="ocr_shape")
+
+    done = _run(v, raw, [], item=item, read_number=tool(read))
     assert done.verified.outcome == "candidate" and done.verified.blind == "values"
-    assert reads == [(FILE, 2), (FILE, 1)] and done.rounds[0].number == 0
+    assert [(r.file, r.page, r.side) for r in asked] == [
+        (FILE, 2, "vendor"),
+        (FILE, 1, "architect"),
+    ]
+    assert done.rounds[0].number == 0
 
-    def one_route(file: str, page: int, box: Any) -> dict[str, Any]:
-        return {"value": '42"' if page == 2 else "44", "routes": ["ocr", "ocr"], "agreed": True}
+    def unread(request: Any) -> Reading:
+        return Reading("unread", reason="the readers disagree", code="readers_disagree")
 
-    assert (
-        _run(v, raw, [resolve.Proposal()], item=item, read_number=one_route).verified.outcome
-        == "not_compared"
-    )
+    done = _run(v, raw, [resolve.Proposal()], item=item, read_number=tool(unread))
+    assert done.verified.outcome == "not_compared"
+    assert "the readers disagree" in done.rounds[0].why
 
-    def other_value(file: str, page: int, box: Any) -> dict[str, Any]:
-        return {"value": "48", "routes": [{"kind": "text"}, {"kind": "shape"}], "agreed": True}
+    def other(request: Any) -> Reading:
+        return Reading("read", "48", '48"', agreed=("text",), code="text")
 
-    done = _run(v, raw, [resolve.Proposal()], item=item, read_number=other_value)
+    done = _run(v, raw, [resolve.Proposal()], item=item, read_number=tool(other))
     assert done.verified.outcome == "not_compared" and "other values" in done.verified.reason
-    assert resolve.find_read_number() is None or callable(resolve.find_read_number())
+
+
+def test_the_hook_reads_a_separate_files_own_page() -> None:
+    from app.review.assistant.read_number import Reading
+
+    pack, _item = _separate()
+    asked: list[Any] = []
+
+    def number(request: Any) -> Reading:
+        asked.append(request)
+        return Reading("unread", reason="no ink", code="no_ink")
+
+    found = resolve.reader_at(number, pack)("arch.pdf", 1001, (1.0, 2.0, 3.0, 4.0), "architect")
+    assert found is not None and found["outcome"] == "unread"
+    assert (asked[0].file, asked[0].page, asked[0].side) == ("arch.pdf", 1, "architect")
 
 
 # ---- the loop's rules ------------------------------------------------------------------------------

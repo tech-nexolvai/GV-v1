@@ -264,8 +264,13 @@ def _area(entry: Mapping[str, Any]) -> str | None:
     return f"{entry.get('section') or ''}|{' '.join(area.split()).lower()}"
 
 
-def round_drawings(page_map: Mapping[str, Any] | None) -> dict[str, list[_Drawing]]:
-    """The vendor's drawings that carry a round, by area (GV's typed headings)."""
+def round_drawings(
+    page_map: Mapping[str, Any] | None,
+    groups: Mapping[tuple[str, int], str] | None = None,
+) -> dict[str, list[_Drawing]]:
+    """The vendor's drawings that carry a round, by area (GV's typed headings); a separate file's
+    vendor drawing with no area, by its round group (`groups`: {(file, page): group}, the simple
+    check's work list, #1728: the rounds paired with one architect drawing)."""
     out: dict[str, list[_Drawing]] = {}
     for entry in (page_map or {}).get("pages") or []:
         if (
@@ -275,6 +280,9 @@ def round_drawings(page_map: Mapping[str, Any] | None) -> dict[str, list[_Drawin
         ):
             continue
         area = _area(entry)
+        group = (groups or {}).get((str(entry.get("file")), int(entry["page"])))
+        if area is None and group is not None:
+            area = f"rounds of {group}"
         if area is None:
             continue
         for half in entry.get("halves") or []:
@@ -455,7 +463,8 @@ def _ink_disagrees(
     or been redrawn there). The ink check groups changes into zones and drops specks, so a new
     digit alone is below what it sees: ink that did not change never contradicts a changed value.
     No ink check (or ink that could not be lined up) says nothing."""
-    if zones is None or changed:
+    if zones is None or changed or first.file != second.file:
+        # The ink check lines up two pages of one file; rounds in two files (#1728) have none.
         return False
     try:
         found = zones(first.page, first.box, second.page, second.box)
@@ -477,12 +486,13 @@ def round_two(
     page_map: Mapping[str, Any] | None,
     *,
     zones: InkZones | None = None,
+    groups: Mapping[tuple[str, int], str] | None = None,
 ) -> RoundReport:
     """What round 2 did with each round-1 item code clouded, and which round-2 items are new
     (see the module's words). `zones`: the ink check (`revision_diff.diff_pages`), optional."""
     report = RoundReport()
     labels = labels_by_page(dims)
-    by_area = round_drawings(page_map)
+    by_area = round_drawings(page_map, groups)
     fits: dict[tuple[_Drawing, _Drawing], tuple[Fit | None, str | None]] = {}
 
     def fitted(first: _Drawing, second: _Drawing) -> tuple[Fit | None, str | None]:

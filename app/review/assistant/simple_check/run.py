@@ -64,6 +64,7 @@ from app.review.assistant.simple_check.verify import (
     Verified,
     with_blind,
 )
+from app.review.assistant.spot_locate import code_spotted
 
 if TYPE_CHECKING:
     from app.review.assistant.chat_engine import ChatEngine, MessageOutcome
@@ -233,6 +234,8 @@ class _Run:
     resolved: dict[str, int] = field(default_factory=dict)
     """The resolve loop's tally: items that entered, made Right, made a red candidate, left Not
     compared, and not finished (a stop or the runaway guard)."""
+    number: Any = None
+    """`read_number.NumberReader` for the set pack (`_number`)."""
     no_architect: int = 0
     """Vendor drawings with no architect drawing anywhere in the set (a vendor-only upload)."""
     unpaired: list[tuple[int, str, str]] = field(default_factory=list)
@@ -270,7 +273,9 @@ class _Run:
                 worklist = import_module(
                     "app.review.assistant.simple_check.worklist"
                 ).build_worklist(folder, engine.book.main_file)
-                self.pack = Pack.from_folder(folder, engine.book.main_file)
+                self.pack = Pack.from_folder(folder, engine.book.main_file).with_rounds(
+                    worklist.round_groups
+                )
             except Exception as failed:  # noqa: BLE001 - said plainly, nothing compared
                 _log.exception("simple check: work list failed")
                 return self._finish("error", f"the work list could not be made ({failed})")
@@ -573,6 +578,16 @@ class _Run:
             _log.info("simple check ink not looked at: %s", label.get("id"))
             return None
 
+    def _number(self) -> Any:
+        """`read_number` bound to the set pack (#1746), made once: a value without a label that
+        `verify_value` could not read, or that the AI could not read, is read again by it."""
+        if self.number is None:
+            workspace = self.engine.tools.workspace
+            self.number = import_module("app.review.assistant.read_number").reader_for_pack(
+                workspace.set_pack, workspace.uploads
+            )
+        return self.number
+
     def _read(self, file: str, page: int, box: Sequence[float], expected: str) -> dict[str, Any]:
         """`verify_value` at a spot (the printed text, then the drawn ink by two OCR engines)."""
         verify_value = import_module("app.review.assistant.verify_value")
@@ -749,6 +764,7 @@ class _Run:
                     ink=self._ink,
                     read=self._read,
                     products=products,
+                    number=self._number(),
                 )
             except Exception as failed:  # noqa: BLE001 - the item fails, with the reason
                 _log.exception("simple check: verify failed on %s", item.id)
@@ -876,18 +892,11 @@ class _Run:
         return out
 
     def _read_number(self) -> resolve_module.ReadAt | None:
-        """The read-number tool at a spot, when the repository has it (`resolve.find_read_number`)."""
-        tool = resolve_module.find_read_number()
-        folder = self.engine.tools.workspace.set_pack
-        if tool is None or folder is None:
+        """The real read-number tool (#1746), bound to the set pack (`_number`), as the loop's
+        hook; set pages turned into the file's own pages (`Pack.own_page`)."""
+        if self.pack is None or self.engine.tools.workspace.set_pack is None:
             return None
-
-        def read_at(file: str, page: int, box: tuple[float, float, float, float]) -> Any:
-            # The set's page number, as the label ids use it (#1722); the tool maps it to the
-            # file's own page with the set pack.
-            return tool(folder, page, box)
-
-        return read_at
+        return resolve_module.reader_at(self._number(), self.pack)
 
     def _crops(self) -> resolve_module.Crops:
         from app.review.assistant.simple_check.blind import _crop
@@ -1333,9 +1342,11 @@ class _Run:
             for f in live
             if f.get("created_by") == CREATED_BY and f.get("status") == "different"
         }
-        failing = {item.page: (self.outcomes.get(item.id)) for item in failed}
+        main = engine.book.main_file
+        # The coverage map is the vendor's file's pages: an earlier round's file (#1728) is not.
+        failing = {item.page: (self.outcomes.get(item.id)) for item in failed if item.file == main}
         pages: list[dict[str, Any]] = []
-        for page in sorted({item.page for item in self.compared}):
+        for page in sorted({item.page for item in self.compared if item.file == main}):
             if page in failing:
                 outcome = failing[page]
                 reason = (outcome.reason if outcome is not None else None) or "not reached"
@@ -1640,7 +1651,8 @@ def _seed_for(
             other.get("created_by") == "gv_review"
             and other.get("source") == "gv_review"
             and other.get("page") == fields.get("page")
-            and not other.get("vendor_box")
+            # No spot yet, or only the one code found for it (#1738).
+            and code_spotted(other)
             and to_inches(str(other.get("vendor") or "")) == vendor
             and to_inches(str(other.get("architect") or "")) == architect
         ):
@@ -1672,6 +1684,12 @@ def own_pages(finding: Mapping[str, Any], pack: Pack | None) -> dict[str, Any]:
             )
             for side, label in dims.items()
         }
+    vendor_spot = fields.get("vendor_box")
+    if isinstance(vendor_spot, Mapping) and isinstance(vendor_spot.get("page"), int):
+        # An earlier round's file (#1728) is numbered after the others: its own page.
+        fields["page"] = int(vendor_spot["page"])
+    elif isinstance(fields.get("page"), int) and fields["page"] > pack.pages.files[0][2]:
+        fields["page"] = pack.pages.file_of(int(fields["page"]))[1]
     spot = fields.get("arch_box")
     if isinstance(fields.get("vs_page"), int):
         if isinstance(spot, Mapping) and isinstance(spot.get("page"), int):
@@ -1803,24 +1821,30 @@ def replay(
     products: Sequence[str] | None = None,
     read: ValueReader | None = None,
     ink: Any = None,
+    number: Any = None,
     resolve: resolve_module.ResolveSettings | None = None,
 ) -> dict[str, list[Verified]]:
     """A saved run verified again at $0 (no model call): each answered work item's items, by
     work item id, after the run's saved resolve rounds (checked again by today's code, with the
     run's own resolve setting unless `resolve` is given) and its own saved blind looks (a candidate
     with none saved stays Not compared). The same code as the run: the pack's work list and facts,
-    `verify_answer`, the markup-free copy's ink and `verify_value` readings unless others are
-    given."""
+    `verify_answer`, the markup-free copy's ink, `verify_value` readings and `read_number` (its
+    readings cached in the pack) unless others are given (a given `read` comes with no
+    `read_number` unless one is given too)."""
     worklist = import_module("app.review.assistant.simple_check.worklist")
-    items = worklist.build_worklist(pack_dir, main_file).items
-    pack = Pack.from_folder(pack_dir, main_file)
+    work = worklist.build_worklist(pack_dir, main_file)
+    items = work.items
+    pack = Pack.from_folder(pack_dir, main_file).with_rounds(work.round_groups)
     outcomes = load_outcomes(run_dir)
     saved = load_blind(run_dir)
     looks = ink if ink is not None else pack_ink(pack_dir, main_file)
     reader = read if read is not None else pack_reader(pack_dir)
+    if number is None and read is None:
+        number = import_module("app.review.assistant.read_number").reader_for_pack(pack_dir)
     settings = resolve if resolve is not None else _run_resolve(run_dir)
     rounds = resolve_module.load_rounds(run_dir)
     proposer = resolve_module.SavedProposer(rounds)
+    hook = resolve_module.reader_at(number, pack) if number is not None else None
     out: dict[str, list[Verified]] = {}
     for item in items:
         outcome = outcomes.get(item.id)
@@ -1828,7 +1852,13 @@ def replay(
             continue
         view = Item.of(item)
         found = verify_module.verify_answer(
-            outcome.result, view, pack, ink=looks, read=reader, products=products
+            outcome.result,
+            view,
+            pack,
+            ink=looks,
+            read=reader,
+            products=products,
+            number=number,
         )
         data = outcome.result.model_dump(mode="json")
         raws = {f"{item.id}:{p.get('vendor_label')}": p for p in data.get("pairs") or []}
@@ -1839,7 +1869,14 @@ def replay(
         for v in found.items:
             if settings.on and v.outcome == "not_compared":
                 v = resolve_module.resolve_one(
-                    v, raws.get(v.key), view, pack, proposer=proposer, settings=settings, ink=looks
+                    v,
+                    raws.get(v.key),
+                    view,
+                    pack,
+                    proposer=proposer,
+                    settings=settings,
+                    ink=looks,
+                    read_number=hook,
                 ).verified
             items_out.append(_with_saved(v, saved.get(v.key)) if v.needs_blind else v)
         out[item.id] = items_out

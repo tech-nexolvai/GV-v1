@@ -246,7 +246,7 @@ describe('the evidence viewer', () => {
     expect(within(viewer).getByRole('heading', { name: /^Vanity top depth\s*· page 3$/ })).toBeTruthy();
     expect(within(viewer).getByRole('img', { name: 'Architect, page 3' }).getAttribute('src')).toBe('/api/v1/chats/c-1/pictures/arch-f3');
     expect(within(viewer).getByText('No evidence picture')).toBeTruthy();
-    expect(within(viewer).getByText('1 of 4')).toBeTruthy();
+    expect(within(viewer).getByText((_, node) => node?.getAttribute('data-slot') === 'chat-evidence-position' && node.textContent === '1 of 4 items')).toBeTruthy();
     expect(within(viewer).getByRole('link', { name: 'Open in review screen' }).getAttribute('href')).toBe('#/review/pkg-1');
 
     // The arrows follow the screen's order: Wrong by area, then Not compared, then Right.

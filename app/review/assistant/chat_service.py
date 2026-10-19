@@ -370,8 +370,18 @@ def sync_uploads(
     workspace: ChatWorkspace, sources: Sequence[UploadSource]
 ) -> tuple[list[dict[str, Any]], bool]:
     """The chat's uploads made equal to the drawing set's latest PDFs (read-only, their uploaded
-    names). Returns the listing and whether it changed (it is rewritten only then)."""
+    names). Returns the listing and whether it changed (it is rewritten only then).
+
+    **Each PDF goes in through the front door** (`extraction/working_copy.py`, #1724): what the
+    chat, its set pack and its outputs read is the standard working copy (rotation turned into the
+    page, the visible area at the origin, the user unit applied), shown exactly as the original.
+    The original stays untouched in the set's storage. A file already in that shape is copied byte
+    for byte; one that was changed is listed with its working copy's `working_sha256` and what was
+    done (`working_changes`, `pages_not_read`), so its set pack is made from the working copy."""
     manifest = workspace.root / "uploads.json"
+    # Loaded by name: the front door opens PDFs, which the control plane never imports.
+    front_door = import_module("extraction.working_copy")
+    version = front_door.WORKING_COPY_VERSION
     names: list[str] = []
     wanted: list[dict[str, Any]] = []
     for index, source in enumerate(sources, start=1):
@@ -388,8 +398,8 @@ def sync_uploads(
         current = None
     same = (
         isinstance(current, list)
-        and [(item.get("name"), item.get("sha256")) for item in current]
-        == [(item["name"], item["sha256"]) for item in wanted]
+        and [(item.get("name"), item.get("sha256"), item.get("intake")) for item in current]
+        == [(item["name"], item["sha256"], version) for item in wanted]
         and all((workspace.uploads / item["name"]).is_file() for item in wanted)
     )
     if same:
@@ -408,6 +418,23 @@ def sync_uploads(
         data = source.read()
         if hashlib.sha256(data).hexdigest() != source.sha256:
             raise ValueError("a stored PDF does not match its recorded hash")
+        item["intake"] = version
+        try:
+            working = front_door.working_copy(data)
+        except front_door.WorkingCopyRefused as refused:
+            # Copied as it is: the readers then refuse it with their own plain reasons.
+            item["intake_problem"] = str(refused)
+        else:
+            # What the original says about itself, for the set pack's health check.
+            item["intake_facts"] = working.facts
+            if working.changed:
+                data = working.data
+                item["working_sha256"] = working.sha256
+                item["working_changes"] = list(working.changes)
+                if working.not_read:
+                    item["pages_not_read"] = [
+                        {"page": page, "why": why} for page, why in working.not_read
+                    ]
         path = uploads / item["name"]
         path.write_bytes(data)
         path.chmod(0o444)

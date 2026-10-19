@@ -428,17 +428,33 @@ def worklist_from(
         (e for e in entries if str(e.get("file")) != file and pages.joined(str(e.get("file")))),
         key=lambda e: pages.to_set(str(e.get("file")), int(e["page"])),
     )
+    roles = page_map.get("upload_roles")
+    upload_roles = dict(roles) if isinstance(roles, Mapping) else {}
+    architect_files = frozenset(n for n, r in upload_roles.items() if r == "architect")
+    by_set_page: dict[int, Mapping[str, Any]] = {}
+
+    def wanted(entry_file: str, half: Mapping[str, Any]) -> bool:
+        """A separate file's drawing the work list reads: the architect's; and the vendor's of an
+        earlier round uploaded beside the re-issued file (#1728), read by its upload."""
+        if half.get("role") == "architect":
+            return True
+        return (
+            half.get("role") == "vendor"
+            and bool(half.get("from_upload"))
+            and upload_roles.get(entry_file) == "vendor"
+        )
+
     for entry in [*mine, *separate_entries]:
         entry_file = str(entry.get("file"))
         own = int(entry["page"])
         page = pages.to_set(entry_file, own)
+        by_set_page[page] = entry
         separate = entry_file != file
         if separate:
-            # A separate file's page: only its architect drawings are read; its own skips are
-            # said with its file and its own page.
+            # A separate file's page: only its architect drawings (and an earlier round's vendor
+            # drawings) are read; its own skips are said with its file and its own page.
             if entry.get("skip") or not any(
-                isinstance(h, Mapping) and h.get("role") == "architect"
-                for h in entry.get("halves") or []
+                isinstance(h, Mapping) and wanted(entry_file, h) for h in entry.get("halves") or []
             ):
                 skipped.append(
                     Skipped(
@@ -454,7 +470,7 @@ def worklist_from(
             continue
         raw_halves = [h for h in entry.get("halves") or [] if isinstance(h, Mapping)]
         if separate:
-            raw_halves = [h for h in raw_halves if h.get("role") == "architect"]
+            raw_halves = [h for h in raw_halves if wanted(entry_file, h)]
         if not raw_halves:
             skip(page, DIVIDER_NOTE)
             cover[page] = PageCover(page=page, how="skipped", reason=DIVIDER_NOTE)
@@ -544,9 +560,11 @@ def worklist_from(
                 detail=any(_DETAIL.search(t) for t in titles),
             )
             drawings[half.ref] = drawing
-            if separate or (half.from_upload and half.role == "architect"):
+            if half.role == "architect" and (separate or half.from_upload):
                 across.append(half)
             if separate:
+                if half.role == "vendor":
+                    vendor_halves.append(half)
                 continue
             halves_by_area.setdefault(key, []).append(half)
             if half.role == "vendor":
@@ -585,11 +603,28 @@ def worklist_from(
             rows=(tuple(raw), scales_page, side),
         )
 
+    # A plain vendor drawing (a separate file, no GV area) is paired across the set by code
+    # (#1723), never by the plan check's page-before guess; the drawings of every round paired
+    # with one architect drawing are one area for their rounds (#1728).
+    across_pairs: dict[str, tuple[list[Drawing], str | None]] = {}
+    groups: dict[str, list[_Half]] = {}
+    for half in vendor_halves:
+        if not half.from_upload:
+            continue
+        decided = _pair_across(
+            drawings[half.ref], [drawings[h.ref] for h in across], facts_of, architect_files
+        )
+        across_pairs[half.ref] = decided
+        if decided[0]:
+            groups.setdefault(decided[0][0].ref, []).append(half)
+    group_of = {h.ref: key for key, hs in groups.items() for h in hs}
+
     items: list[WorkItem] = []
+    round_groups: list[tuple[str, int, int, str]] = []
     used_architect: dict[int, list[str]] = {}
     used_reference: dict[int, list[str]] = {}
     for half in vendor_halves:
-        entry = known[half.page]
+        entry = by_set_page[half.page]
         key = _area_key(entry, known)
         same_area = halves_by_area.get(key, []) if key is not None else []
         if key is None:
@@ -605,12 +640,8 @@ def worklist_from(
             [drawings[h.ref] for h in [*same_area, *paired] if h.role == "architect"], half.page
         )
         pairing: str | None = None
-        if half.from_upload:
-            # A plain vendor drawing (a separate file, no GV area): paired across the set by code
-            # (#1723), never by the plan check's page-before guess.
-            chosen, pairing = _pair_across(
-                drawings[half.ref], [drawings[h.ref] for h in across], facts_of
-            )
+        if half.ref in across_pairs:
+            chosen, pairing = across_pairs[half.ref]
             if pairing is not None:
                 architect = tuple(chosen)
         reference = tuple(
@@ -633,6 +664,8 @@ def worklist_from(
         others = [
             h for h in same_area if key is not None and h.role == "vendor" and h.ref != half.ref
         ]
+        if half.ref in group_of:
+            others = [h for h in groups[group_of[half.ref]] if h.ref != half.ref]
         later = [
             h.ref
             for h in others
@@ -644,18 +677,20 @@ def worklist_from(
             if h.round is not None and half.round is not None and h.round < half.round
         ]
         newest = not later
-        owner = _area_owner(entry, known)
+        owner = _area_owner(entry, known) if half.file == file else entry
         text = " ".join(
             [
                 _plain(owner.get("section")),
                 _plain(owner.get("area")),
-                *_phrases_in(dims_pages.get((half.file, half.page)), vendor.crop_box),
+                *_phrases_in(
+                    dims_pages.get((half.file, half.file_page or half.page)), vendor.crop_box
+                ),
                 *vendor.notes,
                 *vendor.tags,
             ]
         )
         products = tuple(sorted(named_products(text, hints=True)))
-        notes_page = notes_pages.get((half.file, half.page)) or {}
+        notes_page = notes_pages.get((half.file, half.file_page or half.page)) or {}
         only_tags = tuple(
             _plain(t.get("text") if isinstance(t, Mapping) else t)
             for t in notes_page.get("architect_only_tags") or []
@@ -687,6 +722,10 @@ def worklist_from(
                 paired_by=pairing,
             )
         )
+        if half.ref in group_of and len(groups[group_of[half.ref]]) > 1:
+            round_groups.append(
+                (half.file, half.file_page or half.page, half.page, group_of[half.ref])
+            )
         for drawing in architect:
             used_architect.setdefault(drawing.page, []).append(half.ref)
         for drawing in reference:
@@ -751,6 +790,7 @@ def worklist_from(
         skipped=tuple(skipped),
         pages=tuple(cover[p] for p in sorted(cover)),
         uncovered=tuple(uncovered),
+        round_groups=tuple(round_groups),
     )
 
 
@@ -758,13 +798,16 @@ def _pair_across(
     vendor: Drawing,
     candidates: Sequence[Drawing],
     facts_of: Callable[[Drawing], pairing_module.Facts],
+    architect_files: frozenset[str] = frozenset(),
 ) -> tuple[list[Drawing], str | None]:
     """The architect drawing a plain vendor drawing is compared with, and how code chose it; or
     none and why (`pairing.decide`, #1723). The upload's kind first: the architect's own file's
-    drawings are the candidates; only when it has none, the pages of the vendor's own file whose
-    title names the architect."""
-    others = [d for d in candidates if d.file != vendor.file]
-    pool = others or [d for d in candidates if d.ref != vendor.ref]
+    drawings are the candidates; only when it has none, the pages of a vendor file whose title
+    names the architect."""
+    own = [d for d in candidates if d.file in architect_files] or [
+        d for d in candidates if d.file != vendor.file
+    ]
+    pool = own or [d for d in candidates if d.ref != vendor.ref]
     if not pool:
         return [], None
     decision = pairing_module.decide(facts_of(vendor), [facts_of(d) for d in pool])

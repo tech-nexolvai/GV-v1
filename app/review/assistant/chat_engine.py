@@ -248,6 +248,7 @@ from app.review.assistant.send_package import (
 )
 from app.review.assistant.sharpen import helper_lines
 from app.review.assistant.spot_guard import dropped as spot_dropped
+from app.review.assistant.spot_locate import code_spotted
 from app.review.assistant.vendor_consistency import add_to_answer as add_consistency
 from app.review.assistant.vendor_consistency import page_texts
 from app.runs.rates import ModelRates, call_cost_micros
@@ -1538,6 +1539,8 @@ class ChatEngine:
             return tools.str_replace(raw, step)
         if name == "verify_value":
             return tools.verify_value(raw, step)
+        if name == "read_number":
+            return tools.read_number(raw, step)
         if name == "measure_on_drawing":
             return tools.measure_on_drawing(raw, step)
         if name == "drawing_facts":
@@ -3375,7 +3378,8 @@ class ChatEngine:
         seeds = {
             str(f["record_id"]): f
             for f in self.book.by("gv_review")
-            if f.get("record_id") and not (f.get("arch_box") or f.get("vendor_box"))
+            # A row whose only spots code found (#1738) still waits for a helper's reading.
+            if f.get("record_id") and code_spotted(f)
         }
         for found in self.book.by(by):
             seed = seeds.pop(str(found.get("record_id") or ""), None)
@@ -3619,8 +3623,7 @@ class ChatEngine:
         others: list[str] = []
         findings = self.book.live()
         for finding in findings:
-            boxed = finding.get("arch_box") or finding.get("vendor_box")
-            if finding.get("created_by") == "gv_review" and not boxed:
+            if finding.get("created_by") == "gv_review" and code_spotted(finding):
                 unboxed.append(
                     f"- {finding['id']} page {finding['page']}: {finding['item']}: architect "
                     f"{finding['architect']}; vendor {finding['vendor']} "

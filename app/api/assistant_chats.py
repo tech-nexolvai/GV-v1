@@ -187,6 +187,10 @@ _KIND_WORDS: Final = {
     "vendor's, with GV's markup on top)",
     "architectural": "the architect's drawings",
 }
+#: The vendor's earlier round of a set uploaded as separate files (#1728): the shop drawings of the
+#: revision before the latest, beside its re-issued ones, so the round-2 check can follow round 1.
+#: `set_pack.upload_roles` reads the round from these words.
+PREVIOUS_ROUND_WORDS: Final = "the vendor's previous round of shop drawings (round {round})"
 
 
 def _not_found() -> HTTPException:
@@ -1124,7 +1128,7 @@ def _upload_sources(
 
             return read
 
-        return [
+        sources = [
             UploadSource(
                 name=version.file_name or f"{document.kind}.pdf",
                 sha256=version.sha256,
@@ -1134,8 +1138,62 @@ def _upload_sources(
             )
             for document, version in rows
         ]
+        previous = _previous_round(factory, package_id, revision_id, rows)
+        if previous is not None:
+            number, version = previous
+            sources.append(
+                UploadSource(
+                    name=f"Round {number} - {version.file_name or 'shop.pdf'}",
+                    sha256=version.sha256,
+                    kind=PREVIOUS_ROUND_WORDS.format(round=number),
+                    pages=version.page_count,
+                    read=reader(storage_key(version.document_id, version.sha256)),
+                )
+            )
+        return sources
 
     return listed
+
+
+def _previous_round(
+    factory: sessionmaker[Session],
+    package_id: UUID,
+    revision_id: UUID,
+    rows: Sequence[Any],
+) -> tuple[int, DocumentVersion] | None:
+    """The vendor's shop drawings of the revision before `revision_id` (its number and version),
+    for a set uploaded as separate files (#1728): only when this revision has an architect's file
+    of its own and the vendor's file changed. GV's combined sheets carry their rounds in one file,
+    so a set with no architect's file never gets an earlier file beside it."""
+    kinds = {str(document.kind) for document, _version in rows}
+    shop = [version.sha256 for document, version in rows if str(document.kind) == "shop"]
+    if "architectural" not in kinds or len(shop) != 1:
+        return None
+    with factory() as session:
+        number = session.scalar(
+            select(PackageRevision.revision_number).where(PackageRevision.id == revision_id)
+        )
+        if number is None or number <= 1:
+            return None
+        found = session.execute(
+            select(Document, DocumentVersion)
+            .join(PackageRevisionDocument, PackageRevisionDocument.document_id == Document.id)
+            .join(
+                DocumentVersion, DocumentVersion.id == PackageRevisionDocument.document_version_id
+            )
+            .join(
+                PackageRevision,
+                PackageRevision.id == PackageRevisionDocument.package_revision_id,
+            )
+            .where(
+                PackageRevision.package_id == package_id,
+                PackageRevision.revision_number == number - 1,
+                Document.kind == "shop",
+            )
+        ).all()
+    if len(found) != 1 or found[0][1].sha256 == shop[0]:
+        return None
+    return number - 1, found[0][1]
 
 
 def _results_loader(

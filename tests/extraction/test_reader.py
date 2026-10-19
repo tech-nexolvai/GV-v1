@@ -1009,7 +1009,10 @@ def test_a_token_already_found_keeps_its_characters() -> None:
     found: list[tuple[TextItem, Any, dict[str, Any]]] = []
 
     def join(lines: list[list[dict[str, Any]]]) -> None:
-        reader._join_lines(lines, found, transform, Decimal(100), DOCUMENT, 0)
+        frame = reader.PlumberFrame(
+            rotation=0, media_box=sheet, left=Decimal(0), top=Decimal(0), height=Decimal(100)
+        )
+        reader._join_lines(lines, found, transform, frame, DOCUMENT, 0)
 
     join([[feet, inches], [feet, inches]])
     assert [run["text"] for _, _, run in found] == ["2' -5\""]

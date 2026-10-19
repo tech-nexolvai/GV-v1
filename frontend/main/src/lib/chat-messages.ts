@@ -10,6 +10,7 @@
 import type { ChatAccuracy, ChatAgent, ChatBlock, ChatCite, ChatCoverage, ChatEffort, ChatEvent, ChatFile, ChatFinding, ChatFindingUpdate, ChatMessage, ChatMode, ChatModel, ChatPackageState, ChatProduct, ChatProgress, ChatResolver, ChatResume, ChatReviewAction, ChatScope, ChatStep, ChatStopped, ChatSummary, ChatTask, ChatTrust, ChatUnderstood, ChatUnknown, ChatFallback } from '@/lib/chat-api';
 import { CHECK_MODEL } from '@/lib/chat-api';
 import { EFFORT_WORDS } from '@/lib/chat-settings';
+import { applyLive, caughtUp, isLiveEvent, type LiveEvent, type LiveState } from '@/lib/chat-live';
 
 /** A helper agent while its Agent step runs: `running` until its `agent_end`. */
 export interface ViewAgent extends ChatAgent {
@@ -75,6 +76,13 @@ export interface ViewMessage {
   review_action?: ChatReviewAction | null;
   /** #1717: what the full check's package kept (the comment numbers C-01…); from the saved `package` block. */
   package_state?: ChatPackageState | null;
+  /** #1727: a running full check's live state, from its `check_*` events. */
+  live?: LiveState | null;
+  /**
+   * #1727: after a reload, the server's snapshot (`ChatOut.live`), shown until the replayed events
+   * catch up with it (so the card never steps back). Use `shownLive`.
+   */
+  liveSeed?: LiveState | null;
   /** #1577: the refusal fallback that answered instead of the model asked (the last switch). */
   fallback?: ChatFallback | null;
   cost_usd: string | null;
@@ -297,10 +305,12 @@ export function localAnswer(key: string, choice: { model: string; effort: ChatEf
  * An answer still being written when the chat was opened (a reload, another tab): its events are
  * replayed from the server and then follow live, exactly like an answer sent from this screen.
  */
-export function followedAnswer(messageId: string, now = new Date()): ViewMessage {
+export function followedAnswer(messageId: string, now = new Date(), live: LiveState | null = null): ViewMessage {
   return {
-    key: `follow-${messageId}`, id: messageId, role: 'assistant', created_at: now.toISOString(), text: '', model: null, effort: null, thinking: null,
+    key: `follow-${messageId}`, id: messageId, role: 'assistant', created_at: live?.started_at ?? now.toISOString(), text: '', model: null, effort: null, thinking: null,
     blocks: [], files: [], tasks: null, cost_usd: null, stopped: null, error: null, status: 'running',
+    // #1727: a full check's live card draws at once from the chat's live state, before its events replay.
+    ...(live ? { liveSeed: live, mode: 'full_check' as const } : {}),
   };
 }
 
@@ -324,8 +334,20 @@ function withAgents(message: ViewMessage, index: number, change: (agents: ViewAg
   return { ...message, blocks: withBlock(message.blocks, index, { ...block, step: { ...step, agents: change(step.agents ?? []) } }) };
 }
 
+/** #1727: the live state to show: the snapshot until the replay has caught up, then the live events'. */
+export function shownLive(message: Pick<ViewMessage, 'live' | 'liveSeed'>): LiveState | null {
+  return message.liveSeed ?? message.live ?? null;
+}
+
 /** One event applied to the answer it belongs to. Pure: the message given is never changed. */
 export function applyChatEvent(message: ViewMessage, event: ChatEvent): ViewMessage {
+  if (isLiveEvent(event.event)) {
+    // Only a full check sends these; a followed answer learns its mode from them before `message_end`.
+    const live = applyLive(message.live, event as LiveEvent, message.created_at);
+    if (live === (message.live ?? null)) return message;
+    const liveSeed = message.liveSeed && !caughtUp(message.liveSeed, live) ? message.liveSeed : null;
+    return { ...message, live, liveSeed, mode: message.mode ?? 'full_check' };
+  }
   switch (event.event) {
     case 'message_start':
       return { ...message, id: event.data.message_id, model: event.data.model, effort: event.data.effort, thinking: event.data.thinking };
@@ -433,6 +455,8 @@ export function applyChatEvent(message: ViewMessage, event: ChatEvent): ViewMess
         resolver: stored.resolver ?? message.resolver ?? null,
         products: stored.products ?? message.products ?? null,
         error: stored.error ?? message.error,
+        live: message.live ?? message.liveSeed ?? null,
+        liveSeed: null,
       };
     }
     default:
@@ -544,6 +568,8 @@ function phraseFor(step: ChatStep): { key: string; phrase: Phrase } {
       return { key: 'agents', phrase: { one: 'asked a helper', many: (n) => `asked ${n} helpers` } };
     case 'read_under_markup':
       return { key: 'under', phrase: { one: "read under GV's markup", many: (n) => `read under GV's markup ${n} times` } };
+    case 'read_number':
+      return { key: 'number', phrase: { one: 'read a number by code', many: (n) => `read ${n} numbers by code` } };
     case 'drawing_facts':
       return { key: 'facts', phrase: { one: 'read the drawing facts', many: (n) => `read the drawing facts ${n} times` } };
     case 'remember':
@@ -664,6 +690,24 @@ export function chatListWords(
   return kind === 'check' ? { kind, label: 'Full check', when } : { kind, label: title, when: '' };
 }
 
+/** #1727: the open chat as this page knows it (newer than the list's): running or not, and its count. */
+export interface ChatRunLive {
+  chatId: string;
+  running: boolean;
+  done: number | null;
+  total: number | null;
+}
+
+/** #1727: a running chat's row: the working star, and "23/39" while a full check compares drawings. */
+export function chatRunWords(chat: Pick<ChatSummary, 'id' | 'running' | 'mode' | 'drawings_done' | 'drawings_total'>, live?: ChatRunLive | null): { running: boolean; count: string | null } {
+  const own = live && live.chatId === chat.id ? live : null;
+  const running = own ? own.running : Boolean(chat.running);
+  if (!running) return { running: false, count: null };
+  const done = own ? own.done : chat.drawings_done ?? null;
+  const total = own ? own.total : chat.drawings_total ?? null;
+  return { running, count: total ? `${done ?? 0}/${total}` : null };
+}
+
 /** A model id in words: the server's label, else made from the id ("claude-opus-5-5" → "Claude Opus 5.5"). */
 export function modelLabel(id: string | null, models: readonly Pick<ChatModel, 'id' | 'label'>[] | null): string {
   if (!id) return 'Claude';
@@ -709,6 +753,11 @@ export function messageCost(value: string | null | undefined): string | null {
 /** "Claude Opus 5.5" → "Opus 5.5": a model said without the maker's name. */
 function shortName(label: string): string {
   return label.replace(/^Claude\s+/i, '') || label;
+}
+
+/** The model's short name for a message ("Sonnet 5.5"), or null when not known yet. */
+export function shortModelWords(id: string | null, models: readonly Pick<ChatModel, 'id' | 'label'>[] | null): string | null {
+  return id ? shortName(modelLabel(id, models)) : null;
 }
 
 export function footerWords(

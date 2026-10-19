@@ -5103,7 +5103,7 @@ export interface components {
              * Not Compared
              * @description not_compared: the reason (the list's group).
              */
-            not_compared?: ("architect_disagrees" | "nothing_to_compare" | "different_reference" | "unreadable" | "ai_unsure" | "missing_setting" | "prototype" | "not_proved" | "not_seen" | "field_verify" | "finish_not_comparable" | "no_sheet" | "no_overall" | "string_not_verified" | "architect_outside_gv_rule" | "internal") | null;
+            not_compared?: ("architect_disagrees" | "nothing_to_compare" | "different_reference" | "unreadable" | "no_spot" | "ai_unsure" | "missing_setting" | "prototype" | "not_proved" | "not_seen" | "field_verify" | "finish_not_comparable" | "no_sheet" | "no_overall" | "string_not_verified" | "architect_outside_gv_rule" | "internal") | null;
             /**
              * Proof
              * @description Clouded items: the check that proved it, in plain words.
@@ -6508,7 +6508,7 @@ export interface components {
             tool: components["schemas"]["ChatStepTool"];
         };
         /** @enum {string} */
-        ChatStepTool: "bash_tool" | "view" | "create_file" | "str_replace" | "present_files" | "TaskCreate" | "TaskUpdate" | "Agent" | "review_results" | "compare_rounds" | "verify_value" | "measure_on_drawing" | "zoom" | "read_under_markup" | "remember" | "drawing_facts";
+        ChatStepTool: "bash_tool" | "view" | "create_file" | "str_replace" | "present_files" | "TaskCreate" | "TaskUpdate" | "Agent" | "review_results" | "compare_rounds" | "verify_value" | "read_number" | "measure_on_drawing" | "zoom" | "read_under_markup" | "remember" | "drawing_facts";
         /** @enum {string} */
         ChatStopped: "cost_cap" | "cancelled" | "error" | "turn_limit" | "interrupted";
         /** ChatSummaryOut */

@@ -81,6 +81,7 @@ from app.review.assistant.finding_checks import to_inches
 from app.review.assistant.full_check_advocate import Check, code_pairs, is_slip, same_extent
 from app.review.assistant.full_check_plan import read_page_map
 from app.review.assistant.product_scope import ProductScope, named_products
+from app.review.assistant.read_number import Reading, Request
 from app.review.assistant.simple_check.set_pages import SetPages, set_pages
 
 __all__ = [
@@ -131,6 +132,9 @@ type Outcome = Literal["candidate", "red", "right", "not_compared", "listed", "c
 type Box = tuple[float, float, float, float]
 type Ink = Callable[[Mapping[str, Any]], tuple[int, float] | None]
 type ValueReader = Callable[[str, int, Box, str], Mapping[str, Any] | None]
+#: `read_number` bound to the set pack (`read_number.NumberReader`): a number code or the AI could
+#: not read, read again by independent routes (#1746).
+type NumberReader = Callable[[Request], Reading]
 """`verify_value` at a spot: (file, page, box in PDF points, expected value) -> its `as_dict()`
 (`result` match / mismatch / cannot_read, `route` text / drawn, `read`, `reason`), or None."""
 
@@ -364,6 +368,15 @@ class Pack:
     """The set's page numbering (#1722): every fact above is keyed by `(file, set page)`; a
     separate file's labels also carry their own `file_page`."""
 
+    rounds: Mapping[tuple[str, int], str] = field(default_factory=dict)
+    """{(file, set page): group} for the vendor drawings of separate files that are rounds of one
+    drawing (#1728, `WorkList.round_groups`): their area for the round checks."""
+
+    def with_rounds(self, groups: Iterable[Sequence[Any]]) -> Pack:
+        """The pack with the work list's round groups (`WorkList.round_groups`)."""
+        found = {(str(g[0]), int(g[2])): str(g[3]) for g in groups if len(g) >= 4}
+        return replace(self, rounds=found) if found else self
+
     def own_page(self, file: str, page: int) -> int:
         """The file's own page of set page `page` (what a PDF is read at)."""
         return page if self.pages is None else self.pages.own_page(file, page)
@@ -471,7 +484,11 @@ class Pack:
         return self.half_at(file, int(label.get("page") or 0), _box(label.get("box")))
 
     def area_key(self, file: str, page: int) -> tuple[str, int] | None:
-        """The page's area: the page that names it (the page map's `area_from_page` chain)."""
+        """The page's area: the page that names it (the page map's `area_from_page` chain); a
+        separate file's vendor drawing, its round group (#1728)."""
+        group = self.rounds.get((file, page))
+        if group is not None:
+            return (f"rounds of {group}", 0)
         entry = self.entries.get((file, page))
         if entry is None or entry.get("skip") or not str(entry.get("area") or "").strip():
             return None
@@ -1532,6 +1549,7 @@ def _verify_other(
     pack: Pack,
     read: ValueReader | None,
     products: Sequence[str],
+    number: NumberReader | None = None,
 ) -> Verified:
     kind = str(entry.get("kind") or "note").strip().lower()
     verdict = str(entry.get("verdict") or "unsure").strip().lower()
@@ -1565,7 +1583,7 @@ def _verify_other(
     if kind == "missing_on_vendor":
         return _verify_missing(other, item, pack, products, a_file)
     if kind == "dimension_without_label":
-        return _verify_unlabelled(other, item, pack, read, a_file)
+        return _verify_unlabelled(other, item, pack, read, a_file, number)
     code, words = _ITEM_REASONS.get(kind, ("not_proved", "code cannot check it"))
     return other.grey(words, code)
 
@@ -1704,19 +1722,96 @@ def _newer_value(pack: Pack, item: Item, value: Fraction, axis: str | None) -> s
     return None
 
 
+def _read_unread(
+    other: _Other,
+    number: NumberReader | None,
+    sides: Sequence[tuple[str, str, int, Box | None]],
+    texts: dict[str, str],
+    found: dict[str, Any],
+) -> _Other:
+    """The sides the AI could not read (no value, `unreadable`), read by `read_number` at their
+    box (#1746): a value code reads by two routes replaces the AI's none."""
+    if number is None:
+        return other
+    base = dict(other.base)
+    for side, file, page, box in sides:
+        if box is None or _inches_of(texts[side]) is not None or not isinstance(page, int):
+            continue
+        reading = number(Request(file, page, side, box=box))
+        found[f"read_number_{side}"] = reading.as_dict()
+        if reading.outcome == "read" and reading.text:
+            texts[side] = reading.text
+            base[side] = reading.text
+    return _Other(other.key, other.kind, other.entry, base)
+
+
+def _confirm(
+    reads: dict[str, Any],
+    number: NumberReader | None,
+    sides: Sequence[tuple[str, str, int, Box, str]],
+) -> None:
+    """Each side `verify_value` could not read at its box, read again by `read_number` (#1746):
+    its answer, in `verify_value`'s shape, replaces the failed one (a match only when two routes
+    of different kinds read the claimed value). A side code read as another value stays so."""
+    if number is None:
+        return
+    for side, file, page, box, text in sides:
+        key = f"verify_{side}"
+        if isinstance(reads.get(key), Mapping) and reads[key].get("result") in (
+            "match",
+            "mismatch",  # code read another value there: never read over
+        ):
+            continue
+        reads[key] = number(Request(file, page, side, box=box, claim=text)).as_verify(text)
+
+
 def _verify_unlabelled(
-    other: _Other, item: Item, pack: Pack, read: ValueReader | None, a_file: str
+    other: _Other,
+    item: Item,
+    pack: Pack,
+    read: ValueReader | None,
+    a_file: str,
+    number: NumberReader | None = None,
 ) -> Verified:
     """A dimension code has no label for: red only when code reads both values at their boxes
-    (`verify_value`), both run the same way, the vendor box is on the newest round, the pages are
-    one area, and the blind look agrees."""
+    (`verify_value`, then `read_number` for a value it could not confirm or the AI could not
+    read), both run the same way, the vendor box is on the newest round, the pages are one area,
+    and the blind look agrees."""
     entry = other.entry
-    v_text, a_text = str(entry.get("vendor") or ""), str(entry.get("architect") or "")
-    v_in, a_in = _inches_of(v_text), _inches_of(a_text)
     v_box, a_box = _box(entry.get("vendor_box")), _box(entry.get("architect_box"))
     a_page = entry.get("architect_page")
+    texts = {
+        "vendor": str(entry.get("vendor") or ""),
+        "architect": str(entry.get("architect") or ""),
+    }
+    found_first: dict[str, Any] = {}
+    other = _read_unread(
+        other,
+        number,
+        (
+            # Read at each file's own page (a separate file's set page is not its page, #1722).
+            ("vendor", item.vendor.file, pack.own_page(item.vendor.file, item.vendor.page), v_box),
+            (
+                "architect",
+                a_file,
+                pack.own_page(a_file, a_page) if isinstance(a_page, int) else -1,
+                a_box,
+            ),
+        ),
+        texts,
+        found_first,
+    )
+    v_text, a_text = texts["vendor"], texts["architect"]
+    v_in, a_in = _inches_of(v_text), _inches_of(a_text)
     if v_in is None or a_in is None:
-        return other.grey(f"{UNREAD}: a side is not one size code can read", "unreadable")
+        why = "; ".join(
+            str(r.get("reason")) for r in found_first.values() if r.get("outcome") != "read"
+        )
+        return other.grey(
+            f"{UNREAD}: a side is not one size code can read" + (f" ({why})" if why else ""),
+            "unreadable",
+            reads=found_first,
+        )
     if v_box is None or a_box is None or not isinstance(a_page, int):
         return other.grey(f"{UNREAD}: the answer gives no spot on both drawings", "unreadable")
     if _ROOM_WORDS.search(f"{entry.get('what') or ''}"):
@@ -1735,24 +1830,51 @@ def _verify_unlabelled(
     else:
         roles = Check("roles", "pass")
     checks = [roles, _area_check(item, pack, a_file, a_page, a_box)]
-    reads: dict[str, Any] = {}
+    reads: dict[str, Any] = dict(found_first)
     if read is not None and all(c.outcome == "pass" for c in checks):
         # Read at each file's own page (a separate file's set page is not its page, #1722).
         reads["verify_vendor"] = read(
             item.vendor.file, pack.own_page(item.vendor.file, item.vendor.page), v_box, v_text
         )
         reads["verify_architect"] = read(a_file, pack.own_page(a_file, a_page), a_box, a_text)
+        _confirm(
+            reads,
+            number,
+            (
+                (
+                    "vendor",
+                    item.vendor.file,
+                    pack.own_page(item.vendor.file, item.vendor.page),
+                    v_box,
+                    v_text,
+                ),
+                ("architect", a_file, pack.own_page(a_file, a_page), a_box, a_text),
+            ),
+        )
     unread = [
         side
         for side in ("vendor", "architect")
         if not isinstance(reads.get(f"verify_{side}"), Mapping)
         or reads[f"verify_{side}"].get("result") != "match"
     ]
+    why_unread = "; ".join(
+        str(reads[f"verify_{side}"].get("reason"))
+        for side in unread
+        if isinstance(reads.get(f"verify_{side}"), Mapping)
+        and reads[f"verify_{side}"].get("read_number")
+    )
     checks.append(
         Check(
             "read",
             "fail" if unread else "pass",
-            f"code could not confirm the {' and '.join(unread)} value at its box" if unread else "",
+            (
+                (
+                    f"code could not confirm the {' and '.join(unread)} value at its box"
+                    + (f": {why_unread}" if why_unread else "")
+                )
+                if unread
+                else ""
+            ),
         )
     )
     axes = (
@@ -1837,12 +1959,14 @@ def verify_answer(
     ink: Ink | None = None,
     read: ValueReader | None = None,
     products: Sequence[str] | None = None,
+    number: NumberReader | None = None,
 ) -> Verification:
     """Every pair and other item of one work item's `CompareResult`, decided by code (see the
     module). `ink(label)`: the vendor value's own ink (`full_check_advocate.ink_colour` of its box
     on the markup-free copy), asked only for a red candidate; None blocks red. `read`: `verify_value`
     at a spot, for an item without labels; None: such an item is never red. `products`: the check's
-    product scope (None: every active product)."""
+    product scope (None: every active product). `number`: `read_number` (#1746), called by itself
+    for a value without a label that `read` could not confirm or the AI could not read."""
     data = _plain_data(result)
     if not isinstance(data, Mapping):
         data = {}
@@ -1868,7 +1992,7 @@ def verify_answer(
         out.items.append(_verify_pair(pair, item, pack, ink))
     for at, entry in enumerate(data.get("other_items") or [], start=1):
         if isinstance(entry, Mapping):
-            out.items.append(_verify_other(entry, at, item, pack, read, scope))
+            out.items.append(_verify_other(entry, at, item, pack, read, scope, number))
     told = {str(r) for r in data.get("unaccounted_labels") or []}
     out.unaccounted = sorted((r for r in own if r in told), key=_order)
     paired = {
