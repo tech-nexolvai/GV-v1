@@ -36,7 +36,7 @@ import io
 import logging
 import re
 import zipfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from importlib import import_module
 from pathlib import Path
@@ -324,11 +324,17 @@ def set_round(page_map: Mapping[str, Any] | None, findings: Sequence[Mapping[str
 
 
 def check_state(
-    *, incomplete: str | None, page_map: Mapping[str, Any] | None, rounds: Any
+    *,
+    incomplete: str | None,
+    page_map: Mapping[str, Any] | None,
+    rounds: Any,
+    comments: Collection[str] | None = None,
 ) -> CheckState:
     """What the review result needs beyond the findings: did the check finish (S0), the areas the
     architect draws with no vendor sheet (S1, `vendor_consistency.completeness`), and the previous
-    comments still wrong (S3, the round-2 check)."""
+    comments still wrong (S3, the round-2 check). S3 counts the same list the letter shows: the
+    round-1 comments (`comments`: this check's clouded finding ids) still wrong, one verdict per
+    item (a round-2 item already wrong in round 1 is its comment's, counted once)."""
     consistency = import_module("app.review.assistant.vendor_consistency")
     missing = sum(
         1
@@ -336,7 +342,11 @@ def check_state(
         if str(gap.get("what") or "").endswith("no vendor sheet")
     )
     items = list(getattr(rounds, "items", None) or [])
-    still = sum(1 for item in items if item.status in ("still_wrong", "also_in_round_1"))
+    still = sum(
+        1
+        for item in items
+        if item.status == "still_wrong" and (comments is None or item.finding_id in comments)
+    )
     closed = tuple(item.finding_id for item in items if item.status == "fixed")
     return CheckState(incomplete=incomplete, missing_areas=missing, still_open=still, closed=closed)
 
@@ -427,7 +437,12 @@ def package_context(
         date=today or datetime.now(UTC).strftime("%Y-%m-%d"),
         round_no=set_round(page_map, findings),
         rounds=rounds,
-        state=check_state(incomplete=incomplete, page_map=page_map, rounds=rounds),
+        state=check_state(
+            incomplete=incomplete,
+            page_map=page_map,
+            rounds=rounds,
+            comments={str(f.get("id")) for f in findings if proof_group(f) == "clouded"},
+        ),
         labels=comment_labels(findings, numbers),
         areas=_areas(page_map, name),
     )
@@ -530,7 +545,12 @@ def corrections_of(
         finding_id = str(finding.get("id") or "")
         later = by_round.get(finding_id)
         round_word = ""
-        if later is not None and later.status in ("new", "also_in_round_1", "still_wrong"):
+        if later is not None and (
+            later.status in ("new", "still_wrong")
+            or (later.status == "also_in_round_1" and getattr(later, "twin", None))
+        ):
+            # "Previous comment not addressed" only where there was a previous comment: a round-2
+            # item already wrong in round 1, with round 1's comment at its place.
             round_word = ROUND_WORDS[later.status]
         out.append(
             Correction(
