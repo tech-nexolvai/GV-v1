@@ -861,6 +861,7 @@ export type ChatTool =
   | 'review_results'
   | 'compare_rounds'
   | 'verify_value'
+  | 'read_number'
   | 'measure_on_drawing'
   | 'zoom'
   | 'read_under_markup'
