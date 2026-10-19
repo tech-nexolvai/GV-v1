@@ -46,6 +46,7 @@ import { knownAreas, lastFindings, withPrompt } from '@/lib/chat-plus-actions';
 import { applyChatEvent, applyCorrection, CHAT_STARTERS, chatTitle, dollars, followedAnswer, fromSaved, localAnswer, localQuestion, previousQuestion, settle, type ViewMessage } from '@/lib/chat-messages';
 import { browserStorage, EFFORT_WORDS, readChoice, resolveChoice, saveChoice, shortModelLabel, type ChatChoice } from '@/lib/chat-settings';
 import { cn } from '@/lib/utils';
+import { COMPOSER_NOTE, COMPOSER_PLACEHOLDER } from '@/lib/words';
 
 /** A chat with nothing in it yet (one value, so effects that follow the messages do not re-run). */
 const NO_MESSAGES: ViewMessage[] = [];
@@ -53,7 +54,6 @@ const NO_MESSAGES: ViewMessage[] = [];
 /** How close to the bottom (px) still counts as "at the bottom" for following new words. */
 const FOLLOW_GAP = 80;
 /** claude.ai's words under the composer. */
-const DISCLAIMER = 'Claude can make mistakes. Please double-check responses.';
 
 /** "$5.00" → "$5", "$3.10" stays: the money line in the model menu. */
 function money(value: string | null | undefined): string | null {
@@ -699,7 +699,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
             {centred && (
               <div className="mb-4 flex flex-col items-center gap-1.5">
                 <FullCheckButton summary={fullCheckSummary} scope={fullCheckScope} onRun={runFullCheck} blocked={fullCheckBlocked} loadPlan={loadPlan} />
-                <p className="text-center text-xs text-muted-foreground">What’s wrong, what to check and what’s right on every page, with the cloud drawing</p>
+                <p className="text-center text-xs text-muted-foreground">Every vendor drawing against the architect’s: Wrong, Right and Not compared, with the cloud drawing</p>
               </div>
             )}
             {!centred && (
@@ -742,9 +742,10 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                 models={modelList}
                 choice={choice}
                 onChoice={changeChoice}
-                placeholder={centred ? 'How can I help you today?' : 'Reply to Claude…'}
+                placeholder={COMPOSER_PLACEHOLDER}
                 menuFootnote={footnote}
                 textareaRef={textareaRef}
+                modelInMenu
                 leading={<ProductChips products={products} onToggle={toggle} onAll={() => setProducts(pickable(catalog))} disabled={running} />}
                 plus={
                   <PlusMenu
@@ -770,7 +771,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
             </div>
             {centred && <Starters disabled={Boolean(blocked)} onAsk={(question) => void send(question)} />}
             <p data-slot="chat-disclaimer" className={cn('px-2 text-center text-xs text-muted-foreground', centred ? 'mt-5' : 'mt-2')}>
-              {DISCLAIMER}
+              {COMPOSER_NOTE}
             </p>
           </div>
         </section>

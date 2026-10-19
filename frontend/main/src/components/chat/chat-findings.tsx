@@ -82,7 +82,7 @@ export function StatusMark({ finding, className }: { finding: ChatFinding; class
   return (
     <span data-slot="chat-finding-status" data-status={status} className={cn('inline-flex items-center gap-1.5 text-[13px] whitespace-nowrap', STATUS_TEXT[status], className)}>
       <StatusDot status={status} />
-      {status === 'not_compared' ? 'Not looked at' : STATUS_WORDS[finding.status]}
+      {status === 'not_compared' ? 'Not compared' : STATUS_WORDS[finding.status]}
     </span>
   );
 }
@@ -688,13 +688,13 @@ interface SectionDef {
 }
 
 const SECTIONS: readonly SectionDef[] = [
-  { status: 'different', words: 'What’s wrong', hint: null },
-  { status: 'check', words: 'Not compared', hint: 'Nothing to compare: each says why.' },
+  { status: 'different', words: 'Wrong', hint: null },
+  { status: 'check', words: 'Not compared', hint: 'Each with its reason and what is needed' },
 ];
 
 /** #1619: a full check's open section: what code proved wrong (Not compared is folded below). */
 const ARCHITECT_SECTIONS: readonly SectionDef[] = [
-  { status: 'different', words: 'What’s wrong', hint: 'Proved by code: clouded red on the drawing' },
+  { status: 'different', words: 'Wrong', hint: 'Proved by code: red on the cloud drawing, with what it should be' },
 ];
 
 function SectionHead({ status, words, count, hint, children, id }: { status: RowStatus; words: string; count: number; hint?: string | null; children?: React.ReactNode; id?: string }) {
@@ -749,7 +749,8 @@ function Sections({ findings, filter, onFilter, onOpen, pictureUrl, fullPageHref
   const isNarrowScreen = useMediaQuery(FINDINGS_NARROW);
   const categories = categoriesPresent(findings);
   const shown = findings.filter((finding) => (filter.category === null || (finding.category ?? 'other') === filter.category) && (filter.page === null || finding.page === filter.page || finding.vs_page === filter.page));
-  const of = (status: RowStatus) => shown.filter((finding) => statusOf(finding) === status);
+  // #1712: one word per meaning: an item not looked at on both sides is Not compared too (its row says why).
+  const of = (status: RowStatus) => shown.filter((finding) => statusOf(finding) === status || (status === 'check' && statusOf(finding) === 'not_compared'));
   const setCategory = (category: FindingCategory | null) => onFilter({ ...filter, category });
   const firstHead = sections.find((section) => of(section.status).length > 0)?.status ?? null;
   const filters = (categories.length > 1 || filter.page !== null) && !isNarrowScreen ? (
@@ -788,7 +789,6 @@ function Sections({ findings, filter, onFilter, onOpen, pictureUrl, fullPageHref
   ) : null;
 
   const right = of('same');
-  const unseen = of('not_compared');
   // #1619: a full check's Not-compared items are a folded section of their own.
   const notCompared = architectView ? of('check') : [];
   const nothing = sections.every((section) => of(section.status).length === 0);
@@ -840,13 +840,8 @@ function Sections({ findings, filter, onFilter, onOpen, pictureUrl, fullPageHref
         </Folded>
       )}
       {architectView && notCompared.length > 0 && (
-        <Folded status="check" words="Nothing to compare" count={notCompared.length} hint="Not on the cloud drawing; each says why and what is needed (the Not-compared list)" id={ids?.check}>
-          <FindingsList findings={notCompared} label="Nothing to compare" onOpen={onOpen} pictureUrl={pictureUrl} fullPageHref={fullPageHref} decisionFor={decisionFor} />
-        </Folded>
-      )}
-      {unseen.length > 0 && (
-        <Folded status="not_compared" words="Not looked at" count={unseen.length} hint="Not looked at on both sides, so not counted as right">
-          <FindingsList findings={unseen} label="Not looked at" onOpen={onOpen} pictureUrl={pictureUrl} fullPageHref={fullPageHref} />
+        <Folded status="check" words="Not compared" count={notCompared.length} hint="Not on the cloud drawing; each with its reason and what is needed (the Not-compared list)" id={ids?.check}>
+          <FindingsList findings={notCompared} label="Not compared" onOpen={onOpen} pictureUrl={pictureUrl} fullPageHref={fullPageHref} decisionFor={decisionFor} />
         </Folded>
       )}
     </section>

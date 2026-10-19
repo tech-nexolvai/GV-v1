@@ -56,6 +56,11 @@ export interface ChatComposerProps {
   leading?: React.ReactNode;
   /** The "+" menu (#1517), first at the bottom left. */
   plus?: React.ReactNode;
+  /**
+   * #1712 (owner decision 4): the model is chosen in the "+" menu, so the main row shows no model
+   * button. Without it (a composer with no "+" menu) the model button stays.
+   */
+  modelInMenu?: boolean;
 }
 
 /**
@@ -81,6 +86,7 @@ export function ChatComposer({
   textareaRef,
   leading,
   plus,
+  modelInMenu = false,
 }: ChatComposerProps) {
   const fieldId = useId();
   const ownRef = useRef<HTMLTextAreaElement>(null);
@@ -104,7 +110,8 @@ export function ChatComposer({
   return (
     <form
       data-slot="chat-composer"
-      aria-label="Message Claude"
+      data-model={choice?.model ?? undefined}
+      aria-label="Ask GV Review"
       className="flex flex-col rounded-[18px] border border-border bg-background shadow-[0_4px_20px_rgb(0_0_0/0.04),0_1px_2px_rgb(0_0_0/0.04)] transition-[border-color,box-shadow] duration-150 focus-within:border-input/70 focus-within:shadow-[0_4px_20px_rgb(0_0_0/0.06),0_0_0_3px_color-mix(in_srgb,var(--ring)_8%,transparent)] dark:shadow-[0_4px_20px_rgb(0_0_0/0.3)]"
       onSubmit={(event) => {
         event.preventDefault();
@@ -184,7 +191,7 @@ export function ChatComposer({
               <span className="num">{value.length}</span>/<span className="num">{MESSAGE_MAX}</span>
             </span>
           )}
-          {model && choice && <ModelMenu models={models} model={model} choice={choice} onChoice={onChoice} footnote={menuFootnote} />}
+          {model && choice && !modelInMenu && <ModelMenu models={models} model={model} choice={choice} onChoice={onChoice} footnote={menuFootnote} />}
           {running ? (
             <button
               type="button"

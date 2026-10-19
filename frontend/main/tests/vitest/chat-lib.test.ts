@@ -212,20 +212,20 @@ describe('what an answer shows, in order', () => {
 
   it('sums a finished row up in words, claude.ai’s way', () => {
     expect(activitySummary([step('1', 'bash_tool'), step('2', 'bash_tool'), step('3', 'view', { picture_id: 'p' }), step('4', 'bash_tool'), step('5', 'view', { picture_id: 'q' }), step('6', 'create_file')]))
-      .toBe('Ran 3 commands, viewed 2 pictures, created a file');
+      .toBe('Read the drawing data 3 times, looked at 2 pictures, made a file');
     expect(activitySummary([
       { type: 'thinking', text: 'a', seconds: 2, live: false },
       step('1', 'bash_tool'),
       { type: 'thinking', text: 'b', seconds: 5, live: false },
       step('2', 'bash_tool'),
-    ])).toBe('Thought for 7s, ran 2 commands');
+    ])).toBe('Thought for 7s, read the drawing data 2 times');
     expect(activitySummary([step('1', 'view'), step('2', 'str_replace'), step('3', 'TaskCreate'), step('4', 'TaskUpdate'), step('5', 'present_files'), step('6', 'review_results')]))
-      .toBe('Viewed a file, edited a file, updated the task list, presented files');
+      .toBe('Read a file, edited a file, updated its plan, shared the files');
     expect(activitySummary([
       { type: 'thinking', text: 'a', seconds: 41, live: false }, step('1', 'review_results'), step('2', 'bash_tool'), step('3', 'view', { picture_id: 'p' }),
       step('4', 'TaskCreate'), step('5', 'Agent', { agents: [{ id: 'a' }, { id: 'b' }] }), step('6', 'create_file'),
-    ])).toBe('Thought for 41s, ran a command, viewed a picture, ran 2 agents');
-    expect(activitySummary([step('1', 'Agent', { agents: [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }] })])).toBe('Ran 4 agents');
+    ])).toBe('Thought for 41s, read the drawing data, looked at a picture, asked 2 helpers');
+    expect(activitySummary([step('1', 'Agent', { agents: [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }] })])).toBe('Asked 4 helpers');
     expect(activitySummary([{ type: 'thinking', text: 'a', seconds: null, live: false }])).toBe('Thought');
   });
 
@@ -235,7 +235,7 @@ describe('what an answer shows, in order', () => {
     expect(activityHeadline([{ type: 'thinking', text: '', seconds: null, live: true }])).toBe('Thinking…');
     expect(activityHeadline([{ type: 'step', step: { id: '1', tool: 'bash_tool', label: 'Render page 3', ok: null }, live: true }])).toBe('Render page 3');
     expect(activityHeadline([{ type: 'step', step: { id: '1', tool: 'Agent', label: 'Agents', ok: null, agents: [{ id: 'a', description: 'd', model: 'm', ok: null, report: null, steps: [], running: true }, { id: 'b', description: 'd', model: 'm', ok: null, report: null, steps: [], running: true }] }, live: true }]))
-      .toBe('Running 2 agents…');
+      .toBe('Asking 2 helpers…');
     expect(thinkingLine('## Plan\n- **Compare** the widths\n')).toBe('Compare the widths');
     expect(thinkingLine('  ')).toBeNull();
   });

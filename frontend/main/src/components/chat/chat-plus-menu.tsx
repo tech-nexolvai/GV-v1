@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   BookCheck,
   Check,
+  Cpu,
   Cloud,
   FileSearch,
   Gauge,
@@ -37,6 +38,7 @@ import {
   fullCheckEstimate,
   GROUP_WORDS,
   nextBlank,
+  modelActions,
   plusAction,
   plusActions,
   readRecent,
@@ -46,7 +48,7 @@ import {
   type PlusGroup,
   type PlusIcon,
 } from '@/lib/chat-plus-actions';
-import { browserStorage, chooseEffort, EFFORT_WORDS, type ChatChoice } from '@/lib/chat-settings';
+import { browserStorage, chooseEffort, chooseModel, EFFORT_WORDS, type ChatChoice } from '@/lib/chat-settings';
 import { planAnswers, usePlanCheck } from '@/lib/chat-plan-check';
 import { useProductCatalog } from '@/lib/products';
 import { cn } from '@/lib/utils';
@@ -69,9 +71,10 @@ const ICONS: Record<PlusIcon, LucideIcon> = {
   both: Layers,
   quick: Zap,
   thorough: Gauge,
+  model: Cpu,
 };
 
-const GROUPS: readonly PlusGroup[] = ['checks', 'outputs', 'focus'];
+const GROUPS: readonly PlusGroup[] = ['checks', 'outputs', 'focus', 'model'];
 
 /** A row: claude.ai's roomy menu rows; the picked one is a soft grey. */
 const ROW =
@@ -178,6 +181,9 @@ export function PlusMenu(props: PlusMenuProps) {
       case 'effort':
         if (!choice) return 'Loading the models…';
         return effortFor(models, choice, action.run.level) ? null : 'This model does not offer it';
+      case 'model':
+        if (!choice) return 'Loading the models…';
+        return running ? 'After this answer' : null;
       default:
         return null;
     }
@@ -186,6 +192,7 @@ export function PlusMenu(props: PlusMenuProps) {
   function picked(action: PlusAction): boolean {
     if (action.run.kind === 'products') return sameProducts(products, action.run.products);
     if (action.run.kind === 'effort' && choice) return effortFor(models, choice, action.run.level) === choice.effort;
+    if (action.run.kind === 'model' && choice) return choice.model === action.run.model;
     return false;
   }
 
@@ -258,10 +265,18 @@ export function PlusMenu(props: PlusMenuProps) {
         setOpen(false);
         return;
       }
+      case 'model': {
+        if (!choice) return;
+        const next = chooseModel(models, choice, run.model);
+        props.onChoice(next);
+        setStatus(`Model: ${action.label}`);
+        setOpen(false);
+        return;
+      }
     }
   }
 
-  const menuActions = plusActions(catalog);
+  const menuActions = [...plusActions(catalog), ...modelActions(models)];
   const recentActions = recent.map((id) => plusAction(id, catalog)).filter((action): action is PlusAction => action !== null);
 
   const row = (action: PlusAction, value: string) => {
