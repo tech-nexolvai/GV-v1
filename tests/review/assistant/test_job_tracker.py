@@ -322,6 +322,31 @@ def test_a_right_that_was_not_compared_proves_nothing() -> None:
     assert item["state"] == "open" and item["round_now"] == 1
 
 
+def test_a_wrong_code_did_not_prove_is_not_compared_and_unnumbered() -> None:
+    """The pipeline audit (2026-10-19): the tracker counted a finding's raw `different` as Wrong
+    (a check row said 17 wrong where the files said 10), and numbered it. The files count Wrong
+    only when code proved it; the tracker and the comment numbers count the same."""
+    package, sets = one_set()
+    check = answer(
+        package,
+        [
+            finding("F1", "Sink centre line", 25, vendor="EQ", proved=False),
+            finding("F2", "Filler at wall end", 3),
+        ],
+    )
+    built = build_tracker(sets, [check])
+    items = by_item(built)
+    assert items["Sink centre line"]["open_kind"] == "decision"  # Open · Not compared
+    assert items["Filler at wall end"]["open_kind"] == "wrong"
+    row = built["sets"][0]["checks"][0]
+    assert (row["wrong"], row["decision"]) == (1, 1)
+    from app.review.assistant.job_tracker import comment_numbers
+
+    numbers = comment_numbers([check])
+    assert (str(check.message_id), "F1") not in numbers
+    assert numbers[(str(check.message_id), "F2")] == "C-01"
+
+
 def test_a_finding_with_no_round_takes_its_pages_round() -> None:
     package, sets = one_set()
     built = build_tracker(
@@ -418,28 +443,3 @@ def test_nothing_found_is_an_empty_tracker() -> None:
     assert built["totals"]["checks"] == 0
     only_right = build_tracker(sets, [answer(package, [finding("F1", "Width", 2, "same")])])
     assert only_right["items"] == [] and only_right["sets"][0]["items"] == 0
-
-
-def test_a_wrong_code_did_not_prove_is_not_compared_and_unnumbered() -> None:
-    """The pipeline audit (2026-10-19): the tracker counted a finding's raw `different` as Wrong
-    (a check row said 17 wrong where the files said 10), and numbered it. The files count Wrong
-    only when code proved it; the tracker and the comment numbers count the same."""
-    package, sets = one_set()
-    check = answer(
-        package,
-        [
-            finding("F1", "Sink centre line", 25, vendor="EQ", proved=False),
-            finding("F2", "Filler at wall end", 3),
-        ],
-    )
-    built = build_tracker(sets, [check])
-    items = by_item(built)
-    assert items["Sink centre line"]["open_kind"] == "decision"  # Open · Not compared
-    assert items["Filler at wall end"]["open_kind"] == "wrong"
-    row = built["sets"][0]["checks"][0]
-    assert (row["wrong"], row["decision"]) == (1, 1)
-    from app.review.assistant.job_tracker import comment_numbers
-
-    numbers = comment_numbers([check])
-    assert (str(check.message_id), "F1") not in numbers
-    assert numbers[(str(check.message_id), "F2")] == "C-01"
