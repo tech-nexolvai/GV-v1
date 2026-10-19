@@ -755,7 +755,7 @@ def run_message(job: MessageJob, run: RunningMessage, emit: Emit | None = None) 
         feed.publish(event, data)
         if emit is not None:
             emit(event, data)
-        live = run.live
+        live = getattr(run, "live", None)
         if live is not None:
             live.observe(event, data)
         _maybe_checkpoint(run, event)
@@ -766,7 +766,7 @@ def run_message(job: MessageJob, run: RunningMessage, emit: Emit | None = None) 
         if emit is not None:
             emit(event, data)
 
-    if job.mode == "full_check":
+    if getattr(job, "mode", None) == "full_check":
         breaker = getattr(job.provider, "breaker", None)
         run.live = LiveCheck(
             publish_live,
@@ -939,8 +939,9 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             "thinking": job.thinking,
         },
     )
-    if run.live is not None:
-        run.live.start()  # the full check's start time and "getting ready"
+    started = getattr(run, "live", None)
+    if started is not None:
+        started.start()  # the full check's start time and "getting ready"
 
     def finish(outcome: MessageOutcome) -> None:
         _finish(job, run, emit, outcome)
@@ -1159,7 +1160,7 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
         lead_tools=harness.tools,
     )
     run.engine = engine
-    engine.live = run.live
+    engine.live = getattr(run, "live", None)
     engine.book.earlier = dict(earlier_found)
     engine.answer_number = answer_number
     if earlier is not None and job.mode == "full_check":
@@ -1230,7 +1231,7 @@ def _say_service_stop(provider: object, outcome: MessageOutcome) -> None:
 def _finish(job: MessageJob, run: RunningMessage, emit: Emit, outcome: MessageOutcome) -> None:
     """The answer stored, then `error` (if any) and `message_end` with the stored message. Not
     when shutdown already stored it as interrupted (#1514): a question never gets two replies."""
-    live = run.live
+    live = getattr(run, "live", None)
     if live is not None:
         try:
             live.finish(outcome.stopped)  # the live card's last event: done
