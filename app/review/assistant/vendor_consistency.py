@@ -71,13 +71,16 @@ from app.review.assistant.ledger import add_up, format_inches
 __all__ = [
     "CREATED_BY",
     "END_PT",
+    "LINE_WORK_DIR",
     "MIN_SCALE_SUPPORT",
     "TOLERANCE",
     "ConsistencyResult",
     "StringCheck",
     "check_pack",
     "check_set",
+    "line_work",
     "summary_line",
+    "warm_line_work",
 ]
 
 _log = logging.getLogger(__name__)
@@ -1196,24 +1199,73 @@ def page_texts(folder: Path, files: Sequence[str]) -> dict[tuple[str, int], str]
     return out
 
 
+#: The set pack's folder of each page's line work, read once per set (`LineWork`'s cache): reading
+#: it from the PDF took about a second a page, half a minute per full check of a 60-page set.
+LINE_WORK_DIR: Final = "line_work"
+
+
 class LineWork:
     """A page's line work from the upload (`dim_labels`' own reading, loaded by name), each page
-    read at most once: its straight pieces (calling it, a `Segments`) and its line weight."""
+    read at most once: its straight pieces (calling it, a `Segments`) and its line weight. With a
+    set pack (`cache`), each page read is kept there (`LINE_WORK_DIR`, exact floats), so the next
+    check of the set reads it in a moment; a pack is per set of uploads, so it never goes stale."""
 
-    def __init__(self, uploads: Path) -> None:
+    def __init__(self, uploads: Path, cache: Path | None = None) -> None:
         self.uploads = uploads
+        self.cache = cache
         self._read: dict[tuple[str, int], tuple[Sequence[Segment], float] | None] = {}
+
+    def _kept(self, file: str, page: int) -> Path | None:
+        if self.cache is None:
+            return None
+        pack = import_module("app.review.assistant.set_pack")
+        return self.cache / LINE_WORK_DIR / f"{pack.stem(file)}-p{page:04d}.npz"
+
+    def _load(self, path: Path | None) -> tuple[Sequence[Segment], float] | None:
+        if path is None or not path.is_file():
+            return None
+        import numpy as np
+
+        try:
+            with np.load(path) as kept:
+                rows = kept["segments"].tolist()
+                weight = float(kept["weight"])
+        except (OSError, ValueError, KeyError):
+            return None
+        return [((a, b), (c, d)) for a, b, c, d in rows], weight
+
+    def _keep(self, path: Path | None, found: tuple[Sequence[Segment], float]) -> None:
+        if path is None:
+            return
+        import numpy as np
+
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            held = path.with_name(f".{path.stem}.{uuid4().hex}.npz")
+            rows = np.array(
+                [[a[0], a[1], b[0], b[1]] for a, b in found[0]], dtype=np.float64
+            ).reshape(-1, 4)
+            np.savez(held, segments=rows, weight=np.float64(found[1]))
+            held.replace(path)
+        except OSError as failed:
+            _log.info("vendor consistency: line work not kept: %s", type(failed).__name__)
 
     def _page(self, file: str, page: int) -> tuple[Sequence[Segment], float] | None:
         key = (file, page)
         if key not in self._read:
-            try:
-                labels = import_module("app.review.assistant.dim_labels")
-                parsed = labels._parse(self.uploads / file, page - 1)
-                self._read[key] = (parsed.segments, float(parsed.weight))
-            except Exception as failed:  # noqa: BLE001 - its ends stay unchecked: no finding
-                _log.warning("vendor consistency: line work not read: %s", type(failed).__name__)
-                self._read[key] = None
+            kept = self._kept(file, page)
+            found = self._load(kept)
+            if found is None:
+                try:
+                    labels = import_module("app.review.assistant.dim_labels")
+                    parsed = labels._parse(self.uploads / file, page - 1)
+                    found = (parsed.segments, float(parsed.weight))
+                    self._keep(kept, found)
+                except Exception as failed:  # noqa: BLE001 - its ends stay unchecked: no finding
+                    _log.warning(
+                        "vendor consistency: line work not read: %s", type(failed).__name__
+                    )
+            self._read[key] = found
         return self._read[key]
 
     def __call__(self, file: str, page: int) -> Sequence[Segment] | None:
@@ -1225,9 +1277,30 @@ class LineWork:
         return None if found is None else found[1]
 
 
-def line_work(uploads: Path) -> LineWork:
-    """A page's line work from the upload, each page read at most once (`LineWork`)."""
-    return LineWork(uploads)
+def line_work(uploads: Path, cache: Path | None = None) -> LineWork:
+    """A page's line work from the upload, each page read at most once (`LineWork`), kept in the
+    set pack `cache` when one is given."""
+    return LineWork(uploads, cache)
+
+
+def warm_line_work(folder: Path | None, uploads: Path | None) -> int:
+    """Reads and keeps in the set pack the line work of every page with labels (the pages the
+    consistency check reads), ahead of it (the simple full check starts this beside its compare
+    calls). Returns how many pages were read. Never raises."""
+    if folder is None or uploads is None:
+        return 0
+    try:
+        dims = _read_json(folder / "dims.json")
+        reader = LineWork(uploads, folder)
+        done = 0
+        for entry in (dims or {}).get("pages") or []:
+            if isinstance(entry, Mapping) and entry.get("labels") and entry.get("file"):
+                reader(str(entry["file"]), int(entry["page"]))
+                done += 1
+        return done
+    except Exception as failed:  # noqa: BLE001 - the check reads what it needs itself
+        _log.info("vendor consistency: line work not warmed: %s", type(failed).__name__)
+        return 0
 
 
 def check_pack(
@@ -1246,7 +1319,10 @@ def check_pack(
     files = [str(f) for f in (page_map or {}).get("files") or dims.get("files") or []]
     texts = page_texts(folder, files) if read_texts and files else None
     return check_set(
-        dims, page_map, texts=texts, segments=line_work(uploads) if uploads is not None else None
+        dims,
+        page_map,
+        texts=texts,
+        segments=line_work(uploads, folder) if uploads is not None else None,
     )
 
 

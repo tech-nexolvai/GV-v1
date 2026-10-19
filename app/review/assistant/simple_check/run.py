@@ -262,16 +262,27 @@ class _Run:
         )
         self._cover_pages(worklist)
         self._progress()
-        # Code's own findings first ($0), judged by the code checks (GV-note fix).
-        engine.add_code_findings()
-        with engine.timings.phase("advocate"):
-            self._judge_code_findings()
+        # The vendor consistency check's line work (about a second a page) is read beside the
+        # compare calls and kept in the set pack; code's own findings then come after them, so
+        # the first compare call no longer waits for half a minute of code work.
+        warm = threading.Thread(
+            target=import_module("app.review.assistant.vendor_consistency").warm_line_work,
+            args=(folder, workspace.uploads),
+            daemon=True,
+            name="gv-simple-line-work",
+        )
+        warm.start()
         self._open_run_dir()
         if not engine.cancel.is_set():
             if self.options.replay:
                 self._load_saved()
             else:
                 self._compare_all(folder)
+        warm.join()
+        # Code's own findings ($0), judged by the code checks (GV-note fix).
+        engine.add_code_findings()
+        with engine.timings.phase("advocate"):
+            self._judge_code_findings()
         # A stop (the reviewer's, or the runaway guard's) never throws away what was paid for:
         # every answered drawing is verified and recorded; only the blind looks wait for money.
         with engine.timings.phase("verify"):
