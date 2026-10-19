@@ -335,6 +335,11 @@ def test_comment_labels_of_one_check_and_an_agreed_item() -> None:
     }
     # Stable numbers given win; an agreed item with none takes the next free one.
     assert comment_labels([_proved(), agreed], {"F1": "C-07"}) == {"F1": "C-07", "F3": "C-08"}
+    # Only comments are numbered: a Right finding of the same tracked item gets no number (the
+    # pipeline audit: Right items carried "C-03" / "C-04").
+    right = _right()
+    numbers = {"F1": "C-07", str(right["id"]): "C-07"}
+    assert comment_labels([_proved(), right], numbers) == {"F1": "C-07"}
 
 
 # ---- the files, from one workspace ------------------------------------------------------------
