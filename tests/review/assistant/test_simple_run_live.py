@@ -88,6 +88,7 @@ def test_drawings_phases_and_proved_findings_arrive_in_order(
         _first(screen, _phase("comparing")),
         _first(screen, lambda e, d: e == "check_drawing" and d["drawing"]["status"] == "comparing"),
         _first(screen, lambda e, d: e == "check_drawing" and d["drawing"]["status"] == "answered"),
+        _first(screen, _phase("double_checking", "code_checks")),
         _first(screen, _phase("double_checking", "verifying")),
         _first(screen, _phase("double_checking", "second_looks")),
         _first(

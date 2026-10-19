@@ -459,7 +459,9 @@ def test_a_full_check_through_the_route_shows_its_label_and_ends_with_its_two_fi
             ]
             assert "Vendor set - Not compared.pdf" in inside
             assert "Vendor set - Not compared.xlsx" in inside
-            assert inside[-1] == "Vendor set - Check report.pdf"
+            # GV's own check report stays a file of the chat, never in the vendor's package.
+            assert not any("check report" in name.lower() for name in inside)
+            assert any(f["name"].endswith("AI check report.pdf") for f in message["files"])
             letter = "".join(
                 page.extract_text() or ""
                 for page in PdfReader(io.BytesIO(archive.read(inside[1]))).pages

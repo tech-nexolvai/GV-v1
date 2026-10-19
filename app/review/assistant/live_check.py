@@ -39,7 +39,7 @@ of those waiting for a second look; no red ever appears and then disappears):
   and logged loudly (it is a bug: it should not happen).
 
 The simple full check calls the hooks (`work_list`, `drawing_started`, `drawing_finished`,
-`verified`, `second_look`, `decide`, `making_files`); the roster calls none, so there the state
+`code_checks`, `verified`, `second_look`, `decide`, `making_files`); the roster calls none, so there the state
 follows the `progress` events (pages, its three phases) and the findings are decided once, at
 `writing`. Thread-safe: the compare and blind workers report at once; every event is published
 under the state's lock, so the screen sees the changes in the order they were made. This module
@@ -402,6 +402,12 @@ class LiveCheck:
                 unit="drawings",
             )
             self._send_tally()
+
+    def code_checks(self) -> None:
+        """Code's own checks of the whole set (its strings, finishes and pairs, $0) after the
+        compare calls: double-checking, with no count."""
+        with self._lock:
+            self.phase("double_checking", step="code_checks")
 
     def verifying(self, total: int) -> None:
         """Code starts verifying the answered drawings (n of m)."""

@@ -44,7 +44,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final, Literal
 
@@ -158,6 +158,12 @@ class RoundItem:
     file: str | None
     reason: str | None = None
     """Why it could not be compared (grey), in one plain line."""
+    label: tuple[str, int, str] | None = None
+    """The round-1 label it is about (file, page, label id): a round-1 item's own, or the label a
+    round-2 item's place falls on in round 1. What ties one item's two verdicts into one."""
+    twin: str | None = None
+    """A round-2 item already wrong in round 1: the round-1 COMMENT at its place (finding id), when
+    there is one. Only then is it a previous comment not addressed."""
 
 
 @dataclass(slots=True)
@@ -516,7 +522,11 @@ def round_two(
         where = _vendor_box(finding)
         if where is None:
             continue
-        drawing = _drawing_of(where[0] or main_file or "", where[1], where[2], drawings_all)
+        drawing = _recorded(
+            finding,
+            _drawing_of(where[0] or main_file or "", where[1], where[2], drawings_all),
+            by_area,
+        )
         if drawing is None or drawing.round != 1:
             continue
         following = best_next(drawing)
@@ -530,7 +540,7 @@ def round_two(
         file = where[0] or main_file or ""
         page, box = where[1], where[2]
         drawings = [d for ds in by_area.values() for d in ds]
-        drawing = _drawing_of(file, page, box, drawings)
+        drawing = _recorded(finding, _drawing_of(file, page, box, drawings), by_area)
         if drawing is None:
             continue
         item = str(finding.get("item") or "")
@@ -547,7 +557,70 @@ def round_two(
             report.items.append(
                 _round_two_item(finding, drawing, first_round, box, labels, fitted, item, should)
             )
+    report.items = _one_verdict(report.items, {str(f.get("id")) for f in live})
     return report
+
+
+def _recorded(
+    finding: Mapping[str, Any], drawing: _Drawing | None, by_area: Mapping[str, list[_Drawing]]
+) -> _Drawing | None:
+    """The drawing a finding is about: the one its spot falls in, unless the finding records
+    another round (GV's recorded row of round 2 whose spot falls in round 1's box): then the
+    drawing of its own round on the same page, when there is exactly one; else none (it is not
+    followed as the other round's item, never a guess)."""
+    recorded = finding.get("round")
+    if drawing is None or not isinstance(recorded, int) or isinstance(recorded, bool):
+        return drawing
+    if recorded == drawing.round:
+        return drawing
+    own = [
+        d
+        for d in by_area.get(drawing.area, [])
+        if d.round == recorded and d.page == drawing.page and d.file == drawing.file
+    ]
+    return own[0] if len(own) == 1 else None
+
+
+def _one_verdict(items: list[RoundItem], comments: set[str]) -> list[RoundItem]:
+    """One round verdict per item (orchestrator, 2026-10-19). A round-2 item already wrong in
+    round 1 at the same place is the round-1 comment's own item: when that comment is still wrong,
+    the round-2 item points to it (`twin`: a previous comment not addressed, counted once, as the
+    comment); when the comment's own verdict is another (it could not be followed, or it was
+    fixed), the round-2 item says the same thing, never "not addressed" beside "could not be
+    compared". With no round-1 comment there, round 1 printed the same value and nobody had been
+    told: no previous comment."""
+    followed = {
+        item.label: item
+        for item in items
+        if item.label is not None
+        and item.finding_id in comments
+        and item.status in ("fixed", "still_wrong", "not_compared")
+    }
+    out: list[RoundItem] = []
+    for item in items:
+        twin = (
+            followed.get(item.label)
+            if item.status == "also_in_round_1" and item.label is not None
+            else None
+        )
+        if item.status != "also_in_round_1" or twin is None:
+            out.append(item)
+        elif twin.status == "still_wrong":
+            out.append(replace(item, twin=twin.finding_id))
+        else:
+            why = (
+                twin.reason
+                if twin.status == "not_compared"
+                else "round 1's comment at this place reads as fixed in round 2"
+            )
+            out.append(
+                replace(
+                    item,
+                    status="not_compared",
+                    reason=f"its round-1 comment could not be followed: {why}",
+                )
+            )
+    return out
 
 
 def _round_two_item(
@@ -574,7 +647,8 @@ def _round_two_item(
         if label is None:
             break
         back = _nearest(found.back(label.centre), _on(first, labels), label.orientation)
-        if back is not None and _same(back.inches, label.inches):
+        same = back is not None and _same(back.inches, label.inches)
+        if same and back is not None:
             reason = f"round 1 printed the same {_words(back.inches, back.text)} here"
             status: Status = "also_in_round_1"
         else:
@@ -591,6 +665,7 @@ def _round_two_item(
             label.box,
             drawing.file,
             reason,
+            label=(back.file, back.page, back.id) if same and back is not None else None,
         )
     return RoundItem(
         finding_id, "not_compared", item, value, value, should, drawing.page, None, None, why
@@ -715,8 +790,12 @@ def _round_one_item(
     vendor = _vendor_box(finding)
     box = vendor[2] if vendor is not None else drawing.box
 
+    key: list[tuple[str, int, str] | None] = [None]
+
     def grey(why: str, page: int | None = None) -> RoundItem:
-        return RoundItem(finding_id, "not_compared", item, was, None, should, page, None, None, why)
+        return RoundItem(
+            finding_id, "not_compared", item, was, None, should, page, None, None, why, key[0]
+        )
 
     if second is None:
         return grey("the set has no round 2 of this drawing")
@@ -725,6 +804,7 @@ def _round_one_item(
     label = _label_at(finding, _on(drawing, labels), box)
     if label is None:
         return grey("code did not find the vendor's value as printed text in round 1", second.page)
+    key[0] = (label.file, label.page, label.id)
     after = _nearest(lined.place(label.centre), _on(second, labels), label.orientation)
     if after is None:
         return grey("round 2 prints nothing at the same place", second.page)
@@ -740,5 +820,15 @@ def _round_one_item(
     else:
         return grey(f"round 2 changed it to {now}; code does not know the value it should be")
     return RoundItem(
-        finding_id, status, item, was, now, should, second.page, after.box, second.file
+        finding_id,
+        status,
+        item,
+        was,
+        now,
+        should,
+        second.page,
+        after.box,
+        second.file,
+        None,
+        key[0],
     )

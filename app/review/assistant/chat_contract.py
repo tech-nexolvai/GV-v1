@@ -1777,14 +1777,18 @@ class ChatLivePhaseOut(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     phase: Literal["getting_ready", "comparing", "double_checking", "making_files", "done"] = Field(
-        description="getting_ready: the drawing set's pack (labels, page map) and code's own "
-        "checks; comparing: the drawings (n of m); double_checking: code verifies the answers, then "
-        "the blind second looks (n of m); making_files: n of 5 files; done: the answer is stored."
+        description="getting_ready: the drawing set's pack (labels, page map) and the work list; "
+        "comparing: the drawings (n of m); double_checking: code's own checks, code verifies the "
+        "answers, then the blind second looks (n of m); making_files: n of 5 files; done: the "
+        "answer is stored."
     )
-    step: Literal["verifying", "second_looks", "final_checks", "stopped"] | None = Field(
-        default=None,
-        description="Within double_checking: verifying (code checks each answered drawing), "
-        "second_looks, final_checks (no counts); `stopped` on a done check that was stopped.",
+    step: Literal["code_checks", "verifying", "second_looks", "final_checks", "stopped"] | None = (
+        Field(
+            default=None,
+            description="Within double_checking: code_checks (code's own checks of the whole set, "
+            "no count), verifying (code checks each answered drawing), second_looks, final_checks "
+            "(no count); `stopped` on a done check that was stopped.",
+        )
     )
     done: int | None = Field(default=None, description="How many of `total` are done.")
     total: int | None = Field(default=None, description="null: no count for this phase.")
