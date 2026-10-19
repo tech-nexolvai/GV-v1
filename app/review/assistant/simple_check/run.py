@@ -87,6 +87,12 @@ _ORDER: Final = {"red": 0, "not_compared": 1, "right": 2}
 #: Who made a finding the run judges with the code checks (everything but its own).
 _SKIP_JUDGING: Final = frozenset({CREATED_BY})
 _MICROS: Final = 1_000_000
+#: The words a pilot's left-out drawings are skipped with (`_scope_and_pilot`).
+_PILOT: Final = "a pilot run compares only the first"
+#: The next step of a check that did not finish: never "send it to the vendor".
+NOT_FINISHED_NEXT: Final = (
+    "Next: finish the check (compare the drawings left) before anything is sent to the vendor."
+)
 #: How long the run waits for the set pack to be made (its labels are read by OCR at upload).
 PACK_WAIT_SECONDS: Final = 1800.0
 _PACK_POLL_SECONDS: Final = 2.0
@@ -191,6 +197,9 @@ class _Run:
     blind_skipped: str | None = None
     """Why the red candidates got no blind look (a stop, no money), when they did not."""
     blind_skipped_count: int = 0
+    blind_failed: int = 0
+    """Red candidates whose blind look was asked for but could not be made (the call failed, the
+    reply was cut short or not the form): Not compared, said in the summary."""
 
     # -- the run --
 
@@ -289,7 +298,7 @@ class _Run:
         left = [item for item in self.items if item.id not in self.skipped]
         if pilot is not None and len(left) > pilot:
             for item in left[pilot:]:
-                self.skipped[item.id] = f"a pilot run compares only the first {pilot} drawings"
+                self.skipped[item.id] = f"{_PILOT} {pilot} drawings"
             left = left[:pilot]
         self.compared = left
 
@@ -317,10 +326,13 @@ class _Run:
                 )
             elif cover.how == "vendor":
                 reasons = {self.skipped.get(i) for i in cover.items if i in self.skipped}
+                # A pilot's left-out drawings are not reached (the check is not finished); a
+                # drawing outside the product scope is deliberately not compared.
+                pilot = bool(reasons) and all(r and r.startswith(_PILOT) for r in reasons)
                 pages.append(
                     {
                         "page": cover.page,
-                        "status": "not_comparable",
+                        "status": "not_opened" if pilot else "not_comparable",
                         "note": "; ".join(sorted(r for r in reasons if r)) or "not compared",
                     }
                 )
@@ -656,6 +668,9 @@ class _Run:
             looked = [with_blind(v, None, why) for v, _item in candidates]
         else:
             looked = look_all(engine, candidates, self.options.blind)
+            self.blind_failed = sum(
+                1 for done in looked if done.outcome != "red" and _no_look(done)
+            )
         for done in looked:
             self._save_blind(done)
         after = {id(old): new for (old, _item), new in zip(candidates, looked, strict=True)}
@@ -808,12 +823,23 @@ class _Run:
             for item in self.compared
             if (o := self.outcomes.get(item.id)) is None or o.status != "ok"
         ]
+        left = sum(1 for reason in self.skipped.values() if reason.startswith(_PILOT))
         if why is not None:
             engine.incomplete_note = why
         elif failed:
             engine.incomplete_note = (
                 f"{len(failed)} of {len(self.compared)} drawings could not be compared"
             )
+        elif left:
+            # A pilot is not a full check: never a review result for the vendor (S0).
+            engine.incomplete_note = (
+                f"a pilot run: {len(self.compared)} of {len(self.compared) + left} drawings "
+                "compared"
+            )
+        elif not self.compared:
+            # Nothing was compared (no vendor drawing, or none of the products picked): no review
+            # result says the drawings were checked.
+            engine.incomplete_note = self._nothing_compared()
         self._cover_answered(failed)
         try:
             engine._store_scope()
@@ -894,6 +920,18 @@ class _Run:
             except Exception:  # noqa: BLE001 - said in the summary
                 _log.warning("simple check could not record the compared pages")
 
+    def _nothing_compared(self) -> str:
+        """Why no drawing was compared (no error): the work list has none, or every one shows
+        only products outside the check's scope."""
+        outside = sum(1 for r in self.skipped.values() if r.startswith("outside the product scope"))
+        if self.items and outside == len(self.items):
+            label = str(getattr(self.engine.product_scope, "label", "") or "").lower()
+            return (
+                f"no drawing of {label or 'the products picked'} in this set: the "
+                f"{len(self.items)} vendor drawings show only other products"
+            )
+        return "the set has no vendor drawing to compare"
+
     def _summary(
         self,
         stopped: str | None,
@@ -911,7 +949,8 @@ class _Run:
             coverage=book.coverage_map()["counts"] if book.coverage_used else None,
             page_count=engine.tools.page_count,
             products=settings.products,
-            stopped=stopped,
+            # A Stop is said below in this check's own words (what was compared and verified).
+            stopped=None if stopped == "cancelled" else stopped,
             cap_hit=cap_hit,
             cap_usd=cap_text(settings.message_cap_micros),
             budget_usd=cap_text(settings.package_cap_micros),
@@ -919,8 +958,20 @@ class _Run:
             files=files,
             reasons=[row.reason for row in engine.not_compared] or None,
         )
+        pilot = [why for why in self.skipped.values() if why.startswith(_PILOT)]
+        # A check that did not finish is never "send it to the vendor" (its cover and letter say
+        # "Check incomplete: not for sending").
+        unfinished = (
+            why is not None
+            or bool(failed)
+            or stopped is not None
+            or bool(pilot)
+            or not self.compared
+        )
         text = "\n".join(
-            line for line in text.splitlines() if line.strip() != CODE_SUMMARY_NOTE
+            (NOT_FINISHED_NEXT if unfinished and line.startswith("Next:") else line)
+            for line in text.splitlines()
+            if line.strip() != CODE_SUMMARY_NOTE
         ).strip()
         lines = [text]
         answered = sum(1 for item in self.compared if item.id not in {i.id for i in failed})
@@ -936,7 +987,10 @@ class _Run:
                 f"**Check incomplete: {len(failed)} of {len(self.compared)} drawings could not be "
                 f"compared: {names}{more}. Not for sending until they are.**"
             )
-        else:
+        elif not self.compared:
+            nothing = self._nothing_compared()
+            lines.append(f"**Nothing was compared: {nothing}.**")
+        elif not pilot:
             lines.append(f"Every drawing in the work list was compared ({answered} drawings).")
         if stopped == "cancelled" and why is None:
             lines.append(
@@ -948,7 +1002,12 @@ class _Run:
                 f"{self.blind_skipped_count} possible differences got no blind second look "
                 f"({self.blind_skipped}): they are Not compared, never red."
             )
-        pilot = [why for why in self.skipped.values() if why.startswith("a pilot run")]
+        if self.blind_failed:
+            lines.append(
+                f"{self.blind_failed} possible differences could not get their blind second look "
+                "(the call failed or its reply was unusable): they are Not compared, never red. "
+                "Check again to settle them."
+            )
         if pilot:
             lines.append(
                 f"Pilot run: {len(self.compared)} drawings compared; {len(pilot)} more left out "
@@ -1037,6 +1096,14 @@ def load_blind(run_dir: Path) -> dict[str, dict[str, Any]]:
         if isinstance(record, dict) and record.get("key"):
             out[str(record["key"])] = record
     return out
+
+
+def _no_look(done: Verified) -> bool:
+    """A red candidate whose blind look was asked for but could not be made (`blind.look`'s
+    reasons: the call failed, the reply was cut short or not the form, its pictures)."""
+    return "blind second look was not made" in done.reason and not any(
+        why in done.reason for why in ("the check was stopped", "runaway guard")
+    )
 
 
 def _with_saved(candidate: Verified, saved: Mapping[str, Any] | None) -> Verified:
