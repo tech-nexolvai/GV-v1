@@ -24,13 +24,14 @@ import {
   secondsLeft,
   STEPS,
   stepOf,
+  tallyOf,
   usualWords,
   type LiveDrawing,
   type LiveFinding,
   type LiveState,
 } from '@/lib/chat-live';
 import { useReducedMotion } from '@/lib/chat-motion';
-import { itemParts, shouldBeValue, vendorValue } from '@/lib/chat-result';
+import { areaWords, itemParts, shouldBeValue, vendorValue } from '@/lib/chat-result';
 import { cn } from '@/lib/utils';
 
 export interface LiveCheckProps {
@@ -69,7 +70,7 @@ function LiveCheckCard({ live, eta = null, files = [], model = null, cost = null
     if (askStop) stopRef.current?.scrollIntoView?.({ block: 'nearest', behavior: reduced ? 'auto' : 'smooth' });
   }, [askStop, reduced]);
 
-  const tally = live.tally;
+  const tally = tallyOf(live);
   const waiting = tally.waiting_second_look;
   const leftText = isStopping || service ? null : leftWords(left) ?? usualWords(live);
 
@@ -258,9 +259,10 @@ export const LiveCheck = memo(LiveCheckCard, (before, after) =>
 /** "Comparing p.47 · Buffet small with the architect’s · 7 more at the same time", with the decided shimmer. */
 function NowLine({ live, active }: { live: LiveState; active: boolean }) {
   const now = nowWords(live);
-  if (now.page === null) return <Shimmer active={active}>{now.words}</Shimmer>;
+  // #1741 review: a neutral light on this line (red means Wrong; maroon is the logo and the star only).
+  if (now.page === null) return <Shimmer active={active} tone="ink">{now.words}</Shimmer>;
   return (
-    <Shimmer active={active}>
+    <Shimmer active={active} tone="ink">
       Comparing <span className="num text-[13px]">p.{now.page}</span>
       {now.area && <> · {now.area}</>} {now.words}
       {now.more > 0 && <span className="text-muted-foreground/70"> · {now.more} more at the same time</span>}
@@ -281,7 +283,7 @@ function Tiles({ drawings, badges, stopped, pagePicture }: { drawings: readonly 
         // After Stop, a drawing that never started will not be compared.
         const status = stopped && drawing.status === 'waiting' ? 'skipped' : drawing.status;
         const wrong = badges.get(drawing.id) ?? 0;
-        const words = [`p.${drawing.page}`, drawing.area, drawing.round ? `round ${drawing.round}` : null, TILE_WORDS[status], drawing.reason, wrong ? `${wrong} Wrong` : null].filter(Boolean).join(' · ');
+        const words = [`p.${drawing.page}`, areaWords(drawing.area), drawing.round ? `round ${drawing.round}` : null, TILE_WORDS[status], drawing.reason, wrong ? `${wrong} Wrong` : null].filter(Boolean).join(' · ');
         return (
           <li key={drawing.id} data-slot="chat-live-drawing" data-status={status} title={words} aria-label={words} className="chat-live-tile relative flex min-w-0 flex-col gap-1">
             <div
@@ -361,7 +363,7 @@ function Feed({ live }: { live: LiveState }) {
 
 function FeedRow({ finding, fresh }: { finding: LiveFinding; fresh: boolean }) {
   const parts = itemParts(finding.item || '');
-  const area = parts.area ?? finding.area ?? null;
+  const area = parts.area ?? areaWords(finding.area);
   const vendor = vendorValue({ vendor: finding.vendor ?? '' }).main;
   const should = shouldBeValue({ proof: finding.should_be ? ({ should_be: finding.should_be } as never) : null, architect: finding.architect ?? null })?.main ?? null;
   const by = finding.proved_by === 'checked_twice' ? 'checked twice' : 'proved by code';

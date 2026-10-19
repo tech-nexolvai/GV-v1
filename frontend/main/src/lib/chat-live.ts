@@ -10,6 +10,7 @@
  */
 
 import type { components } from '@/api/schema';
+import { areaWords } from '@/lib/chat-result';
 
 export type LiveState = components['schemas']['ChatLiveStateOut'];
 export type LivePhase = components['schemas']['ChatLivePhaseOut'];
@@ -136,7 +137,7 @@ export function nowWords(live: LiveState): { words: string; page: number | null;
     const running = live.drawings.filter((drawing) => drawing.status === 'comparing');
     const last = running[running.length - 1];
     if (!last) return { words: 'Comparing the vendor’s drawings with the architect’s', page: null, area: null, more: 0 };
-    return { words: 'with the architect’s', page: last.page, area: last.area ?? null, more: running.length - 1 };
+    return { words: 'with the architect’s', page: last.page, area: areaWords(last.area), more: running.length - 1 };
   }
   if (phase.phase === 'double_checking') {
     const words = {
@@ -231,6 +232,18 @@ export function elapsedWords(live: LiveState, now: number): string {
 /** The proved Wrongs to show, newest first: removed ones and repeats of the same item left out. */
 export function provedWrongs(live: LiveState): LiveFinding[] {
   return live.findings.filter((finding) => finding.outcome === 'wrong' && !finding.removed && !finding.same_as).reverse();
+}
+
+/**
+ * "Found so far" counted from the decided findings themselves, so the tally always equals the list
+ * under it (one number per thing): the server's `check_tally` can come a few seconds after the
+ * findings it counts. Removed items and repeats of the same item are not counted; the differences
+ * waiting for the second look are only ever the server's count.
+ */
+export function tallyOf(live: LiveState): LiveTally {
+  const counted = live.findings.filter((finding) => !finding.removed && !finding.same_as);
+  const count = (outcome: LiveFinding['outcome']) => counted.filter((finding) => finding.outcome === outcome).length;
+  return { wrong: count('wrong'), right: count('right'), not_compared: count('not_compared'), waiting_second_look: live.tally.waiting_second_look };
 }
 
 /** How many proved Wrongs each drawing tile carries: on the newest tile of the finding's page. */

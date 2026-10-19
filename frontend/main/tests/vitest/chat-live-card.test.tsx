@@ -75,6 +75,26 @@ describe('the live card', () => {
     expect(card.querySelector('[data-slot="chat-live-foot"]')?.textContent).toContain('Sonnet 5.5 · $2.13 so far');
   });
 
+  it('the tally always equals the list: N proved Wrongs shown, N in the tally, even before the server\'s own tally comes', () => {
+    const findings = [finding('a'), finding('b', { page: 23 }), finding('c', { page: 24 }), finding('d', { outcome: 'right' }), finding('e', { outcome: 'not_compared' }), finding('f', { same_as: 'a' }), finding('g', { removed: true })];
+    render(<LiveCheck live={liveState({ findings, tally: { wrong: 0, right: 0, not_compared: 0, waiting_second_look: 1 } })} />);
+    const shown = document.querySelectorAll('[data-slot="chat-live-row"]').length;
+    expect(shown).toBe(3);
+    const value = (kind: string) => document.querySelector(`[data-count="${kind}"] [data-value]`)?.getAttribute('data-value');
+    expect(value('wrong')).toBe(String(shown));
+    expect(value('right')).toBe('1');
+    expect(value('not_compared')).toBe('1');
+    expect(document.querySelector('[data-slot="chat-live-waiting"]')?.textContent).toMatch(/^1 possible difference/);
+  });
+
+  it('the now line is in the text\'s own greys (no red, no maroon) and areas lose their list numbers', () => {
+    render(<LiveCheck live={liveState({ drawings: [drawing('p24.v1', 24, 'comparing', '2.Standard Kitchenette with cooktop'), drawing('p3.v1', 3, 'answered', 'B. Bar')] })} />);
+    const now = document.querySelector('[data-slot="chat-live-now"]') as HTMLElement;
+    expect(now.textContent).toBe('Comparing p.24 · Standard Kitchenette with cooktop with the architect’s');
+    expect(now.querySelector('[data-slot="chat-shimmer"]')?.getAttribute('data-tone')).toBe('ink');
+    expect(document.querySelector('[data-status="answered"]')?.getAttribute('aria-label')).toBe('p.3 · Bar · round 1 · done');
+  });
+
   it('a step with no count (the final code checks) has an indeterminate bar and no time left', () => {
     render(<LiveCheck live={liveState({ phase: phase({ phase: 'double_checking', step: 'final_checks', done: null, total: null }) })} eta={120} />);
     expect(screen.getByRole('progressbar').getAttribute('data-indeterminate')).toBe('true');
