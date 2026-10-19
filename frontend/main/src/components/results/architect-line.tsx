@@ -14,7 +14,7 @@ import { architectState, neutralNumbers, confirmWords, headlinePair, matchOf, ma
  * click (decided 2026-10-09). A pairing resting on one judgment asks the reviewer to confirm it.
  */
 
-/** The result in words: a chip for a recorded result, amber words when the reviewer is needed. */
+/** The result in words: a chip for a recorded result; grey words when the reviewer may look (#1717: no amber, there is no "Your decision"). */
 export function ArchitectStatus({ result, clamp = false }: { result: ArchitectResult; clamp?: boolean }) {
   const state = architectState(result);
   if (state === 'none') return null;
@@ -32,7 +32,7 @@ export function ArchitectStatus({ result, clamp = false }: { result: ArchitectRe
   }
   if (state === 'choose-view' || state === 'by-hand') {
     return (
-      <span data-architect={state} className="inline-flex items-center gap-1 text-xs font-medium text-outcome-review-fg">
+      <span data-architect={state} className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground">
         <OutcomeIcon outcome="REVIEW_REQUIRED" size={13} />
         {state === 'choose-view'
           ? "Choose which of the architect's views shows this countertop"
@@ -58,7 +58,7 @@ export function ArchitectStatus({ result, clamp = false }: { result: ArchitectRe
   }
   if (state === 'confirm' || state === 'unpaired') {
     return (
-      <span data-architect={state} className="inline-flex items-center gap-1 text-xs font-medium text-outcome-review-fg">
+      <span data-architect={state} className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground">
         <OutcomeIcon outcome="REVIEW_REQUIRED" size={13} />
         {state === 'confirm' ? confirmWords(result) : "Pair the architect's dimension with the vendor's"}
       </span>
@@ -76,7 +76,7 @@ export function ArchitectStatus({ result, clamp = false }: { result: ArchitectRe
         <OutcomeBadge outcome={outcome} />
       )}
       {result.needs_decision && outcome !== 'REVIEW_REQUIRED' && (
-        <span className="inline-flex items-center gap-1 font-sans text-xs font-medium text-outcome-review-fg">
+        <span className="inline-flex items-center gap-1 font-sans text-xs font-medium text-muted-foreground">
           <OutcomeIcon outcome="REVIEW_REQUIRED" size={13} /> Needs you
         </span>
       )}
