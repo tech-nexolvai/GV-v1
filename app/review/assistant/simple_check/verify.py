@@ -656,6 +656,26 @@ class BlindAnswer:
     note: str = ""
     model: str = ""
 
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> BlindAnswer:
+        """A saved answer (`as_dict`) read back (a replay)."""
+        vendor = [*list(raw.get("vendor_ends") or []), "", ""]
+        architect = [*list(raw.get("architect_ends") or []), "", ""]
+        pick = str(raw.get("pick") or "none")
+        millwork = raw.get("millwork")
+        return cls(
+            pick=None if pick == "none" else pick,
+            verdict=str(raw.get("verdict") or "unsure"),
+            vendor_from=str(vendor[0]),
+            vendor_to=str(vendor[1]),
+            architect_from=str(architect[0]),
+            architect_to=str(architect[1]),
+            vendor_ink_black=str(raw.get("vendor_ink_black") or "unsure"),
+            millwork=millwork if isinstance(millwork, bool) else None,
+            note=str(raw.get("note") or ""),
+            model=str(raw.get("model") or ""),
+        )
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "pick": self.pick or "none",
@@ -1798,7 +1818,8 @@ def _order(ref: str) -> tuple[int, int]:
 
 def with_blind(verified: Verified, answer: BlindAnswer | None, failed: str = "") -> Verified:
     """A red candidate after the blind second look: red when it agrees (see the module), else Not
-    compared with the reason. `answer` None: the look could not be made (`failed` says why)."""
+    compared with the reason. `answer` None: the look was not made (`failed` says why: it failed,
+    the check was stopped, the money ran out)."""
     if verified.outcome != "candidate":
         return verified
     finding = dict(verified.finding)
@@ -1855,7 +1876,7 @@ def _pick(answer: BlindAnswer, page: object) -> str | None:
 
 def _pair_disagrees(verified: Verified, answer: BlindAnswer | None, failed: str) -> str | None:
     if answer is None:
-        return f"not proved: the blind second look could not be made ({failed or 'not made'})"
+        return f"not proved: the blind second look was not made ({failed or 'not made'})"
     if verified.blind == "pair":
         assert verified.architect is not None
         want = _ref(verified.architect)
@@ -1889,7 +1910,7 @@ def _pair_disagrees(verified: Verified, answer: BlindAnswer | None, failed: str)
 
 def _absence_disagrees(answer: BlindAnswer | None, failed: str) -> str | None:
     if answer is None:
-        return f"not proved: the blind second look could not be made ({failed or 'not made'})"
+        return f"not proved: the blind second look was not made ({failed or 'not made'})"
     if answer.pick is not None or answer.verdict == "shown":
         found = f" ({answer.pick})" if answer.pick else ""
         return f"not proved: a blind second look finds it on the vendor's drawing{found}"

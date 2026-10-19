@@ -1160,6 +1160,7 @@ def _simple_options(settings: Settings, body: ChatMessageIn) -> dict[str, Any] |
         "blind_model": settings.assistant_simple_blind_model,
         "blind_effort": settings.assistant_simple_blind_effort,
         "pilot": body.pilot,
+        "replay": body.replay,
     }
 
 
@@ -1198,12 +1199,12 @@ def _message(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=runtime.choice.reason
         )
-    simple_only = body.pilot is not None or body.compare_model or body.compare_effort
+    simple_only = body.pilot is not None or body.compare_model or body.compare_effort or body.replay
     if simple_only and settings.assistant_full_check_mode != "simple":
         raise CodedHTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             "invalid_request",
-            "pilot, compare_model and compare_effort go only with the simple full check "
+            "pilot, compare_model, compare_effort and replay go only with the simple full check "
             "(GV_ASSISTANT_FULL_CHECK_MODE=simple).",
         )
     revision_id = _latest_revision_id(session, package.id)
