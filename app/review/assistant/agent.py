@@ -72,6 +72,7 @@ from app.review.assistant.sandbox import (
     UPLOADS,
     Sandbox,
     SandboxRefused,
+    SandboxUnavailable,
     check_command,
     cut_output,
     view_path,
@@ -520,7 +521,10 @@ def _bash(raw: object, tools: AgentTools) -> _Ran:
     except SandboxRefused as refused:
         return _refused("bash", "Command refused", str(refused))
     label = _label(arguments.get("description"), "Ran a command")
-    result = tools.sandbox.run(command)
+    try:
+        result = tools.sandbox.run(command)
+    except SandboxUnavailable as gone:  # Docker stopped answering: told plainly, no paths
+        return _refused("bash", "Command refused", str(gone))
     status = "stopped: over its time limit" if result.timed_out else f"exit code {result.exit_code}"
     text = f"[{status}]\n{result.output}" if result.output else f"[{status}, no output]"
     shown, _ = cut_output(result.output, _SHOWN_OUTPUT_CHARS)

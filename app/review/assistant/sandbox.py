@@ -57,6 +57,7 @@ from pathlib import Path
 from typing import Final, Protocol, Self
 
 __all__ = [
+    "DOCKER_FAILED_WORDS",
     "DOCKER_IMAGE",
     "MAX_FILE_BYTES",
     "MAX_FOLDER_BYTES",
@@ -111,6 +112,13 @@ MAX_OUTPUT_CHARS: Final = 20_000
 MAX_COMMAND_CHARS: Final = 8_000
 _TRUNCATED: Final = "\n\n[Output truncated: {left} more characters not shown]"
 _POPPLER: Final = ("pdfinfo", "pdftotext", "pdftoppm", "pdfimages", "pdftocairo", "pdffonts")
+
+
+#: What the model and the screen are told when Docker stops answering in the middle of a chat.
+DOCKER_FAILED_WORDS: Final = (
+    "the secure sandbox (Docker) is not answering, so no command can run now. Go on with the "
+    "other tools, and say that commands could not run"
+)
 
 
 class SandboxUnavailable(RuntimeError):
@@ -617,6 +625,23 @@ def check_command(command: str) -> str:
     return command
 
 
+#: `docker run`'s exit code when Docker itself failed (a command inside may exit 125 too, so its
+#: error words are checked as well: `_docker_said`).
+_DOCKER_OWN_FAILURE: Final = 125
+_DOCKER_WORDS: Final = (
+    "docker: ",
+    "Cannot connect to the Docker daemon",
+    "Error response from daemon",
+    "error during connect",
+)
+
+
+def _docker_said(stderr: str) -> bool:
+    """Whether `docker run`'s error output is Docker's own (not the command's)."""
+    head = stderr.lstrip()
+    return any(head.startswith(words) or words in head[:400] for words in _DOCKER_WORDS)
+
+
 def _decode(raw: bytes | None) -> str:
     return (raw or b"").decode("utf-8", errors="replace")
 
@@ -742,6 +767,11 @@ class DockerSandbox:
         finally:
             with self._lock:
                 self._running.discard(name)
+        if done.returncode == _DOCKER_OWN_FAILURE and _docker_said(_decode(done.stderr)):
+            # Docker itself failed (the daemon stopped, the image went): not the command's own
+            # result. Its words name the server's paths, so they are logged, never shown.
+            _log.warning("assistant sandbox: docker run failed: %s", _decode(done.stderr)[:300])
+            raise SandboxUnavailable(DOCKER_FAILED_WORDS)
         text, cut = cut_output(quiet_pdf_warnings(_decode(done.stdout) + _decode(done.stderr)))
         return SandboxResult(output=text + watch.note(), exit_code=done.returncode, truncated=cut)
 
@@ -1082,6 +1112,10 @@ def view_path(
     at the model's full 2576)."""
     real = workspace.resolve(path)
     shown = workspace.shown(real)
+    if not real.is_dir() and not real.is_file():
+        # A named pipe, socket or device the model made in its folder: reading it can wait for
+        # ever (harness audit 2026-10-19: the answer never ended and Stop could not end it).
+        raise SandboxRefused(f"{shown} is not a regular file or a folder, so it cannot be viewed")
     if real.is_dir():
         viewed = _listing(real, workspace)
     elif real.suffix.lower() in _IMAGE_SUFFIXES:

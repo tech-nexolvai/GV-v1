@@ -175,14 +175,14 @@ def test_the_cloud_drawing_follows_the_decisions_and_keeps_older_files(postgres_
         # F1 agreed: clouded, an override (only AI readings back it here). F2 is not decided and
         # only AI readings back it, F3 was not seen on both sides: Not compared (#1619), never
         # clouded, not on the drawing: the separate Not-compared list.
-        assert "1\nWrong" in cover and "2\nNothing to compare" in cover
+        assert "1\nWrong" in cover and "2\nNot compared" in cover
         sheet = " ".join(pages[2].split())
         assert "Vendor: 3'-10\"" in sheet and 'Should be: 37"' in sheet
         assert _red_near(pdf, 3, VENDOR_BOX) > 5
         assert _red_near(pdf, 4, PAGE3_BOX) == 0
         assert "Proved by: Agreed by reviewer-one" in pages[4]
         notes = " ".join(pages[5].split())
-        assert "Nothing to compare (2)" in notes and "Sink base width" not in notes
+        assert "Not compared (2)" in notes and "Sink base width" not in notes
 
         stored = world.client.get(f"/api/v1/chats/{chat_id}").json()["messages"][-1]
         found = _findings(stored)
