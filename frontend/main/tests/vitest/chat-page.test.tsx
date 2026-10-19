@@ -95,6 +95,28 @@ describe('opening a drawing set’s chats', () => {
   });
 });
 
+describe('a link to a drawing set that is not there (#1685)', () => {
+  it('says the drawing set was not found, with a way back, and offers no full check, composer or model error', async () => {
+    const missing = () => { throw new ApiError(404, { error: 'not_found', message: 'Not found', request_id: 'r' }); };
+    const api = fakeChatApi({ list: vi.fn(async () => missing()), models: vi.fn(async () => missing()) });
+    renderChat(api, null);
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('This drawing set was not found. It may have been opened from an old link.');
+    expect(within(alert).getByRole('link', { name: 'Start a review' }).getAttribute('href')).toBe('#/');
+    expect(screen.queryByRole('button', { name: 'Run full check' })).toBeNull();
+    expect(screen.queryByRole('textbox', { name: 'Your message' })).toBeNull();
+    expect(document.body.textContent).not.toMatch(/models could not be loaded/);
+  });
+
+  it('a list that fails for another reason keeps the chat usable', async () => {
+    const api = fakeChatApi({ list: vi.fn(async () => { throw new ApiError(503, { error: 'unavailable', message: 'Busy', request_id: 'r' }); }) });
+    renderChat(api, null);
+    await waitFor(() => expect(api.list).toHaveBeenCalled());
+    expect(await screen.findByRole('textbox', { name: 'Your message' })).toBeTruthy();
+    expect(screen.queryByText(/drawing set was not found/)).toBeNull();
+  });
+});
+
 describe('an empty chat', () => {
   it('asks what you want to know about the set, offers three starters, and a starter sends with the default choice', async () => {
     const stream = drivenStream();

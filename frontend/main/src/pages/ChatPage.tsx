@@ -128,7 +128,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
         setList({ status: 'ready', chats });
         if (setName) setListName(setName);
       },
-      (error: unknown) => current && setList((now) => (now.status === 'ready' ? now : { status: 'error', message: chatFailureWords(error) })),
+      (error: unknown) => current && setList((now) => (now.status === 'ready' ? now : { status: 'error', message: chatFailureWords(error), missing: error instanceof ApiError && error.status === 404 })),
     );
     return () => {
       current = false;
@@ -536,6 +536,18 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   // #1569: the plan check before a paid full check (a fake API may leave it out: no questions).
   const planApi = api.plan;
   const loadPlan = useMemo(() => (planApi ? () => planApi(packageId) : undefined), [planApi, packageId]);
+
+  // #1685: a link to a drawing set that is not there (deleted, mistyped, another project's) says so,
+  // instead of an empty chat whose only complaint is that the models could not be loaded.
+  if (list.status === 'error' && list.missing) {
+    return (
+      <div data-tw data-slot="chat-page" className="flex min-h-0 w-full min-w-0 flex-1 font-sans text-sm text-foreground antialiased">
+        <div className="mx-auto w-full max-w-[63rem] min-w-0 px-4 pt-8 sm:px-6">
+          <Problem words="This drawing set was not found. It may have been opened from an old link." action="Start a review" href={formatRoute({ page: 'review', packageId: null })} />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <TooltipProvider delayDuration={300}>
