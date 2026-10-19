@@ -119,7 +119,8 @@ describe('the reading ledger on the screen', () => {
     expect([...card.querySelectorAll('figcaption span:first-child')].map((label) => label.textContent)).toEqual(['Reference view', 'This view']);
     await user.click(within(node).getByRole('button', { name: 'Open viewer' }));
     const dialog = screen.getByRole('dialog');
-    expect([...dialog.querySelectorAll('[data-slot="chat-evidence-side"] figcaption span:first-child')].map((label) => label.textContent)).toEqual(['Reference view', 'This view']);
+    // #1717: the panel shows the vendor's side first (its value, then what it is compared with).
+    expect([...dialog.querySelectorAll('[data-slot="chat-evidence-side"] figcaption span:first-child')].map((label) => label.textContent)).toEqual(['This view', 'Reference view']);
   });
 
   it('shows the sum written out in the evidence viewer', async () => {

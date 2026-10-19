@@ -213,6 +213,7 @@ from app.review.assistant.classification import not_compared_line
 from app.review.assistant.decision_resolver import recount_words, resolve_answer
 from app.review.assistant.dim_index import labels_for
 from app.review.assistant.escalation import Escalation, escalate_answer
+from app.review.assistant.filler_range import add_to_answer as add_filler_range
 from app.review.assistant.full_check_brief import (
     LENSES,
     checklist_gaps,
@@ -2417,7 +2418,8 @@ class ChatEngine:
 
     def add_code_findings(self) -> None:
         """The finish's code findings, $0, once per answer: the reading ledger's, the vendor
-        consistency check's (#1584), the finish check's (#1623) and code's own pairs. A roster
+        consistency check's (#1584), the finish check's (#1623), code's own pairs and GV's filler
+        range on the vendor's fillers (`filler_range`). A roster
         full check adds them before its proof steps (#1641), so its blind reads and devil's
         advocate see them; the trust phase then does not add them again."""
         if self._code_findings_added:
@@ -2440,6 +2442,10 @@ class ChatEngine:
                 add_code_pairs(self)  # dimensions code paired by itself, Wrong or Right, $0
             except Exception:  # noqa: BLE001 - the answer goes on without them
                 _log.exception("assistant chat code pairs failed")
+            try:
+                add_filler_range(self)  # GV's filler range on the vendor's fillers, $0
+            except Exception:  # noqa: BLE001 - the answer goes on without it
+                _log.exception("assistant chat filler range check failed")
 
     def _code_finish(self) -> None:
         """A stopped full check's finish, by code only: no model call."""
@@ -2772,9 +2778,7 @@ class ChatEngine:
         )
         # The same counts as the screen and the cloud drawing (#1554, #1619): one final list.
         groups = proof_counts(findings)
-        unseen = (
-            f", {groups['not_compared']} with nothing to compare" if groups["not_compared"] else ""
-        )
+        unseen = f", {groups['not_compared']} not compared" if groups["not_compared"] else ""
         coverage = book.coverage_map()["counts"] if book.coverage_used else None
         trust = report.get("counts") or {}
         products = products_words(self.settings.products)

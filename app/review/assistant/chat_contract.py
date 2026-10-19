@@ -530,6 +530,7 @@ type ChatKeepReason = Literal[
     "needs_job_value",
     "layout",
     "vendor_disagrees",
+    "architect_outside_gv_rule",
     "other",
 ]
 
@@ -631,7 +632,8 @@ class ChatFindingProofOut(BaseModel):
     rule: str | None = Field(
         default=None,
         description="The architect-first rule it falls under (#1619): R4 a difference, R5 the "
-        "vendor's own contradiction, R6 GV's rule; for not_compared R1 (brand prototype), R3 "
+        "vendor's own contradiction, R6 GV's rule; for not_compared R1 (brand prototype, or the "
+        "architect's size outside a GV rule), R3 "
         "(architect's drawings disagree), R7 (architect gives nothing), R8 (different reference "
         "points), R9 (unreadable), R10 (missing job value or setting).",
     )
@@ -650,6 +652,7 @@ class ChatFindingProofOut(BaseModel):
             "no_sheet",
             "no_overall",
             "string_not_verified",
+            "architect_outside_gv_rule",
             "internal",
         ]
         | None

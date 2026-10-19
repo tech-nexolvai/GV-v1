@@ -16,10 +16,12 @@ import { cn } from '@/lib/utils';
  * read from. Read-only: nothing here changes the review.
  */
 
+// #1717: grey at every level. A score is not an outcome, so it takes no outcome colour (and amber is
+// no outcome at all any more); the number and its words carry the level.
 const TONE_CLASS: Record<AccuracyTone, string> = {
-  green: 'border-outcome-pass-fg/40 bg-outcome-pass-bg text-outcome-pass-fg',
-  orange: 'border-outcome-review-fg/50 bg-outcome-review-bg text-outcome-review-fg',
-  yellow: 'border-yellow-500/60 bg-yellow-50 text-yellow-800 dark:bg-yellow-950/40 dark:text-yellow-300',
+  green: 'border-border bg-background text-foreground',
+  orange: 'border-border bg-background text-foreground',
+  yellow: 'border-border bg-background text-foreground',
   none: 'border-border bg-muted text-muted-foreground',
 };
 
