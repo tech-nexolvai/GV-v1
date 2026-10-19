@@ -91,6 +91,7 @@ from app.review.assistant.proof import (
     GROUP_WORDS,
     LEFT_CAPTIONS,
     RULE_LINE,
+    architect_file,
     governs,
     proof_counts,
     proof_group,
@@ -920,7 +921,10 @@ def _proof_entries(
             )
         )
         pages = f"Vendor page {vendor_page}"
-        if architect_page and architect_page != vendor_page:
+        separate = architect_file(finding)
+        if separate is not None and architect_page:
+            pages += f"; the architect's file {separate}, page {architect_page}"
+        elif architect_page and architect_page != vendor_page:
             pages += f"; architect page {architect_page}"
         elif box is not None:
             pages += " (architect's drawing on the same sheet)"
