@@ -43,8 +43,9 @@ import { CHECK_MODEL, chatFailureWords, chatPaths, CONTINUE_TEXT, isAbort, LIVE_
 import { confirmWords, effectiveProducts, FULL_CHECK_TEXT, isFullCheck, lastProducts, pickable, scopeSentence, toggleProduct } from '@/lib/chat-full-check';
 import { useProductCatalog } from '@/lib/products';
 import { knownAreas, lastFindings, withPrompt } from '@/lib/chat-plus-actions';
-import { applyChatEvent, applyCorrection, CHAT_STARTERS, chatTitle, dollars, followedAnswer, fromSaved, localAnswer, localQuestion, previousQuestion, settle, type ViewMessage } from '@/lib/chat-messages';
+import { applyChatEvent, applyCorrection, CHAT_STARTERS, chatTitle, dollars, followedAnswer, fromSaved, localAnswer, localQuestion, previousQuestion, settle, shownLive, type ViewMessage } from '@/lib/chat-messages';
 import { browserStorage, EFFORT_WORDS, readChoice, resolveChoice, saveChoice, shortModelLabel, type ChatChoice } from '@/lib/chat-settings';
+import { drawingCounts, tabTitle, type LiveState } from '@/lib/chat-live';
 import { cn } from '@/lib/utils';
 import { COMPOSER_NOTE, COMPOSER_PLACEHOLDER } from '@/lib/words';
 
@@ -139,6 +140,8 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   const [draft, setDraft] = useState('');
   const [running, setRunning] = useState(false);
   const [stopping, setStopping] = useState(false);
+  // #1727: the live card's "Stop the check?" (from its own Stop or the composer's).
+  const [askStop, setAskStop] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [announce, setAnnounce] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -163,7 +166,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   const stoppedChat = useRef<string | null>(null);
   const counter = useRef(0);
   // An answer still being written when its chat was opened: followed live (#1479).
-  const [toFollow, setToFollow] = useState<{ chatId: string; messageId: string } | null>(null);
+  const [toFollow, setToFollow] = useState<{ chatId: string; messageId: string; live?: LiveState | null } | null>(null);
 
   useEffect(() => {
     if (!chatId) return;
@@ -186,7 +189,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
           setRunning(false);
           setStopping(false);
         }
-        if (chat.running && chat.running_message_id) setToFollow({ chatId, messageId: chat.running_message_id });
+        if (chat.running && chat.running_message_id) setToFollow({ chatId, messageId: chat.running_message_id, live: chat.live ?? null });
       },
       (error: unknown) => {
         if (!current) return;
@@ -324,7 +327,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   // its events so far, then live, exactly like an answer sent from here.
   useEffect(() => {
     if (!toFollow || (runRef.current && !runRef.current.left)) return;
-    const { chatId: target, messageId } = toFollow;
+    const { chatId: target, messageId, live } = toFollow;
     const run: Reading = { chatId: target, controller: new AbortController(), left: false };
     runRef.current = run;
     const key = `follow-${messageId}`;
@@ -334,7 +337,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
     setStopping(stillStopping);
     setAnnounce(stillStopping ? 'Stopping' : 'Answer in progress');
     setThread((now) =>
-      now && now.chatId === target ? { ...now, messages: [...now.messages.filter((message) => message.key !== key), followedAnswer(messageId)] } : now);
+      now && now.chatId === target ? { ...now, messages: [...now.messages.filter((message) => message.key !== key), followedAnswer(messageId, new Date(), live ?? null)] } : now);
     void read(run, key, (onEvent, signal) => api.follow(target, messageId, onEvent, signal))
       .then((ended) => {
         if (ended === 'refused') {
@@ -528,7 +531,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
     if (stopping || !run || !run.chatId) return;
     stoppedChat.current = run.chatId;
     setStopping(true);
-    setAnnounce('Stopping');
+    setAnnounce(runningCheck ? 'Stopping the check: the drawings already started will finish first' : 'Stopping');
     api.cancel(run.chatId).then(
       () => {
         stopTimer.current = window.setTimeout(() => run.controller.abort(), stopGraceMs);
@@ -559,6 +562,45 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
       : '';
   const cap = models.status === 'ready' ? models.data.message_cap_usd : null;
   const showScrollDown = !centred && !atBottom && messages.length > 0;
+
+  // ── #1727: a full check running in this chat: its live card, Stop asked first, the tab and the list ──
+  const lastMessage = messages.length ? messages[messages.length - 1] : null;
+  const beforeLast = messages.length > 1 ? messages[messages.length - 2] : null;
+  const runningCheck = Boolean(running && lastMessage?.role === 'assistant' && lastMessage.status === 'running' && isFullCheck(lastMessage, beforeLast?.role === 'user' ? beforeLast : null));
+  const runningLive = runningCheck && lastMessage ? shownLive(lastMessage) : null;
+  if (askStop && !runningCheck) setAskStop(false);
+  const liveStop = runningCheck ? { onStop: stop, stopping, askStop, onAskStop: setAskStop } : null;
+  const checkTab = runningCheck ? tabTitle(runningLive) : null;
+  useEffect(() => {
+    if (!checkTab) return;
+    const before = document.title;
+    document.title = checkTab;
+    return () => {
+      document.title = before;
+    };
+  }, [checkTab]);
+  // A check that ends while the tab is in the background says so in the tab until it is looked at.
+  const [checkEnded, setCheckEnded] = useState(false);
+  const [hadCheck, setHadCheck] = useState(false);
+  if (hadCheck !== runningCheck) {
+    setHadCheck(runningCheck);
+    if (!runningCheck && typeof document !== 'undefined' && document.hidden) setCheckEnded(true);
+  }
+  useEffect(() => {
+    if (!checkEnded) return;
+    const before = document.title;
+    document.title = '✓ Check done · GV Review';
+    const seen = () => {
+      if (!document.hidden) setCheckEnded(false);
+    };
+    document.addEventListener('visibilitychange', seen);
+    return () => {
+      document.removeEventListener('visibilitychange', seen);
+      document.title = before;
+    };
+  }, [checkEnded]);
+  // The open chat's row follows this page (the list is read again only now and then).
+  const listLive = chatId && chat ? { chatId, running, ...(runningLive ? drawingCounts(runningLive) : { done: null, total: null }) } : null;
 
   const chatName = chat?.title?.trim() || activeSummary?.title?.trim() || null;
 
@@ -607,7 +649,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
 
         {/* One sidebar, like claude.ai: this set's chats sit under the set's name in the app's sidebar. */}
         <SidebarChats>
-          <ChatList packageId={packageId} activeChatId={chatId} state={list} creating={false} onNewChat={newChat} freshTitles={freshTitles} />
+          <ChatList packageId={packageId} activeChatId={chatId} state={list} creating={false} onNewChat={newChat} freshTitles={freshTitles} live={listLive} />
         </SidebarChats>
 
         <section aria-label={activeSummary ? chatTitle(activeSummary) : 'Conversation'} data-slot="chat-page" className="chat-brand relative flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-x-clip">
@@ -682,11 +724,35 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                     pagePicture={(page) => chatPaths.planPage(packageId, page)}
                     fullCheck={isFullCheck(message, asked?.role === 'user' ? asked : null)}
                     focusFindingId={focusFinding && message.id === focusFinding.messageId ? focusFinding.findingId : null}
+                    liveStop={at === messages.length - 1 ? liveStop : null}
                   />
                 );
               })}
             </div>
           </div>
+
+          {/* #1727: jump to the newest at the bottom right of the thread, just above the composer and
+              clear of the cards; hidden when already at the bottom. */}
+          {!centred && (
+            <div data-slot="chat-jump-anchor" className="pointer-events-none relative z-10 h-0 w-full shrink-0">
+              <button
+                type="button"
+                onClick={jumpToLatest}
+                aria-label="Jump to latest"
+                title="Jump to latest"
+                aria-hidden={!showScrollDown || undefined}
+                tabIndex={showScrollDown ? 0 : -1}
+                data-visible={showScrollDown ? 'true' : 'false'}
+                data-slot="chat-jump"
+                className={cn(
+                  'absolute right-4 bottom-3 grid size-9 place-items-center rounded-full border bg-background/90 text-foreground/80 shadow-md backdrop-blur-sm transition-[opacity,transform] duration-200 ease-[cubic-bezier(0.4,0,0.2,1)] hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none motion-reduce:transition-opacity sm:right-6',
+                  showScrollDown ? 'pointer-events-auto scale-100 opacity-100' : 'scale-90 opacity-0 motion-reduce:scale-100',
+                )}
+              >
+                <ArrowDown className="size-4" aria-hidden="true" />
+              </button>
+            </div>
+          )}
 
           <div
             data-slot="chat-dock"
@@ -702,23 +768,6 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                 <FullCheckButton summary={fullCheckSummary} scope={fullCheckScope} onRun={runFullCheck} blocked={fullCheckBlocked} loadPlan={loadPlan} />
                 <p className="text-center text-xs text-muted-foreground">Every vendor drawing against the architect’s: Wrong, Right and Not compared, with the cloud drawing</p>
               </div>
-            )}
-            {!centred && (
-              <button
-                type="button"
-                onClick={jumpToLatest}
-                aria-label="Scroll to bottom"
-                title="Scroll to bottom"
-                aria-hidden={!showScrollDown || undefined}
-                tabIndex={showScrollDown ? 0 : -1}
-                data-visible={showScrollDown ? 'true' : 'false'}
-                className={cn(
-                  'absolute -top-12 left-1/2 z-10 grid size-9 -translate-x-1/2 place-items-center rounded-full border bg-background text-foreground/80 shadow-md transition-[opacity,transform] duration-150 hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none motion-reduce:transition-none',
-                  showScrollDown ? 'opacity-100' : 'pointer-events-none translate-y-1 opacity-0',
-                )}
-              >
-                <ArrowDown className="size-4" aria-hidden="true" />
-              </button>
             )}
             {(unavailable || notice) && (
               <p data-slot="chat-notice" role="alert" className="mb-2 flex items-start gap-2 rounded-xl border bg-muted/40 px-3 py-2 text-[13px]">
@@ -736,7 +785,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                 value={draft}
                 onChange={setDraft}
                 onSend={() => void send(draft)}
-                onStop={stop}
+                onStop={runningCheck ? () => setAskStop(true) : stop}
                 running={running}
                 stopping={stopping}
                 blocked={blocked}

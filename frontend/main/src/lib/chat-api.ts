@@ -13,6 +13,7 @@
 
 import { ApiError, type ErrorEnvelope } from '@/api/client';
 import { parseSseFrames, type SseFrame } from '@/api/sse';
+import { LIVE_EVENTS, type LiveEvent, type LiveState } from '@/lib/chat-live';
 
 // ── Types: the contract's shapes ────────────────────────────
 
@@ -63,6 +64,13 @@ export interface ChatSummary {
   last_message_at: string | null;
   /** How many questions it holds. */
   turns: number;
+  /** #1710: a full check's chat, or an ordinary one. */
+  mode?: ChatMode | null;
+  /** #1710: a message of this chat is being answered now. */
+  running?: boolean;
+  /** #1710: while a full check runs, its drawings compared so far and in all (the row's "23/39"). */
+  drawings_done?: number | null;
+  drawings_total?: number | null;
 }
 
 export interface ChatList {
@@ -96,6 +104,8 @@ export interface Chat {
   running_message_id?: string | null;
   /** Chat v4: the set's product type, the product chips' default. */
   product_type?: ChatProduct | null;
+  /** #1710: while a full check runs, its live state, so a reloaded page draws the live card at once. */
+  live?: LiveState | null;
 }
 
 /** Why a message stopped before it finished; null or absent when it finished. */
@@ -1002,7 +1012,8 @@ export type ChatEvent =
   | { event: 'accuracy'; data: { accuracy: ChatAccuracy } }
   | { event: 'unknowns'; data: { unknowns: ChatUnknown[] } }
   | { event: 'resolver'; data: { index?: number; resolver: ChatResolver } }
-  | { event: 'fallback'; data: { index?: number; fallback: ChatFallback } };
+  | { event: 'fallback'; data: { index?: number; fallback: ChatFallback } }
+  | LiveEvent;
 
 export type ChatEventName = ChatEvent['event'];
 
@@ -1010,7 +1021,7 @@ const EVENT_NAMES: ReadonlySet<string> = new Set<ChatEventName>([
   'message_start', 'thinking_start', 'thinking_delta', 'thinking_end', 'text_delta', 'step_start', 'step_end',
   'tasks', 'agent_start', 'agent_step', 'agent_end', 'file', 'usage', 'message_end', 'error',
   'finding', 'finding_dropped', 'finding_update', 'coverage', 'progress', 'scope', 'trust', 'cite', 'accuracy', 'unknowns', 'understood',
-  'resolver', 'fallback',
+  'resolver', 'fallback', ...LIVE_EVENTS,
 ]);
 
 /**
@@ -1047,6 +1058,8 @@ export const chatPaths = {
   cloudDrawing: (chatId: string, messageId: string) => `${BASE}/chats/${id(chatId)}/messages/${id(messageId)}/cloud-drawing`,
   /** #1584: the vendor consistency check, by code ($0, POST). */
   consistency: (chatId: string) => `${BASE}/chats/${id(chatId)}/consistency`,
+  /** #1710: a running full check's whole live state (a page that reconnects). */
+  live: (chatId: string) => `${BASE}/chats/${id(chatId)}/live`,
   /** #1717: the vendor's page picture in the set pack (100 dpi), for the evidence panel's boxed spot. */
   planPage: (packageId: string, page: number) => `${BASE}/packages/${id(packageId)}/plan-pages/${page}`,
   /** #1569: code's plan for a full check of the set, and where it is unsure (no AI call). */

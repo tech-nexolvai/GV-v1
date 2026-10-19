@@ -8,6 +8,7 @@ import { CoverageStrip } from '@/components/chat/chat-coverage';
 import { EvidenceViewer } from '@/components/chat/chat-evidence';
 import { FindingsSections, type DecisionProps } from '@/components/chat/chat-findings';
 import { FullCheckProgress, type CloudReview } from '@/components/chat/chat-full-check';
+import { LiveCheck } from '@/components/chat/chat-live';
 import { FullCheckResult } from '@/components/chat/chat-result';
 import { ConfidenceLine, HowChecked } from '@/components/chat/chat-trust';
 import { ChatMarkdown } from '@/components/chat/chat-markdown';
@@ -18,6 +19,8 @@ import { fullCheckBubble, fullCheckFiles, withoutCodeNote } from '@/lib/chat-ful
 import { commentNumber, resultGroups } from '@/lib/chat-result';
 import { asShown, proofGroup } from '@/lib/chat-proof';
 import { EFFORT_WORDS } from '@/lib/chat-settings';
+import { startingLive } from '@/lib/chat-live';
+import { useReducedMotion } from '@/lib/chat-motion';
 import { downloadFile, downloadFindingsCsv, markupFailureWords } from '@/lib/chat-exports';
 import { hasTrust, roundCounts } from '@/lib/chat-trust';
 import {
@@ -26,7 +29,10 @@ import {
   fileSize,
   fallbackWords,
   footerWords,
+  messageCost,
   openHref,
+  shortModelWords,
+  shownLive,
   shownBlocks,
   stoppedWords,
   textStreaming,
@@ -311,10 +317,37 @@ export interface AssistantMessageProps {
   remakeCloud?: (messageId: string) => Promise<ChatFile>;
   /** #1578: a finding of this answer to open in the evidence viewer at once (the job tracker's link). */
   focusFindingId?: string | null;
+  /** #1727: Stop on the live full check card (with its confirmation), for the answer running now. */
+  liveStop?: LiveStopControls | null;
 }
 
-export function AssistantMessage({ message, chatId, models, onReload, onRetry, onContinue, latest = false, makeMarkupPdf, fullPageHref, pagePicture = null, fullCheck = false, decide, remakeCloud, focusFindingId = null }: AssistantMessageProps) {
+/** #1727: the live card's Stop: the page's stop, whether it is stopping, and the confirmation's state. */
+export interface LiveStopControls {
+  onStop: () => void;
+  stopping: boolean;
+  askStop: boolean;
+  onAskStop: (open: boolean) => void;
+}
+
+export function AssistantMessage({ message, chatId, models, onReload, onRetry, onContinue, latest = false, makeMarkupPdf, fullPageHref, pagePicture = null, fullCheck = false, decide, remakeCloud, focusFindingId = null, liveStop = null }: AssistantMessageProps) {
   const running = message.status === 'running';
+  // #1727: the live card while a full check runs (from the first moment: getting ready). An older
+  // server that sends only `progress` keeps the one calm line instead.
+  const live = fullCheck && running ? shownLive(message) ?? (message.progress ? null : startingLive(message.created_at)) : null;
+  // When the check ends the card folds away (320 ms) before the result comes in.
+  const reduced = useReducedMotion();
+  const [wasRunning, setWasRunning] = useState(running);
+  const [folding, setFolding] = useState(false);
+  if (wasRunning !== running) {
+    setWasRunning(running);
+    if (!running && fullCheck && shownLive(message) && !reduced) setFolding(true);
+  }
+  useEffect(() => {
+    if (!folding) return;
+    const timer = window.setTimeout(() => setFolding(false), 320);
+    return () => window.clearTimeout(timer);
+  }, [folding]);
+  const liveShown = live ?? (folding ? shownLive(message) : null);
   const pictureUrl = (pictureId: string) => chatPaths.picture(chatId, pictureId);
   const [filter, setFilter] = useState<FindingFilter>(NO_FILTER);
   const [viewing, setViewing] = useState<string | null>(focusFindingId);
@@ -490,7 +523,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
     <HowChecked findings={findings} trust={message.trust} coverage={coverage} coverageStrip={coverageStrip} unknowns={message.unknowns} />
   ) : null;
   const hasResult = fullCheck && (findings.length > 0 || coverage !== null || made.cloud !== null || made.report !== null);
-  const resultShown = hasResult && !running;
+  const resultShown = hasResult && !running && !folding;
   const textItems = items.filter((item) => item.kind === 'text');
 
   return (
@@ -503,8 +536,26 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
       aria-label="Answer"
       className={cn('group/message chat-rise flex min-w-0 flex-col', short ? 'gap-1' : 'gap-3')}
     >
-      {(fullCheck ? (resultShown ? [] : items.filter((item) => item.kind === 'activity')) : items).map((item) => renderItem(item, items.indexOf(item)))}
-      {fullCheck && running && <div className="chat-wide grid min-w-0"><FullCheckProgress message={message} /></div>}
+      {(fullCheck ? (resultShown || liveShown ? [] : items.filter((item) => item.kind === 'activity')) : items).map((item) => renderItem(item, items.indexOf(item)))}
+      {liveShown && (
+        <div data-slot="chat-live-fold" data-shut={folding ? 'true' : 'false'} className="chat-live-fold chat-wide min-w-0">
+          <div className="min-h-0 min-w-0 overflow-hidden">
+            <LiveCheck
+              live={liveShown}
+              eta={liveShown.phase.phase === 'comparing' ? message.progress?.eta_seconds ?? null : null}
+              files={message.files}
+              model={shortModelWords(message.model, models)}
+              cost={messageCost(message.cost_usd)}
+              pagePicture={pagePicture}
+              onStop={running && liveStop ? liveStop.onStop : undefined}
+              stopping={liveStop?.stopping ?? false}
+              askStop={liveStop?.askStop ?? false}
+              onAskStop={liveStop?.onAskStop}
+            />
+          </div>
+        </div>
+      )}
+      {fullCheck && running && !live && <div className="chat-wide grid min-w-0"><FullCheckProgress message={message} /></div>}
       {resultShown && (
         <div data-slot="chat-full-check-lead" className="chat-wide grid min-w-0 gap-7">
           {/* #1717: summary first, each number in one place, the evidence beside each item. */}
@@ -656,7 +707,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
         </p>
       )}
 
-      {running && <Spark label={message.id ? 'Working' : 'Sending your message'} state={sparkState(blocks, streaming)} className="chat-fade-in" />}
+      {running && !live && <Spark label={message.id ? 'Working' : 'Sending your message'} state={sparkState(blocks, streaming)} className="chat-fade-in" />}
 
       {!running && (
         <div data-slot="chat-footer" className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1">
