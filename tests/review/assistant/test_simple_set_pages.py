@@ -1,8 +1,8 @@
 """File-aware ids through the simple full check (#1722, separate PDFs step 3). Made-up pack facts,
 $0.
 
-A separate architect file is numbered after the vendor's file (its page 1 is set page 3 after a
-2-page vendor file), so its drawings and labels get ids of their own; every PDF read and every
+A separate architect file is numbered after the vendor's file, from a round thousand (its page 2
+is set page 1002), so its drawings and labels get ids of their own; every PDF read and every
 recorded spot uses the file's own page; a combined set is unchanged.
 """
 
@@ -87,11 +87,11 @@ def separate_set() -> tuple[dict[str, Any], dict[str, Any]]:
 def test_separate_files_are_numbered_after_the_vendors_file() -> None:
     page_map, _dims = separate_set()
     pages = set_pages(page_map, VENDOR)
-    assert pages.files == ((VENDOR, 0, 2), (ARCH, 2, 2))
+    assert pages.files == ((VENDOR, 0, 2), (ARCH, 1000, 2))
     assert pages.separate
-    assert pages.to_set(ARCH, 2) == 4 and pages.to_set(VENDOR, 2) == 2
-    assert pages.own_page(ARCH, 4) == 2 and pages.own_page(VENDOR, 2) == 2
-    assert pages.file_of(4) == (ARCH, 2) and pages.file_of(1) == (VENDOR, 1)
+    assert pages.to_set(ARCH, 2) == 1002 and pages.to_set(VENDOR, 2) == 2
+    assert pages.own_page(ARCH, 1002) == 2 and pages.own_page(VENDOR, 2) == 2
+    assert pages.file_of(1002) == (ARCH, 2) and pages.file_of(1) == (VENDOR, 1)
 
 
 def test_a_combined_set_keeps_its_own_page_numbers() -> None:
@@ -121,15 +121,15 @@ def test_the_architect_files_drawings_and_labels_get_set_page_ids(
     assert [item.id for item in work.items] == ["p1.v0", "p2.v0"]
     architect = work.items[0].architect[0]
     assert (architect.ref, architect.file, architect.page, architect.file_page) == (
-        "p4.a1",
+        "p1002.a1",
         ARCH,
-        4,
+        1002,
         2,
     )
     assert architect.own_page == 2
-    assert [label.ref for label in architect.labels] == ["p4.D1", "p4.D2"]
+    assert [label.ref for label in architect.labels] == ["p1002.D1", "p1002.D2"]
     assert work.items[0].paired_by == "paired for the test"
-    assert work.items[1].architect[0].ref == "p4.a1"  # several vendor drawings, one architect
+    assert work.items[1].architect[0].ref == "p1002.a1"  # several vendor drawings, one architect
     # Only the vendor's pages are in the page cover; the architect's cover is skipped with its
     # file and its own page.
     assert [cover.page for cover in work.pages] == [1, 2]
@@ -141,7 +141,7 @@ def test_without_pairing_a_separate_vendor_drawing_is_skipped_with_the_reason() 
     page_map, dims = separate_set()
     work = worklist_module.worklist_from(page_map, dims=dims, main_file=VENDOR)
     if work.items:  # paired by code (#1723): the ids are the set's
-        assert all(d.ref == "p4.a1" for item in work.items for d in item.architect)
+        assert all(d.ref == "p1002.a1" for item in work.items for d in item.architect)
         return
     reasons = {s.drawing: s.reason for s in work.skipped if s.drawing}
     assert "p1.v0" in reasons and "(code)" in reasons["p1.v0"]
@@ -150,19 +150,24 @@ def test_without_pairing_a_separate_vendor_drawing_is_skipped_with_the_reason() 
 def test_verify_reads_the_architect_file_at_its_own_page() -> None:
     page_map, dims = separate_set()
     pack = Pack.from_documents(dims=dims, page_map=page_map, main_file=VENDOR)
-    label = pack.label("p4.D2", ARCH, 4)
+    label = pack.label("p1002.D2", ARCH, 1002)
     assert label is not None
-    assert (label["file"], label["page"], label["file_page"], label["inches"]) == (ARCH, 4, 2, "30")
+    assert (label["file"], label["page"], label["file_page"], label["inches"]) == (
+        ARCH,
+        1002,
+        2,
+        "30",
+    )
     assert pack.label("p1.D1", VENDOR, 1)["inches"] == "24"  # type: ignore[index]
     assert "file_page" not in pack.label("p1.D1", VENDOR, 1)  # type: ignore[operator]
-    assert pack.own_page(ARCH, 4) == 2 and pack.own_page(VENDOR, 2) == 2
-    assert [h.role for h in pack.halves(ARCH, 4)] == ["architect"]
+    assert pack.own_page(ARCH, 1002) == 2 and pack.own_page(VENDOR, 2) == 2
+    assert [h.role for h in pack.halves(ARCH, 1002)] == ["architect"]
     item = Item(
         "p1.v0",
         vendor=_region(VENDOR, 1),
-        architect=(_region(ARCH, 4, file_page=2),),
+        architect=(_region(ARCH, 1002, file_page=2),),
     )
-    found = _architect_label("p4.D1", item, pack)
+    found = _architect_label("p1002.D1", item, pack)
     assert found is not None and found["file"] == ARCH and found["file_page"] == 2
 
 
@@ -177,12 +182,12 @@ def test_a_recorded_finding_names_the_architect_file_and_its_own_page() -> None:
     pack = Pack.from_documents(dims=dims, page_map=page_map, main_file=VENDOR)
     finding = {
         "page": 1,
-        "vs_page": 4,
+        "vs_page": 1002,
         "vendor_box": {"page": 1, "x0": 1, "y0": 1, "x1": 2, "y1": 2, "file": VENDOR},
-        "arch_box": {"page": 4, "x0": 1, "y0": 1, "x1": 2, "y1": 2, "file": ARCH},
+        "arch_box": {"page": 1002, "x0": 1, "y0": 1, "x1": 2, "y1": 2, "file": ARCH},
         "dims": {
             "vendor": {"id": "D1", "page": 1, "file": VENDOR},
-            "architect": {"id": "D1", "page": 4, "file": ARCH},
+            "architect": {"id": "D1", "page": 1002, "file": ARCH},
         },
     }
     out = own_pages(finding, pack)
@@ -190,7 +195,7 @@ def test_a_recorded_finding_names_the_architect_file_and_its_own_page() -> None:
     assert out["vendor_box"]["page"] == 1
     assert out["dims"]["architect"]["page"] == 2 and out["dims"]["vendor"]["page"] == 1
     assert out["vs_page"] == 2
-    assert finding["arch_box"]["page"] == 4  # the verified item itself is not changed
+    assert finding["arch_box"]["page"] == 1002  # the verified item itself is not changed
     # A combined set's finding is unchanged.
     combined = Pack.from_documents(dims={"files": ["set.pdf"], "pages": []}, page_map=None)
     assert own_pages(finding, combined) == finding
@@ -201,10 +206,10 @@ def test_a_separate_files_picture_says_which_file_and_page_it_is(
 ) -> None:
     picture = Picture(
         number=2,
-        drawing="p4.a1",
+        drawing="p1002.a1",
         role="architect",
         file=ARCH,
-        page=4,
+        page=1002,
         file_page=2,
         box=(0.0, 0.0, 10.0, 10.0),
         width=100,
@@ -212,7 +217,7 @@ def test_a_separate_files_picture_says_which_file_and_page_it_is(
         dpi=100,
         tokens=16,
         part="whole",
-        labels=("p4.D1",),
+        labels=("p1002.D1",),
     )
     page_map, dims = separate_set()
     monkeypatch.setattr(
@@ -220,6 +225,6 @@ def test_a_separate_files_picture_says_which_file_and_page_it_is(
     )
     item = worklist_module.worklist_from(page_map, dims=dims, main_file=VENDOR).items[0]
     words = _caption(picture, item)
-    assert "page 4 (the separate file arch.pdf, its page 2)" in words
-    assert "D5 = p4.D5" in words
+    assert "page 1002 (the separate file arch.pdf, its page 2)" in words
+    assert "D5 = p1002.D5" in words
     assert picture.own_page == 2
