@@ -536,8 +536,9 @@ class _Run:
         try:
             pdf = set_pack.drawings_only(folder, workspace.uploads, str(label.get("file")))
             x0, y0, x1, y1 = (float(v) for v in label.get("box") or ())
+            page = int(label.get("file_page") or label["page"])  # its own page (#1722)
             crop = set_pack.crop_picture(
-                pdf, int(label["page"]), (x0, y0, x1, y1), 300, cache=folder / set_pack.HIRES
+                pdf, page, (x0, y0, x1, y1), 300, cache=folder / set_pack.HIRES
             )
             return ink_colour(crop.png)
         except Exception:  # noqa: BLE001 - unknown ink: the item is not red
@@ -637,7 +638,7 @@ class _Run:
                 {
                     "by": "compare",
                     "file": picture.file,
-                    "page": picture.page,
+                    "page": picture.own_page,
                     "box": dict(zip(("x0", "y0", "x1", "y1"), picture.box, strict=True)),
                     "dpi": picture.dpi,
                     "picture_id": None,
@@ -991,7 +992,7 @@ class _Run:
         finding book left it out as another product than the check's (the strict scope)."""
         engine = self.engine
         book = engine.book
-        fields: dict[str, Any] = dict(one.finding)
+        fields: dict[str, Any] = own_pages(one.finding, self.pack)
         extra: dict[str, Any] = {
             k: fields.pop(k) for k in ("critic", "pairing", "keep_reason", "round") if k in fields
         }
@@ -1405,6 +1406,40 @@ def _seed_for(
     return None
 
 
+def own_pages(finding: Mapping[str, Any], pack: Pack | None) -> dict[str, Any]:
+    """A finding as the chat's finding book keeps it: every spot on its file's own page (#1722).
+    Verify names pages by set page (a separate architect file is numbered after the vendor's); the
+    book, the evidence and the outputs read each spot's file at its own page. The vendor's file
+    keeps its numbers, so a combined set's finding is unchanged."""
+    fields = dict(finding)
+    if pack is None or pack.pages is None or not pack.pages.separate:
+        return fields
+    for key in ("arch_box", "vendor_box"):
+        box = fields.get(key)
+        if isinstance(box, Mapping) and isinstance(box.get("page"), int) and box.get("file"):
+            fields[key] = {**box, "page": pack.own_page(str(box["file"]), int(box["page"]))}
+    dims = fields.get("dims")
+    if isinstance(dims, Mapping):
+        fields["dims"] = {
+            side: (
+                {**label, "page": pack.own_page(str(label["file"]), int(label["page"]))}
+                if isinstance(label, Mapping)
+                and isinstance(label.get("page"), int)
+                and label.get("file")
+                else label
+            )
+            for side, label in dims.items()
+        }
+    spot = fields.get("arch_box")
+    if isinstance(fields.get("vs_page"), int):
+        if isinstance(spot, Mapping) and isinstance(spot.get("page"), int):
+            fields["vs_page"] = int(spot["page"])
+        else:
+            file, page = pack.pages.file_of(int(fields["vs_page"]))
+            fields["vs_page"] = page if file != pack.main_file else fields["vs_page"]
+    return fields
+
+
 #: What settles a single listed label, by its reason.
 _ROW_NEEDS: Final = {
     "nothing_to_compare": "the architect's size for it",
@@ -1489,8 +1524,9 @@ def pack_ink(pack_dir: Path, main_file: str | None = None) -> Any:
         pdf = pack_dir / f"{set_pack.stem(name)}_drawings_only.pdf"
         try:
             x0, y0, x1, y1 = (float(v) for v in label.get("box") or ())
+            page = int(label.get("file_page") or label["page"])  # its own page (#1722)
             crop = set_pack.crop_picture(
-                pdf, int(label["page"]), (x0, y0, x1, y1), 300, cache=pack_dir / set_pack.HIRES
+                pdf, page, (x0, y0, x1, y1), 300, cache=pack_dir / set_pack.HIRES
             )
             return ink_colour(crop.png)
         except Exception:  # noqa: BLE001 - unknown ink: not red
