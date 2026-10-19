@@ -328,6 +328,10 @@ describe('the answer’s words', () => {
     expect(stoppedWords({ stopped: 'cost_cap', cap_hit: 'package' })).toBe('Stopped: this drawing set has used its AI budget');
     expect(stoppedWords({ stopped: 'cancelled' })).toBe('Stopped');
     expect(stoppedWords({ stopped: 'error' })).toBe('Something went wrong. Try again.');
+    // #1683: the server's own plain reason, when it saved one ("tell your admin" is not "try again").
+    expect(stoppedWords({ stopped: 'error', error: 'Claude is busy right now (too many requests). Please ask again in a minute.' }))
+      .toBe('Claude is busy right now (too many requests). Please ask again in a minute.');
+    expect(stoppedWords({ stopped: 'error', error: '  ' })).toBe('Something went wrong. Try again.');
     expect(stoppedWords({ stopped: 'turn_limit' })).toBe('Stopped after the maximum number of steps');
     expect(stoppedWords({ stopped: null })).toBeNull();
   });
