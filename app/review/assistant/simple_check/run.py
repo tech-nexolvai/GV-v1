@@ -1223,13 +1223,13 @@ class _Run:
                 "compare with (upload the architect's drawings as their own file); GV's own "
                 "rules were still checked"
             )
-        # The work list reads GV's combined sheets (the architect's drawing pasted over the
-        # vendor's, each headed by whose it is). Separately uploaded vendor and architect files
-        # are not paired yet: never a review result as if they were checked.
+        # No vendor drawing at all: none on GV's combined sheets (the architect's drawing pasted
+        # over the vendor's, each headed by whose it is), and no page of a separate vendor file
+        # printing dimensions (#1719): never a review result as if they were checked.
         return (
             "no vendor drawing was found on GV's combined sheets (the architect's drawing over "
-            "the vendor's, each headed by whose it is); separately uploaded vendor and architect "
-            "files are not compared yet"
+            "the vendor's, each headed by whose it is) or as a page of the vendor's own file "
+            "printing dimensions"
         )
 
     def _summary(
