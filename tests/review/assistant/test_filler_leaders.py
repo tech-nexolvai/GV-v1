@@ -220,3 +220,108 @@ def test_a_made_up_sheet_links_its_filler_note(tmp_path: Path) -> None:
     }
     (made,) = fr.findings_from(dims, None, LIMITS, {("set.pdf", 1): linked})
     assert made["status"] == "different" and made["vendor"] == '4"'
+
+
+# ---- a CAD arrowhead at the leader's end (a CAD sheet, #1758) ----------------------------------------------
+
+#: A CAD leader often ends in a filled, closed arrowhead: a thin triangle whose base sits on the
+#: leader's end (a hair off it) and whose tip points into the object. Its corners are not a
+#: rectangle's, and it is a shape, not a piece of the leader.
+ARROWHEAD = ((107.1, 295.0), (108.0, 289.7), (108.9, 295.0), (107.1, 295.0), (107.1, 295.0))
+
+
+def test_a_closed_arrowhead_is_not_a_rectangle() -> None:
+    assert fl._closed_box(ARROWHEAD) is None
+    square = ((10.0, 10.0), (20.0, 10.0), (20.0, 20.0), (10.0, 20.0), (10.0, 10.0))
+    assert fl._closed_box(square) == (10.0, 10.0, 20.0, 20.0)
+
+
+def test_a_closed_arrowhead_is_not_followed_as_a_piece_of_the_leader() -> None:
+    """The leader ends at the arrowhead's base (within a point of its corner): the arrowhead is
+    never taken as the leader's next piece, so the leader's end stays in the filler strip."""
+    assert fl.leader_end(NOTE_BOX, (LEADER, ARROWHEAD)) == (108.0, 295.0)
+
+
+def _arrowhead_sheet() -> bytes:
+    """The made-up elevation with its leader ending in a closed, filled CAD arrowhead (PDF space,
+    y up): the leader stops at the arrowhead's base, 0.9 pt from its corner."""
+    body = b"0 0 0 RG 0.5 w 100 100 16 200 re S 116 100 144 200 re S 116 100 284 16 re S "
+    body += _dim(100, 116, 320, '4"') + _dim(116, 260, 320, '36"') + _dim(100, 260, 345, '40"')
+    body += _text(40, 66, "Filler Left")
+    body += _line((76, 70), (108, 70), (108, 105))
+    body += b"0 0 0 rg 107.1 105 m 108 110.3 l 108.9 105 l h f "
+    return _pdf(body)
+
+
+def test_a_leader_ending_in_a_closed_arrowhead_links_the_filler_width(tmp_path: Path) -> None:
+    """On a real CAD sheet the arrowhead was taken as the leader's next piece and as the smallest
+    rectangle at its end, so nothing was linked; it is ignored, and the strip is found."""
+    from app.review.assistant import dim_labels
+
+    pdf = tmp_path / "set.pdf"
+    pdf.write_bytes(_arrowhead_sheet())
+    geometry = fl.page_geometry(pdf, 1)
+    assert not any(r[2] - r[0] < 3 and r[3] - r[1] < 8 for r in geometry.rects), geometry.rects
+    read = dim_labels.page_labels(pdf, 1, [{"box": [0, 0, 600, 400], "role": "vendor"}])
+    four = [la for la in read.labels if la.get("text") == '4"']
+    assert len(four) == 1 and four[0].get("dim_line"), read.labels
+    assert fl.linked_on_page(pdf, 1, read.labels, read.phrases) == {
+        str(four[0]["id"]): "Filler Left"
+    }
+
+
+# ---- sheets with several elevations, and chains drawn as one line (a CAD sheet, #1758) ------------------
+
+
+def _tick(x: float, y: float) -> tuple[tuple[float, float], tuple[float, float]]:
+    """A slash tick crossing a horizontal dimension line at (x, y)."""
+    return ((x - 2.0, y + 2.0), (x + 2.0, y - 2.0))
+
+
+def test_the_nearest_of_stacked_elevations_strings_is_the_fillers_dimension() -> None:
+    """A sheet draws the same run three times, one under the other: each elevation's filler is
+    dimensioned at the same x, so three labels run along the strip's width. The one whose line is
+    next to the strip (just above it) measures it; the others belong to the elevations below."""
+    lower = _label("D6", '4"', "4", "h", ((100.0, 480.0), (116.0, 480.0)))
+    lowest = _label("D7", '4"', "4", "h", ((100.0, 880.0), (116.0, 880.0)))
+    assert fl.link(_notes(), _geometry(), [*LABELS, lower, lowest]) == {"D1": "Filler Left"}
+
+
+def test_two_labels_as_near_the_strip_link_nothing() -> None:
+    other = _label("D6", '4"', "4", "h", ((100.0, 320.0), (116.0, 320.0)))
+    assert fl.link(_notes(), _geometry(), [*LABELS, other]) == {}
+
+
+def _chain_geometry(ticks: Sequence[float] = (100.0, 116.0, 260.0)) -> fl.Geometry:
+    """The string drawn as ONE line from the filler's left edge to the cabinet's right edge,
+    cut by slash ticks: the reader of labels could not find the filler's own part of it."""
+    chain = ((100.0, 80.0), (260.0, 80.0))
+    return _geometry(paths=(LEADER, *ARROW, chain, *(_tick(x, 80.0) for x in ticks)))
+
+
+def _unlined(label: dict[str, Any], line: Any = None) -> dict[str, Any]:
+    return {**label, "dim_line": line}
+
+
+def test_a_label_with_no_line_found_is_linked_by_the_drawn_ticks_at_the_strips_edges() -> None:
+    """The label's own line was not found (or the whole string was taken for it): the drawing
+    shows a dimension line at the label's row, cut by ticks exactly at the strip's two edges, with
+    the label's middle between them. That is the strip's width."""
+    for line in (None, [[100.0, 80.0], [260.0, 80.0]]):
+        labels = [_unlined(LABELS[0], line), *LABELS[1:]]
+        assert fl.link(_notes(), _chain_geometry(), labels) == {"D1": "Filler Left"}, line
+
+
+def test_no_tick_at_a_strip_edge_or_a_tick_inside_it_links_nothing() -> None:
+    labels = [_unlined(LABELS[0]), *LABELS[1:]]
+    assert fl.link(_notes(), _chain_geometry(ticks=(100.0, 260.0)), labels) == {}
+    assert fl.link(_notes(), _chain_geometry(ticks=(100.0, 108.0, 116.0, 260.0)), labels) == {}
+
+
+def test_a_leader_ending_on_a_box_that_is_not_a_strip_links_nothing() -> None:
+    """A filler is a strip (long and narrow). A leader whose end lands only in a cabinet-shaped
+    box (the strip itself not drawn as a closed rectangle) would take the cabinet's width (a
+    56" "filler"): nothing is linked."""
+    box = (100.0, 100.0, 260.0, 300.0)
+    labels = [_label("D9", '56"', "56", "h", ((100.0, 80.0), (260.0, 80.0)))]
+    assert fl.link(_notes(), _geometry(rects=(box, FRAME)), labels) == {}
