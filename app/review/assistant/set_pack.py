@@ -17,6 +17,13 @@ that set-up once per upload, in the background, and the agent sees it read-only 
   (`vocabulary/panel_headings.py`), its round ("first / second set of comments"), the area or title
   GV typed ("2. Buffet"; carried to the next pages until another), and sheet numbers printed on
   the page. It is a hint for the agent, read by code from GV's labels: the drawings decide.
+  **Separate files** (#1719): a file uploaded as the architect's drawings (not the vendor's file
+  itself) gives its pages the architect role: a pasted drawing with no GV heading is the
+  architect's, and a page with no pasted drawing (a normal CAD sheet) is one whole-page architect
+  drawing. A vendor file with no pasted drawing at all is read the same way (whole-page vendor
+  drawings). A page that prints no dimension (a cover, a notes sheet) stays general. Each such
+  drawing says `from_upload`, and `upload_roles` names the files read so. GV's combined sheets are
+  read exactly as before.
 - `dims.json` (#1558): every printed dimension on every page, numbered per page (`D17`), with its
   value, inches, box, whose drawing it is on, and its dimension and extension lines when found
   (`dim_labels.py`). The `zoom` tool draws these ids on a crop; findings name them. Written as
@@ -75,7 +82,7 @@ from pypdf.generic import ArrayObject, NameObject
 from app.review.assistant import page_cache
 from app.review.assistant.chat_drawing import PDFIUM_LOCK
 from app.review.assistant.page_pictures import fitting_dpi
-from vocabulary.panel_headings import HeadingMeaning, heading_meaning
+from vocabulary.panel_headings import HeadingMeaning, heading_meaning, page_title_role
 
 __all__ = [
     "HIRES",
@@ -88,6 +95,7 @@ __all__ = [
     "pack_folder",
     "pack_key",
     "trim_hires",
+    "upload_roles",
 ]
 
 _log = logging.getLogger(__name__)
@@ -151,6 +159,10 @@ _ROLES: Final = {
     HeadingMeaning.REFERENCE: "brand_prototype",
 }
 _SAFE: Final = re.compile(r"[^A-Za-z0-9._-]+")
+#: A printed dimension in a page's text (`24"`, `3'-0"`, `35 3/4"`): a page of a separate file
+#: shows a drawing when it prints at least `_DRAWING_DIMS` of them (#1719).
+_DIMENSION: Final = re.compile(r"\d\s*(?:\"|''|\u201d)|\d\s*['\u2019]\s*-?\s*\d")
+_DRAWING_DIMS: Final = 2
 
 #: Builds running in this process, by pack folder (a second chat on the same set waits for none).
 _running: dict[Path, threading.Thread] = {}
@@ -165,9 +177,42 @@ type Box = tuple[float, float, float, float]
 
 
 def pack_key(listing: Sequence[Mapping[str, Any]]) -> str:
-    """The pack's name: a hash of the uploads' names and SHA-256, in order."""
-    text = "\n".join(f"{item.get('name')}:{item.get('sha256')}" for item in listing)
+    """The pack's name: a hash of the uploads' names and SHA-256, in order. A separate architect
+    file adds its role (#1719): its pages are read as the architect's, so a pack made before that
+    is made again; a set with no separate architect file keeps its name."""
+    roles = upload_roles(listing)
+    text = "\n".join(
+        f"{item.get('name')}:{item.get('sha256')}"
+        + (":architect" if roles.get(str(item.get("name"))) == "architect" else "")
+        for item in listing
+    )
     return hashlib.sha256(f"v{PACK_VERSION}\n{text}".encode()).hexdigest()[:32]
+
+
+def _is_architect_kind(item: Mapping[str, Any]) -> bool:
+    return str(item.get("kind") or "").strip().lower().startswith("the architect")
+
+
+def _is_vendor_kind(item: Mapping[str, Any]) -> bool:
+    kind = str(item.get("kind") or "").strip().lower()
+    return kind.startswith("the vendor") or "shop drawing" in kind
+
+
+def upload_roles(listing: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    """The role each upload's kind gives its drawings (#1719): `architect` for a file uploaded as
+    the architect's drawings that is not also uploaded as the vendor's (the same combined file in
+    both places is read once, by its GV headings), `vendor` for a file uploaded as the vendor's.
+    `_page_entries` uses a vendor file's role only when the file has no pasted drawing at all."""
+    others = {str(item.get("sha256")) for item in listing if not _is_architect_kind(item)}
+    roles: dict[str, str] = {}
+    for item in listing:
+        name = str(item.get("name"))
+        if _is_architect_kind(item):
+            if str(item.get("sha256")) not in others:
+                roles[name] = "architect"
+        elif _is_vendor_kind(item):
+            roles[name] = "vendor"
+    return roles
 
 
 def pack_folder(chat_root: Path, listing: Sequence[Mapping[str, Any]]) -> Path:
@@ -403,12 +448,43 @@ def _round_of(text: str) -> int | None:
     return _ROUND_NUMBER[found.group(1).lower()] if found else None
 
 
+def _shown_size(page: Any) -> tuple[float, float]:
+    """A page's width and height as shown (its rotation applied), in points."""
+    geometry = _geometry(page)
+    width, height = geometry.urx - geometry.llx, geometry.ury - geometry.lly
+    return (height, width) if geometry.rotation in (90, 270) else (width, height)
+
+
+def _whole_page_role(upload_role: str, text: str) -> str:
+    """Whose drawing a whole page of a separate file is (#1719): the upload's kind first (every
+    page of the architect's file is the architect's); on the vendor's file, a page whose printed
+    title words name the architect alone ("ARCH LAYOUT") is the architect's, any other page the
+    vendor's."""
+    if upload_role == "architect":
+        return "architect"
+    return "architect" if page_title_role(text) == "architect" else "vendor"
+
+
 def _page_entries(
-    name: str, annotations: Sequence[dict[str, Any]], texts: Sequence[str], page_count: int
+    name: str,
+    annotations: Sequence[dict[str, Any]],
+    texts: Sequence[str],
+    page_count: int,
+    *,
+    upload_role: str | None = None,
+    sizes: Sequence[tuple[float, float]] = (),
 ) -> list[dict[str, Any]]:
+    """Each page's entry of `page_map.json`. `upload_role` (#1719): the role the upload's kind
+    gives (`upload_roles`). In the architect's file a pasted drawing with no GV heading is the
+    architect's; in a file with no pasted drawing at all (a plain CAD file, architect's or
+    vendor's), every page printing dimensions is one whole-page drawing (`sizes`: each page's
+    shown size), its role from `_whole_page_role`."""
     by_page: dict[int, list[dict[str, Any]]] = {}
     for item in annotations:
         by_page.setdefault(int(item["page"]), []).append(item)
+    plain = upload_role is not None and not any(
+        a["kind"] == "Stamp" and a["box"] for a in annotations
+    )
     entries: list[dict[str, Any]] = []
     area: str | None = None
     area_page: int | None = None
@@ -442,10 +518,28 @@ def _page_entries(
             elif _AREA.match(text) and not titled:
                 area, area_page, titled = text, number, True
         halves: list[dict[str, Any]] = []
+        text = texts[number - 1] if number - 1 < len(texts) else ""
+        whole: str | None = None
+        if (
+            plain
+            and upload_role is not None
+            and number - 1 < len(sizes)
+            and len(_DIMENSION.findall(text)) >= _DRAWING_DIMS
+        ):
+            # A plain file's page that prints dimensions: one whole-page drawing.
+            width, height = sizes[number - 1]
+            stamps = [{"box": (0.0, 0.0, round(width, 1), round(height, 1))}]
+            whole = _whole_page_role(upload_role, text)
         ordered = sorted(stamps, key=lambda a: (a["box"][1], a["box"][0]))
         one_round = {label["round"] for label in round_labels}
         for stamp, heading in zip(ordered, _headings(ordered, role_labels), strict=True):
             role = heading["role"] if heading else "general"
+            from_upload = False
+            if heading is None and whole is not None:
+                role, from_upload = whole, True
+            elif heading is None and upload_role == "architect":
+                # The architect's own file: a drawing GV gave no heading is the architect's.
+                role, from_upload = "architect", True
             # A round belongs to the vendor's drawings (never the architect's or a prototype):
             # its caption right under or over the drawing, or the page's only round.
             found = None
@@ -456,20 +550,21 @@ def _page_entries(
                     found = caption["round"]
                 elif len(one_round) == 1:
                     found = next(iter(one_round))
-            halves.append(
-                {
-                    "box": stamp["box"],
-                    "role": role,
-                    "heading": " ".join(str(heading["text"]).split()) if heading else None,
-                    "round": found,
-                }
-            )
+            half: dict[str, Any] = {
+                "box": stamp["box"],
+                "role": role,
+                "heading": " ".join(str(heading["text"]).split()) if heading else None,
+                "round": found,
+            }
+            if from_upload:
+                half["from_upload"] = True
+            halves.append(half)
         roles = sorted({half["role"] for half in halves} - {"general"})
         rounds = sorted({half["round"] for half in halves if half["round"]})
         if not halves and round_labels:
             rounds = sorted({label["round"] for label in round_labels})
         sheets: list[str] = []
-        for printed in _SHEET.finditer(texts[number - 1] if number - 1 < len(texts) else ""):
+        for printed in _SHEET.finditer(text):
             sheet = printed.group(1) or printed.group(2)
             if sheet and sheet not in sheets:
                 sheets.append(sheet)
@@ -582,6 +677,9 @@ The set pack: made by code from the uploads, read-only. Start here instead of bu
 
 page_map.json          per page: whose drawing each pasted drawing is (from GV's typed headings),
                        its round, the area or title, sheet numbers. A hint: the drawings decide.
+                       A separate plain file (no pasted drawings): each page printing dimensions
+                       is one whole-page drawing, its role from the upload (the architect's file)
+                       or its title words; from_upload: true marks them.
 annotations.json       every annotation: file, page, kind, author, text, box (GV's markup and
                        headings included; the drawings-only copies drop them).
 *_drawings_only.pdf    each PDF with only the pasted drawings kept: GV's markup hidden.
@@ -632,16 +730,28 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
         _set_status(folder, "building", done, files=names)
         annotations: list[dict[str, Any]] = []
         page_map: list[dict[str, Any]] = []
+        roles = upload_roles(listing)
+        used: dict[str, str] = {}
         for name in names:
             logging.getLogger("pypdf").setLevel(logging.ERROR)
             reader = PdfReader(str(uploads / name))
             found = _annotations(name, reader)
             annotations += found
-            page_map += _page_entries(name, found, _page_texts(copies[name]), len(reader.pages))
+            entries = _page_entries(
+                name,
+                found,
+                _page_texts(copies[name]),
+                len(reader.pages),
+                upload_role=roles.get(name),
+                sizes=[_shown_size(page) for page in reader.pages],
+            )
+            if any(h.get("from_upload") for e in entries for h in e["halves"]):
+                used[name] = roles[name]
+            page_map += entries
         _write_json(folder / "annotations.json", annotations)
         _write_json(
             folder / "page_map.json",
-            {"version": PACK_VERSION, "files": names, "pages": page_map},
+            {"version": PACK_VERSION, "files": names, "upload_roles": used, "pages": page_map},
         )
         done.append("page_map")
         _set_status(folder, "building", done, files=names)
