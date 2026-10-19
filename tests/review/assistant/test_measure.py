@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pikepdf
 import pytest
 from reportlab.pdfgen import canvas  # type: ignore[import-untyped]
 
@@ -88,12 +89,47 @@ def test_a_point_with_no_line_near_is_taken_as_given_and_is_less_sure(tmp_path: 
     assert loose.plus_minus_in > snapped.plus_minus_in
 
 
-def test_gv_coloured_markup_is_never_snapped_to(tmp_path: Path) -> None:
-    pdf = sheet(tmp_path / "s.pdf", red_line_at=152.0)
+def _as_combined_sheet(pdf: Path) -> Path:
+    """The same sheet as one of GV's combined review sheets: a drawing pasted on it as a stamp."""
+    with pikepdf.open(pdf, allow_overwriting_input=True) as document:
+        page = document.pages[0]
+        appearance = document.make_stream(b"0 0 0 RG 1 w 2 2 36 16 re S")
+        appearance["/Type"] = pikepdf.Name.XObject
+        appearance["/Subtype"] = pikepdf.Name.Form
+        appearance["/BBox"] = [0, 0, 40, 20]
+        page.obj["/Annots"] = pikepdf.Array(
+            [
+                document.make_indirect(
+                    pikepdf.Dictionary(
+                        Type=pikepdf.Name.Annot,
+                        Subtype=pikepdf.Name.Stamp,
+                        Rect=[500, 20, 540, 40],
+                        AP=pikepdf.Dictionary(N=appearance),
+                    )
+                )
+            ]
+        )
+        document.save(pdf)
+    return pdf
+
+
+def test_gv_coloured_markup_on_a_combined_sheet_is_never_snapped_to(tmp_path: Path) -> None:
+    pdf = _as_combined_sheet(sheet(tmp_path / "s.pdf", red_line_at=152.0))
     measured = measure_on_drawing(
         pdf, 1, {"x": 150, "y": 450}, {"x": 258, "y": 450}, CALIBRATE, "h"
     )
     assert measured.snapped[0] == "as given (no line within 4 pt)"
+
+
+def test_a_red_line_on_an_ordinary_drawing_is_the_vendors_and_is_snapped_to(
+    tmp_path: Path,
+) -> None:
+    """The colour rule: colour decides nothing on an ordinary upload (a vendor may draw in red)."""
+    pdf = sheet(tmp_path / "s.pdf", red_line_at=152.0)
+    measured = measure_on_drawing(
+        pdf, 1, {"x": 150, "y": 450}, {"x": 258, "y": 450}, CALIBRATE, "h"
+    )
+    assert measured.snapped[0].startswith("snapped to")
 
 
 def test_calibrations_that_disagree_are_refused(tmp_path: Path) -> None:
