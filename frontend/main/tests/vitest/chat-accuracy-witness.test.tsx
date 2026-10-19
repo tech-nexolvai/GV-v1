@@ -70,39 +70,36 @@ describe('not seen is not right', () => {
     expect(levelCounts(FINDINGS, null)).toEqual({ confirmed: 1, likely: 2, to_check: 0 });
   });
 
-  it('shows what could not be compared apart in a full check (folded), with why (#1619)', async () => {
+  it('shows what could not be compared on its own tab, grouped by why (#1619, #1717)', async () => {
     const user = userEvent.setup();
     const placed = FINDINGS.map((each) => ({
       ...each,
       proof: each.id === 'o1' ? { group: 'clouded' as const }
         : each.id === 'r1' ? { group: 'right' as const }
-          : { group: 'not_compared' as const, label: each.id === 'n1' ? 'Not reviewed: not looked at on both drawings' : 'Not reviewed: not proved by code', reason: 'why it could not be compared' },
+          : { group: 'not_compared' as const, not_compared: each.id === 'n1' ? 'not_seen' : 'not_proved', label: each.id === 'n1' ? 'Not reviewed: not looked at on both drawings' : 'Not reviewed: not proved by code', reason: 'why it could not be compared' },
     }));
     render(<AssistantMessage message={answer({ findings: placed })} chatId="c-1" models={[OPUS]} fullCheck />);
     const node = screen.getByRole('article', { name: 'Answer' });
-    expect([...node.querySelectorAll('[data-slot="chat-kpis"] [data-kpi]')].map((tile) => tile.getAttribute('data-kpi'))).toEqual(['different', 'same', 'check', 'pages', 'accuracy']);
-    const rows = () => [...node.querySelectorAll<HTMLElement>('[data-slot="chat-finding-row"]')].map((row) => row.dataset.id);
+    expect([...node.querySelectorAll<HTMLElement>('[data-slot="chat-result-tiles"] [role="tab"]')].map((tile) => tile.dataset.tab)).toEqual(['wrong', 'right', 'not_compared']);
+    const rows = () => [...node.querySelectorAll<HTMLElement>('[data-slot="chat-result-row"]')].map((row) => row.dataset.id);
     expect(rows()).toEqual(['o1']);
-    await user.click(within(node).getByRole('button', { name: /^Not compared\s*2/ }));
-    expect(rows()).toEqual(['o1', 'i1', 'n1']);
-    // The row says why in the trade's words, and offers only "Make it Wrong".
-    const row = node.querySelector<HTMLElement>('[data-id="n1"]')!;
-    expect(row.querySelector('[data-slot="chat-finding-question"]')?.textContent).toContain('Not reviewed: not looked at on both drawings');
+    await user.click(within(node).getByRole('tab', { name: /^Not compared/ }));
+    expect(rows()).toEqual(['i1', 'n1']);
+    // Each group says why, in the Not-compared list's words.
+    expect([...node.querySelectorAll('[data-slot="chat-result-group"]')].map((head) => head.textContent)).toEqual(['Difference not proved by code1', 'Not looked at on both drawings1']);
   });
 
-  it('lists a not-looked-at item under Not compared, not under a word of its own (#1712: one word per meaning)', async () => {
+  it('lists a not-looked-at item under Not compared: no outcome word of its own (#1712)', async () => {
     const user = userEvent.setup();
     const { unmount } = render(<AssistantMessage message={answer({ findings: FINDINGS.slice(0, 3) })} chatId="c-1" models={[OPUS]} fullCheck />);
-    let node = screen.getByRole('article', { name: 'Answer' });
-    expect(within(node).getByRole('region', { name: /^Not compared2/ })).toBeTruthy();
-    expect(node.textContent).not.toMatch(/Not looked at/);
+    const tabs = () => [...document.querySelectorAll<HTMLElement>('[data-slot="chat-result-tiles"] [role="tab"]')].map((tile) => tile.textContent?.replace(/[A-Z][^0-9]*$/, ''));
+    expect(tabs()).toEqual(['Wrong0', 'Right1', 'Not compared2']);
     unmount();
     render(<AssistantMessage message={answer({ findings: FINDINGS })} chatId="c-1" models={[OPUS]} fullCheck />);
-    node = screen.getByRole('article', { name: 'Answer' });
-    expect(within(node).getByRole('region', { name: /^Not compared3/ })).toBeTruthy();
-    await user.click(within(node).getByRole('button', { name: /^Not compared\s*3/ }));
-    expect(node.querySelector('[data-slot="chat-finding-row"][data-id="n1"]')).not.toBeNull();
-    expect(node.textContent).not.toMatch(/Not looked at/);
+    const node = screen.getByRole('article', { name: 'Answer' });
+    expect(tabs()).toEqual(['Wrong0', 'Right1', 'Not compared3']);
+    await user.click(within(node).getByRole('tab', { name: /^Not compared/ }));
+    expect(node.querySelector('[data-slot="chat-result-row"][data-id="n1"]')).not.toBeNull();
   });
 });
 

@@ -679,6 +679,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                     decide={api.decide ? (messageId, findingId, decision) => api.decide!(chatId, messageId, findingId, decision) : undefined}
                     remakeCloud={api.remakeCloud ? (messageId) => api.remakeCloud!(chatId, messageId) : undefined}
                     fullPageHref={formatRoute({ page: 'review', packageId })}
+                    pagePicture={(page) => chatPaths.planPage(packageId, page)}
                     fullCheck={isFullCheck(message, asked?.role === 'user' ? asked : null)}
                     focusFindingId={focusFinding && message.id === focusFinding.messageId ? focusFinding.findingId : null}
                   />
