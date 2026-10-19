@@ -13,7 +13,8 @@ anything else is a 404 that says nothing. The routes, under `/api/v1`:
 - `GET  /chats/{chat_id}/messages/{message_id}/events`: follow a message (#1479): the running
   message's events so far, then live until `message_end`; a finished one's `message_end` at once.
 - `POST /chats/{chat_id}/cancel`: stop the message being answered (the only way to stop it).
-- `GET  /chats/{chat_id}/files/{file_id}`, `GET /chats/{chat_id}/pictures/{picture_id}`.
+- `GET  /chats/{chat_id}/files/{file_id}`, `GET /chats/{chat_id}/pictures/{picture_id}`. A file
+  downloads as an attachment; `?inline=true` shows a PDF in the browser's viewer (Open, #1684).
 - `POST /chats/{chat_id}/messages/{message_id}/markup-pdf`: the answer's findings drawn by code on a
   copy of the vendor's PDF (clouds, notes, the draft stamp, a notes page), kept as a chat file; the
   same file every time for the same answer. `GET .../findings.csv`: the findings with their checks
@@ -545,7 +546,11 @@ def download_file(
     file_id: UUID,
     principal: Authenticated,
     session: Annotated[Session, Depends(get_session)],
+    inline: Annotated[bool, Query()] = False,
 ) -> FileResponse:
+    """The file as an attachment (Download). `inline=true` (Open, #1684) shows a PDF in the
+    browser's own viewer instead of saving it; every other kind of file stays an attachment, so
+    nothing the agent wrote (an HTML or SVG file, say) is ever rendered on the app's own origin."""
     _chat(session, chat_id, principal)
     row = session.get(AssistantChatFile, file_id)
     if row is None or row.chat_id != chat_id:
@@ -553,8 +558,13 @@ def download_file(
     path = ChatWorkspace(_chat_folder(request, chat_id)).files / str(file_id)
     if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != row.sha256:
         raise _not_found()
+    shown = inline and row.mime == "application/pdf"
     return FileResponse(
-        path, media_type=row.mime, filename=row.name, content_disposition_type="attachment"
+        path,
+        media_type=row.mime,
+        filename=row.name,
+        content_disposition_type="inline" if shown else "attachment",
+        headers={"X-Content-Type-Options": "nosniff"},
     )
 
 

@@ -22718,6 +22718,7 @@
     },
     "/api/v1/chats/{chat_id}/files/{file_id}": {
       "get": {
+        "description": "The file as an attachment (Download). `inline=true` (Open, #1684) shows a PDF in the\nbrowser's own viewer instead of saving it; every other kind of file stays an attachment, so\nnothing the agent wrote (an HTML or SVG file, say) is ever rendered on the app's own origin.",
         "operationId": "download_file_api_v1_chats__chat_id__files__file_id__get",
         "parameters": [
           {
@@ -22738,6 +22739,16 @@
               "format": "uuid",
               "title": "File Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "inline",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Inline",
+              "type": "boolean"
             }
           }
         ],

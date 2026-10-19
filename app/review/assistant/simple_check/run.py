@@ -46,6 +46,7 @@ from app.review.assistant.chat_summary import CODE_SUMMARY_NOTE, code_summary
 from app.review.assistant.chat_trust import judged
 from app.review.assistant.finding_checks import to_inches
 from app.review.assistant.full_check_advocate import code_checks, decide, ink_colour, needs_pairing
+from app.review.assistant.product_scope import refiled
 from app.review.assistant.simple_check import verify as verify_module
 from app.review.assistant.simple_check.blind import BlindSettings, look_all
 from app.review.assistant.simple_check.schema import CompareOutcome, WorkItem
@@ -87,6 +88,9 @@ _ORDER: Final = {"red": 0, "not_compared": 1, "right": 2}
 #: Who made a finding the run judges with the code checks (everything but its own).
 _SKIP_JUDGING: Final = frozenset({CREATED_BY})
 _MICROS: Final = 1_000_000
+#: Why a red candidate of a product outside the check's scope gets no blind look (it is never
+#: shown: the finding book leaves it out, and only counts it).
+OUTSIDE_SCOPE: Final = "outside the product scope of this check"
 #: How long the run waits for the set pack to be made (its labels are read by OCR at upload).
 PACK_WAIT_SECONDS: Final = 1800.0
 _PACK_POLL_SECONDS: Final = 2.0
@@ -203,6 +207,8 @@ class _Run:
     blind_skipped: str | None = None
     """Why the red candidates got no blind look (a stop, no money), when they did not."""
     blind_skipped_count: int = 0
+    out_of_scope: int = 0
+    """Items of products outside the check's scope: never looked at again, never shown."""
 
     # -- the run --
 
@@ -657,6 +663,18 @@ class _Run:
         candidates = [(v, item) for v, item in verified if v.needs_blind]
         if not candidates:
             return verified
+        # The strict product scope: a candidate of another product is never paid a look (the
+        # finding book would leave it out anyway). It ends Not compared, never red.
+        outside = {
+            id(v): with_blind(v, None, OUTSIDE_SCOPE)
+            for v, _ in candidates
+            if not self._scoped(v.finding)
+        }
+        candidates = [(v, item) for v, item in candidates if id(v) not in outside]
+        if outside:
+            _log.info("simple check: %d red candidates outside the product scope", len(outside))
+        if not candidates:
+            return [(outside.get(id(v), v), item) for v, item in verified]
         engine = self.engine
         looked: list[Verified]
         if self.options.replay:
@@ -677,7 +695,41 @@ class _Run:
         for done in looked:
             self._save_blind(done)
         after = {id(old): new for (old, _item), new in zip(candidates, looked, strict=True)}
+        after.update(outside)
         return [(after.get(id(v), v), item) for v, item in verified]
+
+    def _filed(self, row: Mapping[str, Any]) -> str | None:
+        """The product a Not-compared row of this run is filed under (`refiled`, as a finding),
+        or `None` when it is another product's."""
+        engine = self.engine
+        scope = getattr(engine, "product_scope", None)
+        if scope is None:
+            return str(row.get("category") or "other")
+        page = row.get("page")
+        words_of = getattr(engine, "page_words", None)
+        words: Any = ""
+        if callable(words_of) and isinstance(page, int):
+            words = lambda: words_of(page)
+        fields = {
+            "category": row.get("category") or "other",
+            "item": row.get("item") or "",
+            "created_by": CREATED_BY,
+        }
+        return refiled(fields, scope, words)
+
+    def _scoped(self, finding: Mapping[str, Any]) -> bool:
+        """Whether an item of this run is of a product in the check's scope, as the finding book
+        files it (`product_scope.refiled`: its product, else its name's words, then its page's)."""
+        engine = self.engine
+        scope = getattr(engine, "product_scope", None)
+        if scope is None or scope.every or not finding:
+            return True
+        page = finding.get("page")
+        words_of = getattr(engine, "page_words", None)
+        words: Any = ""
+        if callable(words_of) and isinstance(page, int):
+            words = lambda: words_of(page)
+        return refiled({**finding, "created_by": CREATED_BY}, scope, words) is not None
 
     # -- saved answers (re-verified at $0 later: `replay`) --
 
@@ -763,19 +815,38 @@ class _Run:
             if one.outcome == "candidate":
                 continue  # never left so: the blind look ran on every candidate
             kept = self._add(one)
-            if not kept:
+            if kept is None:
+                # Another product than the check's (the strict scope): never listed, not even
+                # as Not compared; the finding book counted it.
+                self.out_of_scope += 1
+            elif not kept:
                 if one.outcome == "right":
                     self.not_listed += 1
                 else:
                     self.rows.append(_row(one, "the answer's item limit was reached"))
-        for one, _item in verified:
-            if one.outcome == "listed":
-                self.rows.append(_row(one))
+        # The labels the architect gives no size for, one row per drawing (and product), not one
+        # per label: a set has hundreds (the app test: 1,186 rows beside 46 items on screen).
+        no_size: dict[tuple[str, str], list[Verified]] = {}
+        for one, item in verified:
+            if one.outcome != "listed":
+                continue
+            row = _row(one)
+            if one.reason_code != "nothing_to_compare" or not one.vendor:
+                self.rows.append(row)
+                continue
+            filed = self._filed(row)
+            if filed is None:
+                self.out_of_scope += 1  # another product's label: never listed
+                continue
+            no_size.setdefault((item.id, filed), []).append(one)
+        for (item_id, filed), labels in no_size.items():
+            self.rows.append(_no_size_row(item_id, filed, labels))
         engine.extra_gaps = list(self.rows)
 
-    def _add(self, one: Verified) -> bool:
+    def _add(self, one: Verified) -> bool | None:
         """The item as a finding: merged onto GV Review's recorded row of the same item (same page,
-        same two values, no spot yet), else added. False when the book is full."""
+        same two values, no spot yet), else added. False when the book is full; None when the
+        finding book left it out as another product than the check's (the strict scope)."""
         engine = self.engine
         book = engine.book
         fields: dict[str, Any] = dict(one.finding)
@@ -795,9 +866,10 @@ class _Run:
                 if changed is not None:
                     engine._show_finding(changed)
                     return True
+            before = book.out_of_scope
             added = book.add_code_finding(fields, created_by=CREATED_BY)
             if added is None:
-                return False
+                return None if book.out_of_scope > before else False
             updated = {**added, **extra}
             checks = dict(added.get("checks") or {})
             critic = extra.get("critic")
@@ -1172,12 +1244,47 @@ def _row(one: Verified, why: str | None = None) -> dict[str, Any]:
         if vendor
         else one.key
     )
+    about = one.about or {}
+    finding = one.finding or {}
+    page = vendor.get("page") if vendor else (about.get("page") or finding.get("page"))
     return {
-        "page": vendor.get("page") if vendor else None,
+        "page": page if isinstance(page, int) else None,
         "what": f"{where}: {why or one.reason}",
         "why": one.reason_code or "not_proved",
         "needs": "the architect's size for it" if one.reason_code == "nothing_to_compare" else "",
         "scope": "set",
+        # What files the row under the check's product scope (`product_scope.scoped_gaps`).
+        "item": about.get("item") or finding.get("item"),
+        "category": about.get("category") or finding.get("category"),
+    }
+
+
+#: How many values a grouped "no architect size" row names before "and N more".
+_NO_SIZE_SHOWN: Final = 6
+
+
+def _no_size_row(item_id: str, filed: str, labels: Sequence[Verified]) -> dict[str, Any]:
+    """One Not-compared row for a drawing's labels the architect gives no size for: the page, how
+    many, and the first few values with their labels."""
+    vendor = labels[0].vendor or {}
+    page = vendor.get("page")
+    shown = ", ".join(
+        f"{(one.vendor or {}).get('text')} ({(one.vendor or {}).get('id')})"
+        for one in labels[:_NO_SIZE_SHOWN]
+    )
+    more = f" and {len(labels) - _NO_SIZE_SHOWN} more" if len(labels) > _NO_SIZE_SHOWN else ""
+    many = "dimension" if len(labels) == 1 else "dimensions"
+    return {
+        "page": page if isinstance(page, int) else None,
+        "what": (
+            f"Vendor drawing on page {page}: {len(labels)} {many} the architect gives no size "
+            f"for: {shown}{more}"
+        ),
+        "why": "nothing_to_compare",
+        "needs": "the architect's sizes for them",
+        "scope": "set",
+        "item": f"{item_id}: dimensions with no architect size",
+        "category": filed,
     }
 
 
