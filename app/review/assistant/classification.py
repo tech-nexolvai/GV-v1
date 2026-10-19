@@ -80,6 +80,7 @@ type Reason = Literal[
     "no_overall",
     "string_not_verified",
     "architect_outside_gv_rule",
+    "outside_gv_rule",
     "internal",
 ]
 
@@ -96,6 +97,7 @@ REASONS: Final[tuple[Reason, ...]] = (
     "architect_disagrees",
     "missing_setting",
     "architect_outside_gv_rule",
+    "outside_gv_rule",
     "not_proved",
     "not_seen",
     "finish_not_comparable",
@@ -123,6 +125,7 @@ REASON_WORDS: Final[Mapping[str, str]] = {
     "no_overall": "architect gives only parts, no overall",
     "string_not_verified": "vendor's string not verified on the drawing",
     "architect_outside_gv_rule": "the architect's size is outside a GV rule (GV note)",
+    "outside_gv_rule": "outside GV's usual range (GV note)",
     "internal": "read by the AI only, never at its spot (GV's reviewer only)",
 }
 #: The trade's own words for each reason (industry review, topic 5), shown next to ours on the
@@ -144,6 +147,7 @@ TRADE_WORDS: Final[Mapping[str, str]] = {
     "no_overall": "Not reviewed: architect gives no overall",
     "string_not_verified": "Not reviewed: string not verified on the drawing",
     "architect_outside_gv_rule": "Not reviewed: per architect (outside GV's rule)",
+    "outside_gv_rule": "Not reviewed: outside GV's usual range (GV note)",
     "internal": "Internal: read but not recorded at its spot",
 }
 #: The rule each reason comes from.
@@ -164,6 +168,7 @@ _RULES: Final[Mapping[str, str]] = {
     "no_overall": "R7",
     "string_not_verified": "R5",
     "architect_outside_gv_rule": "R1",
+    "outside_gv_rule": "R6",
     "internal": "R9",
 }
 #: The architect's drawing points to the brand standard: the prototype is then its intent (R1).
@@ -435,6 +440,14 @@ def _check_item(finding: Mapping[str, Any]) -> Classified:
             _short(finding.get("gv_note") or finding.get("why"), 120)
             or "the architect's size is outside a GV rule",
             "GV's own call on the architect's size (an RFI to the architect if it matters)",
+        )
+    if reason == "outside_gv_rule":
+        # A size outside GV's usual range with no architect size for it (`filler_range`): GV's
+        # practice, not a difference; a GV note, never red (the orchestrator, 2026-10-20).
+        return _not(
+            "outside_gv_rule",
+            _short(finding.get("gv_note") or finding.get("why"), 120) or "outside GV's usual range",
+            "GV's own call on the size (the vendor may keep it)",
         )
     if finding.get("source") == "cross_view":
         side = finding.get("reference_side")

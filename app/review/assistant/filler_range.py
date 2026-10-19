@@ -1,4 +1,4 @@
-"""GV's filler range on the vendor's own fillers, $0, no AI: a filler outside it is Wrong.
+"""GV's filler range on the vendor's own fillers, $0, no AI: a filler outside it is a GV note.
 
 GV's settled rule: fillers are at least 1" and at most 2" wide (the client's written rule,
 changeable per project). Until now it ran only inside the cabinet run distribution check
@@ -20,9 +20,12 @@ changeable per project). Until now it ran only inside the cabinet run distributi
   cabinet in the check's products) is not checked.
 - **The architect governs** (DECIDED 2026-10-18). For each vendor filler label, the architect's
   filler labels of the same area (or page; every one when either has no area) are looked at:
-  - the architect gives no filler size: GV's range decides: outside it is **Wrong** (red, the
-    green words `1" to 2" (GV filler rule)`); inside it nothing is added (a Right needs both
-    drawings looked at, `chat_trust.not_compared_why`, and a GV rule has no architect side);
+  - the architect gives no filler size: outside GV's range it is a **GV note**, Not compared,
+    never red ("outside GV's usual 1\"-2\" filler range"; the orchestrator, 2026-10-20: GV's
+    reviewers accept 3" and 5" fillers, and the client's own sheets draw 4" and 5" fillers as
+    normal design, so the range is GV's usual practice, not a rule the vendor breaks); inside it
+    nothing is added (a Right needs both drawings looked at, `chat_trust.not_compared_why`, and a
+    GV rule has no architect side);
   - the architect gives this filler's size and the vendor prints the same: never red; when the
     size is outside GV's range it is **Not compared** ("the architect specifies 3/4\", outside
     GV's 1\"-2\" filler range"), else nothing is added (the architect comparison says Right);
@@ -30,15 +33,16 @@ changeable per project). Until now it ran only inside the cabinet run distributi
     this rule (nothing is added).
 - **One item once.** A label the answer already has an item for is left to it, except a "same"
   item on a filler the architect sizes outside GV's range: that one becomes the Not-compared note
-  (the comparison found them equal, but GV's rule says the size is not GV's).
+  (the comparison found them equal, but GV's rule says the size is not GV's). The range note never
+  replaces the comparison's item.
 - **Product scope**: every item is filed under `cabinet`; the finding book records it only when
   cabinets are in the check's scope.
 
-The Wrong items carry `settled: gv_limits` and GV's rule witness (`checks.rule`), the shape
-the resolver gives a filler GV's limits settle (`decision_resolver._filler_limits`), so the proof
-rules (`proof.code_proved`, `proof.should_be`) treat them alike: no pairing needed, the green words
-are GV's limits. The resolver and the escalation leave this check's items alone
-(`OWN_ITEM`), and the simple check does not list a filler this check decided a second time.
+**Never red.** Every item this check makes is a "check" item with its Not-compared reason
+(`keep_reason`: `OUTSIDE_RANGE` or `ARCHITECT_OUTSIDE`) and its `gv_note`; none carries a settled
+outcome or a rule witness, so no proof rule can cloud it. The resolver and the escalation leave this
+check's items alone (`OWN_ITEM`), and the simple check does not list a filler this check noted a
+second time.
 
 Verification: `tests/review/assistant/test_filler_range.py` (made-up labels).
 """
@@ -60,6 +64,7 @@ __all__ = [
     "ARCHITECT_OUTSIDE",
     "CATEGORY",
     "CREATED_BY",
+    "OUTSIDE_RANGE",
     "Limits",
     "add_to_answer",
     "covered_labels",
@@ -76,10 +81,11 @@ CATEGORY: Final = "cabinet"
 #: The Not-compared reason of a filler the architect sizes outside GV's range
 #: (`classification`: "the architect's size is outside a GV rule").
 ARCHITECT_OUTSIDE: Final = "architect_outside_gv_rule"
+#: The Not-compared reason of a filler outside GV's usual range that the architect gives no size
+#: for (`classification`: "outside GV's usual range (GV note)"): never red.
+OUTSIDE_RANGE: Final = "outside_gv_rule"
 #: Two printed values closer than this are the same (a sixteenth: the drawings' own step).
 TOLERANCE: Final = Fraction(1, 16)
-#: Where the limits come from, in the resolver's words (`proof._LIMITS` reads "limits are ... (").
-_WHERE: Final = "rules.md, the settings in force for this set"
 
 #: A printed size: `3/4"`, `2"`, `1 1/2"`, `4 in`, `2'-0"`.
 _SIZE: Final = re.compile(
@@ -297,32 +303,26 @@ def _item(filler: _Filler) -> str:
     return f"{area}: filler width" if area else "Filler width"
 
 
-def _settled(limits: Limits, value: Fraction) -> dict[str, Any]:
-    how = (
-        f"GV's filler limits are {limits.words()} ({_WHERE}); the vendor draws "
-        f"{_inches(value)} fillers."
-    )
-    return {"outcome": "wrong", "method": "gv_limits", "how": how}
-
-
-def _ruled(filler: _Filler, limits: Limits) -> dict[str, Any] | None:
-    """A vendor filler the architect gives no size for, outside GV's range: Wrong."""
+def _range_note(filler: _Filler, limits: Limits) -> dict[str, Any] | None:
+    """A vendor filler the architect gives no size for, outside GV's usual range: a GV note on the
+    Not-compared list, never red."""
     if str(filler.label.get("route") or "text") != "text":
-        return None  # a value read from drawn ink alone is never proof
+        return None  # a value read from drawn ink alone is not noted
     value = filler.value
     if not limits.outside(value):
         return None
     vendor = _inches(value)
+    note = f"outside GV's usual {limits.dash()} filler range"
     return {
         "page": filler.page,
         "item": _item(filler),
         "category": CATEGORY,
-        "architect": limits.words(),
+        "architect": "",
         "vendor": vendor,
-        "status": "different",
+        "status": "check",
         "why": (
-            f"GV's filler range is {limits.words()} (GV rule); the vendor's drawing prints a "
-            f"{vendor} filler, and the architect's drawing gives no size for it."
+            f"The vendor's drawing prints a {vendor} filler, {note}; the architect's drawing gives "
+            "no size for it. A GV note, not a difference."
         ),
         "verified": False,
         "source": "rules",
@@ -331,8 +331,8 @@ def _ruled(filler: _Filler, limits: Limits) -> dict[str, Any] | None:
         "created_by": CREATED_BY,
         "ledger_ids": [filler.ref],
         # Laid over the recorded finding (`add_to_answer`): the book keeps only its own fields.
-        "settled": _settled(limits, value),
-        "checks": {"rule": "agrees"},
+        "keep_reason": OUTSIDE_RANGE,
+        "gv_note": note,
     }
 
 
@@ -371,7 +371,7 @@ def findings_from(
     linked: Mapping[tuple[str, int], Mapping[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """Every vendor filler label of the set judged by GV's range, the architect first (see the
-    module): the Wrong ones, then the Not-compared notes. `linked`: per page, the labels a filler
+    module): GV notes only, never a Wrong. `linked`: per page, the labels a filler
     note's leader points at (`filler_leaders`), label id -> the note's words."""
     if not isinstance(dims, Mapping) or limits is None:
         return []
@@ -381,7 +381,7 @@ def findings_from(
     for filler in _fillers(dims, areas, "vendor", linked):
         given = [a for a in architects if _same_place(filler, a)]
         if not given:
-            made = _ruled(filler, limits)
+            made = _range_note(filler, limits)
             if made is not None:
                 out.append(made)
             continue
@@ -390,8 +390,7 @@ def findings_from(
             continue  # the vendor differs from the architect: the architect comparison decides
         if limits.outside(filler.value):
             out.append(_architect_note(filler, matching[0], limits))
-    order = {"different": 0, "check": 1}
-    return sorted(out, key=lambda f: (order[f["status"]], f["page"]))
+    return sorted(out, key=lambda f: f["page"])
 
 
 def _leaders(dims: Any, uploads: Path | None) -> dict[tuple[str, int], dict[str, str]]:
@@ -462,7 +461,7 @@ def covered_labels(
 
 def add_to_answer(engine: Any) -> dict[str, int] | None:
     """The engine's hook (a full check, at its finish, $0): each judged filler added through the
-    finding book (its checks, trust rule and product scope), then GV's limits laid over it. A label
+    finding book (its checks, trust rule and product scope), then its note laid over it. A label
     the answer already has an item for is left to it, except a "same" item the architect's
     out-of-range size turns into the Not-compared note. Returns how many were added and replaced."""
     if getattr(engine.settings, "mode", None) != "full_check":
@@ -501,7 +500,10 @@ def add_to_answer(engine: Any) -> dict[str, int] | None:
             key = _label_key(finding, main_file)
             existing = by_label.get(key) if key is not None else None
             if existing is not None:
-                if finding["status"] != "check" or existing.get("status") != "same":
+                if (
+                    finding.get("keep_reason") != ARCHITECT_OUTSIDE
+                    or existing.get("status") != "same"
+                ):
                     continue
                 reason = f"Settled by GV Review: {finding['gv_note']}."
                 if book.absorb(str(existing["id"])):
@@ -511,10 +513,8 @@ def add_to_answer(engine: Any) -> dict[str, int] | None:
             if added is None:
                 continue
             extra: dict[str, Any] = {
-                k: finding[k] for k in ("settled", "keep_reason", "gv_note") if k in finding
+                k: finding[k] for k in ("keep_reason", "gv_note") if k in finding
             }
-            if finding.get("checks"):
-                extra["checks"] = {**(added.get("checks") or {}), **finding["checks"]}
             updated = trust.judged({**added, **extra})
             if book.replace(updated):
                 added = updated
