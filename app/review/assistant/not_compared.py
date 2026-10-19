@@ -27,6 +27,7 @@ from typing import Any, Final
 
 from app.review.assistant.classification import REASON_WORDS, REASONS, TRADE_WORDS
 from app.review.assistant.proof import classified, proof_group, vendor_value
+from app.review.assistant.vendor_text import internal
 from app.review.assistant.workbook import write_xlsx
 
 __all__ = [
@@ -35,6 +36,7 @@ __all__ = [
     "csv_text",
     "rows",
     "summary_rows",
+    "vendor_why",
     "xlsx",
 ]
 
@@ -54,6 +56,25 @@ COLUMNS: Final = (
 _NO_SIZE: Final = re.compile(
     r"\b(?:no|not)\b[^.;]*\b(?:size|width|depth|height|dimension|printed)", re.IGNORECASE
 )
+#: GV's own working words that never go to the vendor in this list, besides `vendor_text.internal`
+#: (the AI, record ids, helpers): code's label ids ("p23.D17"), the compare call's answer and the
+#: model, the blind second look, the OCR engines, the critic, a failed call.
+_PROCESS: Final = re.compile(
+    r"\bp\d+\.D\d+\b|\bthe answer\b|\bthe model\b|\bblind\b|\bOCR\b|\bcritic\b|"
+    r"\bthe call failed\b|\bnot the form\b|\bcut short\b",
+    re.IGNORECASE,
+)
+#: What a reason says when its detail is GV's own working words (the list is sent to the vendor).
+_PLAIN_WHY: Final = "the drawings do not settle it"
+
+
+def vendor_why(why: object) -> str:
+    """A row's "why" as the vendor may read it: the detail, unless it holds GV's own working words
+    (`_PROCESS`, `vendor_text.internal`: the screen keeps them), then the plain words."""
+    words = _flat(why, 400)
+    if not words or internal(words) or _PROCESS.search(words):
+        return _PLAIN_WHY if words else ""
+    return words
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,7 +187,7 @@ def rows(
                 vendor=_flat(vendor_value(finding), 120),
                 architect=_architect_shows(finding, reason),
                 reason=reason,
-                why=found.why or "",
+                why=vendor_why(found.why),
                 needed=found.settle or "",
                 reference=_reference(finding, file),
                 file=file,
@@ -197,13 +218,20 @@ def gap_rows(
             continue
         page = gap.get("page") if isinstance(gap.get("page"), int) else None
         reason = _GAP_REASONS.get(str(gap.get("why") or ""), "no_sheet")
+        what = _flat(gap.get("what"), 160).replace(
+            "the answer's item limit was reached", "too many items in one check to list it"
+        )
+        if internal(what) or _PROCESS.search(what):
+            # The row's place stays (before its first ": "); its detail is GV's own words.
+            head = what.split(": ", 1)[0] if ": " in what else ""
+            what = f"{head}: {_PLAIN_WHY}" if head and not _PROCESS.search(head) else _PLAIN_WHY
         out.append(
             Row(
                 finding_id="",
                 page=page,
                 area=(areas or {}).get(page or 0, ""),
                 product="",
-                item=_flat(gap.get("what"), 160),
+                item=what,
                 vendor="",
                 architect="",
                 reason=reason,

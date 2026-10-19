@@ -142,6 +142,7 @@ from app.review.assistant.chat_request import (
     BY_SHORT,
     HELPER_MAX_TOKENS,
     LEAD_MAX_TOKENS,
+    MODELS,
     ChatModel,
     call_params,
     full_check_helper_effort,
@@ -2690,7 +2691,7 @@ class ChatEngine:
             "Drawing set": book.main_file or "",
             "Products": products,
             "Made": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
-            "Model": f"{self.settings.model.label}, {self.settings.effort} effort",
+            "Model": self._model_words(),
             "Items": f"{groups['clouded']} wrong (proved by code), {groups['right']} right{unseen}",
             "Coverage": (
                 "not recorded"
@@ -2790,6 +2791,31 @@ class ChatEngine:
             listed_kept = [("not compared", name, path) for name, path in listed]
             names += self._package_file(findings, [*kept, *listed_kept], context)
         return names
+
+    def _model_words(self) -> str:
+        """The models the check report names: the chat's; for the simple full check, the models
+        that did its work (the compare call, the hard drawings', the blind look), never the chat's
+        model it did not use."""
+        settings = self.settings
+        simple = settings.simple if self._simple else None
+        if not isinstance(simple, Mapping) or not isinstance(simple.get("compare"), Mapping):
+            return f"{settings.model.label}, {settings.effort} effort"
+        compare = simple["compare"]
+
+        def words(model_id: object, effort: object) -> str:
+            known = MODELS.get(str(model_id))
+            return f"{known.label if known is not None else model_id}, {effort} effort"
+
+        parts = [f"compare {words(compare.get('model'), compare.get('effort'))}"]
+        hard = (compare.get("hard_model"), compare.get("hard_effort"))
+        if hard[0] and hard != (compare.get("model"), compare.get("effort")):
+            parts.append(f"hard drawings {words(*hard)}")
+        blind = (
+            simple.get("blind_model") or "claude-opus-5-5",
+            simple.get("blind_effort") or "high",
+        )
+        parts.append(f"blind second look {words(*blind)}")
+        return "; ".join(parts)
 
     def _comment_numbers(self, findings: Sequence[Mapping[str, Any]]) -> dict[str, str] | None:
         """The stable comment numbers of this check's findings (#1622), from the set's earlier
