@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import hashlib
 import io
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Final
 
@@ -97,6 +97,10 @@ class WorkingCopy:
     """What was done, in plain words, one line per kind of change."""
     not_read: tuple[tuple[int, str], ...] = ()
     """Pages (from 1) left blank because they could not be put in shape exactly, each with why."""
+    facts: dict[str, Any] = field(default_factory=dict)
+    """What the original said, for the health check (`page_health`): `revisions` (saves in
+    stages), `signed`, `producer`, and per page (`pages`, keyed by the page number as text) its
+    `rotation`, `user_unit` and whether its visible area was `moved`. Plain JSON."""
 
     @property
     def sha256(self) -> str:
@@ -131,6 +135,7 @@ def working_copy(data: bytes) -> WorkingCopy:
     with pdf:
         not_read: list[tuple[int, str]] = []
         done: dict[str, list[int]] = {kind: [] for kind in _DONE}
+        facts = _original_facts(pdf, data)
         for number, page in enumerate(pdf.pages, start=1):
             try:
                 for kind in _normalise_page(page):
@@ -145,7 +150,7 @@ def working_copy(data: bytes) -> WorkingCopy:
         if not (changes or not_read):
             # Slight damage qpdf repairs on opening (a duplicated key, a missing index) is no
             # reason to rewrite a file every reader has read as it is: it stays byte for byte.
-            return WorkingCopy(data=data, changed=False)
+            return WorkingCopy(data=data, changed=False, facts=facts)
         if pdf.get_warnings():
             changes.append("the file was slightly damaged and was repaired")
         out = io.BytesIO()
@@ -155,7 +160,48 @@ def working_copy(data: bytes) -> WorkingCopy:
     if failed:
         working, more = _quarantine(working, failed)
         not_read = sorted([*not_read, *more])
-    return WorkingCopy(data=working, changed=True, changes=tuple(changes), not_read=tuple(not_read))
+    return WorkingCopy(
+        data=working,
+        changed=True,
+        changes=tuple(changes),
+        not_read=tuple(not_read),
+        facts=facts,
+    )
+
+
+def _original_facts(pdf: pikepdf.Pdf, data: bytes) -> dict[str, Any]:
+    """What the original file says about itself, before anything is changed (`WorkingCopy.facts`).
+    Read defensively: a fact that cannot be read is left out."""
+    facts: dict[str, Any] = {
+        "revisions": max(1, data.count(b"%%EOF") - (1 if pdf.is_linearized else 0))
+    }
+    try:
+        form = pdf.Root.get("/AcroForm")
+        facts["signed"] = bool(
+            isinstance(form, pikepdf.Dictionary) and int(form.get("/SigFlags", 0) or 0) & 1
+        )
+        producer = pdf.docinfo.get("/Producer") if pdf.docinfo is not None else None
+        if producer is not None:
+            facts["producer"] = str(producer)[:120]
+    except (pikepdf.PdfError, TypeError, ValueError):
+        pass
+    pages: dict[str, dict[str, Any]] = {}
+    for number, page in enumerate(pdf.pages, start=1):
+        try:
+            rotation, odd = _rotation(page)
+            media = _rect(_inherited(page, "/MediaBox"))
+            crop = _rect(_inherited(page, "/CropBox")) or media
+            unit_raw = page.obj.get("/UserUnit")
+            pages[str(number)] = {
+                "rotation": rotation,
+                "odd_rotation": odd,
+                "user_unit": float(_number(unit_raw)) if unit_raw is not None else 1.0,
+                "moved": bool(media is not None and (crop != media or media[0] or media[1])),
+            }
+        except (_PageRefused, pikepdf.PdfError, TypeError, ValueError):
+            continue
+    facts["pages"] = pages
+    return facts
 
 
 def _pages(numbers: list[int]) -> str:

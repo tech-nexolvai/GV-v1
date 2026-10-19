@@ -87,6 +87,7 @@ from app.review.assistant import ink_labels
 from app.review.assistant.finding_checks import claim_value, dimension_tokens, to_inches
 from extraction.reader import pixel_placement
 from extraction.stamp_text import carries_drawing, drawing_ink, path_ink
+from extraction.visible_text import InkPicture, ink_picture, is_shx_comment, shx_comment_text
 
 __all__ = [
     "BIG_BOX_PT2",
@@ -299,8 +300,15 @@ def _vendor_page(data: bytes, page_index: int) -> bytes:
         page = source.pages[page_index]
         out = pikepdf.new()
         out.pages.append(page)
+        # Its layers come with it, so a layer switched off stays off (`visible_text`).
+        if "/OCProperties" in source.Root:
+            layers = source.make_indirect(source.Root["/OCProperties"])
+            out.Root["/OCProperties"] = out.copy_foreign(layers)
         copy = out.pages[0]
         annotations = copy.obj.get("/Annots") or pikepdf.Array()
+        # AutoCAD's SHX text comments are the vendor's text: set as invisible text, read only
+        # where the page draws strokes under them (`visible_text`).
+        shx_comment_text(out, copy, [a for a in annotations if is_shx_comment(a)])
         copy.obj["/Annots"] = pikepdf.Array([a for a in annotations if carries_drawing(a)])
         out.flatten_annotations(mode="all")
         buffer = io.BytesIO()
@@ -399,6 +407,8 @@ def _read_page(path: Path, page_index: int) -> _Page:
         vendor = _vendor_page(path.read_bytes(), page_index)
         chars: list[_Char] = []
         paths: list[_Path] = []
+        with import_module("app.review.assistant.chat_drawing").PDFIUM_LOCK:
+            ink = ink_picture(vendor)
         with pdfplumber.open(io.BytesIO(vendor)) as document:
             page = document.pages[0]
             shown = _placement(page)
@@ -407,7 +417,7 @@ def _read_page(path: Path, page_index: int) -> _Page:
             size = (abs(corner[0] - start[0]), abs(corner[1] - start[1]))
             for char in page.chars:
                 made = _char(char, shown)
-                if made is not None and _on_page(made.box, size):
+                if made is not None and _visible(made.box, size, ink):
                     chars.append(made)
             for item in (*page.curves, *page.lines, *page.rects):
                 made_path = _path(item, shown)
@@ -431,6 +441,14 @@ def _on_page(box: tuple[float, float, float, float], size: tuple[float, float]) 
     visible area (cropped away) is not on the drawing (#1724)."""
     x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
     return 0 <= x <= size[0] and 0 <= y <= size[1]
+
+
+def _visible(
+    box: tuple[float, float, float, float], size: tuple[float, float], ink: InkPicture
+) -> bool:
+    """Whether a character is on the drawing as shown: on the page, with ink at its spot (not on
+    a switched-off layer, not invisible, not under a white-out; `visible_text`, #1745)."""
+    return _on_page(box, size) and ink.shows(box)
 
 
 def _char(
