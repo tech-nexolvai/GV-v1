@@ -183,11 +183,14 @@ type Box = tuple[float, float, float, float]
 def pack_key(listing: Sequence[Mapping[str, Any]]) -> str:
     """The pack's name: a hash of the uploads' names and SHA-256, in order. A separate architect
     file adds its role (#1719): its pages are read as the architect's, so a pack made before that
-    is made again; a set with no separate architect file keeps its name."""
+    is made again; a set with no separate architect file keeps its name. A file the front door
+    changed (`working_sha256`, #1724) adds its working copy's, so its pack is made from that copy;
+    a file it left as it was keeps the name its pack always had."""
     roles = upload_roles(listing)
     text = "\n".join(
         f"{item.get('name')}:{item.get('sha256')}"
         + (":architect" if roles.get(str(item.get("name"))) == "architect" else "")
+        + (f":{item['working_sha256']}" if item.get("working_sha256") else "")
         for item in listing
     )
     return hashlib.sha256(f"v{PACK_VERSION}\n{text}".encode()).hexdigest()[:32]
@@ -326,10 +329,32 @@ def drawings_only(folder: Path, uploads: Path, name: str) -> Path:
                     annotations: Any = page["/Annots"]
                     keep = [a for a in annotations if a.get_object().get("/Subtype") == "/Stamp"]
                     page[NameObject("/Annots")] = ArrayObject(keep)
+                _hide_gv_marks(page)
             buffer = io.BytesIO()
             writer.write(buffer)
             _write_bytes(out, buffer.getvalue())
     return out
+
+
+def _hide_gv_marks(page: Any) -> None:
+    """Empty GV Review's own overlays on a page of the drawings-only copy (`extraction/gv_marks`:
+    signed with `/PieceInfo /GVReview`, or by an older overlay's reserved name)."""
+    resources = page.get("/Resources")
+    resources = resources.get_object() if resources is not None else None
+    xobjects = resources.get("/XObject") if resources is not None else None
+    xobjects = xobjects.get_object() if xobjects is not None else None
+    if xobjects is None:
+        return
+    for name in list(xobjects.keys()):
+        form = xobjects[name].get_object()
+        piece = form.get("/PieceInfo")
+        signed = piece is not None and "/GVReview" in piece.get_object()
+        if form.get("/Subtype") == "/Form" and (signed or name in _GV_RESERVED):
+            form.set_data(b"")
+
+
+#: The resource names GV's overlays used before they were signed (`gv_marks.RESERVED_NAMES`).
+_GV_RESERVED: Final = frozenset({"/GVCloudDrawing", "/GVRedline939"})
 
 
 # ---- annotations and the page map ----------------------------------------------------------------
@@ -691,6 +716,9 @@ pages/<name>/p-NNN.png every page at 100 dpi (drawings only). Zoom to read numbe
                        <name> is the upload's name without ".pdf" (A.pdf: pages/A/p-003.png);
                        NNN is the page with three digits.
 contact/*.png          nine pages per picture, page numbers stamped: the whole set at a glance.
+health.json            per page: what kind of page it is and what was or was not read (typed or
+                       drawn lettering, hidden text not used, AutoCAD SHX text used, layers off,
+                       scanned, straightened, markups not read), with a plain sentence each.
 dims.json              every printed dimension code found, numbered per page (D17): value,
                        inches, box, side, dimension line. zoom marks: true draws the ids.
                        route "drawn": numbers drawn as pen strokes (the vendor's, and an
@@ -759,6 +787,11 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
         )
         done.append("page_map")
         _set_status(folder, "building", done, files=names)
+        try:
+            _health(folder, uploads, listing)
+            done.append("health")
+        except Exception as failed:  # noqa: BLE001 - the pack works without the health check
+            _log.warning("assistant set pack health check failed: %s", type(failed).__name__)
         for name in names:
             pages = _render_pages(copies[name], folder / "pages" / stem(name), RENDER_DPI)
             _contact_sheets(name, pages, folder / "contact")
@@ -773,6 +806,23 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
         _set_status(folder, "failed", done, files=names, error=type(failed).__name__)
         raise
     _set_status(folder, "ready", done, files=names)
+
+
+def _health(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]) -> None:
+    """`health.json`: each page's facts and plain sentences (`extraction/page_health`, #1745)."""
+    health = import_module("extraction.page_health")
+    pages: list[dict[str, Any]] = []
+    for item in listing:
+        name = str(item["name"])
+        data = (uploads / name).read_bytes()
+        with PDFIUM_LOCK:
+            document = pdfium.PdfDocument(data)
+            count = len(document)
+            document.close()
+        for number in range(1, count + 1):
+            with PDFIUM_LOCK:
+                pages.append(health.page_health(data, name, number, item))
+    _write_json(folder / "health.json", {"version": PACK_VERSION, "pages": pages})
 
 
 def _drawn_budget() -> float:
