@@ -315,16 +315,33 @@ def test_the_same_value_of_the_same_kind_is_the_same_item() -> None:
 # ---- code's rules ---------------------------------------------------------------------------------
 
 
-def test_fillers_outside_gvs_limits_are_wrong_and_inside_are_right() -> None:
+def test_fillers_outside_gvs_limits_are_a_gv_note_never_red_and_inside_are_right() -> None:
+    """DECIDED 2026-10-20 (#1763): GV's usual filler range is a note, never red, as in
+    `filler_range`; a filler goes red only by the architect or GV's site-fit rule."""
     wide = finding("F1", item="End filler width", vendor='3"+2" filler each end (round 1: 2")')
     fine = finding("F2", item="End filler width", vendor='1 1/2" filler each end', page=7)
     result = resolve([wide, fine], ResolverContext(areas=AREAS, settings=SETTINGS))
-    assert by_id(result)["F1"]["status"] == "different"
-    assert by_id(result)["F1"]["settled"]["method"] == "gv_limits"
-    assert '3"' in by_id(result)["F1"]["settled"]["how"] and '1" to 2"' in (
-        by_id(result)["F1"]["settled"]["how"]
-    )
+    noted = by_id(result)["F1"]
+    assert noted["status"] == "check" and "settled" not in noted
+    assert noted["keep_reason"] == "outside_gv_rule"
+    assert "outside GV's usual filler range" in noted["question"]
+    assert result.block["kept"] == {"outside_gv_rule": 1}
     assert by_id(result)["F2"]["status"] == "same"
+
+
+def test_a_filler_outside_gvs_range_both_print_alike_is_settled_by_print() -> None:
+    """The range note does not stop the later rules: both sides printing the same is Right."""
+    wide = finding(
+        "F1",
+        item="End filler width",
+        vendor='4" filler',
+        architect='4" filler',
+        arch_box=BOX_A,
+        vendor_box=dict(BOX_V, page=3),
+    )
+    read = ResolverContext(settings=SETTINGS, verify=_witness({2: {'4"'}, 3: {'4"'}}))
+    settled = by_id(resolve([wide], read))["F1"]
+    assert settled["status"] == "same" and settled["settled"]["method"] == "printed_vs_printed"
 
 
 def test_a_run_overall_with_fillers_markup_values_and_helper_notes_are_never_filler_wrongs() -> (
@@ -757,11 +774,12 @@ def test_the_engine_hook_folds_settles_shows_and_adds_the_block(
     settled = decision_resolver.resolve_answer(engine)
     assert [d[0] for d in engine.dropped] == ["F1"]
     assert sorted(engine.shown) == ["F2", "F3"]
-    assert engine.book.findings["F3"]["status"] == "different"
-    assert engine.book.findings["F3"]["trust_level"]
+    # GV's filler range is a note, never red (#1763): the filler stays a decision.
+    assert engine.book.findings["F3"]["status"] == "check"
+    assert engine.book.findings["F3"]["keep_reason"] == "outside_gv_rule"
     assert engine.blocks[0]["type"] == "resolver" and engine.events[0][0] == "resolver"
     assert engine.blocks[0]["resolver"]["cost_usd"] == "0.00"
-    assert {e["finding_id"] for e in settled} == {"F1", "F3"}
+    assert {e["finding_id"] for e in settled} == {"F1"}
 
 
 def test_the_engine_hook_does_nothing_without_decision_items(tmp_path: Path) -> None:
@@ -932,7 +950,7 @@ def test_every_count_shown_comes_from_the_final_list(
                 tool("r3", "report_finding", finding_input(**filler, vendor='5" filler', page=3)),
                 stop="tool_use",
             ),
-            reply(text("Two items are wrong and three need your decision; nothing is right.")),
+            reply(text("One item is wrong and three need your decision; nothing is right.")),
         ]
     )
     harness = Harness(tmp_path, provider)
@@ -949,17 +967,18 @@ def test_every_count_shown_comes_from_the_final_list(
     # Vendor to confirm (amber questions), Right.
     groups = proof_counts(live)
     # The recorded difference with no value and no spot is an internal note (#1650), not counted.
-    assert shown_counts(live)["decision"] == 1 and shown_counts(live)["wrong"] == 2
+    # GV's filler range is a note, never red (#1763): the 5" filler is a decision.
+    assert shown_counts(live)["decision"] == 2 and shown_counts(live)["wrong"] == 1
     final = {
         "wrong": groups["clouded"],
         "decision": groups["not_compared"],
         "right": groups["right"],
     }
-    assert final == {"wrong": 2, "decision": 1, "right": 0}
+    assert final == {"wrong": 1, "decision": 2, "right": 0}
     # The AI's words.
     words = " ".join(b["text"] for b in outcome.blocks if b["type"] == "text")
-    assert "Two items are wrong and one needs your decision" in words
-    assert outcome.text.startswith("Two items are wrong and one needs your decision")
+    assert "One item is wrong and two need your decision" in words
+    assert outcome.text.startswith("One item is wrong and two need your decision")
     # The resolver block counts by status, as it settled them.
     resolver = next(b["resolver"] for b in outcome.blocks if b["type"] == "resolver")
     assert resolver["after"] == {k: shown_counts(live)[k] for k in ("wrong", "decision", "right")}
@@ -1036,8 +1055,9 @@ def test_arithmetic_and_rule_settlements_record_their_witness() -> None:
         printed_total="80",
         vendor="80",
     )
-    wide = finding("F2", item="End filler width", vendor='5" filler', page=7)
-    result = resolve([slip, wide], ResolverContext(settings=SETTINGS))
+    # Inside GV's filler range (outside it is a note, never a settlement: #1763).
+    fine = finding("F2", item="End filler width", vendor='1 1/2" filler', page=7)
+    result = resolve([slip, fine], ResolverContext(settings=SETTINGS))
     sums, rule = _judged(result, "F1"), _judged(result, "F2")
     assert sums["checks"]["arithmetic"] == "does_not_add_up" and "arithmetic" in sums["witnesses"]
     assert rule["checks"]["rule"] == "agrees" and "rule" in rule["witnesses"]
