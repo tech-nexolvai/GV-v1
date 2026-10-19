@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 from collections.abc import Mapping, Sequence
@@ -38,6 +39,7 @@ from decimal import Decimal, InvalidOperation
 from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
+from uuid import uuid4
 
 from app.review.assistant.chat_request import MODELS, ChatModel
 from app.review.assistant.chat_summary import CODE_SUMMARY_NOTE, code_summary
@@ -47,20 +49,39 @@ from app.review.assistant.full_check_advocate import code_checks, decide, ink_co
 from app.review.assistant.simple_check import verify as verify_module
 from app.review.assistant.simple_check.blind import BlindSettings, look_all
 from app.review.assistant.simple_check.schema import CompareOutcome, WorkItem
-from app.review.assistant.simple_check.verify import CREATED_BY, Item, Pack, Verified
+from app.review.assistant.simple_check.verify import (
+    CREATED_BY,
+    BlindAnswer,
+    Item,
+    Pack,
+    ValueReader,
+    Verified,
+    with_blind,
+)
 
 if TYPE_CHECKING:
     from app.review.assistant.chat_engine import ChatEngine, MessageOutcome
 
-__all__ = ["SimpleOptions", "run", "work_item_rows"]
+__all__ = [
+    "SIMPLE_DIR",
+    "SimpleOptions",
+    "load_blind",
+    "load_outcomes",
+    "replay",
+    "run",
+    "work_item_rows",
+]
 
 _log = logging.getLogger(__name__)
 
 #: The compare call's prompt id on the Usage page.
 COMPARE_PROMPT_ID: Final = "review-assistant-chat-simple-compare-{provider}-{harness}"
-#: One compare call held for the runaway guard (prompt and reply tokens), before the next starts.
-_GUARD_PROMPT_TOKENS: Final = 30_000
-_GUARD_REPLY_TOKENS: Final = 16_000
+#: What a compare call's cost is held at while it runs (`_guarded`): its pictures' tokens, the
+#: text of the request and the cached system prompt, and this much reply (thinking and the form).
+_REQUEST_TEXT_TOKENS: Final = 8_000
+_REPLY_HOLD_TOKENS: Final = 16_000
+#: A chat's simple-check runs, each with its saved answers (`<chat>/simple/<run>/`).
+SIMPLE_DIR: Final = "simple"
 #: The order findings are recorded in (the finding book holds `MAX_FINDINGS`): what matters first.
 _ORDER: Final = {"red": 0, "not_compared": 1, "right": 2}
 #: Who made a finding the run judges with the code checks (everything but its own).
@@ -80,6 +101,9 @@ class SimpleOptions:
     """`compare.CompareSettings`'s fields."""
     blind: BlindSettings = field(default_factory=BlindSettings)
     pilot: int | None = None
+    replay: str | None = None
+    """A run folder of this chat (`simple/<run>`): its saved compare answers and blind looks are
+    used instead of model calls ($0); a drawing with no saved answer is not compared."""
 
     @classmethod
     def of(cls, raw: object) -> SimpleOptions:
@@ -96,6 +120,7 @@ class SimpleOptions:
                 str(given.get("blind_effort") or "high"),
             ),
             pilot=int(pilot) if isinstance(pilot, int) and pilot > 0 else None,
+            replay=str(given["replay"]) if given.get("replay") else None,
         )
 
 
@@ -154,6 +179,18 @@ class _Run:
     pack: Pack | None = None
     page_map: Mapping[str, Any] | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
+    run_dir: Path | None = None
+    """Where this run's compare answers and blind looks are saved (`<chat>/simple/<run>`)."""
+    reserved: int = 0
+    """What the compare calls in flight may still cost (millionths of $): the runaway guard counts
+    it as spent, so the calls started never pass the cap together."""
+    reservations: dict[str, int] = field(default_factory=dict)
+    refused: set[str] = field(default_factory=set)
+    """Drawings not started because the runaway guard would have been passed."""
+    saved_blind: dict[str, dict[str, Any]] = field(default_factory=dict)
+    blind_skipped: str | None = None
+    """Why the red candidates got no blind look (a stop, no money), when they did not."""
+    blind_skipped_count: int = 0
 
     # -- the run --
 
@@ -211,18 +248,22 @@ class _Run:
         engine.add_code_findings()
         with engine.timings.phase("advocate"):
             self._judge_code_findings()
+        self._open_run_dir()
         if not engine.cancel.is_set():
-            self._compare_all(folder)
-        if engine.cancel.is_set():
-            return self._finish("cancelled")
+            if self.options.replay:
+                self._load_saved()
+            else:
+                self._compare_all(folder)
+        # A stop (the reviewer's, or the runaway guard's) never throws away what was paid for:
+        # every answered drawing is verified and recorded; only the blind looks wait for money.
         with engine.timings.phase("verify"):
             verified = self._verify_all()
-        if engine.cancel.is_set():
-            return self._finish("cancelled")
         with engine.timings.phase("blind"):
             verified = self._blind(verified)
         with engine.timings.phase("finish_checks"):
             self._record(verified)
+        if engine.cancel.is_set():
+            return self._finish("cancelled")
         return self._finish("cost_cap" if self.cap_hit else None)
 
     # -- 1. the work list --
@@ -463,7 +504,7 @@ class _Run:
                 compare.compare_all(
                     self.compared,
                     provider=engine.provider,
-                    source=source.pictures,
+                    source=self._guarded(source.pictures, settings),
                     system=system,
                     settings=settings,
                     stop=self.stop,
@@ -472,6 +513,32 @@ class _Run:
         finally:
             self.stop.set()
             watcher.join(timeout=2)
+
+    def _guarded(self, draw: Any, settings: Any) -> Any:
+        """The compare call's picture source, guarded: a drawing starts only when what it may
+        cost, with what the calls in flight may still cost, fits the per-answer cap (and the set's
+        budget). Its cost is held until its answer is charged."""
+        engine = self.engine
+
+        def pictures(item: WorkItem) -> Any:
+            if self.stop.is_set():
+                raise _NotStarted("the check was stopped")
+            sent = draw(item)
+            model, _effort = settings.for_item(item)
+            tokens = _REQUEST_TEXT_TOKENS + sum(int(one.picture.tokens) for one in sent)
+            hold = engine._price(model, tokens, _REPLY_HOLD_TOKENS) or 0
+            with self.lock:
+                over = engine._over(self.reserved + hold)
+                if over is not None:
+                    self.cap_hit = self.cap_hit or over
+                    self.refused.add(item.id)
+                    self.stop.set()
+                    raise _NotStarted("the per-answer cap would be passed")
+                self.reserved += hold
+                self.reservations[item.id] = hold
+            return sent
+
+        return pictures
 
     def _watch_cancel(self) -> None:
         while not self.stop.wait(0.5):
@@ -483,7 +550,13 @@ class _Run:
         seen, the runaway guard checked, the progress moved on."""
         engine = self.engine
         with self.lock:
+            self.reserved -= self.reservations.pop(outcome.work_item, 0)
+            if outcome.work_item in self.refused:
+                outcome = outcome.model_copy(
+                    update={"reason": "not started: the per-answer cap would be passed"}
+                )
             self.outcomes[outcome.work_item] = outcome
+        self._save_outcome(outcome)
         model = _model(outcome.model) or _model(outcome.asked_model)
         if model is not None and outcome.usage:
             self._charge(model, outcome)
@@ -500,12 +573,6 @@ class _Run:
                 for picture in outcome.pictures
             ]
             engine.tools.seen.extend(seen)
-        guard_model = _model(self.options.compare.get("model")) or MODELS["claude-sonnet-5-5"]
-        estimate = engine._price(guard_model, _GUARD_PROMPT_TOKENS, _GUARD_REPLY_TOKENS) or 0
-        over = engine._over(estimate)
-        if over is not None and not self.stop.is_set():
-            self.cap_hit = over
-            self.stop.set()
         self._progress()
 
     def _charge(self, model: ChatModel, outcome: CompareOutcome) -> None:
@@ -569,12 +636,102 @@ class _Run:
         return found
 
     def _blind(self, verified: list[tuple[Verified, Item]]) -> list[tuple[Verified, Item]]:
+        """Each red candidate's blind look: the saved one on a replay; none after a stop or when
+        the money ran out (the item is then Not compared, "the blind look was not made"); else
+        one call each. Every look is saved with the run."""
         candidates = [(v, item) for v, item in verified if v.needs_blind]
         if not candidates:
             return verified
-        looked = look_all(self.engine, candidates, self.options.blind)
+        engine = self.engine
+        looked: list[Verified]
+        if self.options.replay:
+            looked = [_with_saved(v, self.saved_blind.get(v.key)) for v, _item in candidates]
+        elif engine.cancel.is_set() or self.cap_hit is not None:
+            why = (
+                "the check was stopped"
+                if engine.cancel.is_set()
+                else "the per-answer cap was reached"
+            )
+            self.blind_skipped, self.blind_skipped_count = why, len(candidates)
+            looked = [with_blind(v, None, why) for v, _item in candidates]
+        else:
+            looked = look_all(engine, candidates, self.options.blind)
+        for done in looked:
+            self._save_blind(done)
         after = {id(old): new for (old, _item), new in zip(candidates, looked, strict=True)}
         return [(after.get(id(v), v), item) for v, item in verified]
+
+    # -- saved answers (re-verified at $0 later: `replay`) --
+
+    def _open_run_dir(self) -> None:
+        root = self.engine.tools.workspace.root
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+        self.run_dir = root / SIMPLE_DIR / f"{stamp}-{uuid4().hex[:8]}"
+        try:
+            (self.run_dir / "compare").mkdir(parents=True, exist_ok=True)
+            (self.run_dir / "blind").mkdir(parents=True, exist_ok=True)
+            (self.run_dir / "run.json").write_text(
+                json.dumps(
+                    {
+                        "items": [item.id for item in self.compared],
+                        "skipped": self.skipped,
+                        "replay_of": self.options.replay,
+                        "compare": dict(self.options.compare),
+                        "blind": {
+                            "model": self.options.blind.model,
+                            "effort": self.options.blind.effort,
+                        },
+                    },
+                    indent=1,
+                ),
+                encoding="utf-8",
+            )
+        except OSError:
+            _log.exception("simple check: the run folder could not be made")
+            self.run_dir = None
+
+    def _save_outcome(self, outcome: CompareOutcome) -> None:
+        if self.run_dir is None:
+            return
+        try:
+            _write(
+                self.run_dir / "compare" / f"{_safe(outcome.work_item)}.json",
+                outcome.model_dump_json(indent=1),
+            )
+        except OSError:
+            _log.exception("simple check: %s's answer could not be saved", outcome.work_item)
+
+    def _save_blind(self, done: Verified) -> None:
+        if self.run_dir is None:
+            return
+        pairing = done.finding.get("pairing") if isinstance(done.finding, Mapping) else None
+        look = pairing.get("advocate") if isinstance(pairing, Mapping) else None
+        record = {"key": done.key, "look": look, "outcome": done.outcome, "reason": done.reason}
+        try:
+            _write(self.run_dir / "blind" / f"{_safe(done.key)}.json", json.dumps(record, indent=1))
+        except OSError:
+            _log.exception("simple check: %s's blind look could not be saved", done.key)
+
+    def _load_saved(self) -> None:
+        """A replay ($0): the saved answers of an earlier run of this chat, as if just answered (no
+        model call; nothing charged again)."""
+        source = _replay_dir(self.engine.tools.workspace.root, self.options.replay)
+        found = load_outcomes(source) if source is not None else {}
+        self.saved_blind = load_blind(source) if source is not None else {}
+        for item in self.compared:
+            outcome = found.get(item.id)
+            if outcome is None:
+                outcome = CompareOutcome(
+                    work_item=item.id,
+                    status="failed",
+                    reason="no saved answer in the run replayed",
+                    asked_model="",
+                    effort="",
+                )
+            else:
+                # Replayed, not paid again: its pictures still count as seen.
+                outcome = outcome.model_copy(update={"usage": {}, "cost_usd": 0.0})
+            self._on_outcome(outcome)
 
     # -- 5. the findings and the rows --
 
@@ -681,7 +838,13 @@ class _Run:
         index = engine._add_block({"type": "text", "text": text, "by": "code"})
         engine.emit("text_delta", {"index": index, "text": text, "by": "code"})
         rows = work_item_rows(self.items, self.outcomes, self.skipped)
-        engine._add_block({"type": "work_items", "work_items": rows})
+        engine._add_block(
+            {
+                "type": "work_items",
+                "work_items": rows,
+                "run": self.run_dir.name if self.run_dir is not None else None,
+            }
+        )
         try:
             engine._accuracy()
         except Exception:  # noqa: BLE001 - stored without its score
@@ -775,6 +938,16 @@ class _Run:
             )
         else:
             lines.append(f"Every drawing in the work list was compared ({answered} drawings).")
+        if stopped == "cancelled" and why is None:
+            lines.append(
+                f"**Stopped: {answered} of {len(self.compared)} drawings were compared and "
+                "verified; the rest were not started.**"
+            )
+        if self.blind_skipped:
+            lines.append(
+                f"{self.blind_skipped_count} possible differences got no blind second look "
+                f"({self.blind_skipped}): they are Not compared, never red."
+            )
         pilot = [why for why in self.skipped.values() if why.startswith("a pilot run")]
         if pilot:
             lines.append(
@@ -787,6 +960,11 @@ class _Run:
                 "answer's item limit)."
             )
         lines.append(f"This check used ${engine.spent / _MICROS:.2f}.")
+        if self.run_dir is not None and self.outcomes:
+            lines.append(
+                f"Every answer is saved with the chat (run {self.run_dir.name}): it can be checked "
+                "again at no cost."
+            )
         return "\n\n".join(lines)
 
 
@@ -811,6 +989,64 @@ def _wait_for_pack(folder: Path, cancel: threading.Event) -> str | None:
             return "the drawing set's pack (labels, pairs) was still being made"
         if cancel.wait(_PACK_POLL_SECONDS):
             return None
+
+
+class _NotStarted(RuntimeError):
+    """A drawing the run did not start (a stop, or the runaway guard)."""
+
+
+def _safe(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", name)[:120] or "item"
+
+
+def _write(path: Path, text: str) -> None:
+    held = path.with_name(f".{path.name}.{uuid4().hex[:6]}")
+    held.write_text(text, encoding="utf-8")
+    held.replace(path)
+
+
+def _replay_dir(root: Path, run: str | None) -> Path | None:
+    """The run folder a replay names, inside this chat's `simple/` folder only."""
+    if not run or not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", run):
+        return None
+    folder = root / SIMPLE_DIR / run
+    return folder if folder.is_dir() else None
+
+
+def load_outcomes(run_dir: Path) -> dict[str, CompareOutcome]:
+    """A run's saved compare answers, by work item."""
+    out: dict[str, CompareOutcome] = {}
+    for path in sorted((run_dir / "compare").glob("*.json")):
+        try:
+            outcome = CompareOutcome.model_validate_json(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            _log.warning("simple check: saved answer %s not read", path.name)
+            continue
+        out[outcome.work_item] = outcome
+    return out
+
+
+def load_blind(run_dir: Path) -> dict[str, dict[str, Any]]:
+    """A run's saved blind looks, by the candidate's key."""
+    out: dict[str, dict[str, Any]] = {}
+    for path in sorted((run_dir / "blind").glob("*.json")):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(record, dict) and record.get("key"):
+            out[str(record["key"])] = record
+    return out
+
+
+def _with_saved(candidate: Verified, saved: Mapping[str, Any] | None) -> Verified:
+    """A candidate after its saved blind look (a replay): the same answer, never a new call."""
+    look = saved.get("look") if isinstance(saved, Mapping) else None
+    if not isinstance(look, Mapping):
+        return with_blind(candidate, None, "no saved blind look in the run replayed")
+    if look.get("failed"):
+        return with_blind(candidate, None, str(look["failed"]))
+    return with_blind(candidate, BlindAnswer.from_dict(look))
 
 
 def _model(name: object) -> ChatModel | None:
@@ -863,6 +1099,77 @@ def _row(one: Verified, why: str | None = None) -> dict[str, Any]:
         "needs": "the architect's size for it" if one.reason_code == "nothing_to_compare" else "",
         "scope": "set",
     }
+
+
+def pack_ink(pack_dir: Path, main_file: str | None = None) -> Any:
+    """A label's own ink on the pack's markup-free copy (`verify._ink_check`'s `ink`)."""
+    from app.review.assistant import set_pack
+
+    def ink(label: Mapping[str, Any]) -> tuple[int, float] | None:
+        name = str(label.get("file") or main_file or "")
+        pdf = pack_dir / f"{set_pack.stem(name)}_drawings_only.pdf"
+        try:
+            x0, y0, x1, y1 = (float(v) for v in label.get("box") or ())
+            crop = set_pack.crop_picture(
+                pdf, int(label["page"]), (x0, y0, x1, y1), 300, cache=pack_dir / set_pack.HIRES
+            )
+            return ink_colour(crop.png)
+        except Exception:  # noqa: BLE001 - unknown ink: not red
+            return None
+
+    return ink
+
+
+def pack_reader(pack_dir: Path) -> ValueReader:
+    """`verify_value` at a spot of the pack's markup-free copy (the same reading as the upload:
+    `verify_value` leaves GV's markup out either way)."""
+    from app.review.assistant import set_pack
+
+    verify_value = import_module("app.review.assistant.verify_value")
+
+    def read(file: str, page: int, box: Sequence[float], expected: str) -> dict[str, Any]:
+        pdf = pack_dir / f"{set_pack.stem(file)}_drawings_only.pdf"
+        spot = {"x0": box[0], "y0": box[1], "x1": box[2], "y1": box[3]}
+        found = verify_value.verify_value(
+            pdf, page, spot, expected, page_cache=pack_dir / set_pack.HIRES
+        )
+        return dict(found.as_dict())
+
+    return read
+
+
+def replay(
+    run_dir: Path,
+    pack_dir: Path,
+    *,
+    main_file: str | None = None,
+    products: Sequence[str] | None = None,
+    read: ValueReader | None = None,
+    ink: Any = None,
+) -> dict[str, list[Verified]]:
+    """A saved run verified again at $0 (no model call): each answered work item's items, by
+    work item id, after the run's own saved blind looks (a candidate with none saved stays Not
+    compared). The same code as the run: the pack's work list and facts, `verify_answer`, the
+    markup-free copy's ink and `verify_value` readings unless others are given."""
+    worklist = import_module("app.review.assistant.simple_check.worklist")
+    items = worklist.build_worklist(pack_dir, main_file).items
+    pack = Pack.from_folder(pack_dir, main_file)
+    outcomes = load_outcomes(run_dir)
+    saved = load_blind(run_dir)
+    looks = ink if ink is not None else pack_ink(pack_dir, main_file)
+    reader = read if read is not None else pack_reader(pack_dir)
+    out: dict[str, list[Verified]] = {}
+    for item in items:
+        outcome = outcomes.get(item.id)
+        if outcome is None or outcome.status != "ok" or outcome.result is None:
+            continue
+        found = verify_module.verify_answer(
+            outcome.result, Item.of(item), pack, ink=looks, read=reader, products=products
+        )
+        out[item.id] = [
+            _with_saved(v, saved.get(v.key)) if v.needs_blind else v for v in found.items
+        ]
+    return out
 
 
 def run(engine: ChatEngine) -> MessageOutcome:

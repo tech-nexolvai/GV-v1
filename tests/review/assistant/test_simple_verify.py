@@ -258,7 +258,7 @@ def test_a_candidate_is_never_red_without_the_blind_look() -> None:
     assert proof.proof_group(stored) == "not_compared"
     failed = with_blind(found, None, "the call failed")
     assert failed.outcome == "not_compared"
-    assert "could not be made (the call failed)" in failed.reason
+    assert "was not made (the call failed)" in failed.reason
     assert proof.proof_group(_stored(failed.finding)) == "not_compared"
 
 

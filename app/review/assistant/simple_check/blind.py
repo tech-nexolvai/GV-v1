@@ -328,6 +328,8 @@ def look(
             output_format=BLIND_SCHEMA,
         )
     except Exception as failed:  # noqa: BLE001 - not looked at: the item stays Not compared
+        if engine.cancel.is_set():
+            return None, "the check was stopped"
         _log.warning("simple check blind look failed: %s", type(failed).__name__)
         return None, "the call failed"
     if reply.stop_reason == "refusal":

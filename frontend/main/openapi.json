@@ -6462,6 +6462,19 @@
             "description": "Active product ids from `GET /products` (e.g. countertop, cabinet): a strict scope, so only these products are checked, ruled, counted and drawn (every active product = All). Not given: every active product (All is the default).",
             "title": "Products"
           },
+          "replay": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z0-9._-]{1,80}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The simple full check only: an earlier run of this chat (its folder name under `simple/`, said in the work-items block) whose saved compare answers and blind looks are verified again, with no model call ($0).",
+            "title": "Replay"
+          },
           "task": {
             "anyOf": [
               {
@@ -9283,6 +9296,18 @@
       },
       "ChatWorkItemsBlock": {
         "properties": {
+          "run": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The run's folder (its saved compare answers and blind looks): name it in `replay` to verify it again at $0.",
+            "title": "Run"
+          },
           "type": {
             "const": "work_items",
             "title": "Type",

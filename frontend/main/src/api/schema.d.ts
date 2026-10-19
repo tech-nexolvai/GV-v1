@@ -5478,6 +5478,11 @@ export interface components {
              * @description Active product ids from `GET /products` (e.g. countertop, cabinet): a strict scope, so only these products are checked, ruled, counted and drawn (every active product = All). Not given: every active product (All is the default).
              */
             products?: string[] | null;
+            /**
+             * Replay
+             * @description The simple full check only: an earlier run of this chat (its folder name under `simple/`, said in the work-items block) whose saved compare answers and blind looks are verified again, with no model call ($0).
+             */
+            replay?: string | null;
             /** @description #1551: the reviewer's correction of how the app understood the question (Edit on the 'Understood as' line); the question's words are sent unchanged in `text`. */
             task?: components["schemas"]["ChatTaskSpecIn"] | null;
             /**
@@ -6618,6 +6623,11 @@ export interface components {
         };
         /** ChatWorkItemsBlock */
         ChatWorkItemsBlock: {
+            /**
+             * Run
+             * @description The run's folder (its saved compare answers and blind looks): name it in `replay` to verify it again at $0.
+             */
+            run?: string | null;
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}

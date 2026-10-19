@@ -207,3 +207,16 @@ def test_a_run_may_name_its_own_compare_model_and_effort() -> None:
                 "compare_model": "claude-sonnet-5-5",
             }
         )
+
+
+def test_a_replay_names_a_saved_run_of_the_chat() -> None:
+    base = {"model": "claude-opus-5-5", "effort": "high", "thinking": True, "mode": "full_check"}
+    assert ChatMessageIn.model_validate({**base, "replay": "20261019-101500-ab12cd34"}).replay
+    for bad in ("../other-chat", "a/b", ""):
+        with pytest.raises(ValidationError):
+            ChatMessageIn.model_validate({**base, "replay": bad})
+    with pytest.raises(ValidationError):
+        ChatMessageIn.model_validate(
+            {**{k: v for k, v in base.items() if k != "mode"}, "text": "hi", "replay": "run-1"}
+        )
+    assert SimpleOptions.of({"replay": "run-1"}).replay == "run-1"

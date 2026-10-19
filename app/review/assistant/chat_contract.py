@@ -205,6 +205,13 @@ class ChatMessageIn(BaseModel):
         default=None,
         description="The simple full check only: this run's compare call effort, for every drawing.",
     )
+    replay: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9._-]{1,80}$",
+        description="The simple full check only: an earlier run of this chat (its folder name under "
+        "`simple/`, said in the work-items block) whose saved compare answers and blind looks are "
+        "verified again, with no model call ($0).",
+    )
 
     @model_validator(mode="after")
     def _a_question_or_a_full_check(self) -> ChatMessageIn:
@@ -212,8 +219,8 @@ class ChatMessageIn(BaseModel):
             raise ValueError("text is needed for a chat message")
         if self.pilot is not None and self.mode != "full_check":
             raise ValueError("pilot goes with a full check only")
-        if (self.compare_model or self.compare_effort) and self.mode != "full_check":
-            raise ValueError("compare_model and compare_effort go with a full check only")
+        if (self.compare_model or self.compare_effort or self.replay) and self.mode != "full_check":
+            raise ValueError("compare_model, compare_effort and replay go with a full check only")
         if self.plan_answers is not None:
             if self.mode != "full_check":
                 raise ValueError("plan_answers go with a full check only")
@@ -1421,6 +1428,11 @@ class ChatWorkItemsBlock(BaseModel):
 
     type: Literal["work_items"]
     work_items: list[ChatWorkItemOut]
+    run: str | None = Field(
+        default=None,
+        description="The run's folder (its saved compare answers and blind looks): name it in "
+        "`replay` to verify it again at $0.",
+    )
 
 
 class ChatProgressBlock(BaseModel):
