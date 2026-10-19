@@ -88,6 +88,7 @@ __all__ = [
     "comment_labels",
     "corrections_of",
     "incomplete_reason",
+    "internal_report",
     "labelled",
     "letter_of",
     "make_package_file",
@@ -839,12 +840,13 @@ _CLOUD_ENDING: Final = " - GV cloud drawing.pdf"
 _NOT_COMPARED: Final = " - Not compared."
 
 
+def internal_report(name: str) -> bool:
+    """Whether a made file is GV's own check report (never in the vendor's package)."""
+    return name.endswith((_REPORT_ENDING, f" - {REPORT_IN_PACKAGE}.pdf"))
+
+
 def _member_order(name: str) -> int:
-    if name.endswith(_CLOUD_ENDING):
-        return 0
-    if name.endswith((_REPORT_ENDING, f" - {REPORT_IN_PACKAGE}.pdf")):
-        return 9
-    return 5
+    return 0 if name.endswith(_CLOUD_ENDING) else 5
 
 
 def make_package_file(
@@ -856,9 +858,11 @@ def make_package_file(
 ) -> Any:
     """The send-ready package of a full check, written to `out` as one zip
     (`chat_findings.MarkupFile`): the files the check made (`made`: each one's name and path: the
-    GV cloud drawing, the Not-compared list, the check report), the comment letter and the issue
-    register, both made here from the same final `findings` and `context` as the cloud drawing.
-    Raises `LookupError` when the chat has no copy of the set's PDFs."""
+    GV cloud drawing, the Not-compared list), the comment letter and the issue register, both made
+    here from the same final `findings` and `context` as the cloud drawing. GV's own check report
+    (its AI and trust columns, the model, rule check ids) never goes in, whoever hands it over: it
+    stays a file of the chat for GV (orchestrator, 2026-10-19: nothing internal reaches the
+    vendor). Raises `LookupError` when the chat has no copy of the set's PDFs."""
     chat = import_module("app.review.assistant.chat_findings")
     registry = import_module("vocabulary.product_registry").registry()
     main = chat.main_upload(chat.read_listing(workspace))
@@ -866,17 +870,7 @@ def make_package_file(
         raise LookupError("no uploads")
     name = str(main["name"])
     members = sorted(
-        (
-            Member(
-                (
-                    given.replace(_REPORT_ENDING, f" - {REPORT_IN_PACKAGE}.pdf")
-                    if given.endswith(_REPORT_ENDING)
-                    else given
-                ),
-                path,
-            )
-            for given, path in made
-        ),
+        (Member(given, path) for given, path in made if not internal_report(given)),
         key=lambda member: _member_order(member.name),
     )
     stem = name[:-4] if name.lower().endswith(".pdf") else name

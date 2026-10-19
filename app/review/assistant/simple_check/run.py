@@ -690,6 +690,9 @@ class _Run:
         looked: list[Verified]
         if self.options.replay:
             looked = [_with_saved(v, self.saved_blind.get(v.key)) for v, _item in candidates]
+            self.blind_failed = sum(
+                1 for done in looked if done.outcome != "red" and _no_look(done)
+            )
         elif engine.cancel.is_set() or self.cap_hit is not None:
             why = (
                 "the check was stopped"
@@ -926,6 +929,14 @@ class _Run:
             # Nothing was compared (no vendor drawing, or none of the products picked): no review
             # result says the drawings were checked.
             engine.incomplete_note = self._nothing_compared()
+        elif self.blind_failed:
+            # A failed second look counts like a failed compare call (orchestrator, 2026-10-19):
+            # an outage, not the drawings, left these possible differences undecided.
+            engine.incomplete_note = (
+                f"{self.blind_failed} possible "
+                f"{'difference' if self.blind_failed == 1 else 'differences'} could not get "
+                "their second check (the service did not answer); check again to settle them"
+            )
         self._cover_answered(failed)
         try:
             engine._store_scope()
@@ -1060,6 +1071,7 @@ class _Run:
             or stopped is not None
             or bool(pilot)
             or not self.compared
+            or bool(self.blind_failed)
         )
         text = "\n".join(
             (NOT_FINISHED_NEXT if unfinished and line.startswith("Next:") else line)
@@ -1098,8 +1110,8 @@ class _Run:
         if self.blind_failed:
             lines.append(
                 f"{self.blind_failed} possible differences could not get their blind second look "
-                "(the call failed or its reply was unusable): they are Not compared, never red. "
-                "Check again to settle them."
+                "(the call failed or its reply was unusable): they are Not compared, never red, "
+                "and the check is not for sending. Check again to settle them."
             )
         if pilot:
             lines.append(
