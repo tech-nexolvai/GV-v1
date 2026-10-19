@@ -116,7 +116,7 @@ def test_rows_that_are_not_findings_reach_the_not_compared_list() -> None:
     assert set(by_reason) == {"nothing_to_compare", "not_proved"}
     assert by_reason["nothing_to_compare"].page == 23
     assert "label D7" in by_reason["nothing_to_compare"].item
-    assert "item limit" in by_reason["not_proved"].item
+    assert "too many items in one check" in by_reason["not_proved"].item
 
 
 def test_the_progress_line_counts_drawings() -> None:
