@@ -730,6 +730,15 @@ export function thoughtFor(seconds: number | null): string {
   return `Thought for ${Math.floor(whole / 60)}m ${whole % 60}s`;
 }
 
+/**
+ * Open (#1684): a PDF is asked for inline, so the browser shows it instead of saving it again (the
+ * server serves only PDFs inline; anything else still downloads). Download keeps the plain link.
+ */
+export function openHref(file: { mime?: string | null; name: string }, href: string): string {
+  const pdf = file.mime === 'application/pdf' || /\.pdf$/i.test(file.name);
+  return pdf ? `${href}${href.includes('?') ? '&' : '?'}inline=true` : href;
+}
+
 /** A file's size in words: "820 KB", "1.2 MB". */
 export function fileSize(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return '';

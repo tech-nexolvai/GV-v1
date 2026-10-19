@@ -15,7 +15,7 @@ import { chatPaths, type ChatEffort, type ChatFile, type ChatFinding, type ChatF
 import { coverageCounts, findingCounts, isNarrowAnswer, isShortAnswer, NO_FILTER, sectionOrder, type FindingFilter } from '@/lib/chat-findings';
 import { checkedWords, fullCheckBubble, fullCheckFiles, previewPage, productsWords, withoutCodeNote } from '@/lib/chat-full-check';
 import { useReducedMotion } from '@/lib/chat-motion';
-import { asShown, proofCounts } from '@/lib/chat-proof';
+import { asShown, proofCounts, proofGroup } from '@/lib/chat-proof';
 import { EFFORT_WORDS } from '@/lib/chat-settings';
 import { downloadFile, downloadFindingsCsv, markupFailureWords } from '@/lib/chat-exports';
 import { hasTrust, roundCounts } from '@/lib/chat-trust';
@@ -361,7 +361,9 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
 
   // PATH step 5: Agree / Not a problem (optimistic; deciding again is the undo) on every finished
   // answer. A server without the route (404 / 405) hides the buttons again and says so once.
-  const actionable = findings.filter((finding) => finding.status !== 'same');
+  // A finished full check (#1684) counts as its screen shows: every Wrong and every Nothing to compare
+  // (a "same" seen on one side only is Not compared, and can be made Wrong too).
+  const actionable = fullCheck && !running ? findings.filter((finding) => proofGroup(finding, null) !== 'right') : findings.filter((finding) => finding.status !== 'same');
   const [decisions, setDecisions] = useState<Record<string, FindingDecision>>({});
   const [decideFailed, setDecideFailed] = useState<string | null>(null);
   const [decisionsOff, setDecisionsOff] = useState(false);
@@ -529,7 +531,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
           {/* PATH 4.2: the three numbers, pages and accuracy (each once). */}
           {(findings.length > 0 || coverage) && <ResultNumbers counts={counts} coverage={coverage} accuracy={message.accuracy} onPick={jumpTo} />}
           {/* PATH 4.3: the cloud drawing, the main output. */}
-          <FullCheckFiles cloud={made.cloud} report={made.report} notCompared={made.notCompared} chatId={chatId} page={previewPage(findings)} totalPages={coverage ? coverageCounts(coverage).total : null} counts={counts} proof={findings.length ? proofCounts(findings, decisionOf) : null} review={review} packaged={made.pkg !== null} />
+          <FullCheckFiles cloud={made.cloud} report={made.report} notCompared={made.notCompared} chatId={chatId} page={previewPage(findings)} totalPages={coverage ? coverageCounts(coverage).total : null} counts={counts} proof={findings.length ? proofCounts(findings, decisionOf) : null} review={review} packaged={made.pkg !== null} unsent={message.review_action?.action === 'not_for_sending'} />
           {/* #1622: the send-ready package, right after the cloud drawing. */}
           {made.pkg && <PackageCard pkg={made.pkg} chatId={chatId} action={message.review_action ?? null} hasReport={made.report !== null} hasNotCompared={made.notCompared.length > 0} />}
           {/* PATH 4.4 to 4.6: What's wrong, Right (folded), Nothing to compare (folded, #1619). */}

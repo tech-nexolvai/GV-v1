@@ -149,7 +149,13 @@ describe('a full-check answer', () => {
 
     // 3. The cloud drawing, with the check report inside its card.
     const cloud = within(node).getByRole('region', { name: 'Cloud drawing' });
-    expect(within(cloud).getByRole('link', { name: 'Open cloud drawing' }).getAttribute('href')).toBe('/api/v1/chats/c-1/files/f-c');
+    // Open shows the PDF in the browser (#1684); Download saves it.
+    expect(within(cloud).getByRole('link', { name: 'Open cloud drawing' }).getAttribute('href')).toBe('/api/v1/chats/c-1/files/f-c?inline=true');
+    expect(within(cloud).getByRole('link', { name: 'Open the cloud drawing' }).getAttribute('href')).toBe('/api/v1/chats/c-1/files/f-c?inline=true');
+    expect(within(cloud).getByRole('link', { name: 'Download vendor-clouded.pdf' }).getAttribute('href')).toBe('/api/v1/chats/c-1/files/f-c');
+    expect(within(cloud).getByRole('link', { name: 'Open check-report.pdf' }).getAttribute('href')).toBe('/api/v1/chats/c-1/files/f-r?inline=true');
+    expect(within(cloud).getByRole('link', { name: 'Download check-report.pdf' }).getAttribute('href')).toBe('/api/v1/chats/c-1/files/f-r');
+    expect(cloud.textContent).toContain('Ready to send: a red cloud at each wrong value');
     expect(cloud.querySelector('[data-slot="chat-check-report"]')).toBeTruthy();
     // The cloud drawing is the marked-up PDF: no separate button, and no plain file card for either PDF.
     expect(within(node).queryByRole('button', { name: 'Download marked-up PDF' })).toBeNull();
@@ -205,6 +211,29 @@ describe('a full-check answer', () => {
     expect(cloud.querySelector('[data-slot="chat-cloud-download"]')?.className).toContain('bg-primary');
     expect(cloud.querySelector('[data-slot="chat-cloud-update"]')).toBeNull();
     expect(cloud.querySelector('[data-slot="chat-cloud-review"]')?.textContent).toContain('0 of 3 overridden · optional');
+  });
+
+  it('never says "Ready to send" when the check did not finish (#1684)', () => {
+    const action = { action: 'not_for_sending' as const, rule: 'S0' as const, words: 'Check incomplete: not for sending', reason: 'The check did not finish: 39 of 39 drawings could not be compared.', corrections: 1, fabrication: 1, note: null, next_step: '', required_by: 'GV: finish the check before sending', disclaimer: '' };
+    const PKG: ChatFile = { id: 'f-z', kind: 'package', name: 'set - GV review package.zip', size: 4_000_000, mime: 'application/zip', url: '/api/v1/chats/c-1/files/f-z' };
+    render(<AssistantMessage message={answer({ findings, files: [CLOUD, REPORT, PKG], review_action: action })} chatId="c-1" models={[OPUS]} fullCheck />);
+    const node = screen.getByRole('article', { name: 'Answer' });
+    const cloud = within(node).getByRole('region', { name: 'Cloud drawing' });
+    expect(cloud.textContent).not.toMatch(/Ready to send/);
+    expect(cloud.textContent).toContain('Kept for you to look at. The check did not finish, so do not send it yet.');
+    // The package card says the same.
+    expect(within(node).getByRole('region', { name: 'Send-ready package' }).textContent).toContain('do not send it yet');
+  });
+
+  it('counts what can be overridden as the screen shows it: every Wrong and every Nothing to compare (#1684)', () => {
+    // A "same" the drawing lists as not compared (seen on one side only) can be made Wrong too.
+    const mixed = [...findings, finding('r3', { item: 'Toe kick height', status: 'same', compared: false, proof: { group: 'not_compared', label: 'Not reviewed: not looked at on both drawings', reason: 'only the vendor’s side was read' } })];
+    render(<AssistantMessage message={answer({ findings: mixed, files: [CLOUD] })} chatId="c-1" models={[OPUS]} fullCheck decide={vi.fn()} />);
+    const node = screen.getByRole('article', { name: 'Answer' });
+    const kpis = node.querySelector<HTMLElement>('[data-slot="chat-kpis"]')!;
+    expect(within(kpis).getByRole('button', { name: 'Wrong: 2. Go to them' })).toBeTruthy();
+    expect(within(kpis).getByRole('button', { name: 'Nothing to compare: 2. Go to them' })).toBeTruthy();
+    expect(node.querySelector('[data-slot="chat-cloud-review"]')?.textContent).toContain('0 of 4 overridden');
   });
 
   it('is still a full check after a reload, when the saved question has no mode (#1508)', () => {
@@ -282,7 +311,7 @@ describe('a full-check answer', () => {
 
     await user.click(within(node).getByRole('button', { name: 'Update cloud drawing' }));
     expect(remake).toHaveBeenCalledWith('msg-1');
-    await waitFor(() => expect(within(node).getByRole('link', { name: 'Open cloud drawing' }).getAttribute('href')).toBe('/api/v1/chats/c-1/files/f-c2'));
+    await waitFor(() => expect(within(node).getByRole('link', { name: 'Open cloud drawing' }).getAttribute('href')).toBe('/api/v1/chats/c-1/files/f-c2?inline=true'));
     expect(reload).toHaveBeenCalled();
   });
 
