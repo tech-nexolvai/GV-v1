@@ -88,7 +88,9 @@ def _vendor_words(y: float = 700.0) -> list[dict[str, Any]]:
     ]
 
 
-def _hstring(prefix: int, y: float, parts: Sequence[tuple[float, float, int, float]]) -> list[dict[str, Any]]:
+def _hstring(
+    prefix: int, y: float, parts: Sequence[tuple[float, float, int, float]]
+) -> list[dict[str, Any]]:
     """An architect string of horizontal dimensions: (start, end, inches, across) each."""
     out = []
     for n, (x0, x1, inches, across) in enumerate(parts):
@@ -112,8 +114,14 @@ def _documents() -> dict[str, Any]:
     halves: dict[int, list[dict[str, Any]]] = {}
     areas: dict[int, tuple[str, int | None]] = {}
 
-    def page(n: int, area: str, start: int | None, labels: list[dict[str, Any]], words: list[Any],
-             parts: list[dict[str, Any]]) -> None:
+    def page(
+        n: int,
+        area: str,
+        start: int | None,
+        labels: list[dict[str, Any]],
+        words: list[Any],
+        parts: list[dict[str, Any]],
+    ) -> None:
         pages[n] = {"file": FILE, "page": n, "labels": labels, "phrases": words}
         halves[n] = parts
         areas[n] = (area, start)
@@ -137,18 +145,44 @@ def _documents() -> dict[str, Any]:
             _label("D4", "4' - 8\"", "56", (80, 100, 90, 130), "architect", "v"),
             _label("D5", "2' - 2\"", "26", (100, 100, 130, 110), "architect", "h"),
             _label("D6", '50 1/4"', "50.25", (20, 500, 30, 530), "vendor", "v"),
-            _label("D7", "381 [15]", "15", (40, 500, 50, 530), "vendor", "v", ((52, 480), (52, 560))),
-            _label("D8", "76 [3]", "3", (40, 561, 50, 575), "vendor", "v", ((52, 560), (52, 576))),
-            _label("D9", "838 [33]", "33", (60, 500, 70, 530), "vendor", "v", ((72, 470), (72, 600))),
-            _label("D10", "25 [1]", "1", (60, 601, 70, 612), "vendor", "v", ((72, 600), (72, 604))),
-            _label("D11", '58"', "58", (80, 500, 90, 530), "vendor", "v", route="drawn"),
-            _label("D12", "1016 [40]", "40", (100, 500, 130, 510), "vendor", "h", ((100, 515), (300, 515))),
             _label(
-                "D13", "EQ", "20", (150, 520, 160, 528), "vendor", "h", ((100, 530), (200, 530)),
+                "D7", "381 [15]", "15", (40, 500, 50, 530), "vendor", "v", ((52, 480), (52, 560))
+            ),
+            _label("D8", "76 [3]", "3", (40, 561, 50, 575), "vendor", "v", ((52, 560), (52, 576))),
+            _label(
+                "D9", "838 [33]", "33", (60, 500, 70, 530), "vendor", "v", ((72, 470), (72, 600))
+            ),
+            _label(
+                "D10", "13 [1/2]", "0.5", (60, 601, 70, 612), "vendor", "v", ((72, 600), (72, 604))
+            ),
+            _label("D11", '58"', "58", (80, 500, 90, 530), "vendor", "v", route="drawn"),
+            _label(
+                "D12",
+                "1016 [40]",
+                "40",
+                (100, 500, 130, 510),
+                "vendor",
+                "h",
+                ((100, 515), (300, 515)),
+            ),
+            _label(
+                "D13",
+                "EQ",
+                "20",
+                (150, 520, 160, 528),
+                "vendor",
+                "h",
+                ((100, 530), (200, 530)),
                 derived={"rule": "equal_parts", "from": "D12", "parts": 2, "less": []},
             ),
             _label(
-                "D14", "EQ", "20", (250, 520, 260, 528), "vendor", "h", ((200, 530), (300, 530)),
+                "D14",
+                "EQ",
+                "20",
+                (250, 520, 260, 528),
+                "vendor",
+                "h",
+                ((200, 530), (300, 530)),
                 derived={"rule": "equal_parts", "from": "D12", "parts": 2, "less": []},
             ),
         ],
@@ -269,7 +303,15 @@ def _documents() -> dict[str, Any]:
                     (323.0, 360.0, 15, 300.0),
                 ],
             ),
-            _label("D8", "2540 [100]", "100", (180, 500, 220, 510), "vendor", "h", ((100, 515), (360, 515))),
+            _label(
+                "D8",
+                "2540 [100]",
+                "100",
+                (180, 500, 220, 510),
+                "vendor",
+                "h",
+                ((100, 515), (360, 515)),
+            ),
             _label("D9", '36"', "36", (20, 600, 30, 630), "vendor", "v"),
             _label("D10", '89 1/2"', "89.5", (40, 600, 50, 630), "vendor", "v"),
         ],
@@ -296,7 +338,15 @@ def _documents() -> dict[str, Any]:
                     (307.0, 333.0, 11, 305.0),
                 ],
             ),
-            _label("D8", "2990 [117 3/4]", "117.75", (180, 500, 220, 510), "vendor", "h", ((100, 515), (333, 515))),
+            _label(
+                "D8",
+                "2990 [117 3/4]",
+                "117.75",
+                (180, 500, 220, 510),
+                "vendor",
+                "h",
+                ((100, 515), (333, 515)),
+            ),
             _label("D9", '30"', "30", (20, 600, 30, 630), "vendor", "v"),
         ],
         _vendor_words(),
@@ -327,7 +377,9 @@ PACK = Pack.from_documents(main_file=FILE, **_documents())
 # ---- the 78 fixtures ---------------------------------------------------------------------------
 
 
-def _pair(v: str, a: str | None, verdict: str, measures: str, ends: Sequence[str]) -> dict[str, Any]:
+def _pair(
+    v: str, a: str | None, verdict: str, measures: str, ends: Sequence[str]
+) -> dict[str, Any]:
     return {
         "vendor_label": v,
         "architect_label": a,
@@ -341,8 +393,17 @@ def _pair(v: str, a: str | None, verdict: str, measures: str, ends: Sequence[str
     }
 
 
-def _other(kind: str, what: str, vendor: str | None, architect: str | None, vbox: Any, abox: Any,
-           apage: int | None, verdict: str = "different", millwork: bool = True) -> dict[str, Any]:
+def _other(
+    kind: str,
+    what: str,
+    vendor: str | None,
+    architect: str | None,
+    vbox: Any,
+    abox: Any,
+    apage: int | None,
+    verdict: str = "different",
+    millwork: bool = True,
+) -> dict[str, Any]:
     return {
         "kind": kind,
         "what": what,
@@ -378,63 +439,248 @@ class Fixture:
 FIXTURES: list[Fixture] = []
 
 
-def fx(fid: str, work: str, group: str, guard: str, item: dict[str, Any], extra: bool = False) -> None:
+def fx(
+    fid: str, work: str, group: str, guard: str, item: dict[str, Any], extra: bool = False
+) -> None:
     FIXTURES.append(Fixture(fid, work, group, guard, item, extra))
 
 
 # AI-assembled strings and notes (F107, F115, F101, F103, s3-63 forms).
-fx("F107-note", "p12.v1", "gap", "kind:note",
-   _other("note", "vendor height string 10 + 46 + 5 = 61 does not add up to the printed 89 1/2", '89 1/2"', '61"', None, None, None))
-fx("F107-pair", "p12.v1", "gap", "no_fixed_pair",
-   _pair("p12.D10", None, "different", "overall height string", ("floor", "top")))
-fx("F115-note", "p13.v1", "gap", "kind:note",
-   _other("note", "vendor height string 9 + 74 = 83 does not add up to the printed 89 1/2", '89 1/2"', '83"', None, None, None))
-fx("F115-pair", "p13.v1", "gap", "no_fixed_pair",
-   _pair("p13.D9", None, "different", "overall height string", ("floor", "top")))
-fx("F101-nolabel", "p12.v1", "gap", "unreadable_side",
-   _other("dimension_without_label", "overalls with fillers vs without: fillers exceed GV's limit", '117" / 110 1/2"', None, None, None, None))
-fx("F101-rule-note", "p12.v1", "gap", "kind:note",
-   _other("note", "fillers wider than GV's filler rule", '3 1/4" each end', '1" to 2" (GV rule)', None, None, None))
-fx("F103-pair", "p9.v1", "gap", "no_fixed_pair",
-   _pair("p9.D4", None, "different", "filler width", ("cabinet side", "wall")))
-fx("F103-note", "p9.v1", "gap", "kind:note",
-   _other("note", "filler widths: GV notes 3 1/2, vendor labels 1 1/2", '1 1/2"', '3 1/2" (GV note)', None, None, None))
+fx(
+    "F107-note",
+    "p12.v1",
+    "gap",
+    "kind:note",
+    _other(
+        "note",
+        "vendor height string 10 + 46 + 5 = 61 does not add up to the printed 89 1/2",
+        '89 1/2"',
+        '61"',
+        None,
+        None,
+        None,
+    ),
+)
+fx(
+    "F107-pair",
+    "p12.v1",
+    "gap",
+    "no_fixed_pair",
+    _pair("p12.D10", None, "different", "overall height string", ("floor", "top")),
+)
+fx(
+    "F115-note",
+    "p13.v1",
+    "gap",
+    "kind:note",
+    _other(
+        "note",
+        "vendor height string 9 + 74 = 83 does not add up to the printed 89 1/2",
+        '89 1/2"',
+        '83"',
+        None,
+        None,
+        None,
+    ),
+)
+fx(
+    "F115-pair",
+    "p13.v1",
+    "gap",
+    "no_fixed_pair",
+    _pair("p13.D9", None, "different", "overall height string", ("floor", "top")),
+)
+fx(
+    "F101-nolabel",
+    "p12.v1",
+    "gap",
+    "unreadable_side",
+    _other(
+        "dimension_without_label",
+        "overalls with fillers vs without: fillers exceed GV's limit",
+        '117" / 110 1/2"',
+        None,
+        None,
+        None,
+        None,
+    ),
+)
+fx(
+    "F101-rule-note",
+    "p12.v1",
+    "gap",
+    "kind:note",
+    _other(
+        "note",
+        "fillers wider than GV's filler rule",
+        '3 1/4" each end',
+        '1" to 2" (GV rule)',
+        None,
+        None,
+        None,
+    ),
+)
+fx(
+    "F103-pair",
+    "p9.v1",
+    "gap",
+    "no_fixed_pair",
+    _pair("p9.D4", None, "different", "filler width", ("cabinet side", "wall")),
+)
+fx(
+    "F103-note",
+    "p9.v1",
+    "gap",
+    "kind:note",
+    _other(
+        "note",
+        "filler widths: GV notes 3 1/2, vendor labels 1 1/2",
+        '1 1/2"',
+        '3 1/2" (GV note)',
+        None,
+        None,
+        None,
+    ),
+)
 
 
-def ref_pair(fid: str, work: str, v: str, a: str, measures: str, v_ends: tuple[str, str],
-             a_ends: tuple[str, str], guards: tuple[str, str, str], worst_group: str) -> None:
-    fx(f"{fid}-honest", work, "no", guards[0], _pair(v, a, "different_points", measures, (*v_ends, *a_ends)))
+def ref_pair(
+    fid: str,
+    work: str,
+    v: str,
+    a: str,
+    measures: str,
+    v_ends: tuple[str, str],
+    a_ends: tuple[str, str],
+    guards: tuple[str, str, str],
+    worst_group: str,
+) -> None:
+    fx(
+        f"{fid}-honest",
+        work,
+        "no",
+        guards[0],
+        _pair(v, a, "different_points", measures, (*v_ends, *a_ends)),
+    )
     fx(f"{fid}-ends", work, "no", guards[1], _pair(v, a, "different", measures, (*v_ends, *a_ends)))
-    fx(f"{fid}-worst", work, worst_group, guards[2], _pair(v, a, "different", measures, (*a_ends, *a_ends)))
+    fx(
+        f"{fid}-worst",
+        work,
+        worst_group,
+        guards[2],
+        _pair(v, a, "different", measures, (*a_ends, *a_ends)),
+    )
     # Not in the 78: the same pair answered "unsure", with the real ends and with the worst ones.
-    fx(f"{fid}-unsure", work, "no", guards[1], _pair(v, a, "unsure", measures, (*v_ends, *a_ends)), extra=True)
+    fx(
+        f"{fid}-unsure",
+        work,
+        "no",
+        guards[1],
+        _pair(v, a, "unsure", measures, (*v_ends, *a_ends)),
+        extra=True,
+    )
 
 
 # Different reference points (F16, s3-36, s3-47, s3-58, F29, s3-60 forms).
-ref_pair("F16", "p1.v1", "p1.D6", "p1.D1", "overall height", ("floor", "top of base unit"),
-         ("floor", "top of wall covering panel"), ("ai_no", "no:trade", "no:trade"), "no")
-ref_pair("s3-36", "p1.v1", "p1.D7", "p1.D2", "countertop to underside of upper cabinets",
-         ("top of splash band", "underside of uppers"), ("top of countertop", "underside of uppers"),
-         ("ai_no", "no:ends", "candidate"), "blind")
-ref_pair("s3-47", "p1.v1", "p1.D9", "p1.D3", "floor to vanity top", ("floor", "underside of top"),
-         ("floor", "top of counter"), ("ai_no", "no:ends", "candidate"), "blind")
-ref_pair("s3-58", "p1.v1", "p1.D11", "p1.D4", "floor to countertop", ("floor", "top of splash"),
-         ("floor", "top of countertop"), ("ai_no", "no:slip", "no:slip"), "no")
-ref_pair("F29", "p1.v1", "p1.D12", "p1.D5", "sink centre line to right wall", ("left wall", "right wall"),
-         ("sink centre line", "right wall"), ("ai_no", "no:ends", "candidate"), "blind")
+ref_pair(
+    "F16",
+    "p1.v1",
+    "p1.D6",
+    "p1.D1",
+    "overall height",
+    ("floor", "top of base unit"),
+    ("floor", "top of wall covering panel"),
+    ("ai_no", "no:trade", "no:trade"),
+    "no",
+)
+ref_pair(
+    "s3-36",
+    "p1.v1",
+    "p1.D7",
+    "p1.D2",
+    "countertop to underside of upper cabinets",
+    ("top of splash band", "underside of uppers"),
+    ("top of countertop", "underside of uppers"),
+    ("ai_no", "no:ends", "candidate"),
+    "blind",
+)
+ref_pair(
+    "s3-47",
+    "p1.v1",
+    "p1.D9",
+    "p1.D3",
+    "floor to vanity top",
+    ("floor", "underside of top"),
+    ("floor", "top of counter"),
+    ("ai_no", "no:ends", "candidate"),
+    "blind",
+)
+ref_pair(
+    "s3-58",
+    "p1.v1",
+    "p1.D11",
+    "p1.D4",
+    "floor to countertop",
+    ("floor", "top of splash"),
+    ("floor", "top of countertop"),
+    ("ai_no", "no:slip", "no:slip"),
+    "no",
+)
+ref_pair(
+    "F29",
+    "p1.v1",
+    "p1.D12",
+    "p1.D5",
+    "sink centre line to right wall",
+    ("left wall", "right wall"),
+    ("sink centre line", "right wall"),
+    ("ai_no", "no:ends", "candidate"),
+    "blind",
+)
 for first in (2, 4, 6):
-    for page, work, label in ((first, f"p{first}.v1", f"p{first}.D2"), (first + 1, f"p{first + 1}.v2", f"p{first + 1}.D1")):
-        ref_pair(f"s3-60-p{page}", work, label, f"p{first}.D1", "overall height", ("floor", "top of unit"),
-                 ("floor", "top of bulkhead box"), ("ai_no", "no:trade", "no:trade"), "no")
+    for page, work, label in (
+        (first, f"p{first}.v1", f"p{first}.D2"),
+        (first + 1, f"p{first + 1}.v2", f"p{first + 1}.D1"),
+    ):
+        ref_pair(
+            f"s3-60-p{page}",
+            work,
+            label,
+            f"p{first}.D1",
+            "overall height",
+            ("floor", "top of unit"),
+            ("floor", "top of bulkhead box"),
+            ("ai_no", "no:trade", "no:trade"),
+            "no",
+        )
 
 # The unsure forms of the three the blind look decides, with the worst ends (not in the 78): the
 # loop may take them in (the AI's doubt is a gap), but never past the blind look.
 for fid, v, a, measures, ends in (
-    ("s3-36", "p1.D7", "p1.D2", "countertop to underside of upper cabinets", ("top of countertop", "underside of uppers")),
+    (
+        "s3-36",
+        "p1.D7",
+        "p1.D2",
+        "countertop to underside of upper cabinets",
+        ("top of countertop", "underside of uppers"),
+    ),
     ("s3-47", "p1.D9", "p1.D3", "floor to vanity top", ("floor", "top of counter")),
-    ("F29", "p1.D12", "p1.D5", "sink centre line to right wall", ("sink centre line", "right wall")),
+    (
+        "F29",
+        "p1.D12",
+        "p1.D5",
+        "sink centre line to right wall",
+        ("sink centre line", "right wall"),
+    ),
 ):
-    fx(f"{fid}-unsure-worst", "p1.v1", "blind", "loop:blind decides", _pair(v, a, "unsure", measures, (*ends, *ends)), extra=True)
+    fx(
+        f"{fid}-unsure-worst",
+        "p1.v1",
+        "blind",
+        "loop:blind decides",
+        _pair(v, a, "unsure", measures, (*ends, *ends)),
+        extra=True,
+    )
 
 # Room context the vendor never draws (11 absences, two forms each; F77 the outlet, "probably
 # right", listed for information).
@@ -460,57 +706,187 @@ def _absence(fid: str, lid: str, what: str, worst_guard: str, worst_group: str) 
         ("honest", False, "listed", "listed"),
         ("worst", True, worst_group, worst_guard),
     ):
-        fx(f"{fid}-{form}", "p8.v1", group, guard,
-           _other("missing_on_vendor", what + "; not shown on the vendor drawing", None, label["text"], None,
-                  label["box"], 8, millwork=millwork))
+        fx(
+            f"{fid}-{form}",
+            "p8.v1",
+            group,
+            guard,
+            _other(
+                "missing_on_vendor",
+                what + "; not shown on the vendor drawing",
+                None,
+                label["text"],
+                None,
+                label["box"],
+                8,
+                millwork=millwork,
+            ),
+        )
 
 
 for fid, lid, what in ROOM:
     _absence(fid, lid, what, "listed", "listed")
-_absence("F77", "p8.D12", "outlet centre line above the counter to the right wall", "kind:missing_on_vendor", "gap")
+_absence(
+    "F77",
+    "p8.D12",
+    "outlet centre line above the counter to the right wall",
+    "kind:missing_on_vendor",
+    "gap",
+)
 
 # GV's markup used as the architect's value (s3-32, s3-38, s3-11, s3-45 forms).
 for fid, vbox, vend, gv, gvbox in (
     ("s3-32", (100, 500, 140, 510), "2750 [108 1/4]", '107 1/4"', (300, 495, 330, 505)),
     ("s3-38", (100, 540, 140, 550), "3020 [118 7/8]", '118 3/8"', (300, 535, 330, 545)),
 ):
-    fx(f"{fid}-gvnote", "p9.v1", "no", "no:roles",
-       _other("dimension_without_label", "wall-to-wall width (reviewer revised)", vend, gv, vbox, gvbox, 9))
-fx("s3-32-pair", "p9.v1", "gap", "no_fixed_pair",
-   _pair("p9.D2", None, "different", "wall-to-wall width", ("left wall", "right wall")))
-fx("s3-38-pair", "p9.v1", "gap", "no_fixed_pair",
-   _pair("p9.D3", None, "different", "wall-to-wall width", ("left wall", "right wall")))
-fx("s3-11-gvnote", "p9.v1", "no", "no:roles",
-   _other("dimension_without_label", "wall-to-wall width (the reviewer's dimension)", '52 1/4"', '48 1/2"',
-          (100, 580, 130, 590), (300, 575, 330, 585), 9))
-fx("s3-45-gvnote", "p9.v1", "no", "no:roles",
-   _other("dimension_without_label", "vanity top width", "1070 [42 1/8]", '56 1/2"', (100, 620, 140, 630),
-          (300, 615, 330, 625), 9))
+    fx(
+        f"{fid}-gvnote",
+        "p9.v1",
+        "no",
+        "no:roles",
+        _other(
+            "dimension_without_label",
+            "wall-to-wall width (reviewer revised)",
+            vend,
+            gv,
+            vbox,
+            gvbox,
+            9,
+        ),
+    )
+fx(
+    "s3-32-pair",
+    "p9.v1",
+    "gap",
+    "no_fixed_pair",
+    _pair("p9.D2", None, "different", "wall-to-wall width", ("left wall", "right wall")),
+)
+fx(
+    "s3-38-pair",
+    "p9.v1",
+    "gap",
+    "no_fixed_pair",
+    _pair("p9.D3", None, "different", "wall-to-wall width", ("left wall", "right wall")),
+)
+fx(
+    "s3-11-gvnote",
+    "p9.v1",
+    "no",
+    "no:roles",
+    _other(
+        "dimension_without_label",
+        "wall-to-wall width (the reviewer's dimension)",
+        '52 1/4"',
+        '48 1/2"',
+        (100, 580, 130, 590),
+        (300, 575, 330, 585),
+        9,
+    ),
+)
+fx(
+    "s3-45-gvnote",
+    "p9.v1",
+    "no",
+    "no:roles",
+    _other(
+        "dimension_without_label",
+        "vanity top width",
+        "1070 [42 1/8]",
+        '56 1/2"',
+        (100, 620, 140, 630),
+        (300, 615, 330, 625),
+        9,
+    ),
+)
 
 # The brand prototype taken as the design (s3-24 form).
-fx("s3-24", "p10.v1", "listed", "no:roles",
-   _pair("p10.D2", "p11.D1", "different", "floor to top of high counter", ("floor", "top of counter", "floor", "top of counter")))
+fx(
+    "s3-24",
+    "p10.v1",
+    "listed",
+    "no:roles",
+    _pair(
+        "p10.D2",
+        "p11.D1",
+        "different",
+        "floor to top of high counter",
+        ("floor", "top of counter", "floor", "top of counter"),
+    ),
+)
 
 # An AI string misread (s3-63 form).
-fx("s3-63-note", "p12.v1", "gap", "kind:note",
-   _other("note", "vendor width string 1/2 + 25 3/4 + 1/2 + 25 3/4 + 1/2 = 53 does not add up to 56", '56"', '53"', None, None, None))
+fx(
+    "s3-63-note",
+    "p12.v1",
+    "gap",
+    "kind:note",
+    _other(
+        "note",
+        "vendor width string 1/2 + 25 3/4 + 1/2 + 25 3/4 + 1/2 = 53 does not add up to 56",
+        '56"',
+        '53"',
+        None,
+        None,
+        None,
+    ),
+)
 
 # Tags: GV's own callouts and naming differences (s3-52, s3-21, s3-25 forms).
-fx("s3-52-tag", "p12.v1", "gap", "kind:tag", _other("tag", "stone tag of the sections", "ST-07", "ST-06", None, None, None))
-fx("s3-21-tag", "p12.v1", "gap", "kind:tag",
-   _other("tag", "countertop finish tag", "ST-104-CUST", "CT-201", None, (300, 200, 330, 210), 12))
-fx("s3-25-tag", "p12.v1", "gap", "kind:tag",
-   _other("tag", "low counter top tag", "ST-09", "CT-203", None, (300, 220, 330, 230), 12))
+fx(
+    "s3-52-tag",
+    "p12.v1",
+    "gap",
+    "kind:tag",
+    _other("tag", "stone tag of the sections", "ST-07", "ST-06", None, None, None),
+)
+fx(
+    "s3-21-tag",
+    "p12.v1",
+    "gap",
+    "kind:tag",
+    _other("tag", "countertop finish tag", "ST-104-CUST", "CT-201", None, (300, 200, 330, 210), 12),
+)
+fx(
+    "s3-25-tag",
+    "p12.v1",
+    "gap",
+    "kind:tag",
+    _other("tag", "low counter top tag", "ST-09", "CT-203", None, (300, 220, 330, 230), 12),
+)
 
 # Summed architect strings (s3-33, s3-39 forms): the loop takes them in (code could not read the
 # values at the spots), and its checks stop them: no label prints the sum, and the string is not
 # one contiguous chain on one line.
-fx("s3-33-sum", "p12.v1", "gap", "loop:chain",
-   _other("dimension_without_label", "wall-to-wall width from the architect's outlet string", "2540 [100]",
-          '101" (sum of the outlet string)', (180, 500, 220, 510), (95, 280, 365, 302), 12))
-fx("s3-39-sum", "p13.v1", "gap", "loop:chain",
-   _other("dimension_without_label", "wall-to-wall width from the architect's outlet string", "2990 [117 3/4]",
-          '105" (sum of the outlet string)', (180, 500, 220, 510), (95, 285, 340, 307), 13))
+fx(
+    "s3-33-sum",
+    "p12.v1",
+    "gap",
+    "loop:chain",
+    _other(
+        "dimension_without_label",
+        "wall-to-wall width from the architect's outlet string",
+        "2540 [100]",
+        '101" (sum of the outlet string)',
+        (180, 500, 220, 510),
+        (95, 280, 365, 302),
+        12,
+    ),
+)
+fx(
+    "s3-39-sum",
+    "p13.v1",
+    "gap",
+    "loop:chain",
+    _other(
+        "dimension_without_label",
+        "wall-to-wall width from the architect's outlet string",
+        "2990 [117 3/4]",
+        '105" (sum of the outlet string)',
+        (180, 500, 220, 510),
+        (95, 285, 340, 307),
+        13,
+    ),
+)
 
 THE_78 = [f for f in FIXTURES if not f.extra]
 
@@ -537,7 +913,12 @@ def _result(fixture: Fixture, item: Item) -> dict[str, Any]:
         and PACK.half_of(label) is not None
         and PACK.half_of(label).box == item.vendor.box  # type: ignore[union-attr]
     ]
-    return {"work_item": fixture.work_item, "pairs": pairs, "other_items": others, "unaccounted_labels": rest}
+    return {
+        "work_item": fixture.work_item,
+        "pairs": pairs,
+        "other_items": others,
+        "unaccounted_labels": rest,
+    }
 
 
 def _verified(fixture: Fixture) -> tuple[Verified, Item, Mapping[str, Any]]:
@@ -615,7 +996,9 @@ def worst_proposals(item: Item) -> Iterator[resolve.Proposal]:
                 yield resolve.Proposal(kind="eq_part", vendor_label=v, **common)
                 yield resolve.Proposal(kind="band", labels=(v,), **common)
                 for a in architect:
-                    yield resolve.Proposal(kind="attach", vendor_label=v, architect_label=a, **common)
+                    yield resolve.Proposal(
+                        kind="attach", vendor_label=v, architect_label=a, **common
+                    )
             for run in _runs(vendor):
                 if len(run) <= 3:
                     yield resolve.Proposal(kind="band", labels=run, **common)
@@ -632,7 +1015,9 @@ class Scripted:
     proposals: list[resolve.Proposal]
     asked: list[resolve.Failure] = field(default_factory=list)
 
-    def __call__(self, failure: resolve.Failure, package: Any, number: int, history: Any) -> resolve.Asked:
+    def __call__(
+        self, failure: resolve.Failure, package: Any, number: int, history: Any
+    ) -> resolve.Asked:
         self.asked.append(failure)
         if not self.proposals:
             return resolve.Asked(None, "no more proposals")
@@ -642,9 +1027,13 @@ class Scripted:
 ON = resolve.ResolveSettings(mode="on", rounds=2)
 
 
-def _loop(v: Verified, item: Item, raw: Mapping[str, Any], proposals: list[resolve.Proposal]) -> tuple[resolve.Resolved, Scripted]:
+def _loop(
+    v: Verified, item: Item, raw: Mapping[str, Any], proposals: list[resolve.Proposal]
+) -> tuple[resolve.Resolved, Scripted]:
     proposer = Scripted(list(proposals))
-    done = resolve.resolve_one(v, raw, item, PACK, proposer=proposer, settings=ON, ink=lambda label: BLACK)
+    done = resolve.resolve_one(
+        v, raw, item, PACK, proposer=proposer, settings=ON, ink=lambda label: BLACK
+    )
     return done, proposer
 
 
@@ -681,7 +1070,9 @@ def test_each_is_kept_out_by_its_named_guard(fixture: Fixture) -> None:
     assert entry.guard == fixture.guard, (fixture.id, entry)
 
 
-@pytest.mark.parametrize("fixture", [f for f in FIXTURES if not f.guard.startswith("loop:")], ids=lambda f: f.id)
+@pytest.mark.parametrize(
+    "fixture", [f for f in FIXTURES if not f.guard.startswith("loop:")], ids=lambda f: f.id
+)
 def test_what_never_enters_is_never_asked_and_never_changed(fixture: Fixture) -> None:
     v, item, raw = _verified(fixture)
     done, proposer = _loop(v, item, raw, list(worst_proposals(item))[:5])
@@ -690,7 +1081,9 @@ def test_what_never_enters_is_never_asked_and_never_changed(fixture: Fixture) ->
     assert done.rounds == ()
 
 
-@pytest.mark.parametrize("fixture", [f for f in FIXTURES if f.guard.startswith("loop:")], ids=lambda f: f.id)
+@pytest.mark.parametrize(
+    "fixture", [f for f in FIXTURES if f.guard.startswith("loop:")], ids=lambda f: f.id
+)
 def test_the_worst_proposal_never_makes_red(fixture: Fixture) -> None:
     """Every worst proposal, as the first round and as the second; the loop may end Right (a
     printed band), Not compared, or (only where the baseline's worst form already waits for it)
@@ -712,7 +1105,9 @@ def test_the_worst_proposal_never_makes_red(fixture: Fixture) -> None:
         assert set(outcomes) == {"not_compared"}, outcomes
 
 
-@pytest.mark.parametrize("fixture", [f for f in FIXTURES if f.guard == "loop:chain"], ids=lambda f: f.id)
+@pytest.mark.parametrize(
+    "fixture", [f for f in FIXTURES if f.guard == "loop:chain"], ids=lambda f: f.id
+)
 def test_a_summed_architect_string_is_stopped_by_the_chain_rule(fixture: Fixture) -> None:
     """The architect's parts count as the architect's size only when code proves one contiguous
     chain on one line (owner decision 2, 2026-10-19): these strings break, so no run is one."""
@@ -740,8 +1135,12 @@ def test_a_printed_band_makes_right_only_never_red() -> None:
     closes the gap is Right; a band that leaves a difference is never red."""
     fixture = next(f for f in FIXTURES if f.id == "s3-36-unsure-worst")
     v, item, raw = _verified(fixture)
-    ends = {"vendor_from": "top_of_counter", "vendor_to": "underside_of_upper",
-            "architect_from": "top_of_counter", "architect_to": "underside_of_upper"}
+    ends = {
+        "vendor_from": "top_of_counter",
+        "vendor_to": "underside_of_upper",
+        "architect_from": "top_of_counter",
+        "architect_to": "underside_of_upper",
+    }
     closing = resolve.Proposal(kind="band", labels=("p1.D8",), verdict="same", **ends)
     done, _ = _loop(v, item, raw, [closing])
     assert done.verified.outcome == "right", done.verified.reason
@@ -761,15 +1160,34 @@ def test_a_loop_candidate_needs_a_blind_look_that_names_the_loops_ends() -> None
     fixture = next(f for f in FIXTURES if f.id == "F29-unsure-worst")
     v, item, raw = _verified(fixture)
     proposal = resolve.Proposal(
-        kind="ends", verdict="different",
-        vendor_from="centre_line (sink)", vendor_to="wall_face (right)",
-        architect_from="centre_line (sink)", architect_to="wall_face (right)",
+        kind="ends",
+        verdict="different",
+        vendor_from="centre_line (sink)",
+        vendor_to="wall_face (right)",
+        architect_from="centre_line (sink)",
+        architect_to="wall_face (right)",
     )
     done, _ = _loop(v, item, raw, [proposal])
     assert done.verified.outcome == "candidate"
-    walls = BlindAnswer("p1.D5", "same_thing", "wall_face (left)", "wall_face (right)", "wall_face (left)", "wall_face (right)", "yes")
+    walls = BlindAnswer(
+        "p1.D5",
+        "same_thing",
+        "wall_face (left)",
+        "wall_face (right)",
+        "wall_face (left)",
+        "wall_face (right)",
+        "yes",
+    )
     assert with_blind(done.verified, walls).outcome == "not_compared"
-    agree = BlindAnswer("p1.D5", "same_thing", "centre_line (sink)", "wall_face (right)", "centre_line (sink)", "wall_face (right)", "yes")
+    agree = BlindAnswer(
+        "p1.D5",
+        "same_thing",
+        "centre_line (sink)",
+        "wall_face (right)",
+        "centre_line (sink)",
+        "wall_face (right)",
+        "yes",
+    )
     assert with_blind(done.verified, agree).outcome == "red"
 
 
@@ -777,13 +1195,21 @@ def test_right_only_mode_never_makes_a_candidate() -> None:
     fixture = next(f for f in FIXTURES if f.id == "F29-unsure-worst")
     v, item, raw = _verified(fixture)
     proposal = resolve.Proposal(
-        kind="ends", verdict="different",
-        vendor_from="centre_line (sink)", vendor_to="wall_face (right)",
-        architect_from="centre_line (sink)", architect_to="wall_face (right)",
+        kind="ends",
+        verdict="different",
+        vendor_from="centre_line (sink)",
+        vendor_to="wall_face (right)",
+        architect_from="centre_line (sink)",
+        architect_to="wall_face (right)",
     )
     done = resolve.resolve_one(
-        v, raw, item, PACK, proposer=Scripted([proposal]),
-        settings=resolve.ResolveSettings(mode="right_only"), ink=lambda label: BLACK,
+        v,
+        raw,
+        item,
+        PACK,
+        proposer=Scripted([proposal]),
+        settings=resolve.ResolveSettings(mode="right_only"),
+        ink=lambda label: BLACK,
     )
     assert done.verified.outcome == "not_compared"
     assert "Right only" in done.verified.reason
@@ -792,11 +1218,16 @@ def test_right_only_mode_never_makes_a_candidate() -> None:
 def test_the_loop_runs_at_most_two_rounds_and_stops_on_a_repeat() -> None:
     fixture = next(f for f in FIXTURES if f.id == "s3-33-sum")
     v, item, raw = _verified(fixture)
-    same = resolve.Proposal(kind="attach", vendor_label="p12.D8", architect_label="p12.D1", verdict="different")
+    same = resolve.Proposal(
+        kind="attach", vendor_label="p12.D8", architect_label="p12.D1", verdict="different"
+    )
     done, proposer = _loop(v, item, raw, [same, same, same])
     assert len(proposer.asked) == 2 and len(done.rounds) == 2
     assert "repeats" in done.rounds[-1].why
-    many = [resolve.Proposal(kind="attach", vendor_label="p12.D8", architect_label=f"p12.D{n}") for n in range(1, 6)]
+    many = [
+        resolve.Proposal(kind="attach", vendor_label="p12.D8", architect_label=f"p12.D{n}")
+        for n in range(1, 6)
+    ]
     done, proposer = _loop(v, item, raw, many)
     assert len(proposer.asked) == 2
 

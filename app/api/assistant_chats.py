@@ -1213,6 +1213,13 @@ def _simple_options(settings: Settings, body: ChatMessageIn) -> dict[str, Any] |
         },
         "blind_model": settings.assistant_simple_blind_model,
         "blind_effort": settings.assistant_simple_blind_effort,
+        "resolve": {
+            "mode": getattr(settings, "assistant_simple_resolve", "off"),
+            "rounds": getattr(settings, "assistant_simple_resolve_rounds", 2),
+            "model": getattr(settings, "assistant_simple_resolve_model", "claude-sonnet-5-5"),
+            "effort": getattr(settings, "assistant_simple_resolve_effort", "high"),
+            "web_search": getattr(settings, "assistant_simple_resolve_web_search", False),
+        },
         "pilot": body.pilot,
         "replay": body.replay,
         "compare_missing": body.compare_missing,
