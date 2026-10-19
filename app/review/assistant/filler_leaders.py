@@ -143,9 +143,7 @@ def leader_end(note: Box, paths: Sequence[Sequence[Point]]) -> Point | None:
     # A closed path (a CAD arrowhead, a box) is a shape, never a piece of a leader: a filled
     # arrowhead's base sits on the leader's end, within `JOIN_PT` of its corner.
     long = [
-        tuple(p)
-        for p in paths
-        if len(p) >= 2 and _length(p) >= MIN_PIECE_PT and not _closed(p)
+        tuple(p) for p in paths if len(p) >= 2 and _length(p) >= MIN_PIECE_PT and not _closed(p)
     ]
     starts: list[tuple[int, tuple[Point, ...]]] = []
     for index, path in enumerate(long):
@@ -248,7 +246,10 @@ def _drawn_row(
     for a, b in segments:
         dx, dy = b[0] - a[0], b[1] - a[1]
         y = (a[1] + b[1]) / 2
-        if abs(dy) > 0.02 * math.hypot(dx, dy) or not box[1] - 0.7 * size <= y <= box[3] + 0.7 * size:
+        if (
+            abs(dy) > 0.02 * math.hypot(dx, dy)
+            or not box[1] - 0.7 * size <= y <= box[3] + 0.7 * size
+        ):
             continue
         if min(a[0], b[0]) <= low + END_PT and max(a[0], b[0]) >= high - END_PT:
             rows.append(y)
