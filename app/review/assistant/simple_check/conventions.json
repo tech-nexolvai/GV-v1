@@ -1,0 +1,106 @@
+{
+  "about": "Reviewed trade conventions the resolve loop may cite (RESOLVE-LOOP-RESEARCH.md section 6; owner decision 2026-10-19). A convention may only explain, choose what evidence code fetches next, or name an arithmetic pattern code applies to PRINTED labels. It never supplies a value or a tolerance, and never overrides the architect's drawings or GV's own rules. It grows by review, never at run time: live web search results are saved as proposals only.",
+  "version": 1,
+  "conventions": [
+    {
+      "id": "C1",
+      "topic": "EQ (equal parts)",
+      "rule": "EQ marks split a printed span into equal parts; each part is the printed span divided by the number of parts, only when the parts sit end to end on the span's own extension lines.",
+      "source": "https://en.wikipedia.org/wiki/Engineering_drawing",
+      "effect": "arithmetic_on_printed",
+      "proposal_kinds": ["eq_part"],
+      "approved_by": "Anant (reading rule)",
+      "code": "resolve._check_eq_part"
+    },
+    {
+      "id": "C2",
+      "topic": "AFF and centre lines",
+      "rule": "AFF means above finished floor (the end is the floor); CL means a centre line (the end is the centre of an outlet, sink or appliance).",
+      "source": "https://www.wbdg.org/ffc/navfac/design-build-request-for-proposal/abbreviations",
+      "effect": "look_here",
+      "proposal_kinds": ["ends"],
+      "approved_by": "Anant (reading rule)",
+      "code": null
+    },
+    {
+      "id": "C3",
+      "topic": "Underside plus the printed top",
+      "rule": "A height to the underside of a top plus the top's printed thickness, on the same dimension line and touching end to end, is the height to the top of the counter.",
+      "source": "https://awinet.org/standards/",
+      "effect": "arithmetic_on_printed",
+      "proposal_kinds": ["band"],
+      "approved_by": "Anant (reading rule; Right only, owner decision 2026-10-19)",
+      "code": "resolve._check_band"
+    },
+    {
+      "id": "C4",
+      "topic": "A splash band inside a height",
+      "rule": "A backsplash band printed on the same dimension line as a height, touching it end to end, moves that end from the counter's top to the splash's top.",
+      "source": "https://awinet.org/standards/",
+      "effect": "arithmetic_on_printed",
+      "proposal_kinds": ["band"],
+      "approved_by": "Anant (reading rule; Right only, owner decision 2026-10-19)",
+      "code": "resolve._check_band"
+    },
+    {
+      "id": "C5",
+      "topic": "A run to a box or bulkhead above the unit",
+      "rule": "A dimension that runs to a soffit, bulkhead or box above the unit measures room context, not the millwork: another trade or different points.",
+      "source": "https://facilities.utdallas.edu/download/UTD_DGCS_06-41-00_Architectural_Wood_Casework.pdf",
+      "effect": "not_compared_reason",
+      "proposal_kinds": [],
+      "approved_by": "Anant (reading rule)",
+      "code": null
+    },
+    {
+      "id": "C6",
+      "topic": "Field verify",
+      "rule": "VIF, field verify and plus-or-minus marks ask for site measurement: the item is Not compared (field verify), never red.",
+      "source": "https://facilities.utdallas.edu/download/UTD_DGCS_06-41-00_Architectural_Wood_Casework.pdf",
+      "effect": "not_compared_reason",
+      "proposal_kinds": [],
+      "approved_by": "Anant (reading rule)",
+      "code": null
+    },
+    {
+      "id": "C7",
+      "topic": "By others",
+      "rule": "NIC, by others and by GC mark another trade's work: never a millwork difference.",
+      "source": "https://forum.4specs.com/t/if-there-is-a-conflict-within-contract-documents/351",
+      "effect": "not_compared_reason",
+      "proposal_kinds": [],
+      "approved_by": "Anant (reading rule)",
+      "code": null
+    },
+    {
+      "id": "C8",
+      "topic": "Which drawing governs",
+      "rule": "Printed dimensions govern over scaled ones; a larger-scale drawing or detail over a smaller one; a later round over an earlier one.",
+      "source": "https://forum.4specs.com/t/if-there-is-a-conflict-within-contract-documents/351",
+      "effect": "look_here",
+      "proposal_kinds": ["newer_round"],
+      "approved_by": "Anant (reading rule; GV's R2 and R3)",
+      "code": null
+    },
+    {
+      "id": "C9",
+      "topic": "Brackets on vendor sheets",
+      "rule": "On the vendor's sheets a value in brackets after millimetres is the same size in inches; it is not a reference dimension in the mechanical-drawing sense.",
+      "source": "https://en.wikipedia.org/wiki/Reference_dimension",
+      "effect": "look_here",
+      "proposal_kinds": [],
+      "approved_by": "Anant (reading rule)",
+      "code": null
+    },
+    {
+      "id": "C10",
+      "topic": "Typical sizes",
+      "rule": "Typical sizes (a counter height, a top's thickness, a filler width) are background only: never a value, never a reason for a difference, never a tolerance.",
+      "source": "https://awinet.org/standards/requirements/3-1-general-4/",
+      "effect": "not_compared_reason",
+      "proposal_kinds": [],
+      "approved_by": "Anant (reading rule)",
+      "code": null
+    }
+  ]
+}

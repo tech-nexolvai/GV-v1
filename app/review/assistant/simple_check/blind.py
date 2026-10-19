@@ -131,8 +131,8 @@ BLIND_SYSTEM: Final = (
 
 
 def question(kind: str, vendor_ref: str | None, architect_ref: str | None) -> str:
-    """The blind question for a candidate (`pair`, `values` or `absence`): never the first
-    answer's pairing, words or verdict."""
+    """The blind question for a candidate (`pair`, `chain`: an architect string the resolve loop
+    proved, `values` or `absence`): never the first answer's pairing, words or verdict."""
     if kind == "pair":
         return (
             "Picture 1 is part of the vendor's shop drawing; the dimension marked on it (code drew "
@@ -144,6 +144,20 @@ def question(kind: str, vendor_ref: str | None, architect_ref: str | None) -> st
             "between the same two points, different_points when they do not, unsure when the "
             "pictures do not show it. vendor_ink_black: is the marked vendor value printed in black "
             "or grey ink? millwork: unsure."
+        )
+    if kind == "chain":
+        return (
+            "Picture 1 is part of the vendor's shop drawing; the dimension marked on it (code drew "
+            f"its extension lines) is {vendor_ref}. The next picture is the architect's drawing "
+            "with every printed dimension numbered. The architect may print this size only as a "
+            "string of parts. Which numbered architect dimensions, end to end, together measure "
+            "the same thing as the marked vendor dimension? pick their ids joined by + (D3+D4+D5), "
+            "or none. Say where each end of the marked vendor dimension lands (vendor_from, "
+            "vendor_to) and where the string you picked starts and ends (architect_from, "
+            "architect_to). verdict: same_thing when both run between the same two points, "
+            "different_points when they do not, unsure when the pictures do not show it. "
+            "vendor_ink_black: is the marked vendor value printed in black or grey ink? millwork: "
+            "unsure."
         )
     if kind == "values":
         return (
@@ -253,7 +267,7 @@ def pictures(engine: ChatEngine, verified: Verified, item: Item) -> list[dict[st
     kind = verified.blind or "pair"
     vendor = verified.vendor
     architect = verified.architect
-    if kind == "pair":
+    if kind in ("pair", "chain"):
         assert vendor is not None and architect is not None
         region = _drawing_of(item, int(architect.get("page") or 0))
         if region is None:
@@ -263,7 +277,7 @@ def pictures(engine: ChatEngine, verified: Verified, item: Item) -> list[dict[st
             *_crop(engine, region, marks=True),
         ]
         ref = f"p{vendor.get('page')}.{vendor.get('id')}"
-        return [*content, {"type": "text", "text": question("pair", ref, None)}]
+        return [*content, {"type": "text", "text": question(kind, ref, None)}]
     finding = verified.finding
     if kind == "values":
         v_box, a_box = finding.get("vendor_box"), finding.get("arch_box")

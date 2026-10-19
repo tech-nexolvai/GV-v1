@@ -16,8 +16,10 @@ CONTRACT-SIMPLE (2026-10-19, Anant: "go ahead"); behind `assistant_full_check_mo
    (`assistant_message_cap_usd`) stops it, and a stopped or failed item is listed, never dropped.
    Each item's usage is a row on the Usage page and is charged to the answer. The screen shows
    "Comparing drawing 12 of 36".
-4. **Code verifies** each answer (`verify.py`) and **one blind second look** per red candidate
-   (`blind.py`) must agree before anything is red.
+4. **Code verifies** each answer (`verify.py`); a difference code could not verify goes through
+   the **resolve loop** when it is on (`resolve.py`: the AI is told the exact failed check, names
+   new evidence by label ids, code verifies again, at most 2 rounds); then **one blind second look**
+   per red candidate (`blind.py`) must agree before anything is red.
 5. **The existing outputs**: findings in the chat finding shape (merged onto GV Review's recorded
    row of the same item when there is one), the Not-compared rows (an architect that gives no size,
    room context), the trust report, the cloud drawing, the check report, the Not-compared PDF and
@@ -48,6 +50,7 @@ from app.review.assistant.filler_range import covered_labels
 from app.review.assistant.finding_checks import to_inches
 from app.review.assistant.full_check_advocate import code_checks, decide, ink_colour, needs_pairing
 from app.review.assistant.product_scope import refiled
+from app.review.assistant.simple_check import resolve as resolve_module
 from app.review.assistant.simple_check import verify as verify_module
 from app.review.assistant.simple_check.blind import BlindSettings, look_all
 from app.review.assistant.simple_check.pairing import UNPAIRED
@@ -132,6 +135,8 @@ class SimpleOptions:
     """With `replay` (#1710, "Compare them again"): the drawings the run has no answer for (failed,
     stopped, never started) are compared now, and the blind looks it could not make are made now;
     every saved answer and look is used again at $0, so the new answer is the whole result."""
+    resolve: resolve_module.ResolveSettings = field(default_factory=resolve_module.ResolveSettings)
+    """The resolve loop (`assistant_simple_resolve*`): off by default."""
 
     @classmethod
     def of(cls, raw: object) -> SimpleOptions:
@@ -150,6 +155,7 @@ class SimpleOptions:
             pilot=int(pilot) if isinstance(pilot, int) and pilot > 0 else None,
             replay=str(given["replay"]) if given.get("replay") else None,
             compare_missing=bool(given.get("compare_missing")) and bool(given.get("replay")),
+            resolve=resolve_module.ResolveSettings.of(given.get("resolve")),
         )
 
 
@@ -225,6 +231,9 @@ class _Run:
     blind_skipped_count: int = 0
     out_of_scope: int = 0
     """Items of products outside the check's scope: never looked at again, never shown."""
+    resolved: dict[str, int] = field(default_factory=dict)
+    """The resolve loop's tally: items that entered, made Right, made a red candidate, left Not
+    compared, and not finished (a stop or the runaway guard)."""
     number: Any = None
     """`read_number.NumberReader` for the set pack (`_number`)."""
     no_architect: int = 0
@@ -331,6 +340,8 @@ class _Run:
         # every answered drawing is verified and recorded; only the blind looks wait for money.
         with engine.timings.phase("verify"):
             verified = self._verify_all()
+        with engine.timings.phase("resolve"):
+            verified = self._resolve(verified)
         with engine.timings.phase("blind"):
             verified = self._blind(verified)
         self._tell("looked", [v for v, _item in verified])
@@ -773,6 +784,142 @@ class _Run:
                 )
         return found
 
+    def _resolve(self, verified: list[tuple[Verified, Item]]) -> list[tuple[Verified, Item]]:
+        """The resolve loop (`resolve.py`) on each item code could not verify, when it is on: the
+        saved rounds on a replay ($0), else one call per round, its cost held under the runaway
+        guard. Off: nothing changes. A stop leaves an item Not compared, never red."""
+        settings = self.options.resolve
+        if not settings.on or self.pack is None:
+            return verified
+        pack = self.pack
+        raws = self._raw_entries()
+        work = [
+            (n, v, item)
+            for n, (v, item) in enumerate(verified)
+            if v.outcome == "not_compared" and self._scoped(v.finding)
+        ]
+        entering = [
+            (n, v, item)
+            for n, v, item in work
+            if isinstance(
+                resolve_module.eligible(v, raws.get(v.key), item, pack, ink=self._ink),
+                resolve_module.Failure,
+            )
+        ]
+        self.resolved = {"entered": len(entering)}
+        if not entering:
+            return verified
+        engine = self.engine
+        holds = resolve_module.Holds()
+        texts = {v.key: (v, raws.get(v.key) or {}) for _n, v, _item in entering}
+        live: resolve_module.Proposer
+        if engine.cancel.is_set() or self.cap_hit is not None:
+            live = resolve_module.NotAsked(
+                "the check was stopped"
+                if engine.cancel.is_set()
+                else "the per-answer cap was reached"
+            )
+        else:
+            live = resolve_module.EngineProposer(engine, settings, holds, texts)
+        proposer: resolve_module.Proposer = live
+        if self.options.replay:
+            source = self._replayed()
+            saved = resolve_module.load_rounds(source) if source is not None else {}
+            proposer = resolve_module.SavedProposer(
+                saved, live if self.options.compare_missing else None
+            )
+        reader = self._read_number()
+        crops = self._crops()
+        out = list(verified)
+        lock = threading.Lock()
+
+        def one(entry: tuple[int, Verified, Item]) -> None:
+            n, v, item = entry
+            done = resolve_module.resolve_one(
+                v,
+                raws.get(v.key),
+                item,
+                pack,
+                proposer=proposer,
+                settings=settings,
+                ink=self._ink,
+                read_number=reader,
+                crops=crops,
+                on_round=self._save_round,
+            )
+            with lock:
+                out[n] = (done.verified, done.item)
+                outcome = done.verified.outcome
+                name = {"right": "right", "candidate": "candidate"}.get(outcome, "not_compared")
+                if any(r.status == "not_asked" for r in done.rounds):
+                    name = "not_finished"
+                self.resolved[name] = self.resolved.get(name, 0) + 1
+
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="gv-simple-resolve") as pool:
+            list(pool.map(one, entering))
+        if settings.web_search and not self.options.replay:
+            routes = []
+            for _n, v, item in entering:
+                found = resolve_module.eligible(v, raws.get(v.key), item, pack, ink=self._ink)
+                if isinstance(found, resolve_module.Failure):
+                    routes.append(found.route)
+            record = resolve_module.web_proposals(engine, settings, routes, holds)
+            if record is not None and self.run_dir is not None:
+                try:
+                    _write(
+                        self.run_dir / "resolve" / "web-proposals.json",
+                        json.dumps(record, indent=1),
+                    )
+                except OSError:
+                    _log.exception("simple check: the web proposals could not be saved")
+        return out
+
+    def _raw_entries(self) -> dict[str, dict[str, Any]]:
+        """Each compare answer's pairs and other items as plain data, by the key verify gives them
+        (`<work item>:<vendor label>`, `<work item>:item<n>`)."""
+        out: dict[str, dict[str, Any]] = {}
+        for item in self.compared:
+            outcome = self.outcomes.get(item.id)
+            if outcome is None or outcome.result is None:
+                continue
+            data = outcome.result.model_dump(mode="json")
+            for pair in data.get("pairs") or []:
+                out[f"{item.id}:{pair.get('vendor_label')}"] = dict(pair)
+            for at, entry in enumerate(data.get("other_items") or [], start=1):
+                out[f"{item.id}:item{at}"] = dict(entry)
+        return out
+
+    def _read_number(self) -> resolve_module.ReadAt | None:
+        """The real read-number tool (#1746), bound to the set pack (`_number`), as the loop's
+        hook; set pages turned into the file's own pages (`Pack.own_page`)."""
+        if self.pack is None or self.engine.tools.workspace.set_pack is None:
+            return None
+        return resolve_module.reader_at(self._number(), self.pack)
+
+    def _crops(self) -> resolve_module.Crops:
+        from app.review.assistant.simple_check.blind import _crop
+
+        engine = self.engine
+
+        def crops(region: Any, box: Any, marks: bool, guides: Sequence[str]) -> Any:
+            return _crop(engine, region, box=box, marks=marks, guides=guides)
+
+        return crops
+
+    def _save_round(self, done: resolve_module.Round) -> None:
+        if self.run_dir is None:
+            return
+        path = resolve_module.round_path(self.run_dir, done.failure.key, done.number)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _write(path, json.dumps(done.as_dict(), indent=1, default=str))
+        except OSError:
+            _log.exception(
+                "simple check: a resolve round of %s could not be saved", done.failure.key
+            )
+
     def _blind(self, verified: list[tuple[Verified, Item]]) -> list[tuple[Verified, Item]]:
         """Each red candidate's blind look: the saved one on a replay; none after a stop or when
         the money ran out (the item is then Not compared, "the blind look was not made"); else
@@ -901,6 +1048,7 @@ class _Run:
         try:
             (self.run_dir / "compare").mkdir(parents=True, exist_ok=True)
             (self.run_dir / "blind").mkdir(parents=True, exist_ok=True)
+            (self.run_dir / "resolve").mkdir(parents=True, exist_ok=True)
             (self.run_dir / "run.json").write_text(
                 json.dumps(
                     {
@@ -912,6 +1060,7 @@ class _Run:
                             "model": self.options.blind.model,
                             "effort": self.options.blind.effort,
                         },
+                        "resolve": self.options.resolve.as_dict(),
                     },
                     indent=1,
                 ),
@@ -1353,6 +1502,21 @@ class _Run:
                 f"{self.not_listed} more items match the architect but are not listed (the "
                 "answer's item limit)."
             )
+        if self.resolved.get("entered"):
+            tally = self.resolved
+            lines.append(
+                f"The resolve step looked again at {tally['entered']} "
+                f"{'difference' if tally['entered'] == 1 else 'differences'} code could not "
+                f"verify: {tally.get('right', 0)} made Right by code, "
+                f"{tally.get('candidate', 0)} verified for the blind second look, "
+                f"{tally.get('not_compared', 0)} still Not compared"
+                + (
+                    f", {tally['not_finished']} not finished (Not compared, never red)"
+                    if tally.get("not_finished")
+                    else ""
+                )
+                + "."
+            )
         lines.append(f"This check used ${engine.spent / _MICROS:.2f}.")
         if self.run_dir is not None and self.outcomes:
             lines.append(
@@ -1658,13 +1822,15 @@ def replay(
     read: ValueReader | None = None,
     ink: Any = None,
     number: Any = None,
+    resolve: resolve_module.ResolveSettings | None = None,
 ) -> dict[str, list[Verified]]:
     """A saved run verified again at $0 (no model call): each answered work item's items, by
-    work item id, after the run's own saved blind looks (a candidate with none saved stays Not
-    compared). The same code as the run: the pack's work list and facts, `verify_answer`, the
-    markup-free copy's ink, `verify_value` readings and `read_number` (its readings cached in the
-    pack) unless others are given (a given `read` comes with no `read_number` unless one is given
-    too)."""
+    work item id, after the run's saved resolve rounds (checked again by today's code, with the
+    run's own resolve setting unless `resolve` is given) and its own saved blind looks (a candidate
+    with none saved stays Not compared). The same code as the run: the pack's work list and facts,
+    `verify_answer`, the markup-free copy's ink, `verify_value` readings and `read_number` (its
+    readings cached in the pack) unless others are given (a given `read` comes with no
+    `read_number` unless one is given too)."""
     worklist = import_module("app.review.assistant.simple_check.worklist")
     work = worklist.build_worklist(pack_dir, main_file)
     items = work.items
@@ -1675,24 +1841,57 @@ def replay(
     reader = read if read is not None else pack_reader(pack_dir)
     if number is None and read is None:
         number = import_module("app.review.assistant.read_number").reader_for_pack(pack_dir)
+    settings = resolve if resolve is not None else _run_resolve(run_dir)
+    rounds = resolve_module.load_rounds(run_dir)
+    proposer = resolve_module.SavedProposer(rounds)
+    hook = resolve_module.reader_at(number, pack) if number is not None else None
     out: dict[str, list[Verified]] = {}
     for item in items:
         outcome = outcomes.get(item.id)
         if outcome is None or outcome.status != "ok" or outcome.result is None:
             continue
+        view = Item.of(item)
         found = verify_module.verify_answer(
             outcome.result,
-            Item.of(item),
+            view,
             pack,
             ink=looks,
             read=reader,
             products=products,
             number=number,
         )
-        out[item.id] = [
-            _with_saved(v, saved.get(v.key)) if v.needs_blind else v for v in found.items
-        ]
+        data = outcome.result.model_dump(mode="json")
+        raws = {f"{item.id}:{p.get('vendor_label')}": p for p in data.get("pairs") or []}
+        raws.update(
+            {f"{item.id}:item{n}": e for n, e in enumerate(data.get("other_items") or [], start=1)}
+        )
+        items_out: list[Verified] = []
+        for v in found.items:
+            if settings.on and v.outcome == "not_compared":
+                v = resolve_module.resolve_one(
+                    v,
+                    raws.get(v.key),
+                    view,
+                    pack,
+                    proposer=proposer,
+                    settings=settings,
+                    ink=looks,
+                    read_number=hook,
+                ).verified
+            items_out.append(_with_saved(v, saved.get(v.key)) if v.needs_blind else v)
+        out[item.id] = items_out
     return out
+
+
+def _run_resolve(run_dir: Path) -> resolve_module.ResolveSettings:
+    """The resolve setting a saved run was made with (`run.json`), off when it says none."""
+    try:
+        record = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return resolve_module.ResolveSettings()
+    return resolve_module.ResolveSettings.of(
+        record.get("resolve") if isinstance(record, Mapping) else None
+    )
 
 
 def run(engine: ChatEngine) -> MessageOutcome:

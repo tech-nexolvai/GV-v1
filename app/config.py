@@ -187,6 +187,19 @@ class Settings(BaseSettings):
         "claude-opus-5-5"
     )
     assistant_simple_blind_effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
+    # The simple check's resolve loop (`simple_check/resolve.py`, #1735): a difference the compare
+    # call saw that code could not verify gets the exact failed check; the AI names new evidence by
+    # code's label ids, code verifies again, at most `rounds` rounds; red still needs every code
+    # check and the blind look. `off` (default); `right_only`: it may make Right or a better reason,
+    # never a red candidate; `on`. Live web search stays off: when on, one fenced search per run
+    # on fixed topics, saved as proposals for the conventions library, never used to decide.
+    assistant_simple_resolve: Literal["off", "right_only", "on"] = "off"
+    assistant_simple_resolve_rounds: int = Field(default=2, ge=1, le=2)
+    assistant_simple_resolve_model: Literal["claude-sonnet-5-5", "claude-opus-5-5"] = (
+        "claude-sonnet-5-5"
+    )
+    assistant_simple_resolve_effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
+    assistant_simple_resolve_web_search: bool = False
     # One sandbox command's time limit, and which sandbox runs it (`auto` and `docker`: the Docker
     # image `gv-assistant-sandbox` when built and Docker answers, else no shell: the chat says the
     # secure sandbox is not running; `macos`: `sandbox-exec`, only for tests on a Mac, never a

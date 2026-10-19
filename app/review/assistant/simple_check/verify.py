@@ -104,6 +104,7 @@ __all__ = [
     "ends_match",
     "verify",
     "verify_answer",
+    "verify_pair",
     "with_blind",
 ]
 
@@ -766,6 +767,9 @@ class Verified:
     about: Mapping[str, Any] = field(default_factory=dict)
     """A listed item's name and product (`page`, `item`, `category`): what files a Not-compared row
     that is not a finding under the product scope (`product_scope.scoped_gaps`)."""
+    resolve: tuple[Mapping[str, Any], ...] = ()
+    """The resolve loop's rounds on this item (`resolve.py`): each round's failed check, the
+    evidence the AI named (label ids), code's verdict on it. Empty when the loop did not run."""
 
     @property
     def verdict(self) -> str:
@@ -784,6 +788,7 @@ class Verified:
             "reason": self.reason,
             "checks": [[c.name, c.outcome, c.why] for c in self.checks],
             "ends": dict(self.ends),
+            **({"resolve": [dict(r) for r in self.resolve]} if self.resolve else {}),
         }
 
     def row(self) -> dict[str, Any]:
@@ -1134,7 +1139,29 @@ class _Pair:
         )
 
 
-def _verify_pair(pair: Mapping[str, Any], item: Item, pack: Pack, ink: Ink | None) -> Verified:
+def verify_pair(
+    pair: Mapping[str, Any],
+    item: Item,
+    pack: Pack,
+    ink: Ink | None = None,
+    *,
+    architect: Mapping[str, Any] | None = None,
+) -> Verified:
+    """One pair verified from scratch, every check, no shortcut: the resolve loop's re-verification
+    of a pair it amended (`resolve.py`). `architect`: the architect's value when it is not one label
+    (code's proved chain of the architect's printed parts, owner decision 2026-10-19), with
+    `area_ref` naming one of its labels for the area check."""
+    return _verify_pair(pair, item, pack, ink, architect_override=architect)
+
+
+def _verify_pair(
+    pair: Mapping[str, Any],
+    item: Item,
+    pack: Pack,
+    ink: Ink | None,
+    *,
+    architect_override: Mapping[str, Any] | None = None,
+) -> Verified:
     vref = str(pair.get("vendor_label") or "")
     key = f"{item.id}:{vref}"
     vendor = pack.label(vref, item.vendor.file, item.vendor.page)
@@ -1147,7 +1174,9 @@ def _verify_pair(pair: Mapping[str, Any], item: Item, pack: Pack, ink: Ink | Non
         return Verified(key, "pair", "covered", f"code has no vendor label {vref}")
     aref = pair.get("architect_label")
     architect = (
-        _architect_label(aref, item, pack) if isinstance(aref, str) and aref.strip() else None
+        dict(architect_override)
+        if architect_override is not None
+        else _architect_label(aref, item, pack) if isinstance(aref, str) and aref.strip() else None
     )
     about = _about(item, pack, pair.get("measures"), f"dimension {_label_words(vendor)}")
     if verdict == "no_architect_value":
@@ -1195,7 +1224,14 @@ def _verify_pair(pair: Mapping[str, Any], item: Item, pack: Pack, ink: Ink | Non
     disagree = "disagrees" in (vendor.get("units"), architect.get("units"))
     checks = [
         _roles_check(vendor, architect),
-        _area_check(item, pack, a_file, a_page, _box(architect.get("box")), _ref(architect)),
+        _area_check(
+            item,
+            pack,
+            a_file,
+            a_page,
+            _box(architect.get("box")),
+            str(architect.get("area_ref") or _ref(architect)),
+        ),
         _view_check(item, a_file, a_page),
         Check(
             "axis",
@@ -2079,6 +2115,21 @@ def _pair_disagrees(verified: Verified, answer: BlindAnswer | None, failed: str)
         if pick != want:
             said = "no architect dimension" if pick is None else pick
             return f"not proved: a blind second look chose {said}, not {want}"
+    if verified.blind == "chain":
+        assert verified.architect is not None
+        chain = {str(ref) for ref in verified.architect.get("chain") or ()}
+        page = verified.architect.get("page")
+        picked = {
+            f"p{parsed[0] or page}.D{parsed[1]}"
+            for part in re.split(r"[+,\s]+", answer.pick or "")
+            if (parsed := parse_ref(part)) is not None
+        }
+        if not chain or picked != chain:
+            said = " + ".join(sorted(picked)) if picked else "no architect dimensions"
+            return (
+                f"not proved: a blind second look chose {said}, not the architect's parts "
+                f"{' + '.join(sorted(chain))}"
+            )
     if answer.verdict == "different_points":
         return f"a blind second look says {DIFFERENT_POINTS}"
     if answer.verdict != "same_thing":
@@ -2090,6 +2141,19 @@ def _pair_disagrees(verified: Verified, answer: BlindAnswer | None, failed: str)
         return f"a blind second look says {DIFFERENT_POINTS} ({why})"
     if state != "same":
         return f"not proved: by a blind second look, {why}"
+    if verified.resolve:
+        # A candidate the resolve loop made: the blind look must also name the ends the loop
+        # claimed, on both drawings (it never saw them; RESOLVE-LOOP-RESEARCH.md §3b).
+        for side in ("vendor", "architect"):
+            claimed = (verified.ends.get(f"{side}_from"), verified.ends.get(f"{side}_to"))
+            seen = (getattr(answer, f"{side}_from"), getattr(answer, f"{side}_to"))
+            state, _why = ends_match(*claimed, *seen)
+            if state != "same":
+                return (
+                    "not proved: a blind second look names other ends on the "
+                    f"{side}'s drawing ({_plain(seen[0])} to {_plain(seen[1])}) than the resolve "
+                    f"step ({_plain(claimed[0])} to {_plain(claimed[1])})"
+                )
     if verified.blind == "values":
         # No code label says which way an unlabelled value runs: the ends must, the same way on
         # both drawings (and as code's label says, when one side has one).
