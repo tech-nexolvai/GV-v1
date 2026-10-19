@@ -25,7 +25,8 @@ import {
   type ResultTab,
   type WorkLineInput,
 } from '@/lib/chat-result';
-import { inchWords } from '@/lib/chat-trust';
+import { inchWords, type RoundCounts } from '@/lib/chat-trust';
+import { ROUND_WORDS } from '@/lib/words';
 import { cn } from '@/lib/utils';
 
 /**
@@ -65,10 +66,12 @@ export interface FullCheckResultProps {
   summary?: React.ReactNode;
   /** What the AI did (its activity rows), shown inside the work line's fold. */
   activity?: React.ReactNode;
+  /** #1744: a later round's counts (Closed / Previous comment not addressed / New); null with one round. */
+  rounds?: RoundCounts | null;
 }
 
 export function FullCheckResult(props: FullCheckResultProps) {
-  const { findings, decisionOf, chatId, files, reviewAction, packageState, work, pictureUrl, onOpen, onRunAgain = null, review = null, summary = null, activity = null } = props;
+  const { findings, decisionOf, chatId, files, reviewAction, packageState, work, pictureUrl, onOpen, onRunAgain = null, review = null, summary = null, activity = null, rounds = null } = props;
   const groups = resultGroups(findings, decisionOf);
   const [tab, setTab] = useState<ResultTab>(groups.wrong.length ? 'wrong' : groups.notCompared.length ? 'not_compared' : 'right');
   const [category, setCategory] = useState<FindingCategory | null>(null);
@@ -85,6 +88,8 @@ export function FullCheckResult(props: FullCheckResultProps) {
     <section data-slot="chat-result" aria-label="Full check result" className="chat-wide grid min-w-0 gap-4">
       <WorkLine words={line.words} time={line.time} timings={work.timings} activity={activity} />
       <ResultHead files={files} chatId={chatId} reviewAction={reviewAction} previewPage={previewPageOf(groups)} onRunAgain={onRunAgain} review={review} />
+
+      {rounds && <RoundStrip rounds={rounds} />}
 
       <div role="tablist" aria-label="Items" data-slot="chat-result-tiles" className="grid grid-cols-3 gap-2.5 max-md:gap-2">
         {(['wrong', 'right', 'not_compared'] as const).map((each) => (
@@ -133,8 +138,17 @@ export function FullCheckResult(props: FullCheckResultProps) {
 
       <div id={`${tabsId}-panel`} role="tabpanel" aria-labelledby={`${tabsId}-${tab}`} data-slot="chat-result-list" data-tab={tab} key={tab} className="chat-fade-in min-w-0 overflow-hidden rounded-[14px] border bg-card">
         {shown.length === 0 && <p className="px-4 py-6 text-center text-sm text-muted-foreground">{inTab.length ? 'Nothing for this product.' : tab === 'wrong' ? 'Nothing proved wrong.' : tab === 'right' ? 'Nothing matched yet.' : 'Every item was compared.'}</p>}
-        {tab === 'wrong' && shown.filter((finding) => !groups.dismissed.includes(finding)).map((finding) => (
+        {tab === 'wrong' && !rounds && shown.filter((finding) => !groups.dismissed.includes(finding)).map((finding) => (
           <WrongRow key={finding.id} finding={finding} number={commentNumber(finding, packageState)} pictureUrl={pictureUrl} onOpen={onOpen} />
+        ))}
+        {/* #1744: in a later round, what the vendor must fix first, then what is new, then what was closed. */}
+        {tab === 'wrong' && rounds && roundGroups(shown.filter((finding) => !groups.dismissed.includes(finding)), category ? groups.right.filter((finding) => (finding.category ?? 'other') === category) : groups.right).map((group) => (
+          <div key={group.key} data-slot="chat-result-round" data-round={group.key}>
+            <GroupHead words={group.words} note={group.note} count={group.findings.length} />
+            {group.findings.map((finding) => (group.key === 'closed'
+              ? <CompactRow key={finding.id} kind="right" finding={finding} onOpen={onOpen} />
+              : <WrongRow key={finding.id} finding={finding} number={commentNumber(finding, packageState)} pictureUrl={pictureUrl} onOpen={onOpen} />))}
+          </div>
         ))}
         {tab === 'wrong' && shown.some((finding) => groups.dismissed.includes(finding)) && (
           <>
@@ -297,10 +311,13 @@ function FileRow({ icon: Icon, name, file, href, note }: { icon: typeof FileText
 
 // ── Rows ──────────────────────────────────────────────────
 
-function GroupHead({ words, count }: { words: string; count: number }) {
+function GroupHead({ words, count, kind, note }: { words: string; count: number; kind?: ResultTab; note?: string }) {
   return (
-    <p data-slot="chat-result-group" className="flex items-center justify-between gap-3 border-t bg-muted/40 px-4 py-2.5 text-[13px] font-semibold first:border-t-0">
-      <span className="min-w-0">{words}</span>
+    <p data-slot="chat-result-group" data-kind={kind} className="flex items-center justify-between gap-3 border-t bg-muted/40 px-4 py-2.5 text-[13px] font-semibold first:border-t-0">
+      <span className="flex min-w-0 items-center gap-2">
+        {kind && <OutcomeGlyph kind={kind} className="size-4 [&_svg]:size-2.5" />}
+        <span className="min-w-0">{words}{note && <span className="font-normal text-muted-foreground"> · {note}</span>}</span>
+      </span>
       <span className="num font-medium text-muted-foreground">{count}</span>
     </p>
   );
@@ -433,6 +450,39 @@ function CompactRow({ kind, finding, onOpen }: { kind: 'right' | 'not_compared' 
       </span>
     </button>
   );
+}
+
+// ── A later round (#1744) ─────────────────────────────────
+
+/** The round strip: the only place for these three numbers. */
+function RoundStrip({ rounds }: { rounds: RoundCounts }) {
+  const cells: { kind: ResultTab; words: string; hint: string; count: number }[] = [
+    { kind: 'right', words: ROUND_WORDS.closed, hint: 'Fixed by the vendor since the last round', count: rounds.fixed },
+    { kind: 'wrong', words: ROUND_WORDS.notAddressed, hint: 'The vendor must fix these first', count: rounds.still_wrong },
+    { kind: 'wrong', words: ROUND_WORDS.new, hint: 'Wrong for the first time in this round', count: rounds.new },
+  ];
+  return (
+    <div data-slot="chat-result-rounds" aria-label="Since the last round" className="grid grid-cols-3 gap-2.5 max-md:gap-2">
+      {cells.map((cell) => (
+        <div key={cell.words} data-round-cell={cell.words} className="grid min-w-0 content-start gap-1 rounded-[14px] border bg-muted/30 px-4 py-3 max-md:px-2.5 max-md:py-2">
+          <span className="flex min-w-0 items-start gap-2 text-[13px] leading-[18px] font-semibold max-md:text-xs"><OutcomeGlyph kind={cell.kind} className="mt-px size-4 [&_svg]:size-2.5" />{cell.words}</span>
+          <span className="num text-[22px] leading-8 font-medium text-foreground max-md:text-xl">{cell.count}</span>
+          <span className="text-[12.5px] leading-[18px] text-muted-foreground max-md:hidden">{cell.hint}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function roundGroups(wrong: readonly ChatFinding[], right: readonly ChatFinding[]): { key: string; words: string; note?: string; findings: ChatFinding[] }[] {
+  const notAddressed = wrong.filter((finding) => finding.round_status === 'still_wrong');
+  const fresh = wrong.filter((finding) => finding.round_status !== 'still_wrong');
+  const closed = right.filter((finding) => finding.round_status === 'fixed_in_later_round');
+  return [
+    { key: 'not_addressed', words: ROUND_WORDS.notAddressed, note: 'the vendor must fix these first', findings: notAddressed },
+    { key: 'new', words: ROUND_WORDS.new, note: 'in this round', findings: fresh },
+    { key: 'closed', words: ROUND_WORDS.closed, note: 'since the last round', findings: closed },
+  ].filter((group) => group.findings.length > 0);
 }
 
 function SummaryFold({ children }: { children: React.ReactNode }) {

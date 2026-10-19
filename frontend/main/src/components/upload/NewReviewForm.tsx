@@ -177,8 +177,10 @@ export function NewReviewForm({ onCreated, onOpenSaved = onCreated }: NewReviewF
           onChange={(event) => setVendor(event.target.value)}
           placeholder="The company that sent the drawings"
           autoComplete="organization"
+          aria-describedby={`${vendorId}-note`}
           required
         />
+        <p id={`${vendorId}-note`} className="text-xs text-muted-foreground">Goes on the comment letter.</p>
       </div>
 
       <ProductTypeField state={productState} value={productType} onChange={setChosenProduct} />

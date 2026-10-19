@@ -228,3 +228,21 @@ def test_a_separate_files_picture_says_which_file_and_page_it_is(
     assert "page 1002 (the separate file arch.pdf, its page 2)" in words
     assert "D5 = p1002.D5" in words
     assert picture.own_page == 2
+
+
+def test_an_earlier_rounds_finding_is_on_its_own_files_page() -> None:
+    page_map, dims = separate_set()
+    page_map["files"].append("round1.pdf")
+    page_map["upload_roles"]["round1.pdf"] = "vendor"
+    page_map["pages"].append(_page("round1.pdf", 1, "vendor"))
+    dims["pages"].append({"file": "round1.pdf", "page": 1, "labels": [_label(1, "36", "vendor")]})
+    pack = Pack.from_documents(dims=dims, page_map=page_map, main_file=VENDOR)
+    assert pack.pages is not None and pack.pages.to_set("round1.pdf", 1) == 2001
+    finding = {
+        "page": 2001,
+        "vs_page": 1002,
+        "vendor_box": {"page": 2001, "x0": 1, "y0": 1, "x1": 2, "y1": 2, "file": "round1.pdf"},
+        "arch_box": {"page": 1002, "x0": 1, "y0": 1, "x1": 2, "y1": 2, "file": ARCH},
+    }
+    out = own_pages(finding, pack)
+    assert (out["page"], out["vendor_box"]["page"], out["vs_page"]) == (1, 1, 2)
