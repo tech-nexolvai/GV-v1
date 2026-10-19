@@ -117,6 +117,10 @@ class SimpleOptions:
     replay: str | None = None
     """A run folder of this chat (`simple/<run>`): its saved compare answers and blind looks are
     used instead of model calls ($0); a drawing with no saved answer is not compared."""
+    compare_missing: bool = False
+    """With `replay` (#1710, "Compare them again"): the drawings the run has no answer for (failed,
+    stopped, never started) are compared now, and the blind looks it could not make are made now;
+    every saved answer and look is used again at $0, so the new answer is the whole result."""
 
     @classmethod
     def of(cls, raw: object) -> SimpleOptions:
@@ -134,6 +138,7 @@ class SimpleOptions:
             ),
             pilot=int(pilot) if isinstance(pilot, int) and pilot > 0 else None,
             replay=str(given["replay"]) if given.get("replay") else None,
+            compare_missing=bool(given.get("compare_missing")) and bool(given.get("replay")),
         )
 
 
@@ -246,6 +251,7 @@ class _Run:
                 return self._finish("error", f"the work list could not be made ({failed})")
             self.items = list(worklist.items)
             self._scope_and_pilot()
+        self._tell("work_list", self.items, self.skipped)
         engine.critic_off = True
         with engine.timings.phase("seeding"):
             try:
@@ -274,23 +280,32 @@ class _Run:
         warm.start()
         self._open_run_dir()
         if not engine.cancel.is_set():
+            self._tell("compare_started")
             if self.options.replay:
-                self._load_saved()
+                if self.options.compare_missing and self._replayed() is None:
+                    return self._finish("error", "the run to compare again is not in this chat")
+                missing = self._load_saved()
+                if missing and not engine.cancel.is_set():
+                    self._compare_all(folder, missing)
             else:
                 self._compare_all(folder)
+        self._tell("code_checks")
         warm.join()
         # Code's own findings ($0), judged by the code checks (GV-note fix).
         engine.add_code_findings()
         with engine.timings.phase("advocate"):
             self._judge_code_findings()
+        self._tell("decide", engine.book.live())
         # A stop (the reviewer's, or the runaway guard's) never throws away what was paid for:
         # every answered drawing is verified and recorded; only the blind looks wait for money.
         with engine.timings.phase("verify"):
             verified = self._verify_all()
         with engine.timings.phase("blind"):
             verified = self._blind(verified)
+        self._tell("looked", [v for v, _item in verified])
         with engine.timings.phase("finish_checks"):
             self._record(verified)
+        self._tell("decide", engine.book.live())
         if engine.cancel.is_set():
             return self._finish("cancelled")
         return self._finish("cost_cap" if self.cap_hit else None)
@@ -362,6 +377,20 @@ class _Run:
                 engine._show_coverage()
             except Exception:  # noqa: BLE001 - the pages are then unknown, said in the summary
                 _log.warning("simple check could not record the skipped pages")
+
+    def _tell(self, name: str, *args: Any, **kwargs: Any) -> None:
+        """The live screen's state (`live_check.LiveCheck`, #1710), when the check has one (a
+        full check's message): drawings, phases, decided findings. It never stops the check."""
+        live = getattr(self.engine, "live", None)
+        if live is None:
+            return
+        try:
+            getattr(live, name)(*args, **kwargs)
+        except Exception:  # noqa: BLE001 - the live screen never stops the check
+            _log.exception("simple check: live state %s failed", name)
+
+    def _live_look(self, done: Verified) -> None:
+        self._tell("second_look", done)
 
     def _progress(self) -> None:
         progress = self.engine._progress
@@ -518,15 +547,16 @@ class _Run:
 
     # -- 3. the compare calls --
 
-    def _compare_all(self, folder: Path) -> None:
+    def _compare_all(self, folder: Path, items: Sequence[WorkItem] | None = None) -> None:
         engine = self.engine
+        items = self.compared if items is None else list(items)
         compare = _compare()
         prompts = import_module("app.review.assistant.simple_check.prompts")
         settings = compare.CompareSettings(**self.options.compare)
         system = prompts.system_prompt(engine._rules_summary(), engine.product_scope.label)
         source = compare.PictureSource(folder, engine.tools.workspace.uploads)
         try:
-            source.prefetch(self.compared)
+            source.prefetch(items)
         except Exception:  # noqa: BLE001 - each picture draws its page itself
             _log.info("simple check: pages not prefetched")
         watcher = threading.Thread(target=self._watch_cancel, daemon=True, name="gv-simple-stop")
@@ -534,7 +564,7 @@ class _Run:
         try:
             with engine.timings.phase("compare"):
                 compare.compare_all(
-                    self.compared,
+                    items,
                     provider=engine.provider,
                     source=self._guarded(source.pictures, settings),
                     system=system,
@@ -568,6 +598,7 @@ class _Run:
                     raise _NotStarted("the per-answer cap would be passed")
                 self.reserved += hold
                 self.reservations[item.id] = hold
+            self._tell("drawing_started", item.id)
             return sent
 
         return pictures
@@ -606,6 +637,13 @@ class _Run:
             ]
             engine.tools.seen.extend(seen)
         self._progress()
+        ok = outcome.status == "ok"
+        self._tell(
+            "drawing_finished",
+            outcome.work_item,
+            "answered" if ok else "failed",
+            None if ok else outcome.reason,
+        )
 
     def _charge(self, model: ChatModel, outcome: CompareOutcome) -> None:
         from app.review.assistant.chat_engine import HARNESS_ID
@@ -638,6 +676,12 @@ class _Run:
         assert self.pack is not None
         found: list[tuple[Verified, Item]] = []
         products = self.engine.product_scope.products
+        answered = sum(
+            1
+            for i in self.compared
+            if (o := self.outcomes.get(i.id)) is not None and o.status == "ok"
+        )
+        self._tell("verifying", answered)
         for item in self.compared:
             outcome = self.outcomes.get(item.id)
             if outcome is None or outcome.status != "ok" or outcome.result is None:
@@ -657,8 +701,11 @@ class _Run:
                 self.outcomes[item.id] = outcome.model_copy(
                     update={"status": "failed", "reason": f"code could not verify it ({failed})"}
                 )
+                self._tell("drawing_finished", item.id, "failed", self.outcomes[item.id].reason)
+                self._tell("verified", item.id, ())
                 continue
             found += [(v, view) for v in verification.items]
+            self._tell("verified", item.id, verification.items, scoped=self._scoped)
             if verification.missing_labels:
                 _log.info(
                     "simple check: %s leaves %d labels unaccounted",
@@ -686,6 +733,8 @@ class _Run:
             _log.info("simple check: %d red candidates outside the product scope", len(outside))
         if not candidates:
             return [(outside.get(id(v), v), item) for v, item in verified]
+        if self.options.replay and self.options.compare_missing:
+            return self._looks_again(verified, candidates, outside)
         engine = self.engine
         looked: list[Verified]
         if self.options.replay:
@@ -702,12 +751,51 @@ class _Run:
             self.blind_skipped, self.blind_skipped_count = why, len(candidates)
             looked = [with_blind(v, None, why) for v, _item in candidates]
         else:
-            looked = look_all(engine, candidates, self.options.blind)
+            self._tell("second_looks", len(candidates))
+            looked = look_all(engine, candidates, self.options.blind, on_done=self._live_look)
             self.blind_failed = sum(
                 1 for done in looked if done.outcome != "red" and _no_look(done)
             )
         for done in looked:
             self._save_blind(done)
+        after = {id(old): new for (old, _item), new in zip(candidates, looked, strict=True)}
+        after.update(outside)
+        return [(after.get(id(v), v), item) for v, item in verified]
+
+    def _looks_again(
+        self,
+        verified: list[tuple[Verified, Item]],
+        candidates: list[tuple[Verified, Item]],
+        outside: Mapping[int, Verified],
+    ) -> list[tuple[Verified, Item]]:
+        """Compare them again (#1710): each red candidate's saved look is used again ($0); a look
+        the run never made, or that failed, is made now, under the same rules as a first run (none
+        after a stop or when the money ran out)."""
+        again = {
+            id(v): _with_saved(v, self.saved_blind[v.key])
+            for v, _item in candidates
+            if _look_made(self.saved_blind.get(v.key))
+        }
+        fresh = [(v, item) for v, item in candidates if id(v) not in again]
+        made: dict[int, Verified] = {}
+        if fresh:
+            engine = self.engine
+            if engine.cancel.is_set() or self.cap_hit is not None:
+                why = (
+                    "the check was stopped"
+                    if engine.cancel.is_set()
+                    else "the per-answer cap was reached"
+                )
+                self.blind_skipped, self.blind_skipped_count = why, len(fresh)
+                done = [with_blind(v, None, why) for v, _item in fresh]
+            else:
+                self._tell("second_looks", len(fresh))
+                done = look_all(engine, fresh, self.options.blind, on_done=self._live_look)
+                self.blind_failed = sum(1 for one in done if one.outcome != "red" and _no_look(one))
+            made = {id(v): one for (v, _item), one in zip(fresh, done, strict=True)}
+        looked = [again.get(id(v)) or made[id(v)] for v, _item in candidates]
+        for one in looked:
+            self._save_blind(one)
         after = {id(old): new for (old, _item), new in zip(candidates, looked, strict=True)}
         after.update(outside)
         return [(after.get(id(v), v), item) for v, item in verified]
@@ -796,14 +884,22 @@ class _Run:
         except OSError:
             _log.exception("simple check: %s's blind look could not be saved", done.key)
 
-    def _load_saved(self) -> None:
+    def _replayed(self) -> Path | None:
+        return _replay_dir(self.engine.tools.workspace.root, self.options.replay)
+
+    def _load_saved(self) -> list[WorkItem]:
         """A replay ($0): the saved answers of an earlier run of this chat, as if just answered (no
-        model call; nothing charged again)."""
-        source = _replay_dir(self.engine.tools.workspace.root, self.options.replay)
+        model call; nothing charged again). With `compare_missing`, the drawings it has no answer
+        for are returned (to be compared now) instead of failing."""
+        source = self._replayed()
         found = load_outcomes(source) if source is not None else {}
         self.saved_blind = load_blind(source) if source is not None else {}
+        missing: list[WorkItem] = []
         for item in self.compared:
             outcome = found.get(item.id)
+            if self.options.compare_missing and (outcome is None or outcome.status != "ok"):
+                missing.append(item)
+                continue
             if outcome is None:
                 outcome = CompareOutcome(
                     work_item=item.id,
@@ -816,6 +912,7 @@ class _Run:
                 # Replayed, not paid again: its pictures still count as seen.
                 outcome = outcome.model_copy(update={"usage": {}, "cost_usd": 0.0})
             self._on_outcome(outcome)
+        return missing
 
     # -- 5. the findings and the rows --
 
@@ -953,6 +1050,7 @@ class _Run:
         files: list[str] = []
         if engine._progress is not None:
             engine._progress.phase("writing")
+        self._tell("making_files", engine.book.live())
         try:
             files = engine._full_check_files(stopped)
         except Exception:  # noqa: BLE001 - the answer still ends, with its summary
@@ -1212,6 +1310,12 @@ def _no_look(done: Verified) -> bool:
     return "blind second look was not made" in done.reason and not any(
         why in done.reason for why in ("the check was stopped", "runaway guard")
     )
+
+
+def _look_made(saved: Mapping[str, Any] | None) -> bool:
+    """A saved blind look that was made and answered (not one that failed or was never made)."""
+    look = saved.get("look") if isinstance(saved, Mapping) else None
+    return isinstance(look, Mapping) and not look.get("failed")
 
 
 def _with_saved(candidate: Verified, saved: Mapping[str, Any] | None) -> Verified:

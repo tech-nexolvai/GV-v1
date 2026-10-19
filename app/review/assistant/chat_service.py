@@ -95,6 +95,7 @@ from app.review.assistant.chat_tools import (
 )
 from app.review.assistant.chat_unknowns import asks_for_the_rest, last_unknowns, work_list_note
 from app.review.assistant.full_check_plan import read_page_map
+from app.review.assistant.live_check import LiveCheck
 from app.review.assistant.package_store import numbering
 from app.review.assistant.plan_check import (
     MAX_DOUBTS,
@@ -196,6 +197,8 @@ class RunningMessage:
     """Its answer is being (or was) stored the ordinary way."""
     abandoned: bool = False
     """Stored as interrupted at shutdown: its own answer is then never stored."""
+    live: LiveCheck | None = None
+    """A full check's live state (#1710): drawings, phases, decided findings, stopping."""
 
     def spent(self) -> int:
         engine = self.engine
@@ -204,6 +207,12 @@ class RunningMessage:
     def stop(self) -> None:
         """Cancel: the engine stops between steps and mid-stream; running commands are killed."""
         self.cancel.set()
+        live = self.live
+        if live is not None:
+            try:
+                live.stopping()  # the live screen: "Stopping…", the drawings still finishing
+            except Exception:  # noqa: BLE001 - cancelling never fails loudly
+                _log.warning("assistant chat could not show the stop")
         engine = self.engine
         if engine is not None:
             engine.stop_streams()
@@ -746,8 +755,24 @@ def run_message(job: MessageJob, run: RunningMessage, emit: Emit | None = None) 
         feed.publish(event, data)
         if emit is not None:
             emit(event, data)
+        live = getattr(run, "live", None)
+        if live is not None:
+            live.observe(event, data)
         _maybe_checkpoint(run, event)
 
+    def publish_live(event: str, data: dict[str, Any]) -> None:
+        # The live state's own events: no checkpoint (they change no block), never observed.
+        feed.publish(event, data)
+        if emit is not None:
+            emit(event, data)
+
+    if getattr(job, "mode", None) == "full_check":
+        breaker = getattr(job.provider, "breaker", None)
+        run.live = LiveCheck(
+            publish_live,
+            mode=job.full_check_mode,
+            service=lambda: getattr(breaker, "reason", None),
+        )
     try:
         configure_page_cache(workers=job.page_cache_workers, memory_mb=job.page_cache_memory_mb)
         _run_message(job, run, publish)
@@ -914,6 +939,9 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             "thinking": job.thinking,
         },
     )
+    started = getattr(run, "live", None)
+    if started is not None:
+        started.start()  # the full check's start time and "getting ready"
 
     def finish(outcome: MessageOutcome) -> None:
         _finish(job, run, emit, outcome)
@@ -1132,6 +1160,7 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
         lead_tools=harness.tools,
     )
     run.engine = engine
+    engine.live = getattr(run, "live", None)
     engine.book.earlier = dict(earlier_found)
     engine.answer_number = answer_number
     if earlier is not None and job.mode == "full_check":
@@ -1202,6 +1231,12 @@ def _say_service_stop(provider: object, outcome: MessageOutcome) -> None:
 def _finish(job: MessageJob, run: RunningMessage, emit: Emit, outcome: MessageOutcome) -> None:
     """The answer stored, then `error` (if any) and `message_end` with the stored message. Not
     when shutdown already stored it as interrupted (#1514): a question never gets two replies."""
+    live = getattr(run, "live", None)
+    if live is not None:
+        try:
+            live.finish(outcome.stopped)  # the live card's last event: done
+        except Exception:  # noqa: BLE001 - the answer is stored whatever the live screen says
+            _log.exception("assistant chat live state did not finish")
     with run.store_lock:
         if run.abandoned:
             return

@@ -979,6 +979,9 @@ class ChatEngine:
         #: findings (an architect that gives no size), for the Not-compared PDF and workbook.
         self.incomplete_note: str | None = None
         self.extra_gaps: list[dict[str, Any]] = []
+        #: A full check's live state for the live screen (`live_check.LiveCheck`, #1710), set by
+        #: `chat_service`; the simple check reports its drawings, phases and decisions to it.
+        self.live: Any = None
         #: Refusal-fallback switches already shown (#1577), and the thinking blocks the API dropped
         #: from this answer's calls because their conversation no longer matched (a bug signal).
         self._fallbacks_shown: set[tuple[str, str]] = set()

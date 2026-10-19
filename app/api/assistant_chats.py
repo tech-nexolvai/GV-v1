@@ -92,6 +92,8 @@ from app.review.assistant.chat_contract import (
     ChatFindingDecisionOut,
     ChatFullCheckPlanOut,
     ChatListOut,
+    ChatLiveOut,
+    ChatLiveStateOut,
     ChatMessageIn,
     ChatMessageOut,
     ChatOut,
@@ -454,11 +456,24 @@ def list_chats(
     package_id: UUID,
     principal: Authenticated,
     session: Annotated[Session, Depends(get_session)],
+    registry: Annotated[ChatRegistry, Depends(chat_registry)],
 ) -> ChatListOut:
     package = _package(session, package_id, principal)
+    # The messages running now (#1710): the sidebar's "Checking · 23 of 39".
+    running: dict[UUID, dict[str, Any]] = {}
+    for run in registry.runs():
+        if run.package_id == package_id:
+            running[run.chat_id] = {} if run.live is None else dict(run.live.counts())
     return ChatListOut(
-        chats=chat_summaries(session, package_id), package_name=package_name(package)
+        chats=chat_summaries(session, package_id, running), package_name=package_name(package)
     )
+
+
+def _live_of(run: RunningMessage | None) -> ChatLiveStateOut | None:
+    """A running full check's live state (#1710); `None` for a question or nothing running."""
+    if run is None or run.live is None:
+        return None
+    return ChatLiveStateOut.model_validate(run.live.snapshot())
 
 
 @router.post(
@@ -517,6 +532,31 @@ def read_chat(
         ],
         running=run is not None,
         running_message_id=None if run is None else run.message_id,
+        live=_live_of(run),
+    )
+
+
+@router.get(
+    "/chats/{chat_id}/live",
+    response_model=ChatLiveOut,
+    summary="A running full check's live state, in one call",
+)
+def read_live(
+    chat_id: UUID,
+    principal: Authenticated,
+    session: Annotated[Session, Depends(get_session)],
+    registry: Annotated[ChatRegistry, Depends(chat_registry)],
+) -> ChatLiveOut:
+    """#1710: the whole live card now (the drawings, the phase with its counts, the findings code
+    has decided, the tally, stopping), for a page that reconnects mid-run; then follow
+    `GET /chats/{chat_id}/messages/{message_id}/events` for the changes. Not running: `running`
+    false and `live` null (the stored answer has the result)."""
+    _chat(session, chat_id, principal)
+    run = registry.get(chat_id)
+    return ChatLiveOut(
+        running=run is not None,
+        message_id=None if run is None else run.message_id,
+        live=_live_of(run),
     )
 
 
@@ -1175,6 +1215,7 @@ def _simple_options(settings: Settings, body: ChatMessageIn) -> dict[str, Any] |
         "blind_effort": settings.assistant_simple_blind_effort,
         "pilot": body.pilot,
         "replay": body.replay,
+        "compare_missing": body.compare_missing,
     }
 
 
