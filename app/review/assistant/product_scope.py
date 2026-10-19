@@ -232,20 +232,9 @@ def _words_of(page_text: str | Callable[[], str]) -> str:
     return page_text() if callable(page_text) else page_text
 
 
-def filed_under(finding: Mapping[str, Any], page_text: str | Callable[[], str] = "") -> set[str]:
-    """The products an item's words file it under (orchestrator, 2026-10-18 and 2026-10-19: an
-    outlet or a string on a cabinet run is a cabinet item), the first step that names any:
-
-    1. its own name, after the area ("Vanity top width" is a countertop's, whatever the area is
-       called): the registry's words and hints ("upper outlet", "top of counter"; "counter /
-       cabinets tags" names both);
-    2. its whole name's words ("Countertop: overall length");
-    3. its other words (why, both values, the question and help it gives);
-    4. the main product of its page's printed words and area title (`main_product`: a page of
-       base cabinets with fillers and drawers is a cabinet run);
-    5. its page's words and hints (several products may stand there).
-
-    Products not active yet count too (a pendant light is lighting). Empty: no product."""
+def _filed(finding: Mapping[str, Any], page_text: str | Callable[[], str]) -> tuple[set[str], bool]:
+    """`filed_under`'s products, and whether they came from the page (step 4) rather than the
+    item's own words."""
     own = _own_name(finding.get("item"))
     for text, hints in (
         (own, True),
@@ -254,25 +243,48 @@ def filed_under(finding: Mapping[str, Any], page_text: str | Callable[[], str] =
     ):
         named = named_products(text, hints=hints, every=True)
         if named:
-            return named
-    words = _words_of(page_text)
-    main = main_product(words)
-    if main is not None:
-        return {main}
-    return named_products(words, hints=True, every=True)
+            return named, False
+    return named_products(_words_of(page_text), hints=True, every=True), True
+
+
+def filed_under(finding: Mapping[str, Any], page_text: str | Callable[[], str] = "") -> set[str]:
+    """The products an item is filed under, the first step that names any:
+
+    1. its own name, after the area ("Vanity top width" is a countertop's, whatever the area is
+       called): the registry's words and hints ("upper outlet", "top of counter"; "counter /
+       cabinets tags" names both);
+    2. its whole name's words ("Countertop: overall length");
+    3. its other words (why, both values, the question and help it gives);
+    4. every product its page's printed words and area title show, words and hints (orchestrator,
+       2026-10-19, the inclusive rule: an outlet or a string on a drawing of several products
+       counts for EACH of them, so a one-product pick never loses an item that may be its own).
+
+    An item named by its own words stays strict (steps 1-3). Products not active yet count too (a
+    pendant light is lighting). Empty: no product."""
+    return _filed(finding, page_text)[0]
 
 
 def category_for(finding: Mapping[str, Any], page_text: str | Callable[[], str] = "") -> str:
-    """A finding's category when every product is in scope: its own when it is an active product;
-    for a code-made `other` item (`CODE_MADE`), the one product its words, else its page's main
-    product, file it under (`filed_under`; two or none: `other`)."""
+    """A finding's category when every product is in scope (All: each item once): its own when it
+    is an active product; for a code-made `other` item (`CODE_MADE`), the one product it is filed
+    under (`filed_under`). Filed under several by its page (no product words of its own): the one
+    its page shows most (`main_product`), else the first in the registry's order. Several named by
+    its own words, or none: `other`."""
     category = str(finding.get("category") or OTHER_CATEGORY)
     if category in registry().active_ids():
         return category
     if str(finding.get("created_by") or "") not in CODE_MADE:
         return category
-    named = filed_under(finding, page_text)
-    return next(iter(named)) if len(named) == 1 else category
+    named, from_page = _filed(finding, page_text)
+    if len(named) == 1:
+        return next(iter(named))
+    if not named or not from_page:
+        return category
+    main = main_product(_words_of(page_text))
+    if main is not None and main in named:
+        return main
+    ordered = registry().ordered(sorted(named))
+    return ordered[0] if ordered else category
 
 
 def no_rules_note(products: Sequence[str]) -> str | None:
