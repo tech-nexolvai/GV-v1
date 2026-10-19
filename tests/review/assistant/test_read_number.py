@@ -351,3 +351,26 @@ def test_disputed_reference_points_are_still_stopped_with_every_value_read(
     assert classify(stored, proved=False).outcome == "not_compared"
     points = _one(_pair("p2.D1", "p1.D1", "different_points", ends=ends))
     assert points.outcome == "not_compared" and points.reason_code == "different_reference"
+
+
+# ---- separate files: a set page is read at its file's own page (#1722) ------------------------------
+
+
+def test_a_separate_files_set_page_is_read_at_its_own_page(tmp_path: Path) -> None:
+    from app.review.assistant.simple_check.verify import Item, Pack, Region
+    from tests.review.assistant.test_simple_pairing import ARCH, VENDOR, _separate_pack
+
+    pack = Pack.from_folder(_separate_pack(tmp_path / "pack"), VENDOR)
+    whole = (0.0, 0.0, 600.0, 850.0)
+    item = Item("p1.v0", Region(VENDOR, 1, whole), (Region(ARCH, 1001, whole),))
+    number = _number({})
+    entry = _unlabelled(architect=None, architect_page=1001)
+    result = {"work_item": item.id, "pairs": [], "other_items": [entry], "unaccounted_labels": []}
+    v.verify_answer(result, item, pack, number=number)
+    asked = [(r.file, r.page, r.side) for r in number.asked]
+    assert (ARCH, 1, "architect") in asked and all(page < 1000 for _f, page, _s in asked)
+
+
+def test_a_page_qualified_label_id_names_the_pages_label(tmp_path: Path) -> None:
+    found = _read(_forty_six(tmp_path), label="p1001.D1", labels=_labels())
+    assert found.outcome == "read" and found.label == "D1"

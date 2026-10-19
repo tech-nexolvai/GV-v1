@@ -101,6 +101,8 @@ class Request:
 
     file: str
     page: int
+    """The file's own page (from 1): a set's page of a separate file (1001...) is turned into it
+    first (`simple_check.set_pages`, `Pack.own_page`)."""
     side: str = "vendor"
     label: str | None = None
     """A label id of the page (`D17`)."""
@@ -510,8 +512,11 @@ def _find(
     """Step 1: the pack's label to read, or the reading that ends here (several spots, none)."""
     mine = [label for label in labels or () if label.get("side") == request.side]
     if request.label:
+        # A label id names its page's label: `D17`, or a page-qualified `p1001.D17` (the page is
+        # the request's own page; a set's file-aware id is turned into it by the caller).
+        wanted = request.label.strip().rsplit(".", 1)[-1].strip().upper()
         for label in labels or ():
-            if str(label.get("id")) == request.label:
+            if str(label.get("id")).upper() == wanted:
                 return label, None
         return None, Reading(
             "unread",
