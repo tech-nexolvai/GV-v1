@@ -158,6 +158,9 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   const [thread, setThread] = useState<{ chatId: string; messages: ViewMessage[] } | null>(null);
   const runRef = useRef<Reading | null>(null);
   const stopTimer = useRef<number | null>(null);
+  // The chat whose answer the reviewer stopped (#1683): until that answer is saved, reading it again
+  // keeps Stop pressed ("Stopping…") rather than offering it a second time.
+  const stoppedChat = useRef<string | null>(null);
   const counter = useRef(0);
   // An answer still being written when its chat was opened: followed live (#1479).
   const [toFollow, setToFollow] = useState<{ chatId: string; messageId: string } | null>(null);
@@ -176,9 +179,24 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
         setLoaded({ chatId, chat });
         setThread({ chatId, messages: chat.messages.map(fromSaved) });
         setLoadError(null);
+        // A stopped answer that is saved by now (#1683) needs no "Stopping…" any more; one still
+        // being finished is followed (below), with Stop still pressed.
+        if (stoppedChat.current === chatId && !(chat.running && chat.running_message_id)) {
+          stoppedChat.current = null;
+          setRunning(false);
+          setStopping(false);
+        }
         if (chat.running && chat.running_message_id) setToFollow({ chatId, messageId: chat.running_message_id });
       },
-      (error: unknown) => current && setLoadError({ chatId, message: chatFailureWords(error), missing: error instanceof ApiError && error.status === 404 }),
+      (error: unknown) => {
+        if (!current) return;
+        setLoadError({ chatId, message: chatFailureWords(error), missing: error instanceof ApiError && error.status === 404 });
+        if (stoppedChat.current === chatId) {
+          stoppedChat.current = null;
+          setRunning(false);
+          setStopping(false);
+        }
+      },
     );
     return () => {
       current = false;
@@ -237,6 +255,8 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
       const patch = (change: (message: ViewMessage) => ViewMessage) =>
         setThread((now) => (now && now.chatId === target ? { ...now, messages: now.messages.map((message) => (message.key === key ? change(message) : message)) } : now));
       let started = false;
+      // #1683: a stopped answer is read again from the server; until then Stop stays "Stopping…".
+      let rereading = false;
       try {
         await stream((event) => {
           if (!started) onStarted?.();
@@ -248,6 +268,8 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
             setThread((now) => (now && now.chatId === target ? { ...now, messages: applyCorrection(now.messages, update) } : now));
           }
         }, run.controller.signal);
+        // The answer ended and was saved: a Stop pressed on it is over (#1683).
+        if (stoppedChat.current === target) stoppedChat.current = null;
         patch((message) => (message.status === 'running' ? settle(message) : message));
         setAnnounce('Answer ready');
         // The first message names the chat; the set's spending moved on.
@@ -264,6 +286,13 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
           setAnnounce('Stopped');
           setListAsk((n) => n + 1);
           setModelsAsk((n) => n + 1);
+          // #1683: what was read so far is not what the server saves. A stopped full check lets the
+          // calls in flight finish, verifies and makes its files after the grace above; so the chat is
+          // read again: the saved answer replaces this one, or one still being finished is followed.
+          if (stoppedChat.current === target) {
+            rereading = true;
+            setLoadAsk((n) => n + 1);
+          }
           return 'done';
         }
         if (!started) return 'refused';
@@ -281,8 +310,10 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
             window.clearTimeout(stopTimer.current);
             stopTimer.current = null;
           }
-          setRunning(false);
-          setStopping(false);
+          if (!rereading) {
+            setRunning(false);
+            setStopping(false);
+          }
         }
       }
     },
@@ -297,9 +328,11 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
     const run: Reading = { chatId: target, controller: new AbortController(), left: false };
     runRef.current = run;
     const key = `follow-${messageId}`;
+    // An answer the reviewer already stopped (#1683) is still being finished: Stop stays pressed.
+    const stillStopping = stoppedChat.current === target;
     setRunning(true);
-    setStopping(false);
-    setAnnounce('Answer in progress');
+    setStopping(stillStopping);
+    setAnnounce(stillStopping ? 'Stopping' : 'Answer in progress');
     setThread((now) =>
       now && now.chatId === target ? { ...now, messages: [...now.messages.filter((message) => message.key !== key), followedAnswer(messageId)] } : now);
     void read(run, key, (onEvent, signal) => api.follow(target, messageId, onEvent, signal))
@@ -381,6 +414,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   async function send(text: string, mode: ChatMode = 'chat', continueFrom?: { id: string; mode: ChatMode }, task?: ChatTaskEdit, planAnswers?: ChatPlanAnswer[]) {
     const question = text.trim();
     if (!question || runRef.current || blocked || !choice) return;
+    stoppedChat.current = null;
     counter.current += 1;
     const userKey = `local-question-${counter.current}`;
     const answerKey = `local-answer-${counter.current}`;
@@ -492,6 +526,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   function stop() {
     const run = runRef.current;
     if (stopping || !run || !run.chatId) return;
+    stoppedChat.current = run.chatId;
     setStopping(true);
     setAnnounce('Stopping');
     api.cancel(run.chatId).then(
