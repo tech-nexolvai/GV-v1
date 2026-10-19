@@ -101,6 +101,7 @@ from app.review.assistant import verify_value as vv
 from app.review.assistant.finding_checks import to_inches, units_check
 from app.review.assistant.measure import _pieces
 from extraction.stamp_text import path_ink
+from extraction.visible_text import ink_picture
 
 __all__ = [
     "LABELS_VERSION",
@@ -212,6 +213,8 @@ def _parse(pdf: Path, page_index: int) -> _Parsed:
     stat = pdf.stat()
     key = (str(pdf.resolve()), stat.st_mtime_ns, stat.st_size, page_index)
     vendor = vv._vendor_page(pdf.read_bytes(), page_index)
+    with import_module("app.review.assistant.chat_drawing").PDFIUM_LOCK:
+        ink = ink_picture(vendor)
     chars: list[Any] = []
     paths: list[Any] = []
     segments: list[Segment] = []
@@ -225,7 +228,7 @@ def _parse(pdf: Path, page_index: int) -> _Parsed:
         size = (abs(corner[0] - start[0]), abs(corner[1] - start[1]))
         for char in page.chars:
             made = vv._char(char, shown)
-            if made is not None and vv._on_page(made.box, size):
+            if made is not None and vv._visible(made.box, size, ink):
                 chars.append(made)
         for item in (*page.curves, *page.lines, *page.rects):
             made_path = vv._path(item, shown)

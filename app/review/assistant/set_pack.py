@@ -716,6 +716,9 @@ pages/<name>/p-NNN.png every page at 100 dpi (drawings only). Zoom to read numbe
                        <name> is the upload's name without ".pdf" (A.pdf: pages/A/p-003.png);
                        NNN is the page with three digits.
 contact/*.png          nine pages per picture, page numbers stamped: the whole set at a glance.
+health.json            per page: what kind of page it is and what was or was not read (typed or
+                       drawn lettering, hidden text not used, AutoCAD SHX text used, layers off,
+                       scanned, straightened, markups not read), with a plain sentence each.
 dims.json              every printed dimension code found, numbered per page (D17): value,
                        inches, box, side, dimension line. zoom marks: true draws the ids.
                        route "drawn": numbers drawn as pen strokes (the vendor's, and an
@@ -784,6 +787,11 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
         )
         done.append("page_map")
         _set_status(folder, "building", done, files=names)
+        try:
+            _health(folder, uploads, listing)
+            done.append("health")
+        except Exception as failed:  # noqa: BLE001 - the pack works without the health check
+            _log.warning("assistant set pack health check failed: %s", type(failed).__name__)
         for name in names:
             pages = _render_pages(copies[name], folder / "pages" / stem(name), RENDER_DPI)
             _contact_sheets(name, pages, folder / "contact")
@@ -798,6 +806,23 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
         _set_status(folder, "failed", done, files=names, error=type(failed).__name__)
         raise
     _set_status(folder, "ready", done, files=names)
+
+
+def _health(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]) -> None:
+    """`health.json`: each page's facts and plain sentences (`extraction/page_health`, #1745)."""
+    health = import_module("extraction.page_health")
+    pages: list[dict[str, Any]] = []
+    for item in listing:
+        name = str(item["name"])
+        data = (uploads / name).read_bytes()
+        with PDFIUM_LOCK:
+            document = pdfium.PdfDocument(data)
+            count = len(document)
+            document.close()
+        for number in range(1, count + 1):
+            with PDFIUM_LOCK:
+                pages.append(health.page_health(data, name, number, item))
+    _write_json(folder / "health.json", {"version": PACK_VERSION, "pages": pages})
 
 
 def _drawn_budget() -> float:
