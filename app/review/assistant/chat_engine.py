@@ -176,6 +176,7 @@ from app.review.assistant.chat_tools import (
     MAX_AGENTS,
     MAX_PARALLEL_COMMANDS,
     PARALLEL_TOOLS,
+    TOOL_FAILED_WORDS,
     ChatTools,
     TaskList,
     ToolResult,
@@ -1431,6 +1432,36 @@ class ChatEngine:
             "is_error": True,
         }
 
+    def _dispatch_safely(
+        self, name: str, raw: object, step: dict[str, Any], *, helper: bool, by: str = "lead"
+    ) -> ToolResult:
+        """`_dispatch`, with an error nobody planned for (a bug, a damaged set-pack file) turned
+        into a plain tool error the model reads: the answer goes on, and the step ends failed
+        instead of spinning for ever (harness audit 2026-10-19). The error itself is logged."""
+        try:
+            return self._dispatch(name, raw, step, helper=helper, by=by)
+        except Exception:  # noqa: BLE001 - the model is told plainly; the answer goes on
+            _log.exception("assistant chat tool %s failed", name)
+            return ToolResult(
+                content=[{"type": "text", "text": f"Refused: {TOOL_FAILED_WORDS}"}],
+                step={**step, "ok": False, "output": TOOL_FAILED_WORDS},
+                is_error=True,
+            )
+
+    def _guarded(
+        self, call: Mapping[str, Any], work: Callable[[], dict[str, Any]]
+    ) -> Callable[[], dict[str, Any]]:
+        """A finding or ledger tool's work, with an unplanned error told as a tool error."""
+
+        def run() -> dict[str, Any]:
+            try:
+                return work()
+            except Exception:  # noqa: BLE001 - the model is told plainly; the answer goes on
+                _log.exception("assistant chat tool %s failed", call.get("name"))
+                return self._not_run(call, TOOL_FAILED_WORDS.rstrip("."))
+
+        return run
+
     def _dispatch(
         self, name: str, raw: object, step: dict[str, Any], *, helper: bool, by: str = "lead"
     ) -> ToolResult:
@@ -1517,12 +1548,14 @@ class ChatEngine:
                 bad = self._not_run(call, "its input was cut off or not valid JSON")
                 return lambda: bad
             if name in FINDING_TOOL_NAMES:
-                return lambda: self._result(
-                    call, self._finding_tool(name, call.get("input"), "lead")
+                return self._guarded(
+                    call,
+                    lambda: self._result(call, self._finding_tool(name, call.get("input"), "lead")),
                 )
             if name in LEDGER_TOOL_NAMES:
-                return lambda: self._result(
-                    call, self._ledger_tool(name, call.get("input"), "lead")
+                return self._guarded(
+                    call,
+                    lambda: self._result(call, self._ledger_tool(name, call.get("input"), "lead")),
                 )
             # The step shows at once, in the order asked, even when its work runs alongside others.
             step = new_step(str(call.get("id")), name, call.get("input"))
@@ -1530,7 +1563,7 @@ class ChatEngine:
             self.emit("step_start", {"index": index, "step": step})
 
             def work() -> dict[str, Any]:
-                outcome = self._dispatch(name, call.get("input"), step, helper=False)
+                outcome = self._dispatch_safely(name, call.get("input"), step, helper=False)
                 with self._lock:
                     self.blocks[index] = {"type": "step", "step": outcome.step}
                 self.emit("step_end", {"index": index, "step": outcome.step})
@@ -3560,13 +3593,17 @@ class ChatEngine:
             return lambda: skipped
         if name in HELPER_FINDING_TOOL_NAMES or (name == "update_finding" and agent.lens == "lead"):
             # The full check's lead review (#1641) places items already recorded.
-            return lambda: self._result(call, self._finding_tool(name, call.get("input"), by))
+            return self._guarded(
+                call, lambda: self._result(call, self._finding_tool(name, call.get("input"), by))
+            )
         if name in LEDGER_TOOL_NAMES:
-            return lambda: self._result(call, self._ledger_tool(name, call.get("input"), by))
+            return self._guarded(
+                call, lambda: self._result(call, self._ledger_tool(name, call.get("input"), by))
+            )
 
         def work() -> dict[str, Any]:
             step = new_step(str(call.get("id")), name, call.get("input"))
-            outcome = self._dispatch(name, call.get("input"), step, helper=True, by=by)
+            outcome = self._dispatch_safely(name, call.get("input"), step, helper=True, by=by)
             with self._lock:
                 entry["steps"].append(outcome.step)
             self.emit(
@@ -3873,7 +3910,11 @@ class ChatEngine:
             return self._run()
         except Exception as failed:  # noqa: BLE001 - the message is still stored, plainly
             _log.exception("assistant chat message failed: %s", type(failed).__name__)
-            self.tools.sandbox.kill_all()
+            self._end_running_steps()
+            try:
+                self.tools.sandbox.kill_all()
+            except Exception:  # noqa: BLE001 - best effort
+                _log.debug("assistant chat sandbox commands not stopped")
             try:
                 self._close_checks()
             except Exception:  # noqa: BLE001 - best effort
@@ -3897,6 +3938,24 @@ class ChatEngine:
                 error="Something went wrong in the assistant, so this answer stopped. Please ask "
                 "again.",
             )
+
+    def _end_running_steps(self) -> None:
+        """Every step still shown as running ends as stopped: a stored answer never spins."""
+        stopped = "Stopped: the answer ended before this step finished."
+        with self._lock:
+            for n, block in enumerate(self.blocks):
+                step = block.get("step") if block.get("type") == "step" else None
+                if not isinstance(step, dict):
+                    continue
+                agents = [
+                    {**agent, "ok": False} if agent.get("ok") is None else agent
+                    for agent in step.get("agents") or []
+                ]
+                if step.get("ok") is None or agents != list(step.get("agents") or []):
+                    ended = {**step, "agents": agents or step.get("agents")}
+                    if step.get("ok") is None:
+                        ended.update(ok=False, output=step.get("output") or stopped)
+                    self.blocks[n] = {"type": "step", "step": ended}
 
     @property
     def _lead_max_tokens(self) -> int:
