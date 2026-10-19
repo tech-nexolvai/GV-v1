@@ -491,6 +491,7 @@ export type KeepReason =
   | 'needs_job_value'
   | 'layout'
   | 'vendor_disagrees'
+  | 'architect_outside_gv_rule'
   | 'other';
 
 export interface FindingSettled {
@@ -870,6 +871,7 @@ export type ChatTool =
   | 'review_results'
   | 'compare_rounds'
   | 'verify_value'
+  | 'read_number'
   | 'measure_on_drawing'
   | 'zoom'
   | 'read_under_markup'

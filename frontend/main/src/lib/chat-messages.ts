@@ -568,6 +568,8 @@ function phraseFor(step: ChatStep): { key: string; phrase: Phrase } {
       return { key: 'agents', phrase: { one: 'asked a helper', many: (n) => `asked ${n} helpers` } };
     case 'read_under_markup':
       return { key: 'under', phrase: { one: "read under GV's markup", many: (n) => `read under GV's markup ${n} times` } };
+    case 'read_number':
+      return { key: 'number', phrase: { one: 'read a number by code', many: (n) => `read ${n} numbers by code` } };
     case 'drawing_facts':
       return { key: 'facts', phrase: { one: 'read the drawing facts', many: (n) => `read the drawing facts ${n} times` } };
     case 'remember':

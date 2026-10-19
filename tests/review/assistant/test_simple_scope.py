@@ -321,3 +321,32 @@ def test_labels_with_no_architect_size_are_one_row_per_drawing() -> None:
     assert row["what"].endswith("and 3 more") and row["category"] == "cabinet"
     listed = not_compared.gap_rows([row])
     assert len(listed) == 1 and listed[0].reason == "nothing_to_compare"
+
+
+def test_labels_the_ai_was_unsure_about_are_their_own_row() -> None:
+    """Unsure labels with no architect label are one row per drawing too, with their own reason,
+    never "the architect gives no size" (the architect may print it)."""
+    from app.review.assistant.simple_check import run as run_module
+    from app.review.assistant.simple_check.verify import Verified
+
+    labels = [
+        Verified(
+            f"p7.v1:p7.D{n}",
+            "pair",
+            "listed",
+            "the AI was unsure and no printed value was found",
+            "ai_unsure",
+            vendor={"id": f"D{n}", "page": 7, "text": f'{n}"'},
+        )
+        for n in range(1, 4)
+    ]
+    row = run_module._no_size_row("p7.v1", "cabinet", labels)
+    assert row["what"].startswith(
+        "Vendor drawing on page 7: 3 dimensions not settled from the drawings (no printed "
+        'architect value found): 1" (D1)'
+    )
+    assert "gives no size" not in row["what"]
+    listed = not_compared.gap_rows([row])
+    assert len(listed) == 1 and listed[0].reason == "ai_unsure"
+    # Sent to the vendor: its own words, kept (no internal words to scrub), never "no size".
+    assert listed[0].item == row["what"] and "no size" not in listed[0].why

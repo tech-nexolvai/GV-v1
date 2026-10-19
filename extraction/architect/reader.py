@@ -60,7 +60,7 @@ from uuid import UUID
 import pdfplumber
 import pikepdf
 
-from evidence.coordinates import PdfPoint, StoredPoint
+from evidence.coordinates import StoredPoint
 from extraction.annotations import read_markup_layer
 from extraction.architect.labels import Qualifier
 from extraction.architect.outline import (
@@ -441,8 +441,9 @@ def page_stamps(
     pictures: list[ArchitectPicture] = []
     with pikepdf.open(io.BytesIO(data)) as pdf:
         page = pdf.pages[page_index]
-        media = [_decimal(value) for value in page.obj.get("/MediaBox", [0, 0, 612, 792])]
-        crop = [_decimal(value) for value in page.obj.get("/CropBox", media)]
+        # Through pikepdf's boxes, which follow the page tree: a page may inherit its boxes, and a
+        # Letter-size guess for one that does placed every stamp wrong (#1724).
+        crop = [_decimal(value) for value in page.cropbox]
         top_edge = crop[3]
         left_edge = crop[0]
         for index, annotation in enumerate(page.obj.get("/Annots") or ()):
@@ -859,7 +860,7 @@ def open_page(
     try:
         with pdfplumber.open(io.BytesIO(data)) as document:
             page = document.pages[page_index]
-            transform, height = page_frame(page, dpi)
+            transform, frame = page_frame(page, dpi)
             moved = _ZeroOrigin(page, exclude)
             ink = ink_from_page(moved, drawing_boxes=tuple(drawing_boxes))
             pixel = pixel_placement(page, dpi)
@@ -880,7 +881,7 @@ def open_page(
     dx, dtop = moved.dx, moved.dtop
 
     def place(x: Decimal, top: Decimal) -> StoredPoint:
-        return transform.to_stored(transform.to_image(PdfPoint(x=x + dx, y=height - (top + dtop))))
+        return transform.to_stored(transform.to_image(frame.to_pdf(x + dx, top + dtop)))
 
     def pixels(box: Box) -> tuple[int, int, int, int]:
         first = pixel(box.x0 + dx, box.top + dtop)

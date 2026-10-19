@@ -328,7 +328,7 @@ class PictureSource:
         pages: dict[str, set[int]] = {}
         for item in items:
             for drawing in (item.vendor, *item.architect):
-                pages.setdefault(drawing.file, set()).add(drawing.page)
+                pages.setdefault(drawing.file, set()).add(drawing.own_page)
         for name, numbers in pages.items():
             try:
                 pdf = self._pack.drawings_only(self.folder, self.uploads, name)
@@ -351,7 +351,7 @@ class PictureSource:
         from PIL import Image
 
         crop = self._pack.crop_picture(
-            pdf, drawing.page, part.box, part.dpi, cache=self.folder / self._pack.HIRES
+            pdf, drawing.own_page, part.box, part.dpi, cache=self.folder / self._pack.HIRES
         )
         png, width, height = crop.png, crop.width, crop.height
         budget = OVERVIEW_TOKENS if part.part == "overview" else MAX_IMAGE_TOKENS
@@ -373,6 +373,7 @@ class PictureSource:
             role=drawing.role,
             file=drawing.file,
             page=drawing.page,
+            file_page=drawing.file_page,
             box=crop.box,
             width=width,
             height=height,
@@ -392,6 +393,9 @@ def _caption(picture: Picture, item: WorkItem) -> str:
     if picture.role == "architect" and item.architect and picture.drawing == item.architect[0].ref:
         whose = "the governing architect drawing"
     part = "" if picture.part == "whole" else f", {picture.part}"
+    if picture.file_page is not None:
+        # A separate file's page (#1722): its set page names its ids; say which file it is.
+        part = f" (the separate file {picture.file}, its page {picture.file_page}){part}"
     tags = (
         f"; its tags are page {picture.page}'s (D5 = p{picture.page}.D5)" if picture.labels else ""
     )
@@ -697,6 +701,7 @@ def to_result(
         pairs=tuple(pairs),
         other_items=tuple(others),
         unaccounted_labels=tuple(dict.fromkeys(unaccounted)),
+        same_drawing=reply.same_drawing,
     )
     problems += check_result(result, item)
     return result, problems

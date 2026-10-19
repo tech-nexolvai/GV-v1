@@ -213,6 +213,7 @@ from app.review.assistant.classification import not_compared_line
 from app.review.assistant.decision_resolver import recount_words, resolve_answer
 from app.review.assistant.dim_index import labels_for
 from app.review.assistant.escalation import Escalation, escalate_answer
+from app.review.assistant.filler_range import add_to_answer as add_filler_range
 from app.review.assistant.full_check_brief import (
     LENSES,
     checklist_gaps,
@@ -247,6 +248,7 @@ from app.review.assistant.send_package import (
 )
 from app.review.assistant.sharpen import helper_lines
 from app.review.assistant.spot_guard import dropped as spot_dropped
+from app.review.assistant.spot_locate import code_spotted
 from app.review.assistant.vendor_consistency import add_to_answer as add_consistency
 from app.review.assistant.vendor_consistency import page_texts
 from app.runs.rates import ModelRates, call_cost_micros
@@ -1537,6 +1539,8 @@ class ChatEngine:
             return tools.str_replace(raw, step)
         if name == "verify_value":
             return tools.verify_value(raw, step)
+        if name == "read_number":
+            return tools.read_number(raw, step)
         if name == "measure_on_drawing":
             return tools.measure_on_drawing(raw, step)
         if name == "drawing_facts":
@@ -2417,7 +2421,8 @@ class ChatEngine:
 
     def add_code_findings(self) -> None:
         """The finish's code findings, $0, once per answer: the reading ledger's, the vendor
-        consistency check's (#1584), the finish check's (#1623) and code's own pairs. A roster
+        consistency check's (#1584), the finish check's (#1623), code's own pairs and GV's filler
+        range on the vendor's fillers (`filler_range`). A roster
         full check adds them before its proof steps (#1641), so its blind reads and devil's
         advocate see them; the trust phase then does not add them again."""
         if self._code_findings_added:
@@ -2440,6 +2445,10 @@ class ChatEngine:
                 add_code_pairs(self)  # dimensions code paired by itself, Wrong or Right, $0
             except Exception:  # noqa: BLE001 - the answer goes on without them
                 _log.exception("assistant chat code pairs failed")
+            try:
+                add_filler_range(self)  # GV's filler range on the vendor's fillers, $0
+            except Exception:  # noqa: BLE001 - the answer goes on without it
+                _log.exception("assistant chat filler range check failed")
 
     def _code_finish(self) -> None:
         """A stopped full check's finish, by code only: no model call."""
@@ -3369,7 +3378,8 @@ class ChatEngine:
         seeds = {
             str(f["record_id"]): f
             for f in self.book.by("gv_review")
-            if f.get("record_id") and not (f.get("arch_box") or f.get("vendor_box"))
+            # A row whose only spots code found (#1738) still waits for a helper's reading.
+            if f.get("record_id") and code_spotted(f)
         }
         for found in self.book.by(by):
             seed = seeds.pop(str(found.get("record_id") or ""), None)
@@ -3613,8 +3623,7 @@ class ChatEngine:
         others: list[str] = []
         findings = self.book.live()
         for finding in findings:
-            boxed = finding.get("arch_box") or finding.get("vendor_box")
-            if finding.get("created_by") == "gv_review" and not boxed:
+            if finding.get("created_by") == "gv_review" and code_spotted(finding):
                 unboxed.append(
                     f"- {finding['id']} page {finding['page']}: {finding['item']}: architect "
                     f"{finding['architect']}; vendor {finding['vendor']} "
