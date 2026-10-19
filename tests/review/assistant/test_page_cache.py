@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -136,6 +137,41 @@ def test_two_askers_at_once_draw_the_page_once(
     results: list[Any] = []
 
     def ask() -> None:
+        results.append(page_cache.cut(cache, pdf, 3, (100, 100, 300, 300), 2))
+
+    threads = [threading.Thread(target=ask) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(results) == 4 and all(r is not None for r in results)
+    assert drawn == [3]
+
+
+def test_askers_racing_to_start_a_page_draw_it_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Looking for a running drawing and starting one are one step: with the pool slow to hand
+    out (as a busy machine is), four askers at once still draw the page once. They used to look,
+    all find none, and all start one (CI saw [3, 3, 3, 3])."""
+    pdf = _drawing(tmp_path / "set.pdf")
+    cache = tmp_path / "hires"
+    drawn = _count_renders(monkeypatch)
+    for name in ("_executor", "_executor_locked"):
+        real = getattr(page_cache, name, None)
+        if real is None:
+            continue
+
+        def slow(real: Any = real) -> Any:
+            time.sleep(0.05)
+            return real()
+
+        monkeypatch.setattr(page_cache, name, slow)
+    start = threading.Barrier(4)
+    results: list[Any] = []
+
+    def ask() -> None:
+        start.wait()
         results.append(page_cache.cut(cache, pdf, 3, (100, 100, 300, 300), 2))
 
     threads = [threading.Thread(target=ask) for _ in range(4)]
