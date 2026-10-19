@@ -85,6 +85,7 @@ import pikepdf
 
 from app.review.assistant import ink_labels
 from app.review.assistant.finding_checks import claim_value, dimension_tokens, to_inches
+from extraction.gv_marks import without_gv_marks
 from extraction.reader import pixel_placement
 from extraction.stamp_text import carries_drawing, drawing_ink, path_ink
 from extraction.visible_text import InkPicture, ink_picture, is_shx_comment, shx_comment_text
@@ -295,7 +296,7 @@ _PAGE_LOCKS: dict[tuple[str, int, int, int], threading.Lock] = {}
 
 def _vendor_page(data: bytes, page_index: int) -> bytes:
     """A one-page copy of page `page_index` with its own content and only its pasted drawings
-    (`carries_drawing`), merged into it."""
+    (`carries_drawing`), merged into it; GV Review's own signed marks emptied (`gv_marks`)."""
     with pikepdf.open(io.BytesIO(data)) as source:
         page = source.pages[page_index]
         out = pikepdf.new()
@@ -310,6 +311,8 @@ def _vendor_page(data: bytes, page_index: int) -> bytes:
         # where the page draws strokes under them (`visible_text`).
         shx_comment_text(out, copy, [a for a in annotations if is_shx_comment(a)])
         copy.obj["/Annots"] = pikepdf.Array([a for a in annotations if carries_drawing(a)])
+        # GV Review's own marks, drawn on a page that came back (`gv_marks`), are never read.
+        without_gv_marks(out, copy)
         out.flatten_annotations(mode="all")
         buffer = io.BytesIO()
         out.save(buffer)

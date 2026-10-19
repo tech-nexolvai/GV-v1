@@ -23,7 +23,8 @@ places, the symbol font decoded. On top of that:
 - a millimetre value over its inches in brackets (`457` over `[18]`) is one label, `457 [18]`;
 - a bare number (no inch mark, no fraction, no bracket) is a label only when code finds a dimension
   line beside it, and never on a drawing that writes millimetres over inches (there a lone bare
-  number is millimetres);
+  number is millimetres), nor inside a tag-sized closed shape (a circle, an oval, a box: the `01`
+  of a drawing-reference bubble is the tag's name, not 1 inch);
 - a scale note (`1/2" = 1'-0"`) is not a dimension.
 
 **The drawn route** (the vendor's numbers drawn as lines, within a time budget,
@@ -124,6 +125,13 @@ MAX_LABELS: Final = 400
 MAX_PHRASES: Final = 1500
 #: A bare number larger than this is not read as inches (it is a count, a note number, or mm).
 _BARE_MAX_IN: Final = Decimal(600)
+#: A tag's closed shape (`_ring`): each side between these (points), at most this much longer one
+#: way than the other, its ends this close, and at most this many text sizes across.
+_RING_MIN_PT: Final = 6.0
+_RING_MAX_PT: Final = 120.0
+_RING_ASPECT: Final = 2.5
+_RING_GAP_PT: Final = 0.5
+_RING_FONTS: Final = 6.0
 #: A dimension line may be at most this many times longer than its text.
 _LINE_MAX_RATIO: Final = 60.0
 #: A drawn cluster: its longer side between these (points), and paths at most this far apart.
@@ -194,6 +202,9 @@ class _Parsed:
     weight: float = 0.3
     """The line work's usual stroke width (the median, points): how far apart two line ends may be
     and still meet (`vendor_consistency`'s joints)."""
+    rings: tuple[Box, ...] = ()
+    """Closed tag-sized shapes (circles, ovals, boxes, polygons), shown points: a bare number inside
+    one is a tag (`01` in a drawing-reference bubble), never a dimension."""
 
 
 def _parse(pdf: Path, page_index: int) -> _Parsed:
@@ -208,6 +219,7 @@ def _parse(pdf: Path, page_index: int) -> _Parsed:
     paths: list[Any] = []
     segments: list[Segment] = []
     widths: list[float] = []
+    rings: list[Box] = []
     with pdfplumber.open(io.BytesIO(vendor)) as document:
         page = document.pages[0]
         shown = vv._placement(page)
@@ -230,13 +242,53 @@ def _parse(pdf: Path, page_index: int) -> _Parsed:
             for piece in _pieces(item):
                 points = [shown(x, y) for x, y in piece]
                 segments.extend((a, b) for a, b in pairwise(points) if a != b)
+            ring = _ring(item, shown)
+            if ring is not None:
+                rings.append(ring)
         pictures = tuple(
             vv._shown_box(shown, *(float(image[k]) for k in ("x0", "top", "x1", "bottom")))
             for image in page.images
         )
     parsed = vv._Page(key, vendor, tuple(chars), tuple(paths), pictures, size)
     weight = float(np.median(widths)) if widths else 0.3
-    return _Parsed(parsed, tuple(segments), weight)
+    return _Parsed(parsed, tuple(segments), weight, tuple(rings))
+
+
+def _ring(
+    item: Mapping[str, Any], shown: Callable[[float, float], tuple[float, float]]
+) -> Box | None:
+    """The shown box of a closed tag-sized shape: a rectangle, or a path that ends where it starts
+    (a circle, an oval, a hexagon), between `_RING_MIN_PT` and `_RING_MAX_PT` on each side and no
+    longer than `_RING_ASPECT` times its width. `None` for anything else."""
+    x0, x1, top, bot = (float(item[k]) for k in ("x0", "x1", "top", "bottom"))
+    across, down = x1 - x0, bot - top
+    if not (_RING_MIN_PT <= min(across, down) and max(across, down) <= _RING_MAX_PT):
+        return None
+    if max(across, down) > _RING_ASPECT * min(across, down):
+        return None
+    if item.get("object_type") != "rect":
+        pieces = _pieces(item)
+        if len(pieces) != 1 or len(pieces[0]) < 4:
+            return None
+        start, end = pieces[0][0], pieces[0][-1]
+        if abs(start[0] - end[0]) > _RING_GAP_PT or abs(start[1] - end[1]) > _RING_GAP_PT:
+            return None
+    a, b = shown(x0, top), shown(x1, bot)
+    return (min(a[0], b[0]), min(a[1], b[1]), max(a[0], b[0]), max(a[1], b[1]))
+
+
+def _in_ring(reading: _Reading, rings: Sequence[Box]) -> bool:
+    """Whether a reading sits inside a tag-sized closed shape no wider than `_RING_FONTS` of its
+    text size: the shape is the tag's (a bubble, a box), the number its name."""
+    x0, y0, x1, y1 = reading.box
+    return any(
+        r[0] - 0.5 <= x0
+        and x1 <= r[2] + 0.5
+        and r[1] - 0.5 <= y0
+        and y1 <= r[3] + 0.5
+        and max(r[2] - r[0], r[3] - r[1]) <= _RING_FONTS * reading.font
+        for r in rings
+    )
 
 
 # ---- the text route ------------------------------------------------------------------------------
@@ -1688,6 +1740,8 @@ def _text_labels(parsed: _Parsed, halves: Sequence[Mapping[str, Any]]) -> list[d
         orientation = _orientation(reading.along)
         line = dimension_line(reading.box, orientation, parsed.segments, reading.font)
         if reading.bare and (line is None or millimetres or reading.inches > _BARE_MAX_IN):
+            continue
+        if reading.bare and _in_ring(reading, parsed.rings):
             continue
         kept.append((reading, line))
     kept.sort(key=lambda item: (round(item[0].box[1] / 4), item[0].box[0]))
