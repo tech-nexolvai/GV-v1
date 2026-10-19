@@ -87,6 +87,9 @@ _ORDER: Final = {"red": 0, "not_compared": 1, "right": 2}
 #: Who made a finding the run judges with the code checks (everything but its own).
 _SKIP_JUDGING: Final = frozenset({CREATED_BY})
 _MICROS: Final = 1_000_000
+#: The note under the simple check's summary (the screen reads a last line "*Summary written by
+#: GV Review…*" as its note).
+SIMPLE_SUMMARY_NOTE: Final = "*Summary written by GV Review from code's own checks.*"
 #: How long the run waits for the set pack to be made (its labels are read by OCR at upload).
 PACK_WAIT_SECONDS: Final = 1800.0
 _PACK_POLL_SECONDS: Final = 2.0
@@ -1031,6 +1034,9 @@ class _Run:
                 f"Every answer is saved with the chat (run {self.run_dir.name}): it can be checked "
                 "again at no cost."
             )
+        # The screen's note under a code-written summary: without one it says "the AI did not
+        # finish its own", which reads like a failure; the simple check has no AI summary at all.
+        lines.append(SIMPLE_SUMMARY_NOTE)
         return "\n\n".join(lines)
 
 

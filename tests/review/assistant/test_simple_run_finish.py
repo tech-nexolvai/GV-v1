@@ -39,6 +39,8 @@ def test_a_whole_check_still_says_send_it(tmp_path: Path, monkeypatch: pytest.Mo
     assert SEND in outcome.text
     assert "Every drawing in the work list was compared (3 drawings)." in outcome.text
     assert not _state(outcome).get("incomplete")
+    # Its own note (the screen's default said "the AI did not finish its own").
+    assert outcome.text.rstrip().endswith("*Summary written by GV Review from code's own checks.*")
 
 
 def test_a_pilot_is_not_a_check_for_the_vendor(
