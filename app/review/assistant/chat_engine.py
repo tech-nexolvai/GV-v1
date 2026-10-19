@@ -358,6 +358,15 @@ _HAIKU_LONG_PROMPT: Final = 100_000
 _HAIKU_LONG_FACTOR: Final = 5
 _MICROS: Final = Decimal(1_000_000)
 
+#: Sent once after a reply with no words and no tool call (Anthropic: an empty `end_turn` happens,
+#: mostly right after tool results; sending the empty reply back does not help).
+EMPTY_REPLY_NOTE: Final = (
+    "Your last reply had no words for the reviewer. Write your answer now, from what you found."
+)
+#: A stream that ended without its stop (the connection closed in the middle of the answer).
+STREAM_CUT_WORDS: Final = "The AI service stopped in the middle of the answer. Please ask again."
+#: The answer's error when the model still wrote nothing after being asked once more.
+NO_ANSWER_ERROR: Final = "Claude finished without writing an answer. Please ask again."
 COST_CAP_NOTE: Final = (
     "This message has nearly used its money cap. Do not use any more tools: answer now from what "
     "you have found, and say what you did not get to."
@@ -711,6 +720,30 @@ def _accumulate(
         bad_inputs={id(content[n]) for n in bad if n < len(content)},
         transformations=transformations,
     )
+
+
+def _sendable(content: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """A reply's content as it may go back into a history: an empty text block left out (the API
+    refuses one in a request)."""
+    return [
+        dict(block)
+        for block in content
+        if not (block.get("type") == "text" and not str(block.get("text") or ""))
+    ]
+
+
+def _replayable(content: Sequence[Mapping[str, Any]]) -> bool:
+    """Whether a reply can go back into the history: it says something or calls a tool, and every
+    thinking block in it is signed. An empty reply, a thinking-only one or one whose thinking was
+    cut is never sent back: the API refuses an empty message and an unsigned thinking block, so it
+    would break every later question of the chat (harness audit 2026-10-19)."""
+    said = any(
+        (block.get("type") == "text" and str(block.get("text") or "").strip())
+        or block.get("type") in _CALLS
+        for block in content
+    )
+    signed = all(block.get("signature") for block in content if block.get("type") == "thinking")
+    return said and signed
 
 
 def _transformations(value: object, before: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1226,6 +1259,28 @@ class ChatEngine:
                     self._cancelled_call(model, prompt_id, started, usage)
                     raise _Cancelled from None
                 failure = failure_from(raised)
+                if usage:
+                    # It broke after its stream started: its prompt is billed already (harness
+                    # audit 2026-10-19: such calls were recorded as $0 and the guard missed them).
+                    partial = _Reply([], None, None, usage, None)
+                    self._record(model, prompt_id, started, partial, failure)
+                    self._charge(model, usage)
+                    if shown is not None:
+                        self._discard_attempt()
+                    if failure.retryable and attempts == 0:
+                        attempts += 1
+                        _log.warning(
+                            "assistant chat call failed mid-stream, asking once more: %s",
+                            failure.status,
+                        )
+                        if self._sleep(_RETRY_WAIT_SECONDS):
+                            raise _Cancelled from None
+                        continue
+                    raise failure from None
+            if reply is not None and reply.stop_reason is None and failure is None:
+                # The stream ended without its `message_delta` (the connection closed cleanly in
+                # the middle): a cut answer, never a finished one.
+                failure = ProviderFailure(STREAM_CUT_WORDS, status=None, retryable=True)
             if reply is not None and not _names_model(reply, model, self.provider.name):
                 failure = ProviderFailure(
                     "The AI service answered with a different model than the one asked, so the "
@@ -3756,9 +3811,13 @@ class ChatEngine:
                     False,
                     "error",
                 )
-            content = reply.history_content()
-            messages.append({"role": "assistant", "content": content})
-            calls = reply.tool_uses()
+            content = _sendable(reply.history_content())
+            # An empty or thinking-only reply is never sent back (the API refuses it): the note
+            # below, or the report from the steps, follows the last user message instead.
+            replayable = _replayable(content)
+            if replayable:
+                messages.append({"role": "assistant", "content": content})
+            calls = reply.tool_uses() if replayable else []
             if (
                 roster_pages
                 and not calls
@@ -4031,6 +4090,8 @@ class ChatEngine:
         cap_hit: str | None = None
         text = ""
         guard_sent = False
+        # Asked once more after a reply with no words (`EMPTY_REPLY_NOTE`).
+        nudged = False
         self._room_for_history()
         if settings.mode == "full_check" and settings.full_check_mode == "simple":
             # The simple full check (CONTRACT-SIMPLE): work list, code, compare, verify, blind.
@@ -4117,8 +4178,33 @@ class ChatEngine:
                 text = _declined(reply.stop_details)
                 self._add_text(text)
                 break
+            content = _sendable(reply.history_content())
+            if not _replayable(content):
+                # Nothing to send back: an empty reply (Anthropic: it happens, mostly right after
+                # tool results), one with only thinking, or one whose thinking was cut. It never
+                # enters the history (the API would refuse every later question of the chat); the
+                # model is asked once more for its words, then the answer says it plainly. A full
+                # check needs no words of its own: code writes its summary.
+                asks = settings.mode != "full_check" and not final
+                if reply.stop_reason in ("end_turn", "stop_sequence") and asks and not nudged:
+                    nudged = True
+                    turn.append(
+                        {"role": "user", "content": [{"type": "text", "text": EMPTY_REPLY_NOTE}]}
+                    )
+                    continue
+                if reply.stop_reason == "max_tokens":
+                    text = "*The answer reached its length limit and was cut off here.*"
+                    self._add_text(text)
+                elif reply.stop_reason == "model_context_window_exceeded":
+                    text = "*This chat is now too long for the model. Start a new chat to go on.*"
+                    self._add_text(text)
+                elif asks:
+                    stopped, error = "error", NO_ANSWER_ERROR
+                    break
+                stopped = forced
+                break
             answered = True
-            turn.append({"role": "assistant", "content": reply.history_content()})
+            turn.append({"role": "assistant", "content": content})
             if reply.stop_reason == "pause_turn" and not final:
                 # Anthropic paused its own tool (a long tool search): sent back as it is, it goes on.
                 tool_turns += 1

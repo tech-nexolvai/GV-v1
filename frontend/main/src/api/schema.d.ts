@@ -5441,6 +5441,11 @@ export interface components {
          */
         ChatMessageIn: {
             /**
+             * Cap Usd
+             * @description This answer's per-answer cap in dollars, when lower than the server's (`GV_ASSISTANT_MESSAGE_CAP_USD`, and a roster full check's fixed price); it never raises them. The runaway guard holds what the calls in flight may cost against it, so a paid run's money stop is kept before calls start (harness audit 2026-10-19).
+             */
+            cap_usd?: number | null;
+            /**
              * Compare Effort
              * @description The simple full check only: this run's compare call effort, for every drawing.
              */
