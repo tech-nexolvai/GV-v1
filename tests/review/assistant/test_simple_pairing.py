@@ -148,8 +148,8 @@ def test_a_vendor_file_pairs_with_the_architect_file_by_code(tmp_path: Path) -> 
     )
     work = build_worklist(folder, "shop.pdf")
     paired = {item.id: [d.ref for d in item.architect] for item in work.items}
-    # The architect file's pages are set pages 4-6 (cover, A, B) after the vendor's 3.
-    assert paired == {"p1.v0": ["p5.a1"], "p2.v0": ["p6.a1"]}
+    # The architect file's pages are set pages 1001-1003 (cover, A, B), after a round thousand.
+    assert paired == {"p1.v0": ["p1002.a1"], "p2.v0": ["p1003.a1"]}
     first = work.items[0]
     assert first.architect[0].file == "arch.pdf" and first.architect[0].own_page == 2
     assert first.paired_by is not None and "printed reference" in first.paired_by
@@ -170,7 +170,7 @@ def test_the_architects_own_file_comes_before_a_page_of_the_vendors_file(tmp_pat
         ("arch.pdf", ARCHITECT_KIND),
     )
     work = build_worklist(folder, "shop.pdf")
-    assert [(i.id, [d.ref for d in i.architect]) for i in work.items] == [("p2.v0", ["p3.a1"])]
+    assert [(i.id, [d.ref for d in i.architect]) for i in work.items] == [("p2.v0", ["p1001.a1"])]
     inside = next(s for s in work.skipped if s.drawing == "p1.a1")
     assert "the architect's own file is compared instead" in inside.reason
     # Without the architect's file, the vendor file's own architect page is the candidate.
@@ -305,7 +305,7 @@ def _compare(monkeypatch: pytest.MonkeyPatch, same_drawing: str, seen: list[Any]
                     pairs=(
                         Pair(
                             vendor_label="p1.D1",
-                            architect_label="p2.D1",
+                            architect_label="p1001.D1",
                             measures="overall width of the run",
                             vendor_from="wall_face (left)",
                             vendor_to="wall_face (right)",
@@ -341,7 +341,7 @@ def test_a_red_item_across_files_names_the_architect_file_and_its_own_page(
     monkeypatch.setattr(blind_module, "look", harness._agreeing)
     outcome = check.engine.run()
     assert [item.id for item in seen] == ["p1.v0"]
-    assert seen[0].architect[0].ref == "p2.a1" and seen[0].paired_by
+    assert seen[0].architect[0].ref == "p1001.a1" and seen[0].paired_by
     red = [f for f in check.findings(outcome) if f.get("status") == "different"]
     assert len(red) == 1, check.findings(outcome)
     finding = red[0]
@@ -363,6 +363,6 @@ def test_the_compare_calls_no_makes_the_drawing_not_compared(
     assert "Not for sending" in outcome.text
     rows = check.engine.extra_gaps
     assert any(
-        "the compare call says the architect drawing code paired it with (p2.a1)" in r["what"]
+        "the compare call says the architect drawing code paired it with (p1001.a1)" in r["what"]
         for r in rows
     )
