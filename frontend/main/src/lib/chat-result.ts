@@ -58,6 +58,7 @@ const REASONS: readonly [string, string][] = [
   ['string_not_verified', 'Vendor’s string not verified on the drawing'],
   ['different_reference', 'Not directly comparable (different reference points)'],
   ['unreadable', 'Vendor’s value could not be read'],
+  ['no_spot', 'The value has no spot on the drawing'],
   ['architect_disagrees', 'Architect’s drawings disagree'],
   ['missing_setting', 'A job value or GV setting is missing'],
   ['not_proved', 'Difference not proved by code'],
