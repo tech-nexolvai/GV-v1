@@ -98,6 +98,14 @@ PACK_WAIT_SECONDS: Final = 1800.0
 _PACK_POLL_SECONDS: Final = 2.0
 #: The words a pilot's left-out drawings are skipped with (`_scope_and_pilot`).
 _PILOT: Final = "a pilot run compares only the first"
+#: The next step of a check that compared no drawing at all.
+NOTHING_NEXT: Final = "Next: nothing can be sent to the vendor until the drawings are compared."
+#: Code's summary lines that read as a finished comparison: never printed when no drawing was
+#: compared (a $0 run on plain CAD files, 2026-10-19, printed "Checked 6 of 6 pages" and "Every
+#: item could be compared." next to "Nothing was compared").
+_AS_IF_CHECKED: Final = re.compile(
+    r"^(?:Checked |Every item could be compared\.|No wrong value was proved by code so far\.)"
+)
 #: The next step of a check that did not finish: never "send it to the vendor".
 NOT_FINISHED_NEXT: Final = (
     "Next: finish the check (compare the drawings left) before anything is sent to the vendor."
@@ -948,20 +956,22 @@ class _Run:
                     self.rows.append(_row(one, "the answer's item limit was reached"))
         # The labels the architect gives no size for, one row per drawing (and product), not one
         # per label: a set has hundreds (the app test: 1,186 rows beside 46 items on screen).
-        no_size: dict[tuple[str, str], list[Verified]] = {}
+        # Labels the AI was unsure about (no architect label) are grouped the same way, with their
+        # own reason.
+        no_size: dict[tuple[str, str, str], list[Verified]] = {}
         for one, item in verified:
             if one.outcome != "listed":
                 continue
             row = _row(one)
-            if one.reason_code != "nothing_to_compare" or not one.vendor:
+            if one.reason_code not in _GROUPED or not one.vendor:
                 self.rows.append(row)
                 continue
             filed = self._filed(row)
             if filed is None:
                 self.out_of_scope += 1  # another product's label: never listed
                 continue
-            no_size.setdefault((item.id, filed), []).append(one)
-        for (item_id, filed), labels in no_size.items():
+            no_size.setdefault((item.id, filed, str(one.reason_code)), []).append(one)
+        for (item_id, filed, _reason), labels in no_size.items():
             self.rows.append(_no_size_row(item_id, filed, labels))
         engine.extra_gaps = list(self.rows)
 
@@ -1193,15 +1203,29 @@ class _Run:
             or not self.compared
             or bool(self.blind_failed)
         )
-        text = "\n".join(
-            (NOT_FINISHED_NEXT if unfinished and line.startswith("Next:") else line)
-            for line in text.splitlines()
-            if line.strip() != CODE_SUMMARY_NOTE
-        ).strip()
+        nothing_ran = why is not None or (not self.compared and not failed)
+        kept: list[str] = []
+        for line in text.splitlines():
+            if line.strip() == CODE_SUMMARY_NOTE:
+                continue
+            if nothing_ran and _AS_IF_CHECKED.match(line.strip()):
+                continue
+            if nothing_ran and not engine.book.live() and re.match(r"^\d+ wrong ", line):
+                continue  # "0 wrong, 0 right, 0 not compared": nothing was looked at
+            if line.startswith("Next:"):
+                line = NOTHING_NEXT if nothing_ran else (NOT_FINISHED_NEXT if unfinished else line)
+            kept.append(line)
+        text = "\n".join(kept).strip()
         lines = [text]
         answered = sum(1 for item in self.compared if item.id not in {i.id for i in failed})
-        if why is not None:
-            lines.append(f"**The check could not run: {why}. Nothing was compared.**")
+        if nothing_ran:
+            # One honest sentence, first: nothing above it reads as a finished check.
+            honest = (
+                f"**The check could not run: {why}. Nothing was compared.**"
+                if why is not None
+                else f"**Nothing was compared: {self._nothing_compared()}.**"
+            )
+            lines.insert(0, honest)
         elif failed:
             names = ", ".join(
                 f"{item.id} ({(self.outcomes[item.id].reason if item.id in self.outcomes else None) or 'not reached'})"
@@ -1212,9 +1236,6 @@ class _Run:
                 f"**Check incomplete: {len(failed)} of {len(self.compared)} drawings could not be "
                 f"compared: {names}{more}. Not for sending until they are.**"
             )
-        elif not self.compared:
-            nothing = self._nothing_compared()
-            lines.append(f"**Nothing was compared: {nothing}.**")
         elif not pilot:
             lines.append(f"Every drawing in the work list was compared ({answered} drawings).")
         if stopped == "cancelled" and why is None:
@@ -1386,6 +1407,13 @@ def _seed_for(
     return None
 
 
+#: What settles a single listed label, by its reason.
+_ROW_NEEDS: Final = {
+    "nothing_to_compare": "the architect's size for it",
+    "ai_unsure": "a printed architect value for it, or a clearer look at both drawings",
+}
+
+
 def _row(one: Verified, why: str | None = None) -> dict[str, Any]:
     """A Not-compared row that is not a finding (`not_compared.gap_rows`'s shape)."""
     vendor = one.vendor or {}
@@ -1401,7 +1429,7 @@ def _row(one: Verified, why: str | None = None) -> dict[str, Any]:
         "page": page if isinstance(page, int) else None,
         "what": f"{where}: {why or one.reason}",
         "why": one.reason_code or "not_proved",
-        "needs": "the architect's size for it" if one.reason_code == "nothing_to_compare" else "",
+        "needs": _ROW_NEEDS.get(str(one.reason_code), ""),
         "scope": "set",
         # What files the row under the check's product scope (`product_scope.scoped_gaps`).
         "item": about.get("item") or finding.get("item"),
@@ -1411,11 +1439,28 @@ def _row(one: Verified, why: str | None = None) -> dict[str, Any]:
 
 #: How many values a grouped "no architect size" row names before "and N more".
 _NO_SIZE_SHOWN: Final = 6
+#: The listed labels grouped one row per drawing, and what each group's row says about them.
+_GROUP_WORDS: Final = {
+    "nothing_to_compare": (
+        "the architect gives no size for",
+        "the architect's sizes for them",
+        "dimensions with no architect size",
+    ),
+    "ai_unsure": (
+        "not settled from the drawings (no printed architect value found):",
+        "a printed architect value for them, or a clearer look at both drawings",
+        "dimensions not settled from the drawings",
+    ),
+}
+_GROUPED: Final = frozenset(_GROUP_WORDS)
 
 
 def _no_size_row(item_id: str, filed: str, labels: Sequence[Verified]) -> dict[str, Any]:
-    """One Not-compared row for a drawing's labels the architect gives no size for: the page, how
-    many, and the first few values with their labels."""
+    """One Not-compared row for a drawing's labels the architect gives no size for (or the AI was
+    unsure about, with no architect label): the page, how many, and the first few values with
+    their labels."""
+    reason = str(labels[0].reason_code or "nothing_to_compare")
+    said, needs, named = _GROUP_WORDS.get(reason, _GROUP_WORDS["nothing_to_compare"])
     vendor = labels[0].vendor or {}
     page = vendor.get("page")
     shown = ", ".join(
@@ -1427,13 +1472,12 @@ def _no_size_row(item_id: str, filed: str, labels: Sequence[Verified]) -> dict[s
     return {
         "page": page if isinstance(page, int) else None,
         "what": (
-            f"Vendor drawing on page {page}: {len(labels)} {many} the architect gives no size "
-            f"for: {shown}{more}"
+            f"Vendor drawing on page {page}: {len(labels)} {many} {said.rstrip(':')}: {shown}{more}"
         ),
-        "why": "nothing_to_compare",
-        "needs": "the architect's sizes for them",
+        "why": reason,
+        "needs": needs,
         "scope": "set",
-        "item": f"{item_id}: dimensions with no architect size",
+        "item": f"{item_id}: {named}",
         "category": filed,
     }
 

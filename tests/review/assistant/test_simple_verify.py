@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from app.review.assistant import proof
+from app.review.assistant import classification, proof
 from app.review.assistant.chat_trust import apply_checks
 from app.review.assistant.full_check_advocate import code_checks
 from app.review.assistant.simple_check import verify as v
@@ -25,6 +25,7 @@ from app.review.assistant.simple_check.verify import (
     verify_answer,
     with_blind,
 )
+from app.review.assistant.vendor_text import internal
 
 FILE = "set.pdf"
 ARCH_HALF = [0.0, 0.0, 500.0, 400.0]
@@ -497,6 +498,24 @@ def test_different_points_unsure_and_no_architect_value() -> None:
     nothing = _one(_pair("p2.D1", None, "no_architect_value"))
     assert nothing.outcome == "listed" and nothing.reason_code == "nothing_to_compare"
     assert nothing.finding == {} and nothing.verdict == "not_compared"
+
+
+def test_unsure_with_no_architect_label_has_its_own_reason() -> None:
+    """An "unsure" answer that names no architect label is not "architect gives no size": the
+    architect may well print it. It is listed with its own reason (a $0 app run, 2026-10-19,
+    listed every unsure label as "architect gives no size")."""
+    for verdict in ("unsure", "maybe"):
+        unsure = _one(_pair("p2.D1", None, verdict))
+        assert unsure.outcome == "listed" and unsure.reason_code == "ai_unsure"
+        assert unsure.reason == v.AI_UNSURE
+        assert unsure.reason == "the AI was unsure and no printed value was found"
+        assert unsure.reason_code in classification.REASONS
+        # The list goes to the vendor: its words for the reason carry no "AI".
+        words = classification.REASON_WORDS["ai_unsure"]
+        assert not internal(words) and "no size" not in words
+    # "No architect value" stays the architect's silence.
+    nothing = _one(_pair("p2.D1", None, "no_architect_value"))
+    assert nothing.reason_code == "nothing_to_compare"
 
 
 def test_same_is_right_only_when_code_reads_the_values_equal() -> None:
