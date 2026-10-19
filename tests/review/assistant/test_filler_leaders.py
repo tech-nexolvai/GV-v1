@@ -133,7 +133,7 @@ def _dims(labels: list[dict[str, Any]]) -> dict[str, Any]:
 def test_a_linked_dimension_is_judged_as_a_filler_and_others_are_not() -> None:
     linked = {("set.pdf", 1): fl.link(_notes(), _geometry(), LABELS)}
     (made,) = fr.findings_from(_dims(LABELS), None, LIMITS, linked)
-    assert made["status"] == "different" and made["vendor"] == '4"'
+    assert made["status"] == "check" and made["vendor"] == '4"'
     assert made["dims"]["vendor"]["id"] == "D1"
     # Without the link, no label says "filler": nothing is judged (never the toe kick's 4").
     assert fr.findings_from(_dims(LABELS), None, LIMITS) == []
@@ -219,7 +219,7 @@ def test_a_made_up_sheet_links_its_filler_note(tmp_path: Path) -> None:
         "pages": [{"file": "set.pdf", "page": 1, "labels": read.labels, "phrases": read.phrases}]
     }
     (made,) = fr.findings_from(dims, None, LIMITS, {("set.pdf", 1): linked})
-    assert made["status"] == "different" and made["vendor"] == '4"'
+    assert made["status"] == "check" and made["vendor"] == '4"'
 
 
 # ---- a CAD arrowhead at the leader's end (a CAD sheet, #1758) ----------------------------------------------

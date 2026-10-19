@@ -1,4 +1,4 @@
-"""GV's filler range on the vendor's own fillers (`filler_range`): Wrong, Right or a GV note.
+"""GV's filler range on the vendor's own fillers (`filler_range`): a GV note, never red.
 
 Made-up labels only (no client data): page 1 holds an architect plan and page 2 a vendor plan of
 one made-up area, or the vendor's page stands alone (no architect drawing at all).
@@ -116,21 +116,30 @@ def test_a_two_inch_filler_is_within_the_range_and_adds_nothing() -> None:
     assert _one([_label("D3", '1" FILLER', "1", "vendor")]) == []
 
 
+def _is_range_note(made: dict[str, Any]) -> None:
+    """A filler outside GV's usual range: a GV note on the Not-compared list, never red (the
+    orchestrator, 2026-10-20: GV's reviewers accept 3" and 5" fillers, and the client's own
+    sheets draw 4" and 5" ones as normal design)."""
+    assert made["status"] == "check" and made["keep_reason"] == fr.OUTSIDE_RANGE
+    assert 'outside GV\'s usual 1"-2" filler range' in made["gv_note"]
+    assert "settled" not in made and "rule" not in (made.get("checks") or {})
+    recorded = judged({**made, "id": "F1", "checks": {"printed_vendor": "match"}})
+    assert proof.proof_group(recorded) == "not_compared"
+    shown = classification.classify(recorded)
+    assert (shown.outcome, shown.reason) == ("not_compared", fr.OUTSIDE_RANGE)
+    assert "outside GV's usual" in shown.line
+
+
 @pytest.mark.parametrize(("text", "inches"), [('4" FILLER', "4"), ('5" FILLER', "5")])
-def test_a_filler_wider_than_the_maximum_is_wrong(text: str, inches: str) -> None:
+def test_a_filler_wider_than_the_maximum_is_a_gv_note_never_red(text: str, inches: str) -> None:
     (made,) = _one([_label("D3", text, inches, "vendor")])
-    assert made["status"] == "different" and made["vendor"] == f'{inches}"'
-    recorded = _recorded(made)
-    assert proof.proof_group(recorded) == "clouded"
-    assert proof.should_be(recorded) == '1" to 2" (GV filler rule)'
-    assert proof.vendor_value(recorded) == f'{inches}"'
-    assert classification.classify(recorded, proved=True).rule == "R6"
+    assert made["vendor"] == f'{inches}"'
+    _is_range_note(made)
 
 
-def test_a_filler_narrower_than_the_minimum_is_wrong() -> None:
+def test_a_filler_narrower_than_the_minimum_is_a_gv_note_never_red() -> None:
     (made,) = _one([_label("D3", '3/4" FILLER', "0.75", "vendor")])
-    assert made["status"] == "different"
-    assert proof.proof_group(_recorded(made)) == "clouded"
+    _is_range_note(made)
 
 
 def test_a_four_inch_dimension_that_is_not_a_filler_is_ignored() -> None:
@@ -147,7 +156,7 @@ def test_a_dimension_whose_printed_row_says_filler_is_a_filler() -> None:
     dims = _dims([_label("D5", '4"', "4", "vendor", x=100)])
     dims["pages"][0]["phrases"] = [_phrase('4" FILLER', 100), _phrase('36"', 200, 20)]
     (made,) = fr.findings_from(dims, PAGE_MAP, LIMITS)
-    assert made["status"] == "different" and made["vendor"] == '4"'
+    assert made["status"] == "check" and made["vendor"] == '4"'
 
 
 @pytest.mark.parametrize(
@@ -229,7 +238,7 @@ def test_an_architect_filler_of_another_area_does_not_count() -> None:
         page_map,
         LIMITS,
     )
-    assert made["status"] == "different"
+    assert made["status"] == "check" and made["keep_reason"] == fr.OUTSIDE_RANGE
 
 
 # ---- the rest of the check leaves it alone -------------------------------------------------------
@@ -240,10 +249,11 @@ def test_the_resolver_and_the_escalation_leave_the_note_alone() -> None:
         [_label("D3", '3/4" FILLER', "0.75", "vendor")],
         [_label("D7", '3/4" FILLER', "0.75", "architect")],
     )
-    note = {**made, "id": "F1"}
-    result = resolve([note], ResolverContext(settings=settings_in_force(RULES_MD)))
-    assert result.changed == [] and result.absorbed == {}
-    assert not escalation.undecided(note)
+    (outside,) = _one([_label("D3", '5" FILLER', "5", "vendor")])
+    for note in ({**made, "id": "F1"}, {**outside, "id": "F2"}):
+        result = resolve([note], ResolverContext(settings=settings_in_force(RULES_MD)))
+        assert result.changed == [] and result.absorbed == {}
+        assert not escalation.undecided(note)
 
 
 def test_it_is_filed_under_cabinets_for_the_product_scope() -> None:
@@ -309,13 +319,14 @@ def _pack(tmp_path: Path, dims: dict[str, Any]) -> Path:
     return tmp_path
 
 
-def test_the_hook_records_a_wrong_with_gv_limits_and_its_rule_witness(tmp_path: Path) -> None:
+def test_the_hook_records_a_gv_note_never_a_red(tmp_path: Path) -> None:
     folder = _pack(tmp_path, _dims([_label("D3", '5" FILLER', "5", "vendor")]))
     engine = _Engine(folder, [])
     assert fr.add_to_answer(engine) == {"added": 1, "replaced": 0}
     (recorded,) = engine.book.live()
-    assert recorded["settled"]["method"] == "gv_limits"
-    assert recorded["checks"]["rule"] == "agrees" and "rule" in recorded["witnesses"]
+    assert recorded["status"] == "check" and recorded["keep_reason"] == fr.OUTSIDE_RANGE
+    assert "settled" not in recorded and "rule" not in (recorded.get("checks") or {})
+    assert proof.proof_group(recorded) == "not_compared"
     assert fr.covered_labels(engine.book.live()) == {(FILE, 2, "D3")}
     assert fr.add_to_answer(_Engine(folder, [], mode="chat")) is None
 
@@ -336,6 +347,16 @@ def test_the_hook_turns_a_same_item_into_the_architect_note(tmp_path: Path) -> N
     assert note["keep_reason"] == fr.ARCHITECT_OUTSIDE and note["status"] == "check"
 
 
+def test_the_range_note_never_replaces_the_architect_comparisons_item(tmp_path: Path) -> None:
+    """Only the architect's own out-of-range size turns a "same" item into a note: a filler
+    outside GV's usual range that the comparison found equal stays the comparison's item."""
+    folder = _pack(tmp_path, _dims([_label("D3", '5" FILLER', "5", "vendor")]))
+    same = {"id": "F4", "page": 2, "status": "same", "dims": {"vendor": {"id": "D3", "page": 2}}}
+    engine = _Engine(folder, [same])
+    assert fr.add_to_answer(engine) == {"added": 0, "replaced": 0}
+    assert [f["id"] for f in engine.book.live()] == ["F4"]
+
+
 def test_the_hook_leaves_a_label_the_answer_already_judged(tmp_path: Path) -> None:
     folder = _pack(tmp_path, _dims([_label("D3", '4" FILLER', "4", "vendor")]))
     other = {
@@ -350,20 +371,23 @@ def test_the_hook_leaves_a_label_the_answer_already_judged(tmp_path: Path) -> No
 
 
 def test_what_it_lays_over_a_finding_fits_the_answers_contract() -> None:
-    """The stored answer is checked against the contract: GV's limits and the note's reason must be
-    values it accepts (found on a $0 run through the app: a `settled.was` of None was refused)."""
+    """The stored answer is checked against the contract: each note's reason must be a value it
+    accepts (found on a $0 run through the app: a `settled.was` of None was refused)."""
     from typing import get_args
 
-    from app.review.assistant.chat_contract import ChatFindingSettledOut, ChatKeepReason
+    from app.review.assistant.chat_contract import ChatFindingProofOut, ChatKeepReason
 
     made = _one(
         [_label("D3", '4" FILLER', "4", "vendor"), _label("D4", '2" FILLER', "2", "vendor", x=200)]
     )
     for finding in made:
-        ChatFindingSettledOut.model_validate(finding["settled"])
+        assert "settled" not in finding  # no "Settled by GV Review": a note, never a Wrong
     (note,) = _one(
         [_label("D3", '3/4" FILLER', "0.75", "vendor")],
         [_label("D7", '3/4" FILLER', "0.75", "architect")],
     )
-    assert note["keep_reason"] in get_args(ChatKeepReason.__value__)
-    assert note["keep_reason"] in classification.REASONS
+    for one in (*made, note):
+        assert one["keep_reason"] in get_args(ChatKeepReason.__value__)
+        assert one["keep_reason"] in classification.REASONS
+    not_compared = ChatFindingProofOut.model_fields["not_compared"].annotation
+    assert fr.OUTSIDE_RANGE in str(not_compared)
