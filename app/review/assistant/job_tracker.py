@@ -56,6 +56,7 @@ from uuid import UUID
 
 from app.review.assistant.chat_trust import round_item_key
 from app.review.assistant.impact import by_impact, impact_of
+from app.review.assistant.proof import proof_group
 from vocabulary.product_registry import registry
 
 __all__ = [
@@ -253,6 +254,19 @@ def _int_or_none(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+def _counted_status(finding: Mapping[str, Any]) -> str:
+    """The finding's status as the files count it (#1619: Wrong only when code proved it): a
+    `different` code did not prove (an unread value, a pairing not proved) is Not compared
+    (`check`) here too, so the tracker, its counts and the comment numbers never call Wrong what
+    the cloud drawing, the letter and the register list as Not compared. A reviewer's "not a
+    problem" keeps its status (the decision says it)."""
+    status = str(finding.get("status") or "")
+    if status != "different":
+        return status
+    group = proof_group(finding)
+    return status if group in ("clouded", "dismissed") else "check"
+
+
 def _sightings(answers: Sequence[TrackerAnswer]) -> list[_Sighting]:
     out: list[_Sighting] = []
     for answer_index, answer in enumerate(answers):
@@ -272,7 +286,7 @@ def _sightings(answers: Sequence[TrackerAnswer]) -> list[_Sighting]:
                     folded=False,
                     page=_page(finding.get("page")),
                     explicit_round=_int_or_none(finding.get("round")),
-                    status=str(finding.get("status") or ""),
+                    status=_counted_status(finding),
                     round_status=ROUND_STATUS_WORDS.get(raw_status),
                     decision=decision if isinstance(decision, Mapping) else None,
                     key=round_item_key(finding),
@@ -749,7 +763,7 @@ def _sets_out(
 
 
 def _check_out(answer: TrackerAnswer) -> dict[str, Any]:
-    statuses = [str(f.get("status") or "") for f in answer.findings]
+    statuses = [_counted_status(f) for f in answer.findings]
     rounds = sorted(
         {r for f in answer.findings if isinstance(r := f.get("round"), int) and r >= 1} or {1}
     )

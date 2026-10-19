@@ -57,6 +57,18 @@ def _finding(
     }
 
 
+def _code_proved(item: str, **more: Any) -> dict[str, Any]:
+    """A Wrong code proved: both values printed at their spots, paired by code."""
+    return {
+        **_finding(item, **more),
+        "trust_level": "confirmed",
+        "witnesses": ["printed"],
+        "paired_by": "code",
+        "checks": {"printed_architect": "match", "printed_vendor": "match"},
+        "inches": {"architect": "37", "vendor": "46", "difference": "9"},
+    }
+
+
 # ---- the instruction --------------------------------------------------------------------------
 
 
@@ -358,7 +370,15 @@ def test_a_chat_answer_never_gets_a_code_summary(tmp_path: Path) -> None:
 
 
 def test_progress_numbers_count_pages_and_items_and_estimate_the_time_left() -> None:
-    findings = [_finding("a"), _finding("b", "check"), _finding("c", "same"), _finding("d")]
+    # Wrong so far counts only what code proved, as the files do (the pipeline audit: the live
+    # line said 17 Wrong for a check whose files said 10): "e" is not proved, so Not compared.
+    findings = [
+        _code_proved("a"),
+        _finding("b", "check"),
+        _finding("c", "same"),
+        _code_proved("d"),
+        _finding("e"),
+    ]
     numbers = progress_numbers(
         findings, {"total": 60, "not_opened": 48}, 60, "reading", elapsed=120.0
     )
@@ -367,7 +387,7 @@ def test_progress_numbers_count_pages_and_items_and_estimate_the_time_left() -> 
         "pages_done": 12,
         "pages_total": 60,
         "wrong_so_far": 2,
-        "decision_so_far": 1,
+        "decision_so_far": 2,
         "right_so_far": 1,
         "eta_seconds": 480,
     }
@@ -388,7 +408,7 @@ def test_progress_is_sent_on_change_and_on_the_timer_only() -> None:
     )
     progress.changed(force=True)
     progress.changed()  # nothing changed: nothing sent
-    state["findings"] = [_finding("a", page=1)]
+    state["findings"] = [_code_proved("a", page=1)]
     now[0] = 10.0
     progress.changed()
     progress.phase("checking")

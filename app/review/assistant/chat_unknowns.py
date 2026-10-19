@@ -66,9 +66,16 @@ _NEEDS: Final = {
 
 
 def _sides_unreadable(finding: Mapping[str, Any]) -> bool:
+    """A value drawn as pen strokes that nothing read again, when the item's outcome rests on it:
+    an item code proved Wrong or Right anyway (its drawn ink read by OCR, the vendor's own sum
+    measured on the drawing) is not unknown."""
     checks = finding.get("checks") or {}
     pen = "no_text" in (checks.get("printed_architect"), checks.get("printed_vendor"))
-    return pen and checks.get("second_read") in ("unsure", "not_run", None)
+    if not (pen and checks.get("second_read") in ("unsure", "not_run", None)):
+        return False
+    from app.review.assistant.proof import proof_group
+
+    return proof_group(finding) not in ("clouded", "right")
 
 
 def _page(value: object) -> int | None:
