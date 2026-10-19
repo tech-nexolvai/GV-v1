@@ -2,10 +2,11 @@ import { useState } from 'react';
 import { MessageCircle, Plus, ScanSearch } from 'lucide-react';
 
 import { formatRoute } from '@/app/route';
+import { GVSpark } from '@/components/chat/chat-motion';
 import { SidebarMenuSub, SidebarMenuSubButton, SidebarMenuSubItem } from '@/components/ui/sidebar';
 import { cn } from '@/lib/utils';
 import type { ChatSummary } from '@/lib/chat-api';
-import { chatListWords, chatTitle } from '@/lib/chat-messages';
+import { chatListWords, chatRunWords, chatTitle, type ChatRunLive } from '@/lib/chat-messages';
 
 /** `missing` (#1685): the drawing set itself was not found (404), not merely its list. */
 export type ChatListState = { status: 'loading' } | { status: 'error'; message: string; missing?: boolean } | { status: 'ready'; chats: ChatSummary[] };
@@ -22,7 +23,10 @@ export interface ChatListProps {
   onNewChat: () => void;
   /** Chats whose first message was sent here: their title fades in when the server names them. */
   freshTitles?: ReadonlySet<string>;
+  /** #1727: the open chat's running full check, from its live card (newer than the list's counts). */
+  live?: ChatRunLive | null;
 }
+
 
 /**
  * A drawing set's chats (#1464, #1471), shown in the app's one sidebar under the open set, the way
@@ -32,7 +36,7 @@ export interface ChatListProps {
  * question its own words with its day, each with a small icon; no counts (each number has one place,
  * on the answer).
  */
-export function ChatList({ packageId, activeChatId, state, creating, onNewChat, freshTitles }: ChatListProps) {
+export function ChatList({ packageId, activeChatId, state, creating, onNewChat, freshTitles, live = null }: ChatListProps) {
   const [showAll, setShowAll] = useState(false);
   const chats = state.status === 'ready' ? state.chats : [];
   // The open chat always shows, even when it is older than the first ten.
@@ -63,6 +67,8 @@ export function ChatList({ packageId, activeChatId, state, creating, onNewChat, 
           const words = chatListWords(chat);
           const Icon = words.kind === 'check' ? ScanSearch : MessageCircle;
           const fresh = Boolean(freshTitles?.has(chat.id) && chat.title);
+          const run = chatRunWords(chat, live);
+          const runWords = run.running ? `, running${run.count ? `: ${run.count.replace('/', ' of ')} drawings compared` : ''}` : '';
           return (
             <SidebarMenuSubItem key={chat.id}>
               <SidebarMenuSubButton
@@ -70,7 +76,7 @@ export function ChatList({ packageId, activeChatId, state, creating, onNewChat, 
                 isActive={active}
                 aria-current={active ? 'page' : undefined}
                 // Every full check reads "Full check": its time tells them apart, for screen readers too.
-                aria-label={words.kind === 'check' && words.when ? `Full check, ${words.when}` : undefined}
+                aria-label={words.kind === 'check' && words.when ? `Full check, ${words.when}${runWords}` : runWords ? `${words.label}${runWords}` : undefined}
                 title={title}
                 className="transition-colors duration-150 data-[active=true]:font-medium"
               >
@@ -84,7 +90,14 @@ export function ChatList({ packageId, activeChatId, state, creating, onNewChat, 
                 >
                   {words.label}
                 </span>
-                {words.when && <span data-slot="chat-list-when" aria-hidden="true" className="num ml-auto shrink-0 text-xs text-muted-foreground">{words.when}</span>}
+                {run.running ? (
+                  <span data-slot="chat-list-running" aria-hidden="true" className="ml-auto inline-flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+                    {run.count && <span className="num">{run.count}</span>}
+                    <GVSpark state="working" size={13} />
+                  </span>
+                ) : (
+                  words.when && <span data-slot="chat-list-when" aria-hidden="true" className="num ml-auto shrink-0 text-xs text-muted-foreground">{words.when}</span>
+                )}
               </SidebarMenuSubButton>
             </SidebarMenuSubItem>
           );

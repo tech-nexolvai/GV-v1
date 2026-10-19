@@ -227,7 +227,7 @@ export function EvidenceViewer({ findings, openId, onOpen, pictureUrl, fullPageH
             <StatusMark finding={finding} />
             <RoundChip finding={finding} />
             <span className="flex-1" />
-            <span data-slot="chat-evidence-position" className="num px-1 text-xs text-muted-foreground">{at + 1} of {findings.length}</span>
+            <span data-slot="chat-evidence-position" className="px-1 text-xs text-muted-foreground"><span className="num">{at + 1}</span> of <span className="num">{findings.length}</span> {findings.length === 1 ? 'item' : 'items'}</span>
             <button type="button" aria-label="Previous finding" disabled={!previous} onClick={() => previous && onOpen(previous.id)} className={ICON_BUTTON}><ChevronLeft className="size-4" aria-hidden="true" /></button>
             <button type="button" aria-label="Next finding" disabled={!next} onClick={() => next && onOpen(next.id)} className={ICON_BUTTON}><ChevronRight className="size-4" aria-hidden="true" /></button>
             <SheetClose aria-label="Close" className={ICON_BUTTON}><X className="size-4" aria-hidden="true" /></SheetClose>

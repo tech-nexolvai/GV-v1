@@ -106,10 +106,20 @@ export function neededWords(finding: ChatFinding): string {
 
 const quoteMarks = (text: string) => text.replace(/"/g, '″').replace(/'/g, '′');
 
+/**
+ * An area as the reviewer reads it: the drawing list's own numbering left off ("2.Standard
+ * Kitchenette" → "Standard Kitchenette", "B. Bar" → "Bar"). A name that only starts like one
+ * ("B.O.H. corridor", "3.5 m wall") is kept as it is.
+ */
+export function areaWords(area: string | null | undefined): string | null {
+  const words = (area ?? '').replace(/^\s*(?:\d{1,3}|[A-Za-z])[.)](?:\s+|(?=[A-Z][a-z]))/, '').trim();
+  return words || null;
+}
+
 /** "Standard Kitchenette with cooktop: the left wall to outlet 1…" → area + what was measured. */
 export function itemParts(item: string): { area: string | null; thing: string } {
   const at = item.indexOf(': ');
-  const area = at > 0 ? item.slice(0, at).trim() : null;
+  const area = at > 0 ? areaWords(item.slice(0, at)) : null;
   const rest = (at > 0 ? item.slice(at + 2) : item).trim();
   return { area, thing: quoteMarks(rest.charAt(0).toUpperCase() + rest.slice(1)) };
 }

@@ -3,7 +3,7 @@
  * The chat page's claude.ai look (#1471): the composer (Enter / Shift+Enter, placeholders, Send and
  * Stop), the one model button and its menu (keyboard, Opus's locked thinking, thinking off holding
  * effort at High, the money footnote), models that are not available, the disclaimer, the empty
- * chat's centred composer and starters, the "Scroll to bottom" button and a new chat's title fading
+ * chat's centred composer and starters, the "Jump to latest" button and a new chat's title fading
  * in. The one sidebar (folding, the phone drawer) is tested through the app in chat-shell.test.tsx.
  * Synthetic data only.
  */
@@ -227,10 +227,10 @@ describe('the page around it', () => {
     expect(screen.getByRole('button', { name: 'Send message' }).hasAttribute('disabled')).toBe(true);
   });
 
-  it('"Scroll to bottom" shows only away from the bottom, and takes you there', async () => {
+  it('"Jump to latest" shows only away from the bottom, and takes you there', async () => {
     renderPage(fakeChatApi({ get: vi.fn(async () => chatOut('c-1', [QUESTION, SAVED_ANSWER])) }));
     await screen.findByRole('article', { name: 'Answer' });
-    expect(screen.queryByRole('button', { name: 'Scroll to bottom' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Jump to latest' })).toBeNull();
 
     const thread = document.querySelector('[data-slot="chat-thread"]') as HTMLElement;
     Object.defineProperty(thread, 'scrollHeight', { configurable: true, value: 3000 });
@@ -238,10 +238,10 @@ describe('the page around it', () => {
     thread.scrollTo = vi.fn();
     thread.scrollTop = 200;
     fireEvent.scroll(thread);
-    const down = await screen.findByRole('button', { name: 'Scroll to bottom' });
+    const down = await screen.findByRole('button', { name: 'Jump to latest' });
     await userEvent.setup().click(down);
     expect(thread.scrollTo).toHaveBeenCalledWith(expect.objectContaining({ top: 3000 }));
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Scroll to bottom' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Jump to latest' })).toBeNull());
   });
 
   it('a new chat’s title fades in once its first message names it', async () => {
