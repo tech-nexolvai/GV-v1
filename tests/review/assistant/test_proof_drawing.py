@@ -3,7 +3,7 @@
 - which items code clouds by itself (only Wrong items code proved), and where the rest go;
 - the colours: red and green legible on white and in greyscale print;
 - the words: "Vendor: 46"" in red, "Should be: 37" (architect 3'-1", page 2)" in green;
-- the rendered PDF: cover counts (Wrong / Right / Nothing to compare), stamp, assumptions, the
+- the rendered PDF: cover counts (Wrong / Right / Not compared), stamp, assumptions, the
   sheet's note, the proof entry, the page labels; the reviewer's decisions as overrides; what could
   not be compared is never on the drawing (#1619): it is the separate Not-compared list;
 - the plan check never waits: code's likely answers, written on the cover.
@@ -411,7 +411,7 @@ def test_the_drawing_clouds_only_what_code_proved_in_red_and_green(tmp_path: Pat
         "Checked automatically by GV Review: 2026-10-18",
         "1\nWrong",
         "1\nRight",
-        "2\nNothing to compare",
+        "2\nNot compared",
         RULE_LINE[:60],
         "Buffet outlet height",
     ):
@@ -435,7 +435,7 @@ def test_the_drawing_clouds_only_what_code_proved_in_red_and_green(tmp_path: Pat
     assert _count(proof_picture, GREEN) > 50 and _count(proof_picture, RED) > 50  # the boxes
     notes = " ".join(reader.pages[3].extract_text().split())
     # What could not be compared is not on the drawing: the notes point to the separate list.
-    assert "Nothing to compare (2): listed with the reason" in notes
+    assert "Not compared (2): listed with the reason" in notes
     assert "Base cabinet height" not in notes
     assert "Right (1)" in notes and "Toe kick height" in notes
     words = "".join(page.extract_text() for page in reader.pages)
