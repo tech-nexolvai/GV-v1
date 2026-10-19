@@ -723,6 +723,9 @@ class Verified:
     ends: Mapping[str, str] = field(default_factory=dict)
     reads: Mapping[str, Any] = field(default_factory=dict)
     """`verify_value`'s reading of each side, for an item without labels."""
+    about: Mapping[str, Any] = field(default_factory=dict)
+    """A listed item's name and product (`page`, `item`, `category`): what files a Not-compared row
+    that is not a finding under the product scope (`product_scope.scoped_gaps`)."""
 
     @property
     def verdict(self) -> str:
@@ -942,12 +945,41 @@ def _first_failure(checks: Sequence[Check]) -> Check | None:
 # ---- the finding ----------------------------------------------------------------------------------
 
 
+def _category(item: Item, what: object) -> str:
+    """The product an item of the answer is filed under: the one its OWN words name (what it
+    measures: "vanity top width" is a countertop's even in an area called "Standard Vanity"),
+    by the product registry's words; else the drawing's one product (the work list's); else, on a
+    drawing of several products, the one its words hint at; else "other" (the finding book then
+    re-files it from its name and its page's words, `product_scope.refiled`)."""
+    words = str(what or "")
+    named = named_products(words, every=True)
+    if len(named) == 1:
+        return next(iter(named))
+    if not named and item.category != "other":
+        return item.category
+    hinted = named or named_products(words, hints=True, every=True)
+    return next(iter(hinted)) if len(hinted) == 1 else "other"
+
+
 def _name(pack: Pack, item: Item, what: object, fallback: str) -> str:
     area = pack.area_name(item.vendor.file, item.vendor.page)
     words = " ".join(str(what or "").split()) or fallback
     words = words[:1].upper() + words[1:]
     name = f"{area}: {words}" if area and not words.lower().startswith(area.lower()) else words
     return name[:_ITEM_CHARS]
+
+
+def _about(item: Item, pack: Pack, what: object, fallback: str) -> dict[str, Any]:
+    """A listed item's page, name and product (`Verified.about`)."""
+    return {
+        "page": item.vendor.page,
+        "item": _name(pack, item, what, fallback),
+        "category": _category(item, what),
+    }
+
+
+def _about_other(base: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: base.get(key) for key in ("page", "item", "category")}
 
 
 def _spot(box: Box | None, file: str, page: object) -> dict[str, Any] | None:
@@ -1002,7 +1034,7 @@ def _pair_finding(
     finding: dict[str, Any] = {
         "page": int(vendor.get("page") or item.vendor.page),
         "item": _name(pack, item, measures, f"dimension {_label_words(vendor)}"),
-        "category": item.category,
+        "category": _category(item, measures),
         "architect": _label_words(architect) if architect is not None else "no size printed",
         "vendor": _label_words(vendor),
         "status": status,
@@ -1078,9 +1110,17 @@ def _verify_pair(pair: Mapping[str, Any], item: Item, pack: Pack, ink: Ink | Non
     architect = (
         _architect_label(aref, item, pack) if isinstance(aref, str) and aref.strip() else None
     )
+    about = _about(item, pack, pair.get("measures"), f"dimension {_label_words(vendor)}")
     if verdict == "no_architect_value":
         return Verified(
-            key, "pair", "listed", NO_SIZE, "nothing_to_compare", vendor=vendor, ends=ends
+            key,
+            "pair",
+            "listed",
+            NO_SIZE,
+            "nothing_to_compare",
+            vendor=vendor,
+            ends=ends,
+            about=about,
         )
     code = pack.pairs.get(_ref(vendor))
     if code is not None:
@@ -1096,7 +1136,14 @@ def _verify_pair(pair: Mapping[str, Any], item: Item, pack: Pack, ink: Ink | Non
                 "not_proved",
             )
         return Verified(
-            key, "pair", "listed", NO_SIZE, "nothing_to_compare", vendor=vendor, ends=ends
+            key,
+            "pair",
+            "listed",
+            NO_SIZE,
+            "nothing_to_compare",
+            vendor=vendor,
+            ends=ends,
+            about=about,
         )
     if verdict == "different_points":
         return one.grey(DIFFERENT_POINTS, "different_reference")
@@ -1444,7 +1491,7 @@ def _verify_other(
     base: dict[str, Any] = {
         "page": item.vendor.page,
         "item": _name(pack, item, entry.get("what"), kind.replace("_", " ")),
-        "category": item.category,
+        "category": _category(item, entry.get("what")),
         "architect": architect_words or "not shown on the architect's drawing",
         "vendor": vendor_words or "not shown on the vendor's drawing",
         "verified": False,
@@ -1458,7 +1505,9 @@ def _verify_other(
     if verdict == "same":
         return Verified(key, kind, "covered", "the AI reads it the same; code cannot check it")
     if verdict == "no_architect_value":
-        return Verified(key, kind, "listed", NO_SIZE, "nothing_to_compare")
+        return Verified(
+            key, kind, "listed", NO_SIZE, "nothing_to_compare", about=_about_other(base)
+        )
     if verdict == "unsure":
         return other.grey(UNSURE, "not_proved")
     if kind == "missing_on_vendor":
@@ -1480,10 +1529,13 @@ def _verify_missing(
             "listed",
             "room context, not millwork, by the AI's reading: not a vendor item",
             "not_proved",
+            about=_about_other(other.base),
         )
     gate = _scope_gate(entry, item, pack, products, a_file)
     if gate is not None:
-        return Verified(other.key, other.kind, "listed", gate, "not_proved")
+        return Verified(
+            other.key, other.kind, "listed", gate, "not_proved", about=_about_other(other.base)
+        )
     label, tag, value, why = _architect_printed(entry, pack, a_file)
     vendor = "not proved missing"
     if label is None and tag is None:
