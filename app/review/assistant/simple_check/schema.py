@@ -288,6 +288,10 @@ class WorkItem(_Frozen):
     products: tuple[str, ...] = ()
     """Registry product ids the drawings' printed words name (`product_scope.named_products`,
     hints included); empty when they name none."""
+    main_product: str | None = None
+    """The product the vendor drawing's printed words are mostly about (`product_scope.
+    main_product`: a run of base cabinets is a cabinet run); `None` when none or a tie. An item of
+    the answer whose own words name no product is filed under it."""
     architect_only_tags: tuple[str, ...] = ()
     """Tags printed on the area's architect drawing and not on its vendor drawing (`notes.json`)."""
     hard: tuple[str, ...] = ()

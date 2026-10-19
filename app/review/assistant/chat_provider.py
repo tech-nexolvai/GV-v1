@@ -33,11 +33,13 @@ from app.review.assistant.chat_request import OPENROUTER_BASE_URL, Provider
 
 __all__ = [
     "RETENTION_WORDS",
+    "UNREACHABLE_WORDS",
     "AnthropicSdkProvider",
     "ChatProvider",
     "EventStream",
     "ProviderChoice",
     "ProviderFailure",
+    "ServiceBreaker",
     "choose_provider",
     "failure_from",
 ]
@@ -138,14 +140,91 @@ def _says_retention(error: BaseException) -> bool:
     return "retention" in words.lower()
 
 
+#: What a failure says about the AI service for this server: `key` (it refused the key, 401/403),
+#: `payment` (402), `account` (the account cannot use the model: data retention), `unreachable`
+#: (no answer: connection refused or lost, timed out). `None`: anything else.
+type FailureKind = Literal["key", "payment", "account", "unreachable"]
+
+
 class ProviderFailure(Exception):
     """A model call that failed, in plain words. `retryable`: a 5xx, 520/529 or a lost
-    connection, worth asking once more; `status`: the HTTP status when there was one."""
+    connection, worth asking once more; `status`: the HTTP status when there was one; `kind`:
+    what it says about the service (`FailureKind`), for the breaker (`ServiceBreaker`)."""
 
-    def __init__(self, message: str, *, status: int | None, retryable: bool) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int | None,
+        retryable: bool,
+        kind: FailureKind | None = None,
+    ) -> None:
         super().__init__(message)
         self.status = status
         self.retryable = retryable
+        self.kind = kind
+
+
+#: The service failures that will not mend within one answer: the first one stops new calls.
+_DEAD_AT_ONCE: Final = frozenset({"key", "payment", "account"})
+#: Calls in a row that could not reach the service (no answer between) before new calls stop.
+UNREACHABLE_IN_A_ROW: Final = 3
+UNREACHABLE_WORDS: Final = (
+    "The AI service can't be reached from this server, so no more AI calls were started for "
+    "this answer. Please try again in a few minutes; if it keeps happening, tell your admin."
+)
+
+
+class ServiceBreaker:
+    """One answer's view of the AI service (harness audit 2026-10-19: with the service down, a full
+    check retried each of its 39 calls for 6 minutes). Once the service has refused this server's
+    key, asked for payment or refused the account, or could not be reached `UNREACHABLE_IN_A_ROW`
+    times with no answer between, no new call is started: each fails at once, not retryable, with
+    the same plain reason. Thread-safe (helpers and compare calls run at once)."""
+
+    def __init__(self, unreachable_in_a_row: int = UNREACHABLE_IN_A_ROW) -> None:
+        self._lock = threading.Lock()
+        self._limit = unreachable_in_a_row
+        self._misses = 0
+        self._open: ProviderFailure | None = None
+
+    @property
+    def reason(self) -> str | None:
+        """The plain reason no call is started any more, or `None`."""
+        with self._lock:
+            return None if self._open is None else str(self._open)
+
+    def check(self) -> None:
+        """Raises the stop's failure when calls are stopped."""
+        with self._lock:
+            stopped = self._open
+        if stopped is not None:
+            raise ProviderFailure(
+                str(stopped), status=stopped.status, retryable=False, kind=stopped.kind
+            )
+
+    def failed(self, failure: ProviderFailure) -> None:
+        with self._lock:
+            if self._open is not None:
+                return
+            if failure.kind in _DEAD_AT_ONCE:
+                self._open = failure
+            elif failure.kind == "unreachable":
+                self._misses += 1
+                if self._misses >= self._limit:
+                    self._open = ProviderFailure(
+                        UNREACHABLE_WORDS, status=None, retryable=False, kind="unreachable"
+                    )
+            if self._open is not None:
+                _log.warning(
+                    "assistant chat: the AI service is %s for this answer; no new call starts",
+                    "unreachable" if self._open.kind == "unreachable" else "refusing it",
+                )
+
+    def answered(self) -> None:
+        """A call reached the service and was accepted: misses in a row start again."""
+        with self._lock:
+            self._misses = 0
 
 
 def failure_from(error: BaseException) -> ProviderFailure:
@@ -158,19 +237,25 @@ def failure_from(error: BaseException) -> ProviderFailure:
     status = status if isinstance(status, int) else None
     if isinstance(error, anthropic.APITimeoutError):
         return ProviderFailure(
-            "Claude did not answer in time. Please ask again.", status=None, retryable=True
+            "Claude did not answer in time. Please ask again.",
+            status=None,
+            retryable=True,
+            kind="unreachable",
         )
     if isinstance(error, anthropic.APIConnectionError):
         return ProviderFailure(
-            "Claude could not be reached (the connection was lost). Please ask again.",
+            "The AI service can't be reached from this server (the connection failed). Please "
+            "ask again.",
             status=None,
             retryable=True,
+            kind="unreachable",
         )
     if isinstance(error, anthropic.AuthenticationError | anthropic.PermissionDeniedError):
         return ProviderFailure(
             "The AI service refused this server's key, so Claude did not answer. Tell your admin.",
             status=status,
             retryable=False,
+            kind="key",
         )
     if isinstance(error, anthropic.RateLimitError):
         return ProviderFailure(
@@ -184,9 +269,10 @@ def failure_from(error: BaseException) -> ProviderFailure:
             "your admin.",
             status=status,
             retryable=False,
+            kind="payment",
         )
     if status in (400, 404) and _says_retention(error):
-        return ProviderFailure(RETENTION_WORDS, status=status, retryable=False)
+        return ProviderFailure(RETENTION_WORDS, status=status, retryable=False, kind="account")
     if isinstance(error, anthropic.APIStatusError):
         if status is not None and status < 400:
             # An `error` event in the middle of a stream (overloaded, api_error): the HTTP
@@ -217,6 +303,8 @@ def failure_from(error: BaseException) -> ProviderFailure:
     )
 
 
+#: How long a call waits to connect to the AI service (the whole call may take much longer).
+CONNECT_SECONDS: Final = 15.0
 # How long `close` waits for a read it woke to return before closing the connection.
 _WAKE_SECONDS: Final = 5.0
 
@@ -299,16 +387,21 @@ class AnthropicSdkProvider:
         import anthropic
 
         self.name: Provider = choice.name
+        #: This answer's view of the service: a provider is made for each message.
+        self.breaker = ServiceBreaker()
         extra: dict[str, Any] = {} if http_client is None else {"http_client": http_client}
+        # A host that does not answer at all fails after `CONNECT_SECONDS`, not after the whole
+        # call's time (15 minutes) three times over.
+        timeout = anthropic.Timeout(timeout_seconds, connect=min(CONNECT_SECONDS, timeout_seconds))
         if choice.name == "anthropic":
             self._client = anthropic.Anthropic(
-                api_key=choice.key, timeout=timeout_seconds, max_retries=2, **extra
+                api_key=choice.key, timeout=timeout, max_retries=2, **extra
             )
         else:
             self._client = anthropic.Anthropic(
                 auth_token=choice.key,
                 base_url=OPENROUTER_BASE_URL,
-                timeout=timeout_seconds,
+                timeout=timeout,
                 max_retries=2,
                 **extra,
             )
@@ -317,6 +410,7 @@ class AnthropicSdkProvider:
         return f"AnthropicSdkProvider(name={self.name!r})"
 
     def open_stream(self, params: Mapping[str, Any]) -> EventStream:
+        self.breaker.check()
         call = dict(params)
         try:
             if "betas" in call or "fallbacks" in call:
@@ -324,5 +418,8 @@ class AnthropicSdkProvider:
             else:
                 raw = self._client.messages.create(**call, stream=True)
         except Exception as error:  # noqa: BLE001 - every provider failure is told plainly
-            raise failure_from(error) from None
+            failure = failure_from(error)
+            self.breaker.failed(failure)
+            raise failure from None
+        self.breaker.answered()
         return _SdkStream(raw)

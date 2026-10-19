@@ -503,9 +503,51 @@ def test_a_handed_over_file_downloads_as_an_attachment(postgres_engine, tmp_path
         assert download.headers["content-disposition"].startswith("attachment;")
         assert 'filename="issues.csv"' in download.headers["content-disposition"]
 
+        # Open (#1684) asks for it inline: only a PDF is shown inline, so a CSV still downloads.
+        opened = world.client.get(shown["url"], params={"inline": "true"})
+        assert opened.status_code == 200
+        assert opened.headers["content-disposition"].startswith("attachment;")
+        assert opened.headers["x-content-type-options"] == "nosniff"
+
         # A copy that no longer matches its recorded hash is never served.
         (world.root / chat_id / "files" / shown["id"]).write_text("changed")
         assert world.client.get(shown["url"]).status_code == 404
+
+
+def test_open_shows_a_pdf_inline_and_download_saves_it(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    # #1684: Open on the cloud drawing or the check report must show the PDF, not save it again.
+    provider = ScriptedProvider(
+        lead=[
+            reply(
+                tool(
+                    "c",
+                    "create_file",
+                    {
+                        "path": "/mnt/user-data/outputs/report.pdf",
+                        "file_text": "%PDF-1.4 sample",
+                        "description": "PDF",
+                    },
+                ),
+                tool("p", "present_files", {"filepaths": ["/mnt/user-data/outputs/report.pdf"]}),
+                stop="tool_use",
+            ),
+            reply(text("Here it is.")),
+        ]
+    )
+    with _world(postgres_engine, tmp_path, provider=provider) as world:
+        chat_id = world.chat()
+        _, events = world.ask(chat_id, "Make me a PDF")
+        shown = _named(events, "file")[0]["file"]
+        assert shown["mime"] == "application/pdf"
+
+        opened = world.client.get(shown["url"], params={"inline": "true"})
+        assert opened.status_code == 200 and opened.headers["content-type"] == "application/pdf"
+        assert opened.headers["content-disposition"].startswith("inline;")
+        assert 'filename="report.pdf"' in opened.headers["content-disposition"]
+        assert opened.headers["x-content-type-options"] == "nosniff"
+
+        saved = world.client.get(shown["url"])
+        assert saved.headers["content-disposition"].startswith("attachment;")
 
 
 def test_a_second_message_while_one_runs_is_a_409(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]

@@ -17,6 +17,7 @@ from PIL import Image, ImageDraw
 from app.review.assistant.chat_provider import AnthropicSdkProvider, ProviderChoice, ProviderFailure
 from app.review.assistant.simple_check import compare
 from app.review.assistant.simple_check.compare import (
+    DOWN_REASON,
     MAX_IMAGE_TOKENS,
     MIN_LEGIBLE_DPI,
     OVERVIEW_TOKENS,
@@ -547,6 +548,38 @@ def test_a_stopped_run_lists_every_item_left() -> None:
     )
     assert [o.status for o in outcomes] == ["failed", "failed"]
     assert all("stopped" in (o.reason or "") for o in outcomes)
+
+
+def test_a_service_that_does_not_answer_stops_being_asked() -> None:
+    """The app test (2026-10-19): with the AI service down, every drawing was tried again and
+    again (6 minutes for 39). After three drawings in a row fail every try, the rest fail at once
+    with the reason; a refused request (one drawing's own problem) does not count."""
+    items = [_item(item_id=f"p7.v{n}") for n in range(1, 7)]
+    provider = _Provider([ProviderFailure("connection refused", status=None, retryable=True)] * 9)
+    outcomes = compare_all(
+        items,
+        provider=provider,
+        source=_pictures,
+        system=SYSTEM,
+        settings=CompareSettings(parallel=1, retries=2),
+        sleep=lambda _s: None,
+        warm_wait_s=0.0,
+    )
+    assert [o.status for o in outcomes] == ["failed"] * 6
+    assert all("model call failed" in (o.reason or "") for o in outcomes[:3])
+    assert all((o.reason or "") == DOWN_REASON for o in outcomes[3:])
+    assert len(provider.calls) == 9  # three drawings, three tries each; none for the rest
+    refused = _Provider([ProviderFailure("refused (error 400)", status=400, retryable=False)] * 4)
+    outcomes = compare_all(
+        items[:4],
+        provider=refused,
+        source=_pictures,
+        system=SYSTEM,
+        settings=CompareSettings(parallel=1, retries=2),
+        sleep=lambda _s: None,
+        warm_wait_s=0.0,
+    )
+    assert len(refused.calls) == 4 and DOWN_REASON not in [o.reason for o in outcomes]
 
 
 # ---- pictures from a PDF ------------------------------------------------------------------------

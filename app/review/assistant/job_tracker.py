@@ -19,8 +19,11 @@ knows, never by new matching rules of its own:
   items;
 - across answers (several checks of one set): GV Review's recorded difference (`record_id`), then the
   numbered dimension label the vendor side was built from (#1558), then the same page and spot (the
-  vendor boxes within `NEAR_PT`, `revision_diff`'s "at the zone" distance), then the same page and
-  the same item words.
+  vendor boxes within `NEAR_PT`, `revision_diff`'s "at the zone" distance; both boxes spot-sized,
+  `SPOT_PT`: a box round a whole elevation is near everything on it), then the same page and the
+  same item words. The strongest links go first, and two different findings of one check and round
+  are never one item (#1680: a layout drawn round an elevation had tied every item on it into one,
+  so one comment number named different items).
 
 **Rounds.** A finding's `round` (the sheet's "first / second set of comments") says which round; a
 finding with none takes the round other findings on its page were given, else round 1. A finding's
@@ -53,6 +56,7 @@ from uuid import UUID
 
 from app.review.assistant.chat_trust import round_item_key
 from app.review.assistant.impact import by_impact, impact_of
+from app.review.assistant.proof import proof_group
 from vocabulary.product_registry import registry
 
 __all__ = [
@@ -72,6 +76,9 @@ __all__ = [
 
 #: Points within which two vendor boxes on one page are the same spot (`revision_diff._NEAR_PT`).
 NEAR_PT: Final = 18.0
+#: A vendor box larger than this on either side (points) is not a spot (a whole elevation, a layout):
+#: being "near" it says nothing about which item it is, so it never links items by place.
+SPOT_PT: Final = 72.0
 
 type State = Literal["open", "fixed", "not_a_problem", "right_later"]
 type RoundStatus = Literal[
@@ -184,6 +191,11 @@ def _box(value: object) -> tuple[str | None, int | None, tuple[float, float, flo
     return (None if file is None else str(file)), _page(value.get("page")), corners
 
 
+def _spot(corners: tuple[float, float, float, float]) -> bool:
+    """A box small enough to be one spot (a printed value), not a whole drawing (`SPOT_PT`)."""
+    return abs(corners[2] - corners[0]) <= SPOT_PT and abs(corners[3] - corners[1]) <= SPOT_PT
+
+
 def _gap(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
     dx = max(0.0, max(a[0], b[0]) - min(a[2], b[2]))
     dy = max(0.0, max(a[1], b[1]) - min(a[3], b[3]))
@@ -242,6 +254,19 @@ def _int_or_none(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+def _counted_status(finding: Mapping[str, Any]) -> str:
+    """The finding's status as the files count it (#1619: Wrong only when code proved it): a
+    `different` code did not prove (an unread value, a pairing not proved) is Not compared
+    (`check`) here too, so the tracker, its counts and the comment numbers never call Wrong what
+    the cloud drawing, the letter and the register list as Not compared. A reviewer's "not a
+    problem" keeps its status (the decision says it)."""
+    status = str(finding.get("status") or "")
+    if status != "different":
+        return status
+    group = proof_group(finding)
+    return status if group in ("clouded", "dismissed") else "check"
+
+
 def _sightings(answers: Sequence[TrackerAnswer]) -> list[_Sighting]:
     out: list[_Sighting] = []
     for answer_index, answer in enumerate(answers):
@@ -261,7 +286,7 @@ def _sightings(answers: Sequence[TrackerAnswer]) -> list[_Sighting]:
                     folded=False,
                     page=_page(finding.get("page")),
                     explicit_round=_int_or_none(finding.get("round")),
-                    status=str(finding.get("status") or ""),
+                    status=_counted_status(finding),
                     round_status=ROUND_STATUS_WORDS.get(raw_status),
                     decision=decision if isinstance(decision, Mapping) else None,
                     key=round_item_key(finding),
@@ -324,10 +349,15 @@ def _fill_rounds(sightings: Sequence[_Sighting]) -> None:
 
 
 class _Groups:
-    """Union-find over sightings."""
+    """Union-find over sightings, where two different findings of one check and round are never
+    one item: a join that would put them together is refused (each group knows, per check and
+    round, the finding that carries it)."""
 
-    def __init__(self, size: int) -> None:
-        self.parent = list(range(size))
+    def __init__(self, sightings: Sequence[_Sighting]) -> None:
+        self.parent = list(range(len(sightings)))
+        self.carriers: dict[int, dict[tuple[int, int], str]] = {
+            s.index: {(s.answer_index, s.round): s.carrier_id} for s in sightings
+        }
 
     def find(self, at: int) -> int:
         while self.parent[at] != at:
@@ -335,10 +365,20 @@ class _Groups:
             at = self.parent[at]
         return at
 
-    def join(self, a: int, b: int) -> None:
+    def join(self, a: int, b: int) -> bool:
+        """Joins the two items; False (nothing joined) when they hold two different findings of
+        one check and round."""
         first, second = self.find(a), self.find(b)
-        if first != second:
-            self.parent[max(first, second)] = min(first, second)
+        if first == second:
+            return True
+        mine, theirs = self.carriers[first], self.carriers[second]
+        if any(theirs.get(key, carrier) != carrier for key, carrier in mine.items()):
+            return False
+        root, child = min(first, second), max(first, second)
+        self.parent[child] = root
+        self.carriers[root] = {**mine, **theirs}
+        del self.carriers[child]
+        return True
 
 
 def _link_inside_answers(sightings: Sequence[_Sighting], groups: _Groups) -> None:
@@ -386,7 +426,7 @@ def _match(new: _Sighting, old: _Sighting) -> int | None:
     if new.page is None or new.page != old.page:
         return None
     new_box, old_box = _box(new.finding.get("vendor_box")), _box(old.finding.get("vendor_box"))
-    if new_box is not None and old_box is not None:
+    if new_box is not None and old_box is not None and _spot(new_box[2]) and _spot(old_box[2]):
         same_file = new_box[0] is None or old_box[0] is None or new_box[0] == old_box[0]
         if same_file and _gap(new_box[2], old_box[2]) <= NEAR_PT:
             return 2
@@ -396,7 +436,10 @@ def _match(new: _Sighting, old: _Sighting) -> int | None:
 
 
 def _link_across_answers(sightings: Sequence[_Sighting], groups: _Groups) -> None:
-    """Each sighting joins its best match in every earlier answer of the same set."""
+    """Each sighting joins its best match in every earlier answer of the same set: the strongest
+    links of an answer first (a record, then a label, then a spot, then the words), each sighting
+    once per earlier answer; a link that would make two findings of one check one item is skipped
+    for the next best (`_Groups.join`)."""
     earlier: dict[UUID, list[_Sighting]] = {}
     by_answer: dict[int, list[_Sighting]] = {}
     for sighting in sightings:
@@ -405,17 +448,16 @@ def _link_across_answers(sightings: Sequence[_Sighting], groups: _Groups) -> Non
         members = by_answer[answer_index]
         package = members[0].answer.package_id
         seen = earlier.setdefault(package, [])
+        links: list[tuple[int, int, int, int]] = []
         for sighting in members:
-            best: dict[int, tuple[int, int]] = {}
             for old in seen:
                 strength = _match(sighting, old)
-                if strength is None:
-                    continue
-                current = best.get(old.answer_index)
-                if current is None or strength < current[0]:
-                    best[old.answer_index] = (strength, old.index)
-            for _strength, old_index in best.values():
-                groups.join(sighting.index, old_index)
+                if strength is not None:
+                    links.append((strength, sighting.index, old.answer_index, old.index))
+        linked: set[tuple[int, int]] = set()
+        for _strength, new_index, old_answer, old_index in sorted(links):
+            if (new_index, old_answer) not in linked and groups.join(new_index, old_index):
+                linked.add((new_index, old_answer))
         seen.extend(members)
 
 
@@ -618,7 +660,7 @@ def build_tracker(sets: Sequence[TrackerSet], answers: Sequence[TrackerAnswer]) 
         by_package.setdefault(sighting.answer.package_id, []).append(sighting)
     for members in by_package.values():
         _fill_rounds(members)
-    groups = _Groups(len(sightings))
+    groups = _Groups(sightings)
     _link_inside_answers(sightings, groups)
     _link_across_answers(sightings, groups)
 
@@ -721,7 +763,7 @@ def _sets_out(
 
 
 def _check_out(answer: TrackerAnswer) -> dict[str, Any]:
-    statuses = [str(f.get("status") or "") for f in answer.findings]
+    statuses = [_counted_status(f) for f in answer.findings]
     rounds = sorted(
         {r for f in answer.findings if isinstance(r := f.get("round"), int) and r >= 1} or {1}
     )
@@ -833,7 +875,7 @@ def comment_numbers(answers: Sequence[TrackerAnswer]) -> dict[tuple[str, str], s
         by_package.setdefault(sighting.answer.package_id, []).append(sighting)
     for members in by_package.values():
         _fill_rounds(members)
-    groups = _Groups(len(sightings))
+    groups = _Groups(sightings)
     _link_inside_answers(sightings, groups)
     _link_across_answers(sightings, groups)
     rank: dict[tuple[int, str], int] = {}
