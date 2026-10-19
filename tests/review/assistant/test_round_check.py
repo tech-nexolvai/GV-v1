@@ -370,3 +370,74 @@ def test_the_cover_lists_what_round_two_made_comparable(tmp_path: Path) -> None:
     # Nothing is marked for them on the sheets: no red cloud for an item that was not compared.
     for spot in (_moved(ROUND_ONE['46"']), _moved(ROUND_ONE['12"'])):
         assert _colour_near(out, 2, spot, RED) == 0
+
+
+# ---- one round verdict per item (orchestrator, 2026-10-19) ---------------------------------------
+
+
+def _round_two_twin(fid: str = "F5") -> dict[str, Any]:
+    """A round-2 item at the place of round 1's 12": round 2 still prints 12"."""
+    x, y = _moved(ROUND_ONE['12"'])
+    box = {"page": 2, "x0": x - 10, "y0": y - 8, "x1": x + 10, "y1": y + 8, "file": "sheet.pdf"}
+    return _finding(
+        fid,
+        '8"',
+        '14"',
+        page=2,
+        vendor='12"',
+        vendor_box=box,
+        round=2,
+        inches={"architect": "14", "vendor": "12"},
+    )
+
+
+def test_a_finding_recorded_as_round_two_is_never_followed_as_a_round_one_comment() -> None:
+    """The pipeline audit: GV's recorded row of round 2, whose spot fell in round 1's box, was
+    listed among the previous comments. A finding's recorded round wins; with no drawing of that
+    round on the page, it is not followed at all (never a guess)."""
+    recorded = _finding("F9", '12"', '14"', round=2)  # its spot is on round 1's drawing
+    report = round_two([recorded], _dims(), _page_map())
+    assert "F9" not in report.by_finding()
+
+
+def test_one_item_has_one_round_verdict_and_s3_counts_the_letters_list() -> None:
+    """The pipeline audit: round 1's comment could not be followed (its ink changed) while the
+    round-2 item at the same place said "also in round 1: previous comment not addressed"; the
+    review result counted 1 not addressed, the letter's line 0. One verdict per item now, and the
+    review result counts the letter's own list."""
+    from app.review.assistant.send_package import check_state, corrections_of
+
+    comment, later = _finding("F2", '12"', '14"'), _round_two_twin()
+    ids = {"F2", "F5"}
+    labels = {"F2": "C-01", "F5": "C-02"}
+    # Round 1's comment could not be followed: the round-2 item says the same, never "not
+    # addressed".
+    vetoed = round_two(
+        [comment, later],
+        _dims(),
+        _page_map(),
+        zones=lambda *_pages: [(100.0, 440.0, 140.0, 460.0)],
+    )
+    by = vetoed.by_finding()
+    assert by["F2"].status == "not_compared"
+    assert by["F5"].status == "not_compared" and "could not be followed" in str(by["F5"].reason)
+    state = check_state(incomplete=None, page_map=_page_map(), rounds=vetoed, comments=ids)
+    assert state.still_open == 0
+    words = {c.label: c.round_word for c in corrections_of([comment, later], labels, vetoed)}
+    assert words["C-02"] == ""
+    # Round 1's comment is still wrong: the round-2 item is that comment's, counted once.
+    still = round_two([comment, later], _dims(), _page_map())
+    by = still.by_finding()
+    assert by["F2"].status == "still_wrong"
+    assert by["F5"].status == "also_in_round_1" and by["F5"].twin == "F2"
+    state = check_state(incomplete=None, page_map=_page_map(), rounds=still, comments=ids)
+    assert state.still_open == 1
+    words = {c.label: c.round_word for c in corrections_of([comment, later], labels, still)}
+    assert words["C-02"] == "Previous comment not addressed"
+    # No comment in round 1 at that place: nobody had been told, so no previous comment.
+    alone = round_two([later], _dims(), _page_map())
+    assert alone.by_finding()["F5"].twin is None
+    state = check_state(incomplete=None, page_map=_page_map(), rounds=alone, comments={"F5"})
+    assert state.still_open == 0
+    words = {c.label: c.round_word for c in corrections_of([later], {"F5": "C-02"}, alone)}
+    assert words["C-02"] == ""

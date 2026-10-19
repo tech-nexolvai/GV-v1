@@ -47,6 +47,15 @@ __all__ = [
     "ChatFindingUpdateOut",
     "ChatFullCheckPlanOut",
     "ChatListOut",
+    "ChatLiveCountsOut",
+    "ChatLiveDrawingOut",
+    "ChatLiveFindingOut",
+    "ChatLiveImpactOut",
+    "ChatLiveOut",
+    "ChatLivePhaseOut",
+    "ChatLiveStateOut",
+    "ChatLiveStoppingOut",
+    "ChatLiveTallyOut",
     "ChatMessageIn",
     "ChatMessageOut",
     "ChatOut",
@@ -64,6 +73,7 @@ __all__ = [
     "ChatStepBlock",
     "ChatStepOut",
     "ChatSummaryOut",
+    "ChatSummaryReviewOut",
     "ChatTaskOut",
     "ChatTaskSpecIn",
     "ChatTextBlock",
@@ -222,6 +232,13 @@ class ChatMessageIn(BaseModel):
         "`simple/`, said in the work-items block) whose saved compare answers and blind looks are "
         "verified again, with no model call ($0).",
     )
+    compare_missing: bool = Field(
+        default=False,
+        description="#1710, with `replay` ('Compare them again'): the drawings that run has no "
+        "answer for (failed, stopped, never started) are compared now, and the blind looks it "
+        "could not make are made now; every saved answer and look is used again at $0, so the new "
+        "answer is the whole result.",
+    )
 
     @model_validator(mode="after")
     def _a_question_or_a_full_check(self) -> ChatMessageIn:
@@ -231,6 +248,8 @@ class ChatMessageIn(BaseModel):
             raise ValueError("pilot goes with a full check only")
         if (self.compare_model or self.compare_effort or self.replay) and self.mode != "full_check":
             raise ValueError("compare_model, compare_effort and replay go with a full check only")
+        if self.compare_missing and not self.replay:
+            raise ValueError("compare_missing goes with replay (the run to compare again)")
         if self.plan_answers is not None:
             if self.mode != "full_check":
                 raise ValueError("plan_answers go with a full check only")
@@ -1743,6 +1762,196 @@ class ChatMessageOut(BaseModel):
     )
 
 
+# ---- the full check's live state (#1710) ---------------------------------------------------------
+# Sent as small versioned events while a full check runs (`live_check.py`: each event is
+# `{"v": 1, <name>: <shape>}`): `check_phase` {phase: ChatLivePhaseOut}, `check_drawings`
+# {drawings: [ChatLiveDrawingOut]}, `check_drawing` {drawing: ChatLiveDrawingOut}, `check_finding`
+# {finding: ChatLiveFindingOut}, `check_tally` {tally: ChatLiveTallyOut}, `check_stopping`
+# {stopping: ChatLiveStoppingOut}, `check_service` {reason: str}. The whole state is one GET away
+# (`GET /chats/{chat_id}/live`, and `ChatOut.live`), for a page that reconnects mid-run.
+
+
+class ChatLivePhaseOut(BaseModel):
+    """What the full check is doing now, in plain phases with counts (`check_phase`)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    phase: Literal["getting_ready", "comparing", "double_checking", "making_files", "done"] = Field(
+        description="getting_ready: the drawing set's pack (labels, page map) and the work list; "
+        "comparing: the drawings (n of m); double_checking: code's own checks, code verifies the "
+        "answers, then the blind second looks (n of m); making_files: n of 5 files; done: the "
+        "answer is stored."
+    )
+    step: Literal["code_checks", "verifying", "second_looks", "final_checks", "stopped"] | None = (
+        Field(
+            default=None,
+            description="Within double_checking: code_checks (code's own checks of the whole set, "
+            "no count), verifying (code checks each answered drawing), second_looks, final_checks "
+            "(no count); `stopped` on a done check that was stopped.",
+        )
+    )
+    done: int | None = Field(default=None, description="How many of `total` are done.")
+    total: int | None = Field(default=None, description="null: no count for this phase.")
+    unit: Literal["drawings", "pages", "looks", "files"] | None = Field(
+        default=None, description="What `done` and `total` count (pages: the roster check)."
+    )
+    started_at: datetime = Field(description="When the check started (the elapsed clock).")
+    phase_started_at: datetime
+    stopping: bool = Field(default=False, description="Stop was pressed (`check_stopping`).")
+
+
+class ChatLiveDrawingOut(BaseModel):
+    """One vendor drawing of the work list as a live tile (`check_drawings`, `check_drawing`)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str = Field(description="The drawing's id, `p23.v1` (as in the `work_items` block).")
+    page: int
+    round: int | None = None
+    area: str | None = Field(default=None, description="The area or sheet name (page map).")
+    status: Literal["waiting", "comparing", "answered", "failed", "skipped"]
+    reason: str | None = Field(
+        default=None, description="Why it failed or was skipped, in plain words."
+    )
+
+
+class ChatLiveImpactOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    score: int = Field(ge=0, le=100)
+    why: str
+
+
+class ChatLiveFindingOut(BaseModel):
+    """One finding as soon as code DECIDED it (`check_finding`, sent again when it changes).
+    Wrong only when proved (the cloud drawing's own rule); a candidate waiting for the blind
+    second look is only counted (`ChatLiveTallyOut.waiting_second_look`)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    key: str = Field(description="The row's live key; never changes (later events update it).")
+    id: str | None = Field(
+        default=None, description="The finding's id (`F12`) once recorded in the answer."
+    )
+    outcome: Literal["wrong", "right", "not_compared"]
+    proved_by: Literal["code", "checked_twice"] | None = Field(
+        default=None,
+        description="A Wrong only: code alone, or code and the blind second look ('checked twice').",
+    )
+    page: int | None = None
+    area: str | None = None
+    item: str = ""
+    vendor: str | None = Field(default=None, description="The vendor's value (red when Wrong).")
+    architect: str | None = None
+    should_be: str | None = Field(default=None, description="What it should be (green).")
+    product: str = Field(default="other", description="The product id the item is filed under.")
+    reason: str | None = Field(default=None, description="Not compared: why, in plain words.")
+    needs: str | None = Field(default=None, description="Not compared: what would settle it.")
+    impact: ChatLiveImpactOut | None = None
+    same_as: str | None = Field(
+        default=None,
+        description="A Wrong that is the same item as the row `same_as`: not counted, not shown "
+        "(the final list keeps the item once).",
+    )
+    removed: bool = Field(
+        default=False, description="No longer in the answer (folded into another, or left out)."
+    )
+    previous: Literal["wrong", "right", "not_compared"] | None = Field(
+        default=None, description="Its outcome before, when it changed."
+    )
+    final: bool = Field(
+        default=False,
+        description="Decided for good (the final list). Right and Not compared may still move "
+        "between each other before; a shown Wrong stays Wrong.",
+    )
+
+
+class ChatLiveTallyOut(BaseModel):
+    """Found so far (`check_tally`): proved Wrongs only, and the differences waiting for the
+    blind second look (they become Wrong only if it agrees)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    wrong: int = Field(ge=0)
+    right: int = Field(ge=0)
+    not_compared: int = Field(ge=0)
+    waiting_second_look: int = Field(ge=0)
+
+
+class ChatLiveStoppingOut(BaseModel):
+    """After Stop (`check_stopping`, sent again as drawings finish): nothing new starts."""
+
+    model_config = ConfigDict(frozen=True)
+
+    in_flight: int = Field(ge=0, description="Drawings being compared now: they finish, kept.")
+    not_started: int = Field(ge=0, description="Drawings that will not be compared.")
+
+
+class ChatLiveCountsOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    drawings_done: int | None = Field(
+        default=None, description="Drawings compared (answered or failed); null before the list."
+    )
+    drawings_total: int | None = Field(
+        default=None, description="Drawings to compare (skipped ones left out)."
+    )
+    second_looks_done: int = 0
+    second_looks_total: int = 0
+    files_made: int = 0
+
+
+class ChatLiveStateOut(BaseModel):
+    """A running full check's whole live state, in one call (a page that reconnects)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    v: int = Field(description="The live events' and this state's version (1).")
+    mode: Literal["simple", "roster"] = Field(
+        description="simple: drawings, verify and second looks; roster: pages, fewer events."
+    )
+    started_at: datetime
+    phase: ChatLivePhaseOut
+    drawings: list[ChatLiveDrawingOut]
+    findings: list[ChatLiveFindingOut] = Field(
+        description="Every decided finding so far (removed ones left out)."
+    )
+    tally: ChatLiveTallyOut
+    counts: ChatLiveCountsOut
+    stopping: ChatLiveStoppingOut | None = None
+    service: str | None = Field(
+        default=None,
+        description="The AI service stopped every call (a refused key, no payment, not "
+        "reachable): its plain reason.",
+    )
+
+
+class ChatLiveOut(BaseModel):
+    """`GET /chats/{chat_id}/live`: the running full check's live state, or not running."""
+
+    model_config = ConfigDict(frozen=True)
+
+    running: bool
+    message_id: UUID | None = Field(
+        default=None, description="The answer being written (follow its events)."
+    )
+    live: ChatLiveStateOut | None = Field(
+        default=None,
+        description="null when nothing runs, or the running message is a question (no live card).",
+    )
+
+
+class ChatSummaryReviewOut(BaseModel):
+    """A chat's newest full check's review result, for the sidebar (#1710)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    action: Literal[
+        "approved", "approved_as_noted", "revise_resubmit", "rejected", "not_for_sending"
+    ]
+    words: str = Field(description='"Revise and resubmit", "Check incomplete: not for sending", …')
+
+
 class ChatSummaryOut(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -1751,6 +1960,23 @@ class ChatSummaryOut(BaseModel):
     created_at: datetime
     last_message_at: datetime | None
     turns: int
+    mode: Literal["chat", "full_check"] | None = Field(
+        default=None,
+        description="#1710: the newest question's mode: a full check or a typed question; null on "
+        "questions stored before it was kept.",
+    )
+    running: bool = Field(default=False, description="#1710: a message is being answered now.")
+    drawings_done: int | None = Field(
+        default=None, description="#1710: while a full check runs: drawings compared so far."
+    )
+    drawings_total: int | None = Field(
+        default=None, description="#1710: while a full check runs: drawings to compare."
+    )
+    review_result: ChatSummaryReviewOut | None = Field(
+        default=None,
+        description="#1710: the newest full check's review result (its package made); null "
+        "otherwise.",
+    )
 
 
 class ChatPlanOptionOut(BaseModel):
@@ -1830,6 +2056,11 @@ class ChatOut(BaseModel):
         default=None,
         description="The answer being written while `running`: follow it with "
         "GET /chats/{chat_id}/messages/{running_message_id}/events.",
+    )
+    live: ChatLiveStateOut | None = Field(
+        default=None,
+        description="#1710: while a full check runs, its live state (drawings, phase, decided "
+        "findings, tally), so a reloaded page draws the live card at once.",
     )
 
 

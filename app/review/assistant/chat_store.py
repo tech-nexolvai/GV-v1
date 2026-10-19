@@ -30,9 +30,14 @@ from app.review.assistant.chat_contract import (
     ChatFileOut,
     ChatMessageOut,
     ChatSummaryOut,
+    ChatSummaryReviewOut,
 )
-from app.review.assistant.chat_corrections import with_corrections
-from app.review.assistant.chat_decisions import package_block, with_decisions
+from app.review.assistant.chat_corrections import corrections_by_answer, with_corrections
+from app.review.assistant.chat_decisions import (
+    latest_decisions_of,
+    package_block,
+    with_decisions,
+)
 from app.review.assistant.chat_trust import rescored
 from app.review.assistant.impact import blocks_with_impacts
 from app.review.assistant.review_action import CheckState, review_action
@@ -52,6 +57,7 @@ __all__ = [
     "message_out",
     "package_name",
     "recorded_chat_spend",
+    "review_results",
     "stored_chat_spend",
     "unanswered_questions",
 ]
@@ -461,10 +467,16 @@ def _scope_of(blocks: Sequence[Any]) -> dict[str, Any] | None:
     return found if isinstance(found, dict) else None
 
 
-def chat_summaries(session: Session, package_id: UUID) -> list[ChatSummaryOut]:
+def chat_summaries(
+    session: Session,
+    package_id: UUID,
+    running: Mapping[UUID, Mapping[str, Any]] | None = None,
+) -> list[ChatSummaryOut]:
     """The package's chats with at least one message, newest activity first. A chat never used
     (an empty "New chat" made before chats were made on the first message) is left out, not
-    deleted: the table is append-only."""
+    deleted: the table is append-only. Each says (#1710) its newest question's mode, whether a
+    message is being answered now (`running`: chat id -> its live counts, `{}` for a question)
+    and its newest full check's review result."""
     chats = list(
         session.scalars(select(AssistantChat).where(AssistantChat.package_id == package_id))
     )
@@ -484,18 +496,23 @@ def chat_summaries(session: Session, package_id: UUID) -> list[ChatSummaryOut]:
         )
     }
     firsts: dict[UUID, str] = {}
-    for chat_id, text in session.execute(
-        select(AssistantChatMessage.chat_id, AssistantChatMessage.text)
+    modes: dict[UUID, str | None] = {}
+    for chat_id, text, mode in session.execute(
+        select(AssistantChatMessage.chat_id, AssistantChatMessage.text, AssistantChatMessage.mode)
         .where(AssistantChatMessage.chat_id.in_(ids), AssistantChatMessage.role == "user")
         .order_by(AssistantChatMessage.chat_id, AssistantChatMessage.seq)
     ):
         firsts.setdefault(chat_id, text)
+        modes[chat_id] = mode  # the newest question's (ordered by seq)
+    results = review_results(session, ids)
     out: list[ChatSummaryOut] = []
     for chat in chats:
         row = stats.get(chat.id)
         if row is None:
             continue
         first = firsts.get(chat.id)
+        live = (running or {}).get(chat.id)
+        mode = modes.get(chat.id)
         out.append(
             ChatSummaryOut(
                 id=chat.id,
@@ -503,9 +520,70 @@ def chat_summaries(session: Session, package_id: UUID) -> list[ChatSummaryOut]:
                 created_at=chat.created_at,
                 last_message_at=row.last,
                 turns=int(row.turns),
+                mode="full_check" if mode == "full_check" else "chat" if mode == "chat" else None,
+                running=live is not None,
+                drawings_done=None if live is None else live.get("drawings_done"),
+                drawings_total=None if live is None else live.get("drawings_total"),
+                review_result=results.get(chat.id),
             )
         )
     out.sort(key=lambda item: (item.last_message_at or item.created_at, item.id), reverse=True)
+    return out
+
+
+def review_results(session: Session, chat_ids: Sequence[UUID]) -> dict[UUID, ChatSummaryReviewOut]:
+    """Each chat's newest full check's review result (#1710, for the chat list), as its answer
+    shows it (`message_out`): its findings at their newest versions (a later answer's corrections),
+    with the reviewer's latest decisions, and the state kept with its package. A chat whose newest
+    full check has no package yet (stopped before it, or older) has none."""
+    if not chat_ids:
+        return {}
+    newest: dict[UUID, tuple[int, UUID]] = {}
+    for chat_id, message_id, seq in session.execute(
+        select(AssistantChatMessage.chat_id, AssistantChatMessage.id, AssistantChatMessage.seq)
+        .where(
+            AssistantChatMessage.chat_id.in_(chat_ids),
+            AssistantChatMessage.role == "assistant",
+            AssistantChatMessage.mode == "full_check",
+        )
+        .order_by(AssistantChatMessage.chat_id, AssistantChatMessage.seq)
+    ):
+        newest[chat_id] = (seq, message_id)
+    if not newest:
+        return {}
+    answers = {
+        row.id: row
+        for row in session.scalars(
+            select(AssistantChatMessage).where(
+                AssistantChatMessage.id.in_([m for _seq, m in newest.values()])
+            )
+        )
+    }
+    # Later answers in the same chats may correct a full check's findings (#1548).
+    later: dict[UUID, list[AssistantChatMessage]] = {}
+    for row in session.scalars(
+        select(AssistantChatMessage)
+        .where(
+            AssistantChatMessage.chat_id.in_(list(newest)),
+            AssistantChatMessage.role == "assistant",
+        )
+        .order_by(AssistantChatMessage.chat_id, AssistantChatMessage.seq)
+    ):
+        if row.seq > newest[row.chat_id][0]:
+            later.setdefault(row.chat_id, []).append(row)
+    decided = latest_decisions_of(session, list(answers))
+    out: dict[UUID, ChatSummaryReviewOut] = {}
+    for chat_id, (_seq, message_id) in newest.items():
+        message = answers.get(message_id)
+        if message is None or package_block(message.blocks) is None:
+            continue
+        corrections = corrections_by_answer(later.get(chat_id, [])).get(str(message_id))
+        blocks = with_decisions(
+            with_corrections(message.blocks, corrections), decided.get(message_id)
+        )
+        found = _review_action(message, blocks or [])
+        if found is not None:
+            out[chat_id] = ChatSummaryReviewOut(action=found["action"], words=found["words"])
     return out
 
 

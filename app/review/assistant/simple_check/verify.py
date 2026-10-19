@@ -547,8 +547,6 @@ class Item:
     """The label refs of its architect drawings (empty: each drawing's box decides)."""
     products: tuple[str, ...] = ()
     """The products the drawings' printed words name (the work list's)."""
-    main_product: str | None = None
-    """The product the vendor drawing's words are mostly about (the work list's)."""
 
     @property
     def category(self) -> str:
@@ -582,7 +580,6 @@ class Item:
                 label.ref for drawing in work.architect for label in drawing.labels
             ),
             products=tuple(getattr(work, "products", ()) or ()),
-            main_product=getattr(work, "main_product", None),
         )
 
     @classmethod
@@ -951,18 +948,15 @@ def _first_failure(checks: Sequence[Check]) -> Check | None:
 def _category(item: Item, what: object) -> str:
     """The product an item of the answer is filed under: the one its OWN words name (what it
     measures: "vanity top width" is a countertop's even in an area called "Standard Vanity"), by
-    the product registry's words and hints ("top of counter", "upper outlet"); else the
-    product the drawing is mostly about (an outlet or a string on a cabinet run is a cabinet item,
-    orchestrator 2026-10-19); else the drawing's one product; else "other" (the finding book then
-    re-files it from its page's words, `product_scope.refiled`)."""
-    words = str(what or "")
-    named = named_products(words, hints=True, every=True)
+    the product registry's words and hints ("top of counter", "upper outlet"); else, on a drawing
+    of one product, that product; else "other": the finding book files it under every product
+    its page shows (`product_scope.filed_under`, the inclusive rule of 2026-10-19: an outlet or a
+    string on a drawing of several products counts for each of them)."""
+    named = named_products(str(what or ""), hints=True, every=True)
     if len(named) == 1:
         return next(iter(named))
     if named:
         return "other"
-    if item.main_product is not None:
-        return item.main_product
     return item.category
 
 

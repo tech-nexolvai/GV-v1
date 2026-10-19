@@ -2,7 +2,7 @@
 
 What the vendor gets, with no human step (the rule is `proof.py`):
 
-1. **Cover**: the counts (Wrong, clouded; Right; Nothing to compare), the rule in one line, the stamp "Checked automatically by GV Review: <date>" ("… and reviewed by <name>" once a
+1. **Cover**: the counts (Wrong, clouded; Right; Not compared), the rule in one line, the stamp "Checked automatically by GV Review: <date>" ("… and reviewed by <name>" once a
    reviewer decided anything), every assumption code made about the page map, and the list of the
    clouded items.
 2. **The vendor's sheets**: a tight red cloud round each wrong value code proved, a numbered red
@@ -676,7 +676,7 @@ def _cover(
     tiles = [
         ("Wrong", counts["clouded"], RED, "proved by code, clouded"),
         ("Right", counts["right"], GREEN, "matches the architect"),
-        ("Nothing to compare", counts["not_compared"], _LIST_GREY, "listed apart, with the reason"),
+        ("Not compared", counts["not_compared"], _LIST_GREY, "listed apart, with the reason"),
     ]
     cells = [
         [
@@ -1216,7 +1216,7 @@ def proof_markup_pdf(
     notes.append(
         Paragraph(
             escape(
-                f"Nothing to compare ({nothing}): listed with the reason and what would settle "
+                f"Not compared ({nothing}): listed with the reason and what would settle "
                 f'it in the separate list, "{set_name} - {NOT_COMPARED_TITLE}".'
             ),
             styles["grey"],

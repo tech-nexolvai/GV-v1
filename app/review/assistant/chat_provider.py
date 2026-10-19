@@ -33,6 +33,7 @@ from app.review.assistant.chat_request import OPENROUTER_BASE_URL, Provider
 
 __all__ = [
     "RETENTION_WORDS",
+    "STREAM_IDLE_SECONDS",
     "UNREACHABLE_WORDS",
     "AnthropicSdkProvider",
     "ChatProvider",
@@ -42,6 +43,7 @@ __all__ = [
     "ServiceBreaker",
     "choose_provider",
     "failure_from",
+    "idle_words",
 ]
 
 _log = logging.getLogger(__name__)
@@ -236,10 +238,12 @@ def failure_from(error: BaseException) -> ProviderFailure:
     status = getattr(error, "status_code", None)
     status = status if isinstance(status, int) else None
     if isinstance(error, anthropic.APITimeoutError):
+        # The SDK has already asked 3 times (its own retries): asking again would only wait again.
         return ProviderFailure(
-            "Claude did not answer in time. Please ask again.",
+            "The AI service did not answer in time (it was asked 3 times), so this call was "
+            "stopped. Please ask again.",
             status=None,
-            retryable=True,
+            retryable=False,
             kind="unreachable",
         )
     if isinstance(error, anthropic.APIConnectionError):
@@ -305,6 +309,33 @@ def failure_from(error: BaseException) -> ProviderFailure:
 
 #: How long a call waits to connect to the AI service (the whole call may take much longer).
 CONNECT_SECONDS: Final = 15.0
+#: How long a call's stream may send nothing at all (no event, no `ping`) before it is stopped
+#: (`GV_ASSISTANT_STREAM_IDLE_SECONDS`; owner decision 2026-10-19: about 3 minutes, was the
+#: call's whole 15 minutes). Anthropic's streaming docs promise no `ping` interval ("may include
+#: any number of ping events"), so the limit does not rest on pings: every call asks for
+#: `display: "summarized"`, which streams the reasoning's summary as it thinks (only `omitted`
+#: streams a thinking block empty), and in the live app's stored answers the longest whole
+#: thinking block took 35 s (244 blocks, Opus 5.5 high). The limit is the socket's read timeout,
+#: so any byte, a `ping` included, starts it again.
+STREAM_IDLE_SECONDS: Final = 180.0
+
+
+def idle_words(seconds: float) -> str:
+    """What a call that sent nothing for `seconds` ends with, in plain words."""
+    minutes = seconds / 60
+    span = f"{minutes:g} minutes" if minutes >= 1 else f"{seconds:g} seconds"
+    return (
+        f"The AI service sent nothing for {span}, so this call was stopped (the connection "
+        "looked dead). Please ask again."
+    )
+
+
+def _is_timeout(error: BaseException) -> bool:
+    """An HTTP read, write or pool time-out raised while a stream is read (the SDK wraps time-outs
+    only while it sends the request)."""
+    return any(cls.__name__ == "TimeoutException" for cls in type(error).__mro__)
+
+
 # How long `close` waits for a read it woke to return before closing the connection.
 _WAKE_SECONDS: Final = 5.0
 
@@ -325,8 +356,9 @@ def _shut_down(raw: Any) -> None:
 class _SdkStream:
     """The SDK's raw stream, as plain dicts."""
 
-    def __init__(self, raw: Any) -> None:
+    def __init__(self, raw: Any, idle_seconds: float = STREAM_IDLE_SECONDS) -> None:
         self._raw = raw
+        self._idle_seconds = idle_seconds
         self._finished = False
         self._closed = False
         # Clear while a thread waits on the raw stream for its next event.
@@ -347,7 +379,18 @@ class _SdkStream:
                 if getattr(event, "type", None) in _RAW_EVENTS:
                     yield event.to_dict(mode="json")
         except Exception as error:  # noqa: BLE001 - every provider failure is told plainly
-            raise (_stopped() if self._closed else failure_from(error)) from None
+            if self._closed:
+                raise _stopped() from None
+            if _is_timeout(error):
+                # Nothing at all arrived for the idle limit: the stream is dead. Not asked again
+                # (that could wait as long once more); what it used so far is still recorded.
+                raise ProviderFailure(
+                    idle_words(self._idle_seconds),
+                    status=None,
+                    retryable=False,
+                    kind="unreachable",
+                ) from None
+            raise failure_from(error) from None
         if self._closed:
             # A shut connection can read as the body's clean end: still a stop, never an answer.
             raise _stopped()
@@ -379,9 +422,15 @@ class AnthropicSdkProvider:
     """The official SDK client for one provider. Holds the key; never shows it."""
 
     def __init__(
-        self, choice: ProviderChoice, *, timeout_seconds: float, http_client: Any = None
+        self,
+        choice: ProviderChoice,
+        *,
+        timeout_seconds: float,
+        idle_seconds: float = STREAM_IDLE_SECONDS,
+        http_client: Any = None,
     ) -> None:
-        """`http_client` is for tests only (a fake transport: no network)."""
+        """`idle_seconds`: how long a stream may send nothing (`STREAM_IDLE_SECONDS`).
+        `http_client` is for tests only (a fake transport: no network)."""
         if choice.key is None:
             raise ValueError("the assistant has no provider key")
         import anthropic
@@ -390,9 +439,15 @@ class AnthropicSdkProvider:
         #: This answer's view of the service: a provider is made for each message.
         self.breaker = ServiceBreaker()
         extra: dict[str, Any] = {} if http_client is None else {"http_client": http_client}
-        # A host that does not answer at all fails after `CONNECT_SECONDS`, not after the whole
-        # call's time (15 minutes) three times over.
-        timeout = anthropic.Timeout(timeout_seconds, connect=min(CONNECT_SECONDS, timeout_seconds))
+        # A host that does not answer at all fails after `CONNECT_SECONDS`, and a stream that
+        # sends nothing (no event, no ping) after `idle_seconds`, not after the whole call's time
+        # (15 minutes) three times over.
+        self.idle_seconds = min(idle_seconds, timeout_seconds)
+        timeout = anthropic.Timeout(
+            timeout_seconds,
+            connect=min(CONNECT_SECONDS, timeout_seconds),
+            read=self.idle_seconds,
+        )
         if choice.name == "anthropic":
             self._client = anthropic.Anthropic(
                 api_key=choice.key, timeout=timeout, max_retries=2, **extra
@@ -422,4 +477,4 @@ class AnthropicSdkProvider:
             self.breaker.failed(failure)
             raise failure from None
         self.breaker.answered()
-        return _SdkStream(raw)
+        return _SdkStream(raw, self.idle_seconds)
