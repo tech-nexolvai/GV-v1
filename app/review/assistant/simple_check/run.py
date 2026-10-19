@@ -937,20 +937,22 @@ class _Run:
                     self.rows.append(_row(one, "the answer's item limit was reached"))
         # The labels the architect gives no size for, one row per drawing (and product), not one
         # per label: a set has hundreds (the app test: 1,186 rows beside 46 items on screen).
-        no_size: dict[tuple[str, str], list[Verified]] = {}
+        # Labels the AI was unsure about (no architect label) are grouped the same way, with their
+        # own reason.
+        no_size: dict[tuple[str, str, str], list[Verified]] = {}
         for one, item in verified:
             if one.outcome != "listed":
                 continue
             row = _row(one)
-            if one.reason_code != "nothing_to_compare" or not one.vendor:
+            if one.reason_code not in _GROUPED or not one.vendor:
                 self.rows.append(row)
                 continue
             filed = self._filed(row)
             if filed is None:
                 self.out_of_scope += 1  # another product's label: never listed
                 continue
-            no_size.setdefault((item.id, filed), []).append(one)
-        for (item_id, filed), labels in no_size.items():
+            no_size.setdefault((item.id, filed, str(one.reason_code)), []).append(one)
+        for (item_id, filed, _reason), labels in no_size.items():
             self.rows.append(_no_size_row(item_id, filed, labels))
         engine.extra_gaps = list(self.rows)
 
@@ -1363,6 +1365,13 @@ def _seed_for(
     return None
 
 
+#: What settles a single listed label, by its reason.
+_ROW_NEEDS: Final = {
+    "nothing_to_compare": "the architect's size for it",
+    "ai_unsure": "a printed architect value for it, or a clearer look at both drawings",
+}
+
+
 def _row(one: Verified, why: str | None = None) -> dict[str, Any]:
     """A Not-compared row that is not a finding (`not_compared.gap_rows`'s shape)."""
     vendor = one.vendor or {}
@@ -1378,7 +1387,7 @@ def _row(one: Verified, why: str | None = None) -> dict[str, Any]:
         "page": page if isinstance(page, int) else None,
         "what": f"{where}: {why or one.reason}",
         "why": one.reason_code or "not_proved",
-        "needs": "the architect's size for it" if one.reason_code == "nothing_to_compare" else "",
+        "needs": _ROW_NEEDS.get(str(one.reason_code), ""),
         "scope": "set",
         # What files the row under the check's product scope (`product_scope.scoped_gaps`).
         "item": about.get("item") or finding.get("item"),
@@ -1388,11 +1397,28 @@ def _row(one: Verified, why: str | None = None) -> dict[str, Any]:
 
 #: How many values a grouped "no architect size" row names before "and N more".
 _NO_SIZE_SHOWN: Final = 6
+#: The listed labels grouped one row per drawing, and what each group's row says about them.
+_GROUP_WORDS: Final = {
+    "nothing_to_compare": (
+        "the architect gives no size for",
+        "the architect's sizes for them",
+        "dimensions with no architect size",
+    ),
+    "ai_unsure": (
+        "not settled from the drawings (no printed architect value found):",
+        "a printed architect value for them, or a clearer look at both drawings",
+        "dimensions not settled from the drawings",
+    ),
+}
+_GROUPED: Final = frozenset(_GROUP_WORDS)
 
 
 def _no_size_row(item_id: str, filed: str, labels: Sequence[Verified]) -> dict[str, Any]:
-    """One Not-compared row for a drawing's labels the architect gives no size for: the page, how
-    many, and the first few values with their labels."""
+    """One Not-compared row for a drawing's labels the architect gives no size for (or the AI was
+    unsure about, with no architect label): the page, how many, and the first few values with
+    their labels."""
+    reason = str(labels[0].reason_code or "nothing_to_compare")
+    said, needs, named = _GROUP_WORDS.get(reason, _GROUP_WORDS["nothing_to_compare"])
     vendor = labels[0].vendor or {}
     page = vendor.get("page")
     shown = ", ".join(
@@ -1404,13 +1430,12 @@ def _no_size_row(item_id: str, filed: str, labels: Sequence[Verified]) -> dict[s
     return {
         "page": page if isinstance(page, int) else None,
         "what": (
-            f"Vendor drawing on page {page}: {len(labels)} {many} the architect gives no size "
-            f"for: {shown}{more}"
+            f"Vendor drawing on page {page}: {len(labels)} {many} {said.rstrip(':')}: {shown}{more}"
         ),
-        "why": "nothing_to_compare",
-        "needs": "the architect's sizes for them",
+        "why": reason,
+        "needs": needs,
         "scope": "set",
-        "item": f"{item_id}: dimensions with no architect size",
+        "item": f"{item_id}: {named}",
         "category": filed,
     }
 
