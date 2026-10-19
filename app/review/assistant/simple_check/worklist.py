@@ -38,14 +38,16 @@ import json
 import logging
 import math
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
 from typing import Any, Final
 
+from app.review.assistant import dim_pairs, view_scales
 from app.review.assistant.full_check_plan import DIVIDER_NOTE, read_page_map
 from app.review.assistant.product_scope import named_products
+from app.review.assistant.simple_check import pairing as pairing_module
 from app.review.assistant.simple_check.schema import (
     Box,
     Drawing,
@@ -393,6 +395,9 @@ def worklist_from(
     mine = sorted((e for e in entries if str(e.get("file")) == file), key=lambda e: int(e["page"]))
     known = {int(e["page"]): e for e in mine}
     dims_pages = _by_page(dims)
+    known_any = {
+        (str(e.get("file")), int(e["page"])): e for e in entries if isinstance(e.get("page"), int)
+    }
     scales_pages = _by_page(scales)
     notes_pages = _by_page(notes)
     skipped: list[Skipped] = []
@@ -547,6 +552,39 @@ def worklist_from(
             if half.role == "vendor":
                 vendor_halves.append(half)
 
+    def facts_of(drawing: Drawing) -> pairing_module.Facts:
+        """What code knows of a drawing for pairing across files (#1723): its printed values,
+        the references printed on it, and its labels' drawn rows for `dim_pairs`."""
+        own = drawing.own_page
+        dims_page = dims_pages.get((drawing.file, own)) or {}
+        texts = [
+            *_phrases_in(dims_page, drawing.crop_box),
+            *(drawing.titles or ()),
+            *(drawing.notes or ()),
+            *(drawing.heading or "",),
+            *(
+                str(s)
+                for s in (known_any.get((drawing.file, own)) or {}).get("sheet_numbers") or []
+            ),
+        ]
+        side = _LABEL_SIDE.get(drawing.role, drawing.role)
+        raw = [
+            dict(label)
+            for label in dims_page.get("labels") or []
+            if isinstance(label, Mapping)
+            and label.get("side") == side
+            and (box := _box(label.get("box"))) is not None
+            and _distance(_centre(box), drawing.box) <= _LABEL_REACH_PT
+        ]
+        scales_page = scales_pages.get((drawing.file, own)) or {}
+        return pairing_module.Facts(
+            ref=drawing.ref,
+            values=pairing_module.values_of(drawing.labels),
+            references=pairing_module.references_in(texts),
+            spans=_spans_with(raw, scales_page, side) if drawing.role == "vendor" else None,
+            rows=(tuple(raw), scales_page, side),
+        )
+
     items: list[WorkItem] = []
     used_architect: dict[int, list[str]] = {}
     used_reference: dict[int, list[str]] = {}
@@ -567,10 +605,14 @@ def worklist_from(
             [drawings[h.ref] for h in [*same_area, *paired] if h.role == "architect"], half.page
         )
         pairing: str | None = None
-        if not architect and half.from_upload:
-            # A plain vendor drawing (a separate file, no GV area): paired across the set (#1723).
-            chosen, pairing = _pair_across(drawings[half.ref], [drawings[h.ref] for h in across])
-            architect = tuple(chosen)
+        if half.from_upload:
+            # A plain vendor drawing (a separate file, no GV area): paired across the set by code
+            # (#1723), never by the plan check's page-before guess.
+            chosen, pairing = _pair_across(
+                drawings[half.ref], [drawings[h.ref] for h in across], facts_of
+            )
+            if pairing is not None:
+                architect = tuple(chosen)
         reference = tuple(
             drawings[h.ref] for h in same_area if h.role == "brand_prototype" and h.ref
         )
@@ -652,19 +694,30 @@ def worklist_from(
 
     # Architect and prototype drawings no item looks at: the vendor did not submit that area.
     looked = {d.ref for item in items for d in (*item.architect, *item.reference)}
+    across_refs = {h.ref for h in across}
+    separate_file = any(h.file != file for h in across)
     for ref, drawing in drawings.items():
         if drawing.role != "vendor" and ref not in looked:
+            if drawing.file != file:
+                reason = "the architect's drawing no vendor drawing was paired with (code)"
+            elif ref in across_refs and separate_file:
+                reason = (
+                    "an architect's drawing inside the vendor's file: the architect's own file "
+                    "is compared instead (code)"
+                )
+            elif ref in across_refs:
+                reason = "the architect's drawing no vendor drawing was paired with (code)"
+            else:
+                reason = (
+                    f"the {drawing.role.replace('_', ' ')}'s drawing of an area with no vendor "
+                    "drawing in this set: the vendor did not submit it (code)"
+                )
             skipped.append(
                 Skipped(
                     file=drawing.file,
-                    page=drawing.file_page or drawing.page,
+                    page=drawing.own_page,
                     drawing=ref,
-                    reason=(
-                        f"the {drawing.role.replace('_', ' ')}'s drawing of an area with no vendor "
-                        "drawing in this set: the vendor did not submit it (code)"
-                        if drawing.file_page is None
-                        else "the architect's drawing no vendor drawing was paired with (code)"
-                    ),
+                    reason=reason,
                 )
             )
 
@@ -702,16 +755,67 @@ def worklist_from(
 
 
 def _pair_across(
-    vendor: Drawing, candidates: Sequence[Drawing]
+    vendor: Drawing,
+    candidates: Sequence[Drawing],
+    facts_of: Callable[[Drawing], pairing_module.Facts],
 ) -> tuple[list[Drawing], str | None]:
     """The architect drawing a plain vendor drawing is compared with, and how code chose it; or
-    none and why. Separate files are paired automatically in #1723; until then none is chosen."""
-    if not candidates:
+    none and why (`pairing.decide`, #1723). The upload's kind first: the architect's own file's
+    drawings are the candidates; only when it has none, the pages of the vendor's own file whose
+    title names the architect."""
+    others = [d for d in candidates if d.file != vendor.file]
+    pool = others or [d for d in candidates if d.ref != vendor.ref]
+    if not pool:
         return [], None
-    return [], (
-        "a vendor drawing of a separate file: code does not pair it with the architect's file "
-        "yet, so it is not compared (code)"
-    )
+    decision = pairing_module.decide(facts_of(vendor), [facts_of(d) for d in pool])
+    if decision.chosen is None:
+        return [], f"{decision.why} (code)"
+    chosen = next(d for d in pool if d.ref == decision.chosen)
+    return [chosen], f"code paired it with {chosen.ref}: {decision.why}"
+
+
+def _spans_with(
+    raw: Sequence[Mapping[str, Any]], scales_page: Mapping[str, Any], side: str
+) -> Callable[[pairing_module.Facts], int]:
+    """How many of a vendor drawing's spans code's drawn-position pairing (`dim_pairs`, in real
+    inches at each drawing's measured scale) lines up with a candidate's, never by value."""
+
+    def spans(candidate: pairing_module.Facts) -> int:
+        if candidate.rows is None:
+            return 0
+        theirs, their_scales, their_side = candidate.rows
+        labels = [{**label, "id": f"v{label.get('id')}", "side": "vendor"} for label in raw] + [
+            {**label, "id": f"a{label.get('id')}", "side": "architect"} for label in theirs
+        ]
+        scales = [
+            scale
+            for page, as_side in ((scales_page, side), (their_scales, their_side))
+            for entry in page.get("scales") or []
+            if isinstance(entry, Mapping)
+            and entry.get("side") == as_side
+            and (
+                scale := view_scales.from_dict(
+                    {**entry, "side": "vendor" if as_side == side else "architect"}
+                )
+            )
+            is not None
+        ]
+        checks = [
+            {**check, "id": f"{prefix}{check.get('id')}"}
+            for page, prefix in ((scales_page, "v"), (their_scales, "a"))
+            for check in page.get("labels") or []
+            if isinstance(check, Mapping)
+        ]
+        if not scales or not labels:
+            return 0
+        try:
+            found = dim_pairs.page_pairs(0, labels, scales, checks)
+        except Exception:  # noqa: BLE001 - no layout evidence, never a stop
+            _log.debug("simple check pairing: drawn rows not paired", exc_info=True)
+            return 0
+        return len(found.get("pairs") or [])
+
+    return spans
 
 
 def _governing_first(drawings: Sequence[Drawing], vendor_page: int) -> tuple[Drawing, ...]:

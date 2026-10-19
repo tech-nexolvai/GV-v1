@@ -49,6 +49,7 @@ from app.review.assistant.full_check_advocate import code_checks, decide, ink_co
 from app.review.assistant.product_scope import refiled
 from app.review.assistant.simple_check import verify as verify_module
 from app.review.assistant.simple_check.blind import BlindSettings, look_all
+from app.review.assistant.simple_check.pairing import UNPAIRED
 from app.review.assistant.simple_check.schema import CompareOutcome, WorkItem
 from app.review.assistant.simple_check.verify import (
     CREATED_BY,
@@ -214,6 +215,12 @@ class _Run:
     blind_skipped_count: int = 0
     out_of_scope: int = 0
     """Items of products outside the check's scope: never looked at again, never shown."""
+    no_architect: int = 0
+    """Vendor drawings with no architect drawing anywhere in the set (a vendor-only upload)."""
+    unpaired: list[tuple[int, str, str]] = field(default_factory=list)
+    """Vendor drawings of a separate file not compared because code could not pair them with an
+    architect drawing, or the compare call said the drawing code paired shows something else
+    (#1723): (page, drawing id, reason). Each is a Not-compared row; the check is not complete."""
 
     # -- the run --
 
@@ -250,6 +257,16 @@ class _Run:
                 _log.exception("simple check: work list failed")
                 return self._finish("error", f"the work list could not be made ({failed})")
             self.items = list(worklist.items)
+            self.unpaired = [
+                (s.page, str(s.drawing or ""), s.reason)
+                for s in worklist.skipped
+                if s.reason.startswith(UNPAIRED)
+            ]
+            self.no_architect = sum(
+                1
+                for s in worklist.skipped
+                if s.drawing and ".v" in s.drawing and s.reason.startswith("no architect drawing")
+            )
             self._scope_and_pilot()
         self._tell("work_list", self.items, self.skipped)
         engine.critic_off = True
@@ -687,6 +704,22 @@ class _Run:
             outcome = self.outcomes.get(item.id)
             if outcome is None or outcome.status != "ok" or outcome.result is None:
                 continue
+            if item.paired_by and outcome.result.same_drawing == "no":
+                # Code paired it across separate files; the compare call says the architect
+                # drawing shows something else: not compared, never verified (#1723).
+                architect = ", ".join(d.ref for d in item.architect)
+                self.unpaired.append(
+                    (
+                        item.page,
+                        item.id,
+                        (
+                            f"{UNPAIRED}: the compare call says the architect drawing code "
+                            f"paired it with ({architect}) shows something else"
+                        ),
+                    )
+                )
+                self._tell("verified", item.id, ())
+                continue
             view = Item.of(item)
             try:
                 verification = verify_module.verify_answer(
@@ -953,6 +986,18 @@ class _Run:
             no_size.setdefault((item.id, filed), []).append(one)
         for (item_id, filed), labels in no_size.items():
             self.rows.append(_no_size_row(item_id, filed, labels))
+        for page, drawing, reason in self.unpaired:
+            self.rows.append(
+                {
+                    "page": page,
+                    "what": f"Vendor drawing on page {page} ({drawing}): {reason}",
+                    "why": "not_proved",
+                    "needs": "the architect's drawing for it (a printed reference to its sheet)",
+                    "scope": "set",
+                    "item": f"{drawing}: vendor drawing not compared",
+                    "category": "other",
+                }
+            )
         engine.extra_gaps = list(self.rows)
 
     def _add(self, one: Verified) -> bool | None:
@@ -1027,6 +1072,10 @@ class _Run:
             # Nothing was compared (no vendor drawing, or none of the products picked): no review
             # result says the drawings were checked.
             engine.incomplete_note = self._nothing_compared()
+        elif self.unpaired:
+            # A vendor drawing of a separate file code could not pair is not compared: the check
+            # did not look at all of the vendor's drawings (#1723).
+            engine.incomplete_note = self._unpaired_words()
         elif self.blind_failed:
             # A failed second look counts like a failed compare call (orchestrator, 2026-10-19):
             # an outage, not the drawings, left these possible differences undecided.
@@ -1116,15 +1165,32 @@ class _Run:
             except Exception:  # noqa: BLE001 - said in the summary
                 _log.warning("simple check could not record the compared pages")
 
+    def _unpaired_words(self) -> str:
+        count = len(self.unpaired)
+        drawings = "vendor drawing" if count == 1 else "vendor drawings"
+        return (
+            f"{count} {drawings} could not be paired with an architect drawing by code (the "
+            "reasons are in the Not-compared list)"
+        )
+
     def _nothing_compared(self) -> str:
         """Why no drawing was compared (no error): the work list has none, or every one shows
         only products outside the check's scope."""
         outside = sum(1 for r in self.skipped.values() if r.startswith("outside the product scope"))
+        if self.unpaired and not self.items:
+            return self._unpaired_words()
         if self.items and outside == len(self.items):
             label = str(getattr(self.engine.product_scope, "label", "") or "").lower()
             return (
                 f"no drawing of {label or 'the products picked'} in this set: the "
                 f"{len(self.items)} vendor drawings show only other products"
+            )
+        if self.no_architect and not self.items:
+            many = "drawing has" if self.no_architect == 1 else "drawings have"
+            return (
+                f"the {self.no_architect} vendor {many} no architect drawing in this set to "
+                "compare with (upload the architect's drawings as their own file); GV's own "
+                "rules were still checked"
             )
         # The work list reads GV's combined sheets (the architect's drawing pasted over the
         # vendor's, each headed by whose it is). Separately uploaded vendor and architect files
@@ -1171,6 +1237,7 @@ class _Run:
             or bool(pilot)
             or not self.compared
             or bool(self.blind_failed)
+            or bool(self.unpaired)
         )
         text = "\n".join(
             (NOT_FINISHED_NEXT if unfinished and line.startswith("Next:") else line)
@@ -1196,6 +1263,10 @@ class _Run:
             lines.append(f"**Nothing was compared: {nothing}.**")
         elif not pilot:
             lines.append(f"Every drawing in the work list was compared ({answered} drawings).")
+        if self.unpaired and self.compared and why is None:
+            lines.append(
+                f"**Not compared: {self._unpaired_words()}. Not for sending until they are.**"
+            )
         if stopped == "cancelled" and why is None:
             lines.append(
                 f"**Stopped: {answered} of {len(self.compared)} drawings were compared and "
