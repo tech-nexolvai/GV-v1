@@ -930,7 +930,14 @@ class _Run:
                 f"no drawing of {label or 'the products picked'} in this set: the "
                 f"{len(self.items)} vendor drawings show only other products"
             )
-        return "the set has no vendor drawing to compare"
+        # The work list reads GV's combined sheets (the architect's drawing pasted over the
+        # vendor's, each headed by whose it is). Separately uploaded vendor and architect files
+        # are not paired yet: never a review result as if they were checked.
+        return (
+            "no vendor drawing was found on GV's combined sheets (the architect's drawing over "
+            "the vendor's, each headed by whose it is); separately uploaded vendor and architect "
+            "files are not compared yet"
+        )
 
     def _summary(
         self,

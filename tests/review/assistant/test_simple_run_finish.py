@@ -111,3 +111,24 @@ def test_nothing_in_the_products_picked_is_said_and_not_for_sending(
     assert "Every drawing in the work list was compared" not in outcome.text
     assert SEND not in outcome.text
     assert _state(outcome).get("incomplete")
+
+
+def test_pages_that_are_not_combined_sheets_are_never_a_review_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The app test (2026-10-19): a vendor PDF and an architect PDF uploaded apart, as the start
+    page asks, gave "Approved" with nothing compared. The work list reads GV's combined sheets
+    only; with none, the check says so and is not for sending."""
+    check = _Run(tmp_path)
+    page_map = json.loads((check.pack / "page_map.json").read_text())
+    for entry in page_map["pages"]:
+        entry["halves"] = []
+    (check.pack / "page_map.json").write_text(json.dumps(page_map), encoding="utf-8")
+    monkeypatch.setattr(compare_module, "compare_all", lambda items, **_: list(items))
+    monkeypatch.setattr(compare_module, "PictureSource", _Pictures)
+    outcome = check.engine.run()
+    assert "Nothing was compared: no vendor drawing was found on GV's combined sheets" in (
+        outcome.text
+    )
+    assert SEND not in outcome.text and "Approved" not in outcome.text
+    assert _state(outcome).get("incomplete")

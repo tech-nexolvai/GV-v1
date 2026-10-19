@@ -85,6 +85,8 @@ from app.review.assistant.simple_check.schema import (
 )
 
 __all__ = [
+    "DOWN_AFTER",
+    "DOWN_REASON",
     "MAX_IMAGES",
     "MIN_LEGIBLE_DPI",
     "PRICES",
@@ -127,6 +129,14 @@ WARM_WAIT_S: Final = 90.0
 _RETRY_BASE_S: Final = 4.0
 _RATE_LIMIT_BASE_S: Final = 20.0
 _RETRY_STATUSES: Final = frozenset({408, 409, 429, 500, 502, 503, 504, 520, 522, 524, 529})
+#: Drawings in a row whose model call still failed after every try: the AI service is taken as
+#: down and the drawings not started yet fail at once with the reason (the app test, 2026-10-19:
+#: with the service down, 39 drawings each tried again and again took 6 minutes).
+DOWN_AFTER: Final = 3
+DOWN_REASON: Final = (
+    f"not started: the AI service did not answer for {DOWN_AFTER} drawings in a row; check again "
+    "when it answers"
+)
 
 #: Anthropic's list prices per million tokens (input, output, cache read, 5-minute cache write),
 #: from the bundled model catalogue (2026-10); an estimate only, the Usage page uses the rates file.
@@ -745,8 +755,10 @@ def compare_item(
     before_call: Callable[[], None] | None = None,
     stop: threading.Event | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    down: threading.Event | None = None,
 ) -> CompareOutcome:
-    """One work item's compare call, its retries and its one repair turn."""
+    """One work item's compare call, its retries and its one repair turn. `down`: set when the AI
+    service is taken as down (`compare_all`): no more tries."""
     started = time.monotonic()
     model, effort = settings.for_item(item)
     usage: dict[str, int] = {}
@@ -819,7 +831,8 @@ def compare_item(
             except ProviderFailure as failure:
                 if first_event is not None:
                     first_event()  # the other calls need not wait for this one any more
-                if not _retryable(failure) or attempt >= settings.retries:
+                gone = down is not None and down.is_set()
+                if not _retryable(failure) or attempt >= settings.retries or gone:
                     return outcome(
                         status="failed",
                         reason=f"the model call failed: {failure}",
@@ -911,6 +924,8 @@ def compare_all(
     warmed = threading.Event()
     results: list[CompareOutcome | None] = [None] * len(items)
     lock = threading.Lock()
+    down = threading.Event()
+    failed_in_row = [0]
 
     def wait_for_warm() -> None:
         warmed.wait(warm_wait_s)
@@ -926,6 +941,14 @@ def compare_all(
                 asked_model=model.id,
                 effort=effort,
             )
+        elif down.is_set():
+            done = CompareOutcome(
+                work_item=item.id,
+                status="failed",
+                reason=DOWN_REASON,
+                asked_model=model.id,
+                effort=effort,
+            )
         else:
             first = index == 0
             done = compare_item(
@@ -938,11 +961,20 @@ def compare_all(
                 before_call=None if first else wait_for_warm,
                 stop=stop,
                 sleep=sleep,
+                down=down,
             )
             if first:
                 warmed.set()
         with lock:
             results[index] = done
+            # A call that failed after being tried again (not a refused request) counts towards
+            # the service being down; any answer resets the count.
+            if done.status == "ok":
+                failed_in_row[0] = 0
+            elif (done.reason or "").startswith("the model call failed") and done.attempts > 1:
+                failed_in_row[0] += 1
+                if failed_in_row[0] >= DOWN_AFTER:
+                    down.set()
         if on_outcome is not None:
             try:
                 on_outcome(done)
