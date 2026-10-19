@@ -125,9 +125,9 @@ def _is_range_note(made: dict[str, Any]) -> None:
     assert "settled" not in made and "rule" not in (made.get("checks") or {})
     recorded = judged({**made, "id": "F1", "checks": {"printed_vendor": "match"}})
     assert proof.proof_group(recorded) == "not_compared"
-    shown = classification.classify(recorded)
+    shown = classification.classify(recorded, proved=False)
     assert (shown.outcome, shown.reason) == ("not_compared", fr.OUTSIDE_RANGE)
-    assert "outside GV's usual" in shown.line
+    assert "outside GV's usual" in (shown.why or "") and shown.rule == "R6"
 
 
 @pytest.mark.parametrize(("text", "inches"), [('4" FILLER', "4"), ('5" FILLER', "5")])

@@ -5103,7 +5103,7 @@ export interface components {
              * Not Compared
              * @description not_compared: the reason (the list's group).
              */
-            not_compared?: ("architect_disagrees" | "nothing_to_compare" | "different_reference" | "unreadable" | "no_spot" | "ai_unsure" | "missing_setting" | "prototype" | "not_proved" | "not_seen" | "field_verify" | "finish_not_comparable" | "no_sheet" | "no_overall" | "string_not_verified" | "architect_outside_gv_rule" | "internal") | null;
+            not_compared?: ("architect_disagrees" | "nothing_to_compare" | "different_reference" | "unreadable" | "no_spot" | "ai_unsure" | "missing_setting" | "prototype" | "not_proved" | "not_seen" | "field_verify" | "finish_not_comparable" | "no_sheet" | "no_overall" | "string_not_verified" | "architect_outside_gv_rule" | "outside_gv_rule" | "internal") | null;
             /**
              * Proof
              * @description Clouded items: the check that proved it, in plain words.
@@ -5286,7 +5286,7 @@ export interface components {
         /** @enum {string} */
         ChatIntent: "fact" | "compare" | "whole_set" | "rules" | "arithmetic" | "rounds" | "file" | "summary" | "clarify" | "refuse_action";
         /** @enum {string} */
-        ChatKeepReason: "architect_prints_nothing" | "measures_something_else" | "which_governs" | "unreadable" | "needs_job_value" | "layout" | "vendor_disagrees" | "architect_outside_gv_rule" | "other";
+        ChatKeepReason: "architect_prints_nothing" | "measures_something_else" | "which_governs" | "unreadable" | "needs_job_value" | "layout" | "vendor_disagrees" | "architect_outside_gv_rule" | "outside_gv_rule" | "other";
         /** ChatLedgerBoxOut */
         ChatLedgerBoxOut: {
             /** File */
