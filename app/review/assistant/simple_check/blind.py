@@ -231,7 +231,8 @@ def _crop(
         raise ValueError("the drawing has no box")
     x0, y0, x1, y1 = (float(v) for v in area)
     item: dict[str, Any] = {
-        "page": region.page,
+        # The file's own page: a separate file's set page is not its page (#1722).
+        "page": region.file_page or region.page,
         "box": {"x0": x0, "y0": y0, "x1": x1, "y1": y1},
         "file": region.file,
     }

@@ -81,6 +81,7 @@ from app.review.assistant.finding_checks import to_inches
 from app.review.assistant.full_check_advocate import Check, code_pairs, is_slip, same_extent
 from app.review.assistant.full_check_plan import read_page_map
 from app.review.assistant.product_scope import ProductScope, named_products
+from app.review.assistant.simple_check.set_pages import SetPages, set_pages
 
 __all__ = [
     "AI_UNSURE",
@@ -359,6 +360,13 @@ class Pack:
     texts: Mapping[tuple[str, int], str] = field(default_factory=dict)
     pairs: Mapping[str, str] = field(default_factory=dict)
     """{vendor label ref: the architect label ref code paired it with} (`pairs.json`)."""
+    pages: SetPages | None = None
+    """The set's page numbering (#1722): every fact above is keyed by `(file, set page)`; a
+    separate file's labels also carry their own `file_page`."""
+
+    def own_page(self, file: str, page: int) -> int:
+        """The file's own page of set page `page` (what a PDF is read at)."""
+        return page if self.pages is None else self.pages.own_page(file, page)
 
     @classmethod
     def from_documents(
@@ -372,18 +380,25 @@ class Pack:
     ) -> Pack:
         files = [str(f) for f in (dims or {}).get("files") or (page_map or {}).get("files") or []]
         main = main_file or (files[0] if files else "")
+        numbering = set_pages(page_map, main)
+
+        def key_of(entry: Mapping[str, Any]) -> tuple[str, int]:
+            name = str(entry.get("file") or main)
+            return name, numbering.to_set(name, int(entry["page"]))
+
         entries: dict[tuple[str, int], Mapping[str, Any]] = {}
         for entry in (page_map or {}).get("pages") or []:
             if isinstance(entry, Mapping) and isinstance(entry.get("page"), int):
-                entries[(str(entry.get("file") or main), int(entry["page"]))] = entry
+                entries[key_of(entry)] = entry
         labels: dict[tuple[str, int], tuple[dict[str, Any], ...]] = {}
         phrases: dict[tuple[str, int], tuple[Mapping[str, Any], ...]] = {}
         for entry in (dims or {}).get("pages") or []:
             if not isinstance(entry, Mapping) or not isinstance(entry.get("page"), int):
                 continue
-            key = (str(entry.get("file") or main), int(entry["page"]))
+            key = key_of(entry)
+            own = {"file_page": int(entry["page"])} if key[1] != int(entry["page"]) else {}
             labels[key] = tuple(
-                {**label, "file": key[0], "page": key[1]}
+                {**label, "file": key[0], "page": key[1], **own}
                 for label in entry.get("labels") or []
                 if isinstance(label, Mapping)
             )
@@ -391,9 +406,8 @@ class Pack:
         texts: dict[tuple[str, int], str] = {}
         for entry in (page_texts or {}).get("pages") or []:
             if isinstance(entry, Mapping) and isinstance(entry.get("page"), int):
-                key = (str(entry.get("file") or main), int(entry["page"]))
-                texts[key] = str(entry.get("text") or "")
-        return cls(main, entries, labels, phrases, texts, code_pairs(pairs))
+                texts[key_of(entry)] = str(entry.get("text") or "")
+        return cls(main, entries, labels, phrases, texts, code_pairs(pairs), numbering)
 
     @classmethod
     def from_folder(cls, folder: Path, main_file: str | None = None) -> Pack:
@@ -518,6 +532,8 @@ class Region:
     box: Box | None = None
     round: int | None = None
     view: str | None = None
+    file_page: int | None = None
+    """Its page in its own file when `page` is a separate file's set page (#1722)."""
 
 
 _VIEWS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = tuple(
@@ -579,6 +595,7 @@ class Item:
                     _box(getattr(d, "crop_box", None)) or _box(d.box),
                     None,
                     _view_of(getattr(d, "titles", ()) or ()),
+                    getattr(d, "file_page", None),
                 )
                 for d in work.architect
             ),
@@ -1720,8 +1737,11 @@ def _verify_unlabelled(
     checks = [roles, _area_check(item, pack, a_file, a_page, a_box)]
     reads: dict[str, Any] = {}
     if read is not None and all(c.outcome == "pass" for c in checks):
-        reads["verify_vendor"] = read(item.vendor.file, item.vendor.page, v_box, v_text)
-        reads["verify_architect"] = read(a_file, a_page, a_box, a_text)
+        # Read at each file's own page (a separate file's set page is not its page, #1722).
+        reads["verify_vendor"] = read(
+            item.vendor.file, pack.own_page(item.vendor.file, item.vendor.page), v_box, v_text
+        )
+        reads["verify_architect"] = read(a_file, pack.own_page(a_file, a_page), a_box, a_text)
     unread = [
         side
         for side in ("vendor", "architect")
