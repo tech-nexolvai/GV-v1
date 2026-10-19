@@ -14,7 +14,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Final
 
-from app.review.assistant.chat_trust import cloud_kind
+from app.review.assistant.proof import proof_group
 
 #: Seconds between progress events while nothing changes.
 TICK_SECONDS: Final = 5.0
@@ -44,13 +44,20 @@ def progress_numbers(
     eta: int | None = None
     if done > 0 and elapsed > 0:
         eta = round((total - done) * elapsed / done)
+    groups: dict[str, int] = {}
+    for finding in findings:
+        group = proof_group(finding)
+        groups[group] = groups.get(group, 0) + 1
     return {
         "phase": phase,
         "pages_done": done,
         "pages_total": total,
-        "wrong_so_far": sum(1 for f in findings if cloud_kind(f) == "wrong"),
-        "decision_so_far": sum(1 for f in findings if cloud_kind(f) == "check"),
-        "right_so_far": sum(1 for f in findings if cloud_kind(f) is None),
+        # The cloud drawing's own counts (#1619): Wrong only when code proved it, so the live
+        # line never says more Wrong than the files will (`proof.proof_group`); what is not
+        # proved yet is Not compared (`decision_so_far`, the old name kept for the screen).
+        "wrong_so_far": groups.get("clouded", 0),
+        "decision_so_far": groups.get("not_compared", 0),
+        "right_so_far": groups.get("right", 0) + groups.get("dismissed", 0),
         "eta_seconds": eta,
     }
 
