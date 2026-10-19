@@ -136,7 +136,8 @@ def test_a_host_that_never_answers_fails_after_the_connect_time() -> None:
 
     timeout = provider._client.timeout
     assert isinstance(timeout, anthropic.Timeout)
-    assert timeout.connect == CONNECT_SECONDS and timeout.read == 900
+    # The read time-out is the stream's idle limit (#1708), not the call's whole time.
+    assert timeout.connect == CONNECT_SECONDS and timeout.read == 180
 
 
 def _outcome(**changes: Any) -> MessageOutcome:
