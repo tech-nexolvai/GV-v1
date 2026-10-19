@@ -52,7 +52,7 @@ describe('the work behind an answer', () => {
         { type: 'text', text: 'Done.' },
       ],
     }));
-    const row = within(node).getByRole('button', { name: 'Ran 3 commands, viewed 2 pictures, created a file' });
+    const row = within(node).getByRole('button', { name: 'Read the drawing data 3 times, looked at 2 pictures, made a file' });
     expect(row.getAttribute('aria-expanded')).toBe('false');
     expect(node.querySelectorAll('[data-slot="chat-activity"]')).toHaveLength(1);
 
@@ -61,10 +61,14 @@ describe('the work behind an answer', () => {
     expect(row.getAttribute('aria-expanded')).toBe('true');
     expect(node.querySelectorAll('[data-slot="chat-timeline"] > [data-slot="chat-entry"]')).toHaveLength(6);
 
-    // A step opens to its command and output.
+    // A step opens to what it did; its command and output wait under a closed "Technical details" (#1712).
     const first = within(node).getByRole('button', { name: 'Step 1' });
     await user.click(first);
     expect(first.getAttribute('aria-expanded')).toBe('true');
+    expect(node.querySelector('[data-slot="chat-step-command"]')).toBeNull();
+    const technical = within(node).getByRole('button', { name: 'Technical details' });
+    expect(technical.getAttribute('aria-expanded')).toBe('false');
+    await user.click(technical);
     expect(node.querySelector('[data-slot="chat-step-command"]')?.textContent).toBe('ls');
     expect(node.querySelector('[data-slot="chat-step-output"]')?.textContent).toBe('a.pdf');
 
@@ -146,7 +150,7 @@ describe('the task checklist', () => {
     const before: ChatTask[] = [{ id: '1', subject: 'Compare widths', status: 'pending' }];
     const node = show(answer({ tasks, blocks: [step('1', 'TaskCreate', { tasks: before }), step('2', 'TaskUpdate', { tasks }), { type: 'text', text: 'Done.' }] }));
     const user = userEvent.setup();
-    await user.click(within(node).getByRole('button', { name: 'Updated the task list' }));
+    await user.click(within(node).getByRole('button', { name: 'Updated its plan' }));
     await user.click(within(node).getByRole('button', { name: 'Step 1' }));
     const lists = [...node.querySelectorAll('[data-slot="chat-tasks"]')].map((list) => list.textContent);
     expect(lists).toHaveLength(2);
@@ -161,9 +165,9 @@ describe('helper agents', () => {
     { id: 'g2', description: 'Pages 5-8', model: 'claude-haiku-5-5', ok: true, report: 'Page 6 differs.', steps: [], running: false },
   ];
 
-  it('"Running 2 agents…" with one row per helper: its description, model and status', async () => {
+  it('"Asking 2 helpers…" with one row per helper: its description, model and status', async () => {
     const node = show(answer({ status: 'running', blocks: [{ type: 'step', step: { id: 'a', tool: 'Agent', label: 'Agents', ok: null, agents }, live: true }] }));
-    expect(node.querySelector('[data-slot="chat-activity-toggle"]')?.textContent).toBe('Running 2 agents…');
+    expect(node.querySelector('[data-slot="chat-activity-toggle"]')?.textContent).toBe('Asking 2 helpers…');
     await userEvent.setup().click(node.querySelector('[data-slot="chat-activity-toggle"]') as HTMLElement);
     const rows = [...node.querySelectorAll('[data-slot="chat-agent"]')];
     expect(rows.map((row) => row.getAttribute('data-status'))).toEqual(['running', 'done']);
@@ -177,7 +181,7 @@ describe('helper agents', () => {
     const finished = [{ ...agents[0], running: false, ok: false, stopped: 'cost_cap' as const, report: 'Pages 1-3 checked.' }, agents[1]];
     const node = show(answer({ blocks: [{ type: 'step', step: { id: 'a', tool: 'Agent', label: 'Agents', ok: true, agents: finished }, live: false }, { type: 'text', text: 'Done.' }] }));
     const user = userEvent.setup();
-    await user.click(within(node).getByRole('button', { name: 'Ran 2 agents' }));
+    await user.click(within(node).getByRole('button', { name: 'Asked 2 helpers' }));
     const helper = within(node).getByRole('button', { name: /Pages 1-4/ });
     expect(helper.textContent).toContain('Stopped at the cost limit');
     await user.click(helper);

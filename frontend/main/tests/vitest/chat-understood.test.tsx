@@ -159,7 +159,7 @@ describe('on the chat page', () => {
     expect(line?.previousElementSibling?.getAttribute('data-slot')).toBe('chat-user-message');
 
     const user = userEvent.setup();
-    await waitFor(() => expect(screen.queryByRole('button', { name: /^Model:/ })).not.toBeNull());
+    await waitFor(() => expect(document.querySelector('[data-slot="chat-composer"][data-model]')).not.toBeNull());
     await user.click(screen.getByRole('button', { name: /^Edit how the question was understood/ }));
     const pages = screen.getByRole('textbox', { name: 'Pages' });
     await user.clear(pages);

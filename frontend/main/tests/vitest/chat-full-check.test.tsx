@@ -109,7 +109,7 @@ describe('a full-check answer', () => {
     finding('r2', { item: 'Sink model', category: 'other', status: 'same', source: 'brand_prototype', architect: 'K-1', vendor: 'K-1', proof: { group: 'right' } }),
   ];
 
-  it('follows the reviewer’s path: summary, the numbers, the cloud drawing, What’s wrong, Right and Nothing to compare (folded), How this was checked', async () => {
+  it('follows the reviewer’s path: summary, the numbers, the cloud drawing, Wrong, Right and Not compared (folded), How this was checked', async () => {
     const user = userEvent.setup();
     render(
       <AssistantMessage
@@ -128,14 +128,14 @@ describe('a full-check answer', () => {
     }
     // 1. The summary: a code headline over the answer's own words.
     const summary = within(node).getByRole('region', { name: 'Summary' });
-    expect(summary.querySelector('[data-slot="chat-summary-headline"]')?.textContent).toBe('2 wrong on the vendor’s drawings, 2 right, 1 with nothing to compare.');
+    expect(summary.querySelector('[data-slot="chat-summary-headline"]')?.textContent).toBe('2 wrong on the vendor’s drawings, 2 right, 1 not compared.');
     expect(within(summary).getByText('Two values are wrong; one to check.')).toBeTruthy();
     expect(within(summary).getByText('Full check · Checked: All products')).toBeTruthy();
 
     // 2. The three numbers, pages and accuracy: each once on the screen.
     const kpis = node.querySelector<HTMLElement>('[data-slot="chat-kpis"]')!;
     expect([...kpis.querySelectorAll<HTMLElement>('[data-kpi]')].map((tile) => `${tile.dataset.kpi}:${tile.textContent}`)).toEqual([
-      'different:Wrong2Proved by code, clouded red', 'same:Right2Matches the architect', 'check:Nothing to compare1Listed apart, with the reason',
+      'different:Wrong2Proved by code, clouded red', 'same:Right2Matches the architect', 'check:Not compared1Each with its reason and what is needed',
       'pages:Pages checked2/22 of 2 pages compared · 0 not comparable · 0 not opened', 'accuracy:Accuracy84%',
     ]);
     expect(node.querySelectorAll('[data-slot="chat-accuracy"]')).toHaveLength(1);
@@ -168,7 +168,7 @@ describe('a full-check answer', () => {
     expect(ids()).toEqual(['w1', 'w2']);
     await user.click(within(node).getByRole('button', { name: /^Right\s*2/ }));
     expect(ids()).toEqual(['w1', 'w2', 'r1', 'r2']);
-    await user.click(within(node).getByRole('button', { name: /^Nothing to compare\s*1/ }));
+    await user.click(within(node).getByRole('button', { name: /^Not compared\s*1/ }));
     expect(ids()).toEqual(['w1', 'w2', 'r1', 'r2', 'k1']);
     expect(node.querySelector('[data-id="k1"] [data-slot="chat-finding-question"]')?.textContent).toBe('Not reviewed: not shown on the architect’s drawings: architect gives no size or information for itNeeded: the architect’s size or note for the island overhang');
     expect(node.textContent).not.toMatch(/Your call|your decision|vendor to confirm|check before sending/i);
@@ -176,8 +176,8 @@ describe('a full-check answer', () => {
     // A number jumps to its section.
     const scrolled: string[] = [];
     Element.prototype.scrollIntoView = function (this: Element) { scrolled.push(this.textContent ?? ''); } as typeof Element.prototype.scrollIntoView;
-    await user.click(within(kpis).getByRole('button', { name: 'Nothing to compare: 1. Go to them' }));
-    expect(scrolled[0]).toMatch(/Nothing to compare/);
+    await user.click(within(kpis).getByRole('button', { name: 'Not compared: 1. Go to them' }));
+    expect(scrolled[0]).toMatch(/Not compared/);
   });
 
   it('never labels the vendor’s own string or span “Architect” (#1581)', () => {
@@ -204,7 +204,7 @@ describe('a full-check answer', () => {
     render(<AssistantMessage message={answer({ findings: proved, files: [CLOUD, REPORT] })} chatId="c-1" models={[OPUS]} fullCheck decide={vi.fn()} />);
     const cloud = within(screen.getByRole('article', { name: 'Answer' })).getByRole('region', { name: 'Cloud drawing' });
     expect(cloud.textContent).not.toMatch(/draft|signed review/i);
-    expect(cloud.querySelector('[data-slot="chat-cloud-counts"]')?.textContent).toBe('1 clouded, proved by code2 with nothing to compare');
+    expect(cloud.querySelector('[data-slot="chat-cloud-counts"]')?.textContent).toBe('1 clouded, proved by code2 not compared');
     // Download is the first and main action, before any decision.
     const actions = [...cloud.querySelectorAll<HTMLElement>('a, button')].map((el) => el.getAttribute('aria-label') ?? el.textContent);
     expect(actions[1]).toBe('Download vendor-clouded.pdf');
@@ -225,14 +225,14 @@ describe('a full-check answer', () => {
     expect(within(node).getByRole('region', { name: 'Send-ready package' }).textContent).toContain('do not send it yet');
   });
 
-  it('counts what can be overridden as the screen shows it: every Wrong and every Nothing to compare (#1684)', () => {
+  it('counts what can be overridden as the screen shows it: every Wrong and every Not compared (#1684)', () => {
     // A "same" the drawing lists as not compared (seen on one side only) can be made Wrong too.
     const mixed = [...findings, finding('r3', { item: 'Toe kick height', status: 'same', compared: false, proof: { group: 'not_compared', label: 'Not reviewed: not looked at on both drawings', reason: 'only the vendor’s side was read' } })];
     render(<AssistantMessage message={answer({ findings: mixed, files: [CLOUD] })} chatId="c-1" models={[OPUS]} fullCheck decide={vi.fn()} />);
     const node = screen.getByRole('article', { name: 'Answer' });
     const kpis = node.querySelector<HTMLElement>('[data-slot="chat-kpis"]')!;
     expect(within(kpis).getByRole('button', { name: 'Wrong: 2. Go to them' })).toBeTruthy();
-    expect(within(kpis).getByRole('button', { name: 'Nothing to compare: 2. Go to them' })).toBeTruthy();
+    expect(within(kpis).getByRole('button', { name: 'Not compared: 2. Go to them' })).toBeTruthy();
     expect(node.querySelector('[data-slot="chat-cloud-review"]')?.textContent).toContain('0 of 4 overridden');
   });
 
@@ -247,10 +247,10 @@ describe('a full-check answer', () => {
     expect(fullCheckFiles([markup]).cloud).toBe(markup);
   });
 
-  it('says "Nothing proved wrong" when nothing is wrong, and counts what had nothing to compare', () => {
+  it('says "Nothing proved wrong" when nothing is wrong, and counts what was not compared', () => {
     render(<AssistantMessage message={answer({ findings: findings.filter((item) => item.status !== 'different') })} chatId="c-1" models={[OPUS]} fullCheck />);
     const node = screen.getByRole('article', { name: 'Answer' });
-    expect(node.querySelector('[data-slot="chat-summary-headline"]')?.textContent).toBe('Nothing proved wrong on the vendor’s drawings, 2 right, 1 with nothing to compare.');
+    expect(node.querySelector('[data-slot="chat-summary-headline"]')?.textContent).toBe('Nothing proved wrong on the vendor’s drawings, 2 right, 1 not compared.');
     expect(node.querySelector('[data-slot="chat-findings-different"]')).toBeNull();
     expect(within(node).getByRole('button', { name: 'Wrong: 0. Go to them' }).hasAttribute('disabled')).toBe(true);
   });
@@ -300,7 +300,7 @@ describe('a full-check answer', () => {
     // Optimistic: the count moves at once.
     await user.click(within(node.querySelector<HTMLElement>('[data-id="w2"]')!).getByRole('button', { name: 'Agree' }));
     // A Not-compared item offers only "Make it Wrong" (#1619): the Agree route, so it is clouded.
-    await user.click(within(node).getByRole('button', { name: /^Nothing to compare\s*1/ }));
+    await user.click(within(node).getByRole('button', { name: /^Not compared\s*1/ }));
     const open = node.querySelector<HTMLElement>('[data-id="k1"]')!;
     expect(within(open).queryByRole('button', { name: 'Not a problem' })).toBeNull();
     await user.click(within(open).getByRole('button', { name: 'Make it Wrong' }));

@@ -167,7 +167,7 @@ describe('What’s wrong, biggest first (#1569)', () => {
     const rest = node.querySelector<HTMLElement>('[data-slot="chat-findings-different"] [data-slot="chat-findings-list"]')!;
     expect([...rest.querySelectorAll<HTMLElement>('[data-slot="chat-finding-row"]')].map((row) => row.dataset.id)).toEqual(['f4', 'f1']);
     // Still one status and one count: Wrong 7.
-    expect(within(node).getByRole('heading', { name: /^What’s wrong\s*7$/ })).toBeTruthy();
+    expect(within(node).getByRole('heading', { name: /^Wrong\s*7$/ })).toBeTruthy();
   });
 
   it('without impact (an older answer, or while it streams) keeps the list as it was', () => {

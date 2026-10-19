@@ -117,21 +117,37 @@ function Picture({ url, label }: { url: string; label: string }) {
 
 function StepDetail({ step, pictureUrl }: { step: ChatStep; pictureUrl: PictureUrl }) {
   const command = step.command ?? step.path ?? null;
+  const [technical, setTechnical] = useState(false);
+  const technicalId = useId();
   if (step.tasks?.length) {
     return <div className="pt-1 pb-2"><TaskChecklist tasks={step.tasks} running={false} /></div>;
   }
   return (
     <div className="grid min-w-0 gap-2 pt-1 pb-2">
-      {command && (
-        <pre data-slot="chat-step-command" className="overflow-x-auto rounded-md bg-muted/60 px-2.5 py-1.5 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-foreground [overflow-wrap:anywhere]">
-          {command}
-        </pre>
-      )}
       {step.picture_id && <Picture url={pictureUrl(step.picture_id)} label={step.label} />}
-      {step.output && (
-        <pre data-slot="chat-step-output" className="max-h-64 overflow-auto rounded-md border bg-muted/30 px-2.5 py-1.5 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-muted-foreground [overflow-wrap:anywhere]">
-          {step.output}
-        </pre>
+      {/* #1712: a reviewer reads what was done, not the command: the command and its output wait under
+          a closed "Technical details" fold. */}
+      {(command || step.output) && (
+        <div data-slot="chat-step-technical" className="grid min-w-0 gap-2">
+          <button type="button" aria-expanded={technical} aria-controls={technicalId} onClick={() => setTechnical(!technical)} className={cn(ROW_BUTTON, 'w-fit py-0.5 text-xs')}>
+            <Chevron open={technical} />
+            Technical details
+          </button>
+          <Collapse open={technical} id={technicalId}>
+            <div className="grid min-w-0 gap-2">
+              {command && (
+                <pre data-slot="chat-step-command" className="overflow-x-auto rounded-md bg-muted/60 px-2.5 py-1.5 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-foreground [overflow-wrap:anywhere]">
+                  {command}
+                </pre>
+              )}
+              {step.output && (
+                <pre data-slot="chat-step-output" className="max-h-64 overflow-auto rounded-md border bg-muted/30 px-2.5 py-1.5 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-muted-foreground [overflow-wrap:anywhere]">
+                  {step.output}
+                </pre>
+              )}
+            </div>
+          </Collapse>
+        </div>
       )}
       {!command && !step.output && !step.picture_id && <p className="text-xs text-muted-foreground">Nothing more to show for this step.</p>}
     </div>

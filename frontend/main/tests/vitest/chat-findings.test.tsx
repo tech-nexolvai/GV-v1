@@ -70,7 +70,7 @@ describe('the findings (#1522 redesign)', () => {
     expect(node.querySelectorAll('[data-slot="chat-findings"]')).toHaveLength(1);
     // Not inside the work fold: a direct part of the answer.
     expect(node.querySelector('[data-slot="chat-activity"] [data-slot="chat-findings"]')).toBeNull();
-    expect(within(node).getByRole('heading', { name: /^What’s wrong\s*2$/ })).toBeTruthy();
+    expect(within(node).getByRole('heading', { name: /^Wrong\s*2$/ })).toBeTruthy();
     expect(within(node).getByRole('heading', { name: /^Not compared\s*1$/ })).toBeTruthy();
     // "Vanity top depth" names an area; "Base cabinet B3 width" names none, so it is grouped by page.
     const wrong = node.querySelector<HTMLElement>('[data-slot="chat-findings-different"]')!;
@@ -127,7 +127,7 @@ describe('the findings (#1522 redesign)', () => {
 
     rerender(<AssistantMessage message={answer({ findings: updated.filter((item) => item.id !== 'f1') })} chatId="c-1" models={[OPUS]} />);
     expect(node.querySelector('[data-id="f1"]')?.getAttribute('data-leaving')).toBe('true');
-    expect(within(node).getByRole('heading', { name: /^What’s wrong\s*1$/ })).toBeTruthy();
+    expect(within(node).getByRole('heading', { name: /^Wrong\s*1$/ })).toBeTruthy();
     await waitFor(() => expect(node.querySelector('[data-id="f1"]')).toBeNull());
   });
 
@@ -155,7 +155,7 @@ describe('the item card', () => {
     const { node } = show(answer({ findings: [sink, filler, finding('x', { page: 9 }), finding('y', { page: 12 })] }));
     const row = node.querySelector<HTMLElement>('[data-id="c1"]')!;
     expect(row.querySelector('[data-slot="chat-finding-line"]')?.textContent).toBe('Vendor drew 46 in · , needs 37 in (architect 3\'-1")+9 in');
-    expect(within(row).getByText('Still wrong')).toBeTruthy();
+    expect(within(row).getByText('Previous comment not addressed')).toBeTruthy();
     const toggle = within(row).getByRole('button', { name: 'Sink base width' });
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     await user.click(toggle);
@@ -319,7 +319,7 @@ describe('how this was checked (whole-set answers)', () => {
     expect(how.querySelector('[data-slot="chat-trust-levels"]')).toBeNull();
     await user.click(within(how).getByRole('button', { name: 'How this was checked' }));
     expect([...how.querySelectorAll('[data-slot="chat-trust-levels"] li')].map((item) => item.textContent)).toEqual(['Confirmed1', 'Likely0', 'AI reading only1']);
-    expect(within(how).getByText('Vendor fixed 1 of 2 round-1 items · 1 still wrong')).toBeTruthy();
+    expect(within(how).getByText('Closed 1 of 2 round-1 items · 1 previous comment not addressed')).toBeTruthy();
     await user.click(within(how).getByRole('button', { name: /Matches GV Review’s own checks: 8 of 9/ }));
     expect(within(how).getByText('Upper cabinet height')).toBeTruthy();
     const lines = [...how.querySelectorAll('[data-slot="chat-trust-checks"] li')].map((line) => line.textContent);
