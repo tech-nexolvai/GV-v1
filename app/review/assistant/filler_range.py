@@ -11,7 +11,10 @@ changeable per project). Until now it ran only inside the cabinet run distributi
   note) or the one printed phrase the label sits in (a dimension's value with `FILLER` printed after
   it on the same row; `dims.json` keeps the page's phrases). Any other word (`OVERALL`, `HEIGHT`,
   `PANEL`, `W/`) makes it another dimension, never judged; so is a value with no filler word, and a
-  value read from drawn ink (OCR alone never makes a red).
+  value read from drawn ink (OCR alone never makes a red). A plain dimension (`4"`) counts too when
+  a filler note with no size (`Filler Left`) points at it with a leader line, by the drawing's
+  geometry (`filler_leaders`: the leader's end lies in a strip whose narrow side that dimension
+  measures, end to end); anything unsure links nothing.
 - **The limits** are the settings in force for the set (`rules.md`, `filler_min` / `filler_max`:
   the rulebook's default or the project's own value). A set whose settings do not give both (no
   cabinet in the check's products) is not checked.
@@ -43,6 +46,7 @@ Verification: `tests/review/assistant/test_filler_range.py` (made-up labels).
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -64,6 +68,8 @@ __all__ = [
     "limits_from",
     "own_item",
 ]
+
+_log = logging.getLogger(__name__)
 
 CREATED_BY: Final = "filler_range"
 CATEGORY: Final = "cabinet"
@@ -223,7 +229,10 @@ def _words(label: Mapping[str, Any], phrases: Sequence[Mapping[str, Any]]) -> st
 
 
 def _fillers(
-    dims: Mapping[str, Any], areas: Mapping[tuple[str, int], str], side: str
+    dims: Mapping[str, Any],
+    areas: Mapping[tuple[str, int], str],
+    side: str,
+    linked: Mapping[tuple[str, int], Mapping[str, str]] | None = None,
 ) -> list[_Filler]:
     out: list[_Filler] = []
     for entry in dims.get("pages") or []:
@@ -231,10 +240,16 @@ def _fillers(
             continue
         file, page = str(entry.get("file")), int(entry["page"])
         phrases = [p for p in entry.get("phrases") or [] if isinstance(p, Mapping)]
+        notes = (linked or {}).get((file, page)) or {}
         for label in entry.get("labels") or []:
             if not isinstance(label, Mapping) or label.get("side") != side or not label.get("id"):
                 continue
             words = _words(label, phrases)
+            note = notes.get(str(label["id"]))
+            if words is None and note is not None:
+                # A filler note's leader points at this dimension (`filler_leaders`).
+                joined = f"{' '.join(str(label.get('text') or '').split())} {note}"
+                words = joined if is_filler_label(joined) else None
             if words is None:
                 continue
             value = _fraction(label.get("inches"))
@@ -353,15 +368,17 @@ def findings_from(
     dims: Mapping[str, Any] | None,
     page_map: Mapping[str, Any] | None,
     limits: Limits | None,
+    linked: Mapping[tuple[str, int], Mapping[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """Every vendor filler label of the set judged by GV's range, the architect first (see the
-    module): the Wrong ones, then the Not-compared notes."""
+    module): the Wrong ones, then the Not-compared notes. `linked`: per page, the labels a filler
+    note's leader points at (`filler_leaders`), label id -> the note's words."""
     if not isinstance(dims, Mapping) or limits is None:
         return []
     areas = _areas(page_map)
-    architects = _fillers(dims, areas, "architect")
+    architects = _fillers(dims, areas, "architect", linked)
     out: list[dict[str, Any]] = []
-    for filler in _fillers(dims, areas, "vendor"):
+    for filler in _fillers(dims, areas, "vendor", linked):
         given = [a for a in architects if _same_place(filler, a)]
         if not given:
             made = _ruled(filler, limits)
@@ -375,6 +392,31 @@ def findings_from(
             out.append(_architect_note(filler, matching[0], limits))
     order = {"different": 0, "check": 1}
     return sorted(out, key=lambda f: (order[f["status"]], f["page"]))
+
+
+def _leaders(dims: Any, uploads: Path | None) -> dict[tuple[str, int], dict[str, str]]:
+    """Per page that prints a filler note, the labels its leaders point at (`filler_leaders`,
+    loaded by name: it reads the PDF). A page it cannot read links nothing."""
+    if not isinstance(dims, Mapping) or uploads is None:
+        return {}
+    leaders = import_module("app.review.assistant.filler_leaders")
+    out: dict[tuple[str, int], dict[str, str]] = {}
+    for entry in dims.get("pages") or []:
+        if not isinstance(entry, Mapping) or not isinstance(entry.get("page"), int):
+            continue
+        phrases = [p for p in entry.get("phrases") or [] if isinstance(p, Mapping)]
+        if not leaders.filler_notes(phrases):
+            continue
+        file, page = str(entry.get("file")), int(entry["page"])
+        labels = [la for la in entry.get("labels") or [] if isinstance(la, Mapping)]
+        try:
+            found = leaders.linked_on_page(Path(uploads) / file, page, labels, phrases)
+        except Exception:  # noqa: BLE001 - a page whose lines cannot be read links nothing
+            _log.warning("filler range: the leaders of page %s could not be read", page)
+            continue
+        if found:
+            out[(file, page)] = found
+    return out
 
 
 def _read(path: Path) -> Any:
@@ -434,10 +476,13 @@ def add_to_answer(engine: Any) -> dict[str, int] | None:
     except (OSError, AttributeError, TypeError):
         rules = None
     settings = import_module("app.review.assistant.decision_resolver").settings_in_force(rules)
+    dims = _read(Path(folder) / "dims.json")
+    limits = limits_from(settings)
     found = findings_from(
-        _read(Path(folder) / "dims.json"),
+        dims,
         _read(Path(folder) / "page_map.json"),
-        limits_from(settings),
+        limits,
+        _leaders(dims, getattr(workspace, "uploads", None)) if limits is not None else None,
     )
     if not found:
         return None

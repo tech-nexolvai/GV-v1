@@ -37,7 +37,9 @@ drawings.
 **Everything else**, with its reason (`classification`'s reasons, so the Not-compared list words it):
 
 - `different_points` -> Not compared ("the two dimensions measure different points", R8);
-- `unsure` -> Not compared ("not settled from the drawings");
+- `unsure` -> Not compared ("not settled from the drawings"); with no architect label, a row of the
+  Not-compared list with its own reason ("the AI was unsure and no printed value was found"), never
+  "architect gives no size";
 - `no_architect_value` -> a row of the Not-compared list ("architect gives no size", R7), not a
   finding (a set has hundreds);
 - `same` with both values verified equal -> Right; `same` with values that differ -> Not compared,
@@ -82,6 +84,7 @@ from app.review.assistant.product_scope import ProductScope, named_products
 from app.review.assistant.simple_check.set_pages import SetPages, set_pages
 
 __all__ = [
+    "AI_UNSURE",
     "CREATED_BY",
     "DIFFERENT_POINTS",
     "GV_INK_SHARE",
@@ -134,6 +137,9 @@ type ValueReader = Callable[[str, int, Box, str], Mapping[str, Any] | None]
 DIFFERENT_POINTS: Final = "the two dimensions measure different points"
 #: The model was not sure.
 UNSURE: Final = "not settled from the drawings"
+#: An answer that is unsure and names no architect label: the architect may well print the size,
+#: so it is never "architect gives no size" (a $0 app run, 2026-10-19).
+AI_UNSURE: Final = "the AI was unsure and no printed value was found"
 #: The architect prints no size for it (R7).
 NO_SIZE: Final = "architect gives no size"
 #: Code could not read a value at its box.
@@ -1151,15 +1157,9 @@ def _verify_pair(pair: Mapping[str, Any], item: Item, pack: Pack, ink: Ink | Non
                 f"not proved: the answer names no architect label code knows ({aref or 'none'})",
                 "not_proved",
             )
+        # Unsure (or a verdict the form does not know) with no architect label: its own reason.
         return Verified(
-            key,
-            "pair",
-            "listed",
-            NO_SIZE,
-            "nothing_to_compare",
-            vendor=vendor,
-            ends=ends,
-            about=about,
+            key, "pair", "listed", AI_UNSURE, "ai_unsure", vendor=vendor, ends=ends, about=about
         )
     if verdict == "different_points":
         return one.grey(DIFFERENT_POINTS, "different_reference")
