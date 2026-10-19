@@ -7,7 +7,9 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { chatListWords } from '@/lib/chat-messages';
+import { chatListWords, fallbackWords, footerWords, modelLabel } from '@/lib/chat-messages';
+import { shortModelLabel } from '@/lib/chat-settings';
+import { modelName } from '@/lib/usage';
 import { BANNED_WORDS, COMPOSER_NOTE, COMPOSER_PLACEHOLDER, OUTCOME_WORDS, roundTagWords, setStatusWords } from '@/lib/words';
 
 const SRC = resolve(__dirname, '../../src');
@@ -23,6 +25,15 @@ function reviewerFiles(): string[] {
     join(SRC, 'pages/ChatPage.tsx'),
     join(SRC, 'pages/TrackerPage.tsx'),
   ];
+}
+
+/** Every source file under src (#1756: no screen anywhere names the model maker's assistant). */
+function allSourceFiles(dir = SRC): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) return allSourceFiles(path);
+    return /\.tsx?$/.test(entry.name) ? [path] : [];
+  });
 }
 
 /** The code without its comments, so explaining an old word in a comment is fine. */
@@ -82,5 +93,30 @@ describe('reviewer words (#1712)', () => {
     expect(chatListWords({ title: 'Is the sink the architect’s?', created_at: today, last_message_at: today }, now))
       .toEqual({ kind: 'question', label: 'Is the sink the architect’s?', when: '' });
     expect(chatListWords({ title: null, created_at: today, last_message_at: null }, now).label).toBe('New chat');
+  });
+
+  it('never says "Claude" on any screen: the product is GV Review, a model is its short name (#1756)', () => {
+    const found: string[] = [];
+    for (const file of allSourceFiles()) {
+      const code = withoutComments(readFileSync(file, 'utf8'));
+      const match = /\bClaude\b/.exec(code);
+      if (match) found.push(`${file.replace(SRC, 'src')}: "${code.slice(Math.max(0, match.index - 30), match.index + 30)}"`);
+    }
+    expect(found).toEqual([]);
+    expect(BANNED_WORDS.some((banned) => banned.pattern.test('so Claude did not answer'))).toBe(true);
+    // A model id, a URL or a lower-case package name is not reviewer text.
+    expect(BANNED_WORDS.some((banned) => banned.pattern.test('claude-opus-5-5'))).toBe(false);
+  });
+
+  it('names a model by its short name everywhere (#1756)', () => {
+    expect(modelLabel('claude-sonnet-5-5', [])).toBe('Sonnet 5.5');
+    expect(modelLabel('anthropic.claude-opus-5-5', null)).toBe('Opus 5.5');
+    expect(modelLabel('claude-opus-5-5', [{ id: 'claude-opus-5-5', label: 'Claude Opus 5.5' }])).toBe('Opus 5.5');
+    expect(shortModelLabel({ label: 'Claude Opus 5.5' })).toBe('Opus 5.5');
+    expect(modelName('anthropic.claude-opus-5-5')).toBe('Opus 5.5');
+    expect(fallbackWords({ from_model: 'claude-fable-5-1', to_model: 'claude-opus-4-8' } as never, null))
+      .toBe('Fable 5.1 declined this request, so Opus 4.8 answered it instead.');
+    // No model known yet: the footer names none (it used to say "Claude").
+    expect(footerWords({ model: null, effort: 'high', cost_usd: '1.72' }, null)).toBe('High effort · $1.72');
   });
 });

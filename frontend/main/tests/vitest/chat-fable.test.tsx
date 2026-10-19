@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * Claude Fable 5.1 on the chat screen (#1577): the picker offers it with an honest price line and
+ * Fable 5.1 on the chat screen (#1577): the picker offers it with an honest price line and
  * thinking locked on; an answer Anthropic's refusal fallback wrote says so in one quiet line, live
  * and when saved. Synthetic data only.
  */
@@ -17,7 +17,7 @@ import { FABLE, OPUS, SAVED_ANSWER, SONNET } from './fixtures/chat';
 const MODELS = [OPUS, SONNET, FABLE];
 const SWITCH = { from_model: 'claude-fable-5-1', to_model: 'claude-opus-4-8' };
 
-describe('Claude Fable 5.1 in the picker', () => {
+describe('Fable 5.1 in the picker', () => {
   it('says its price honestly and keeps Opus the default', () => {
     expect(modelBlurb(FABLE)).toBe('Hardest tasks · about 2.5× Opus cost');
     expect(modelBlurb(OPUS)).toBe('Best for most review work');
@@ -36,10 +36,10 @@ describe('Claude Fable 5.1 in the picker', () => {
   });
 
   it('the Usage page names Fable and the fallback models', () => {
-    expect(modelName('anthropic.claude-fable-5-1')).toBe('Claude Fable 5.1');
-    expect(modelName('anthropic.claude-opus-4-8')).toBe('Claude Opus 4.8');
-    expect(modelName('anthropic.claude-opus-5')).toBe('Claude Opus 5');
-    expect(modelName('anthropic.claude-opus-5-5')).toBe('Claude Opus 5.5');
+    expect(modelName('anthropic.claude-fable-5-1')).toBe('Fable 5.1');
+    expect(modelName('anthropic.claude-opus-4-8')).toBe('Opus 4.8');
+    expect(modelName('anthropic.claude-opus-5')).toBe('Opus 5');
+    expect(modelName('anthropic.claude-opus-5-5')).toBe('Opus 5.5');
   });
 });
 
@@ -55,11 +55,11 @@ describe('an answer the refusal fallback wrote', () => {
   });
 
   it('shows one quiet line naming both models', () => {
-    expect(fallbackWords(SWITCH, MODELS)).toBe('Claude Fable 5.1 declined this request, so Claude Opus 4.8 answered it instead.');
+    expect(fallbackWords(SWITCH, MODELS)).toBe('Fable 5.1 declined this request, so Opus 4.8 answered it instead.');
     const saved = fromSaved({ ...SAVED_ANSWER, model: 'claude-fable-5-1', blocks: [{ type: 'text', text: 'Two items differ.' }, { type: 'fallback', fallback: SWITCH }] });
     render(<AssistantMessage message={saved} chatId="c-1" models={MODELS} messageCapUsd="5.00" />);
     const line = document.querySelector('[data-slot="chat-fallback"]');
-    expect(line?.textContent).toBe('Claude Fable 5.1 declined this request, so Claude Opus 4.8 answered it instead.');
+    expect(line?.textContent).toBe('Fable 5.1 declined this request, so Opus 4.8 answered it instead.');
     expect(line?.className).toContain('text-muted-foreground');
     expect(screen.getByText(/Fable 5\.1 · High effort/)).toBeTruthy();
   });

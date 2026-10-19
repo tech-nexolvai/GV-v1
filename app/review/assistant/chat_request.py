@@ -144,7 +144,7 @@ MODELS: Final[Mapping[str, ChatModel]] = {
     for model in (
         ChatModel(
             id="claude-opus-5-5",
-            label="Claude Opus 5.5",
+            label="Opus 5.5",
             openrouter="anthropic/claude-opus-5.5",
             rates_key="anthropic.claude-opus-5-5",
             short="opus",
@@ -155,7 +155,7 @@ MODELS: Final[Mapping[str, ChatModel]] = {
         ),
         ChatModel(
             id="claude-sonnet-5-5",
-            label="Claude Sonnet 5.5",
+            label="Sonnet 5.5",
             openrouter="anthropic/claude-sonnet-5.5",
             rates_key="anthropic.claude-sonnet-5-5",
             short="sonnet",
@@ -165,7 +165,7 @@ MODELS: Final[Mapping[str, ChatModel]] = {
         ),
         ChatModel(
             id="claude-haiku-5-5",
-            label="Claude Haiku 5.5",
+            label="Haiku 5.5",
             openrouter="anthropic/claude-haiku-5.5",
             rates_key="anthropic.claude-haiku-5-5",
             short="haiku",
@@ -177,7 +177,7 @@ MODELS: Final[Mapping[str, ChatModel]] = {
         # the hardest long tasks, at 2.5 times Opus 5.5's price per token).
         ChatModel(
             id="claude-fable-5-1",
-            label="Claude Fable 5.1",
+            label="Fable 5.1",
             openrouter="",
             rates_key="anthropic.claude-fable-5-1",
             short="fable",
@@ -224,7 +224,7 @@ def check_choice(
     if provider is not None and provider not in model.providers:
         raise ChoiceRefused(
             f"{model.label} is offered only on Anthropic's own API (it needs 30-day data "
-            "retention), and this server uses OpenRouter's keep-no-data route. Pick Claude Opus 5.5."
+            "retention), and this server uses OpenRouter's keep-no-data route. Pick Opus 5.5."
         )
     if effort not in EFFORTS:
         raise ChoiceRefused(f"effort must be one of {', '.join(EFFORTS)}")

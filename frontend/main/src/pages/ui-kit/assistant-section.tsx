@@ -48,7 +48,7 @@ const RECORDS: AssistantRecords = {
 
 const INFO: AssistantInfo = {
   enabled: true,
-  model_label: 'Claude Sonnet',
+  model_label: 'Sonnet 5.5',
   keeps_no_data: true,
   starters: ['Why did page 4 fail?', 'What is left before sign-off?', 'Why does page 7 need me?', 'Which pages have no countertop?'],
 };

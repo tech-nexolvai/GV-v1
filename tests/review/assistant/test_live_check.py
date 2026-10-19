@@ -348,7 +348,7 @@ def test_the_ai_services_reason_is_sent_once_when_it_stops_every_call() -> None:
     live.work_list(_items(), {})
     live.drawing_finished("p2.v1", "failed", "the model call failed: busy")
     assert screen.named("check_service") == []
-    reason["now"] = "The AI service refused this server's key, so Claude did not answer."
+    reason["now"] = "The AI service refused this server's key, so the AI did not answer."
     live.drawing_finished("p3.v1", "failed", "the model call failed: refused")
     live.finish(None)
     assert [d["reason"] for d in screen.named("check_service")] == [reason["now"]]

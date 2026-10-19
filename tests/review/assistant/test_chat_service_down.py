@@ -26,7 +26,7 @@ from app.review.assistant.chat_provider import (
 )
 from app.review.assistant.chat_service import _say_service_stop
 
-KEY_WORDS = "The AI service refused this server's key, so Claude did not answer. Tell your admin."
+KEY_WORDS = "The AI service refused this server's key, so the AI did not answer. Tell your admin."
 
 
 def _params() -> dict[str, Any]:

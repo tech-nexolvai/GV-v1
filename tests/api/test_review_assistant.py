@@ -118,7 +118,7 @@ def test_info_is_off_by_default_and_offers_starters(postgres_engine) -> None:  #
     assert response.status_code == 200, response.text
     assert response.json() == {
         "enabled": False,
-        "model_label": "Claude Sonnet 5.5",
+        "model_label": "Sonnet 5.5",
         "keeps_no_data": True,
         "reads_drawings": False,
         "starters": ["What is left before sign-off?"],
@@ -143,8 +143,8 @@ def test_info_names_the_lead_model_when_the_tool_using_assistant_runs(postgres_e
             model=_FakeModel({}), agent_model=opus, sandbox="off", max_history_turns=6
         )
         one_call = client.get(url).json()
-    assert (tool_using["model_label"], tool_using["reads_drawings"]) == ("Claude Opus 5.5", True)
-    assert (one_call["model_label"], one_call["reads_drawings"]) == ("Claude Sonnet 5.5", False)
+    assert (tool_using["model_label"], tool_using["reads_drawings"]) == ("Opus 5.5", True)
+    assert (one_call["model_label"], one_call["reads_drawings"]) == ("Sonnet 5.5", False)
 
 
 def test_info_is_on_only_when_switched_on_and_the_key_is_set(postgres_engine) -> None:  # type: ignore[no-untyped-def]

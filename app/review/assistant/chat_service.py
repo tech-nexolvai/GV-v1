@@ -753,7 +753,7 @@ class MessageJob:
 
 
 _NO_SANDBOX: Final = (
-    "The secure sandbox (Docker) is not running, so Claude cannot open the drawings. Start Docker "
+    "The secure sandbox (Docker) is not running, so the AI cannot open the drawings. Start Docker "
     "Desktop (with the gv-assistant-sandbox image built), then ask again."
 )
 _NO_UPLOADS: Final = (
@@ -761,13 +761,13 @@ _NO_UPLOADS: Final = (
     "keeps happening, tell your admin."
 )
 _NOT_SAVED: Final = (
-    "This message could not be saved, so it was not sent to Claude. Please try again."
+    "This message could not be saved, so it was not sent to the AI. Please try again."
 )
 
 
 def _budget_used(job: MessageJob) -> str:
     return (
-        f"This drawing set has used its ${cap_text(job.package_cap_micros)} AI budget, so Claude "
+        f"This drawing set has used its ${cap_text(job.package_cap_micros)} AI budget, so the AI "
         "was not asked. Your admin can raise GV_ASSISTANT_PACKAGE_CAP_USD."
     )
 
@@ -1469,7 +1469,7 @@ def resume_of(
         )
     else:
         redo = (
-            "Continue asks Claude to go on from what it had written and the "
+            "Continue asks the AI to go on from what it had written and the "
             f"{steps} step{'' if steps == 1 else 's'} it had done; only the step that was "
             "running when the server restarted (and what came after it) is done again."
         )

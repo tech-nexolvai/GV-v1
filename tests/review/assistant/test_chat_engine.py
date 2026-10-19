@@ -963,7 +963,7 @@ def test_a_refusal_answers_plainly_and_never_stores_the_partial_reply(tmp_path: 
     outcome = harness.run()
 
     assert outcome.stopped is None and outcome.error is None
-    assert outcome.text.startswith("Claude declined to answer this request")
+    assert outcome.text.startswith("The AI declined to answer this request")
     assert [b["text"] for b in outcome.blocks if b["type"] == "text"] == [outcome.text]
     assert outcome.api_content == []
 
@@ -1149,7 +1149,7 @@ def test_a_fable_refusal_before_any_output_answers_plainly(tmp_path: Path) -> No
     outcome = harness.run()
 
     assert outcome.stopped is None and outcome.error is None
-    assert outcome.text.startswith("Claude declined to answer this request.")
+    assert outcome.text.startswith("The AI declined to answer this request.")
     assert outcome.api_content == [] and "fallback" not in harness.names()
 
 
@@ -1250,7 +1250,7 @@ def test_fable_on_an_account_without_data_retention_says_so(tmp_path: Path) -> N
 
     assert outcome.stopped == "error"
     assert outcome.error is not None and "30-day data retention" in outcome.error
-    assert "Pick Claude Opus 5.5" in outcome.error
+    assert "Pick Opus 5.5" in outcome.error
 
 
 def test_thinking_the_api_dropped_for_a_changed_conversation_is_logged(

@@ -46,22 +46,22 @@ MAX_QUESTION_LENGTH: Final = 500
 MAX_HISTORY_TURNS: Final = 6
 #: A turn of history is a short chat message; anything longer is cut by the client or refused here.
 MAX_HISTORY_TEXT: Final = 2000
-MODEL_LABEL: Final = "Claude Sonnet 5.5"
+MODEL_LABEL: Final = "Sonnet 5.5"
 _MODEL_LABELS: Final[dict[str, str]] = {
-    "anthropic.claude-sonnet-5-5": "Claude Sonnet 5.5",
-    "anthropic.claude-opus-5-5": "Claude Opus 5.5",
+    "anthropic.claude-sonnet-5-5": "Sonnet 5.5",
+    "anthropic.claude-opus-5-5": "Opus 5.5",
 }
 
 
 def model_label(model_id: str) -> str:
-    """The model in words, for the panel's footer ("Claude Opus 5.5")."""
+    """The model in words, for the panel's footer, by its short name ("Opus 5.5", #1756)."""
     return _MODEL_LABELS.get(model_id, MODEL_LABEL)
 
 
 type StageId = Literal["records", "model", "tool", "guard"]
 STAGE_LABELS: Final[dict[str, str]] = {
     "records": "Reading this review's records",
-    "model": "Asking Claude Sonnet",
+    "model": "Asking the AI",
     "tool": "Using a tool",
     "guard": "Checking the answer against the records",
 }
@@ -98,8 +98,8 @@ class AssistantInfoOut(BaseModel):
     enabled: bool
     model_label: str = Field(
         default=MODEL_LABEL,
-        description="The model that answers, in words: the lead (Claude Opus 5.5) when the "
-        "tool-using assistant runs, else Claude Sonnet 5.5.",
+        description="The model that answers, in words: the lead (Opus 5.5) when the "
+        "tool-using assistant runs, else Sonnet 5.5.",
     )
     keeps_no_data: bool = True
     reads_drawings: bool = Field(

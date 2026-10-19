@@ -81,6 +81,6 @@ def test_the_check_report_names_the_models_the_simple_check_used(tmp_path: Path)
         },
     )
     words = check.engine._model_words()
-    assert words.startswith("compare Claude Sonnet 5.5, high effort")
-    assert "hard drawings Claude Opus 5.5, high effort" in words
-    assert words.endswith("blind second look Claude Opus 5.5, high effort")
+    assert words.startswith("compare Sonnet 5.5, high effort")
+    assert "hard drawings Opus 5.5, high effort" in words
+    assert words.endswith("blind second look Opus 5.5, high effort")

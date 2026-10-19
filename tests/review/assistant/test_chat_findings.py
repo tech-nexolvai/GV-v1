@@ -555,7 +555,7 @@ def test_the_csv_has_trust_columns_and_never_runs_a_formula() -> None:
     values = dict(zip(header, row, strict=True))
     assert values["Item"] == "'=HYPERLINK(1)"
     assert values["Difference (in)"] == "9" and values["Trust"] == "Likely"
-    assert values["Checked on drawing by Claude"] == "yes"
+    assert values["Checked on drawing by the AI"] == "yes"
 
 
 def test_code_numbers_come_from_the_checks_module(monkeypatch: pytest.MonkeyPatch) -> None:

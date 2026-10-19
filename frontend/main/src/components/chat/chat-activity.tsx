@@ -214,7 +214,7 @@ function ThinkingEntry({ block }: { block: Extract<ViewBlock, { type: 'thinking'
 
 /** "Sonnet 5.5" from "claude-sonnet-5-5". */
 function shortModel(model: string): string {
-  return modelLabel(model, null).replace(/^Claude\s+/, '');
+  return modelLabel(model, null);
 }
 
 function agentStatus(agent: ViewAgent): string {

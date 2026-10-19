@@ -370,7 +370,7 @@ EMPTY_REPLY_NOTE: Final = (
 #: A stream that ended without its stop (the connection closed in the middle of the answer).
 STREAM_CUT_WORDS: Final = "The AI service stopped in the middle of the answer. Please ask again."
 #: The answer's error when the model still wrote nothing after being asked once more.
-NO_ANSWER_ERROR: Final = "Claude finished without writing an answer. Please ask again."
+NO_ANSWER_ERROR: Final = "The AI finished without writing an answer. Please ask again."
 COST_CAP_NOTE: Final = (
     "This message has nearly used its money cap. Do not use any more tools: answer now from what "
     "you have found, and say what you did not get to."
@@ -4553,7 +4553,7 @@ def _declined(details: Mapping[str, Any] | None) -> str:
     category = details.get("category") if isinstance(details, Mapping) else None
     why = f" (the AI service's safety check: {category})" if isinstance(category, str) else ""
     return (
-        f"Claude declined to answer this request{why}. Nothing else changed; you can ask in a "
+        f"The AI declined to answer this request{why}. Nothing else changed; you can ask in a "
         "different way."
     )
 

@@ -798,7 +798,7 @@ describe('assistant: like claude.ai', () => {
     server.replies.push('hang');
     mount();
     await user.type(composer(), 'Why did page 3 fail?{Enter}');
-    await act(async () => server.push({ event: 'stage', data: { id: 'model', label: 'Asking Claude' } }));
+    await act(async () => server.push({ event: 'stage', data: { id: 'model', label: 'Asking the AI' } }));
     await act(async () => server.push({ event: 'stage', data: { id: 'tool', label: 'Read page 3 text' } }));
     await act(async () =>
       server.push({ event: 'step', data: { agent: null, step: { kind: 'bash', label: 'Read page 3 text', command: 'pdftotext -f 3 -l 3 made-up.pdf -', output: 'MADE-UP OVERALL 40', ok: true } } }),
@@ -850,9 +850,9 @@ describe('assistant: like claude.ai', () => {
   });
 
   it('names the lead model and says it reads the drawings', async () => {
-    server.info = { ...INFO, model_label: 'Claude Opus 5.5', reads_drawings: true };
+    server.info = { ...INFO, model_label: 'Opus 5.5', reads_drawings: true };
     mount();
-    await screen.findByText('Claude Opus 5.5 · reads the drawings · it explains, you decide');
+    await screen.findByText('Opus 5.5 · reads the drawings · it explains, you decide');
     expect(screen.queryByText(/keeps no data/)).toBeNull();
     expect(screen.getByText(/reads this set’s drawings and results/)).toBeTruthy();
     expect(screen.queryByText(/answers from this review only/)).toBeNull();

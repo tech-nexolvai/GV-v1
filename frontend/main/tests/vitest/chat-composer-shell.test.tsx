@@ -124,7 +124,7 @@ describe('the composer', () => {
     const onChoice = vi.fn();
     render(<Composer onChoice={onChoice} />);
     const user = userEvent.setup();
-    const button = screen.getByRole('button', { name: 'Model: Claude Opus 5.5' });
+    const button = screen.getByRole('button', { name: 'Model: Opus 5.5' });
     expect(button.textContent).toBe('Opus 5.5');
 
     button.focus();
@@ -144,29 +144,29 @@ describe('the composer', () => {
     await user.keyboard('{Enter}');
     await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
     expect(onChoice).toHaveBeenLastCalledWith({ model: SONNET.id, effort: 'high', thinking: true });
-    expect(screen.getByRole('button', { name: 'Model: Claude Sonnet 5.5' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Model: Sonnet 5.5' })).toBeTruthy();
 
     // Esc closes the menu and gives focus back to the button.
-    screen.getByRole('button', { name: 'Model: Claude Sonnet 5.5' }).focus();
+    screen.getByRole('button', { name: 'Model: Sonnet 5.5' }).focus();
     await user.keyboard('{Enter}');
     await screen.findByRole('menu');
     await user.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Model: Claude Sonnet 5.5' }));
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Model: Sonnet 5.5' }));
   });
 
   it('Opus always thinks; turning thinking off on Sonnet holds effort at High and says why above it', async () => {
     const onChoice = vi.fn();
     render(<Composer onChoice={onChoice} />);
     const user = userEvent.setup();
-    await user.click(screen.getByRole('button', { name: 'Model: Claude Opus 5.5' }));
+    await user.click(screen.getByRole('button', { name: 'Model: Opus 5.5' }));
     const locked = await screen.findByRole('menuitemcheckbox', { name: /Extended thinking/ });
     expect(locked.getAttribute('aria-checked')).toBe('true');
     expect(locked.getAttribute('aria-disabled')).toBe('true');
     expect(locked.textContent).toContain('Opus 5.5 always thinks');
 
     await user.click(screen.getByRole('menuitemradio', { name: /Sonnet 5.5/ }));
-    await user.click(screen.getByRole('button', { name: 'Model: Claude Sonnet 5.5' }));
+    await user.click(screen.getByRole('button', { name: 'Model: Sonnet 5.5' }));
     const thinking = await screen.findByRole('menuitemcheckbox', { name: /Extended thinking/ });
     expect(thinking.textContent).toContain('Think longer for complex tasks');
     await user.click(thinking);

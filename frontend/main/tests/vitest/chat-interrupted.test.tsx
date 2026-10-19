@@ -23,7 +23,7 @@ beforeEach(() => {
   }
 });
 
-const REDO = 'Continue asks Claude to go on from what it had written and the 2 steps it had done; only the step that was running when the server restarted (and what came after it) is done again.';
+const REDO = 'Continue asks the AI to go on from what it had written and the 2 steps it had done; only the step that was running when the server restarted (and what came after it) is done again.';
 
 function interrupted(resume: ChatResume, change: Partial<ChatMessage> = {}): ChatMessage {
   return {

@@ -201,15 +201,15 @@ export function outcomeTotals(days: readonly OutcomeDay[]): SummaryOutcomes {
 
 /** Model ids in words (#1165); null for a model with no known name (the id is shown instead). */
 const MODEL_NAMES: readonly [RegExp, string][] = [
-  [/claude-fable-5-1/, 'Claude Fable 5.1'],
-  [/claude-opus-5-5/, 'Claude Opus 5.5'],
-  [/claude-sonnet-5-5/, 'Claude Sonnet 5.5'],
-  [/claude-haiku-5-5/, 'Claude Haiku 5.5'],
+  [/claude-fable-5-1/, 'Fable 5.1'],
+  [/claude-opus-5-5/, 'Opus 5.5'],
+  [/claude-sonnet-5-5/, 'Sonnet 5.5'],
+  [/claude-haiku-5-5/, 'Haiku 5.5'],
   // #1577: the models Anthropic's refusal fallback can answer on.
-  [/claude-opus-5(?![-.]\d)/, 'Claude Opus 5'],
-  [/claude-opus-4-8/, 'Claude Opus 4.8'],
-  [/claude-sonnet-5(?![-.]\d)/, 'Claude Sonnet 5'],
-  [/claude-haiku-4-5/, 'Claude Haiku 4.5'],
+  [/claude-opus-5(?![-.]\d)/, 'Opus 5'],
+  [/claude-opus-4-8/, 'Opus 4.8'],
+  [/claude-sonnet-5(?![-.]\d)/, 'Sonnet 5'],
+  [/claude-haiku-4-5/, 'Haiku 4.5'],
   [/nova-2-lite/, 'Amazon Nova 2 Lite'],
   [/nova-pro/, 'Amazon Nova Pro'],
   [/nova-lite/, 'Amazon Nova Lite'],

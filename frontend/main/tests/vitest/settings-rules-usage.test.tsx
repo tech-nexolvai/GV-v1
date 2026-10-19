@@ -323,7 +323,7 @@ const HISTORY: UsageHistory = {
 
 describe('spend so far words', () => {
   it('names models, routes and purposes in words, and keeps unknown ids as they are', () => {
-    expect(modelName('anthropic.claude-opus-5-5')).toBe('Claude Opus 5.5');
+    expect(modelName('anthropic.claude-opus-5-5')).toBe('Opus 5.5');
     expect(modelName('us.amazon.nova-2-lite-v1:0')).toBe('Amazon Nova 2 Lite');
     expect(modelName('amazon.nova-lite-v1:0')).toBe('Amazon Nova Lite');
     expect(modelName('us.amazon.nova-pro-v1:0')).toBe('Amazon Nova Pro');
@@ -388,11 +388,11 @@ describe('Usage page', () => {
     const byModel = within(section).getByRole('table', { name: 'AI spend by model' });
     const modelRows = within(byModel).getAllByRole('row').slice(1).map((row) => [...row.children].map((cell) => cell.textContent));
     expect(modelRows).toEqual([
-      ['Claude Opus 5.5anthropic.claude-opus-5-5', 'Not recorded', '80', '80.0k / 8,000', '$30.00', '0'],
+      ['Opus 5.5anthropic.claude-opus-5-5', 'Not recorded', '80', '80.0k / 8,000', '$30.00', '0'],
       ['Qwen3 VL 235Bqwen.qwen3-vl-235b-a22b', 'Amazon Bedrock', '6', '6,000 / 600', 'at least $0.50', '1'],
       // The same model through two routes: the route is said under the name for narrow screens.
-      ['Claude Sonnet 5.5anthropic.claude-sonnet-5-5OpenRouter', 'OpenRouter', '2', '2,000 / 200', '$0.10', '0'],
-      ['Claude Sonnet 5.5anthropic.claude-sonnet-5-5Not recorded', 'Not recorded', '1', '1,000 / 100', '$0.05', '0'],
+      ['Sonnet 5.5anthropic.claude-sonnet-5-5OpenRouter', 'OpenRouter', '2', '2,000 / 200', '$0.10', '0'],
+      ['Sonnet 5.5anthropic.claude-sonnet-5-5Not recorded', 'Not recorded', '1', '1,000 / 100', '$0.05', '0'],
       // Partly unpriced with the priced calls free (a failed call costs nothing): never "at least $0.00".
       ['Amazon Nova Proamazon.nova-pro-v1:0', 'Amazon Bedrock', '5', '5,000 / 500', 'Not priced', '4'],
       // A model nobody priced is "Not priced", never $0.00, and sorts last.
@@ -402,7 +402,7 @@ describe('Usage page', () => {
     const runs = within(section).getByRole('table', { name: 'Earlier AI runs' });
     const runRows = within(runs).getAllByRole('row').slice(1).map((row) => [...row.children].map((cell) => cell.textContent));
     expect(runRows).toEqual([
-      [shortDayLabel('2026-10-08'), 'Reading drawings', 'Claude Opus 5.5 · Claude Sonnet 5.5', '7', '$36.50'],
+      [shortDayLabel('2026-10-08'), 'Reading drawings', 'Opus 5.5 · Sonnet 5.5', '7', '$36.50'],
       [shortDayLabel('2026-10-06'), 'Model comparison', 'Qwen3 VL 235B', '3', 'at least $0.50'],
       [shortDayLabel('2026-10-06'), 'Findings wording', 'Amazon Nova Pro', '1', '$0.01'],
     ]);
