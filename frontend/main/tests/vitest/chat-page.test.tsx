@@ -311,18 +311,30 @@ describe('a message streaming in', () => {
 
   it('Stop asks the server to stop, stops reading, and the answer says it was stopped', async () => {
     // The chat read again after Stop (#1683): the server saved the stopped answer with what it had.
+    // That read is held here, so both moments are seen in order, whatever the machine's speed.
     const stopped = { ...SAVED_ANSWER, id: 'a-9', text: 'So far', blocks: [{ type: 'text' as const, text: 'So far' }], files: [], stopped: 'cancelled' as const };
-    const get = vi.fn(async (id: string) => (get.mock.calls.length > 1 ? chatOut(id, [{ ...QUESTION, text: 'Summarise' }, stopped]) : chatOut(id)));
+    let reread: (chat: ReturnType<typeof chatOut>) => void = () => {};
+    let reads = 0;
+    const get = vi.fn((id: string) => {
+      reads += 1;
+      return reads > 1 ? new Promise<ReturnType<typeof chatOut>>((done) => { reread = done; }) : Promise.resolve(chatOut(id));
+    });
     const { api, stream, user } = await ready(drivenStream(), { get });
     await user.type(composer(), 'Summarise{Enter}');
     act(() => stream.emit({ event: 'message_start', data: { message_id: 'a-9', model: 'claude-opus-5-5', effort: 'high', thinking: true } }, { event: 'text_delta', data: { index: 0, text: 'So far' } }));
     await user.click(screen.getByRole('button', { name: 'Stop response' }));
     expect(api.cancel).toHaveBeenCalledWith('c-1');
     await waitFor(() => expect(document.querySelector('[data-slot="chat-stopped"]')?.textContent).toBe('Stopped'));
-    // The stream's signal was aborted, and the composer is back.
+    // The stream's signal was aborted; until the saved answer is read back, Stop stays "Stopping…".
     expect((stream.send.mock.calls[0][3] as AbortSignal).aborted).toBe(true);
-    expect(screen.getByRole('button', { name: 'Send message' })).toBeTruthy();
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole('button', { name: 'Stop response' }).getAttribute('title')).toBe('Stopping…');
+    expect(screen.queryByRole('button', { name: 'Send message' })).toBeNull();
+    // The saved answer is back: the composer is too.
+    await act(async () => reread(chatOut('c-1', [{ ...QUESTION, text: 'Summarise' }, stopped])));
+    expect(await screen.findByRole('button', { name: 'Send message' })).toBeTruthy();
     expect(screen.getByText('So far')).toBeTruthy();
+    expect(document.querySelector('[data-slot="chat-stopped"]')?.textContent).toBe('Stopped');
   });
 
   it('Stop while the server is still finishing (a full check keeps its paid answers): the chat is followed again until the saved answer, files and all', async () => {
