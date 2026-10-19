@@ -145,7 +145,8 @@ def test_a_stop_says_what_is_still_finishing_then_ends_stopped(
     assert outcome.stopped == "cancelled"
     stops = [d["stopping"] for d in screen.named("check_stopping")]
     assert stops[0] == {"in_flight": 1, "not_started": 1}
-    assert stops[-1] == {"in_flight": 0, "not_started": 0}
+    assert stops[-1]["in_flight"] == 0
+    assert live.snapshot()["stopping"] == {"in_flight": 0, "not_started": 0}
     tiles = {d["id"]: d for d in live.snapshot()["drawings"]}
     never = [d for d in tiles.values() if d["status"] == "failed"]
     assert len(never) == 1 and "stopped" in (never[0]["reason"] or "")

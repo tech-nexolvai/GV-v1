@@ -527,9 +527,12 @@ class LiveCheck:
         }
 
     def _send_stopping(self) -> None:
+        """Sent when Stop is pressed and each time the drawings still finishing change (the ones
+        never started are counted as they are let go, without an event each)."""
         out = self._stopping_out()
-        if out != self._stopping:
-            self._stopping = out
+        before = self._stopping
+        self._stopping = out
+        if not before or out["in_flight"] != before.get("in_flight"):
             self._send("check_stopping", "stopping", dict(out))
 
     def _check_service(self) -> None:

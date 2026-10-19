@@ -328,11 +328,13 @@ def test_stop_says_how_many_drawings_still_finish_and_how_many_never_start() -> 
     assert screen.last("check_stopping")["stopping"] == {"in_flight": 1, "not_started": 1}
     assert screen.last("check_phase")["phase"]["stopping"] is True
     live.drawing_finished("p3.v1", "failed", "the run was stopped before this drawing was compared")
-    assert screen.last("check_stopping")["stopping"] == {"in_flight": 1, "not_started": 0}
+    # A drawing let go without starting: counted, no event of its own.
+    assert len(screen.named("check_stopping")) == 1
+    assert live.snapshot()["stopping"] == {"in_flight": 1, "not_started": 0}
     live.drawing_finished("p2.v1", "answered")
     assert screen.last("check_stopping")["stopping"] == {"in_flight": 0, "not_started": 0}
     live.stopping()  # pressed again: nothing new
-    assert len(screen.named("check_stopping")) == 3
+    assert len(screen.named("check_stopping")) == 2
     live.finish("cancelled")
     done = screen.last("check_phase")["phase"]
     assert (done["phase"], done["step"]) == ("done", "stopped")
