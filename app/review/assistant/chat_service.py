@@ -1160,6 +1160,7 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
     outcome = engine.run()
     if outcome.stopped == "cancelled":
         sandbox.kill_all()
+    _say_service_stop(job.provider, outcome)
     # The hard filter's backstop: no out-of-scope finding is stored, whatever reached the blocks.
     outcome.blocks, dropped = final_blocks(
         outcome.blocks, engine.product_scope, engine.book.out_of_scope
@@ -1176,6 +1177,26 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
         outcome.blocks.append({"type": "text", "text": note})
         outcome.text = f"{outcome.text}\n\n{note}" if outcome.text else note
     finish(outcome)
+
+
+def _say_service_stop(provider: object, outcome: MessageOutcome) -> None:
+    """When the AI service stopped this answer's calls (`ServiceBreaker`: it refused the key, or
+    could not be reached), the answer says why in plain words, once, whatever else it shows (a
+    full check still gives code's findings and files)."""
+    breaker = getattr(provider, "breaker", None)
+    reason = getattr(breaker, "reason", None)
+    if not isinstance(reason, str) or outcome.stopped == "cancelled":
+        return
+    if reason == outcome.error:
+        return
+    if outcome.stopped == "error" and outcome.error is None:
+        outcome.error = reason
+        return
+    said = f"**AI calls stopped:** {reason}"
+    if any(block.get("text") == said for block in outcome.blocks):
+        return
+    outcome.blocks.append({"type": "text", "text": said})
+    outcome.text = f"{outcome.text}\n\n{said}" if outcome.text else said
 
 
 def _finish(job: MessageJob, run: RunningMessage, emit: Emit, outcome: MessageOutcome) -> None:
