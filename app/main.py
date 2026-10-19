@@ -24,6 +24,8 @@ Source: `docs/DESIGN_PLATFORM.md` §4.1, §4.2 · Verification: `tests/api/test_
 
 from __future__ import annotations
 
+import logging
+import os
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Final
 from uuid import uuid4
@@ -38,7 +40,7 @@ from app.api.guards import assert_no_verdict_fields
 from app.api.stale_revision import refuse_stale_revision
 from app.auth import authenticate
 from app.auth.development import principal_from_environment
-from app.config import Settings
+from app.config import Settings, unknown_settings
 from app.errors import REQUEST_ID_STATE, _envelope, install_error_handlers
 from app.host_guard import install_host_guard
 from app.telemetry.tracing import (
@@ -66,6 +68,7 @@ API_PREFIX = "/api/v1"
 #: A UUID is 36 characters and a `sha256:`-prefixed digest is 71, so this is clear of every real id while
 #: far too small to smuggle content through.
 REQUEST_ID_MAX_LENGTH: Final = 100
+_log = logging.getLogger(__name__)
 
 #: The request id contract: ids, hex, digests and prefixed forms, and nothing else.
 #:
@@ -101,6 +104,23 @@ def _accepted_request_id(supplied: str | None) -> str:
         return str(uuid4())
 
 
+def _warn_unknown_settings() -> None:
+    """A loud warning, never a refusal, for each `GV_ASSISTANT_*` / `GV_REVIEW_*` environment
+    variable that is not a setting (`app.config.unknown_settings`): it has no effect, and a
+    refusal could stop a running deployment over a stale line."""
+    unknown = unknown_settings(os.environ)
+    if unknown:
+        _log.warning(
+            "UNKNOWN SETTING(S), IGNORED: %s %s set in the environment but %s not a setting of "
+            "this server, so %s no effect (a typo, or a setting that was removed?). Check the "
+            "start script.",
+            ", ".join(unknown),
+            "is" if len(unknown) == 1 else "are",
+            "is" if len(unknown) == 1 else "are",
+            "it has" if len(unknown) == 1 else "they have",
+        )
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Build an application.
 
@@ -108,6 +128,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     setting a startup failure. Passing one in is how a test avoids needing the environment at all.
     """
     resolved = settings or Settings()  # type: ignore[call-arg]  # values come from the environment
+    _warn_unknown_settings()
     app = FastAPI(
         title="Graniti Vicentia V1",
         description=(

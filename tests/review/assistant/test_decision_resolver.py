@@ -980,7 +980,7 @@ def test_every_count_shown_comes_from_the_final_list(
     for count, label in (
         (groups["clouded"], "Wrong"),
         (groups["right"], "Right"),
-        (groups["not_compared"], "Nothing to compare"),
+        (groups["not_compared"], "Not compared"),
     ):
         assert re.search(rf"\b{count}\s+{label}", cover), (count, label)
 

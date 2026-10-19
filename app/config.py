@@ -13,9 +13,10 @@ Source: `docs/DESIGN_PLATFORM.md` §4.1 · Verification: `tests/api/test_app.py`
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from decimal import Decimal
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal
 
 from pydantic import Field, SecretStr, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -192,8 +193,12 @@ class Settings(BaseSettings):
     # silent fallback, security audit 2026-10-18).
     assistant_command_timeout_seconds: int = Field(default=120, ge=5, le=900)
     assistant_sandbox: Literal["auto", "docker", "macos"] = "auto"
-    # One model call's time limit (a streamed call with long thinking can take minutes).
+    # One model call's time limit for connecting pools and sending (a streamed call with long
+    # thinking can take minutes: its stream is held only by the idle limit below).
     assistant_call_timeout_seconds: int = Field(default=900, ge=30, le=3600)
+    # How long a call's stream may send nothing at all (no event, no ping) before it is stopped
+    # with a plain reason (owner decision 2026-10-19: about 3 minutes; `chat_provider`).
+    assistant_stream_idle_seconds: int = Field(default=180, ge=30, le=3600)
     # #1551: a typed question no code rule settles is sharpened into a task spec by Claude Haiku
     # 5.5 (low effort, one short JSON reply) before any tool runs; a reply later than the deadline
     # is not waited for (the chat then runs as before, with no spec).
@@ -505,3 +510,25 @@ class Settings(BaseSettings):
                 "constraints and exact NUMERIC, none of which behave the same elsewhere."
             )
         return value
+
+
+#: The `GV_` families that only `Settings` reads: an unknown name in them is a typo or a stale line.
+#: Other `GV_` names (`GV_DEV_*`, `GV_READER_*`, ...) are read by other code, so they are not judged.
+_CHECKED_FAMILIES: Final = ("GV_ASSISTANT_", "GV_REVIEW_")
+
+
+def unknown_settings(environ: Mapping[str, str]) -> list[str]:
+    """The `GV_ASSISTANT_*` and `GV_REVIEW_*` environment variables that are not a setting.
+
+    `extra="forbid"` refuses an unknown key in `.env` only: pydantic-settings never reads an
+    unknown variable from the process's environment, so a typo in a start script (for example
+    `GV_ASSISTANT_FULL_CHECK_CAPX_USD`) left the default in place without a word (harness audit
+    2026-10-19). The app warns about these at start (`app.main.create_app`); it never refuses,
+    so a stale line cannot stop a running deployment.
+    """
+    known = {name.upper() for name in Settings.model_fields}
+    return sorted(
+        name
+        for name in environ
+        if name.startswith(_CHECKED_FAMILIES) and name.removeprefix("GV_") not in known
+    )

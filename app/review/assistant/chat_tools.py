@@ -72,6 +72,7 @@ from app.review.assistant.sandbox import (
     ChatWorkspace,
     Sandbox,
     SandboxRefused,
+    SandboxUnavailable,
     check_command,
     cut_output,
     folder_bytes,
@@ -95,6 +96,7 @@ __all__ = [
     "MAX_ZOOM_CROPS",
     "PARALLEL_TOOLS",
     "READ_UNDER_MARKUP",
+    "TOOL_FAILED_WORDS",
     "ChatTools",
     "TaskList",
     "ToolResult",
@@ -961,6 +963,14 @@ def new_step(step_id: str, name: str, raw: object) -> dict[str, Any]:
     return step
 
 
+#: What the model and the screen are told when a tool fails with an error nobody planned for (a
+#: bug in GV Review, a damaged set-pack file): the error itself is logged, never shown.
+TOOL_FAILED_WORDS: Final = (
+    "This tool failed with an error in GV Review (it is logged for the admin). Try another way, "
+    "or go on without it."
+)
+
+
 @dataclass(slots=True)
 class ToolResult:
     """One tool call's result for the model (`content`, `is_error`) and for the screen (`step`)."""
@@ -1099,6 +1109,8 @@ class ChatTools:
         try:
             with self._commands:
                 result = self.sandbox.run(command)
+        except SandboxUnavailable as gone:  # Docker stopped answering: told plainly, no paths
+            return _refused(step, started, str(gone))
         except Exception:  # noqa: BLE001 - the model reads it; the message goes on
             return _refused(step, started, "the computer could not run this command just now")
         status = (
