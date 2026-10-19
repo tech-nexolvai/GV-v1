@@ -174,7 +174,6 @@ HELPER_TOOL_NAMES: Final = (
     "record_string",
     "record_reading",
     "verify_value",
-    "read_number",
     "measure_on_drawing",
     "read_under_markup",
     "drawing_facts",
@@ -194,7 +193,6 @@ HELPER_KITS: Final[Mapping[str, tuple[str, ...]]] = {
         "record_string",
         "record_reading",
         "verify_value",
-        "read_number",
         "read_under_markup",
         "drawing_facts",
     ),
@@ -686,12 +684,12 @@ READ_NUMBER: Final[Mapping[str, Any]] = {
         "($0, no AI): the drawing's text, else its strokes read by two OCR engines, matched to "
         "known fonts' digits, and measured by its dimension line at the drawing's scale. Code "
         "accepts a value only when two routes of different kinds agree; otherwise it says why it "
-        "stays unread (for example cut off in the file, or read two ways). Call it whenever you "
+        "stays unread (for example cut off in the file, or read two ways). Use it when you "
         "cannot read a value, instead of guessing; its answer stands. Name the label (D17) when "
         "code numbered it, else give a tight box round the number; add the value you think it is "
-        "to have it checked. When several labels print that value it lists them: call again "
-        "with the one you mean. "
-        'Example: {"page": 4, "box": {"x0": 345, "y0": 702, "x1": 354, "y1": 716}}'
+        "to have it checked. Returns the value and the routes that agree, the labels that "
+        "print it when there are several (call again with the one you mean), or unread with why. "
+        'Example: {"page": 4, "box": {"x0": 410, "y0": 300, "x1": 420, "y1": 314}}'
     ),
     "input_schema": {
         "type": "object",
@@ -911,7 +909,6 @@ HELPER_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     SET_COVERAGE,
     *LEDGER_TOOLS,
     VERIFY_VALUE,
-    READ_NUMBER,
     MEASURE_ON_DRAWING,
     READ_UNDER_MARKUP,
     DRAWING_FACTS,
@@ -1255,6 +1252,19 @@ class ChatTools:
         except Exception as failed:  # noqa: BLE001 - told plainly, never a crash
             _log_failure(failed)
             return _refused(step, started, "the spot could not be read just now")
+        if found["result"] == "cannot_read":
+            # Code could not read it: `read_number` reads it again by itself (#1746).
+            try:
+                module = import_module("app.review.assistant.read_number")
+                again = module.reader_for_pack(self.workspace.set_pack, self.workspace.uploads)(
+                    module.Request(name, page, "vendor", box=tuple(box), claim=expected)
+                )
+                if again.outcome == "read":
+                    found = again.as_verify(expected)
+                elif again.reason:
+                    found = {**found, "words": f"{found['words']}; read_number: {again.reason}"}
+            except Exception as failed:  # noqa: BLE001 - the first answer stands
+                _log_failure(failed)
         how = {"text": "the drawing's text", "drawn": "the vendor's drawn ink (two OCR engines)"}
         text = f"{found['result']}: {found['words']}."
         if found["result"] == "match":
@@ -1295,7 +1305,7 @@ class ChatTools:
                 raise SandboxRefused("value must be the value as printed, as text")
             if label is None and given.get("box") is None and value is None:
                 raise SandboxRefused("give the label (D17), a box round the number, or a value")
-            spot = {k: given[k] for k in ("page", "file") if k in given}
+            spot: dict[str, Any] = {k: given[k] for k in ("page", "file") if k in given}
             spot["box"] = given.get("box") or {"x0": 0, "y0": 0, "x1": 1, "y1": 1}
             name, page, box, _label = self._crop_request(spot, 0)
         except SandboxRefused as refused:

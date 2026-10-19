@@ -386,10 +386,10 @@ def shape_read(label: ink_labels.Label, turn: ink_labels.Turn) -> ShapeReading:
         return ShapeReading(None, "a leading zero, which no dimension has", tuple(found))
     value = Fraction(int(whole)) if whole else Fraction(0)
     if fraction is not None:
-        top, bottom = int(fraction[0] or 0), int(fraction[1] or 0)
-        if bottom not in _DENOMINATORS or not 0 < top < bottom:
-            return ShapeReading(None, f"a fraction {top}/{bottom} no drawing prints", tuple(found))
-        value += Fraction(top, bottom)
+        upper, lower = int(fraction[0] or 0), int(fraction[1] or 0)
+        if lower not in _DENOMINATORS or not 0 < upper < lower:
+            return ShapeReading(None, f"a fraction {upper}/{lower} no drawing prints", tuple(found))
+        value += Fraction(upper, lower)
     if value <= 0:
         return ShapeReading(None, "zero", tuple(found))
     return ShapeReading(
@@ -399,7 +399,7 @@ def shape_read(label: ink_labels.Label, turn: ink_labels.Turn) -> ShapeReading:
 
 def main() -> int:
     """Write `digit_shapes.json` from the Hershey fonts and the free outline fonts found."""
-    import reportlab  # the Bitstream Vera font ships with it (a free licence)
+    import reportlab  # type: ignore[import-untyped]  # Bitstream Vera ships with it (free)
 
     vera = Path(reportlab.__file__).parent / "fonts" / "Vera.ttf"
     made = build_templates([("vera", str(vera))])

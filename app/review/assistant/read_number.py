@@ -68,8 +68,8 @@ __all__ = [
     "Request",
     "Route",
     "decide",
-    "reader_for_pack",
     "read_number",
+    "reader_for_pack",
 ]
 
 _log = logging.getLogger(__name__)
@@ -415,7 +415,10 @@ def _ocr(label: Any, engines: Sequence[Any]) -> tuple[Decimal | None, str]:
     value = dim_labels._drawn_value(reads, lambda v: dim_labels._vector_ones(label, v, None))
     lines = sorted({line for read in reads for line in read.lines})[:6]
     if value is None:
-        return None, f"the two engines did not agree on one value (read {', '.join(lines) or 'nothing'})"
+        return (
+            None,
+            f"the two engines did not agree on one value (read {', '.join(lines) or 'nothing'})",
+        )
     return value, f"{_inch_words(value)} by two engines"
 
 
@@ -454,7 +457,9 @@ def _ruler_of_label(
     scale = _scale(scales, label.get("box") or (), side)
     if scale is None:
         return None, f"its line is {span} pt but the drawing's scale is not known"
-    return round(float(span) * scale, 2), f"{float(span) * scale:.2f}\" ({span} pt at the drawing's scale)"
+    return round(
+        float(span) * scale, 2
+    ), f"{float(span) * scale:.2f}\" ({span} pt at the drawing's scale)"
 
 
 def _ruler_of_ink(
@@ -497,7 +502,9 @@ def _inside(label: Mapping[str, Any], box: Box, slack: float = 2.0) -> bool:
 
 
 def _find(
-    request: Request, labels: Sequence[Mapping[str, Any]] | None, halves: Sequence[Mapping[str, Any]]
+    request: Request,
+    labels: Sequence[Mapping[str, Any]] | None,
+    halves: Sequence[Mapping[str, Any]],
 ) -> tuple[Mapping[str, Any] | None, Reading | None]:
     """Step 1: the pack's label to read, or the reading that ends here (several spots, none)."""
     mine = [label for label in labels or () if label.get("side") == request.side]
@@ -579,7 +586,9 @@ def read_number(
     ruler: float | None = None
     if label is not None:
         box = _label_box(label)
-        value = to_inches(str(label.get("inches") or "")) if label.get("inches") is not None else None
+        value = (
+            to_inches(str(label.get("inches") or "")) if label.get("inches") is not None else None
+        )
         if value is None:
             try:
                 value = Decimal(str(label.get("inches")))
@@ -623,7 +632,9 @@ def read_number(
         if value is not None:
             # The set pack's own OCR pair read this label (two engines agreeing).
             ocr = value
-            routes.append(Route("ocr", str(value), f"{label.get('text')} by two engines (set pack)"))
+            routes.append(
+                Route("ocr", str(value), f"{label.get('text')} by two engines (set pack)")
+            )
         ruler, said = _ruler_of_label(label, scales, request.side)
         routes.append(Route("ruler", None if ruler is None else str(ruler), said))
     if box is None or pdf is None:
@@ -765,7 +776,9 @@ class NumberReader:
             self._store(key, found)
         return found
 
-    def check(self, file: str, page: int, box: Sequence[float], claim: str, side: str) -> dict[str, Any]:
+    def check(
+        self, file: str, page: int, box: Sequence[float], claim: str, side: str
+    ) -> dict[str, Any]:
         """A value at its box in `verify_value`'s shape (the simple check's hook)."""
         spot = (float(box[0]), float(box[1]), float(box[2]), float(box[3]))
         return self(Request(file, page, side, box=spot, claim=claim)).as_verify(claim)
