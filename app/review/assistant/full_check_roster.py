@@ -1045,9 +1045,7 @@ class _Run:
                 page: why for gaps in engine._checklist_gaps.values() for page, why in gaps.items()
             }
         unboxed = [
-            f
-            for f in engine.book.live()
-            if f.get("created_by") == "gv_review" and code_spotted(f)
+            f for f in engine.book.live() if f.get("created_by") == "gv_review" and code_spotted(f)
         ]
         pages: dict[int, list[str]] = {}
         planned = sorted(
