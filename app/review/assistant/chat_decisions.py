@@ -48,6 +48,7 @@ __all__ = [
     "decided_summary",
     "decision_out",
     "latest_decisions",
+    "latest_decisions_of",
     "make_decided_files",
     "record_decision",
     "resolver_settled",
@@ -102,6 +103,23 @@ def latest_decisions(
     latest: dict[UUID, dict[str, dict[str, Any]]] = {}
     for row in session.scalars(
         query.order_by(AssistantFindingDecision.decided_at, AssistantFindingDecision.created_at)
+    ):
+        latest.setdefault(row.message_id, {})[row.finding_id] = decision_out(row)
+    return latest
+
+
+def latest_decisions_of(
+    session: Session, message_ids: Sequence[UUID]
+) -> dict[UUID, dict[str, dict[str, Any]]]:
+    """The latest decision per finding of these answers (`latest_decisions`, for several answers
+    of several chats at once: the chat list, #1710)."""
+    if not message_ids:
+        return {}
+    latest: dict[UUID, dict[str, dict[str, Any]]] = {}
+    for row in session.scalars(
+        select(AssistantFindingDecision)
+        .where(AssistantFindingDecision.message_id.in_(list(message_ids)))
+        .order_by(AssistantFindingDecision.decided_at, AssistantFindingDecision.created_at)
     ):
         latest.setdefault(row.message_id, {})[row.finding_id] = decision_out(row)
     return latest

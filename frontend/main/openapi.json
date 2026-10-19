@@ -6335,6 +6335,611 @@
         "title": "ChatListOut",
         "type": "object"
       },
+      "ChatLiveCountsOut": {
+        "properties": {
+          "drawings_done": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Drawings compared (answered or failed); null before the list.",
+            "title": "Drawings Done"
+          },
+          "drawings_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Drawings to compare (skipped ones left out).",
+            "title": "Drawings Total"
+          },
+          "files_made": {
+            "default": 0,
+            "title": "Files Made",
+            "type": "integer"
+          },
+          "second_looks_done": {
+            "default": 0,
+            "title": "Second Looks Done",
+            "type": "integer"
+          },
+          "second_looks_total": {
+            "default": 0,
+            "title": "Second Looks Total",
+            "type": "integer"
+          }
+        },
+        "title": "ChatLiveCountsOut",
+        "type": "object"
+      },
+      "ChatLiveDrawingOut": {
+        "description": "One vendor drawing of the work list as a live tile (`check_drawings`, `check_drawing`).",
+        "properties": {
+          "area": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The area or sheet name (page map).",
+            "title": "Area"
+          },
+          "id": {
+            "description": "The drawing's id, `p23.v1` (as in the `work_items` block).",
+            "title": "Id",
+            "type": "string"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why it failed or was skipped, in plain words.",
+            "title": "Reason"
+          },
+          "round": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Round"
+          },
+          "status": {
+            "enum": [
+              "waiting",
+              "comparing",
+              "answered",
+              "failed",
+              "skipped"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "page",
+          "status"
+        ],
+        "title": "ChatLiveDrawingOut",
+        "type": "object"
+      },
+      "ChatLiveFindingOut": {
+        "description": "One finding as soon as code DECIDED it (`check_finding`, sent again when it changes).\nWrong only when proved (the cloud drawing's own rule); a candidate waiting for the blind\nsecond look is only counted (`ChatLiveTallyOut.waiting_second_look`).",
+        "properties": {
+          "architect": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Architect"
+          },
+          "area": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Area"
+          },
+          "final": {
+            "default": false,
+            "description": "Decided for good (the final list). Right and Not compared may still move between each other before; a shown Wrong stays Wrong.",
+            "title": "Final",
+            "type": "boolean"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The finding's id (`F12`) once recorded in the answer.",
+            "title": "Id"
+          },
+          "impact": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatLiveImpactOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "item": {
+            "default": "",
+            "title": "Item",
+            "type": "string"
+          },
+          "key": {
+            "description": "The row's live key; never changes (later events update it).",
+            "title": "Key",
+            "type": "string"
+          },
+          "needs": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Not compared: what would settle it.",
+            "title": "Needs"
+          },
+          "outcome": {
+            "enum": [
+              "wrong",
+              "right",
+              "not_compared"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "previous": {
+            "anyOf": [
+              {
+                "enum": [
+                  "wrong",
+                  "right",
+                  "not_compared"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its outcome before, when it changed.",
+            "title": "Previous"
+          },
+          "product": {
+            "default": "other",
+            "description": "The product id the item is filed under.",
+            "title": "Product",
+            "type": "string"
+          },
+          "proved_by": {
+            "anyOf": [
+              {
+                "enum": [
+                  "code",
+                  "checked_twice"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A Wrong only: code alone, or code and the blind second look ('checked twice').",
+            "title": "Proved By"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Not compared: why, in plain words.",
+            "title": "Reason"
+          },
+          "removed": {
+            "default": false,
+            "description": "No longer in the answer (folded into another, or left out).",
+            "title": "Removed",
+            "type": "boolean"
+          },
+          "same_as": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A Wrong that is the same item as the row `same_as`: not counted, not shown (the final list keeps the item once).",
+            "title": "Same As"
+          },
+          "should_be": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What it should be (green).",
+            "title": "Should Be"
+          },
+          "vendor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The vendor's value (red when Wrong).",
+            "title": "Vendor"
+          }
+        },
+        "required": [
+          "key",
+          "outcome"
+        ],
+        "title": "ChatLiveFindingOut",
+        "type": "object"
+      },
+      "ChatLiveImpactOut": {
+        "properties": {
+          "score": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Score",
+            "type": "integer"
+          },
+          "why": {
+            "title": "Why",
+            "type": "string"
+          }
+        },
+        "required": [
+          "score",
+          "why"
+        ],
+        "title": "ChatLiveImpactOut",
+        "type": "object"
+      },
+      "ChatLiveOut": {
+        "description": "`GET /chats/{chat_id}/live`: the running full check's live state, or not running.",
+        "properties": {
+          "live": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatLiveStateOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "null when nothing runs, or the running message is a question (no live card)."
+          },
+          "message_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The answer being written (follow its events).",
+            "title": "Message Id"
+          },
+          "running": {
+            "title": "Running",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "running"
+        ],
+        "title": "ChatLiveOut",
+        "type": "object"
+      },
+      "ChatLivePhaseOut": {
+        "description": "What the full check is doing now, in plain phases with counts (`check_phase`).",
+        "properties": {
+          "done": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How many of `total` are done.",
+            "title": "Done"
+          },
+          "phase": {
+            "description": "getting_ready: the drawing set's pack (labels, page map) and code's own checks; comparing: the drawings (n of m); double_checking: code verifies the answers, then the blind second looks (n of m); making_files: n of 5 files; done: the answer is stored.",
+            "enum": [
+              "getting_ready",
+              "comparing",
+              "double_checking",
+              "making_files",
+              "done"
+            ],
+            "title": "Phase",
+            "type": "string"
+          },
+          "phase_started_at": {
+            "format": "date-time",
+            "title": "Phase Started At",
+            "type": "string"
+          },
+          "started_at": {
+            "description": "When the check started (the elapsed clock).",
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "step": {
+            "anyOf": [
+              {
+                "enum": [
+                  "verifying",
+                  "second_looks",
+                  "final_checks",
+                  "stopped"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Within double_checking: verifying (code checks each answered drawing), second_looks, final_checks (no counts); `stopped` on a done check that was stopped.",
+            "title": "Step"
+          },
+          "stopping": {
+            "default": false,
+            "description": "Stop was pressed (`check_stopping`).",
+            "title": "Stopping",
+            "type": "boolean"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "null: no count for this phase.",
+            "title": "Total"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "enum": [
+                  "drawings",
+                  "pages",
+                  "looks",
+                  "files"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What `done` and `total` count (pages: the roster check).",
+            "title": "Unit"
+          }
+        },
+        "required": [
+          "phase",
+          "started_at",
+          "phase_started_at"
+        ],
+        "title": "ChatLivePhaseOut",
+        "type": "object"
+      },
+      "ChatLiveStateOut": {
+        "description": "A running full check's whole live state, in one call (a page that reconnects).",
+        "properties": {
+          "counts": {
+            "$ref": "#/components/schemas/ChatLiveCountsOut"
+          },
+          "drawings": {
+            "items": {
+              "$ref": "#/components/schemas/ChatLiveDrawingOut"
+            },
+            "title": "Drawings",
+            "type": "array"
+          },
+          "findings": {
+            "description": "Every decided finding so far (removed ones left out).",
+            "items": {
+              "$ref": "#/components/schemas/ChatLiveFindingOut"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "mode": {
+            "description": "simple: drawings, verify and second looks; roster: pages, fewer events.",
+            "enum": [
+              "simple",
+              "roster"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "phase": {
+            "$ref": "#/components/schemas/ChatLivePhaseOut"
+          },
+          "service": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The AI service stopped every call (a refused key, no payment, not reachable): its plain reason.",
+            "title": "Service"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "stopping": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatLiveStoppingOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tally": {
+            "$ref": "#/components/schemas/ChatLiveTallyOut"
+          },
+          "v": {
+            "description": "The live events' and this state's version (1).",
+            "title": "V",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "v",
+          "mode",
+          "started_at",
+          "phase",
+          "drawings",
+          "findings",
+          "tally",
+          "counts"
+        ],
+        "title": "ChatLiveStateOut",
+        "type": "object"
+      },
+      "ChatLiveStoppingOut": {
+        "description": "After Stop (`check_stopping`, sent again as drawings finish): nothing new starts.",
+        "properties": {
+          "in_flight": {
+            "description": "Drawings being compared now: they finish, kept.",
+            "minimum": 0.0,
+            "title": "In Flight",
+            "type": "integer"
+          },
+          "not_started": {
+            "description": "Drawings that will not be compared.",
+            "minimum": 0.0,
+            "title": "Not Started",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "in_flight",
+          "not_started"
+        ],
+        "title": "ChatLiveStoppingOut",
+        "type": "object"
+      },
+      "ChatLiveTallyOut": {
+        "description": "Found so far (`check_tally`): proved Wrongs only, and the differences waiting for the\nblind second look (they become Wrong only if it agrees).",
+        "properties": {
+          "not_compared": {
+            "minimum": 0.0,
+            "title": "Not Compared",
+            "type": "integer"
+          },
+          "right": {
+            "minimum": 0.0,
+            "title": "Right",
+            "type": "integer"
+          },
+          "waiting_second_look": {
+            "minimum": 0.0,
+            "title": "Waiting Second Look",
+            "type": "integer"
+          },
+          "wrong": {
+            "minimum": 0.0,
+            "title": "Wrong",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "wrong",
+          "right",
+          "not_compared",
+          "waiting_second_look"
+        ],
+        "title": "ChatLiveTallyOut",
+        "type": "object"
+      },
       "ChatMessageIn": {
         "additionalProperties": false,
         "description": "One message from the reviewer, with the model, effort and thinking they picked.\n\n`mode: full_check` (CONTRACT4) runs the app's own fixed whole-set check instead of a typed\nquestion (`text` is then not needed: the question shown is \"Full check \u00b7 Countertops \u00b7 High\neffort\"). `products`: the products picked in the composer (default: the set's own), each an\nACTIVE product id of the product registry (`GET /products`, #1547).",
@@ -6371,6 +6976,12 @@
             ],
             "description": "The simple full check only: this run's compare call effort, for every drawing.",
             "title": "Compare Effort"
+          },
+          "compare_missing": {
+            "default": false,
+            "description": "#1710, with `replay` ('Compare them again'): the drawings that run has no answer for (failed, stopped, never started) are compared now, and the blind looks it could not make are made now; every saved answer and look is used again at $0, so the new answer is the whole result.",
+            "title": "Compare Missing",
+            "type": "boolean"
           },
           "compare_model": {
             "anyOf": [
@@ -6914,6 +7525,17 @@
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "live": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatLiveStateOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#1710: while a full check runs, its live state (drawings, phase, decided findings, tally), so a reloaded page draws the live card at once."
           },
           "messages": {
             "items": {
@@ -8242,6 +8864,30 @@
             "title": "Created At",
             "type": "string"
           },
+          "drawings_done": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#1710: while a full check runs: drawings compared so far.",
+            "title": "Drawings Done"
+          },
+          "drawings_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#1710: while a full check runs: drawings to compare.",
+            "title": "Drawings Total"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -8258,6 +8904,39 @@
               }
             ],
             "title": "Last Message At"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "chat",
+                  "full_check"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#1710: the newest question's mode: a full check or a typed question; null on questions stored before it was kept.",
+            "title": "Mode"
+          },
+          "review_result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatSummaryReviewOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#1710: the newest full check's review result (its package made); null otherwise."
+          },
+          "running": {
+            "default": false,
+            "description": "#1710: a message is being answered now.",
+            "title": "Running",
+            "type": "boolean"
           },
           "title": {
             "anyOf": [
@@ -8283,6 +8962,33 @@
           "turns"
         ],
         "title": "ChatSummaryOut",
+        "type": "object"
+      },
+      "ChatSummaryReviewOut": {
+        "description": "A chat's newest full check's review result, for the sidebar (#1710).",
+        "properties": {
+          "action": {
+            "enum": [
+              "approved",
+              "approved_as_noted",
+              "revise_resubmit",
+              "rejected",
+              "not_for_sending"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "words": {
+            "description": "\"Revise and resubmit\", \"Check incomplete: not for sending\", \u2026",
+            "title": "Words",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "words"
+        ],
+        "title": "ChatSummaryReviewOut",
         "type": "object"
       },
       "ChatTaskOut": {
@@ -22782,6 +23488,50 @@
           }
         },
         "summary": "A file the assistant handed over",
+        "tags": [
+          "assistant chats"
+        ]
+      }
+    },
+    "/api/v1/chats/{chat_id}/live": {
+      "get": {
+        "description": "#1710: the whole live card now (the drawings, the phase with its counts, the findings code\nhas decided, the tally, stopping), for a page that reconnects mid-run; then follow\n`GET /chats/{chat_id}/messages/{message_id}/events` for the changes. Not running: `running`\nfalse and `live` null (the stored answer has the result).",
+        "operationId": "read_live_api_v1_chats__chat_id__live_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chat_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Chat Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatLiveOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "A running full check's live state, in one call",
         "tags": [
           "assistant chats"
         ]
