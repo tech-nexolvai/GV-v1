@@ -24,7 +24,7 @@
  */
 
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ChevronRight, CircleAlert, ListChecks, RotateCw } from 'lucide-react';
+import { ArrowDown, ChevronRight, CircleAlert, ListChecks, RotateCw, WifiOff } from 'lucide-react';
 
 import { formatRoute } from '@/app/route';
 import { HeaderActions, HeaderTitleExtra, SidebarChats } from '@/components/shell/ShellHeader';
@@ -46,8 +46,10 @@ import { knownAreas, lastFindings, withPrompt } from '@/lib/chat-plus-actions';
 import { applyChatEvent, applyCorrection, CHAT_STARTERS, chatTitle, dollars, followedAnswer, fromSaved, localAnswer, localQuestion, previousQuestion, settle, shownLive, type ViewMessage } from '@/lib/chat-messages';
 import { browserStorage, EFFORT_WORDS, readChoice, resolveChoice, saveChoice, shortModelLabel, type ChatChoice } from '@/lib/chat-settings';
 import { drawingCounts, tabTitle, type LiveState } from '@/lib/chat-live';
+import { useOnline } from '@/lib/online';
 import { cn } from '@/lib/utils';
-import { COMPOSER_NOTE, COMPOSER_PLACEHOLDER } from '@/lib/words';
+import { toast } from 'sonner';
+import { COMPOSER_NOTE, COMPOSER_PLACEHOLDER, COMPOSER_RUNNING_PLACEHOLDER } from '@/lib/words';
 
 /** A chat with nothing in it yet (one value, so effects that follow the messages do not re-run). */
 const NO_MESSAGES: ViewMessage[] = [];
@@ -193,7 +195,8 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
       },
       (error: unknown) => {
         if (!current) return;
-        setLoadError({ chatId, message: chatFailureWords(error), missing: error instanceof ApiError && error.status === 404 });
+        // #1744: a link to a chat that is not there, or not a chat id at all (422), says "not found".
+        setLoadError({ chatId, message: chatFailureWords(error), missing: error instanceof ApiError && (error.status === 404 || error.status === 422) });
         if (stoppedChat.current === chatId) {
           stoppedChat.current = null;
           setRunning(false);
@@ -532,6 +535,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
     stoppedChat.current = run.chatId;
     setStopping(true);
     setAnnounce(runningCheck ? 'Stopping the check: the drawings already started will finish first' : 'Stopping');
+    if (runningCheck) toast('Stopping the check. The drawings already started will finish first.');
     api.cancel(run.chatId).then(
       () => {
         stopTimer.current = window.setTimeout(() => run.controller.abort(), stopGraceMs);
@@ -579,19 +583,26 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
       document.title = before;
     };
   }, [checkTab]);
-  // A check that ends while the tab is in the background says so in the tab until it is looked at.
-  const [checkEnded, setCheckEnded] = useState(false);
-  const [hadCheck, setHadCheck] = useState(false);
-  if (hadCheck !== runningCheck) {
-    setHadCheck(runningCheck);
-    if (!runningCheck && typeof document !== 'undefined' && document.hidden) setCheckEnded(true);
+  // #1744: a check seen running here that ends while this page still reads nothing (a stop that is
+  // being finished keeps the page reading) says so: a toast, and in a background tab its title until
+  // the tab is looked at (owner decision 7: no browser notification).
+  const [watchedCheck, setWatchedCheck] = useState<string | null>(null);
+  const [checkEnded, setCheckEnded] = useState<{ stopped: boolean; hidden: boolean } | null>(null);
+  if (runningCheck && chatId && watchedCheck !== chatId) setWatchedCheck(chatId);
+  if (watchedCheck && !running) {
+    setWatchedCheck(null);
+    if (watchedCheck === chatId && lastMessage?.role === 'assistant' && lastMessage.status !== 'running') {
+      setCheckEnded({ stopped: lastMessage.stopped === 'cancelled', hidden: typeof document !== 'undefined' && document.hidden });
+    }
   }
   useEffect(() => {
     if (!checkEnded) return;
+    toast(checkEnded.stopped ? 'The check stopped. What was compared is in the result.' : 'The full check is done.');
+    if (!checkEnded.hidden) return;
     const before = document.title;
     document.title = '✓ Check done · GV Review';
     const seen = () => {
-      if (!document.hidden) setCheckEnded(false);
+      if (!document.hidden) setCheckEnded(null);
     };
     document.addEventListener('visibilitychange', seen);
     return () => {
@@ -599,6 +610,23 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
       document.title = before;
     };
   }, [checkEnded]);
+
+  // #1744: the connection. Lost: a banner (the check goes on on the server). Back: a toast, and the
+  // chat is read again, so a running check is followed anew.
+  const online = useOnline();
+  const [wasOnline, setWasOnline] = useState(online);
+  const [backOnline, setBackOnline] = useState(0);
+  if (wasOnline !== online) {
+    setWasOnline(online);
+    if (online) {
+      setBackOnline((n) => n + 1);
+      setLoadAsk((n) => n + 1);
+      setListAsk((n) => n + 1);
+    }
+  }
+  useEffect(() => {
+    if (backOnline) toast('Back online.');
+  }, [backOnline]);
   // The open chat's row follows this page (the list is read again only now and then).
   const listLive = chatId && chat ? { chatId, running, ...(runningLive ? drawingCounts(runningLive) : { done: null, total: null }) } : null;
 
@@ -655,6 +683,12 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
         <section aria-label={activeSummary ? chatTitle(activeSummary) : 'Conversation'} data-slot="chat-page" className="chat-brand relative flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-x-clip">
           {/* Positioned, so screen-reader-only text deep in the thread is placed (and clipped) inside it,
               not against the shell, where it would make the whole page scrollable. */}
+          {!online && (
+            <p data-slot="chat-offline" role="status" className="flex shrink-0 items-center justify-center gap-2 bg-foreground px-4 py-2 text-center text-[13px] text-background">
+              <WifiOff className="size-4 shrink-0" aria-hidden="true" />
+              <span>Connection lost. Reconnecting… {runningCheck ? 'The check keeps running on the server.' : 'Anything running keeps going on the server.'}</span>
+            </p>
+          )}
           <div
             ref={scroller}
             onScroll={onScroll}
@@ -675,10 +709,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                 )
               )}
               {chatId && !chat && !failedToLoad && (
-                <div aria-label="Loading the chat" className="flex flex-col gap-3 pt-6">
-                  <Skeleton className="h-7 w-2/3" />
-                  <Skeleton className="h-4 w-1/2" />
-                </div>
+                <LoadingChat />
               )}
               {chat && chatId && messages.map((message, at) => {
                 if (message.role === 'user') {
@@ -792,7 +823,8 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                 models={modelList}
                 choice={choice}
                 onChoice={changeChoice}
-                placeholder={COMPOSER_PLACEHOLDER}
+                // #1744: the server refuses a second message while a check runs (409 message_running).
+                placeholder={runningCheck ? COMPOSER_RUNNING_PLACEHOLDER : COMPOSER_PLACEHOLDER}
                 menuFootnote={footnote}
                 textareaRef={textareaRef}
                 modelInMenu
@@ -845,6 +877,49 @@ function Problem({ words, action, onAction, href }: { words: string; action: str
         <span>{words}</span>
       </p>
       {href ? <a href={href} className={actionClass}>{action}</a> : <button type="button" onClick={onAction} className={actionClass}>{action}</button>}
+    </div>
+  );
+}
+
+/**
+ * #1744: opening a chat, a skeleton shaped like a result (the question, the work line, the head, three
+ * tiles, rows with their two pictures), shown only after 250 ms so a fast load never flashes.
+ */
+function LoadingChat() {
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setShown(true), 250);
+    return () => window.clearTimeout(timer);
+  }, []);
+  return (
+    <div aria-label="Loading the chat" aria-busy="true" data-slot="chat-loading" data-shown={shown ? 'true' : 'false'} hidden={!shown || undefined} className="grid min-w-0 gap-4">
+      <Skeleton className="ml-auto h-10 w-64 rounded-full" />
+      <Skeleton className="h-5 w-80 max-w-full" />
+      <div className="grid gap-4 rounded-[14px] border p-4 md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
+        <Skeleton className="h-40 max-md:hidden" />
+        <div className="grid content-start gap-3">
+          <Skeleton className="h-6 w-56" />
+          <Skeleton className="h-4 w-full" />
+          <Skeleton className="h-4 w-4/5" />
+          <Skeleton className="h-9 w-48" />
+        </div>
+      </div>
+      <div className="grid grid-cols-3 gap-2.5">
+        {[0, 1, 2].map((at) => <Skeleton key={at} className="h-20 rounded-[14px]" />)}
+      </div>
+      <div className="grid rounded-[14px] border">
+        {[0, 1, 2].map((at) => (
+          <div key={at} className="flex gap-5 border-t p-4 first:border-t-0">
+            <div className="grid flex-1 content-start gap-2">
+              <Skeleton className="h-4 w-40" />
+              <Skeleton className="h-5 w-3/4" />
+              <Skeleton className="h-4 w-1/2" />
+            </div>
+            <Skeleton className="h-24 w-[168px] max-md:hidden" />
+            <Skeleton className="h-24 w-[168px] max-md:hidden" />
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

@@ -16,6 +16,8 @@ export const OUTCOME_WORDS = { wrong: 'Wrong', right: 'Right', notCompared: 'Not
 
 /** The composer's placeholder, in a chat with or without messages. */
 export const COMPOSER_PLACEHOLDER = 'Ask about these drawings…';
+/** #1744: while a full check runs in the chat (the server takes no second message until it ends). */
+export const COMPOSER_RUNNING_PLACEHOLDER = 'The check is running. Ask a question in a new chat…';
 
 /** The one line under the composer. */
 export const COMPOSER_NOTE = 'GV Review can be wrong. Every red mark shows its proof.';

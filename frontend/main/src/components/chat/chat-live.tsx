@@ -55,8 +55,12 @@ export interface LiveCheckProps {
   onAskStop?: (open: boolean) => void;
 }
 
-function LiveCheckCard({ live, eta = null, files = [], model = null, cost = null, pagePicture = null, onStop, stopping = false, askStop = false, onAskStop }: LiveCheckProps) {
+function LiveCheckCard({ live: fromServer, eta = null, files = [], model = null, cost = null, pagePicture = null, onStop, stopping = false, askStop = false, onAskStop }: LiveCheckProps) {
   const reduced = useReducedMotion();
+  // #1744: Stop pressed here says "Stopping…" at once, before the server's own word arrives.
+  const live = stopping && !fromServer.stopping
+    ? { ...fromServer, stopping: { in_flight: fromServer.drawings.filter((drawing) => drawing.status === 'comparing').length, not_started: 0 } }
+    : fromServer;
   const { now, left } = useClock(live, eta);
   const isStopping = stopping || live.phase.stopping || Boolean(live.stopping);
   const service = live.service ?? null;

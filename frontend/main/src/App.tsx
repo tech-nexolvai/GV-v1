@@ -11,6 +11,7 @@ import { RulebookPage } from './pages/RulebookPage';
 import { UsagePage } from './pages/UsagePage';
 import { TrackerPage } from './pages/TrackerPage';
 import { ChatPage } from './pages/ChatPage';
+import { Toaster } from './components/ui/sonner';
 import { useRoute } from './app/route';
 import type { Page } from './app/route';
 import { useTheme } from './app/theme';
@@ -223,6 +224,8 @@ export default function App() {
       {route.page === 'settings' && <CompanySettingsPage focus={route.focus} project={route.project} />}
 
       {route.page === 'usage' && <UsagePage />}
+      {/* #1744: one place for short notes (stopping a check, a check done, back online), bottom right. */}
+      <Toaster position="bottom-right" offset={24} mobileOffset={16} duration={4000} />
     </AppShell>
   );
 }

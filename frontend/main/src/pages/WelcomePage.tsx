@@ -16,7 +16,7 @@ import { projectId } from '@/api/config';
 import { useAsync } from '@/api/useAsync';
 import { NewReviewForm } from '@/components/upload/NewReviewForm';
 import { PageFrame } from '@/components/ui/PageFrame';
-import { PackageStatusBadge } from '@/components/ui/package-status-badge';
+import { setStatusWords } from '@/lib/words';
 
 interface WelcomePageProps {
   /** An upload finished: the app opens the set's chat (#1464). */
@@ -71,12 +71,14 @@ export function WelcomePage({ onCreated, onOpenSaved, onOpenReview }: WelcomePag
                       <span className="flex min-w-0 flex-1 flex-col">
                         <span className="truncate text-sm font-medium" title={vendor}>{vendor}</span>
                         <span className="text-xs text-muted-foreground">
-                          Revision <span className="num">{pkg.current_revision_number}</span>
+                          {/* #1744: "Round" (the vendor's submission), as everywhere else. */}
+                          Round <span className="num">{pkg.current_revision_number}</span>
                           {' · '}
                           <time className="num" dateTime={pkg.created_at}>{formatDay(pkg.created_at)}</time>
                         </span>
                       </span>
-                      <PackageStatusBadge status={pkg.state} />
+                      {/* #1744: a set's state is grey words, never an outcome colour (as in the sidebar). */}
+                      <span data-slot="set-status" data-status={pkg.state} className="shrink-0 text-xs text-muted-foreground max-sm:hidden">{setStatusWords(pkg.state)}</span>
                       <ArrowRight className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
                     </button>
                   </li>
