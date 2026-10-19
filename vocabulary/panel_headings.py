@@ -54,6 +54,7 @@ __all__ = [
     "heading_meaning",
     "looks_like_heading",
     "normalise_label",
+    "page_title_role",
     "place_words",
 ]
 
@@ -193,3 +194,39 @@ def place_words(boxes: list[Box]) -> list[str]:
         where = "-".join(part for part in (vertical, across) if part) or "middle"
         words.append(f"the {where} drawing")
     return words
+
+
+# ---- whose drawing a whole page is, from its printed title words (#1719) -------------------------
+
+#: The words a CAD sheet prints in its title when it is the architect's or the vendor's drawing
+#: ("ARCH LAYOUT", "ID SET ELEVATION", "VENDOR LAYOUT", "SHOP DRAWING", "SUBMITTAL"), for a whole
+#: page with no GV heading (a separate, plain file: `set_pack`). One plain list, read as whole words.
+ARCHITECT_TITLE_WORDS: Final = ("ARCH", "ARCHITECT", "ARCHITECT'S", "ARCHITECTS", "ARCHITECTURAL")
+ARCHITECT_TITLE_PHRASES: Final = ("ID SET", "I.D. SET")
+VENDOR_TITLE_WORDS: Final = (
+    "VENDOR",
+    "VENDOR'S",
+    "VENDORS",
+    "SHOP",
+    "SUBMITTAL",
+    "FABRICATOR",
+    "FABRICATOR'S",
+)
+_TITLE_WORD: Final = re.compile(r"[A-Z][A-Z'.]*[A-Z]|[A-Z]")
+
+
+def page_title_role(text: str) -> str | None:
+    """`architect` or `vendor` when a page's printed words name exactly one of the two
+    (`ARCHITECT_TITLE_WORDS` / `ARCHITECT_TITLE_PHRASES` against `VENDOR_TITLE_WORDS`, whole words,
+    case and apostrophes ignored); `None` when they name neither or both (a vendor sheet noting
+    "VERIFY WITH ARCH" names both: its upload decides)."""
+    label = normalise_label(text)
+    words = set(_TITLE_WORD.findall(label))
+    spaced = f" {' '.join(re.sub(r'[^A-Z.\' ]+', ' ', label).split())} "
+    architect = bool(words & set(ARCHITECT_TITLE_WORDS)) or any(
+        f" {phrase} " in spaced for phrase in ARCHITECT_TITLE_PHRASES
+    )
+    vendor = bool(words & set(VENDOR_TITLE_WORDS))
+    if architect == vendor:
+        return None
+    return "architect" if architect else "vendor"

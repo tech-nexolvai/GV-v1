@@ -139,6 +139,10 @@ class DimLabels:
             self._dims = (stamp, pages)
         return pages
 
+    def halves(self, file: str, page: int) -> list[Mapping[str, Any]]:
+        """The page's drawing halves from the pack's page map (each with its role and round)."""
+        return self._halves(file, page)
+
     def _halves(self, file: str, page: int) -> list[Mapping[str, Any]]:
         if self.folder is None:
             return []

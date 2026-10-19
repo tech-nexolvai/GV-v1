@@ -44,11 +44,13 @@ from uuid import uuid4
 from app.review.assistant.chat_request import MODELS, ChatModel
 from app.review.assistant.chat_summary import CODE_SUMMARY_NOTE, code_summary
 from app.review.assistant.chat_trust import judged
+from app.review.assistant.filler_range import covered_labels
 from app.review.assistant.finding_checks import to_inches
 from app.review.assistant.full_check_advocate import code_checks, decide, ink_colour, needs_pairing
 from app.review.assistant.product_scope import refiled
 from app.review.assistant.simple_check import verify as verify_module
 from app.review.assistant.simple_check.blind import BlindSettings, look_all
+from app.review.assistant.simple_check.pairing import UNPAIRED
 from app.review.assistant.simple_check.schema import CompareOutcome, WorkItem
 from app.review.assistant.simple_check.verify import (
     CREATED_BY,
@@ -59,6 +61,7 @@ from app.review.assistant.simple_check.verify import (
     Verified,
     with_blind,
 )
+from app.review.assistant.spot_locate import code_spotted
 
 if TYPE_CHECKING:
     from app.review.assistant.chat_engine import ChatEngine, MessageOutcome
@@ -96,6 +99,14 @@ PACK_WAIT_SECONDS: Final = 1800.0
 _PACK_POLL_SECONDS: Final = 2.0
 #: The words a pilot's left-out drawings are skipped with (`_scope_and_pilot`).
 _PILOT: Final = "a pilot run compares only the first"
+#: The next step of a check that compared no drawing at all.
+NOTHING_NEXT: Final = "Next: nothing can be sent to the vendor until the drawings are compared."
+#: Code's summary lines that read as a finished comparison: never printed when no drawing was
+#: compared (a $0 run on plain CAD files, 2026-10-19, printed "Checked 6 of 6 pages" and "Every
+#: item could be compared." next to "Nothing was compared").
+_AS_IF_CHECKED: Final = re.compile(
+    r"^(?:Checked |Every item could be compared\.|No wrong value was proved by code so far\.)"
+)
 #: The next step of a check that did not finish: never "send it to the vendor".
 NOT_FINISHED_NEXT: Final = (
     "Next: finish the check (compare the drawings left) before anything is sent to the vendor."
@@ -214,6 +225,12 @@ class _Run:
     blind_skipped_count: int = 0
     out_of_scope: int = 0
     """Items of products outside the check's scope: never looked at again, never shown."""
+    no_architect: int = 0
+    """Vendor drawings with no architect drawing anywhere in the set (a vendor-only upload)."""
+    unpaired: list[tuple[int, str, str]] = field(default_factory=list)
+    """Vendor drawings of a separate file not compared because code could not pair them with an
+    architect drawing, or the compare call said the drawing code paired shows something else
+    (#1723): (page, drawing id, reason). Each is a Not-compared row; the check is not complete."""
 
     # -- the run --
 
@@ -250,6 +267,16 @@ class _Run:
                 _log.exception("simple check: work list failed")
                 return self._finish("error", f"the work list could not be made ({failed})")
             self.items = list(worklist.items)
+            self.unpaired = [
+                (s.page, str(s.drawing or ""), s.reason)
+                for s in worklist.skipped
+                if s.reason.startswith(UNPAIRED)
+            ]
+            self.no_architect = sum(
+                1
+                for s in worklist.skipped
+                if s.drawing and ".v" in s.drawing and s.reason.startswith("no architect drawing")
+            )
             self._scope_and_pilot()
         self._tell("work_list", self.items, self.skipped)
         engine.critic_off = True
@@ -527,8 +554,9 @@ class _Run:
         try:
             pdf = set_pack.drawings_only(folder, workspace.uploads, str(label.get("file")))
             x0, y0, x1, y1 = (float(v) for v in label.get("box") or ())
+            page = int(label.get("file_page") or label["page"])  # its own page (#1722)
             crop = set_pack.crop_picture(
-                pdf, int(label["page"]), (x0, y0, x1, y1), 300, cache=folder / set_pack.HIRES
+                pdf, page, (x0, y0, x1, y1), 300, cache=folder / set_pack.HIRES
             )
             return ink_colour(crop.png)
         except Exception:  # noqa: BLE001 - unknown ink: the item is not red
@@ -628,7 +656,7 @@ class _Run:
                 {
                     "by": "compare",
                     "file": picture.file,
-                    "page": picture.page,
+                    "page": picture.own_page,
                     "box": dict(zip(("x0", "y0", "x1", "y1"), picture.box, strict=True)),
                     "dpi": picture.dpi,
                     "picture_id": None,
@@ -685,6 +713,22 @@ class _Run:
         for item in self.compared:
             outcome = self.outcomes.get(item.id)
             if outcome is None or outcome.status != "ok" or outcome.result is None:
+                continue
+            if item.paired_by and outcome.result.same_drawing == "no":
+                # Code paired it across separate files; the compare call says the architect
+                # drawing shows something else: not compared, never verified (#1723).
+                architect = ", ".join(d.ref for d in item.architect)
+                self.unpaired.append(
+                    (
+                        item.page,
+                        item.id,
+                        (
+                            f"{UNPAIRED}: the compare call says the architect drawing code "
+                            f"paired it with ({architect}) shows something else"
+                        ),
+                    )
+                )
+                self._tell("verified", item.id, ())
                 continue
             view = Item.of(item)
             try:
@@ -918,6 +962,15 @@ class _Run:
 
     def _record(self, verified: list[tuple[Verified, Item]]) -> None:
         engine = self.engine
+        # A vendor filler GV's filler range already decided (`filler_range`, code's own finding):
+        # the compare answer's Right or Not-compared item on the same label is not listed again
+        # (a red from the architect comparison still is).
+        decided = covered_labels(engine.book.live(), engine.book.main_file)
+        verified = [
+            pair
+            for pair in verified
+            if pair[0].outcome == "red" or self._label_key(pair[0]) not in decided
+        ]
         ordered = sorted(
             (pair for pair in verified if pair[0].finding),
             key=lambda pair: _ORDER.get(pair[0].outcome, 3),
@@ -937,22 +990,47 @@ class _Run:
                     self.rows.append(_row(one, "the answer's item limit was reached"))
         # The labels the architect gives no size for, one row per drawing (and product), not one
         # per label: a set has hundreds (the app test: 1,186 rows beside 46 items on screen).
-        no_size: dict[tuple[str, str], list[Verified]] = {}
+        # Labels the AI was unsure about (no architect label) are grouped the same way, with their
+        # own reason.
+        no_size: dict[tuple[str, str, str], list[Verified]] = {}
         for one, item in verified:
             if one.outcome != "listed":
                 continue
             row = _row(one)
-            if one.reason_code != "nothing_to_compare" or not one.vendor:
+            if one.reason_code not in _GROUPED or not one.vendor:
                 self.rows.append(row)
                 continue
             filed = self._filed(row)
             if filed is None:
                 self.out_of_scope += 1  # another product's label: never listed
                 continue
-            no_size.setdefault((item.id, filed), []).append(one)
-        for (item_id, filed), labels in no_size.items():
+            no_size.setdefault((item.id, filed, str(one.reason_code)), []).append(one)
+        for (item_id, filed, _reason), labels in no_size.items():
             self.rows.append(_no_size_row(item_id, filed, labels))
+        for page, drawing, reason in self.unpaired:
+            self.rows.append(
+                {
+                    "page": page,
+                    "what": f"Vendor drawing on page {page} ({drawing}): {reason}",
+                    "why": "not_proved",
+                    "needs": "the architect's drawing for it (a printed reference to its sheet)",
+                    "scope": "set",
+                    "item": f"{drawing}: vendor drawing not compared",
+                    "category": "other",
+                }
+            )
         engine.extra_gaps = list(self.rows)
+
+    def _label_key(self, one: Verified) -> tuple[str, int, str] | None:
+        vendor = one.vendor
+        if not isinstance(vendor, Mapping) or not vendor.get("id"):
+            return None
+        try:
+            page = int(vendor.get("page") or 0)
+        except (TypeError, ValueError):
+            return None
+        file = str(vendor.get("file") or self.engine.book.main_file or "")
+        return (file, page, str(vendor["id"]))
 
     def _add(self, one: Verified) -> bool | None:
         """The item as a finding: merged onto GV Review's recorded row of the same item (same page,
@@ -960,7 +1038,7 @@ class _Run:
         finding book left it out as another product than the check's (the strict scope)."""
         engine = self.engine
         book = engine.book
-        fields: dict[str, Any] = dict(one.finding)
+        fields: dict[str, Any] = own_pages(one.finding, self.pack)
         extra: dict[str, Any] = {
             k: fields.pop(k) for k in ("critic", "pairing", "keep_reason", "round") if k in fields
         }
@@ -1026,6 +1104,10 @@ class _Run:
             # Nothing was compared (no vendor drawing, or none of the products picked): no review
             # result says the drawings were checked.
             engine.incomplete_note = self._nothing_compared()
+        elif self.unpaired:
+            # A vendor drawing of a separate file code could not pair is not compared: the check
+            # did not look at all of the vendor's drawings (#1723).
+            engine.incomplete_note = self._unpaired_words()
         elif self.blind_failed:
             # A failed second look counts like a failed compare call (orchestrator, 2026-10-19):
             # an outage, not the drawings, left these possible differences undecided.
@@ -1115,23 +1197,40 @@ class _Run:
             except Exception:  # noqa: BLE001 - said in the summary
                 _log.warning("simple check could not record the compared pages")
 
+    def _unpaired_words(self) -> str:
+        count = len(self.unpaired)
+        drawings = "vendor drawing" if count == 1 else "vendor drawings"
+        return (
+            f"{count} {drawings} could not be paired with an architect drawing by code (the "
+            "reasons are in the Not-compared list)"
+        )
+
     def _nothing_compared(self) -> str:
         """Why no drawing was compared (no error): the work list has none, or every one shows
         only products outside the check's scope."""
         outside = sum(1 for r in self.skipped.values() if r.startswith("outside the product scope"))
+        if self.unpaired and not self.items:
+            return self._unpaired_words()
         if self.items and outside == len(self.items):
             label = str(getattr(self.engine.product_scope, "label", "") or "").lower()
             return (
                 f"no drawing of {label or 'the products picked'} in this set: the "
                 f"{len(self.items)} vendor drawings show only other products"
             )
-        # The work list reads GV's combined sheets (the architect's drawing pasted over the
-        # vendor's, each headed by whose it is). Separately uploaded vendor and architect files
-        # are not paired yet: never a review result as if they were checked.
+        if self.no_architect and not self.items:
+            many = "drawing has" if self.no_architect == 1 else "drawings have"
+            return (
+                f"the {self.no_architect} vendor {many} no architect drawing in this set to "
+                "compare with (upload the architect's drawings as their own file); GV's own "
+                "rules were still checked"
+            )
+        # No vendor drawing at all: none on GV's combined sheets (the architect's drawing pasted
+        # over the vendor's, each headed by whose it is), and no page of a separate vendor file
+        # printing dimensions (#1719): never a review result as if they were checked.
         return (
             "no vendor drawing was found on GV's combined sheets (the architect's drawing over "
-            "the vendor's, each headed by whose it is); separately uploaded vendor and architect "
-            "files are not compared yet"
+            "the vendor's, each headed by whose it is) or as a page of the vendor's own file "
+            "printing dimensions"
         )
 
     def _summary(
@@ -1170,16 +1269,31 @@ class _Run:
             or bool(pilot)
             or not self.compared
             or bool(self.blind_failed)
+            or bool(self.unpaired)
         )
-        text = "\n".join(
-            (NOT_FINISHED_NEXT if unfinished and line.startswith("Next:") else line)
-            for line in text.splitlines()
-            if line.strip() != CODE_SUMMARY_NOTE
-        ).strip()
+        nothing_ran = why is not None or (not self.compared and not failed)
+        kept: list[str] = []
+        for line in text.splitlines():
+            if line.strip() == CODE_SUMMARY_NOTE:
+                continue
+            if nothing_ran and _AS_IF_CHECKED.match(line.strip()):
+                continue
+            if nothing_ran and not engine.book.live() and re.match(r"^\d+ wrong ", line):
+                continue  # "0 wrong, 0 right, 0 not compared": nothing was looked at
+            if line.startswith("Next:"):
+                line = NOTHING_NEXT if nothing_ran else (NOT_FINISHED_NEXT if unfinished else line)
+            kept.append(line)
+        text = "\n".join(kept).strip()
         lines = [text]
         answered = sum(1 for item in self.compared if item.id not in {i.id for i in failed})
-        if why is not None:
-            lines.append(f"**The check could not run: {why}. Nothing was compared.**")
+        if nothing_ran:
+            # One honest sentence, first: nothing above it reads as a finished check.
+            honest = (
+                f"**The check could not run: {why}. Nothing was compared.**"
+                if why is not None
+                else f"**Nothing was compared: {self._nothing_compared()}.**"
+            )
+            lines.insert(0, honest)
         elif failed:
             names = ", ".join(
                 f"{item.id} ({(self.outcomes[item.id].reason if item.id in self.outcomes else None) or 'not reached'})"
@@ -1190,11 +1304,12 @@ class _Run:
                 f"**Check incomplete: {len(failed)} of {len(self.compared)} drawings could not be "
                 f"compared: {names}{more}. Not for sending until they are.**"
             )
-        elif not self.compared:
-            nothing = self._nothing_compared()
-            lines.append(f"**Nothing was compared: {nothing}.**")
         elif not pilot:
             lines.append(f"Every drawing in the work list was compared ({answered} drawings).")
+        if self.unpaired and self.compared and why is None:
+            lines.append(
+                f"**Not compared: {self._unpaired_words()}. Not for sending until they are.**"
+            )
         if stopped == "cancelled" and why is None:
             lines.append(
                 f"**Stopped: {answered} of {len(self.compared)} drawings were compared and "
@@ -1355,12 +1470,54 @@ def _seed_for(
             other.get("created_by") == "gv_review"
             and other.get("source") == "gv_review"
             and other.get("page") == fields.get("page")
-            and not other.get("vendor_box")
+            # No spot yet, or only the one code found for it (#1738).
+            and code_spotted(other)
             and to_inches(str(other.get("vendor") or "")) == vendor
             and to_inches(str(other.get("architect") or "")) == architect
         ):
             return other
     return None
+
+
+def own_pages(finding: Mapping[str, Any], pack: Pack | None) -> dict[str, Any]:
+    """A finding as the chat's finding book keeps it: every spot on its file's own page (#1722).
+    Verify names pages by set page (a separate architect file is numbered after the vendor's); the
+    book, the evidence and the outputs read each spot's file at its own page. The vendor's file
+    keeps its numbers, so a combined set's finding is unchanged."""
+    fields = dict(finding)
+    if pack is None or pack.pages is None or not pack.pages.separate:
+        return fields
+    for key in ("arch_box", "vendor_box"):
+        box = fields.get(key)
+        if isinstance(box, Mapping) and isinstance(box.get("page"), int) and box.get("file"):
+            fields[key] = {**box, "page": pack.own_page(str(box["file"]), int(box["page"]))}
+    dims = fields.get("dims")
+    if isinstance(dims, Mapping):
+        fields["dims"] = {
+            side: (
+                {**label, "page": pack.own_page(str(label["file"]), int(label["page"]))}
+                if isinstance(label, Mapping)
+                and isinstance(label.get("page"), int)
+                and label.get("file")
+                else label
+            )
+            for side, label in dims.items()
+        }
+    spot = fields.get("arch_box")
+    if isinstance(fields.get("vs_page"), int):
+        if isinstance(spot, Mapping) and isinstance(spot.get("page"), int):
+            fields["vs_page"] = int(spot["page"])
+        else:
+            file, page = pack.pages.file_of(int(fields["vs_page"]))
+            fields["vs_page"] = page if file != pack.main_file else fields["vs_page"]
+    return fields
+
+
+#: What settles a single listed label, by its reason.
+_ROW_NEEDS: Final = {
+    "nothing_to_compare": "the architect's size for it",
+    "ai_unsure": "a printed architect value for it, or a clearer look at both drawings",
+}
 
 
 def _row(one: Verified, why: str | None = None) -> dict[str, Any]:
@@ -1378,7 +1535,7 @@ def _row(one: Verified, why: str | None = None) -> dict[str, Any]:
         "page": page if isinstance(page, int) else None,
         "what": f"{where}: {why or one.reason}",
         "why": one.reason_code or "not_proved",
-        "needs": "the architect's size for it" if one.reason_code == "nothing_to_compare" else "",
+        "needs": _ROW_NEEDS.get(str(one.reason_code), ""),
         "scope": "set",
         # What files the row under the check's product scope (`product_scope.scoped_gaps`).
         "item": about.get("item") or finding.get("item"),
@@ -1388,11 +1545,28 @@ def _row(one: Verified, why: str | None = None) -> dict[str, Any]:
 
 #: How many values a grouped "no architect size" row names before "and N more".
 _NO_SIZE_SHOWN: Final = 6
+#: The listed labels grouped one row per drawing, and what each group's row says about them.
+_GROUP_WORDS: Final = {
+    "nothing_to_compare": (
+        "the architect gives no size for",
+        "the architect's sizes for them",
+        "dimensions with no architect size",
+    ),
+    "ai_unsure": (
+        "not settled from the drawings (no printed architect value found):",
+        "a printed architect value for them, or a clearer look at both drawings",
+        "dimensions not settled from the drawings",
+    ),
+}
+_GROUPED: Final = frozenset(_GROUP_WORDS)
 
 
 def _no_size_row(item_id: str, filed: str, labels: Sequence[Verified]) -> dict[str, Any]:
-    """One Not-compared row for a drawing's labels the architect gives no size for: the page, how
-    many, and the first few values with their labels."""
+    """One Not-compared row for a drawing's labels the architect gives no size for (or the AI was
+    unsure about, with no architect label): the page, how many, and the first few values with
+    their labels."""
+    reason = str(labels[0].reason_code or "nothing_to_compare")
+    said, needs, named = _GROUP_WORDS.get(reason, _GROUP_WORDS["nothing_to_compare"])
     vendor = labels[0].vendor or {}
     page = vendor.get("page")
     shown = ", ".join(
@@ -1404,13 +1578,12 @@ def _no_size_row(item_id: str, filed: str, labels: Sequence[Verified]) -> dict[s
     return {
         "page": page if isinstance(page, int) else None,
         "what": (
-            f"Vendor drawing on page {page}: {len(labels)} {many} the architect gives no size "
-            f"for: {shown}{more}"
+            f"Vendor drawing on page {page}: {len(labels)} {many} {said.rstrip(':')}: {shown}{more}"
         ),
-        "why": "nothing_to_compare",
-        "needs": "the architect's sizes for them",
+        "why": reason,
+        "needs": needs,
         "scope": "set",
-        "item": f"{item_id}: dimensions with no architect size",
+        "item": f"{item_id}: {named}",
         "category": filed,
     }
 
@@ -1424,8 +1597,9 @@ def pack_ink(pack_dir: Path, main_file: str | None = None) -> Any:
         pdf = pack_dir / f"{set_pack.stem(name)}_drawings_only.pdf"
         try:
             x0, y0, x1, y1 = (float(v) for v in label.get("box") or ())
+            page = int(label.get("file_page") or label["page"])  # its own page (#1722)
             crop = set_pack.crop_picture(
-                pdf, int(label["page"]), (x0, y0, x1, y1), 300, cache=pack_dir / set_pack.HIRES
+                pdf, page, (x0, y0, x1, y1), 300, cache=pack_dir / set_pack.HIRES
             )
             return ink_colour(crop.png)
         except Exception:  # noqa: BLE001 - unknown ink: not red

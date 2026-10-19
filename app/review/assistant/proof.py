@@ -55,6 +55,7 @@ __all__ = [
     "RULE_LINE",
     "TWO_READS",
     "ProofGroup",
+    "architect_file",
     "blocks_with_proof",
     "classified",
     "code_proved",
@@ -446,6 +447,16 @@ def should_be_value(finding: Mapping[str, Any]) -> str:
     return _short(finding.get("architect"))
 
 
+def architect_file(finding: Mapping[str, Any]) -> str | None:
+    """The architect's file when it is not the vendor's (separate PDFs, #1722): the name its spot
+    is in, so "page 1" is never read as the vendor's page 1. `None` on GV's combined sheets."""
+    arch, vendor = finding.get("arch_box"), finding.get("vendor_box")
+    if not isinstance(arch, Mapping) or not isinstance(vendor, Mapping):
+        return None
+    name, other = arch.get("file"), vendor.get("file")
+    return str(name) if name and other and name != other else None
+
+
 def governs(finding: Mapping[str, Any]) -> str:
     """What governs the value, named plainly with where it is printed: "architect 3'-1", page 28",
     "GV rule", "brand prototype 24", page 40", "the vendor's own parts (printed 80")"."""
@@ -463,6 +474,9 @@ def governs(finding: Mapping[str, Any]) -> str:
     if isinstance(box, Mapping) and box.get("page"):
         page = box.get("page")
     where = f", page {page}" if page and page != finding.get("page") else ""
+    separate = architect_file(finding)
+    if separate is not None and page:
+        where = f", {separate} page {page}"
     if should_be_value(finding) == architect:
         return f"{words}{where}"
     return f"{words} {architect}{where}"

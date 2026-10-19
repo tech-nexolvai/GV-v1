@@ -5103,7 +5103,7 @@ export interface components {
              * Not Compared
              * @description not_compared: the reason (the list's group).
              */
-            not_compared?: ("architect_disagrees" | "nothing_to_compare" | "different_reference" | "unreadable" | "missing_setting" | "prototype" | "not_proved" | "not_seen" | "field_verify" | "finish_not_comparable" | "no_sheet" | "no_overall" | "string_not_verified" | "internal") | null;
+            not_compared?: ("architect_disagrees" | "nothing_to_compare" | "different_reference" | "unreadable" | "no_spot" | "ai_unsure" | "missing_setting" | "prototype" | "not_proved" | "not_seen" | "field_verify" | "finish_not_comparable" | "no_sheet" | "no_overall" | "string_not_verified" | "architect_outside_gv_rule" | "internal") | null;
             /**
              * Proof
              * @description Clouded items: the check that proved it, in plain words.
@@ -5116,7 +5116,7 @@ export interface components {
             reason?: string | null;
             /**
              * Rule
-             * @description The architect-first rule it falls under (#1619): R4 a difference, R5 the vendor's own contradiction, R6 GV's rule; for not_compared R1 (brand prototype), R3 (architect's drawings disagree), R7 (architect gives nothing), R8 (different reference points), R9 (unreadable), R10 (missing job value or setting).
+             * @description The architect-first rule it falls under (#1619): R4 a difference, R5 the vendor's own contradiction, R6 GV's rule; for not_compared R1 (brand prototype, or the architect's size outside a GV rule), R3 (architect's drawings disagree), R7 (architect gives nothing), R8 (different reference points), R9 (unreadable), R10 (missing job value or setting).
              */
             rule?: string | null;
             /**
@@ -5286,7 +5286,7 @@ export interface components {
         /** @enum {string} */
         ChatIntent: "fact" | "compare" | "whole_set" | "rules" | "arithmetic" | "rounds" | "file" | "summary" | "clarify" | "refuse_action";
         /** @enum {string} */
-        ChatKeepReason: "architect_prints_nothing" | "measures_something_else" | "which_governs" | "unreadable" | "needs_job_value" | "layout" | "vendor_disagrees" | "other";
+        ChatKeepReason: "architect_prints_nothing" | "measures_something_else" | "which_governs" | "unreadable" | "needs_job_value" | "layout" | "vendor_disagrees" | "architect_outside_gv_rule" | "other";
         /** ChatLedgerBoxOut */
         ChatLedgerBoxOut: {
             /** File */

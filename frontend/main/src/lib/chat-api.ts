@@ -491,6 +491,7 @@ export type KeepReason =
   | 'needs_job_value'
   | 'layout'
   | 'vendor_disagrees'
+  | 'architect_outside_gv_rule'
   | 'other';
 
 export interface FindingSettled {
