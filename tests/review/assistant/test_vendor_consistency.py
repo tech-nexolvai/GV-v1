@@ -684,3 +684,50 @@ def test_the_hook_drops_a_grouped_string_codes_geometry_refutes(
     engine._show_dropped = lambda finding_id, reason: dropped.append(finding_id)  # type: ignore[attr-defined]
     vc.add_to_answer(engine)
     assert dropped == ["F7"] and engine.book.live() == []
+
+
+def test_the_line_work_is_read_once_per_set_and_kept_in_its_pack(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reading a page's line work took about a second a page, half a minute of every full check
+    (the pipeline audit, 2026-10-19). It is kept in the set pack, exactly, and the next check of
+    the set reads it from there; the pack's warm-up reads every labelled page."""
+    from types import SimpleNamespace
+
+    from app.review.assistant import dim_labels
+    from app.review.assistant import vendor_consistency as vc
+
+    calls: list[int] = []
+    segments = [((1.5, 2.25), (3.125, 4.0)), ((0.1, 0.2), (0.30000000000000004, 0.4))]
+
+    def parse(_pdf: Path, index: int) -> Any:
+        calls.append(index)
+        return SimpleNamespace(segments=list(segments), weight=0.72)
+
+    monkeypatch.setattr(dim_labels, "_parse", parse)
+    pack, uploads = tmp_path / "pack", tmp_path / "uploads"
+    pack.mkdir()
+    uploads.mkdir()
+    first = vc.line_work(uploads, pack)
+    assert first("set.pdf", 3) == segments and first.weight("set.pdf", 3) == 0.72
+    assert calls == [2]
+    again = vc.line_work(uploads, pack)
+    assert again("set.pdf", 3) == segments and again.weight("set.pdf", 3) == 0.72
+    assert calls == [2]  # read from the pack, exactly
+    (pack / "dims.json").write_text(
+        json.dumps(
+            {
+                "files": ["set.pdf"],
+                "pages": [
+                    {"file": "set.pdf", "page": 3, "labels": [{"id": "D1"}]},
+                    {"file": "set.pdf", "page": 4, "labels": [{"id": "D1"}]},
+                    {"file": "set.pdf", "page": 5, "labels": []},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert vc.warm_line_work(pack, uploads) == 2
+    assert calls == [2, 3]  # page 4 read once; page 3 kept; page 5 has no labels
+    # Without a pack (a question, not a full check), nothing is kept.
+    assert vc.line_work(uploads)("set.pdf", 6) == segments and calls == [2, 3, 5]

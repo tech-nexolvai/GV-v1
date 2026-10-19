@@ -381,7 +381,12 @@ def test_cloud_drawing_letter_and_register_print_the_same_comment_numbers(
     drawing = workspace.files / "drawing.pdf"
     made = make_proof_file(workspace, findings, drawing, context=context, today="2026-10-18")
     out = workspace.files / "package.zip"
-    package = make_package_file(workspace, findings, [(made.name, drawing)], out, context)
+    # GV's own check report is handed over too, and never goes in (orchestrator, 2026-10-19:
+    # nothing internal reaches the vendor): it stays the chat's own file for GV.
+    report = workspace.files / "report.pdf"
+    report.write_bytes(b"%PDF-1.4 internal")
+    handed = [(made.name, drawing), ("sheet - AI check report.pdf", report)]
+    package = make_package_file(workspace, findings, handed, out, context)
     assert package.name == "sheet - GV review package.zip"
     with zipfile.ZipFile(out) as archive:
         names = archive.namelist()
@@ -391,6 +396,7 @@ def test_cloud_drawing_letter_and_register_print_the_same_comment_numbers(
             "sheet - Issue register.xlsx",
         ]
         letter = _text(archive.read(names[1]))
+        assert "check report" not in letter.lower()
         cloud = _text(archive.read(names[0]))
         register = archive.read(names[2])
     # Biggest first is the order (the outlet height, then the drawer); the numbers are stable.

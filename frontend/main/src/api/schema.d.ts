@@ -101,6 +101,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/chats/{chat_id}/live": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A running full check's live state, in one call
+         * @description #1710: the whole live card now (the drawings, the phase with its counts, the findings code
+         *     has decided, the tally, stopping), for a page that reconnects mid-run; then follow
+         *     `GET /chats/{chat_id}/messages/{message_id}/events` for the changes. Not running: `running`
+         *     false and `live` null (the stored answer has the result).
+         */
+        get: operations["read_live_api_v1_chats__chat_id__live_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/chats/{chat_id}/messages": {
         parameters: {
             query?: never;
@@ -5430,6 +5453,292 @@ export interface components {
              */
             package_name?: string | null;
         };
+        /** ChatLiveCountsOut */
+        ChatLiveCountsOut: {
+            /**
+             * Drawings Done
+             * @description Drawings compared (answered or failed); null before the list.
+             */
+            drawings_done?: number | null;
+            /**
+             * Drawings Total
+             * @description Drawings to compare (skipped ones left out).
+             */
+            drawings_total?: number | null;
+            /**
+             * Files Made
+             * @default 0
+             */
+            files_made: number;
+            /**
+             * Second Looks Done
+             * @default 0
+             */
+            second_looks_done: number;
+            /**
+             * Second Looks Total
+             * @default 0
+             */
+            second_looks_total: number;
+        };
+        /**
+         * ChatLiveDrawingOut
+         * @description One vendor drawing of the work list as a live tile (`check_drawings`, `check_drawing`).
+         */
+        ChatLiveDrawingOut: {
+            /**
+             * Area
+             * @description The area or sheet name (page map).
+             */
+            area?: string | null;
+            /**
+             * Id
+             * @description The drawing's id, `p23.v1` (as in the `work_items` block).
+             */
+            id: string;
+            /** Page */
+            page: number;
+            /**
+             * Reason
+             * @description Why it failed or was skipped, in plain words.
+             */
+            reason?: string | null;
+            /** Round */
+            round?: number | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "waiting" | "comparing" | "answered" | "failed" | "skipped";
+        };
+        /**
+         * ChatLiveFindingOut
+         * @description One finding as soon as code DECIDED it (`check_finding`, sent again when it changes).
+         *     Wrong only when proved (the cloud drawing's own rule); a candidate waiting for the blind
+         *     second look is only counted (`ChatLiveTallyOut.waiting_second_look`).
+         */
+        ChatLiveFindingOut: {
+            /** Architect */
+            architect?: string | null;
+            /** Area */
+            area?: string | null;
+            /**
+             * Final
+             * @description Decided for good (the final list). Right and Not compared may still move between each other before; a shown Wrong stays Wrong.
+             * @default false
+             */
+            final: boolean;
+            /**
+             * Id
+             * @description The finding's id (`F12`) once recorded in the answer.
+             */
+            id?: string | null;
+            impact?: components["schemas"]["ChatLiveImpactOut"] | null;
+            /**
+             * Item
+             * @default
+             */
+            item: string;
+            /**
+             * Key
+             * @description The row's live key; never changes (later events update it).
+             */
+            key: string;
+            /**
+             * Needs
+             * @description Not compared: what would settle it.
+             */
+            needs?: string | null;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "wrong" | "right" | "not_compared";
+            /** Page */
+            page?: number | null;
+            /**
+             * Previous
+             * @description Its outcome before, when it changed.
+             */
+            previous?: ("wrong" | "right" | "not_compared") | null;
+            /**
+             * Product
+             * @description The product id the item is filed under.
+             * @default other
+             */
+            product: string;
+            /**
+             * Proved By
+             * @description A Wrong only: code alone, or code and the blind second look ('checked twice').
+             */
+            proved_by?: ("code" | "checked_twice") | null;
+            /**
+             * Reason
+             * @description Not compared: why, in plain words.
+             */
+            reason?: string | null;
+            /**
+             * Removed
+             * @description No longer in the answer (folded into another, or left out).
+             * @default false
+             */
+            removed: boolean;
+            /**
+             * Same As
+             * @description A Wrong that is the same item as the row `same_as`: not counted, not shown (the final list keeps the item once).
+             */
+            same_as?: string | null;
+            /**
+             * Should Be
+             * @description What it should be (green).
+             */
+            should_be?: string | null;
+            /**
+             * Vendor
+             * @description The vendor's value (red when Wrong).
+             */
+            vendor?: string | null;
+        };
+        /** ChatLiveImpactOut */
+        ChatLiveImpactOut: {
+            /** Score */
+            score: number;
+            /** Why */
+            why: string;
+        };
+        /**
+         * ChatLiveOut
+         * @description `GET /chats/{chat_id}/live`: the running full check's live state, or not running.
+         */
+        ChatLiveOut: {
+            /** @description null when nothing runs, or the running message is a question (no live card). */
+            live?: components["schemas"]["ChatLiveStateOut"] | null;
+            /**
+             * Message Id
+             * @description The answer being written (follow its events).
+             */
+            message_id?: string | null;
+            /** Running */
+            running: boolean;
+        };
+        /**
+         * ChatLivePhaseOut
+         * @description What the full check is doing now, in plain phases with counts (`check_phase`).
+         */
+        ChatLivePhaseOut: {
+            /**
+             * Done
+             * @description How many of `total` are done.
+             */
+            done?: number | null;
+            /**
+             * Phase
+             * @description getting_ready: the drawing set's pack (labels, page map) and the work list; comparing: the drawings (n of m); double_checking: code's own checks, code verifies the answers, then the blind second looks (n of m); making_files: n of 5 files; done: the answer is stored.
+             * @enum {string}
+             */
+            phase: "getting_ready" | "comparing" | "double_checking" | "making_files" | "done";
+            /**
+             * Phase Started At
+             * Format: date-time
+             */
+            phase_started_at: string;
+            /**
+             * Started At
+             * Format: date-time
+             * @description When the check started (the elapsed clock).
+             */
+            started_at: string;
+            /**
+             * Step
+             * @description Within double_checking: code_checks (code's own checks of the whole set, no count), verifying (code checks each answered drawing), second_looks, final_checks (no count); `stopped` on a done check that was stopped.
+             */
+            step?: ("code_checks" | "verifying" | "second_looks" | "final_checks" | "stopped") | null;
+            /**
+             * Stopping
+             * @description Stop was pressed (`check_stopping`).
+             * @default false
+             */
+            stopping: boolean;
+            /**
+             * Total
+             * @description null: no count for this phase.
+             */
+            total?: number | null;
+            /**
+             * Unit
+             * @description What `done` and `total` count (pages: the roster check).
+             */
+            unit?: ("drawings" | "pages" | "looks" | "files") | null;
+        };
+        /**
+         * ChatLiveStateOut
+         * @description A running full check's whole live state, in one call (a page that reconnects).
+         */
+        ChatLiveStateOut: {
+            counts: components["schemas"]["ChatLiveCountsOut"];
+            /** Drawings */
+            drawings: components["schemas"]["ChatLiveDrawingOut"][];
+            /**
+             * Findings
+             * @description Every decided finding so far (removed ones left out).
+             */
+            findings: components["schemas"]["ChatLiveFindingOut"][];
+            /**
+             * Mode
+             * @description simple: drawings, verify and second looks; roster: pages, fewer events.
+             * @enum {string}
+             */
+            mode: "simple" | "roster";
+            phase: components["schemas"]["ChatLivePhaseOut"];
+            /**
+             * Service
+             * @description The AI service stopped every call (a refused key, no payment, not reachable): its plain reason.
+             */
+            service?: string | null;
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            stopping?: components["schemas"]["ChatLiveStoppingOut"] | null;
+            tally: components["schemas"]["ChatLiveTallyOut"];
+            /**
+             * V
+             * @description The live events' and this state's version (1).
+             */
+            v: number;
+        };
+        /**
+         * ChatLiveStoppingOut
+         * @description After Stop (`check_stopping`, sent again as drawings finish): nothing new starts.
+         */
+        ChatLiveStoppingOut: {
+            /**
+             * In Flight
+             * @description Drawings being compared now: they finish, kept.
+             */
+            in_flight: number;
+            /**
+             * Not Started
+             * @description Drawings that will not be compared.
+             */
+            not_started: number;
+        };
+        /**
+         * ChatLiveTallyOut
+         * @description Found so far (`check_tally`): proved Wrongs only, and the differences waiting for the
+         *     blind second look (they become Wrong only if it agrees).
+         */
+        ChatLiveTallyOut: {
+            /** Not Compared */
+            not_compared: number;
+            /** Right */
+            right: number;
+            /** Waiting Second Look */
+            waiting_second_look: number;
+            /** Wrong */
+            wrong: number;
+        };
         /**
          * ChatMessageIn
          * @description One message from the reviewer, with the model, effort and thinking they picked.
@@ -5450,6 +5759,12 @@ export interface components {
              * @description The simple full check only: this run's compare call effort, for every drawing.
              */
             compare_effort?: ("low" | "medium" | "high" | "xhigh" | "max") | null;
+            /**
+             * Compare Missing
+             * @description #1710, with `replay` ('Compare them again'): the drawings that run has no answer for (failed, stopped, never started) are compared now, and the blind looks it could not make are made now; every saved answer and look is used again at $0, so the new answer is the whole result.
+             * @default false
+             */
+            compare_missing: boolean;
             /**
              * Compare Model
              * @description The simple full check only (#1665): this run's compare call model, for every drawing (the hard ones too); none: the settings' (`GV_ASSISTANT_SIMPLE_COMPARE_MODEL`).
@@ -5608,6 +5923,8 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** @description #1710: while a full check runs, its live state (drawings, phase, decided findings, tally), so a reloaded page draws the live card at once. */
+            live?: components["schemas"]["ChatLiveStateOut"] | null;
             /** Messages */
             messages: components["schemas"]["ChatMessageOut"][];
             /**
@@ -6202,16 +6519,55 @@ export interface components {
              */
             created_at: string;
             /**
+             * Drawings Done
+             * @description #1710: while a full check runs: drawings compared so far.
+             */
+            drawings_done?: number | null;
+            /**
+             * Drawings Total
+             * @description #1710: while a full check runs: drawings to compare.
+             */
+            drawings_total?: number | null;
+            /**
              * Id
              * Format: uuid
              */
             id: string;
             /** Last Message At */
             last_message_at: string | null;
+            /**
+             * Mode
+             * @description #1710: the newest question's mode: a full check or a typed question; null on questions stored before it was kept.
+             */
+            mode?: ("chat" | "full_check") | null;
+            /** @description #1710: the newest full check's review result (its package made); null otherwise. */
+            review_result?: components["schemas"]["ChatSummaryReviewOut"] | null;
+            /**
+             * Running
+             * @description #1710: a message is being answered now.
+             * @default false
+             */
+            running: boolean;
             /** Title */
             title: string | null;
             /** Turns */
             turns: number;
+        };
+        /**
+         * ChatSummaryReviewOut
+         * @description A chat's newest full check's review result, for the sidebar (#1710).
+         */
+        ChatSummaryReviewOut: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "approved" | "approved_as_noted" | "revise_resubmit" | "rejected" | "not_for_sending";
+            /**
+             * Words
+             * @description "Revise and resubmit", "Check incomplete: not for sending", …
+             */
+            words: string;
         };
         /** ChatTaskOut */
         ChatTaskOut: {
@@ -12920,6 +13276,37 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_live_api_v1_chats__chat_id__live_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                chat_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatLiveOut"];
+                };
             };
             /** @description Validation Error */
             422: {
