@@ -1539,6 +1539,8 @@ class ChatEngine:
             return tools.str_replace(raw, step)
         if name == "verify_value":
             return tools.verify_value(raw, step)
+        if name == "read_number":
+            return tools.read_number(raw, step)
         if name == "measure_on_drawing":
             return tools.measure_on_drawing(raw, step)
         if name == "drawing_facts":
