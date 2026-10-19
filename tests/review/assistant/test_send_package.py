@@ -278,6 +278,51 @@ def test_comment_numbers_stay_with_the_item_across_checks() -> None:
     assert comment_numbers([first, second]) == found
 
 
+def test_a_comment_number_names_one_item_across_checks() -> None:
+    """The pipeline audit (2026-10-19): a layout finding of an early check, drawn round the whole
+    elevation, joined every item on it, so one number named the fridge outlet in one check and
+    the J-box in another. Each item keeps its own number; the layout keeps its own."""
+    now = datetime(2026, 10, 18, tzinfo=UTC)
+    whole = {"page": 23, "x0": 300.0, "y0": 50.0, "x1": 900.0, "y1": 400.0}
+
+    def wrong(fid: str, item: str, spot: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": fid,
+            "item": item,
+            "page": 23,
+            "status": "different",
+            "round": 1,
+            "vendor": '16"',
+            "architect": '14"',
+            "category": "cabinet",
+            "source": "architect",
+            "vendor_box": spot,
+        }
+
+    def spot(x: float) -> dict[str, Any]:
+        return {"page": 23, "x0": x, "y0": 300.0, "x1": x + 30, "y1": 310.0}
+
+    layout = _answer([wrong("L1", "Layout: drawers and uppers", whole)], now)
+    first = _answer(
+        [wrong("F1", "Fridge outlet to wall", spot(700)), wrong("F2", "Floor to J-box", spot(400))],
+        now + timedelta(days=1),
+    )
+    second = _answer(
+        [
+            wrong("G1", "Fridge outlet CL to wall", spot(701)),
+            wrong("G2", "J-box height", spot(402)),
+        ],
+        now + timedelta(days=2),
+    )
+    found = comment_numbers([layout, first, second])
+    number = {
+        fid: found[(str(a.message_id), fid)]
+        for a, fid in ((layout, "L1"), (first, "F1"), (first, "F2"), (second, "G1"), (second, "G2"))
+    }
+    assert number["G1"] == number["F1"] and number["G2"] == number["F2"]
+    assert len({number["L1"], number["F1"], number["F2"]}) == 3
+
+
 def test_comment_labels_of_one_check_and_an_agreed_item() -> None:
     agreed = _decision(decision={"decision": "agree", "by": "R"})
     labels = comment_labels([_second(), _proved(), agreed])
