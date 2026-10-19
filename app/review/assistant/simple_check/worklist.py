@@ -17,6 +17,12 @@ the set pack alone ($0, no PDF opened, no picture drawn):
   check skipped, a mark too small to be a drawing, a drawing with no heading saying whose it is, a
   vendor drawing whose area has no architect drawing, an architect drawing of an area the vendor did
   not submit, a page of another upload. Nothing is skipped for money.
+- **Separate files** (#1722): a file whose drawings took their role from its upload (the architect's
+  own PDF, #1719) is numbered after the vendor's file (`set_pages`: its page 1 is set page 6 after a
+  5-page vendor file), so its drawings and labels have ids of their own (`p6.a1`, `p6.D3`). Each
+  `Drawing` keeps its file and its own page (`file_page`) for its pictures. Its architect drawings
+  are the candidates a plain vendor drawing (one whole page, no GV area) is paired with
+  (`_pair_across`).
 - **Every page is said to be covered or skipped** (`WorkList.pages`); `uncovered` lists any page with
   a drawing that no item covers and no reason explains (a test holds it empty on a real set).
 - **Hard items** (no labels on the vendor drawing, an architect drawing with no labels, a very dense
@@ -50,6 +56,7 @@ from app.review.assistant.simple_check.schema import (
     WorkList,
     label_ref,
 )
+from app.review.assistant.simple_check.set_pages import set_pages
 
 __all__ = [
     "DENSE_LABELS",
@@ -172,6 +179,10 @@ class _Half:
     box: Box
     labels: list[Mapping[str, Any]] = field(default_factory=list)
     ref: str = ""
+    file_page: int | None = None
+    """The page in its own file, when `page` is a set page of a separate file (#1722)."""
+    from_upload: bool = False
+    """Its role came from its upload (a separate plain file, #1719): no GV area, no heading."""
 
 
 def _assign_labels(
@@ -390,9 +401,11 @@ def worklist_from(
     def skip(page: int, reason: str, drawing: str | None = None) -> None:
         skipped.append(Skipped(file=file, page=page, drawing=drawing, reason=reason))
 
-    # Another upload's pages: one file per work list (label ids name pages, not files).
+    pages = set_pages(page_map, file)
+    # Another upload's pages: one file per work list (label ids name pages, not files), except a
+    # separate file read by its upload, numbered after the vendor's (#1722).
     for entry in entries:
-        if str(entry.get("file")) != file and entry.get("halves"):
+        if not pages.joined(str(entry.get("file"))) and entry.get("halves"):
             skipped.append(
                 Skipped(
                     file=str(entry.get("file")),
@@ -404,13 +417,39 @@ def worklist_from(
     drawings: dict[str, Drawing] = {}
     halves_by_area: dict[str | None, list[_Half]] = {}
     vendor_halves: list[_Half] = []
-    for entry in mine:
-        page = int(entry["page"])
-        if entry.get("skip"):
+    across: list[_Half] = []
+    """Architect drawings a plain vendor drawing may be paired with (#1722)."""
+    separate_entries = sorted(
+        (e for e in entries if str(e.get("file")) != file and pages.joined(str(e.get("file")))),
+        key=lambda e: pages.to_set(str(e.get("file")), int(e["page"])),
+    )
+    for entry in [*mine, *separate_entries]:
+        entry_file = str(entry.get("file"))
+        own = int(entry["page"])
+        page = pages.to_set(entry_file, own)
+        separate = entry_file != file
+        if separate:
+            # A separate file's page: only its architect drawings are read; its own skips are
+            # said with its file and its own page.
+            if entry.get("skip") or not any(
+                isinstance(h, Mapping) and h.get("role") == "architect"
+                for h in entry.get("halves") or []
+            ):
+                skipped.append(
+                    Skipped(
+                        file=entry_file,
+                        page=own,
+                        reason=str(entry.get("skip") or DIVIDER_NOTE),
+                    )
+                )
+                continue
+        elif entry.get("skip"):
             skip(page, str(entry["skip"]))
             cover[page] = PageCover(page=page, how="skipped", reason=str(entry["skip"]))
             continue
         raw_halves = [h for h in entry.get("halves") or [] if isinstance(h, Mapping)]
+        if separate:
+            raw_halves = [h for h in raw_halves if h.get("role") == "architect"]
         if not raw_halves:
             skip(page, DIVIDER_NOTE)
             cover[page] = PageCover(page=page, how="skipped", reason=DIVIDER_NOTE)
@@ -425,13 +464,15 @@ def worklist_from(
                 continue
             letter = _ROLE_LETTER.get(role)
             half = _Half(
-                file=file,
+                file=entry_file,
                 page=page,
                 index=index,
                 role=role,
                 round=raw.get("round") if isinstance(raw.get("round"), int) else None,
                 heading=_plain(raw.get("heading")) or None,
                 box=box,
+                file_page=own if separate else None,
+                from_upload=bool(raw.get("from_upload")),
             )
             halves.append(half)
             if box[2] - box[0] < MIN_DRAWING_PT or box[3] - box[1] < MIN_DRAWING_PT:
@@ -455,14 +496,14 @@ def worklist_from(
                 counts[letter] = counts.get(letter, 0) + 1
                 half.ref = f"p{page}.{letter}{counts[letter]}"
         _vendor_ids(page, [h for h in halves if h.role == "vendor"])
-        dims_page = dims_pages.get((file, page))
+        dims_page = dims_pages.get((entry_file, own))
         left = _assign_labels(
             [h for h in halves if h.ref],
             [lb for lb in (dims_page or {}).get("labels") or [] if isinstance(lb, Mapping)],
         )
         if left:
             _log.debug("simple check work list: p%d has %d labels on no drawing", page, len(left))
-        key = _area_key(entry, known)
+        key = None if separate else _area_key(entry, known)
         for half in halves:
             if not half.ref:
                 continue
@@ -475,13 +516,14 @@ def worklist_from(
                 x1 + _MARGIN_PT,
                 y1 + _MARGIN_PT,
             )
-            tags, printed = _drawing_notes(notes_pages.get((file, page)), half)
+            tags, printed = _drawing_notes(notes_pages.get((entry_file, own)), half)
             titles = tuple(t for t in (half.heading or "", *printed) if t and _TITLE.search(t))
-            in_per_pt, note = _drawing_scale(scales_pages.get((file, page)), dims_page, half)
+            in_per_pt, note = _drawing_scale(scales_pages.get((entry_file, own)), dims_page, half)
             drawing = Drawing(
                 ref=half.ref,
-                file=file,
+                file=entry_file,
                 page=page,
+                file_page=half.file_page,
                 half=half.index,
                 role=half.role,  # type: ignore[arg-type]
                 round=half.round,
@@ -497,6 +539,10 @@ def worklist_from(
                 detail=any(_DETAIL.search(t) for t in titles),
             )
             drawings[half.ref] = drawing
+            if separate or (half.from_upload and half.role == "architect"):
+                across.append(half)
+            if separate:
+                continue
             halves_by_area.setdefault(key, []).append(half)
             if half.role == "vendor":
                 vendor_halves.append(half)
@@ -520,6 +566,11 @@ def worklist_from(
         architect = _governing_first(
             [drawings[h.ref] for h in [*same_area, *paired] if h.role == "architect"], half.page
         )
+        pairing: str | None = None
+        if not architect and half.from_upload:
+            # A plain vendor drawing (a separate file, no GV area): paired across the set (#1723).
+            chosen, pairing = _pair_across(drawings[half.ref], [drawings[h.ref] for h in across])
+            architect = tuple(chosen)
         reference = tuple(
             drawings[h.ref] for h in same_area if h.role == "brand_prototype" and h.ref
         )
@@ -527,8 +578,11 @@ def worklist_from(
         if not architect:
             skip(
                 half.page,
-                "no architect drawing for this area in the set, so there is nothing to compare "
-                "it with (code)",
+                pairing
+                or (
+                    "no architect drawing for this area in the set, so there is nothing to "
+                    "compare it with (code)"
+                ),
                 half.ref,
             )
             continue
@@ -588,6 +642,7 @@ def worklist_from(
                 products=products,
                 architect_only_tags=tuple(t for t in only_tags if t),
                 hard=tuple(hard),
+                paired_by=pairing,
             )
         )
         for drawing in architect:
@@ -599,11 +654,18 @@ def worklist_from(
     looked = {d.ref for item in items for d in (*item.architect, *item.reference)}
     for ref, drawing in drawings.items():
         if drawing.role != "vendor" and ref not in looked:
-            skip(
-                drawing.page,
-                f"the {drawing.role.replace('_', ' ')}'s drawing of an area with no vendor drawing "
-                "in this set: the vendor did not submit it (code)",
-                ref,
+            skipped.append(
+                Skipped(
+                    file=drawing.file,
+                    page=drawing.file_page or drawing.page,
+                    drawing=ref,
+                    reason=(
+                        f"the {drawing.role.replace('_', ' ')}'s drawing of an area with no vendor "
+                        "drawing in this set: the vendor did not submit it (code)"
+                        if drawing.file_page is None
+                        else "the architect's drawing no vendor drawing was paired with (code)"
+                    ),
+                )
             )
 
     on_page: dict[int, list[str]] = {}
@@ -636,6 +698,19 @@ def worklist_from(
         skipped=tuple(skipped),
         pages=tuple(cover[p] for p in sorted(cover)),
         uncovered=tuple(uncovered),
+    )
+
+
+def _pair_across(
+    vendor: Drawing, candidates: Sequence[Drawing]
+) -> tuple[list[Drawing], str | None]:
+    """The architect drawing a plain vendor drawing is compared with, and how code chose it; or
+    none and why. Separate files are paired automatically in #1723; until then none is chosen."""
+    if not candidates:
+        return [], None
+    return [], (
+        "a vendor drawing of a separate file: code does not pair it with the architect's file "
+        "yet, so it is not compared (code)"
     )
 
 

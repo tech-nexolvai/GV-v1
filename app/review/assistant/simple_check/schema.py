@@ -262,6 +262,14 @@ class Drawing(_Frozen):
     """The printed scale note beside it (`1/2" = 1'-0"`), when there is one."""
     detail: bool = False
     """Its title says detail, section or enlarged (governs over a plan or elevation, R5)."""
+    file_page: int | None = None
+    """Its page in its own file when `page` is a set page of a separate file (#1722: a separate
+    architect file is numbered after the vendor's); `None`: `page` is its own page."""
+
+    @property
+    def own_page(self) -> int:
+        """The page of `file` it is on (what its pictures are cut from)."""
+        return self.file_page or self.page
 
 
 class WorkItem(_Frozen):
@@ -292,6 +300,9 @@ class WorkItem(_Frozen):
     """Tags printed on the area's architect drawing and not on its vendor drawing (`notes.json`)."""
     hard: tuple[str, ...] = ()
     """Why this item goes to the stronger model (empty: the default model)."""
+    paired_by: str | None = None
+    """How code paired a vendor drawing of a separate file with its architect drawing (#1723);
+    `None` for GV's combined sheets (the same page or GV's typed area)."""
 
     @property
     def vendor_refs(self) -> tuple[str, ...]:
@@ -521,6 +532,12 @@ class Picture(_Frozen):
     """`whole`, `overview`, or `tile 1 of 2`."""
     labels: tuple[str, ...] = ()
     """The label ids marked on it."""
+    file_page: int | None = None
+    """Its page in its own file when `page` is a separate file's set page (#1722)."""
+
+    @property
+    def own_page(self) -> int:
+        return self.file_page or self.page
 
 
 class CompareOutcome(_Frozen):
