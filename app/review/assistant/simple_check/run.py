@@ -97,6 +97,14 @@ PACK_WAIT_SECONDS: Final = 1800.0
 _PACK_POLL_SECONDS: Final = 2.0
 #: The words a pilot's left-out drawings are skipped with (`_scope_and_pilot`).
 _PILOT: Final = "a pilot run compares only the first"
+#: The next step of a check that compared no drawing at all.
+NOTHING_NEXT: Final = "Next: nothing can be sent to the vendor until the drawings are compared."
+#: Code's summary lines that read as a finished comparison: never printed when no drawing was
+#: compared (a $0 run on plain CAD files, 2026-10-19, printed "Checked 6 of 6 pages" and "Every
+#: item could be compared." next to "Nothing was compared").
+_AS_IF_CHECKED: Final = re.compile(
+    r"^(?:Checked |Every item could be compared\.|No wrong value was proved by code so far\.)"
+)
 #: The next step of a check that did not finish: never "send it to the vendor".
 NOT_FINISHED_NEXT: Final = (
     "Next: finish the check (compare the drawings left) before anything is sent to the vendor."
@@ -1192,15 +1200,29 @@ class _Run:
             or not self.compared
             or bool(self.blind_failed)
         )
-        text = "\n".join(
-            (NOT_FINISHED_NEXT if unfinished and line.startswith("Next:") else line)
-            for line in text.splitlines()
-            if line.strip() != CODE_SUMMARY_NOTE
-        ).strip()
+        nothing_ran = why is not None or (not self.compared and not failed)
+        kept: list[str] = []
+        for line in text.splitlines():
+            if line.strip() == CODE_SUMMARY_NOTE:
+                continue
+            if nothing_ran and _AS_IF_CHECKED.match(line.strip()):
+                continue
+            if nothing_ran and not engine.book.live() and re.match(r"^\d+ wrong ", line):
+                continue  # "0 wrong, 0 right, 0 not compared": nothing was looked at
+            if line.startswith("Next:"):
+                line = NOTHING_NEXT if nothing_ran else (NOT_FINISHED_NEXT if unfinished else line)
+            kept.append(line)
+        text = "\n".join(kept).strip()
         lines = [text]
         answered = sum(1 for item in self.compared if item.id not in {i.id for i in failed})
-        if why is not None:
-            lines.append(f"**The check could not run: {why}. Nothing was compared.**")
+        if nothing_ran:
+            # One honest sentence, first: nothing above it reads as a finished check.
+            honest = (
+                f"**The check could not run: {why}. Nothing was compared.**"
+                if why is not None
+                else f"**Nothing was compared: {self._nothing_compared()}.**"
+            )
+            lines.insert(0, honest)
         elif failed:
             names = ", ".join(
                 f"{item.id} ({(self.outcomes[item.id].reason if item.id in self.outcomes else None) or 'not reached'})"
@@ -1211,9 +1233,6 @@ class _Run:
                 f"**Check incomplete: {len(failed)} of {len(self.compared)} drawings could not be "
                 f"compared: {names}{more}. Not for sending until they are.**"
             )
-        elif not self.compared:
-            nothing = self._nothing_compared()
-            lines.append(f"**Nothing was compared: {nothing}.**")
         elif not pilot:
             lines.append(f"Every drawing in the work list was compared ({answered} drawings).")
         if stopped == "cancelled" and why is None:
