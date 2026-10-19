@@ -680,6 +680,25 @@ class _Run:
         after.update(outside)
         return [(after.get(id(v), v), item) for v, item in verified]
 
+    def _filed(self, row: Mapping[str, Any]) -> str | None:
+        """The product a Not-compared row of this run is filed under (`refiled`, as a finding),
+        or `None` when it is another product's."""
+        engine = self.engine
+        scope = getattr(engine, "product_scope", None)
+        if scope is None:
+            return str(row.get("category") or "other")
+        page = row.get("page")
+        words_of = getattr(engine, "page_words", None)
+        words: Any = ""
+        if callable(words_of) and isinstance(page, int):
+            words = lambda: words_of(page)
+        fields = {
+            "category": row.get("category") or "other",
+            "item": row.get("item") or "",
+            "created_by": CREATED_BY,
+        }
+        return refiled(fields, scope, words)
+
     def _scoped(self, finding: Mapping[str, Any]) -> bool:
         """Whether an item of this run is of a product in the check's scope, as the finding book
         files it (`product_scope.refiled`: its product, else its name's words, then its page's)."""
@@ -787,9 +806,23 @@ class _Run:
                     self.not_listed += 1
                 else:
                     self.rows.append(_row(one, "the answer's item limit was reached"))
-        for one, _item in verified:
-            if one.outcome == "listed":
-                self.rows.append(_row(one))
+        # The labels the architect gives no size for, one row per drawing (and product), not one
+        # per label: a set has hundreds (the app test: 1,186 rows beside 46 items on screen).
+        no_size: dict[tuple[str, str], list[Verified]] = {}
+        for one, item in verified:
+            if one.outcome != "listed":
+                continue
+            row = _row(one)
+            if one.reason_code != "nothing_to_compare" or not one.vendor:
+                self.rows.append(row)
+                continue
+            filed = self._filed(row)
+            if filed is None:
+                self.out_of_scope += 1  # another product's label: never listed
+                continue
+            no_size.setdefault((item.id, filed), []).append(one)
+        for (item_id, filed), labels in no_size.items():
+            self.rows.append(_no_size_row(item_id, filed, labels))
         engine.extra_gaps = list(self.rows)
 
     def _add(self, one: Verified) -> bool | None:
@@ -1143,6 +1176,35 @@ def _row(one: Verified, why: str | None = None) -> dict[str, Any]:
         # What files the row under the check's product scope (`product_scope.scoped_gaps`).
         "item": about.get("item") or finding.get("item"),
         "category": about.get("category") or finding.get("category"),
+    }
+
+
+#: How many values a grouped "no architect size" row names before "and N more".
+_NO_SIZE_SHOWN: Final = 6
+
+
+def _no_size_row(item_id: str, filed: str, labels: Sequence[Verified]) -> dict[str, Any]:
+    """One Not-compared row for a drawing's labels the architect gives no size for: the page, how
+    many, and the first few values with their labels."""
+    vendor = labels[0].vendor or {}
+    page = vendor.get("page")
+    shown = ", ".join(
+        f"{(one.vendor or {}).get('text')} ({(one.vendor or {}).get('id')})"
+        for one in labels[:_NO_SIZE_SHOWN]
+    )
+    more = f" and {len(labels) - _NO_SIZE_SHOWN} more" if len(labels) > _NO_SIZE_SHOWN else ""
+    many = "dimension" if len(labels) == 1 else "dimensions"
+    return {
+        "page": page if isinstance(page, int) else None,
+        "what": (
+            f"Vendor drawing on page {page}: {len(labels)} {many} the architect gives no size "
+            f"for: {shown}{more}"
+        ),
+        "why": "nothing_to_compare",
+        "needs": "the architect's sizes for them",
+        "scope": "set",
+        "item": f"{item_id}: dimensions with no architect size",
+        "category": filed,
     }
 
 

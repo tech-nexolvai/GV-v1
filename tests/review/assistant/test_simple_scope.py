@@ -265,9 +265,12 @@ def test_a_cabinet_check_shows_and_pays_for_no_countertop_item(
     words = [f"{row.item} {row.why}" for row in rows]
     assert not any("item limit" in line for line in words)
     assert not any("label D1)" in line and "page 2" in line for line in words)
-    # The countertop's splash (no architect size) is not listed; the cabinet's toe kick is.
-    assert not any("label D5)" in line for line in words)
-    assert any("label D4)" in line for line in words)
+    # The countertop's splash (no architect size) is not listed; the cabinet's toe kick is, in
+    # one row for its drawing (not one row per label).
+    assert not any("(D5)" in line for line in words)
+    assert any(
+        "1 dimension the architect gives no size for" in line and "(D4)" in line for line in words
+    )
     trust = next(b["trust"] for b in outcome.blocks if b.get("type") == "trust")
     assert trust["product_scope"]["dropped_out_of_scope"] >= 1
 
@@ -280,5 +283,31 @@ def test_all_products_still_look_at_and_list_everything(
     red = next(f for f in _simple(outcome) if f["vendor"] == '45 1/4"')
     assert red["status"] == "different" and red["category"] == "countertop"
     words = [row.item for row in rows]
-    assert any("label D5)" in line for line in words)
-    assert any("label D4)" in line for line in words)
+    assert any("(D5)" in line for line in words)
+    assert any("(D4)" in line for line in words)
+
+
+def test_labels_with_no_architect_size_are_one_row_per_drawing() -> None:
+    """The app test (2026-10-19): the screen said 46 Not compared and the workbook had 1,232 rows,
+    1,175 of them one per label the architect gives no size for. They are one row per drawing."""
+    from app.review.assistant.simple_check import run as run_module
+    from app.review.assistant.simple_check.verify import Verified
+
+    labels = [
+        Verified(
+            f"p23.v1:p23.D{n}",
+            "pair",
+            "listed",
+            "architect gives no size",
+            "nothing_to_compare",
+            vendor={"id": f"D{n}", "page": 23, "text": f'{n}"'},
+        )
+        for n in range(1, 10)
+    ]
+    row = run_module._no_size_row("p23.v1", "cabinet", labels)
+    assert row["what"].startswith(
+        'Vendor drawing on page 23: 9 dimensions the architect gives no size for: 1" (D1), 2" (D2)'
+    )
+    assert row["what"].endswith("and 3 more") and row["category"] == "cabinet"
+    listed = not_compared.gap_rows([row])
+    assert len(listed) == 1 and listed[0].reason == "nothing_to_compare"
