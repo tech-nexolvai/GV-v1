@@ -123,4 +123,12 @@
   max-width: none;
 }
 
+/* #1717: the evidence panel slides in (300 ms) and out (200 ms); under reduced motion it simply appears. */
+@media (prefers-reduced-motion: reduce) {
+  .chat-sheet,
+  .chat-sheet[data-state] {
+    animation-duration: 1ms !important;
+  }
+}
+
 } /* @layer legacy */

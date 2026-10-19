@@ -197,7 +197,7 @@ describe('a saved chat, after a reload', () => {
     expect(download.getAttribute('href')).toBe('/api/v1/chats/c-1/files/f-1');
     expect(download.getAttribute('download')).toBe('markup.pdf');
     expect(within(answer).getByText('PDF · 1.2 MB')).toBeTruthy();
-    expect(answer.querySelector('[data-slot="chat-meta"]')?.textContent).toBe('Claude Opus 5.5 · High effort · $1.72');
+    expect(answer.querySelector('[data-slot="chat-meta"]')?.textContent).toBe('Opus 5.5 · High effort · $1.72');
 
     // Blocks keep their order: the activity row (with the task list after it), the words, then the file and footer.
     const order = [...answer.children].map((child) => child.getAttribute('data-slot') ?? child.firstElementChild?.getAttribute('data-slot'));
@@ -307,7 +307,7 @@ describe('a message streaming in', () => {
       blocks: [{ type: 'thinking', text: 'Reading the vendor pages.', seconds: 12 }, { type: 'step', step: { id: 's1', tool: 'bash_tool', label: 'List the PDFs', command: 'ls', output: 'vendor.pdf', ok: true } }, { type: 'text', text: 'Two items differ.' }],
       files: [{ id: 'f-9', name: 'issues.csv', size: 900, mime: 'text/csv', url: '/api/v1/chats/c-1/files/f-9' }],
     }));
-    expect(answer.querySelector('[data-slot="chat-meta"]')?.textContent).toBe('Claude Opus 5.5 · High effort · $0.64');
+    expect(answer.querySelector('[data-slot="chat-meta"]')?.textContent).toBe('Opus 5.5 · High effort · $0.64');
     expect(answer.querySelector('[data-streaming="true"]')).toBeNull();
     expect(answer.querySelector('[data-slot="chat-working"]')).toBeNull();
     expect(screen.getByRole('button', { name: 'Send message' })).toBeTruthy();

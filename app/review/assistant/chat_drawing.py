@@ -1111,7 +1111,7 @@ def markup_pdf(
 # ---- the check report ----------------------------------------------------------------------------
 
 REPORT_TITLE: Final = "Check report: checked automatically by GV Review"
-#: Under What's wrong (#1569): how the list is ordered, in plain words.
+#: Under Wrong (#1569, #1717): how the list is ordered, in plain words.
 IMPACT_NOTE: Final = (
     "checked items before AI readings only, then what changes fabrication (overall sizes, "
     "cut-outs, heights, missing parts) and the size of the difference; tags and labels last."
@@ -1191,7 +1191,7 @@ def check_report_pdf(
         **summary,
         "Cloud drawing": (
             f"{groups['clouded']} wrong clouded (proved by code), {groups['right']} right, "
-            f"{groups['not_compared']} with nothing to compare (the Not-compared list)"
+            f"{groups['not_compared']} not compared (the Not-compared list)"
         ),
         "The rule": proof.RULE_LINE,
     }
@@ -1220,7 +1220,7 @@ def check_report_pdf(
         summary_count = len(summary)
     sections: list[tuple[str, list[str], list[list[Any]], list[int]]] = [
         (
-            f"What's wrong ({len(wrong)})",
+            f"Wrong ({len(wrong)})",
             ["AI", "Product", "Page", "Item", "Vendor", "Should be", "Proof", "Trust"],
             [
                 [
@@ -1238,7 +1238,7 @@ def check_report_pdf(
             [24, 58, 30, 128, 92, 132, 196, 56],
         ),
         (
-            f"What's right ({len(right)})",
+            f"Right ({len(right)})",
             ["AI", "Product", "Page", "Item", "Value", "Matches"],
             [
                 [
@@ -1257,7 +1257,7 @@ def check_report_pdf(
     if unseen:
         sections.append(
             (
-                f"Nothing to compare ({len(unseen)})",
+                f"Not compared ({len(unseen)})",
                 ["AI", "Product", "Page", "Item", "Value", "Why not compared"],
                 [
                     [
@@ -1292,7 +1292,7 @@ def check_report_pdf(
         )
     for title, header, rows, widths in sections:
         story += [Spacer(1, 10), Paragraph(escape(title), styles["Heading2"])]
-        if rows and title.startswith("What's wrong"):
+        if rows and title.startswith("Wrong ("):
             story.append(p(f"{BIGGEST_FIRST}: {IMPACT_NOTE}", small))
         story.append(table(header, rows, widths) if rows else p("None.", body))
     story += [Spacer(1, 10), Paragraph("Not checked", styles["Heading2"])]

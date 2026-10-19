@@ -306,9 +306,9 @@ describe('model, effort and thinking', () => {
 
 describe('the answer’s words', () => {
   it('meta line: model, effort and cost, under one cent as "<$0.01", with no AI-answer label', () => {
-    expect(footerWords({ model: 'claude-opus-5-5', effort: 'high', cost_usd: '1.72' }, MODELS)).toBe('Claude Opus 5.5 · High effort · $1.72');
-    expect(footerWords({ model: 'claude-opus-5-5', effort: 'xhigh', cost_usd: null }, null)).toBe('Claude Opus 5.5 · Extra high effort');
-    expect(footerWords({ model: 'claude-haiku-5-5', effort: 'low', cost_usd: '0.00' }, null)).toBe('Claude Haiku 5.5 · Low effort · <$0.01');
+    expect(footerWords({ model: 'claude-opus-5-5', effort: 'high', cost_usd: '1.72' }, MODELS)).toBe('Opus 5.5 · High effort · $1.72');
+    expect(footerWords({ model: 'claude-opus-5-5', effort: 'xhigh', cost_usd: null }, null)).toBe('Opus 5.5 · Extra high effort');
+    expect(footerWords({ model: 'claude-haiku-5-5', effort: 'low', cost_usd: '0.00' }, null)).toBe('Haiku 5.5 · Low effort · <$0.01');
     expect(messageCost('0.002')).toBe('<$0.01');
     expect(messageCost('0.01')).toBe('$0.01');
     expect(messageCost('junk')).toBeNull();

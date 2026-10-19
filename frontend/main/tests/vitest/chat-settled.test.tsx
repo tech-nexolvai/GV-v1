@@ -119,21 +119,17 @@ describe('fewer decisions (#1554)', () => {
     expect(line).not.toContain('needs');
   });
 
-  it('shows the same counts in the headline, the cards, the sections and the settled group', () => {
+  it('shows each count once, on its tile, and the settled group counts the final list (#1717)', () => {
     // #1619: the server's groups: the two Wrong items code proved, one Not compared.
     const placed = FINDINGS.map((f) => ({ ...f, proof: { group: f.status === 'check' ? 'not_compared' as const : 'clouded' as const, label: 'Not reviewed: not shown on the architect’s drawings', reason: 'architect gives no size or information for it' } }));
     render(<AssistantMessage message={answer({ findings: placed, resolver: RESOLVER, mode: 'full_check', products: ['countertop'] })} chatId="c-1" models={[OPUS]} messageCapUsd="5.00" fullCheck />);
     const node = screen.getByRole('article', { name: 'Answer' });
     const wrong = FINDINGS.filter((f) => f.status === 'different').length;
     const decide = FINDINGS.filter((f) => f.status === 'check').length;
-    const headline = node.querySelector('[data-slot="chat-summary-headline"]')?.textContent ?? '';
-    expect(headline).toContain(`${wrong} wrong`);
-    expect(headline).toContain(`${decide} not compared`);
-    const card = (kind: string) => node.querySelector(`[data-kpi="${kind}"]`)?.textContent ?? '';
-    expect(card('different')).toContain(String(wrong));
-    expect(card('check')).toContain(String(decide));
-    expect(within(node).getByRole('heading', { name: new RegExp(`^Wrong\\s*${wrong}$`) })).toBeTruthy();
-    expect(within(node).getByRole('button', { name: new RegExp(`^Not compared\\s*${decide}`) })).toBeTruthy();
+    const count = (tab: string) => node.querySelector(`[data-slot="chat-result-tiles"] [data-tab="${tab}"] [data-slot="chat-result-count"]`)?.textContent;
+    expect(count('wrong')).toBe(String(wrong));
+    expect(count('not_compared')).toBe(String(decide));
+    expect(node.querySelector('[data-slot="chat-summary-headline"], [data-kpi]')).toBeNull();
     // The settled group counts the final list too, whatever the block's own numbers say.
     const stale = { ...RESOLVER, before: { wrong: 0, decision: 99, right: 0 }, after: { wrong: 0, decision: 42, right: 0 } };
     render(<AssistantMessage message={answer({ key: 'b', id: 'msg-2', findings: FINDINGS, resolver: stale })} chatId="c-1" models={[OPUS]} messageCapUsd="5.00" />);

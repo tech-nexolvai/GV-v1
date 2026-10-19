@@ -154,7 +154,7 @@ export function FullCheckButton({ summary, onRun, blocked, variant = 'primary', 
  * The cloud drawing's page preview: the page with the first wrong item, drawn from the PDF once the
  * card is on screen (pdf.js loads only then). Until it is drawn, or when it cannot be, a calm icon.
  */
-function CloudPreview({ href, page, total }: { href: string; page: number; total: number | null }) {
+export function CloudPreview({ href, page, total }: { href: string; page: number; total: number | null }) {
   const [state, setState] = useState<{ src: string } | 'icon'>('icon');
   const frame = useRef<HTMLSpanElement>(null);
   useEffect(() => {
