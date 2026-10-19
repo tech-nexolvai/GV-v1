@@ -425,6 +425,8 @@ def sync_uploads(
             # Copied as it is: the readers then refuse it with their own plain reasons.
             item["intake_problem"] = str(refused)
         else:
+            # What the original says about itself, for the set pack's health check.
+            item["intake_facts"] = working.facts
             if working.changed:
                 data = working.data
                 item["working_sha256"] = working.sha256

@@ -100,6 +100,7 @@ from app.review.assistant import hand_labels, ink_labels
 from app.review.assistant import verify_value as vv
 from app.review.assistant.finding_checks import to_inches, units_check
 from app.review.assistant.measure import _pieces
+from extraction.visible_text import ink_picture
 
 __all__ = [
     "LABELS_VERSION",
@@ -213,6 +214,8 @@ def _parse(pdf: Path, page_index: int) -> _Parsed:
     data = pdf.read_bytes()
     colour_rule = vv.combined_sheet(data)  # the colour rule: GV's combined sheets only
     vendor = vv._vendor_page(data, page_index)
+    with import_module("app.review.assistant.chat_drawing").PDFIUM_LOCK:
+        ink = ink_picture(vendor)
     chars: list[Any] = []
     paths: list[Any] = []
     segments: list[Segment] = []
@@ -226,7 +229,7 @@ def _parse(pdf: Path, page_index: int) -> _Parsed:
         size = (abs(corner[0] - start[0]), abs(corner[1] - start[1]))
         for char in page.chars:
             made = vv._char(char, shown, colour_rule=colour_rule)
-            if made is not None and vv._on_page(made.box, size):
+            if made is not None and vv._visible(made.box, size, ink):
                 chars.append(made)
         for item in (*page.curves, *page.lines, *page.rects):
             made_path = vv._path(item, shown, colour_rule=colour_rule)
