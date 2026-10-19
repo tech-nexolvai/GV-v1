@@ -226,12 +226,13 @@ def register_status(finding: Mapping[str, Any], closed: Sequence[str] = ()) -> S
 def comment_labels(
     findings: Sequence[Mapping[str, Any]], numbers: Mapping[str, str] | None = None
 ) -> dict[str, str]:
-    """Each finding's comment number (finding id -> "C-07"): the stable numbers given (from the
-    set's earlier checks, `package_store.numbering`), else this list's own
-    (`job_tracker.comment_numbers` of this one check). Each comment of the list has its own
-    number: one with none (an item the reviewer agreed that was never Wrong) or one sharing its
-    tracker item with a bigger comment of the same list (the same words on another page) gets the
-    next free number, biggest first."""
+    """Each comment's number (finding id -> "C-07"): the stable numbers given (from the set's
+    earlier checks, `package_store.numbering`), else this list's own (`job_tracker.comment_numbers`
+    of this one check). Only the comments (the clouded items) are numbered: a Right or Not-compared
+    finding of a tracked item gets none. Each comment of the list has its own number: one with
+    none (an item the reviewer agreed that was never Wrong) or one sharing its tracker item with a
+    bigger comment of the same list (the same words on another page) gets the next free number,
+    biggest first."""
     tracker = import_module("app.review.assistant.job_tracker")
     if numbers is None:
         from datetime import UTC, datetime
@@ -255,7 +256,10 @@ def comment_labels(
     # Every comment of this list has its own number: one with none, or one whose item the tracker
     # links to an earlier comment of the same list (the same words on another page), gets the next
     # free number, biggest first.
+    # Only the comments carry a number (a Right or Not-compared item of the same tracked item is
+    # never "C-04" on the screen or the drawing).
     given: set[str] = set()
+    kept: dict[str, str] = {}
     for finding in corrections(by_impact(findings)):
         finding_id = str(finding.get("id") or "")
         if not finding_id:
@@ -264,7 +268,8 @@ def comment_labels(
             after += 1
             out[finding_id] = str(tracker.comment_label(after))
         given.add(out[finding_id])
-    return out
+        kept[finding_id] = out[finding_id]
+    return kept
 
 
 def labelled(
