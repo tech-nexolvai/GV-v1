@@ -513,30 +513,31 @@ type Phrase = { one: string; many: (count: number) => string } | { once: string 
 function phraseFor(step: ChatStep): { key: string; phrase: Phrase } {
   switch (step.tool) {
     case 'bash_tool':
-      return { key: 'bash', phrase: { one: 'ran a command', many: (n) => `ran ${n} commands` } };
+      // #1712: plain words for a reviewer, never "commands" (the command itself is under Technical details).
+      return { key: 'bash', phrase: { one: 'read the drawing data', many: (n) => `read the drawing data ${n} times` } };
     case 'view':
       return step.picture_id
-        ? { key: 'picture', phrase: { one: 'viewed a picture', many: (n) => `viewed ${n} pictures` } }
-        : { key: 'read', phrase: { one: 'viewed a file', many: (n) => `viewed ${n} files` } };
+        ? { key: 'picture', phrase: { one: 'looked at a picture', many: (n) => `looked at ${n} pictures` } }
+        : { key: 'read', phrase: { one: 'read a file', many: (n) => `read ${n} files` } };
     case 'create_file':
-      return { key: 'create', phrase: { one: 'created a file', many: (n) => `created ${n} files` } };
+      return { key: 'create', phrase: { one: 'made a file', many: (n) => `made ${n} files` } };
     case 'str_replace':
       return { key: 'edit', phrase: { one: 'edited a file', many: (n) => `edited ${n} files` } };
     case 'present_files':
-      return { key: 'present', phrase: { once: 'presented files' } };
+      return { key: 'present', phrase: { once: 'shared the files' } };
     case 'TaskCreate':
     case 'TaskUpdate':
-      return { key: 'tasks', phrase: { once: 'updated the task list' } };
+      return { key: 'tasks', phrase: { once: 'updated its plan' } };
     case 'Agent':
-      return { key: 'agents', phrase: { one: 'ran an agent', many: (n) => `ran ${n} agents` } };
+      return { key: 'agents', phrase: { one: 'asked a helper', many: (n) => `asked ${n} helpers` } };
     case 'read_under_markup':
       return { key: 'under', phrase: { one: "read under GV's markup", many: (n) => `read under GV's markup ${n} times` } };
     case 'drawing_facts':
-      return { key: 'facts', phrase: { one: "read code's facts", many: (n) => `read code's facts ${n} times` } };
+      return { key: 'facts', phrase: { one: 'read the drawing facts', many: (n) => `read the drawing facts ${n} times` } };
     case 'remember':
       return { key: 'remember', phrase: { one: 'kept a note for this set', many: (n) => `kept ${n} notes for this set` } };
     default:
-      return { key: 'results', phrase: { once: 'read the review results' } };
+      return { key: 'results', phrase: { once: 'read the check results' } };
   }
 }
 
@@ -581,11 +582,11 @@ export function thinkingLine(text: string): string | null {
   return lines.length ? lines[lines.length - 1] : null;
 }
 
-/** "Running 4 agents…" while any helper works, "Ran 4 agents" after. */
+/** "Asking 4 helpers…" while any helper works, "Asked 4 helpers" after. */
 export function agentsWords(step: Pick<ViewStep, 'agents'>, running: boolean): string {
   const count = step.agents?.length ?? 0;
-  const noun = count === 1 ? 'agent' : 'agents';
-  return running ? `Running ${count || ''}${count ? ' ' : ''}${noun}…` : `Ran ${count} ${noun}`;
+  const noun = count === 1 ? 'helper' : 'helpers';
+  return running ? `Asking ${count || ''}${count ? ' ' : ''}${noun}…` : `Asked ${count} ${noun}`;
 }
 
 /** True while an Agent step's helpers are still working. */
@@ -620,12 +621,35 @@ export function previousQuestion(messages: readonly Pick<ViewMessage, 'key' | 'r
 export const CHAT_STARTERS: readonly string[] = [
   'Which items are wrong comparing the vendor and architect drawings?',
   'Summarise every issue, product by product',
-  'Make me a marked-up PDF of the problems',
+  // #1712: one word per meaning: the marked-up PDF is the cloud drawing.
+  'Make a cloud drawing of the problems',
 ];
 
 /** A chat's name: its title (its first question), else "New chat". */
 export function chatTitle(chat: Pick<ChatSummary, 'title'>): string {
   return chat.title?.trim() || 'New chat';
+}
+
+/**
+ * A chat as the sidebar lists it (#1712): a full check is "Full check" with when it started (every
+ * full check's own title is the same long line, so the time tells them apart: the time of day for
+ * today, else the day, "18 Oct"); a question is its own words, the whole width, with no time.
+ */
+export function chatListWords(
+  chat: Pick<ChatSummary, 'title' | 'created_at' | 'last_message_at'>,
+  now: Date = new Date(),
+): { kind: 'check' | 'question'; label: string; when: string } {
+  const title = chatTitle(chat);
+  const kind = /^(?:Full|Continue the full) check\b/.test(title) ? 'check' : 'question';
+  const at = new Date(chat.created_at);
+  let when = '';
+  if (!Number.isNaN(at.getTime())) {
+    const sameDay = at.getFullYear() === now.getFullYear() && at.getMonth() === now.getMonth() && at.getDate() === now.getDate();
+    when = sameDay
+      ? at.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+      : at.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', ...(at.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }) });
+  }
+  return kind === 'check' ? { kind, label: 'Full check', when } : { kind, label: title, when: '' };
 }
 
 /** A model id in words: the server's label, else made from the id ("claude-opus-5-5" → "Claude Opus 5.5"). */

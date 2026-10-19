@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { Plus } from 'lucide-react';
+import { MessageCircle, Plus, ScanSearch } from 'lucide-react';
 
 import { formatRoute } from '@/app/route';
 import { SidebarMenuSub, SidebarMenuSubButton, SidebarMenuSubItem } from '@/components/ui/sidebar';
+import { cn } from '@/lib/utils';
 import type { ChatSummary } from '@/lib/chat-api';
-import { chatTitle } from '@/lib/chat-messages';
+import { chatListWords, chatTitle } from '@/lib/chat-messages';
 
 /** `missing` (#1685): the drawing set itself was not found (404), not merely its list. */
 export type ChatListState = { status: 'loading' } | { status: 'error'; message: string; missing?: boolean } | { status: 'ready'; chats: ChatSummary[] };
@@ -27,7 +28,9 @@ export interface ChatListProps {
  * A drawing set's chats (#1464, #1471), shown in the app's one sidebar under the open set, the way
  * claude.ai shows a project's chats: "New chat" with a plus, then one line per chat (cut with "…"),
  * newest first, the open one highlighted, the first ten and then "Show all". Each chat is a real
- * link, so it can be opened in a new tab.
+ * link, so it can be opened in a new tab. #1712: a full check reads "Full check" with its time, a
+ * question its own words with its day, each with a small icon; no counts (each number has one place,
+ * on the answer).
  */
 export function ChatList({ packageId, activeChatId, state, creating, onNewChat, freshTitles }: ChatListProps) {
   const [showAll, setShowAll] = useState(false);
@@ -57,6 +60,8 @@ export function ChatList({ packageId, activeChatId, state, creating, onNewChat, 
         {shown.map((chat) => {
           const active = chat.id === activeChatId;
           const title = chatTitle(chat);
+          const words = chatListWords(chat);
+          const Icon = words.kind === 'check' ? ScanSearch : MessageCircle;
           const fresh = Boolean(freshTitles?.has(chat.id) && chat.title);
           return (
             <SidebarMenuSubItem key={chat.id}>
@@ -64,17 +69,22 @@ export function ChatList({ packageId, activeChatId, state, creating, onNewChat, 
                 href={formatRoute({ page: 'chat', packageId, chatId: chat.id })}
                 isActive={active}
                 aria-current={active ? 'page' : undefined}
+                // Every full check reads "Full check": its time tells them apart, for screen readers too.
+                aria-label={words.kind === 'check' && words.when ? `Full check, ${words.when}` : undefined}
                 title={title}
                 className="transition-colors duration-150 data-[active=true]:font-medium"
               >
+                <Icon aria-hidden="true" />
                 {/* Keyed by the title, so a title the first message just set mounts afresh and fades in. */}
                 <span
                   key={chat.title ?? ''}
                   data-fresh={fresh ? 'true' : undefined}
-                  className={fresh ? 'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-500' : undefined}
+                  data-kind={words.kind}
+                  className={cn('min-w-0 flex-1 truncate', fresh && 'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-500')}
                 >
-                  {title}
+                  {words.label}
                 </span>
+                {words.when && <span data-slot="chat-list-when" aria-hidden="true" className="num ml-auto shrink-0 text-xs text-muted-foreground">{words.when}</span>}
               </SidebarMenuSubButton>
             </SidebarMenuSubItem>
           );

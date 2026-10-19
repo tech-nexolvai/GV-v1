@@ -96,10 +96,10 @@ describe('fewer decisions (#1554)', () => {
     expect(alsoOnWords({ also_on: null })).toBe('');
   });
 
-  it('lets the stat card labels wrap on a phone instead of cutting "Nothing to compare" short', () => {
+  it('lets the stat card labels wrap on a phone instead of cutting "Not compared" short', () => {
     render(<ResultNumbers counts={{ different: 2, check: 1, same: 0, not_compared: 0, total: 3 } as FindingCounts} coverage={null} accuracy={null} onPick={() => {}} />);
     const labels = [...document.querySelectorAll<HTMLElement>('[data-slot="chat-kpi-label"]')];
-    expect(labels.map((label) => label.textContent)).toEqual(['Wrong', 'Right', 'Nothing to compare']);
+    expect(labels.map((label) => label.textContent)).toEqual(['Wrong', 'Right', 'Not compared']);
     for (const label of labels) {
       expect(label.querySelector('.truncate')).toBeNull();
       expect(label.className).toContain('min-h-[2.5em]');
@@ -128,12 +128,12 @@ describe('fewer decisions (#1554)', () => {
     const decide = FINDINGS.filter((f) => f.status === 'check').length;
     const headline = node.querySelector('[data-slot="chat-summary-headline"]')?.textContent ?? '';
     expect(headline).toContain(`${wrong} wrong`);
-    expect(headline).toContain(`${decide} with nothing to compare`);
+    expect(headline).toContain(`${decide} not compared`);
     const card = (kind: string) => node.querySelector(`[data-kpi="${kind}"]`)?.textContent ?? '';
     expect(card('different')).toContain(String(wrong));
     expect(card('check')).toContain(String(decide));
-    expect(within(node).getByRole('heading', { name: new RegExp(`^What’s wrong\\s*${wrong}$`) })).toBeTruthy();
-    expect(within(node).getByRole('button', { name: new RegExp(`^Nothing to compare\\s*${decide}`) })).toBeTruthy();
+    expect(within(node).getByRole('heading', { name: new RegExp(`^Wrong\\s*${wrong}$`) })).toBeTruthy();
+    expect(within(node).getByRole('button', { name: new RegExp(`^Not compared\\s*${decide}`) })).toBeTruthy();
     // The settled group counts the final list too, whatever the block's own numbers say.
     const stale = { ...RESOLVER, before: { wrong: 0, decision: 99, right: 0 }, after: { wrong: 0, decision: 42, right: 0 } };
     render(<AssistantMessage message={answer({ key: 'b', id: 'msg-2', findings: FINDINGS, resolver: stale })} chatId="c-1" models={[OPUS]} messageCapUsd="5.00" />);

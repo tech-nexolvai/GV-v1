@@ -37,6 +37,7 @@ import {
   type Tone,
   type TrackerFilters,
 } from '@/lib/tracker';
+import { roundTagWords } from '@/lib/words';
 
 type Link = TrackerItem['link'];
 
@@ -104,7 +105,7 @@ function itemColumns(onOpenItem: (link: Link) => void, oneSet: boolean): ColumnD
             </button>
             <span className="text-xs text-muted-foreground">
               {item.kind}
-              {item.tags.map((tag) => <span key={tag} data-slot="tracker-tag"> · {tag}</span>)}
+              {item.tags.map((tag) => roundTagWords(tag)).filter((tag): tag is string => tag !== null).map((tag) => <span key={tag} data-slot="tracker-tag"> · {tag}</span>)}
             </span>
             {/* Phones: what the hidden columns say, on one quiet line. */}
             <span className="text-xs text-muted-foreground md:hidden">
@@ -189,7 +190,7 @@ function Numbers({ tracker }: { tracker: Tracker }) {
       ),
     },
     {
-      label: 'Fixed',
+      label: 'Closed',
       value: totals.fixed,
       sub: 'right in a later round',
     },
@@ -219,7 +220,7 @@ function Numbers({ tracker }: { tracker: Tracker }) {
 
 const STATE_BUTTONS: { id: StateFilter; label: string }[] = [
   { id: 'open', label: 'Open' },
-  { id: 'fixed', label: 'Fixed' },
+  { id: 'fixed', label: 'Closed' },
   { id: 'not_a_problem', label: 'Not a problem' },
   { id: 'all', label: 'All' },
 ];
@@ -297,7 +298,7 @@ function SetsList({ sets, onOpenSet }: { sets: readonly TrackerSet[]; onOpenSet:
             </span>
             <span className="flex flex-wrap items-baseline gap-x-4 gap-y-0.5 text-[13px] text-muted-foreground md:justify-end">
               <span><span className="num text-foreground">{set.open}</span> open</span>
-              <span><span className="num">{set.fixed}</span> fixed</span>
+              <span><span className="num">{set.fixed}</span> closed</span>
               <span><span className="num">{checks}</span> {checks === 1 ? 'check' : 'checks'}</span>
               <span>last {dayWords(set.last_checked_at)}</span>
             </span>
@@ -346,7 +347,7 @@ function VendorCard({ vendor }: { vendor: TrackerVendor }) {
       </header>
       <dl className="grid gap-3 sm:grid-cols-2">
         <div className="grid gap-0.5">
-          <dt className="text-xs text-muted-foreground">Fixed on the next round</dt>
+          <dt className="text-xs text-muted-foreground">Closed on the next round</dt>
           <dd className="num text-[15px] font-medium">{fixedNextWords(vendor)}</dd>
         </div>
         <div className="grid gap-0.5">

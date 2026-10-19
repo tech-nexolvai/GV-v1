@@ -11,6 +11,7 @@
 import type { ChatCoverage, ChatFinding, ChatTimings, ChatTrust, ChatUnknown, EvidenceKind, FindingRead, LedgerReport, PrintedResult, RoundStatus, TrustLeftOut, TrustLevel, UnknownWhy } from '@/lib/chat-api';
 import { categoryOf, categoryOrderFor, categoryWords, pageWords, sourceTag, STATUS_WORDS, verifiedWords } from '@/lib/chat-findings';
 import { PROOF_WORDS, proofGroup } from '@/lib/chat-proof';
+import { ROUND_WORDS as ROUND_LETTER_WORDS } from '@/lib/words';
 
 // ── Levels ──────────────────────────────────────────────────
 
@@ -537,9 +538,10 @@ export function helperTimingRows(timings: ChatTimings | null | undefined): Timin
 // ── Rounds ──────────────────────────────────────────────────
 
 export const ROUND_WORDS: Record<RoundStatus, string | null> = {
-  fixed_in_later_round: 'Fixed in a later round',
-  still_wrong: 'Still wrong',
-  new_in_later_round: 'New in a later round',
+  // #1712: the comment letter's round-2 words (Closed / Previous comment not addressed / New).
+  fixed_in_later_round: ROUND_LETTER_WORDS.closed,
+  still_wrong: ROUND_LETTER_WORDS.notAddressed,
+  new_in_later_round: ROUND_LETTER_WORDS.new,
   not_in_later_round: 'Not in the later round',
   single_round: null,
 };
@@ -571,13 +573,13 @@ export function roundCounts(findings: readonly ChatFinding[], trust: ChatTrust |
   return any ? counts : null;
 }
 
-/** "Vendor fixed 3 of 8 round-1 items · 5 still wrong · 1 new". */
+/** "Closed 3 of 8 round-1 items · 5 previous comments not addressed · 1 new" (#1712: the letter's words). */
 export function roundWords(counts: RoundCounts): string {
   if (counts.line) return counts.line;
   const notInLater = counts.not_in_later ?? 0;
   const first = counts.fixed + counts.still_wrong + notInLater;
-  const parts = [`Vendor fixed ${counts.fixed} of ${first} round-1 ${first === 1 ? 'item' : 'items'}`];
-  if (counts.still_wrong) parts.push(`${counts.still_wrong} still wrong`);
+  const parts = [`Closed ${counts.fixed} of ${first} round-1 ${first === 1 ? 'item' : 'items'}`];
+  if (counts.still_wrong) parts.push(`${counts.still_wrong} previous ${counts.still_wrong === 1 ? 'comment' : 'comments'} not addressed`);
   if (notInLater) parts.push(`${notInLater} not in the later round`);
   if (counts.new) parts.push(`${counts.new} new`);
   if (counts.unrequested) parts.push(`${counts.unrequested} ${counts.unrequested === 1 ? 'change' : 'changes'} nobody asked for`);

@@ -18,16 +18,16 @@
 
 import type { ChatEffort, ChatFinding, ChatModel, ChatProduct } from '@/lib/chat-api';
 import { areaOf } from '@/lib/chat-findings';
-import { chooseEffort, type ChatChoice } from '@/lib/chat-settings';
+import { chooseEffort, modelBlurb, shortModelLabel, type ChatChoice } from '@/lib/chat-settings';
 import type { ViewMessage } from '@/lib/chat-messages';
 import { activeProducts, productCatalog, type ProductCatalog } from '@/lib/products';
 
-export type PlusGroup = 'checks' | 'outputs' | 'focus';
+export type PlusGroup = 'checks' | 'outputs' | 'focus' | 'model';
 
 export type PlusIcon =
   | 'full_check' | 'page' | 'area' | 'rules' | 'consistency' | 'strings' | 'missing' | 'rounds'
   | 'cloud' | 'csv' | 'letter' | 'rfi' | 'summary'
-  | 'product' | 'both' | 'quick' | 'thorough';
+  | 'product' | 'both' | 'quick' | 'thorough' | 'model';
 
 /** What choosing an option does. */
 export type PlusRun =
@@ -38,7 +38,8 @@ export type PlusRun =
   | { kind: 'cloud' }
   | { kind: 'csv' }
   | { kind: 'products'; products: ChatProduct[]; comingLater?: boolean }
-  | { kind: 'effort'; level: 'quick' | 'thorough' };
+  | { kind: 'effort'; level: 'quick' | 'thorough' }
+  | { kind: 'model'; model: string };
 
 export interface PlusAction {
   id: string;
@@ -108,7 +109,7 @@ const PROMPTS = {
   page:
     'Check vendor page [page number] against the architect’s drawing. List every value that is wrong with what it needs to be, anything I should check, and anything you could not compare.',
   area:
-    'Compare the [area] on the vendor’s shop drawing with the architect’s drawing: sizes, heights, depths, materials, hardware and notes. Say what is wrong, what to check and what is right.',
+    'Compare the [area] on the vendor’s shop drawing with the architect’s drawing: sizes, heights, depths, materials, hardware and notes. Say what is wrong, what is right, and what could not be compared and why.',
   rules:
     'Check the vendor’s drawings against GV’s rules for the selected products. For each rule, list the pages that break it with GV’s number and the vendor’s.',
   strings:
@@ -134,7 +135,7 @@ export const PLUS_ACTIONS: readonly PlusAction[] = [
   { id: 'consistency', group: 'checks', label: 'Vendor consistency check', hint: 'The vendor’s numbers against each other', estimate: '$0', icon: 'consistency', keywords: ['contradiction', 'add up', 'strings', 'sum', 'missing sheet', 'round', 'index', 'self-check', 'free'], run: { kind: 'consistency' } },
   { id: 'strings', group: 'checks', label: 'Do the dimension strings add up?', hint: 'The vendor’s own sums', estimate: '~5 min · ~$1.50', icon: 'strings', keywords: ['sum', 'arithmetic', 'total', 'overall', 'math'], run: { kind: 'prompt', text: PROMPTS.strings } },
   { id: 'missing', group: 'checks', label: 'What’s missing on either side?', hint: 'Items on one drawing only', estimate: '~5 min · ~$1.50', icon: 'missing', keywords: ['completeness', 'left out', 'extra', 'added'], run: { kind: 'prompt', text: PROMPTS.missing } },
-  { id: 'rounds', group: 'checks', label: 'What changed between rounds?', hint: 'Fixed, still wrong, or new changes', estimate: '~3 min · ~$1', icon: 'rounds', keywords: ['diff', 'revision', 'round 1', 'round 2', 'resubmittal', 'compare'], run: { kind: 'prompt', text: PROMPTS.rounds } },
+  { id: 'rounds', group: 'checks', label: 'What changed between rounds?', hint: 'Closed, previous comments not addressed, or new', estimate: '~3 min · ~$1', icon: 'rounds', keywords: ['diff', 'revision', 'round 1', 'round 2', 'resubmittal', 'compare'], run: { kind: 'prompt', text: PROMPTS.rounds } },
   // Outputs
   { id: 'cloud', group: 'outputs', label: 'Cloud drawing', hint: 'The last answer’s findings, marked up by code', estimate: '$0', icon: 'cloud', keywords: ['marked-up', 'markup', 'pdf', 'redline', 'clouds'], run: { kind: 'cloud' } },
   { id: 'csv', group: 'outputs', label: 'Excel (CSV) of findings', hint: 'The last answer’s findings, for Excel', estimate: '$0', icon: 'csv', keywords: ['spreadsheet', 'table', 'export', 'download'], run: { kind: 'csv' } },
@@ -147,7 +148,23 @@ export const PLUS_ACTIONS: readonly PlusAction[] = [
   { id: 'thorough', group: 'focus', label: 'Thorough', hint: 'Extra high effort: slower, more careful', icon: 'thorough', keywords: ['effort', 'careful', 'deep', 'high'], run: { kind: 'effort', level: 'thorough' } },
 ];
 
-export const GROUP_WORDS: Record<PlusGroup, string> = { checks: 'Checks', outputs: 'Outputs', focus: 'Focus' };
+export const GROUP_WORDS: Record<PlusGroup, string> = { checks: 'Checks', outputs: 'Outputs', focus: 'Focus', model: 'Model' };
+
+/**
+ * #1712 (owner decision 4): the model choice lives in the + menu, not on the composer's main row; the
+ * server's default model stays the default. One row per model the server offers, in its order.
+ */
+export function modelActions(models: readonly Pick<ChatModel, 'id' | 'label'>[]): PlusAction[] {
+  return models.map((model) => ({
+    id: `model:${model.id}`,
+    group: 'model',
+    label: shortModelLabel(model),
+    hint: modelBlurb(model) || 'A model for this chat',
+    icon: 'model',
+    keywords: ['model', 'claude', model.label.toLowerCase()],
+    run: { kind: 'model', model: model.id },
+  }));
+}
 
 /**
  * The Focus options for the products (#1547): "<Products> only" for each active product, "All

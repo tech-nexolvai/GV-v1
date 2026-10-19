@@ -74,10 +74,10 @@ const TRACKER: Tracker = {
 };
 
 describe('tracker words (#1578)', () => {
-  it('says each state one way, coloured only for Wrong and Fixed', () => {
+  it('says each state one way, coloured only for Wrong and Closed', () => {
     expect(stateWords(ITEMS[0])).toEqual({ word: 'Open · Wrong', tone: 'wrong', detail: null });
     expect(stateWords(ITEMS[1])).toEqual({ word: 'Open · Not compared', tone: 'neutral', detail: null });
-    expect(stateWords(ITEMS[2])).toEqual({ word: 'Fixed · round 2', tone: 'right', detail: null });
+    expect(stateWords(ITEMS[2])).toEqual({ word: 'Closed · round 2', tone: 'right', detail: null });
     expect(stateWords(ITEMS[3])).toEqual({ word: 'Not a problem', tone: 'neutral', detail: 'reviewer-two' });
     expect(stateWords({ ...ITEMS[0], state: 'right_later' }).word).toBe('Right on a later check');
     expect(ITEMS.map(stateRank)).toEqual([0, 1, 2, 4]);
@@ -110,13 +110,13 @@ describe('the tracker page (#1578)', () => {
     const rows = within(table).getAllByRole('row').slice(1);
     expect(rows.map((row) => within(row).getAllByRole('button')[0].textContent)).toEqual(['Outlet height', 'Filler at wall end']);
     expect(within(rows[0]).getByText('Open · Wrong')).toBeTruthy();
-    expect(within(rows[0]).getByText(/Still wrong/)).toBeTruthy();
+    expect(within(rows[0]).getByText(/Previous comment not addressed/)).toBeTruthy();
 
     await userEvent.click(within(rows[0]).getByRole('button', { name: /Outlet height/ }));
     expect(onOpenItem).toHaveBeenCalledWith(ITEMS[0].link);
 
-    await userEvent.click(screen.getByRole('button', { name: /Fixed/ }));
-    expect(within(table).getByText('Fixed · round 2')).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: /Closed/ }));
+    expect(within(table).getByText('Closed · round 2')).toBeTruthy();
     const link = screen.getByRole('link', { name: /Download XLSX/ });
     expect(link.getAttribute('href')).toBe('/api/v1/projects/p/tracker.xlsx?state=fixed');
 
