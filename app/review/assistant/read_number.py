@@ -457,9 +457,10 @@ def _ruler_of_label(
     scale = _scale(scales, label.get("box") or (), side)
     if scale is None:
         return None, f"its line is {span} pt but the drawing's scale is not known"
-    return round(
-        float(span) * scale, 2
-    ), f"{float(span) * scale:.2f}\" ({span} pt at the drawing's scale)"
+    return (
+        round(float(span) * scale, 2),
+        f"{float(span) * scale:.2f}\" ({span} pt at the drawing's scale)",
+    )
 
 
 def _ruler_of_ink(

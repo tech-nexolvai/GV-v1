@@ -1787,11 +1787,13 @@ def _verify_unlabelled(
             "read",
             "fail" if unread else "pass",
             (
-                f"code could not confirm the {' and '.join(unread)} value at its box"
-                + (f": {why_unread}" if why_unread else "")
-            )
-            if unread
-            else "",
+                (
+                    f"code could not confirm the {' and '.join(unread)} value at its box"
+                    + (f": {why_unread}" if why_unread else "")
+                )
+                if unread
+                else ""
+            ),
         )
     )
     axes = (
