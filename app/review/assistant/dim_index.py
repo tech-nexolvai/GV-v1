@@ -24,6 +24,7 @@ import re
 import threading
 from collections.abc import Iterable, Mapping, Sequence
 from decimal import Decimal, InvalidOperation
+from fractions import Fraction
 from importlib import import_module
 from pathlib import Path
 from typing import Any, Final
@@ -66,9 +67,28 @@ def _inches(label: Mapping[str, Any]) -> Decimal | None:
         return None
 
 
+def _inches_words(value: object) -> str:
+    """Inches as a drawing writes them: `18"`, `14 1/4"`."""
+    try:
+        exact = Fraction(Decimal(str(value)))
+    except (InvalidOperation, ValueError):
+        return str(value)
+    whole, rest = divmod(exact, 1)
+    if not rest:
+        return f'{whole}"'
+    return f'{whole} {rest}"' if whole else f'{rest}"'
+
+
 def label_line(label: Mapping[str, Any]) -> str:
-    """One label in a line: `D17 36" (vendor, h, text)`, plus the millimetres' agreement."""
+    """One label in a line: `D17 36" (vendor, h, text)`, plus the millimetres' agreement; a
+    derived label says its value and where it comes from (`D23 EQ = 18" (equal part of D18, ...)`).
+    """
     bits = [str(label.get("side") or "unknown"), str(label.get("orientation") or "")]
+    derived = label.get("derived")
+    if isinstance(derived, Mapping):
+        bits.insert(0, f"equal part of {derived.get('from')}, by code")
+        text = f"{label.get('text')} = {_inches_words(label.get('inches'))}"
+        return f"{label.get('id')} {text} ({', '.join(b for b in bits if b)})"
     if label.get("route") == "drawn":
         bits.append("drawn ink, OCR")
     if label.get("units") == "disagrees":

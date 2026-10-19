@@ -924,6 +924,89 @@ def _place_words(finding: Mapping[str, Any]) -> str:
     return " ".join(item[found.start() :].split()) if found else ""
 
 
+#: An architect's two dimensions that place one missing thing lie this close on the drawing
+#: (points between their labels): an outlet's height and its distance from an end (#1671).
+_PLACE_PT: Final = 36.0
+
+
+def _spot(box: object) -> tuple[float, float, float, float] | None:
+    """A finding's box (`{x0, y0, x1, y1}`) or a label's (`[x0, y0, x1, y1]`) as a tuple."""
+    try:
+        if isinstance(box, Mapping):
+            x0, y0, x1, y1 = (float(box[key]) for key in ("x0", "y0", "x1", "y1"))
+        elif isinstance(box, Sequence) and len(box) == 4:
+            x0, y0, x1, y1 = (float(value) for value in box)
+        else:
+            return None
+    except (KeyError, TypeError, ValueError):
+        return None
+    return (x0, y0, x1, y1) if x1 > x0 and y1 > y0 else None
+
+
+def _shared(a: tuple[float, ...], b: tuple[float, ...]) -> float:
+    """How much of the smaller box the two share (0 to 1)."""
+    wide, tall = min(a[2], b[2]) - max(a[0], b[0]), min(a[3], b[3]) - max(a[1], b[1])
+    if wide <= 0 or tall <= 0:
+        return 0.0
+    smaller = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
+    return wide * tall / smaller
+
+
+def _architect_label(finding: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    dims = finding.get("dims")
+    label = dims.get("architect") if isinstance(dims, Mapping) else None
+    return label if isinstance(label, Mapping) and label.get("id") else None
+
+
+def _places_one_thing(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
+    """Code's facts say two missing rows are one thing, whatever their words: the readings point
+    at the same spot on the vendor's drawing, and the architect's two dimensions (code's labels,
+    on one page) run different ways, one across and one up, close together (an outlet placed by
+    its height and its distance from an end)."""
+    vendor_a, vendor_b = _spot(a.get("vendor_box")), _spot(b.get("vendor_box"))
+    label_a, label_b = _architect_label(a), _architect_label(b)
+    if vendor_a is None or vendor_b is None or label_a is None or label_b is None:
+        return False
+    if _shared(vendor_a, vendor_b) < 0.5:
+        return False
+    if label_a.get("page") != label_b.get("page") or label_a.get("id") == label_b.get("id"):
+        return False
+    box_a, box_b = _spot(label_a.get("box")), _spot(label_b.get("box"))
+    if box_a is None or box_b is None:
+        return False
+    across_a = box_a[2] - box_a[0] >= box_a[3] - box_a[1]
+    across_b = box_b[2] - box_b[0] >= box_b[3] - box_b[1]
+    if across_a == across_b:
+        return False
+    gap_x = max(box_a[0], box_b[0]) - min(box_a[2], box_b[2])
+    gap_y = max(box_a[1], box_b[1]) - min(box_a[3], box_b[3])
+    return max(gap_x, gap_y, 0.0) <= _PLACE_PT
+
+
+def _one_missing_thing(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
+    """Two rows of one thing the vendor does not show (#1648, #1671): both missing on the vendor,
+    on one page, and the same thing by their words or by code's facts (`_places_one_thing`)."""
+    if not (missing_on_vendor(a) and missing_on_vendor(b)) or a.get("page") != b.get("page"):
+        return False
+    thing = _missing_thing(a)
+    return (bool(thing) and thing == _missing_thing(b)) or _places_one_thing(a, b)
+
+
+def _joined(primary: Mapping[str, Any], others: Sequence[Mapping[str, Any]]) -> list[Any]:
+    """The rows among `others` one thing with `primary`, directly or through another of them."""
+    reached = [primary]
+    left = list(others)
+    grew = True
+    while grew:
+        grew = False
+        for other in list(left):
+            if any(_one_missing_thing(other, found) for found in reached):
+                reached.append(other)
+                left.remove(other)
+                grew = True
+    return reached[1:]
+
+
 def missing_together(
     primary: Mapping[str, Any], others: Sequence[Mapping[str, Any]]
 ) -> dict[str, Any]:
@@ -1019,21 +1102,23 @@ def _merge(
             fold(finding, primary)
 
     # 3. One thing the vendor does not show, reported once per dimension that places it (the
-    # architect's outlet at a height and at a distance from the end): one item (#1648).
-    missing: dict[tuple[Any, str, str], list[dict[str, Any]]] = {}
+    # architect's outlet at a height and at a distance from the end): one item (#1648). Rows join
+    # by their words or by code's facts, never only by how a reading words it (#1671).
+    missing: dict[tuple[Any, str], list[dict[str, Any]]] = {}
     for finding in findings:
         if finding.get("status") != "check" or finding.get("record_id"):
             continue
         if str(finding["id"]) in absorbed or not missing_on_vendor(finding):
             continue
-        thing = _missing_thing(finding)
-        if thing:
-            missing.setdefault((finding.get("page"), _area(finding, areas), thing), []).append(
-                finding
-            )
+        missing.setdefault((finding.get("page"), _area(finding, areas)), []).append(finding)
     for group in missing.values():
-        for finding in group[1:]:
-            fold(finding, group[0])
+        left = list(group)
+        while left:
+            primary = left.pop(0)
+            joined = _joined(primary, left)
+            for finding in joined:
+                left.remove(finding)
+                fold(finding, primary)
 
     # A primary that was itself folded hands its copies on, to the item that carries it.
     def carrier(finding_id: str) -> str:
@@ -1155,13 +1240,9 @@ def resolve(findings: Sequence[Mapping[str, Any]], ctx: ResolverContext) -> Reso
     for primary_id, entries_also in also.items():
         primary = changed.get(primary_id) or dict(by_id[primary_id])
         primary["also_on"] = [*(primary.get("also_on") or []), *entries_also]
-        together = [
-            by_id[str(e["finding_id"])]
-            for e in entries_also
-            if missing_on_vendor(by_id.get(str(e["finding_id"]), {}))
-            and missing_on_vendor(primary)
-            and _missing_thing(by_id[str(e["finding_id"])]) == _missing_thing(primary)
-        ]
+        together = _joined(
+            primary, [by_id[str(e["finding_id"])] for e in entries_also if e["finding_id"] in by_id]
+        )
         if together:
             primary = missing_together(primary, together)
         changed[primary_id] = primary

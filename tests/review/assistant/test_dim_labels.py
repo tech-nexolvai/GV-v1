@@ -15,6 +15,7 @@ import threading
 import zlib
 from collections.abc import Mapping, Sequence
 from decimal import Decimal
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -777,3 +778,138 @@ def test_a_drawn_rows_digits_are_read_as_its_vectors_lay_them_out(
     line: str, layout: tuple[int, int, int], value: Decimal | None
 ) -> None:
     assert dl._laid_out(line, layout) == value
+
+
+# ---- equal parts (`EQ`, #1668) -------------------------------------------------------------------
+
+
+def _equal_chain(xs: Sequence[float], y: float, marks: Sequence[str]) -> bytes:
+    """A chain line at `y` with extension lines at `xs` and a mark over each part."""
+    body = _line(xs[0] - 1.5, y, xs[-1] + 1.5, y)
+    for x in xs:
+        body += _line(x, y - 40, x, y + 3)
+    for (a, b), mark in zip(pairwise(xs), marks, strict=True):
+        body += _text((a + b) / 2 - 5, y + 3, mark)
+    return body
+
+
+def _vendor_labels(tmp_path: Path, body: bytes) -> list[dict[str, Any]]:
+    path = tmp_path / "eq.pdf"
+    path.write_bytes(_pdf([body]))
+    return [label for label in dl.page_labels(path, 1, HALVES).labels if label["side"] == "vendor"]
+
+
+def test_eq_parts_are_the_overall_shared_equally(tmp_path: Path) -> None:
+    # 36" wall to wall printed once; the sink's centre line splits it EQ / EQ: 18" each side.
+    body = _dimension(300, 420, 200) + _text(352, 203, '36"')
+    body += _equal_chain([300, 360, 420], 300, ["EQ", "EQ"])
+    labels = _vendor_labels(tmp_path, body)
+    overall = next(label for label in labels if label["text"] == '36"')
+    parts = [label for label in labels if label.get("derived")]
+    assert [p["inches"] for p in parts] == ["18", "18"]
+    assert all(p["text"] == "EQ" and p["route"] == "text" for p in parts)
+    assert all(
+        p["derived"] == {"rule": "equal_parts", "from": overall["id"], "parts": 2, "less": []}
+        for p in parts
+    )
+    # Numbered after every printed label; each part on its own span of the chain.
+    assert [p["id"] for p in parts] == [f"D{len(labels) - 1}", f"D{len(labels)}"]
+    assert [p["dim_line"][0][0] for p in parts] == [300, 360]
+
+
+def test_printed_parts_of_the_chain_are_taken_off_first(tmp_path: Path) -> None:
+    # 40" overall; the chain is 4" + EQ + EQ: each EQ is 18".
+    body = _dimension(300, 420, 200) + _text(352, 203, '40"')
+    body += _equal_chain([300, 312, 366, 420], 300, ['4"', "EQ", "EQ"])
+    labels = _vendor_labels(tmp_path, body)
+    four = next(label for label in labels if label["text"] == '4"')
+    parts = [label for label in labels if label.get("derived")]
+    assert [p["inches"] for p in parts] == ["18", "18"]
+    assert parts[0]["derived"]["less"] == [four["id"]]
+
+
+@pytest.mark.parametrize(
+    ("overall", "chain", "why"),
+    [
+        (None, [300, 360, 420], "no overall printed for the chain"),
+        ((300, 410), [300, 360, 420], "the overall's line does not run between the chain's ends"),
+        ((300, 420), [300, 330, 420], "the EQ parts are not drawn equal"),
+    ],
+)
+def test_no_eq_part_is_derived_without_its_proof(
+    tmp_path: Path, overall: tuple[float, float] | None, chain: list[float], why: str
+) -> None:
+    body = _equal_chain(chain, 300, ["EQ", "EQ"])
+    if overall is not None:
+        body += _dimension(*overall, 200) + _text(sum(overall) / 2 - 8, 203, '36"')
+    assert not [label for label in _vendor_labels(tmp_path, body) if label.get("derived")], why
+
+
+def test_a_part_a_drawing_cannot_print_is_not_derived(tmp_path: Path) -> None:
+    # 37" over three EQ parts is 12 1/3": no drawing prints that, so nothing is derived.
+    body = _dimension(300, 420, 200) + _text(352, 203, '37"')
+    body += _equal_chain([300, 340, 380, 420], 300, ["EQ", "EQ", "EQ"])
+    assert not [label for label in _vendor_labels(tmp_path, body) if label.get("derived")]
+
+
+def test_derived_parts_do_not_set_the_drawings_scale() -> None:
+    # Three printed labels drawn at 2 points an inch, four derived ones at 3: the drawing's scale
+    # comes from the printed ones only, so they stay on scale.
+    printed = [{"side": "vendor", "inches": str(n), "span_pt": 2.0 * n} for n in (10, 20, 30)]
+    derived = [
+        {"side": "vendor", "inches": "10", "span_pt": 30.0, "derived": {"rule": "equal_parts"}}
+        for _ in range(4)
+    ]
+    labels: list[dict[str, Any]] = [*printed, *derived]
+    dl._scale_checks(labels)
+    assert [label["scale_ok"] for label in printed] == [True, True, True]
+    assert [label["scale_ok"] for label in derived] == [False] * 4
+
+
+def test_a_derived_part_says_its_value_and_where_it_comes_from() -> None:
+    from app.review.assistant.dim_index import label_line
+
+    part = {
+        "id": "D23",
+        "text": "EQ",
+        "inches": "14.25",
+        "side": "vendor",
+        "orientation": "h",
+        "route": "text",
+        "derived": {"rule": "equal_parts", "from": "D9", "parts": 4, "less": []},
+    }
+    assert label_line(part) == 'D23 EQ = 14 1/4" (equal part of D9, by code, vendor, h)'
+
+
+def test_the_pack_adds_eq_parts_once_last_and_never_reuses_an_id(tmp_path: Path) -> None:
+    body = _dimension(300, 420, 200) + _text(352, 203, '36"')
+    body += _equal_chain([300, 360, 420], 300, ["EQ", "EQ"])
+    path = tmp_path / "eq.pdf"
+    path.write_bytes(_pdf([body]))
+    page_map = {"pages": [{"file": "eq.pdf", "page": 1, "halves": HALVES}]}
+    seen: list[dict[str, tuple[str, tuple[float, ...]]]] = []
+
+    def written(document: dict[str, Any]) -> None:
+        labels = document["pages"][0]["labels"]
+        seen.append({label["id"]: (label["text"], tuple(label["box"])) for label in labels})
+
+    document = dl.build_dims({"eq.pdf": path}, page_map, on_page=written)
+    final = seen[-1]
+    labels = document["pages"][0]["labels"]
+    assert [label["inches"] for label in labels if label.get("derived")] == ["18", "18"]
+    assert all(label.get("derived") for label in labels[-2:])
+    for snapshot in seen:
+        assert all(final.get(key) == value for key, value in snapshot.items())
+
+
+def test_a_line_crossing_an_eq_chain_cuts_no_part(tmp_path: Path) -> None:
+    # The chain has slash ticks at its ends and its middle; a grid line crosses its right part
+    # with no tick. The parts end at the ticks, so the chain still spans the printed overall.
+    body = _dimension(300, 420, 200) + _text(352, 203, '36"')
+    body += _equal_chain([300, 360, 420], 300, ["EQ", "EQ"])
+    for x in (300, 360, 420):
+        body += _line(x - 1.5, 298.5, x + 1.5, 301.5)
+    body += _line(400, 250, 400, 350)  # the grid line
+    parts = [label for label in _vendor_labels(tmp_path, body) if label.get("derived")]
+    assert [p["inches"] for p in parts] == ["18", "18"]
+    assert [p["dim_line"][1][0] for p in parts] == [360, 420]
