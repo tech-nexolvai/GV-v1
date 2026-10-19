@@ -83,16 +83,26 @@ describe('not seen is not right', () => {
     expect([...node.querySelectorAll('[data-slot="chat-kpis"] [data-kpi]')].map((tile) => tile.getAttribute('data-kpi'))).toEqual(['different', 'same', 'check', 'pages', 'accuracy']);
     const rows = () => [...node.querySelectorAll<HTMLElement>('[data-slot="chat-finding-row"]')].map((row) => row.dataset.id);
     expect(rows()).toEqual(['o1']);
-    await user.click(within(node).getByRole('button', { name: /^Nothing to compare\s*2/ }));
+    await user.click(within(node).getByRole('button', { name: /^Not compared\s*2/ }));
     expect(rows()).toEqual(['o1', 'i1', 'n1']);
     // The row says why in the trade's words, and offers only "Make it Wrong".
     const row = node.querySelector<HTMLElement>('[data-id="n1"]')!;
     expect(row.querySelector('[data-slot="chat-finding-question"]')?.textContent).toContain('Not reviewed: not looked at on both drawings');
   });
 
-  it('has no "Not compared" part when every item was compared', () => {
-    render(<AssistantMessage message={answer({ findings: FINDINGS.slice(0, 3) })} chatId="c-1" models={[OPUS]} fullCheck />);
-    expect(screen.queryByRole('button', { name: /^Not compared/ })).toBeNull();
+  it('lists a not-looked-at item under Not compared, not under a word of its own (#1712: one word per meaning)', async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(<AssistantMessage message={answer({ findings: FINDINGS.slice(0, 3) })} chatId="c-1" models={[OPUS]} fullCheck />);
+    let node = screen.getByRole('article', { name: 'Answer' });
+    expect(within(node).getByRole('region', { name: /^Not compared2/ })).toBeTruthy();
+    expect(node.textContent).not.toMatch(/Not looked at/);
+    unmount();
+    render(<AssistantMessage message={answer({ findings: FINDINGS })} chatId="c-1" models={[OPUS]} fullCheck />);
+    node = screen.getByRole('article', { name: 'Answer' });
+    expect(within(node).getByRole('region', { name: /^Not compared3/ })).toBeTruthy();
+    await user.click(within(node).getByRole('button', { name: /^Not compared\s*3/ }));
+    expect(node.querySelector('[data-slot="chat-finding-row"][data-id="n1"]')).not.toBeNull();
+    expect(node.textContent).not.toMatch(/Not looked at/);
   });
 });
 
@@ -126,7 +136,7 @@ describe('unknowns', () => {
 describe('the accuracy popover', () => {
   it('says how the points were calibrated and what was left out of the score', async () => {
     const user = userEvent.setup();
-    expect(excludedWords({ not_compared: 2, unknowns: 3 })).toBe('2 “What’s right” items not compared (not counted) · 3 not checked (they lower the score)');
+    expect(excludedWords({ not_compared: 2, unknowns: 3 })).toBe('2 “Right” items not compared (not counted) · 3 not checked (they lower the score)');
     expect(excludedWords({})).toBeNull();
     render(
       <AssistantMessage
@@ -137,6 +147,6 @@ describe('the accuracy popover', () => {
     );
     await user.click(screen.getByRole('button', { name: /Accuracy 91%/ }));
     expect(document.querySelector('[data-slot="chat-accuracy-calibration"]')?.textContent).toContain('24 of 24');
-    expect(document.querySelector('[data-slot="chat-accuracy-excluded"]')?.textContent).toBe('1 “What’s right” item not compared (not counted)');
+    expect(document.querySelector('[data-slot="chat-accuracy-excluded"]')?.textContent).toBe('1 “Right” item not compared (not counted)');
   });
 });

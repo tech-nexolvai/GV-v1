@@ -45,8 +45,8 @@ export const STATUS_WORDS: Record<FindingStatus, string> = {
 
 /** The long form, for headings and the summary. */
 export const STATUS_LONG: Record<FindingStatus, string> = {
-  different: 'What’s wrong',
-  check: 'Nothing to compare',
+  different: 'Wrong',
+  check: 'Not compared',
   same: 'Right',
 };
 
@@ -374,7 +374,7 @@ export function groupCountWords(counts: FindingCounts): string {
   if (counts.different) parts.push(`${counts.different} wrong`);
   if (counts.check) parts.push(`${counts.check} not compared`);
   if (counts.same) parts.push(`${counts.same} right`);
-  if (counts.not_compared) parts.push(`${counts.not_compared} not looked at`);
+  if (counts.not_compared) parts.push(`${counts.not_compared} not compared`);
   return parts.join(' · ');
 }
 
@@ -546,7 +546,7 @@ export function reviewerWords(original: ChatFinding): ReviewerWords {
   const fallback = status === 'different' && difference !== null && architect !== null && vendor !== null
     ? `The vendor’s ${inchWords(vendor)} in is ${inchWords(Math.abs(difference))} in ${difference > 0 ? 'more' : 'less'} than the ${whom}’s ${inchWords(architect)} in.`
     : status === 'different' ? `The vendor’s drawing does not match the ${whom}.`
-    : status === 'check' ? 'There is nothing to compare it with; it is listed apart with the reason.'
+    : status === 'check' ? 'Not compared: it is listed apart with the reason and what is needed.'
     : status === 'not_compared' ? `${finding.not_compared_why === 'pair_not_covered' ? 'Its page pair was not compared' : 'Both sides were not looked at'}, so this is not counted as right.`
     : `The vendor’s drawing matches the ${whom}.`;
   const tell = status !== 'different' ? null
@@ -564,7 +564,7 @@ export function reviewerWords(original: ChatFinding): ReviewerWords {
     reference: finding.source === 'vendor_arithmetic' && architect !== null ? `${inchWords(architect)} in` : sideWords(finding, 'architect'),
     vendorLabel: finding.source === 'cross_view' ? 'This view shows' : 'Vendor drew',
     vendor: sideWords(finding, 'vendor'),
-    whyLabel: { different: 'Why it’s wrong', check: 'Why it could not be compared', same: 'Why it’s right', not_compared: 'Why it was not looked at' }[status],
+    whyLabel: { different: 'Why it’s wrong', check: 'Why it could not be compared', same: 'Why it’s right', not_compared: 'Why it could not be compared' }[status],
     why: finding.why?.trim() || fallback,
     tell,
     sure: sureWords(finding),

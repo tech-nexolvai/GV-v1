@@ -59,7 +59,7 @@ function Composer({ running = false, blocked = null, models = MODELS, onSend = v
         onChoice(next);
         setChoice(next);
       }}
-      placeholder="How can I help you today?"
+      placeholder="Ask about these drawings…"
       menuFootnote="Up to $5 per answer · $3.10 of $40 used on this set"
     />
   );
@@ -199,8 +199,8 @@ describe('the page around it', () => {
     expect(await screen.findByRole('heading', { name: `What do you want to know about ${SET_NAME}?` })).toBeTruthy();
     const dock = document.querySelector('[data-slot="chat-dock"]') as HTMLElement;
     expect(dock.getAttribute('data-centred')).toBe('true');
-    expect(box().getAttribute('placeholder')).toBe('How can I help you today?');
-    expect(screen.getByText('Claude can make mistakes. Please double-check responses.')).toBeTruthy();
+    expect(box().getAttribute('placeholder')).toBe('Ask about these drawings…');
+    expect(screen.getByText('GV Review can be wrong. Every red mark shows its proof.')).toBeTruthy();
     expect(screen.queryByText(/check before acting/)).toBeNull();
     expect((document.querySelector('[data-slot="chat-thread"]') as HTMLElement).hidden).toBe(true);
 
@@ -211,17 +211,17 @@ describe('the page around it', () => {
     expect(dock.getAttribute('data-centred')).toBeNull();
     expect((document.querySelector('[data-slot="chat-thread"]') as HTMLElement).hidden).toBe(false);
     expect(screen.queryByRole('list', { name: 'Suggested questions' })).toBeNull();
-    expect(box().getAttribute('placeholder')).toBe('Reply to Claude…');
+    expect(box().getAttribute('placeholder')).toBe('Ask about these drawings…');
     expect(screen.getByRole('button', { name: 'Stop response' })).toBeTruthy();
   });
 
-  it('a chat with messages says "Reply to Claude…"; models not available say why and Send stays off', async () => {
+  it('a chat with messages says "Ask about these drawings…" (#1712); models not available say why and Send stays off', async () => {
     renderPage(fakeChatApi({
       get: vi.fn(async () => chatOut('c-1', [QUESTION, SAVED_ANSWER])),
       models: vi.fn(async () => modelsOut({ available: false, reason: 'No model key is set on this server.', models: [] })),
     }));
     await screen.findByRole('article', { name: 'Answer' });
-    expect(box().getAttribute('placeholder')).toBe('Reply to Claude…');
+    expect(box().getAttribute('placeholder')).toBe('Ask about these drawings…');
     expect((await screen.findByRole('alert')).textContent).toContain('No model key is set on this server.');
     await userEvent.setup().type(box(), 'Hello');
     expect(screen.getByRole('button', { name: 'Send message' }).hasAttribute('disabled')).toBe(true);

@@ -38,7 +38,6 @@ function Shell({ page, packageId = null, title, children }: { page: Page; packag
       activePackage={packageId}
       theme="light"
       sidebarRefreshKey={0}
-      liveNeedYou={null}
       onNavigate={() => {}}
       onOpenPackage={() => {}}
       onNewReview={() => {}}

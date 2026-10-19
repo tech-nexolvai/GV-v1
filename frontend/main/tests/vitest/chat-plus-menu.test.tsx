@@ -205,7 +205,7 @@ const opt = (value: string) => {
 };
 
 describe('the + menu', () => {
-  it('opens upward with a search box, grouped Checks · Outputs · Focus, and estimates', async () => {
+  it('opens upward with a search box, grouped Checks · Outputs · Focus · Model, and estimates', async () => {
     const user = userEvent.setup();
     render(<Harness />);
     await user.click(plusButton());
@@ -214,7 +214,12 @@ describe('the + menu', () => {
     expect(within(menu).getByText('Checks')).toBeTruthy();
     expect(within(menu).getByText('Outputs')).toBeTruthy();
     expect(within(menu).getByText('Focus')).toBeTruthy();
-    expect(within(menu).getAllByRole('option')).toHaveLength(plusActions().length);
+    // #1712 (owner decision 4): the model is chosen here, one row per model, the current one marked.
+    expect(within(menu).getByText('Model')).toBeTruthy();
+    const modelRows = within(menu).getAllByRole('option').filter((option) => option.getAttribute('data-action')?.startsWith('model:'));
+    expect(within(menu).getAllByRole('option')).toHaveLength(plusActions().length + modelRows.length);
+    expect(modelRows.length).toBeGreaterThan(0);
+    expect(modelRows.filter((row) => within(row).queryByLabelText('Current'))).toHaveLength(1);
     // The products not ready yet are listed, greyed: "Coming later".
     expect(opt('product:lighting').getAttribute('aria-disabled')).toBe('true');
     expect(opt('product:lighting').textContent).toContain('Coming later');

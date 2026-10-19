@@ -67,7 +67,7 @@ describe('chat first', () => {
     expect(screen.queryByRole('complementary', { name: 'Chats' })).toBeNull();
     const chats = await within(sidebar).findByRole('navigation', { name: 'Chats in this drawing set' });
     expect(within(chats).getAllByRole('button').map((button) => button.textContent)).toEqual(['New chat']);
-    expect(within(chats).getAllByRole('link').map((link) => link.textContent)).toEqual(['Widths', 'Sinks']);
+    expect(within(chats).getAllByRole('link').map((link) => link.querySelector('[data-kind]')?.textContent)).toEqual(['Widths', 'Sinks']);
     expect(within(chats).getByRole('link', { name: 'Widths' }).getAttribute('aria-current')).toBe('page');
     // The top bar: the set, then the chat's title; no brand in the middle.
     expect(document.querySelector('[data-slot="chat-crumb"]')?.textContent).toBe('Widths');

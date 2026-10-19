@@ -216,7 +216,6 @@ describe('app shell', () => {
         activePackage={openPackage}
         theme="light"
         sidebarRefreshKey={0}
-        liveNeedYou={null}
         liveRestarting={liveRestarting}
         onNavigate={() => {}}
         onOpenPackage={() => {}}
@@ -244,24 +243,19 @@ describe('app shell', () => {
     expect(document.querySelector('[data-slot="sidebar"][data-state]')?.getAttribute('data-state')).toBe('expanded');
   });
 
-  it('lists recent reviews with their status and how many questions are optional (owner, 2026-10-16)', async () => {
+  it('lists recent reviews with their state in plain grey words: no pill, no "N optional" count (#1712)', async () => {
     render(<Shell openPackage={null} />);
     const sidebar = document.querySelector('[data-slot="sidebar"]') as HTMLElement;
     expect(await within(sidebar).findByText('Synthetic vendor A')).toBeTruthy();
-    await waitFor(() => expect(sidebar.querySelector('[data-slot="need-you"]')?.textContent).toBe('4 optional'));
-    // Grey, never the amber "needs your decision" colour or its glyph.
-    expect(sidebar.querySelector('[data-slot="need-you"]')?.className).toContain('text-muted-foreground');
-    expect(sidebar.querySelector('[data-slot="need-you"]')?.className).not.toContain('outcome-review');
-    expect(sidebar.textContent).not.toMatch(/need you|needs you/i);
-    expect(document.querySelector('[data-status="APPROVED"]')).not.toBeNull();
-  });
-
-  it('the open review shows its optional count in grey too, never an amber "Needs you" (owner, 2026-10-16)', async () => {
-    render(<Shell />);
-    const sidebar = document.querySelector('[data-slot="sidebar"]') as HTMLElement;
-    await waitFor(() => expect(sidebar.querySelector('[data-slot="need-you"]')?.textContent).toMatch(/^\d+ optional$/));
-    expect(sidebar.querySelector('[data-slot="need-you"] [data-outcome-icon="REVIEW_REQUIRED"]')).toBeNull();
-    expect(sidebar.textContent).not.toMatch(/needs you/i);
+    const status = sidebar.querySelector('[data-slot="set-status"][data-status="APPROVED"]') as HTMLElement;
+    expect(status).not.toBeNull();
+    expect(status.textContent).toMatch(/^Approved/);
+    // Grey words: a set's state is not an outcome, so no outcome colour and no badge.
+    expect(status.className).toContain('text-muted-foreground');
+    expect(status.className).not.toMatch(/outcome-/);
+    expect(sidebar.querySelector('[data-slot="package-status-badge"]')).toBeNull();
+    expect(sidebar.querySelector('[data-slot="need-you"]')).toBeNull();
+    expect(sidebar.textContent).not.toMatch(/optional|need you|needs you|Awaiting Review/i);
   });
 
   it('the open review\'s badge says "Restarting" with its header while its reading restarts; other reviews keep "Stopped" (#1249)', async () => {
@@ -270,8 +264,8 @@ describe('app shell', () => {
     render(<Shell liveRestarting={{ packageId: 'p1', restarting: true }} />);
     const sidebar = document.querySelector('[data-slot="sidebar"]') as HTMLElement;
     await within(sidebar).findByText('Synthetic vendor B');
-    const badges = [...sidebar.querySelectorAll('[data-slot="package-status-badge"]')].map((badge) => badge.textContent);
-    expect(badges).toEqual(['Restarting after a problem', 'Stopped after a problem']);
+    const states = [...sidebar.querySelectorAll('[data-slot="set-status"]')].map((line) => line.textContent);
+    expect(states).toEqual(['Restarting after a problem', 'Stopped after a problem']);
   });
 
   it('the open review\'s badge keeps "Stopped" when nothing restarts (#1249)', async () => {
@@ -279,7 +273,7 @@ describe('app shell', () => {
     render(<Shell liveRestarting={{ packageId: 'p1', restarting: false }} />);
     const sidebar = document.querySelector('[data-slot="sidebar"]') as HTMLElement;
     await within(sidebar).findByText('Synthetic vendor A');
-    expect(sidebar.querySelector('[data-slot="package-status-badge"]')?.textContent).toBe('Stopped after a problem');
+    expect(sidebar.querySelector('[data-slot="set-status"]')?.textContent).toBe('Stopped after a problem');
   });
 
   it('keyboard order: skip link, navigation, header (where you are → status → action), then the page', async () => {
