@@ -60,6 +60,7 @@ from app.review.assistant.simple_check.verify import (
     Verified,
     with_blind,
 )
+from app.review.assistant.spot_locate import code_spotted
 
 if TYPE_CHECKING:
     from app.review.assistant.chat_engine import ChatEngine, MessageOutcome
@@ -1376,7 +1377,8 @@ def _seed_for(
             other.get("created_by") == "gv_review"
             and other.get("source") == "gv_review"
             and other.get("page") == fields.get("page")
-            and not other.get("vendor_box")
+            # No spot yet, or only the one code found for it (#1738).
+            and code_spotted(other)
             and to_inches(str(other.get("vendor") or "")) == vendor
             and to_inches(str(other.get("architect") or "")) == architect
         ):

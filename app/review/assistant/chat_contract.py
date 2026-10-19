@@ -643,6 +643,7 @@ class ChatFindingProofOut(BaseModel):
             "nothing_to_compare",
             "different_reference",
             "unreadable",
+            "no_spot",
             "missing_setting",
             "prototype",
             "not_proved",

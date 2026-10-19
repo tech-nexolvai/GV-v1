@@ -89,6 +89,7 @@ from app.review.assistant.full_check_advocate import (
 from app.review.assistant.full_check_specialists import HELPER_CORE, knowledge_text
 from app.review.assistant.impact import by_impact
 from app.review.assistant.product_scope import scaled_price
+from app.review.assistant.spot_locate import code_spotted
 from app.review.assistant.untrusted import fence
 
 if TYPE_CHECKING:
@@ -1046,7 +1047,7 @@ class _Run:
         unboxed = [
             f
             for f in engine.book.live()
-            if f.get("created_by") == "gv_review" and not (f.get("arch_box") or f.get("vendor_box"))
+            if f.get("created_by") == "gv_review" and code_spotted(f)
         ]
         pages: dict[int, list[str]] = {}
         planned = sorted(
