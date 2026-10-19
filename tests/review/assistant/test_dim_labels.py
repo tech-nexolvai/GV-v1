@@ -187,6 +187,49 @@ def test_a_bare_number_needs_a_dimension_line(pdf: Path) -> None:
     assert labels[0]["side"] == "unknown"
 
 
+def _circle(cx: float, cy: float, r: float) -> bytes:
+    """A closed circle of four Bezier arcs (how CAD draws a drawing-reference bubble)."""
+    k = 0.5523 * r
+    return (
+        f"0 0 0 RG 0.5 w {cx + r} {cy} m "
+        f"{cx + r} {cy + k} {cx + k} {cy + r} {cx} {cy + r} c "
+        f"{cx - k} {cy + r} {cx - r} {cy + k} {cx - r} {cy} c "
+        f"{cx - r} {cy - k} {cx - k} {cy - r} {cx} {cy - r} c "
+        f"{cx + k} {cy - r} {cx + r} {cy - k} {cx + r} {cy} c S "
+    ).encode()
+
+
+def _title_bar() -> bytes:
+    """A view title as CAD sheets draw it: a bubble with the view number over the sheet number,
+    and the title's underline running from the bubble's edge with a dot at each end."""
+    body = _circle(80, 300, 20) + _line(58, 300, 400, 300)
+    for x in (58, 400):  # a dot at each end of the underline, which reads as a tick
+        body += _circle(x, 300, 1.5).replace(b" S ", b" f ") + _line(x, 298.5, x, 301.5)
+    body += _text(74, 301.5, "01", size=10) + _text(72, 290, "A2", size=10)
+    body += _text(110, 304, "ARCH LAYOUT", size=14)
+    return body
+
+
+def test_a_number_in_a_drawing_reference_bubble_is_not_a_dimension(tmp_path: Path) -> None:
+    """The `01` of a view title's bubble sits over a line with ends, like a bare dimension: but it
+    is inside a tag-sized closed shape, so it is the tag's name, not 1 inch."""
+    path = tmp_path / "bubble.pdf"
+    path.write_bytes(_pdf([_title_bar() + _page_two()]))
+    labels = dl.page_labels(path, 1).labels
+    assert [(label["text"], label["inches"]) for label in labels] == [("24", "24")]
+
+
+def test_a_number_in_a_box_tag_is_not_a_dimension_but_a_marked_one_is(tmp_path: Path) -> None:
+    box = b"0 0 0 RG 0.5 w 300 290 24 16 re S "  # a boxed tag over a dimension line
+    body = _dimension(260, 380, 292) + box + _text(306, 295, "12", size=10)
+    marked = b"0 0 0 RG 0.5 w 300 140 30 16 re S " + _dimension(260, 380, 142)
+    marked += _text(304, 145, '12"', size=10)
+    path = tmp_path / "boxed.pdf"
+    path.write_bytes(_pdf([body + marked]))
+    labels = dl.page_labels(path, 1).labels
+    assert [label["text"] for label in labels] == ['12"']
+
+
 def test_ids_are_stable_and_in_reading_order(pdf: Path) -> None:
     first = dl.page_labels(pdf, 1, HALVES).labels
     again = dl.page_labels(pdf, 1, HALVES).labels
