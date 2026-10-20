@@ -5859,6 +5859,76 @@
         "title": "ChatFullCheckPlanOut",
         "type": "object"
       },
+      "ChatFunnelOut": {
+        "description": "The simple full check's funnel in total (#1767; the whole one is `funnel.json` in the run\nfolder): how far the vendor's dimensions got, step by step.",
+        "properties": {
+          "agreed": {
+            "default": 0,
+            "description": "Second looks that agreed (red).",
+            "title": "Agreed",
+            "type": "integer"
+          },
+          "drawings": {
+            "default": 0,
+            "description": "Vendor drawings compared (answered).",
+            "title": "Drawings",
+            "type": "integer"
+          },
+          "labels_read": {
+            "default": 0,
+            "description": "Vendor labels code read on them.",
+            "title": "Labels Read",
+            "type": "integer"
+          },
+          "not_compared": {
+            "default": 0,
+            "title": "Not Compared",
+            "type": "integer"
+          },
+          "paired": {
+            "default": 0,
+            "description": "Vendor labels the AI paired with an architect's.",
+            "title": "Paired",
+            "type": "integer"
+          },
+          "red": {
+            "default": 0,
+            "title": "Red",
+            "type": "integer"
+          },
+          "resolved": {
+            "default": 0,
+            "description": "Items the resolve loop looked at again.",
+            "title": "Resolved",
+            "type": "integer"
+          },
+          "right": {
+            "default": 0,
+            "title": "Right",
+            "type": "integer"
+          },
+          "second_looks": {
+            "default": 0,
+            "description": "Blind second looks made.",
+            "title": "Second Looks",
+            "type": "integer"
+          },
+          "unaccounted": {
+            "default": 0,
+            "description": "Vendor labels the AI left unaccounted or never named.",
+            "title": "Unaccounted",
+            "type": "integer"
+          },
+          "verified_different": {
+            "default": 0,
+            "description": "Differences code verified (red candidates before the second look).",
+            "title": "Verified Different",
+            "type": "integer"
+          }
+        },
+        "title": "ChatFunnelOut",
+        "type": "object"
+      },
       "ChatGvChecksOut": {
         "description": "Of the differences GV Review's own checks recorded, how many this answer includes.",
         "properties": {
@@ -10036,6 +10106,17 @@
       },
       "ChatWorkItemsBlock": {
         "properties": {
+          "funnel": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatFunnelOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The run's funnel in total (#1767): shown under How this was checked; null on a run from before it."
+          },
           "run": {
             "anyOf": [
               {

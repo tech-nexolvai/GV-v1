@@ -5282,6 +5282,76 @@ export interface components {
             summary?: string | null;
         };
         /**
+         * ChatFunnelOut
+         * @description The simple full check's funnel in total (#1767; the whole one is `funnel.json` in the run
+         *     folder): how far the vendor's dimensions got, step by step.
+         */
+        ChatFunnelOut: {
+            /**
+             * Agreed
+             * @description Second looks that agreed (red).
+             * @default 0
+             */
+            agreed: number;
+            /**
+             * Drawings
+             * @description Vendor drawings compared (answered).
+             * @default 0
+             */
+            drawings: number;
+            /**
+             * Labels Read
+             * @description Vendor labels code read on them.
+             * @default 0
+             */
+            labels_read: number;
+            /**
+             * Not Compared
+             * @default 0
+             */
+            not_compared: number;
+            /**
+             * Paired
+             * @description Vendor labels the AI paired with an architect's.
+             * @default 0
+             */
+            paired: number;
+            /**
+             * Red
+             * @default 0
+             */
+            red: number;
+            /**
+             * Resolved
+             * @description Items the resolve loop looked at again.
+             * @default 0
+             */
+            resolved: number;
+            /**
+             * Right
+             * @default 0
+             */
+            right: number;
+            /**
+             * Second Looks
+             * @description Blind second looks made.
+             * @default 0
+             */
+            second_looks: number;
+            /**
+             * Unaccounted
+             * @description Vendor labels the AI left unaccounted or never named.
+             * @default 0
+             */
+            unaccounted: number;
+            /**
+             * Verified Different
+             * @description Differences code verified (red candidates before the second look).
+             * @default 0
+             */
+            verified_different: number;
+        };
+        /**
          * ChatGvChecksOut
          * @description Of the differences GV Review's own checks recorded, how many this answer includes.
          */
@@ -7001,6 +7071,8 @@ export interface components {
         };
         /** ChatWorkItemsBlock */
         ChatWorkItemsBlock: {
+            /** @description The run's funnel in total (#1767): shown under How this was checked; null on a run from before it. */
+            funnel?: components["schemas"]["ChatFunnelOut"] | null;
             /**
              * Run
              * @description The run's folder (its saved compare answers and blind looks): name it in `replay` to verify it again at $0.

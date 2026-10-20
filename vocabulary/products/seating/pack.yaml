@@ -1,0 +1,26 @@
+# The seating product pack (#1776): its registry entry and what it teaches the engines.
+# What each field means: vocabulary/products.yaml (the registry's fields) and
+# vocabulary/product_packs.py (the pack's own fields). Generic trade words only, no client values.
+
+id: seating
+label: Seating
+plural: Seating
+description: Chairs, stools, banquettes and sofas (draft starter checklist).
+active: false
+draft: true
+check_kinds: [dimension_match, global_rules]
+checklist:
+  - name: dimensions
+    text: Overall width, depth and height; seat height and depth; arm height.
+  - name: finish
+    text: >-
+      Fabric, leather and frame finish codes match the architect's or the specification.
+  - name: specs
+    text: >-
+      Glides or feet, upholstery details, stacking or swivel, weight limits where stated.
+  - name: quantities
+    text: How many of each piece, and where each one goes.
+  - name: notes
+    text: Every note and callout on the architect's drawing or specification is followed.
+global_rule_hints: []
+words: [chair, chairs, stool, stools, banquette, banquettes, sofa, sofas]
