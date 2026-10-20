@@ -1408,6 +1408,11 @@ def _message(
             ),
             pairing_proof=settings.assistant_pairing_proof,
             full_check_mode=settings.assistant_full_check_mode,
+            page_match_model=(
+                None
+                if settings.assistant_page_match_model == "off"
+                else settings.assistant_page_match_model
+            ),
             simple=_simple_options(settings, body) if mode == "full_check" else None,
             plan_answers=(
                 None

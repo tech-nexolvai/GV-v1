@@ -107,7 +107,7 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 #: Changes when what the pack holds changes: an older pack is built again.
-PACK_VERSION: Final = 8
+PACK_VERSION: Final = 9
 RENDER_DPI: Final = 100
 #: Seconds the dimension labels' drawn-ink route (OCR) may spend on one set, after every page's
 #: text labels (`GV_DIM_LABELS_DRAWN_BUDGET_S`; 0 turns it off). It reads the vendor's drawn
@@ -615,16 +615,18 @@ def _page_entries(
         whole: str | None = None
         candidate: dict[str, Any] | None = None
         headed = bool(stamps) and any(h for h in _headings(stamps, role_labels))
-        if upload_role is not None and number - 1 < len(sizes) and not headed:
+        if upload_role is not None and number - 1 < len(sizes):
             own = _own_text(own_texts, number, text, stamps)
             width, height = sizes[number - 1]
             page_box = (0.0, 0.0, round(width, 1), round(height, 1))
             if len(_DIMENSION.findall(own)) >= _DRAWING_DIMS:
                 # A page that prints dimensions by itself: one whole-page drawing, whatever
-                # stamps sit on it.
+                # stamps sit on it, GV's heading over them too (#1798: GV pastes reference
+                # snapshots on the vendor's own CAD pages and heads the page "VENDOR SHOP
+                # DRAWING"; the snapshots are GV's, the page is the vendor's drawing).
                 stamps = [{"box": page_box}]
                 whole = _whole_page_role(upload_role, text)
-            else:
+            elif not headed:
                 candidate = _candidate(
                     page_box, _whole_page_role(upload_role, text), upload_role, upload_round
                 )
@@ -633,8 +635,8 @@ def _page_entries(
         for stamp, heading in zip(ordered, _headings(ordered, role_labels), strict=True):
             role = heading["role"] if heading else "general"
             from_upload = False
-            if heading is None and whole is not None:
-                role, from_upload = whole, True
+            if whole is not None:
+                role, from_upload, heading = whole, True, None
             elif heading is None and upload_role == "architect":
                 # The architect's own file: a drawing GV gave no heading is the architect's.
                 role, from_upload = "architect", True
