@@ -30,9 +30,10 @@ export const ROUND_WORDS = {
 } as const;
 
 /**
- * A tracker tag in the round-2 words. The server tags "Still wrong" and "New in round N"; a first
- * round's "New in round 1" says nothing (every item is new there), so it is not shown. Other tags
- * (the item's kind) pass through.
+ * A tracker tag in the round-2 words. The server tags in these words itself ("Previous comment not
+ * addressed", "New", #1766); older answers' "Still wrong" and "New in round N" are mapped, and a
+ * first round's "New in round 1" says nothing (every item is new there), so it is not shown. Other
+ * tags (the item's kind) pass through.
  */
 export function roundTagWords(tag: string): string | null {
   if (/^still wrong$/i.test(tag.trim())) return ROUND_WORDS.notAddressed;

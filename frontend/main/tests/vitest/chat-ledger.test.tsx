@@ -75,7 +75,7 @@ describe('the reading ledger in words', () => {
   });
 
   it('uses the rounds line code wrote for compare_rounds', () => {
-    const line = 'Vendor fixed 1 of 3 round-1 items · 2 still wrong · 2 changes nobody asked for';
+    const line = 'Round 1 comments: 1 of 3 closed · 2 previous comments not addressed · 2 changes nobody asked for';
     expect(roundWords({ fixed: 1, still_wrong: 2, new: 0, unrequested: 2, line })).toBe(line);
     // Without code's line, the screen says it in the comment letter's round words (#1712).
     expect(roundWords({ fixed: 1, still_wrong: 2, new: 0, unrequested: 2 })).toBe('Closed 1 of 3 round-1 items · 2 previous comments not addressed · 2 changes nobody asked for');
@@ -88,7 +88,7 @@ describe('the reading ledger on the screen', () => {
     const trust: ChatTrust = {
       ledger: LEDGER,
       gv_checks: { recorded: 9, included: 9, left_out: [] },
-      rounds: { fixed: 1, still_wrong: 2, new: 0, unrequested: 2, line: 'Vendor fixed 1 of 3 round-1 items · 2 still wrong · 2 changes nobody asked for' },
+      rounds: { fixed: 1, still_wrong: 2, new: 0, unrequested: 2, line: 'Round 1 comments: 1 of 3 closed · 2 previous comments not addressed · 2 changes nobody asked for' },
     };
     const node = show(answer({ findings: [CROSS, SUM], trust, scope: { kind: 'whole_set' } }));
     const summary = within(node).getByRole('region', { name: 'How this was checked' });
@@ -98,7 +98,7 @@ describe('the reading ledger on the screen', () => {
     await user.click(ledger);
     expect(within(summary).getByText('W30 wall')).toBeTruthy();
     expect(within(summary).getByText('Matches GV Review’s own checks:', { exact: false }).textContent).toContain('9 of 9');
-    expect(within(summary).getByText('Vendor fixed 1 of 3 round-1 items · 2 still wrong · 2 changes nobody asked for')).toBeTruthy();
+    expect(within(summary).getByText('Round 1 comments: 1 of 3 closed · 2 previous comments not addressed · 2 changes nobody asked for')).toBeTruthy();
   });
 
   it('says a cross-view item by its views, and code’s sum in a vendor string’s card', () => {
