@@ -911,3 +911,37 @@ def test_verify_works_out_the_work_item_from_its_id(tmp_path: Path) -> None:
     unknown = verify({**result, "work_item": "p9.v1"}, tmp_path)
     assert unknown[0]["verdict"] == "not_compared"
     assert unknown[0]["reason"] == "code does not know this work item"
+
+
+# ---- the AI says only "same points"; code compares the numbers (#1775, C3) ----------------------
+
+
+def test_same_points_with_values_code_reads_different_is_a_candidate() -> None:
+    found = _one(_pair("p2.D1", "p1.D1", "same_points"))
+    assert found.outcome == "candidate" and found.needs_blind
+    assert with_blind(found, _agrees(found)).outcome == "red"
+    # The older form's "same" on the very same pair stays Not compared (saved answers replay so).
+    older = _one(_pair("p2.D1", "p1.D1", "same"))
+    assert older.outcome == "not_compared"
+
+
+def test_same_points_with_values_code_reads_equal_is_right() -> None:
+    right = _one(
+        _pair("p1.D7", "p1.D3", "same_points", ("wall", "outlet CL", "wall", "outlet centre line")),
+        ROUND_1,
+    )
+    assert right.outcome == "right" and "answer said different" not in right.finding["why"]
+
+
+def test_same_points_never_passes_a_failed_code_check() -> None:
+    found = _one(
+        _pair(
+            "p2.D1",
+            "p1.D1",
+            "same_points",
+            ("floor", "top of counter", "floor", "underside of counter"),
+        )
+    )
+    assert found.outcome == "not_compared" and found.reason_code == "different_reference"
+    unsure = _one(_pair("p2.D1", "p1.D1", "unsure"))
+    assert unsure.outcome == "not_compared"

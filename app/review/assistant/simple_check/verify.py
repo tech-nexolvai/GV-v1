@@ -9,8 +9,10 @@ outputs read (the cloud drawing, the package, the Not-compared PDF and workbook,
 
 **A pair is a red candidate** only when ALL of these hold (each one a named `Check`):
 
-- the model says `different`, both labels exist and code read their values (`dims.json`: printed
-  text, or the vendor's drawn ink read by two OCR engines), and they differ by more than 1/16";
+- the model says the two run between the same two points (`same_points`; the older form's
+  `different`), both labels exist and code read their values (`dims.json`: printed text, or the
+  vendor's drawn ink read by two OCR engines), and code finds they differ by more than 1/16": the
+  model never judges the values (recipe step 2, C3);
 - `roles`: the vendor label is on a vendor drawing, the architect label on the architect's (a brand
   prototype is reference only, R1);
 - `area`: the architect label is on one of the work item's architect drawings, in the same area of
@@ -43,7 +45,8 @@ drawings.
   "architect gives no size";
 - `no_architect_value` -> a row of the Not-compared list ("architect gives no size", R7), not a
   finding (a set has hundreds);
-- `same` with both values verified equal -> Right; `same` with values that differ -> Not compared,
+- `same_points` -> code compares the values: equal -> Right (every check above but the value),
+  different -> a red candidate. The older form's `same` with values that differ -> Not compared,
   never Right; `different` with values code reads as equal -> Right;
 - a vendor label code paired by itself (`pairs.json`) -> covered: code's own finding decides it;
 - `missing_on_vendor` -> a red candidate only when code finds the architect's value or tag printed
@@ -1204,7 +1207,7 @@ def _verify_pair(
         return Verified(key, "pair", "covered", why, vendor=vendor, architect=architect, ends=ends)
     one = _Pair(key, item, pack, pair, vendor, architect, ends)
     if architect is None:
-        if verdict in ("same", "different", "different_points"):
+        if verdict in ("same_points", "same", "different", "different_points"):
             return one.grey(
                 f"not proved: the answer names no architect label code knows ({aref or 'none'})",
                 "not_proved",
@@ -1215,12 +1218,16 @@ def _verify_pair(
         )
     if verdict == "different_points":
         return one.grey(DIFFERENT_POINTS, "different_reference")
-    if verdict not in ("same", "different"):
+    if verdict not in ("same_points", "same", "different"):
         note = str(pair.get("note") or "").strip()
         return one.grey(UNSURE + (f": {note}" if note else ""), "not_proved")
     v_in, a_in = _fraction(vendor.get("inches")), _fraction(architect.get("inches"))
     if v_in is None or a_in is None:
         return one.grey("code could not read the value as a size", "unreadable")
+    if verdict == "same_points":
+        # The AI said only that both run between the same two points (recipe step 2): code
+        # compares the numbers and takes the older form's path for what it reads.
+        verdict = "different" if _differ(v_in, a_in) else "same"
     a_file = str(architect.get("file") or pack.main_file)
     a_page = int(architect.get("page") or 0)
     matched = ends_match(
