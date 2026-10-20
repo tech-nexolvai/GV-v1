@@ -55,7 +55,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 from uuid import uuid4
 
-from app.review.assistant import classification, witness
+from app.review.assistant import classification, dim_anchors, same_ends, witness
 from app.review.assistant import proof as proof_rule
 from app.review.assistant.chat_findings import UPDATE_FINDING
 from app.review.assistant.chat_request import BY_SHORT, thinking_config
@@ -799,6 +799,9 @@ class _Run:
     spent: dict[str, int] = field(default_factory=dict)
     stopped_for_money: bool = False
     pairs: dict[str, str] = field(default_factory=dict)
+    #: The drawn run's drawings and line work (`same_ends`), read once per run.
+    _drawn_sides: dict[Any, Any] = field(default_factory=dict)
+    _line_work: dict[tuple[str, int], Any] = field(default_factory=dict)
     agents: list[Any] = field(default_factory=list)
     #: The phase whose budget the devil's advocate's blind picks are charged to: its own (P4), or
     #: what is left under the fixed price (the escalation, #1619).
@@ -1770,7 +1773,7 @@ class _Run:
                 and architect is not None
                 and mode != "code_only"
             ):
-                extent = self._extent(vendor, architect)
+                extent = self._extent(vendor, architect, page_map)
                 if extent[0] == "same_extent":
                     # Only an item code's geometry backs is worth the blind pick's call (#1641).
                     reply = self._blind_pick(finding, vendor, architect, page_map)
@@ -1860,8 +1863,14 @@ class _Run:
             return None
 
     def _extent(
-        self, vendor: Mapping[str, Any], architect: Mapping[str, Any]
+        self,
+        vendor: Mapping[str, Any],
+        architect: Mapping[str, Any],
+        page_map: Mapping[str, Any] | None = None,
     ) -> tuple[Extent, str]:
+        """Code's geometry for a pair: the anchor fit (`same_extent`); where it cannot tell, the
+        drawn run (`same_ends`: ties on both drawings and nothing else drawn near a moved end).
+        A failure of the second proof leaves the first's answer."""
         labels = self.engine.book.dim_labels
 
         def side(label: Mapping[str, Any], wanted: str) -> list[dict[str, Any]]:
@@ -1871,7 +1880,31 @@ class _Run:
         state, why = same_extent(
             vendor, architect, side(vendor, "vendor"), side(architect, "architect")
         )
-        return state, why
+        if state != "cannot_tell":
+            return state, why
+        try:
+            proved, said = same_ends.prove_labels(
+                vendor,
+                architect,
+                labels_of=lambda file, page: labels.on_page(file, page, read_now=False) or [],
+                segments_of=self._segments,
+                page_map=page_map,
+                cache=self._drawn_sides,
+            )
+        except Exception:  # noqa: BLE001 - the drawn run is extra proof; the anchor fit stands
+            _log.exception("assistant roster same-ends proof failed")
+            return state, why
+        if proved == "cannot_tell":
+            return state, why
+        return proved, f"the drawn run: {said}"
+
+    def _segments(self, file: str, page: int) -> Sequence[Any]:
+        """A page's line work as `dim_labels` reads it, read once per run."""
+        key = (file, page)
+        if key not in self._line_work:
+            pdf = self.engine.book.dim_labels.uploads / file
+            self._line_work[key] = dim_anchors.page_segments(pdf, page - 1)
+        return self._line_work[key]
 
     def _half_box(
         self, page_map: Mapping[str, Any] | None, label: Mapping[str, Any]
