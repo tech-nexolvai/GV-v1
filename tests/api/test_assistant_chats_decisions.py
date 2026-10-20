@@ -208,7 +208,7 @@ def test_the_cloud_drawing_follows_the_decisions_and_keeps_older_files(postgres_
         assert "and reviewed by reviewer-one" in pages2[0]
         assert _red_near(pdf2, 3, VENDOR_BOX) > 5
         assert _red_near(pdf2, 4, PAGE3_BOX) == 0
-        assert "Not a problem (reviewer) (1)" in pages2[-1] and "Field fit" in pages2[-1]
+        assert "Right (reviewer): Field fit" in " ".join(pages2[-1].split())
 
         # The older pair is kept and still downloads unchanged.
         files = world.client.get(f"/api/v1/chats/{chat_id}").json()["messages"][-1]["files"]

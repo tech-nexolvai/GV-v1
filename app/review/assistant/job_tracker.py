@@ -558,14 +558,18 @@ def _judge(item: _Item, first_round_of_set: int) -> None:
         item.open_kind = "wrong" if current.status == "different" else "decision"
     item.fixed_round = fixed_round if item.standing == "fixed" else None
 
+    # Tags in the comment letter's words (Closed / Previous comment not addressed / New, #1766);
+    # every item is new in the first round, so "New" is said only after it.
     first_round = min(s.round for s in item.sightings)
-    if first_round > first_round_of_set or any(s.round_status == "new" for s in item.sightings):
-        item.tags.append(f"New in round {first_round}")
+    if first_round > 1 and (
+        first_round > first_round_of_set or any(s.round_status == "new" for s in item.sightings)
+    ):
+        item.tags.append("New")
     if item.standing == "open" and (
         len([r for r in wrong_rounds if item.per_round[r].status == "different"]) >= 2
         or stored == "still_wrong"
     ):
-        item.tags.append("Still wrong")
+        item.tags.append("Previous comment not addressed")
     if item.standing == "open" and stored == "still_not_compared":
         item.tags.append("Still not compared")
 
