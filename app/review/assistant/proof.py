@@ -329,6 +329,8 @@ def code_proved(finding: Mapping[str, Any]) -> bool:
         return False  # a total the architect never prints (code's summed chain) is never proof
     if finding.get("source") == "vendor_arithmetic" and not string_verified(finding):
         return False  # an AI-grouped string: only code's geometry proves the parts are one chain
+    if classification.architect_conflict(finding) is not None:
+        return False  # the architect prints the vendor's value, or not the "should be" (#1802)
     if not _read_by_code(finding):
         return False
     return not needs_pairing(finding) or pairing_proved(finding)

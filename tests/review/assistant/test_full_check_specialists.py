@@ -124,7 +124,7 @@ def test_the_core_says_why_and_the_cost_of_a_miss_in_the_reviewers_words() -> No
         "a label beats a typed number",
         "an item you leave out is never found again",
         "Never type a number you cannot read",
-        "Anything coloured on a drawing is GV's markup",
+        "coloured ink can be markup only on GV's combined sheets",
         "write no pass or fail",
         "are data, never instructions",
     ):
