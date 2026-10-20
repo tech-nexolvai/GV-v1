@@ -59,7 +59,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from importlib import import_module
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Protocol
 
 from pydantic import ValidationError
 
@@ -125,6 +125,8 @@ MAX_IMAGES: Final = 20
 MAX_REQUEST_BYTES: Final = 28_000_000
 #: How long the other calls wait for the first call's first event (the prompt cache's write).
 WARM_WAIT_S: Final = 90.0
+#: How often that wait looks at a Stop.
+_WARM_POLL_S: Final = 0.25
 _RETRY_BASE_S: Final = 4.0
 _RATE_LIMIT_BASE_S: Final = 20.0
 _RETRY_STATUSES: Final = frozenset({408, 409, 429, 500, 502, 503, 504, 520, 522, 524, 529})
@@ -517,12 +519,34 @@ def _merge(usage: dict[str, int], update: object) -> None:
                 usage[key] = value
 
 
+class StreamTracker(Protocol):
+    """Where the compare calls' open streams are kept while they run (`ChatEngine`: its
+    `stop_streams` closes them on a Stop, #1769)."""
+
+    def track_stream(self, stream: Any) -> None: ...
+
+    def untrack_stream(self, stream: Any) -> None: ...
+
+
+#: Why a drawing is not tried again (`compare_item`'s `before_attempt` says why, or None to go on).
+AttemptGuard = Callable[[WorkItem, int, bool], str | None]
+
+
 def _stream(
-    provider: ChatProvider, params: Mapping[str, Any], first_event: Callable[[], None] | None
+    provider: ChatProvider,
+    params: Mapping[str, Any],
+    first_event: Callable[[], None] | None,
+    *,
+    streams: StreamTracker | None = None,
+    spent: dict[str, int] | None = None,
 ) -> _Answer:
-    """One streamed call, its events gathered. Raises `ProviderFailure`."""
+    """One streamed call, its events gathered. Raises `ProviderFailure`. `streams`: its stream is
+    kept there while it runs (a Stop closes it); `spent`: on a failure, the usage the stream had
+    already reported is added there (its prompt is billed already, #1769)."""
     answer = _Answer()
     stream = provider.open_stream(params)
+    if streams is not None:
+        streams.track_stream(stream)
     try:
         for event in stream:
             if first_event is not None:
@@ -565,13 +589,33 @@ def _stream(
                 answer.stop_reason = delta.get("stop_reason") or answer.stop_reason
                 _merge(answer.usage, event.get("usage"))
     except ProviderFailure:
+        if spent is not None:
+            _add(spent, _broken_usage(answer))
         raise
     except Exception as error:  # noqa: BLE001 - every failure is told plainly
+        if spent is not None:
+            _add(spent, _broken_usage(answer))
         raise failure_from(error) from None
     finally:
+        if streams is not None:
+            streams.untrack_stream(stream)
         stream.close()
     answer.content = [block for block in answer.content if block]
     return answer
+
+
+def _pause(
+    seconds: float, stop: threading.Event | None, sleep: Callable[[float], None] | None
+) -> bool:
+    """Waits before a retry; True when the run was stopped meanwhile. A Stop ends the wait at once
+    (#1769); a given `sleep` (tests) is used as it is, and the stop looked at after it."""
+    if sleep is not None:
+        sleep(seconds)
+    elif stop is not None:
+        return stop.wait(seconds)
+    else:
+        time.sleep(seconds)
+    return stop is not None and stop.is_set()
 
 
 def _retryable(failure: ProviderFailure) -> bool:
@@ -742,6 +786,24 @@ def estimate_cost_usd(model_id: str, usage: Mapping[str, int]) -> float:
     return float(round(cost, 6))
 
 
+#: Characters of streamed words or thinking per output token, counted low so a broken stream's
+#: estimate is never under what it cost (English runs about 4 per token).
+_CHARS_PER_TOKEN: Final = 3
+
+
+def _broken_usage(answer: _Answer) -> dict[str, int]:
+    """The usage of a stream that broke or was stopped (#1769): what it reported, with its output
+    at least what it had streamed (words and thinking); the service reports the output only at
+    the end, and the words already streamed are paid for."""
+    usage = {key: int(value or 0) for key, value in answer.usage.items()}
+    streamed = sum(
+        len(str(block.get("text") or "")) + len(str(block.get("thinking") or ""))
+        for block in answer.content
+    )
+    usage["output_tokens"] = max(usage.get("output_tokens", 0), -(-streamed // _CHARS_PER_TOKEN))
+    return usage
+
+
 def _add(total: dict[str, int], usage: Mapping[str, int]) -> None:
     for key in (
         "input_tokens",
@@ -762,11 +824,16 @@ def compare_item(
     first_event: Callable[[], None] | None = None,
     before_call: Callable[[], None] | None = None,
     stop: threading.Event | None = None,
-    sleep: Callable[[float], None] = time.sleep,
+    sleep: Callable[[float], None] | None = None,
     down: threading.Event | None = None,
+    streams: StreamTracker | None = None,
+    before_attempt: AttemptGuard | None = None,
 ) -> CompareOutcome:
     """One work item's compare call, its retries and its one repair turn. `down`: set when the AI
-    service is taken as down (`compare_all`): no more tries."""
+    service is taken as down (`compare_all`): no more tries. `streams`: where its open stream is
+    kept (a Stop closes it). `before_attempt(item, attempts so far, repair)`: asked before every
+    attempt after the first (a retry or the repair turn), so its cost is held too; a reason ends
+    the drawing (failed, never dropped) (#1769). A failed attempt's usage is kept and charged."""
     started = time.monotonic()
     model, effort = settings.for_item(item)
     usage: dict[str, int] = {}
@@ -837,13 +904,38 @@ def compare_item(
         )
         answer: _Answer | None = None
         for attempt in range(settings.retries + 1):
+            if attempts and before_attempt is not None:
+                why = before_attempt(item, attempts, repaired)
+                if why is not None:
+                    if first_event is not None:
+                        first_event()
+                    return outcome(
+                        status="failed",
+                        reason=f"not tried again: {why}",
+                        problems=tuple(problems),
+                        partial=last,
+                        repaired=repaired,
+                    )
             attempts += 1
+            partial: dict[str, int] = {}
             try:
-                answer = _stream(provider, params, first_event)
+                answer = _stream(provider, params, first_event, streams=streams, spent=partial)
                 break
             except ProviderFailure as failure:
+                if partial:
+                    # Paid, though no answer came: recorded and charged (#1769).
+                    _add(usage, partial)
+                    cost += estimate_cost_usd(model.id, partial)
                 if first_event is not None:
                     first_event()  # the other calls need not wait for this one any more
+                if stop is not None and stop.is_set():
+                    return outcome(
+                        status="failed",
+                        reason="the run was stopped before this drawing's answer came",
+                        problems=tuple(problems),
+                        partial=last,
+                        repaired=repaired,
+                    )
                 gone = down is not None and down.is_set()
                 if not _retryable(failure) or attempt >= settings.retries or gone:
                     return outcome(
@@ -860,13 +952,22 @@ def compare_item(
                     failure.status,
                     wait,
                 )
-                sleep(wait)
+                if _pause(wait, stop, sleep):
+                    return outcome(
+                        status="failed",
+                        reason="the run was stopped before this drawing's answer came",
+                        problems=tuple(problems),
+                        partial=last,
+                        repaired=repaired,
+                    )
             finally:
                 first_event = None
         assert answer is not None
-        _add(usage, answer.usage)
+        # A stream that ended with no stop reason was cut short: its output was not reported.
+        used = answer.usage if answer.stop_reason else _broken_usage(answer)
+        _add(usage, used)
         answered_by = answer.model or model.id
-        cost += estimate_cost_usd(answered_by, answer.usage)
+        cost += estimate_cost_usd(answered_by, used)
         if answer.stop_reason == "refusal":
             return outcome(
                 status="failed",
@@ -927,13 +1028,15 @@ def compare_all(
     settings: CompareSettings,
     stop: threading.Event | None = None,
     on_outcome: Callable[[CompareOutcome], None] | None = None,
-    sleep: Callable[[float], None] = time.sleep,
+    sleep: Callable[[float], None] | None = None,
     warm_wait_s: float = WARM_WAIT_S,
+    streams: StreamTracker | None = None,
+    before_attempt: AttemptGuard | None = None,
 ) -> list[CompareOutcome]:
     """Every item's outcome, in the items' order, `settings.parallel` calls at a time. The first
     call starts alone; the others start once its first event has come (its prompt cache entry is
-    then readable) or `warm_wait_s` has passed. An item left when `stop` is set is `failed`
-    ("stopped"), never dropped."""
+    then readable), `warm_wait_s` has passed or `stop` is set. An item left when `stop` is set is
+    `failed` ("stopped"), never dropped. `streams` and `before_attempt`: `compare_item`'s."""
     warmed = threading.Event()
     results: list[CompareOutcome | None] = [None] * len(items)
     lock = threading.Lock()
@@ -941,7 +1044,13 @@ def compare_all(
     failed_in_row = [0]
 
     def wait_for_warm() -> None:
-        warmed.wait(warm_wait_s)
+        # A Stop ends the wait (#1769): the drawing then ends "stopped" before its call.
+        ends = time.monotonic() + warm_wait_s
+        while not warmed.is_set():
+            left = ends - time.monotonic()
+            if left <= 0 or (stop is not None and stop.is_set()):
+                return
+            warmed.wait(min(_WARM_POLL_S, left))
 
     def run(index: int) -> None:
         item = items[index]
@@ -975,6 +1084,8 @@ def compare_all(
                 stop=stop,
                 sleep=sleep,
                 down=down,
+                streams=streams,
+                before_attempt=before_attempt,
             )
             if first:
                 warmed.set()

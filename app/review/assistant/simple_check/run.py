@@ -80,6 +80,7 @@ __all__ = [
     "replay",
     "replay_with_funnel",
     "run",
+    "run_of_message",
     "work_item_rows",
 ]
 
@@ -87,10 +88,11 @@ _log = logging.getLogger(__name__)
 
 #: The compare call's prompt id on the Usage page.
 COMPARE_PROMPT_ID: Final = "review-assistant-chat-simple-compare-{provider}-{harness}"
-#: What a compare call's cost is held at while it runs (`_guarded`): its pictures' tokens, the
-#: text of the request and the cached system prompt, and this much reply (thinking and the form).
+#: What a compare attempt's cost is held at while it runs (`_guarded`, `_again`): its pictures'
+#: tokens, the text of the request and the cached system prompt, and its whole reply room
+#: (`CompareSettings.max_tokens`, thinking and the form). Each retry and the repair turn hold it
+#: again before they start (#1769): the hold is a real ceiling, not a typical answer.
 _REQUEST_TEXT_TOKENS: Final = 8_000
-_REPLY_HOLD_TOKENS: Final = 16_000
 #: A chat's simple-check runs, each with its saved answers (`<chat>/simple/<run>/`).
 SIMPLE_DIR: Final = "simple"
 #: The order findings are recorded in (the finding book holds `MAX_FINDINGS`): what matters first.
@@ -157,6 +159,9 @@ class SimpleOptions:
     every saved answer and look is used again at $0, so the new answer is the whole result."""
     resolve: resolve_module.ResolveSettings = field(default_factory=resolve_module.ResolveSettings)
     """The resolve loop (`assistant_simple_resolve*`): off by default."""
+    message_id: str | None = None
+    """The answer this run belongs to, written in its `run.json`: a Continue after a restart finds
+    the interrupted answer's run by it (`run_of_message`, #1769)."""
 
     @classmethod
     def of(cls, raw: object) -> SimpleOptions:
@@ -176,6 +181,7 @@ class SimpleOptions:
             replay=str(given["replay"]) if given.get("replay") else None,
             compare_missing=bool(given.get("compare_missing")) and bool(given.get("replay")),
             resolve=resolve_module.ResolveSettings.of(given.get("resolve")),
+            message_id=str(given["message_id"]) if given.get("message_id") else None,
         )
 
 
@@ -233,15 +239,20 @@ class _Run:
     cap_hit: str | None = None
     pack: Pack | None = None
     page_map: Mapping[str, Any] | None = None
-    lock: threading.Lock = field(default_factory=threading.Lock)
+    lock: threading.Condition = field(default_factory=threading.Condition)
+    """Guards the holds; a call waiting for room is woken when a hold goes (`_release`)."""
     run_dir: Path | None = None
     """Where this run's compare answers and blind looks are saved (`<chat>/simple/<run>`)."""
     reserved: int = 0
     """What the compare calls in flight may still cost (millionths of $): the runaway guard counts
     it as spent, so the calls started never pass the cap together."""
     reservations: dict[str, int] = field(default_factory=dict)
+    attempt_holds: dict[str, int] = field(default_factory=dict)
+    """One attempt's hold per drawing started (`_guarded`): what each retry holds again."""
     refused: set[str] = field(default_factory=set)
     """Drawings not started because the runaway guard would have been passed."""
+    waiting: set[str] = field(default_factory=set)
+    """Drawings waiting for room (`_room`): their holds are not counted as calls that will end."""
     saved_blind: dict[str, dict[str, Any]] = field(default_factory=dict)
     blind_failed: int = 0
     """Red candidates whose blind look was asked for but could not be made (the call failed, the
@@ -682,8 +693,11 @@ class _Run:
                     source=self._guarded(source.pictures, settings),
                     system=system,
                     settings=settings,
-                    stop=self.stop,
+                    stop=_AnyStop(self.stop, getattr(engine, "cancel", None)),
                     on_outcome=self._on_outcome,
+                    # A Stop closes the calls streaming now (`ChatEngine.stop_streams`, #1769).
+                    streams=engine,
+                    before_attempt=self._again(settings),
                 )
         finally:
             self.stop.set()
@@ -692,29 +706,94 @@ class _Run:
     def _guarded(self, draw: Any, settings: Any) -> Any:
         """The compare call's picture source, guarded: a drawing starts only when what it may
         cost, with what the calls in flight may still cost, fits the per-answer cap (and the set's
-        budget). Its cost is held until its answer is charged."""
+        budget). Its cost is held until its answer is charged. When it does not fit while other
+        calls run, it waits for them to end (their holds become their real, smaller cost); it is
+        refused only when it would pass the cap with nothing else running (#1769 review)."""
         engine = self.engine
 
         def pictures(item: WorkItem) -> Any:
-            if self.stop.is_set():
+            if self._stopping():
                 raise _NotStarted("the check was stopped")
             sent = draw(item)
             model, _effort = settings.for_item(item)
             tokens = _REQUEST_TEXT_TOKENS + sum(int(one.picture.tokens) for one in sent)
-            hold = engine._price(model, tokens, _REPLY_HOLD_TOKENS) or 0
+            hold = engine._price(model, tokens, int(settings.max_tokens)) or 0
             with self.lock:
-                over = engine._over(self.reserved + hold)
-                if over is not None:
-                    self.cap_hit = self.cap_hit or over
+                why = self._room(item.id, hold)
+                if why == STOPPED_WORDS:
+                    raise _NotStarted("the check was stopped")
+                if why is not None:
                     self.refused.add(item.id)
-                    self.stop.set()
-                    raise _NotStarted("the per-answer cap would be passed")
-                self.reserved += hold
+                    raise _NotStarted(why)
                 self.reservations[item.id] = hold
+                self.attempt_holds[item.id] = hold
             self._tell("drawing_started", item.id)
             return sent
 
         return pictures
+
+    def _again(self, settings: Any) -> Any:
+        """Asked before a drawing's retry or repair turn (`compare.compare_item`): the attempt is
+        held like the first (#1769), a repair turn with the earlier reply in its prompt too; it
+        waits for room like a first attempt (`_room`), and when it would pass the cap with nothing
+        else running the drawing is not tried again and nothing new starts."""
+        engine = self.engine
+
+        def again(item: WorkItem, _attempts: int, repair: bool) -> str | None:
+            hold = self.attempt_holds.get(item.id, 0)
+            if repair:
+                model, _effort = settings.for_item(item)
+                hold += engine._price(model, int(settings.max_tokens), 0) or 0
+            with self.lock:
+                why = self._room(item.id, hold)
+                if why is not None:
+                    return why
+                self.reservations[item.id] = self.reservations.get(item.id, 0) + hold
+            return None
+
+        return again
+
+    def _stopping(self) -> bool:
+        """Stopped: the run's own flag, or the reviewer's Stop at once (the watcher only looks
+        twice a second, and no new call may start in between: #1769 review)."""
+        cancel = getattr(self.engine, "cancel", None)
+        if cancel is not None and cancel.is_set():
+            self.stop.set()
+        return self.stop.is_set()
+
+    def _room(self, item_id: str, hold: int) -> str | None:
+        """Holds `hold` for `item_id` once it fits the cap with the calls in flight (the caller
+        holds `self.lock` and records the hold in `reservations`); `STOPPED_WORDS` when the check
+        is stopped while waiting; the cap's words (and the run stopped, `cap_hit` set) when it
+        would pass the cap while no other call that will end is running."""
+        while True:
+            if self._stopping():
+                return STOPPED_WORDS
+            over = self.engine._over(self.reserved + hold)
+            if over is None:
+                self.reserved += hold
+                return None
+            running = sum(
+                held
+                for other, held in self.reservations.items()
+                if other != item_id and other not in self.waiting
+            )
+            if running <= 0:
+                self.cap_hit = self.cap_hit or over
+                self.stop.set()
+                self.lock.notify_all()
+                return "the per-answer cap would be passed"
+            self.waiting.add(item_id)
+            try:
+                self.lock.wait(0.25)
+            finally:
+                self.waiting.discard(item_id)
+
+    def _release(self, item_id: str) -> None:
+        """A drawing's holds go (its money is charged): calls waiting for room look again."""
+        with self.lock:
+            self.reserved -= self.reservations.pop(item_id, 0)
+            self.lock.notify_all()
 
     def _watch_cancel(self) -> None:
         while not self.stop.wait(0.5):
@@ -726,16 +805,20 @@ class _Run:
         seen, the runaway guard checked, the progress moved on."""
         engine = self.engine
         with self.lock:
-            self.reserved -= self.reservations.pop(outcome.work_item, 0)
             if outcome.work_item in self.refused:
                 outcome = outcome.model_copy(
                     update={"reason": "not started: the per-answer cap would be passed"}
                 )
             self.outcomes[outcome.work_item] = outcome
-        self._save_outcome(outcome)
-        model = _model(outcome.model) or _model(outcome.asked_model)
-        if model is not None and outcome.usage:
-            self._charge(model, outcome)
+        try:
+            self._save_outcome(outcome)
+            model = _model(outcome.model) or _model(outcome.asked_model)
+            if model is not None and outcome.usage:
+                self._charge(model, outcome)
+        finally:
+            # The hold goes only once the money is charged (#1769): in between, a call starting
+            # elsewhere sees one or the other, never neither, so two calls never pass the cap.
+            self._release(outcome.work_item)
         if outcome.status == "ok":
             seen = [
                 {
@@ -1119,6 +1202,10 @@ class _Run:
                         "items": [item.id for item in self.compared],
                         "skipped": self.skipped,
                         "replay_of": self.options.replay,
+                        "message_id": self.options.message_id,
+                        # The set pack its answers were read against: a Continue replays them only
+                        # on the same pack (#1769 review).
+                        "set_pack": _pack_name(self.engine.tools.workspace.set_pack),
                         "compare": dict(self.options.compare),
                         "blind": {
                             "model": self.options.blind.model,
@@ -1786,6 +1873,37 @@ def _wait_for_pack(folder: Path, cancel: threading.Event) -> str | None:
             return None
 
 
+class _AnyStop:
+    """The compare calls' stop (`compare.compare_all`'s `stop`): set when the run's own flag is,
+    or the reviewer's Stop (the engine's cancel) at once. A Stop closes the first call's stream,
+    which wakes the calls waiting for its first event before the watcher sets the run's flag
+    (#1769 review): they must see the Stop then, or each would send its request."""
+
+    def __init__(self, own: threading.Event, cancel: threading.Event | None) -> None:
+        self.own, self.cancel = own, cancel
+
+    def is_set(self) -> bool:
+        if self.cancel is not None and self.cancel.is_set():
+            self.own.set()
+        return self.own.is_set()
+
+    def set(self) -> None:
+        self.own.set()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        ends = None if timeout is None else time.monotonic() + timeout
+        while not self.is_set():
+            left = 0.1 if ends is None else min(0.1, ends - time.monotonic())
+            if left <= 0:
+                return False
+            self.own.wait(left)
+        return True
+
+
+#: Why a compare call waiting for room, or about to start, does not start: the check was stopped.
+STOPPED_WORDS: Final = "the check was stopped"
+
+
 class _NotStarted(RuntimeError):
     """A drawing the run did not start (a stop, or the runaway guard)."""
 
@@ -1806,6 +1924,32 @@ def _replay_dir(root: Path, run: str | None) -> Path | None:
         return None
     folder = root / SIMPLE_DIR / run
     return folder if folder.is_dir() else None
+
+
+def _pack_name(folder: Path | None) -> str | None:
+    return None if folder is None else folder.name
+
+
+def run_of_message(root: Path, message_id: object, set_pack: Path | None) -> str | None:
+    """The newest simple-check run of this chat made for that answer (`run.json`'s
+    `message_id`) on this set pack (`set_pack`'s folder, named from the uploads and the pack's
+    version), by its folder name; None when there is none (#1769: a Continue after a restart
+    replays it and compares only the drawings it has no answer for). A run read against another
+    pack (the drawings or the pack changed since) is never replayed: its answers name labels of
+    that pack, so the whole check runs again."""
+    folder = root / SIMPLE_DIR
+    if not message_id or not folder.is_dir():
+        return None
+    for run_dir in sorted(folder.iterdir(), reverse=True):
+        try:
+            record = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(record, Mapping) and record.get("message_id") == str(message_id):
+            if record.get("set_pack") is None or record.get("set_pack") != _pack_name(set_pack):
+                return None
+            return run_dir.name
+    return None
 
 
 def load_outcomes(run_dir: Path) -> dict[str, CompareOutcome]:
