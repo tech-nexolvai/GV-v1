@@ -306,3 +306,20 @@ def test_no_page_is_left_unchecked_without_its_reason(
     for page in (2, 3, 4, 5):
         note = str(_coverage(outcome)[page].get("note"))
         assert "out of money" in note or "more looks" in note, note
+
+
+@pytest.mark.parametrize(
+    ("spans", "item"),
+    [
+        ({"from": "floor", "to": "box_above_unit"}, "Market: overall height"),
+        (_SPANS, "Lobby: floor to soffit"),
+        (_SPANS, "Pantry: top of counter to underside of bulkhead"),
+    ],
+)
+def test_two_picks_alone_never_prove_room_context(spans: Mapping[str, str], item: str) -> None:
+    advocate = {**_AGREE, STRONG_PICK: True, "vendor_spans": spans, "architect_spans": spans}
+    verdict = decide(advocate=advocate, extent=_CANNOT, item=item, **_COMMON)
+    assert verdict.result == "objects" and "room context" in verdict.reason
+    # Where code's geometry proves the same extent, the item is judged as before.
+    proved = decide(advocate=advocate, extent=("same_extent", "ok"), item=item, **_COMMON)
+    assert proved.result == "passed"

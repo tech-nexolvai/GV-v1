@@ -2615,6 +2615,7 @@ class _Run:
                 advocate=reply,
                 extent=extent,
                 code_paired=code_paired,
+                item=str(finding.get("item") or ""),
             )
             pairing = {
                 "labels": {

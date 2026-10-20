@@ -106,6 +106,10 @@ SPANS: Final = (
     "blocking",
     "other",
 )
+#: An item about the room, never millwork alone (the simple check's trade rule, `verify.py`).
+_ROOM_CONTEXT: Final = re.compile(
+    r"\b(?:ceiling|soffit|bulkhead|header|door|window|beam|column|room height)s?\b", re.IGNORECASE
+)
 #: A Wrong item between two drawings: its pairing must be proved.
 PAIRED_SOURCES: Final = frozenset({"architect", "brand_prototype", "gv_review"})
 #: Code paired these itself: the vendor's own string (one string, no pairing), GV's rule check.
@@ -533,6 +537,7 @@ def decide(
     advocate: Mapping[str, Any] | None,
     extent: tuple[Extent, str] | None,
     code_paired: bool,
+    item: str | None = None,
 ) -> Verdict:
     """The verdict on one red candidate under D1 (see the module). `printed`: code read both
     values at their spots. `helper_pick`: the helper's architect label (`p23.D10`). `advocate`: the
@@ -600,6 +605,24 @@ def decide(
     answers["extent"] = state
     if state != "same_extent" and not advocate.get(STRONG_PICK):
         return Verdict("objects", f"Not proved: {why}.", answers)
+    if state != "same_extent":
+        # With no geometry to back the picks, the simple check's trade rule holds too: an end at
+        # a box above the unit, or an item about the room (ceiling, soffit, bulkhead, a door), is
+        # never proved by two picks alone (#1819; key s3-60: the architect's height runs to a
+        # bulkhead box, the vendor's to the unit's top).
+        ends = [
+            str(spans.get(end))
+            for spans in (vendor_spans, architect_spans)
+            if isinstance(spans, Mapping)
+            for end in ("from", "to")
+        ]
+        if "box_above_unit" in ends or _ROOM_CONTEXT.search(item or ""):
+            answers["trade"] = "fail"
+            return Verdict(
+                "objects",
+                f"Not proved: {why}, and it may measure room context or another trade's box.",
+                answers,
+            )
     answers["pairing"] = "proved" if state == "same_extent" else "proved_by_two_picks"
     return Verdict("passed", "", answers)
 
