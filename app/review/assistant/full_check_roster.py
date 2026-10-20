@@ -31,9 +31,16 @@ checkers decide what may be red:
   reworded by Haiku only when every number survives.
 
 **The fixed price.** `assistant_full_check_cap_usd` (default $5) is the message's whole cap. Each
-phase has its share of it and each specialist its own cap within that share (`PricePlan`); at 80%
-of its cap a helper gets the wrap-up note, at its cap it stops and code keeps what it recorded. The
-price can only come in under the cap. **Nothing is dropped silently:** a phase or item the price
+phase has its share of it and each specialist its own cap within that share (`PricePlan`); every
+share and cap is proportional to the price (#1805: a cap made for $5 stopped "look again" at $1.69
+of a $15 price). Money a phase leaves rolls forward: each later step (the gap closers, the verifier,
+the lead review, the devil's advocate, the look-again) may take all that is left under the price
+except the later steps' own shares. A specialist at its cap first takes what its phase's other
+specialists left unspent (`_Pool`); only when that is used up does it get the wrap-up note and stop,
+and code keeps what it recorded. "Stopped at its cap" (and the message's `cost_cap`) is said only
+when the price is really used up; a step that used its share while the later steps' money waits is
+listed as such. Each phase's spend against its share is in the timings line. The price can only
+come in under the cap. **Nothing is dropped silently:** a phase or item the price
 did not reach is listed under "Not done within the fixed price" in the summary, and each red
 candidate the advocate could not check stays grey with that reason.
 
@@ -120,6 +127,7 @@ _MICROS: Final = 1_000_000
 #: helpers stopped at small fixed caps with half the content pages unread while a fifth of the price
 #: was never spent, so the numbers pickers (where the red clouds come from) and the gap closers that
 #: finish what they leave get more, the drawn-things readers about the same per page.
+#: #1805: the escalation's look-again is a share of its own (it was 4% carved out of the lead's).
 SHARES: Final[Mapping[str, float]] = {
     "numbers": 0.33,
     "drawn": 0.16,
@@ -127,17 +135,41 @@ SHARES: Final[Mapping[str, float]] = {
     "gaps": 0.18,
     "provers": 0.05,
     "advocate": 0.07,
-    "lead": 0.14,
+    "lead": 0.10,
+    "escalation": 0.04,
     "summary": 0.005,
     "reads": 0.035,
 }
 #: The phases whose money the page helpers and gap closers may never spend (#1641): the paid run
 #: of 2026-10-19 let its helpers take $5.31 of a $5 price, so the devil's advocate made no call
 #: and no AI-found difference could be proved. The engine's `helper_ceiling` keeps them.
-PROTECTED: Final = ("provers", "advocate", "lead", "summary", "reads")
-#: A specialist's own cap at most, whatever its phase's share. The page-group helpers (numbers,
-#: drawn) and the gap closers have none: their cap is their phase's money in proportion to their
-#: pages (`PricePlan.cap_for`).
+PROTECTED: Final = ("provers", "advocate", "lead", "escalation", "summary", "reads")
+#: The later steps in the order they run (#1805): each may take all that is left under the price
+#: except the shares of the steps after it. The second reads run alongside everything, so their
+#: share (and the summary's) is kept to the end.
+LATER_ORDER: Final = ("gaps", "provers", "lead", "advocate", "escalation", "summary")
+_KEPT_TO_THE_END: Final = ("reads",)
+#: The timings phase each share is shown on (`Timings.set_budget`).
+TIMINGS_PHASES: Final[Mapping[str, tuple[str, ...]]] = {
+    "helpers": ("numbers", "drawn", "tags"),
+    "gap_closers": ("gaps",),
+    "provers": ("provers",),
+    "lead_review": ("lead",),
+    "advocate": ("advocate",),
+    "escalation": ("escalation",),
+    "second_reads": ("reads",),
+}
+#: The price the fixed caps below were set for (#1805): at another price every cap scales with it.
+REFERENCE_PRICE: Final = 5_000_000
+#: The price is used up when less than this share of it is left (or less than one small call).
+_USED_UP_SHARE: Final = 0.02
+_USED_UP_MICROS: Final = 50_000
+#: A top-up is worth making only above this (millionths of $): about one Sonnet call.
+_MIN_TOP_UP: Final = 20_000
+#: A specialist's own cap at most at the $5 `REFERENCE_PRICE`, whatever its phase's share; at another
+#: price it scales with the price (`scaled_cap`). The page-group helpers (numbers, drawn) and the gap
+#: closers have none: their cap is their phase's money in proportion to their pages
+#: (`PricePlan.cap_for`).
 JOB_CAPS: Final[Mapping[str, int]] = {
     "tags": 200_000,
     "provers": 100_000,
@@ -156,8 +188,6 @@ MIN_GAP_PAGE_MICROS: Final = 80_000
 #: (about $0.15 with its crops), so the paid run of 2026-10-19's closers at $0.08 each never made a
 #: call (4 of 10 stopped at once).
 MIN_GAP_RUN_MICROS: Final = 250_000
-#: The later phases' money, kept back when the gap closers take what P1 left.
-_LATER_PHASES: Final = PROTECTED
 #: Code's estimate of one advocate call's prompt (two crops and the question) and its reply.
 _ADVOCATE_PROMPT_TOKENS: Final = 7_000
 _ADVOCATE_MAX_TOKENS: Final = 2_000
@@ -178,8 +208,6 @@ _STRING_PAD_PT: Final = 24.0
 _STRING_ROUNDING: Final = Decimal(1) / Decimal(16)
 #: The lead review's pages at most (#1641): about $0.10 of Opus 5.5 a page.
 LEAD_MAX_PAGES: Final = 16
-#: The escalation's deeper look after the lead review, kept from the lead's money (#1654).
-_ESCALATION_SHARE: Final = 0.04
 #: An architect drawing with no code labels counts as this many labels still to read (#1654).
 _BARE_ARCHITECT: Final = 10
 #: The lead review's money per page it takes (#1652): with tight zooms at low effort, about two
@@ -228,11 +256,16 @@ class PricePlan:
             name: (
                 budgets[name] // counts[name]
                 if name in PAGE_KINDS
-                else min(JOB_CAPS[name], budgets[name] // counts[name])
+                else min(scaled_cap(name, price), budgets[name] // counts[name])
             )
             for name in counts
         }
         return cls(price=price, groups=groups, budgets=budgets, caps=caps, pages=pages)
+
+    def after(self, phase: str) -> int:
+        """The shares kept for the steps after `phase` (`LATER_ORDER`) and to the end (#1805)."""
+        later = LATER_ORDER[LATER_ORDER.index(phase) + 1 :] if phase in LATER_ORDER else ()
+        return sum(self.budgets[name] for name in (*later, *_KEPT_TO_THE_END))
 
     def cap_for(self, kind: str, pages: int) -> int:
         """A specialist's cap: for a page-group helper its phase's budget over the set's pages,
@@ -248,6 +281,41 @@ class PricePlan:
     def protected(self) -> int:
         """The money the page helpers and gap closers may never spend (`PROTECTED`)."""
         return sum(self.budgets[name] for name in PROTECTED)
+
+
+def scaled_cap(name: str, price: int) -> int:
+    """A specialist's fixed cap (`JOB_CAPS`, set for the $5 `REFERENCE_PRICE`) at `price`."""
+    return JOB_CAPS[name] * max(0, price) // REFERENCE_PRICE
+
+
+@dataclass(slots=True)
+class _Pool:
+    """One phase's money shared by its specialists (#1805): a specialist at its own cap takes more
+    from what the others left (a finished one counts what it spent, a running one its cap), at most
+    its first cap again each time, so one cheap helper's savings reach a busy one before anybody
+    stops at a cap while the phase's money is unspent."""
+
+    limit: int
+    agents: list[Any] = field(default_factory=list)
+    first: dict[int, int] = field(default_factory=dict)
+
+    def add(self, agent: Any) -> Any:
+        self.agents.append(agent)
+        self.first[id(agent)] = int(agent.cap_micros or 0)
+        agent.top_up = self.top_up
+        return agent
+
+    def committed(self, skip: Any = None) -> int:
+        return sum(
+            a.spent if a.done else max(a.spent, int(a.cap_micros or 0))
+            for a in self.agents
+            if a is not skip
+        )
+
+    def top_up(self, agent: Any) -> int:
+        free = self.limit - self.committed(agent) - int(agent.cap_micros or 0)
+        more = min(free, max(self.first.get(id(agent), 0), _MIN_TOP_UP))
+        return more if more >= _MIN_TOP_UP else 0
 
 
 def _dollars(micros: int) -> str:
@@ -820,20 +888,49 @@ class _Run:
     escalated: set[str] = field(default_factory=set)
     #: Every page's architect labels, set-wide, once read (`_architect_pages`, #1802).
     architect_labels: list[list[dict[str, Any]]] | None = None
+    #: The engine's spend when the roster started (the price counts from there).
+    started_at: int = 0
 
     # -- money --
 
     def _phase_room(self, phase: str, estimate: int) -> bool:
+        """`estimate` fits the phase: its own share, or all that is left under the price less the
+        later steps' shares, whichever is more (#1805: money a phase leaves rolls forward)."""
         assert self.plan is not None
-        if phase == "escalation":
-            # The escalation spends only what is left under the fixed price.
-            return self._left() >= estimate and self.engine._fits(estimate)
         used = self.spent.get(phase, 0)
-        return used + estimate <= self.plan.budgets[phase] and self.engine._fits(estimate)
+        fits = used + estimate <= self.plan.budgets[phase] or estimate <= self._room(phase)
+        return fits and estimate <= self._left() and self.engine._fits(estimate)
 
     def _left(self) -> int:
-        """What is left under the fixed price (millionths of $)."""
-        return max(0, self.engine.settings.message_cap_micros - self.engine.spent)
+        """What is left under the fixed price (millionths of $): the message's cap, and the price
+        for the products in scope when that is less."""
+        left = self.engine.settings.message_cap_micros - self.engine.spent
+        if self.plan is not None:
+            left = min(left, self.plan.price - (self.engine.spent - self.started_at))
+        return max(0, left)
+
+    def _room(self, phase: str) -> int:
+        """All that is left under the price less the shares kept for the steps after `phase`."""
+        assert self.plan is not None
+        return max(0, self._left() - self.plan.after(phase))
+
+    def _used_up(self) -> bool:
+        """The price is really used up (#1805): only then may a step "stop at its cap"."""
+        if self.plan is None:
+            return True
+        margin = max(_USED_UP_MICROS, int(self.plan.price * _USED_UP_SHARE))
+        return self._left() < margin
+
+    def _capped(self, description: str, tail: str = "") -> None:
+        """A specialist stopped at its cap: a stop for money only when the price is used up;
+        otherwise it used its phase's share while the later steps' money is kept (said so)."""
+        if self._used_up():
+            self.stopped_for_money = True
+            self._note(f"{description}: stopped at its cap{tail}")
+        else:
+            self._note(
+                f"{description}: used its share of the price (the rest is kept for the later checks){tail}"
+            )
 
     def _charge(self, phase: str, cost: int) -> None:
         self.spent[phase] = self.spent.get(phase, 0) + cost
@@ -910,6 +1007,9 @@ class _Run:
         # The fixed price shrinks with the pages the product scope leaves to compare (never grows).
         price = scaled_price(settings.message_cap_micros, plan.pages, pages_all)
         self.plan = PricePlan.balanced(price, groups, plan.pages)
+        self.started_at = engine.spent
+        for timing, names in TIMINGS_PHASES.items():
+            engine.timings.set_budget(timing, sum(self.plan.budgets[n] for n in names))
         engine._started_scope = engine.scope()
         engine.emit(
             "scope", {"index": None, "scope": json.loads(json.dumps(engine._started_scope))}
@@ -928,8 +1028,9 @@ class _Run:
                 engine._show_coverage()
             except Exception:  # noqa: BLE001 - recorded as unknown pages instead
                 _log.warning("assistant roster could not record the divider pages")
-        # P1: pickers and readers per group, the tag reader for the set.
+        # P1: pickers and readers per group, the tag reader for the set; one pool for their money.
         model = engine._helper_model()
+        pool = _Pool(sum(self.plan.budgets[name] for name in ("numbers", "drawn", "tags")))
         agents = []
         for job in plan.jobs:
             kind = "drawn" if job.lens == "drawn" else "numbers"
@@ -953,6 +1054,8 @@ class _Run:
         tag_pages = sorted({page for job in plan.jobs for page in job.pages})
         if tag_pages:
             agents.append(self._tag_agent(tag_pages, page_map))
+        for agent in agents:
+            pool.add(agent)
         self.agents = list(agents)
         # The page helpers and the gap closers never spend the later checks' money (#1641).
         engine.helper_ceiling = engine.spent + max(0, price - self.plan.protected())
@@ -964,10 +1067,7 @@ class _Run:
                     continue
                 self._salvage(agent, entry)
                 if entry.get("stopped") == "cost_cap":
-                    self.stopped_for_money = True
-                    self._note(
-                        f"{agent.description}: stopped at its cap; the pages it left are listed"
-                    )
+                    self._capped(agent.description, "; the pages it left are listed")
             engine._queue_second_reads(engine.book.live())
             if not engine.cancel.is_set():
                 self._gap_closers(page_map, rules, pictures)
@@ -1130,6 +1230,7 @@ class _Run:
             return
         closers = min(MAX_GAP_CLOSERS, engine._max_agents, max(1, budget // MIN_GAP_RUN_MICROS))
         runs = page_runs(chosen, closers)
+        pool = _Pool(budget)
         agents = []
         for run in runs:
             brief = helper_brief(
@@ -1150,36 +1251,35 @@ class _Run:
                 brief = "\n\n".join([brief, *pair_lines(paired, unpaired, UPLOADS)])
             where = page_ranges_words(run)
             agents.append(
-                self._agent(
-                    call_id=f"gap-{run[0]}",
-                    description=f"Close the gaps on {where}",
-                    prompt=f"{GAP_SCHEMA_NOTE} on {where} (only these):\n{gaps}\n\n{brief}",
-                    model=BY_SHORT["sonnet"],
-                    pages=tuple(run),
-                    lens="gap",
-                    effort="medium",
-                    phase="gap_closers",
-                    cap_micros=budget * len(run) // len(chosen),
-                    soft_cap=True,
-                    system=engine._kind_system("numbers"),
+                pool.add(
+                    self._agent(
+                        call_id=f"gap-{run[0]}",
+                        description=f"Close the gaps on {where}",
+                        prompt=f"{GAP_SCHEMA_NOTE} on {where} (only these):\n{gaps}\n\n{brief}",
+                        model=BY_SHORT["sonnet"],
+                        pages=tuple(run),
+                        lens="gap",
+                        effort="medium",
+                        phase="gap_closers",
+                        cap_micros=budget * len(run) // len(chosen),
+                        soft_cap=True,
+                        system=engine._kind_system("numbers"),
+                    )
                 )
             )
         entries = engine._launch(agents, on_done=engine._helper_done)
         for agent, entry in zip(agents, entries, strict=True):
             self._salvage(agent, entry)
             if entry.get("stopped") == "cost_cap":
-                self.stopped_for_money = True
-                self._note(f"{agent.description}: stopped at its cap")
+                self._capped(agent.description)
         self.agents.extend(agents)
         del rules, pictures
 
     def _gap_budget(self) -> int:
-        """The gap closers' money: all that is left under the fixed price less the protected
-        phases' shares (P1's unspent money is not lost; the later checks' money is never theirs,
-        #1641, so a P1 that spent past its share leaves the gap closers less, never the checks)."""
-        assert self.plan is not None
-        later = sum(self.plan.budgets[name] for name in _LATER_PHASES)
-        return max(0, self._left() - later)
+        """The gap closers' money: all that is left under the fixed price less the later phases'
+        shares (P1's unspent money is not lost; the later checks' money is never theirs, #1641,
+        so a P1 that spent past its share leaves the gap closers less, never the checks)."""
+        return self._room("gaps")
 
     # -- P3: the verifier --
 
@@ -1212,6 +1312,9 @@ class _Run:
             PROVER_JOB,
             [("what-dimensions-measure.md", None), ("reading-drawings.md", None)],
         )
+        # Its own share plus what the earlier phases left (#1805), split over its groups.
+        pool = _Pool(self._room("provers"))
+        cap = pool.limit // max(1, len(groups))
         for pages, findings in groups.items():
             agents.append(
                 self._agent(
@@ -1227,20 +1330,23 @@ class _Run:
                     pages=pages,
                     lens="prover",
                     effort="medium",
-                    cap_micros=self.plan.caps["provers"],
+                    cap_micros=cap,
                     soft_cap=True,
                     system=system,
                     tools=self._tools(_PROVER_TOOLS),
                     output_format=PROVER_SCHEMA,
                 )
             )
+            pool.add(agents[-1])
             asked.append([str(f["id"]) for f in findings])
+        if cap <= 0:
+            self._note("the verifier: not reached within the fixed price")
+            return
         entries = engine._launch(agents)
         for agent, entry, ids in zip(agents, entries, asked, strict=True):
             done = apply_proofs(engine, str(entry.get("report") or ""), ids)
             if entry.get("stopped") == "cost_cap":
-                self.stopped_for_money = True
-                self._note(f"{agent.description}: stopped at its cap")
+                self._capped(agent.description)
             engine._queue_second_reads(
                 [f for f in engine.book.live() if f["id"] in done and f.get("status") != "same"]
             )
@@ -1395,17 +1501,14 @@ class _Run:
         return chosen, [f for f in unplaced if int(f["page"]) in chosen]
 
     def _lead_money(self) -> int:
-        """The lead review's cap (#1654): its own share, or all that is left under the fixed price
-        less what the steps after it need (the devil's advocate and the string readings, the
-        escalation's look, the summary), whichever is more. The paid run of 2026-10-19 ended
-        with $1.23 of $6 unspent while 25 content pages were never compared."""
+        """The lead review's cap (#1654, #1805): all that is left under the fixed price less the
+        shares of the steps after it (the devil's advocate and the string readings, the
+        escalation's look, the summary, the second reads), at most its own cap scaled to the
+        price. The paid run of 2026-10-19 ended with $1.23 of $6 unspent while 25 content pages
+        were never compared; the one of 2026-10-20 stopped the lead at its $2.50 fixed cap with
+        a third of a $15 price unspent."""
         assert self.plan is not None
-        after = (
-            self.plan.budgets["advocate"]
-            + self.plan.budgets["summary"]
-            + int(self.plan.price * _ESCALATION_SHARE)
-        )
-        return min(JOB_CAPS["lead"], max(self.plan.caps["lead"], self._left() - after))
+        return min(scaled_cap("lead", self.plan.price), self._room("lead"))
 
     def _lead_review(self, page_map: Mapping[str, Any] | None) -> None:
         """One capped lead (Opus 5.5) after the page helpers, as Anthropic's long-running agent
@@ -1459,7 +1562,7 @@ class _Run:
         self._salvage(agent, entries[0])
         self._drop_placed_salvage()
         if entries[0].get("stopped") == "cost_cap":
-            self._note(f"{agent.description}: stopped at its cap")
+            self._capped(agent.description)
 
     def _helper_notes(self, pages: Sequence[int]) -> str:
         """The page helpers' and gap closers' own reports on these pages, short (data)."""
@@ -2247,8 +2350,15 @@ class _Run:
             PROVER_JOB, [("what-dimensions-measure.md", None), ("reading-drawings.md", None)]
         )
         agents, asked = [], []
-        cap = min(self.plan.caps["provers"], self._left() // max(1, len(groups)))
+        # All that is left under the price less the summary's and second reads' shares (#1805:
+        # the old $0.10 fixed cap stopped every look-again with most of a $15 price unspent).
+        pool = _Pool(self._room("escalation"))
+        cap = pool.limit // max(1, len(groups))
         if cap <= 0:
+            self._note(
+                f"the escalation's deeper look: {len(findings)} items not verified within the "
+                "fixed price"
+            )
             return
         for pages, items in groups.items():
             self.escalated.update(str(f["id"]) for f in items)
@@ -2275,12 +2385,13 @@ class _Run:
                     output_format=PROVER_SCHEMA,
                 )
             )
+            pool.add(agents[-1])
             asked.append([str(f["id"]) for f in items])
         entries = engine._launch(agents)
         for agent, entry, ids in zip(agents, entries, asked, strict=True):
             done = apply_proofs(engine, str(entry.get("report") or ""), ids)
             if entry.get("stopped") == "cost_cap":
-                self._note(f"{agent.description}: stopped at its cap (the rest stay not compared)")
+                self._capped(agent.description, " (the rest stay not compared)")
             engine._queue_second_reads(
                 [f for f in engine.book.live() if f["id"] in done and f.get("status") != "same"]
             )

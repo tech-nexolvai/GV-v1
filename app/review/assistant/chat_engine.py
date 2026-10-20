@@ -817,6 +817,12 @@ class _Agent:
     phase: str = "helpers"
     """The timings phase its calls are charged to (#1652: a roster's gap closers, verifiers, lead
     review and deeper look each show apart from the page helpers)."""
+    top_up: Callable[[_Agent], int] | None = None
+    """A roster specialist's top-up (#1805): at its soft cap it asks for more of its phase's money
+    (what the phase's other specialists left unspent); more than 0 raises its cap and it goes on,
+    so it stops at its cap only when its phase's money is really used up."""
+    done: bool = False
+    """It has reported (a phase's top-up counts only what a finished specialist really spent)."""
 
 
 @dataclass(slots=True)
@@ -3193,6 +3199,7 @@ class ChatEngine:
                     report = _report_from_steps(entry["steps"], "it failed unexpectedly")
                     ok, stopped = False, "error"
             self.timings.helper_ended(agent.number, stopped)
+            agent.done = True
             with self._lock:
                 entry.update({"ok": ok, "report": report, "stopped": stopped})
                 summary = {
@@ -3765,6 +3772,21 @@ class ChatEngine:
 
         return work
 
+    @staticmethod
+    def _topped_up(agent: _Agent) -> bool:
+        """A soft-capped specialist at its cap got more of its phase's money (#1805)."""
+        if not agent.soft_cap or agent.top_up is None:
+            return False
+        try:
+            more = int(agent.top_up(agent))
+        except Exception:  # noqa: BLE001 - no top-up: it wraps up at its cap, as before
+            _log.warning("assistant chat helper top-up failed")
+            return False
+        if more <= 0:
+            return False
+        agent.cap_micros = (agent.cap_micros or 0) + more
+        return True
+
     def _helper(
         self, agent: _Agent, step_index: int, entry: dict[str, Any], share: _Share
     ) -> tuple[str, bool, str | None]:
@@ -3862,10 +3884,14 @@ class ChatEngine:
                     wrap, why = "turn_limit", "you have used your tool calls"
                 elif not self._fits(estimate):
                     wrap, why = "cost_cap", "this message is near its money cap"
-                elif agent.cap_micros is not None and (
-                    agent.spent >= agent.cap_micros * 4 // 5
-                    if agent.soft_cap
-                    else agent.spent + (estimate or 0) > agent.cap_micros
+                elif (
+                    agent.cap_micros is not None
+                    and (
+                        agent.spent >= agent.cap_micros * 4 // 5
+                        if agent.soft_cap
+                        else agent.spent + (estimate or 0) > agent.cap_micros
+                    )
+                    and not self._topped_up(agent)
                 ):
                     wrap, why = "cost_cap", "you have used your part of the money"
                 elif not self._hold(share, estimate):

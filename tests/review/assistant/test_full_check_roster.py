@@ -97,6 +97,67 @@ def test_the_caps_never_add_up_to_more_than_the_price() -> None:
     assert plan.cap_for("tags", 45) == plan.caps["tags"] <= full_check_roster.JOB_CAPS["tags"]
 
 
+def test_every_share_and_cap_follows_the_price() -> None:
+    """#1805: caps made for a $5 price stopped "look again" at $1.69 of a $15 price."""
+    five, fifteen = PricePlan.balanced(5 * DOLLARS, 2), PricePlan.balanced(15 * DOLLARS, 2)
+    assert abs(sum(full_check_roster.SHARES.values()) - 1) < 1e-9
+    for name in full_check_roster.SHARES:
+        assert abs(fifteen.budgets[name] - 3 * five.budgets[name]) <= 3
+    for name in ("tags", "provers", "advocate", "lead", "summary"):
+        assert abs(fifteen.caps[name] - 3 * five.caps[name]) <= 3
+    assert (
+        full_check_roster.scaled_cap("lead", 15 * DOLLARS) == 3 * full_check_roster.JOB_CAPS["lead"]
+    )
+    # The steps after the verifier keep their shares; the second reads' share is kept to the end.
+    after = fifteen.after("provers")
+    assert after == sum(
+        fifteen.budgets[n] for n in ("lead", "advocate", "escalation", "summary", "reads")
+    )
+    assert fifteen.after("summary") == fifteen.budgets["reads"]
+
+
+def test_a_phase_pool_lets_a_busy_specialist_take_what_the_others_left() -> None:
+    from types import SimpleNamespace
+
+    def agent(cap: int) -> Any:
+        return SimpleNamespace(cap_micros=cap, spent=0, done=False, top_up=None)
+
+    pool = full_check_roster._Pool(1_000_000)
+    cheap, busy = pool.add(agent(500_000)), pool.add(agent(500_000))
+    assert busy.top_up == pool.top_up
+    busy.spent = 450_000
+    assert pool.top_up(busy) == 0  # the other one may still spend its cap
+    cheap.spent, cheap.done = 100_000, True
+    assert pool.top_up(busy) == 400_000  # what the finished one left, never more
+    busy.cap_micros += 400_000
+    assert pool.top_up(busy) == 0
+
+
+def test_stopped_at_its_cap_only_when_the_price_is_used_up(tmp_path: Path) -> None:
+    harness = _roster(tmp_path, _Roster())
+    run = _run(harness)
+    run._capped("Look again, pages 3-7")
+    assert not run.stopped_for_money
+    assert "used its share of the price" in run.not_done[-1]
+    harness.engine._spent = 5 * DOLLARS - 10_000
+    run._capped("Look again, pages 8-9")
+    assert run.stopped_for_money and run.not_done[-1].endswith("stopped at its cap")
+
+
+def test_the_timings_line_shows_each_phase_against_its_share() -> None:
+    from app.review.assistant.chat_timings import Timings
+
+    timings = Timings()
+    timings.set_budget("helpers", 2_500_000)
+    with timings.phase("helpers"):
+        timings.charge(1_250_000)
+    with timings.phase("lead_review"):
+        timings.charge(10_000)
+    line = Timings.log_line(timings.as_dict(1_260_000))
+    assert "helpers" in line and "$1.25 of $2.50 (1)" in line
+    assert "lead_review" in line and "$0.01 (1)" in line
+
+
 # ---- the advocate's code checks -------------------------------------------------------------------------
 
 
@@ -270,13 +331,19 @@ def test_decision_d1_needs_every_condition_and_code_only_needs_code() -> None:
         verdict = decide(mode="ai_pair_plus_code", advocate=advocate, extent=extent, **common)  # type: ignore[arg-type]
         assert verdict.result == "objects" and words in verdict.reason, (words, verdict.reason)
     not_printed = decide(
-        mode="ai_pair_plus_code", advocate=agree, extent=same, **{**common, "printed": False}  # type: ignore[arg-type]
+        mode="ai_pair_plus_code",
+        advocate=agree,
+        extent=same,
+        **{**common, "printed": False},  # type: ignore[arg-type]
     )
     assert not_printed.result == "objects"
     code_only = decide(mode="code_only", advocate=agree, extent=same, **common)  # type: ignore[arg-type]
     assert code_only.result == "objects" and "code_only" in code_only.reason
     vendor_sum = decide(
-        mode="code_only", advocate=None, extent=None, **{**common, "code_paired": True}  # type: ignore[arg-type]
+        mode="code_only",
+        advocate=None,
+        extent=None,
+        **{**common, "code_paired": True},  # type: ignore[arg-type]
     )
     assert vendor_sum.result == "passed" and vendor_sum.answers["pairing"] == "code"
     failed = decide(
