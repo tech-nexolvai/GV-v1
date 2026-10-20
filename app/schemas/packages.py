@@ -54,20 +54,26 @@ class PackageCreate(BaseModel):
             "vendor name is worse than an absent one, because it reads as a fact."
         ),
     )
-    product_type: str = Field(
+    product_type: str | None = Field(
+        default=None,
         min_length=1,
         max_length=32,
         description=(
-            "What product this drawing set is for, chosen by the reviewer (#994): an active product "
-            "id from `GET /products` (the product registry, #1547). Only the published checks for "
-            "this product are run, and the readers are told it. A product with no published check "
-            "is refused, because a set checked against nothing would look exactly like a clean one."
+            "What product this drawing set is for (#994): an active product id from `GET /products` "
+            "(the product registry, #1547), or left out for **every active product** (All, the "
+            "default since the start page lost its product question, #1765: a set stated "
+            '"countertop" often holds cabinets too; the reviewer narrows in the chat). With a '
+            "product, only its published checks are run and the readers are told it. A product with "
+            "no published check is refused, because a set checked against nothing would look "
+            "exactly like a clean one; left out, at least one product must have a published check."
         ),
     )
 
     @field_validator("product_type")
     @classmethod
-    def _an_active_product(cls, value: str) -> str:
+    def _an_active_product(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         product = registry().get(value)
         if product is None:
             raise ValueError(f"{value!r} is not a product (see GET /products)")

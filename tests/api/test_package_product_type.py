@@ -1,7 +1,8 @@
 """The reviewer says what product a drawing set is for, through the API (#994).
 
-- `POST /packages` requires `product_type`; a value outside the vocabulary, or one no published rule
-  checks, is a 422 and writes nothing.
+- `POST /packages` takes `product_type`; a value outside the vocabulary, or one no published rule
+  checks, is a 422 and writes nothing. Left out (or null) it is every active product (All, #1765),
+  stored as no product; refused only when no product has a published check.
 - `GET` returns it, and a package from before #994 reads back as `null`.
 - `GET /product-types` lists only the active products the published rulebook has checks for.
 - `GET /products` lists every product of the product registry (#1547), inactive ones too, with
@@ -138,14 +139,12 @@ def test_a_package_is_created_for_a_product_and_reads_it_back(session: Session) 
 @pytest.mark.parametrize(
     "body",
     [
-        {"vendor": "A vendor"},
         {"vendor": "A vendor", "product_type": "Countertop"},
         {"vendor": "A vendor", "product_type": "lighting"},
         {"vendor": "A vendor", "product_type": "spaceship"},
-        {"vendor": "A vendor", "product_type": None},
         {"vendor": "A vendor", "product_type": ""},
     ],
-    ids=["missing", "wrong-case", "inactive-product", "not-in-registry", "null", "empty"],
+    ids=["wrong-case", "inactive-product", "not-in-registry", "empty"],
 )
 def test_a_product_outside_the_vocabulary_is_refused_and_writes_nothing(
     session: Session, body: dict[str, object]
@@ -155,6 +154,35 @@ def test_a_product_outside_the_vocabulary_is_refused_and_writes_nothing(
     response = _client(session).post(f"/api/v1/projects/{PROJECT}/packages", json=body)
 
     assert response.status_code == 422, response.text
+    assert _packages(session) == 0
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{"vendor": "A vendor"}, {"vendor": "A vendor", "product_type": None}],
+    ids=["missing", "null"],
+)
+def test_no_product_named_is_every_product(session: Session, body: dict[str, object]) -> None:
+    """#1765: the start page no longer asks what the set is for. The set is stored with no product,
+    which every consumer reads as every active product (All); the reviewer narrows in the chat."""
+    _publish(session, ProductType.COUNTERTOP)
+    client = _client(session)
+
+    created = client.post(f"/api/v1/projects/{PROJECT}/packages", json=body)
+
+    assert created.status_code == 201, created.text
+    assert created.json()["product_type"] is None
+    assert session.get(Package, created.json()["id"]).product_type is None  # type: ignore[union-attr]
+
+
+def test_no_product_named_is_still_refused_when_nothing_is_published(session: Session) -> None:
+    """All is never a set checked against nothing: with no published check at all, it is a 422."""
+    response = _client(session).post(
+        f"/api/v1/projects/{PROJECT}/packages", json={"vendor": "A vendor"}
+    )
+
+    assert response.status_code == 422, response.text
+    assert "No checks are published yet" in response.json()["message"]
     assert _packages(session) == 0
 
 

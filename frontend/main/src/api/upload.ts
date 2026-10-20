@@ -185,8 +185,11 @@ export async function uploadDocument(
 
 export interface NewPackage {
   vendor: string;
-  /** What the drawing set is for (#994): only that product's published checks run. */
-  productType: ProductType;
+  /**
+   * What the drawing set is for (#994): only that product's published checks run. Left out (the
+   * start page since #1765), the set is checked for every active product (All).
+   */
+  productType?: ProductType | null;
   architectural?: File | null;
   shop?: File | null;
 }

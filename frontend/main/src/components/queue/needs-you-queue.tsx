@@ -1009,7 +1009,7 @@ function PageQuestion({ page, status, onAnswer, onAnswered }: { page: PageWithou
   if (status === 'waiting-for-run') {
     return (
       <p data-slot="queue-page-countertop" className="rounded-lg border border-dashed p-3 text-sm">
-        You said this page has a countertop. Run the checks: it then needs your decision like any countertop with no line chosen.
+        You said this page has a countertop. Run the checks: it then joins the queue like any countertop with no line chosen.
       </p>
     );
   }

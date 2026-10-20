@@ -103,7 +103,7 @@ assert.equal(opened.match(/class="ftable__detail"/g)?.length, 2);
 
 // --- CodeRabbit #4114736983: one outcome wording, shared with the markdown table -----------------
 
-assert.match(html, />Needs your decision</, 'the chip uses the same label as the markdown table');
+assert.match(html, />Not compared</, 'the chip uses the same label as the markdown table');
 assert.match(html, />Waiting on a value</);
 assert.doesNotMatch(html, />Review</, 'no shortened second wording');
 // The engine's own spellings, which the narration above the table never used.

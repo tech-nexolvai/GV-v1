@@ -107,4 +107,32 @@ describe('while a full check runs', () => {
     await waitFor(() => expect(toast).toHaveBeenCalledWith('The full check is done.'));
     expect(screen.getByRole('textbox', { name: 'Your message' }).getAttribute('placeholder')).toBe('Ask about these drawings…');
   });
+
+  it('a check that ends in a background tab says so in the tab title until the tab is looked at (#1765)', async () => {
+    let hidden = true;
+    vi.spyOn(document, 'hidden', 'get').mockImplementation(() => hidden);
+    document.title = 'Synthetic set · GV Review';
+    const feed = drivenFollow();
+    renderChat(fakeChatApi({ get: vi.fn(async () => chatOut('c-1', [asked], { running: true, running_message_id: 'a-7' })), follow: feed.follow }));
+    await waitFor(() => expect(feed.follow).toHaveBeenCalledTimes(1));
+    act(() => feed.emit({ event: 'message_start', data: { message_id: 'a-7', model: 'claude-opus-5-5', effort: 'high', thinking: false } } as ChatEvent));
+    await act(async () => feed.end({ ...SAVED_ANSWER, id: 'a-7', mode: 'full_check' }));
+    await waitFor(() => expect(document.title).toBe('✓ Check done · GV Review'));
+    hidden = false;
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await waitFor(() => expect(document.title).not.toBe('✓ Check done · GV Review'));
+  });
+
+  it('a check that ends while the tab is in view leaves the tab title alone (the toast says it)', async () => {
+    vi.spyOn(document, 'hidden', 'get').mockImplementation(() => false);
+    const feed = drivenFollow();
+    renderChat(fakeChatApi({ get: vi.fn(async () => chatOut('c-1', [asked], { running: true, running_message_id: 'a-7' })), follow: feed.follow }));
+    await waitFor(() => expect(feed.follow).toHaveBeenCalledTimes(1));
+    act(() => feed.emit({ event: 'message_start', data: { message_id: 'a-7', model: 'claude-opus-5-5', effort: 'high', thinking: false } } as ChatEvent));
+    await act(async () => feed.end({ ...SAVED_ANSWER, id: 'a-7', mode: 'full_check' }));
+    await waitFor(() => expect(toast).toHaveBeenCalledWith('The full check is done.'));
+    expect(document.title).not.toBe('✓ Check done · GV Review');
+  });
 });

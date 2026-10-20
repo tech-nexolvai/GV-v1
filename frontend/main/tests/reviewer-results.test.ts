@@ -55,8 +55,8 @@ for (const screen of ['src/components/results/decide-dialog.tsx', 'src/component
 }
 const words = readFileSync('src/lib/countertop-results.ts','utf8');
 // The donut groups rows by recorded result (#1056); its undecided group holds no PASS or FAIL, so it
-// uses the outcome word "Needs your decision" ("Needs you" stays the card, chip and queue).
-assert.match(words, /'needs-you': 'Needs your decision'/);
+// uses the outcome word "Not compared" ("Needs you" stays the card, chip and queue).
+assert.match(words, /'needs-you': 'Not compared'/);
 assert.match(words, /'not-checkable': 'Not checkable'/);
 assert.match(words, /pass: 'PASS'/);
 assert.match(words, /fail: 'FAIL'/);

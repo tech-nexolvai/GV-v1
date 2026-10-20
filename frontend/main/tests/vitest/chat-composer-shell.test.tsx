@@ -60,7 +60,6 @@ function Composer({ running = false, blocked = null, models = MODELS, onSend = v
         setChoice(next);
       }}
       placeholder="Ask about these drawings…"
-      menuFootnote="Up to $5 per answer · $3.10 of $40 used on this set"
     />
   );
 }
@@ -136,7 +135,9 @@ describe('the composer', () => {
       'Haiku 5.5Fastest model for daily tasks',
     ]);
     expect(within(menu).getByRole('menuitemradio', { name: /Opus 5.5/ }).getAttribute('aria-checked')).toBe('true');
-    expect(menu.querySelector('[data-slot="chat-model-footnote"]')?.textContent).toBe('Up to $5 per answer · $3.10 of $40 used on this set');
+    // #1765: no money line in the model menu (cost has one quiet place: the answer's footer).
+    expect(menu.querySelector('[data-slot="chat-model-footnote"]')).toBeNull();
+    expect(menu.textContent).not.toContain('$');
 
     await waitFor(() => expect(document.activeElement?.textContent).toContain('Opus 5.5'));
     await user.keyboard('{ArrowDown}');

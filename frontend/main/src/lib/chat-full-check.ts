@@ -106,9 +106,12 @@ export function fullCheckBubble(products: readonly ChatProduct[] | null | undefi
   return ['Full check', productsWords(products), effortWords ? `${effortWords} effort` : null].filter(Boolean).join(' · ');
 }
 
-/** The confirm line: "Full check · Countertops · Opus 5.5 · High · up to $15". */
-export function confirmWords(products: readonly ChatProduct[] | null, model: string | null, effortWords: string | null, cap: string | null): string {
-  return ['Full check', productsWords(products) ?? 'this set’s product', model, effortWords, cap ? `up to ${cap}` : null].filter(Boolean).join(' · ');
+/**
+ * The confirm line: "Full check · Countertops · Opus 5.5 · High". #1765: no price here: cost has one
+ * quiet place (the answer's footer, and "$x so far" in the live card).
+ */
+export function confirmWords(products: readonly ChatProduct[] | null, model: string | null, effortWords: string | null): string {
+  return ['Full check', productsWords(products) ?? 'this set’s product', model, effortWords].filter(Boolean).join(' · ');
 }
 
 /**
@@ -185,7 +188,8 @@ export function progressWords(
   const live = message.progress;
   if (live) {
     if (live.phase === 'reading' && !live.pages_done && !live.drawings_total) return 'Reading the drawings…';
-    if (live.phase === 'writing') return `Writing the summary and the cloud drawing · ${live.wrong_so_far} wrong · ${live.decision_so_far} to decide`;
+    // #1765: the server's count is of proved Wrongs only; what is not proved yet is never "to decide".
+    if (live.phase === 'writing') return `Writing the summary and the cloud drawing · ${live.wrong_so_far} wrong so far`;
     // #1665: the simple full check counts drawings, not pages.
     const drawings = live.drawings_total ? `Comparing drawing ${Math.min((live.drawings_done ?? 0) + 1, live.drawings_total)} of ${live.drawings_total}` : null;
     const at = drawings ?? (live.pages_total ? `Checking page ${Math.min(live.pages_done + 1, live.pages_total)} of ${live.pages_total}` : `Checking · ${live.pages_done} pages done`);
@@ -195,7 +199,8 @@ export function progressWords(
   const pages = message.coverage?.pages ?? [];
   const done = new Set(pages.filter((page) => page.status !== 'not_opened').map((page) => page.page)).size;
   const total = message.coverage?.counts?.total ?? null;
-  const wrong = (message.findings ?? []).filter((finding) => finding.status === 'different').length;
+  // #1765: only proved Wrongs (clouded by code) count; a raw "different" from the AI is not a Wrong yet.
+  const wrong = (message.findings ?? []).filter((finding) => proofGroup(finding, finding.decision ?? null) === 'clouded').length;
   if (!done && !wrong) return 'Starting the full check…';
   const parts = [total ? `Checking page ${Math.min(done + 1, total)} of ${total}` : `Checking · ${done} ${done === 1 ? 'page' : 'pages'} done`];
   parts.push(`${wrong} wrong so far`);

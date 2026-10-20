@@ -29,7 +29,7 @@ export function actionNeedsNote(outcome: Outcome, action: SimpleReviewAction): b
 
 export function decisionPayload(id: string, outcome: Outcome, action: SimpleReviewAction, note?: string) {
   if (actionNeedsNote(outcome, action) && !note?.trim()) {
-    throw new Error('Write a note explaining your decision.');
+    throw new Error('Write a note saying why.');
   }
   return { finding_id: id, action, ...(note?.trim() ? { note: note.trim() } : {}) };
 }

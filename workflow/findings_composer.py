@@ -51,10 +51,14 @@ __all__ = [
 _OUTCOME_LABELS = {
     "PASS": "Looks right",
     "FAIL": "Needs correction",
-    "REVIEW_REQUIRED": "Needs your decision",
+    # #1765: there is no "Your decision" (2026-10-18); a check the app could not settle is Not compared.
+    "REVIEW_REQUIRED": "Not compared",
     "NOT_FOUND": "Waiting on a value",
     "NO_APPLICABLE_RULE": "Not applicable",
 }
+#: Labels the screens used before, still read as the outcome they named, so prose that says one is
+#: held to the same verdict wall as prose using the current word.
+_RETIRED_OUTCOME_LABELS = {"REVIEW_REQUIRED": ("Needs your decision",)}
 _FIELD_LABELS = {
     SemanticType.WALL_CONFIG.value: "wall layout",
     "filler_symmetry": "whether the fillers should be symmetrical",
@@ -698,7 +702,9 @@ def _outcomes(text: str) -> frozenset[str]:
     }
     # Reviewer-facing labels are verdict claims too; a model must not turn a FAIL into "Looks
     # right" merely by avoiding the database enum spelling.
-    for outcome, label in _OUTCOME_LABELS.items():
+    labels = [*_OUTCOME_LABELS.items()]
+    labels += [(outcome, old) for outcome, olds in _RETIRED_OUTCOME_LABELS.items() for old in olds]
+    for outcome, label in labels:
         if re.search(rf"(?<![A-Z]){re.escape(label.upper())}(?![A-Z])", folded):
             outcomes.add(outcome.replace("_", " "))
     return frozenset(outcomes)

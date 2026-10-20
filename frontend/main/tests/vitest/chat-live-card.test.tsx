@@ -166,6 +166,37 @@ describe('the sidebar row of a running check', () => {
   });
 });
 
+describe('the sidebar row of a finished check (#1765)', () => {
+  const props = { packageId: 'pkg-1', activeChatId: 'c-2', creating: false, onNewChat: vi.fn() };
+  const check = (running: boolean) => summary('c-1', { title: 'Full check · All products', running, mode: 'full_check', drawings_done: 39, drawings_total: 39 });
+
+  it('a check seen running that then ends gets a small done mark; a question never does', () => {
+    const question = summary('c-2', { title: 'Fillers on p.8', running: true });
+    const { rerender } = render(<ChatList {...props} state={{ status: 'ready', chats: [check(true), question] }} />);
+    expect(document.querySelector('[data-slot="chat-list-done"]')).toBeNull();
+    rerender(<ChatList {...props} state={{ status: 'ready', chats: [check(false), { ...question, running: false }] }} />);
+    const done = document.querySelectorAll('[data-slot="chat-list-done"]');
+    expect(done).toHaveLength(1);
+    expect(done[0].querySelector('svg')).not.toBeNull();
+    expect(screen.getByRole('link', { name: /^Full check, .*, finished$/ })).toBeTruthy();
+    // The mark stays while the list is read again.
+    rerender(<ChatList {...props} state={{ status: 'ready', chats: [check(false), { ...question, running: false }] }} />);
+    expect(document.querySelectorAll('[data-slot="chat-list-done"]')).toHaveLength(1);
+  });
+
+  it('a check that was already finished when the page opened has no mark (nothing was seen ending)', () => {
+    render(<ChatList {...props} state={{ status: 'ready', chats: [check(false)] }} />);
+    expect(document.querySelector('[data-slot="chat-list-done"]')).toBeNull();
+    expect(document.querySelector('[data-slot="chat-list-when"]')).not.toBeNull();
+  });
+
+  it('the open chat ends by its live card, before the list is read again', () => {
+    const { rerender } = render(<ChatList {...props} activeChatId="c-1" state={{ status: 'ready', chats: [check(true)] }} live={{ chatId: 'c-1', running: true, done: 38, total: 39 }} />);
+    rerender(<ChatList {...props} activeChatId="c-1" state={{ status: 'ready', chats: [check(true)] }} live={{ chatId: 'c-1', running: false, done: null, total: null }} />);
+    expect(document.querySelector('[data-slot="chat-list-done"]')).not.toBeNull();
+  });
+});
+
 describe('a full check running when its chat is opened', () => {
   const asked: ChatMessage = { ...QUESTION, mode: 'full_check', text: 'Full check · All products' };
 

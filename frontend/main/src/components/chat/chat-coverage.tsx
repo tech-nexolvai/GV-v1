@@ -18,14 +18,15 @@ const SQUARE_CLASS: Record<CoverageStatus, string> = {
   same: 'border-outcome-pass-fg/40 bg-outcome-pass/70 text-white',
   different: 'border-outcome-fail-fg bg-outcome-fail-fg text-background',
   not_comparable: 'border-outcome-missing-fg/50 bg-[repeating-linear-gradient(135deg,var(--outcome-missing-bg)_0_3px,var(--outcome-missing)_3px_4px)] text-foreground',
-  not_opened: 'border-dashed border-outcome-review-fg bg-transparent text-outcome-review-fg',
+  // #1765: grey, never amber (nothing waits for a decision): an empty dashed square.
+  not_opened: 'border-dashed border-muted-foreground/70 bg-transparent text-muted-foreground',
 };
 
 const BAR_CLASS: Record<CoverageStatus, string> = {
   same: 'bg-outcome-pass/70',
   different: 'bg-outcome-fail-fg',
   not_comparable: 'bg-outcome-missing',
-  not_opened: 'bg-outcome-review/40',
+  not_opened: 'bg-muted-foreground/25',
 };
 
 export interface CoverageStripProps {

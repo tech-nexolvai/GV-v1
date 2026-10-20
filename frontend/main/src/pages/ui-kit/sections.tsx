@@ -415,7 +415,7 @@ export function ArchitectSection() {
 
 /* ── Results: said once, quiet notes (#1126) ──────────────────────────────── */
 
-const SAMPLE_NOT_COMPARED = 'No architect dimension on this sheet measures a countertop or a cabinet run, so there is nothing to compare.';
+const SAMPLE_NOT_COMPARED = 'No architect dimension on this sheet measures a countertop or a cabinet run, so it is not compared.';
 function sampleRow(id: string, page: number, extra: Partial<CountertopResult>): CountertopResult {
   return {
     finding_id: `sample-${id}`, row_id: id, page_number: page, label: `Countertop row ${page}.1`, row_location: null,

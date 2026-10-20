@@ -17,11 +17,13 @@ import type { Outcome } from './types';
  * authority: the backend composes the narration a reviewer reads first, so the badge beside it has
  * to agree word for word or the screen contradicts itself. `tests/test_outcome_labels.py`
  * fails if the two drift apart.
+ *
+ * #1765: there is no "Your decision" (2026-10-18): a check the app could not settle is Not compared.
  */
 export const OUTCOME_LABELS: Record<Outcome, string> = {
   PASS: 'Looks right',
   FAIL: 'Needs correction',
-  REVIEW_REQUIRED: 'Needs your decision',
+  REVIEW_REQUIRED: 'Not compared',
   NOT_FOUND: 'Waiting on a value',
   NO_APPLICABLE_RULE: 'Not applicable',
 };

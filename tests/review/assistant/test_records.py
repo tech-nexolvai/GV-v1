@@ -40,7 +40,7 @@ def test_numbers_keep_the_display_text_and_the_exact_value() -> None:
 def test_outcomes_are_the_screens_words_and_the_engines_value() -> None:
     assert [(c.id, c.page_number, c.outcome, c.outcome_label) for c in SNAPSHOT.countertops] == [
         ("C1", 4, "FAIL", "Needs correction"),
-        ("C2", 7, "REVIEW_REQUIRED", "Needs your decision"),
+        ("C2", 7, "REVIEW_REQUIRED", "Not compared"),
         ("C3", 9, "PASS", "Looks right"),
     ]
 

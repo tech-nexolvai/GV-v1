@@ -110,8 +110,6 @@ export interface PlusMenuProps {
   models: readonly ChatModel[];
   choice: ChatChoice | null;
   onChoice: (choice: ChatChoice) => void;
-  /** "$5": the most one answer may cost, for the full check's estimate. */
-  messageCap: string | null;
   /** Areas the chat's answers named, offered by "Compare an area…". */
   areas: readonly string[];
   /** Something went wrong or cannot be done, in plain words (shown above the composer). */
@@ -283,7 +281,7 @@ export function PlusMenu(props: PlusMenuProps) {
     const Icon = ICONS[action.icon];
     const why = disabledWhy(action);
     const on = picked(action);
-    const estimate = action.run.kind === 'full_check' ? fullCheckEstimate(props.messageCap) : action.estimate;
+    const estimate = action.run.kind === 'full_check' ? fullCheckEstimate() : action.estimate;
     // Focus rows say what they set; the effort rows name the effort they will pick.
     const hint =
       action.run.kind === 'effort' && choice && !why

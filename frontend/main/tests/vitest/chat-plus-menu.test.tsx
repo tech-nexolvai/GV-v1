@@ -106,8 +106,7 @@ describe('the + menu’s rules, without React', () => {
 
   it('says the full check’s time from one constant, and the cap it is given', () => {
     expect(FULL_CHECK_MINUTES).toBe(15);
-    expect(fullCheckEstimate('$15')).toBe('~15 min · up to $15');
-    expect(fullCheckEstimate(null)).toBe('~15 min');
+    expect(fullCheckEstimate()).toBe('~15 min');
   });
 
   it('remembers the three most recent options, newest first', () => {
@@ -174,7 +173,7 @@ function Harness(props: Partial<PlusMenuProps> & { initial?: string; onSend?: (t
         <PlusMenu
           onPrompt={(text) => setValue((now) => withPrompt(now, text))}
           textareaRef={ref}
-          fullCheck={{ summary: 'Full check · Countertops · Opus 5.5 · High · up to $5', blocked: null, onRun: vi.fn() }}
+          fullCheck={{ summary: 'Full check · Countertops · Opus 5.5 · High', blocked: null, onRun: vi.fn() }}
           lastFindings={{ messageId: 'a-1', findings: FINDINGS }}
           makeMarkupPdf={vi.fn(async () => MARKUP)}
           fileHref={(file) => file.url}
@@ -183,7 +182,6 @@ function Harness(props: Partial<PlusMenuProps> & { initial?: string; onSend?: (t
           models={[OPUS]}
           choice={choice}
           onChoice={setChoice}
-          messageCap="$5"
           areas={['Vanity (left)', 'Pantry']}
           onNotice={vi.fn()}
           running={false}
@@ -224,9 +222,10 @@ describe('the + menu', () => {
     expect(opt('product:lighting').getAttribute('aria-disabled')).toBe('true');
     expect(opt('product:lighting').textContent).toContain('Coming later');
     const full = opt('full_check');
-    expect(full.textContent).toContain('~15 min · up to $5');
-    expect(opt('check_page').textContent).toContain('~2 min · ~$0.50');
-    expect(opt('cloud').textContent).toContain('$0');
+    expect(full.textContent).toContain('~15 min');
+    expect(full.textContent).not.toContain('$');
+    expect(opt('check_page').textContent).toContain('~2 min');
+    expect(opt('cloud').textContent).not.toContain('$');
     // The products already picked are marked.
     expect(within(opt('product:countertop')).getByLabelText('Current')).toBeTruthy();
     await user.keyboard('{Escape}');
@@ -381,11 +380,11 @@ describe('the + menu', () => {
   it('the full check is confirmed first with the same line as the button, then runs', async () => {
     const user = userEvent.setup();
     const onRun = vi.fn();
-    render(<Harness fullCheck={{ summary: 'Full check · Countertops · Opus 5.5 · High · up to $5', blocked: null, onRun }} />);
+    render(<Harness fullCheck={{ summary: 'Full check · Countertops · Opus 5.5 · High', blocked: null, onRun }} />);
     await user.click(plusButton());
     await user.click(opt('full_check'));
     expect(onRun).not.toHaveBeenCalled();
-    expect(screen.getByText('Full check · Countertops · Opus 5.5 · High · up to $5')).toBeTruthy();
+    expect(screen.getByText('Full check · Countertops · Opus 5.5 · High')).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Back' }));
     await user.click(opt('full_check'));
     await user.click(screen.getByRole('button', { name: 'Run full check' }));
@@ -440,7 +439,7 @@ describe('the + menu', () => {
     const onRun = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
     render(<Harness consistency={{ onRun }} />);
     await user.click(plusButton());
-    expect(opt('consistency').textContent).toContain('$0');
+    expect(opt('consistency').textContent).not.toContain('$');
     await user.click(opt('consistency'));
     expect(onRun).toHaveBeenCalledTimes(1);
     expect(plusButton().getAttribute('aria-busy')).toBe('true');
@@ -516,7 +515,7 @@ describe('the + menu on the chat page', () => {
     expect(api.markup).toHaveBeenCalledWith('c-1', 'a-1');
   });
 
-  it('shows the per-answer cap the server states, in the words’ face (no monospace)', async () => {
+  it('shows the time only, never a price, in the words’ face (no monospace) (#1765)', async () => {
     const user = userEvent.setup();
     const api = fakeChatApi({
       models: vi.fn(async () => modelsOut({ message_cap_usd: '15.00' })) as never,
@@ -526,8 +525,11 @@ describe('the + menu on the chat page', () => {
     await screen.findByText('Two items differ.');
     await user.click(plusButton());
     const estimate = opt('full_check').querySelector('[data-slot=chat-plus-estimate]');
-    expect(estimate?.textContent).toBe('~15 min · up to $15');
-    expect(opt('check_page').querySelector('[data-slot=chat-plus-estimate]')?.textContent).toBe('~2 min · ~$0.50');
+    expect(estimate?.textContent).toBe('~15 min');
+    expect(opt('check_page').querySelector('[data-slot=chat-plus-estimate]')?.textContent).toBe('~2 min');
+    // Cost has one quiet place (the answer's footer, the live card's "so far"): none in the menu.
+    for (const hint of document.querySelectorAll('[data-slot=chat-plus-estimate]')) expect(hint.textContent).not.toContain('$');
+    expect(opt('consistency').querySelector('[data-slot=chat-plus-estimate]')).toBeNull();
     for (const hint of document.querySelectorAll('[data-slot=chat-plus-estimate], [data-slot=chat-plus-estimate] *')) {
       expect(hint.className).not.toMatch(/\b(num|font-mono)\b/);
     }

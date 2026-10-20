@@ -104,7 +104,6 @@ function TimingTable({ rows, caption, slot, head }: { rows: TimingRow[]; caption
           <tr>
             <th scope="col" className="px-2.5 py-1.5 text-left font-medium">{head}</th>
             <th scope="col" className="px-2.5 py-1.5 text-right font-medium">Time</th>
-            <th scope="col" className="px-2.5 py-1.5 text-right font-medium">Cost</th>
             <th scope="col" className="px-2.5 py-1.5 text-right font-medium">Calls</th>
           </tr>
         </thead>
@@ -113,7 +112,6 @@ function TimingTable({ rows, caption, slot, head }: { rows: TimingRow[]; caption
             <tr key={row.key} data-phase={row.key} className={cn('border-t align-top', row.key === 'total' && 'font-medium')}>
               <th scope="row" className="px-2.5 py-1 text-left font-[inherit] break-words">{row.label}</th>
               <td className="px-2.5 py-1 text-right whitespace-nowrap">{row.time}</td>
-              <td className="px-2.5 py-1 text-right whitespace-nowrap">{row.cost}</td>
               <td className="px-2.5 py-1 text-right">{row.calls ?? ''}</td>
             </tr>
           ))}
@@ -123,16 +121,16 @@ function TimingTable({ rows, caption, slot, head }: { rows: TimingRow[]; caption
   );
 }
 
-/** Where the answer's time and money went (#1512): one row per phase, then one per helper. */
+/** Where the answer's time went (#1512): one row per phase, then one per helper (#1765: no cost here). */
 function TimingsTable({ trust }: { trust: ChatTrust | null | undefined }) {
   const rows = timingRows(trust?.timings);
   if (!rows) return null;
   const helpers = helperTimingRows(trust?.timings);
   return (
     <div data-slot="chat-trust-timings" className="mt-2 grid min-w-0 gap-2">
-      <p className="text-xs font-medium text-muted-foreground">Time and cost by phase (phases that ran together overlap)</p>
-      <TimingTable rows={rows} caption="Time and cost by phase" slot="chat-trust-timings-phases" head="Phase" />
-      {helpers.length > 0 && <TimingTable rows={helpers} caption="Time and cost by helper" slot="chat-trust-timings-helpers" head="Helper" />}
+      <p className="text-xs font-medium text-muted-foreground">Time by phase (phases that ran together overlap)</p>
+      <TimingTable rows={rows} caption="Time by phase" slot="chat-trust-timings-phases" head="Phase" />
+      {helpers.length > 0 && <TimingTable rows={helpers} caption="Time by helper" slot="chat-trust-timings-helpers" head="Helper" />}
     </div>
   );
 }

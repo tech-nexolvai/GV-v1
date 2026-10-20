@@ -62,8 +62,9 @@ describe('products and the full check, without React', () => {
   it('says the full check plainly', () => {
     expect(productsWords(['cabinet', 'countertop'])).toBe('Countertops + Cabinets');
     expect(fullCheckBubble(['countertop'], 'High')).toBe('Full check · Countertops · High effort');
-    expect(confirmWords(['countertop'], 'Opus 5.5', 'High', '$15')).toBe('Full check · Countertops · Opus 5.5 · High · up to $15');
-    expect(confirmWords(null, 'Opus 5.5', 'High', null)).toBe('Full check · this set’s product · Opus 5.5 · High');
+    // #1765: no price on the confirm line (cost has one quiet place).
+    expect(confirmWords(['countertop'], 'Opus 5.5', 'High')).toBe('Full check · Countertops · Opus 5.5 · High');
+    expect(confirmWords(null, 'Opus 5.5', 'High')).toBe('Full check · this set’s product · Opus 5.5 · High');
     expect(matchesWords('architect')).toBe('matches architect');
     expect(matchesWords('brand_prototype')).toBe('matches brand prototype');
   });
@@ -291,6 +292,17 @@ describe('a full-check answer', () => {
     expect(progressWords({ created_at: '2026-10-17T10:00:00Z', findings: [], coverage: null, progress: { ...progress, eta_seconds: 20 } })).toBe('Checking page 12 of 60 · 8 wrong so far · under a minute left');
   });
 
+  it('the older progress line counts only proved Wrongs and never says "to decide" (#1765)', () => {
+    const progress = { phase: 'writing' as const, pages_done: 60, pages_total: 60, wrong_so_far: 8, decision_so_far: 3, right_so_far: 4, eta_seconds: null };
+    expect(progressWords({ created_at: '2026-10-17T10:00:00Z', findings: [], coverage: null, progress })).toBe('Writing the summary and the cloud drawing · 8 wrong so far');
+    // With no server progress: an AI "different" that code did not prove is not a Wrong.
+    const raw = { ...findings[0], status: 'different' as const, proof: { group: 'not_compared' as const } };
+    const proved = { ...findings[0], id: 'proved', status: 'different' as const, proof: { group: 'clouded' as const } };
+    const coverage = { pages: [{ page: 1, status: 'different' as const }], counts: { total: 10 } } as never;
+    expect(progressWords({ created_at: '2026-10-17T10:00:00Z', findings: [raw, raw, proved], coverage, progress: null })).toBe('Checking page 2 of 10 · 1 wrong so far');
+    expect(progressWords({ created_at: '2026-10-17T10:00:00Z', findings: [raw], coverage, progress: null })).toBe('Checking page 2 of 10 · 0 wrong so far');
+  });
+
   it('counts drawings in the simple full check (#1665)', () => {
     const progress = { phase: 'checking' as const, pages_done: 3, pages_total: 60, wrong_so_far: 2, decision_so_far: 0, right_so_far: 1, eta_seconds: 400, drawings_done: 11, drawings_total: 36 };
     expect(progressWords({ created_at: '2026-10-17T10:00:00Z', findings: [], coverage: null, progress })).toBe('Comparing drawing 12 of 36 · 2 wrong so far · about 7 min left');
@@ -313,7 +325,7 @@ describe('a full-check answer', () => {
     expect(decide).toHaveBeenCalledWith('msg-1', 'w2', 'not_a_problem');
     await waitFor(() => expect(tiles(node)[0]).toMatch(/^wrong:Wrong1/));
     await user.keyboard('{Escape}');
-    expect(node.querySelector('[data-slot="chat-result-list"]')?.textContent).toContain('Not a problem (your call)');
+    expect(node.querySelector('[data-slot="chat-result-list"]')?.textContent).toContain('Marked not a problem');
     // A Not-compared item offers "Make it Wrong" (the Agree route): it moves to Wrong.
     await user.click(within(node).getByRole('tab', { name: /^Not compared/ }));
     await user.click(within(node).getByRole('button', { name: /^Island overhang, page \d+\. Open the evidence$/ }));
@@ -453,7 +465,7 @@ describe('the chat page', () => {
     await user.click(run);
     const summary = await screen.findByText(/^Full check · /, { selector: '[data-slot="chat-full-check-summary"]' });
     // All by default, even for a set stated "countertop" (2026-10-18).
-    expect(summary.textContent).toBe('Full check · Countertops + Cabinets · Opus 5.5 · High · up to $5');
+    expect(summary.textContent).toBe('Full check · Countertops + Cabinets · Opus 5.5 · High');
     expect(screen.getByText('Checks all products (countertops, cabinets).')).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Run' }));
     await waitFor(() => expect(stream.send).toHaveBeenCalled());

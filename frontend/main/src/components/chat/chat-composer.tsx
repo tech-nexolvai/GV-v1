@@ -49,8 +49,6 @@ export interface ChatComposerProps {
   choice: ChatChoice | null;
   onChoice: (choice: ChatChoice) => void;
   placeholder: string;
-  /** Small muted words at the foot of the model menu (what a message may cost). */
-  menuFootnote?: string;
   textareaRef?: React.RefObject<HTMLTextAreaElement | null>;
   /** Shown at the bottom left (chat v4: the Countertop / Cabinet chips). */
   leading?: React.ReactNode;
@@ -82,7 +80,6 @@ export function ChatComposer({
   choice,
   onChoice,
   placeholder,
-  menuFootnote,
   textareaRef,
   leading,
   plus,
@@ -132,7 +129,7 @@ export function ChatComposer({
         >
           {blankSegments(value).map((segment, at) =>
             segment.blank ? (
-              <mark key={at} className="rounded-[4px] bg-[color-mix(in_srgb,var(--outcome-review)_24%,transparent)] text-transparent">{segment.text}</mark>
+              <mark key={at} className="rounded-[4px] bg-[color-mix(in_srgb,var(--muted-foreground)_22%,transparent)] text-transparent">{segment.text}</mark>
             ) : (
               <span key={at}>{segment.text}</span>
             ),
@@ -191,7 +188,7 @@ export function ChatComposer({
               <span className="num">{value.length}</span>/<span className="num">{MESSAGE_MAX}</span>
             </span>
           )}
-          {model && choice && !modelInMenu && <ModelMenu models={models} model={model} choice={choice} onChoice={onChoice} footnote={menuFootnote} />}
+          {model && choice && !modelInMenu && <ModelMenu models={models} model={model} choice={choice} onChoice={onChoice} />}
           {running ? (
             <button
               type="button"
@@ -230,13 +227,11 @@ function ModelMenu({
   model,
   choice,
   onChoice,
-  footnote,
 }: {
   models: readonly ChatModel[];
   model: ChatModel;
   choice: ChatChoice;
   onChoice: (choice: ChatChoice) => void;
-  footnote?: string;
 }) {
   const locked = model.thinking === 'always';
   // Effort opens in place under its row (a side submenu has no room on a phone).
@@ -332,14 +327,6 @@ function ModelMenu({
           </MenuPrimitive.RadioGroup>
         )}
 
-        {footnote && (
-          <>
-            <DropdownMenuSeparator className="my-1.5" />
-            <p data-slot="chat-model-footnote" className="px-2.5 pt-0.5 pb-1 text-xs leading-snug text-muted-foreground">
-              {footnote}
-            </p>
-          </>
-        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );

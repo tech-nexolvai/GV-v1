@@ -95,9 +95,11 @@
     --outcome-fail: #dc2626;
     --outcome-fail-fg: #b91c1c;
     --outcome-fail-bg: #fef2f2;
-    --outcome-review: #d97706;
-    --outcome-review-fg: #a14a06;
-    --outcome-review-bg: #fffbeb;
+    /* #1765: amber is retired (2026-10-18: no "Your decision"). The old screens' "review" token is
+       a strong grey, apart from the dashed "missing" grey by its weight, never a hue. */
+    --outcome-review: #737373;
+    --outcome-review-fg: #404040;
+    --outcome-review-bg: #f2f2f2;
     --outcome-missing: #8a8a8a;
     --outcome-missing-fg: #525252;
     --outcome-missing-bg: #f4f4f4;
@@ -154,9 +156,9 @@
     --outcome-fail: #ef4444;
     --outcome-fail-fg: #f87171;
     --outcome-fail-bg: #2e1414;
-    --outcome-review: #f59e0b;
-    --outcome-review-fg: #fbbf24;
-    --outcome-review-bg: #2b210a;
+    --outcome-review: #a3a3a3;
+    --outcome-review-fg: #d4d4d4;
+    --outcome-review-bg: #262626;
     --outcome-missing: #8a8a8a;
     --outcome-missing-fg: #b4b4b4;
     --outcome-missing-bg: #232323;

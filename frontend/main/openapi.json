@@ -14841,11 +14841,18 @@
         "description": "A new reviewable drawing package.",
         "properties": {
           "product_type": {
-            "description": "What product this drawing set is for, chosen by the reviewer (#994): an active product id from `GET /products` (the product registry, #1547). Only the published checks for this product are run, and the readers are told it. A product with no published check is refused, because a set checked against nothing would look exactly like a clean one.",
-            "maxLength": 32,
-            "minLength": 1,
-            "title": "Product Type",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What product this drawing set is for (#994): an active product id from `GET /products` (the product registry, #1547), or left out for **every active product** (All, the default since the start page lost its product question, #1765: a set stated \"countertop\" often holds cabinets too; the reviewer narrows in the chat). With a product, only its published checks are run and the readers are told it. A product with no published check is refused, because a set checked against nothing would look exactly like a clean one; left out, at least one product must have a published check.",
+            "title": "Product Type"
           },
           "vendor": {
             "anyOf": [
@@ -14861,9 +14868,6 @@
             "title": "Vendor"
           }
         },
-        "required": [
-          "product_type"
-        ],
         "title": "PackageCreate",
         "type": "object"
       },
@@ -24761,7 +24765,7 @@
         ]
       },
       "post": {
-        "description": "Create a package in this project, in state `CREATED`, with revision 1.\n\nTwo checks, because they answer different questions: `require_project_access` says the caller may\nsee this project at all, and `require_action` says creating a package is something their role may\ndo. Collapsing them would make \"any member of a project may create packages in it\" true by\naccident rather than by decision.\n\nThe package, its first revision and the revision's birth event are one transaction. A package with\nno revision would be a package nothing can be uploaded to, and it would look completely normal in\na list.\n\nA project that does not exist answers `404`, in the same words as a project the caller is not in.\n\n**The product must be one the published rulebook checks (#994).** The schema already refuses a\nvalue outside the `ProductType` vocabulary; this refuses a vocabulary value no published rule is\nfor. Such a set would be checked against nothing, and an empty findings list reads as a clean\none \u2014 so it is a `422` naming the problem, not a package that quietly runs no checks.",
+        "description": "Create a package in this project, in state `CREATED`, with revision 1.\n\nTwo checks, because they answer different questions: `require_project_access` says the caller may\nsee this project at all, and `require_action` says creating a package is something their role may\ndo. Collapsing them would make \"any member of a project may create packages in it\" true by\naccident rather than by decision.\n\nThe package, its first revision and the revision's birth event are one transaction. A package with\nno revision would be a package nothing can be uploaded to, and it would look completely normal in\na list.\n\nA project that does not exist answers `404`, in the same words as a project the caller is not in.\n\n**The product must be one the published rulebook checks (#994).** The schema already refuses a\nvalue outside the `ProductType` vocabulary; this refuses a vocabulary value no published rule is\nfor. Such a set would be checked against nothing, and an empty findings list reads as a clean\none \u2014 so it is a `422` naming the problem, not a package that quietly runs no checks.\n\n**No product named = every active product (#1765).** The start page no longer asks; the set is\nstored with no product, which every consumer already reads as \"every product\" (`package_product`),\nand the reviewer narrows in the chat. It is still refused when no product has a published check.",
         "operationId": "create_package_api_v1_projects__project_id__packages_post",
         "parameters": [
           {

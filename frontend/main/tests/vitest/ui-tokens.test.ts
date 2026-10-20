@@ -55,6 +55,14 @@ describe.each([
     expect(contrast(t.background, t['outcome-fail-fg'])).toBeGreaterThanOrEqual(4.5);
   });
 
+  it('has no amber: the old "review" outcome is a grey, with no hue (#1765)', () => {
+    for (const name of ['outcome-review', 'outcome-review-fg', 'outcome-review-bg']) {
+      const hex = t[name];
+      expect(hex.slice(1, 3), name).toBe(hex.slice(3, 5));
+      expect(hex.slice(3, 5), name).toBe(hex.slice(5, 7));
+    }
+  });
+
   it('body text, muted text and control edges are readable', () => {
     expect(contrast(t.foreground, t.background)).toBeGreaterThanOrEqual(4.5);
     expect(contrast(t['muted-foreground'], t.background)).toBeGreaterThanOrEqual(4.5);

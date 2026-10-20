@@ -59,7 +59,7 @@ describe('the plan check before a full check', () => {
     const user = userEvent.setup();
     const onRun = vi.fn();
     const loadPlan = vi.fn(async () => UNSURE);
-    render(<FullCheckButton summary="Full check · Countertops · Opus 5.5 · High · up to $15" onRun={onRun} blocked={null} loadPlan={loadPlan} />);
+    render(<FullCheckButton summary="Full check · Countertops · Opus 5.5 · High" onRun={onRun} blocked={null} loadPlan={loadPlan} />);
     expect(loadPlan).not.toHaveBeenCalled(); // read only when the popover opens
 
     await user.click(screen.getByRole('button', { name: 'Run full check' }));

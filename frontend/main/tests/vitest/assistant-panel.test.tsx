@@ -367,7 +367,7 @@ describe('assistant panel', () => {
     const items = within(list).getAllByRole('button');
     // The queue's own order: countertops by page, then the other checks.
     expect(items.map((item) => item.textContent)).toEqual([
-      expect.stringContaining('A fail with no decision yet'),
+      expect.stringContaining('A fail not looked at yet'),
       expect.stringContaining('Synthetic: the two readers disagree'),
       expect.stringContaining('Synthetic sink check'),
     ]);
@@ -640,7 +640,7 @@ describe('assistant panel: less clutter', () => {
     const lines = within(list).getAllByRole('button');
     expect(lines).toHaveLength(8);
     // Countertops: "Page N", the reason's first sentence in sentence case, the badge at the end.
-    expect(lines[2].textContent).toBe('Page 20Synthetic: readers disagree on piece 0Needs your decision');
+    expect(lines[2].textContent).toBe('Page 20Synthetic: readers disagree on piece 0Not compared');
     // 2 countertops + 9 held + 1 sink check + 1 group of six = 13 lines; 8 shown, 5 lines (10 results) left.
     expect(screen.getByText(/more in the queue/).textContent).toBe('and 10 more in the queue');
     await user.click(screen.getByRole('button', { name: 'Open queue' }));

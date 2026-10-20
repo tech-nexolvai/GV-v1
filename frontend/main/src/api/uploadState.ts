@@ -15,19 +15,15 @@ export function canUploadFor(choice: ProductChoice): boolean {
 }
 
 /**
- * The product to preselect: the first one in the registry's order that can be uploaded for, and
- * `null` when there is none — the form then cannot start.
+ * The body of `POST /projects/{id}/packages`: who sent the set, and the product it is for only when
+ * one is named. #1765: the start page names none, so the set is checked for every active product
+ * (All); the server refuses it only when no product has a published check.
  */
-export function defaultProductType(choices: readonly ProductChoice[]): ProductType | null {
-  return choices.find(canUploadFor)?.id ?? null;
-}
-
-/** The body of `POST /projects/{id}/packages`: who sent the set and what it is for. */
 export function packageCreateBody(
   vendor: string,
-  productType: ProductType,
+  productType: ProductType | null = null,
 ): components['schemas']['PackageCreate'] {
-  return { vendor: vendor || null, product_type: productType };
+  return productType ? { vendor: vendor || null, product_type: productType } : { vendor: vendor || null };
 }
 
 /** A package exists even though one of the later upload or extraction steps failed. */

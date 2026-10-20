@@ -2,7 +2,8 @@
  * The reviewer's words, one meaning each (#1712, UI redesign step 1; design spec section 7).
  *
  * Every chat, shell and tracker screen takes its outcome and voice words from here, and
- * `tests/vitest/reviewer-words.test.ts` fails when a retired word is written into their code again.
+ * `tests/vitest/reviewer-words.test.ts` fails when a retired word is written into any screen's code
+ * again (#1765: every screen, the older review screens too).
  *
  * - **Wrong**: the vendor's value differs from the architect's (or GV's rule, or the vendor's own
  *   sum), proved by code; red on the cloud drawing.
@@ -87,6 +88,9 @@ export const BANNED_WORDS: readonly { pattern: RegExp; instead: string }[] = [
   { pattern: /What[’']s (?:wrong|right)/, instead: 'say "Wrong" / "Right"' },
   { pattern: /what to check(?:,| and)/i, instead: 'there is no "to check": say Wrong / Right / Not compared' },
   { pattern: /your decision/i, instead: 'there is no "Your decision": say "Not compared"' },
+  // #1765: no "your call", and nothing counted as "N to decide" (only proved Wrongs are counted).
+  { pattern: /your call\b/i, instead: 'say what was recorded ("Marked not a problem")' },
+  { pattern: /\}\s*to decide\b/, instead: 'count only proved Wrongs; nothing is "to decide"' },
   { pattern: /['"`]Still wrong['"`]|Fixed · round|['"`]Fixed in a later round['"`]/, instead: 'say the round-2 words: Closed / Previous comment not addressed / New' },
   // #1756: the product is GV Review; a model is named only by its short name ("Opus 5.5").
   { pattern: /\bClaude\b/, instead: 'say "the AI", or the model\'s short name ("Opus 5.5")' },
