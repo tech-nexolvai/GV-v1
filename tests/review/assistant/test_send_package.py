@@ -449,10 +449,11 @@ def test_the_letter_reads_like_a_transmittal(workspace: ChatWorkspace) -> None:
         "Revise and resubmit",
         "Action required by: Vendor: revise and resubmit",
         "C-01",
-        'Vendor shows 46"',
-        'Architect requires 37"',
+        'Vendor shows 46" for the buffet outlet height; the architect shows 37" (printed 3\'-1")',
+        'Change it to 37" (9" over).',
         "Correct as noted",
-        "Source: architect",
+        "Reference: Architect drawing, on the same sheet",
+        "Proved by code: both numbers are printed on the drawings",
         "Not compared (1)",
         "Approval of an item is not approval of an assembly it is part of.",
         "Enclosures",
@@ -491,7 +492,7 @@ def test_round_two_words_and_still_open_comments() -> None:
         ("C-02", "Previous comment not addressed")
     ]
     rows = register_rows(findings, context)
-    history = {row[0]: row[12] for row in rows}
+    history = {row[0]: row[13] for row in rows}
     status = {row[0]: row[5] for row in rows}
     assert status == {"C-01": "Right", "C-02": "Wrong"}
     assert history["C-01"] == "Round 1: wrong · Round 2: Closed"
@@ -569,12 +570,13 @@ def test_the_register_speaks_to_the_vendor() -> None:
         labels={"F1": "C-01", "F2": "C-02"},
     )
     rows = register_rows([_ai_only(), _right(), _proved()], context)
-    assert [(r[0], r[5], r[11]) for r in rows] == [
+    assert [(r[0], r[5], r[12]) for r in rows] == [
         ("C-01", "Wrong", "1"),
         ("", "Not compared", "2"),
         ("", "Right", ""),
     ]
-    assert rows[1][10] and not any(FORBIDDEN.search(cell) for row in rows for cell in row)
+    assert rows[0][7].startswith('Vendor shows 46"')  # the proof card's sentence
+    assert rows[1][11] and not any(FORBIDDEN.search(cell) for row in rows for cell in row)
 
 
 def _c10(**changes: Any) -> dict[str, Any]:
@@ -633,7 +635,7 @@ def test_a_gv_rule_result_without_a_stated_requirement_is_never_a_comment(
     row = next(r for r in rows if r[4] == "Countertop row on page 5")
     assert row[0] in (None, "") and row[5] == "Not compared"
     # The Not-compared list's reason for it, word for word (#1766: one reason per item, R6).
-    assert row[10].startswith("Not reviewed: project value not set: GV's rule found a difference")
+    assert row[11].startswith("Not reviewed: project value not set: GV's rule found a difference")
     assert not any(FORBIDDEN.search(str(c or "")) for r in rows for c in r)
 
 

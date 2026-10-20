@@ -63,6 +63,7 @@ __all__ = [
     "code_proved",
     "could_not_compare_reason",
     "governs",
+    "gv_limits",
     "needs_pairing",
     "no_stated_requirement",
     "pairing_proved",
@@ -79,6 +80,7 @@ __all__ = [
     "vendor_facing",
     "vendor_own",
     "vendor_value",
+    "witnesses_of",
 ]
 
 type ProofGroup = Literal["clouded", "right", "not_compared", "dismissed"]
@@ -429,6 +431,25 @@ def _gv_limits(finding: Mapping[str, Any]) -> str | None:
     return found.group(1).strip() if found else None
 
 
+def gv_limits(finding: Mapping[str, Any]) -> str | None:
+    """GV's limits that settled the item ("1" to 2""), else `None` (`_gv_limits`)."""
+    return _gv_limits(finding)
+
+
+def witnesses_of(finding: Mapping[str, Any]) -> list[str]:
+    """The finding's non-AI witnesses (`_witnesses`)."""
+    return _witnesses(finding)
+
+
+def _reviewer_should_be(finding: Mapping[str, Any]) -> str | None:
+    """The value GV's reviewer gave with an Agree (#1803), else `None`."""
+    decision = finding.get("decision")
+    if not isinstance(decision, Mapping) or decision.get("decision") != "agree":
+        return None
+    given = " ".join(str(decision.get("should_be") or "").split())
+    return given or None
+
+
 def _settled_how(finding: Mapping[str, Any]) -> str:
     settled = finding.get("settled")
     return str(settled.get("how") or "") if isinstance(settled, Mapping) else ""
@@ -452,9 +473,13 @@ def vendor_value(finding: Mapping[str, Any]) -> str:
 
 
 def should_be_value(finding: Mapping[str, Any]) -> str:
-    """Just the value the vendor's should be: code's inches of the governing value when it read
-    one (`37"`, `80 1/8"`), GV's limits when they settled it (`1" to 2"`), else that value as
+    """Just the value the vendor's should be: the value GV's reviewer gave with an Agree (#1803,
+    the decision's `should_be`), else code's inches of the governing value when it read one
+    (`37"`, `80 1/8"`), GV's limits when they settled it (`1" to 2"`), else that value as
     printed."""
+    given = _reviewer_should_be(finding)
+    if given is not None:
+        return given
     limits = _gv_limits(finding)
     if limits is not None:
         return limits
