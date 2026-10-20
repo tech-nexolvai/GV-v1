@@ -52,6 +52,7 @@ __all__ = [
     "ADVOCATE_SYSTEM",
     "CODE_PAIRED_SOURCES",
     "CODE_PAIRS_FILE",
+    "INCOMPLETE",
     "NOT_VERIFIED",
     "PAIRED_SOURCES",
     "SPANS",
@@ -60,16 +61,22 @@ __all__ = [
     "STRING_SYSTEM",
     "Check",
     "Extent",
+    "StringChain",
     "Verdict",
     "advocate_question",
+    "architect_overalls",
     "code_checks",
     "code_pairs",
     "compare_strings",
     "decide",
+    "filler_notes_left_out",
+    "filler_size",
     "ink_colour",
     "is_slip",
     "needs_pairing",
+    "same_chain",
     "same_extent",
+    "string_chain",
     "string_extent",
     "string_extras",
     "string_gap",
@@ -471,8 +478,9 @@ def same_extent(
             counted.setdefault(value, []).append(label)
         return {value: found[0] for value, found in counted.items() if len(found) == 1}
 
-    v_once, a_once = once(vendor_labels, vendor.get("id")), once(
-        architect_labels, architect.get("id")
+    v_once, a_once = (
+        once(vendor_labels, vendor.get("id")),
+        once(architect_labels, architect.get("id")),
     )
     pairs: list[tuple[float, float]] = []
     for value in set(v_once) & set(a_once):
@@ -715,57 +723,268 @@ def string_gap(
     the overall and a row of labels printing exactly the reading's parts are found with their
     dimension lines, and those parts do not reach the overall's ends or leave a gap between them,
     the readings left a part out (a 3/4" end panel, a 1/8" reveal), so the string is never proved
-    by readings. `None`: no such gap (or code could not find the lines: pen strokes)."""
+    by readings. `None`: no such gap (or code could not find the lines: pen strokes). End gaps a
+    filler note fills exactly are not a gap here: `string_chain` says so (#1802)."""
+    chain = string_chain(parts, printed, labels, box)
+    return chain.why if chain.outcome == "gap" else None
+
+
+#: Two parts' dimension lines are one row when they sit this close across (points). The old
+#: grouping rounded each line to a 2 pt band, so a row drawn 1/2 pt lower in one place fell into
+#: two bands and the veto never ran (the paid run of 2026-10-20, #1802).
+_ROW_PT: Final = 2.0
+#: Two parts' lines may meet across a tick this wide (points) when filler notes fill the ends:
+#: on a small-scale CAD plan the ticks leave about 1.2 pt between parts. Such a string is never
+#: red by its readings (`fillers` is red only when the architect prints the same sum).
+_JOINT_PT: Final = 1.5
+#: A filler note's size at the overall's own scale fills an end gap within this many points.
+_FILL_PT: Final = 1.0
+#: A filler note: the word FILLER with its size (`3/4" FILLER`, `3/4"FILLER (TYP.)`).
+_FILLER_WORD: Final = re.compile(r"\bFILLERS?\b", re.IGNORECASE)
+#: A stacked fraction read as two numbers before the word (`3 4" FILLER` for 3/4").
+_STACKED_FILLER: Final = re.compile(r"^\s*(\d{1,2})\s+(\d{1,2})\s*\"?\s*FILLERS?\b", re.IGNORECASE)
+_DENOMINATORS: Final = frozenset({2, 4, 8, 16, 32, 64})
+
+type ChainOutcome = Literal["tiles", "fillers", "gap", "unknown"]
+
+
+@dataclass(frozen=True)
+class StringChain:
+    """What code's lines say about a vendor string (#1802):
+
+    - `tiles`: a row printing exactly the parts fills the overall's line end to end;
+    - `fillers`: it does once the filler notes at the run's ends are counted (`before` and `after`
+      are their sizes, in inches): a note is not a dimension, so a reading leaves it out;
+    - `gap`: the parts leave a gap no filler note fills (`why`): a part is missing;
+    - `unknown`: code found no such row (pen strokes, no lines): the readings decide."""
+
+    outcome: ChainOutcome
+    why: str = ""
+    before: tuple[Decimal, ...] = ()
+    after: tuple[Decimal, ...] = ()
+
+    @property
+    def fillers(self) -> tuple[Decimal, ...]:
+        return self.before + self.after
+
+
+def filler_size(label: Mapping[str, Any]) -> Decimal | None:
+    """The size a filler note prints (`3/4" FILLER` -> 3/4), from its words; `3 4" FILLER` (a
+    stacked fraction read as two numbers) is 3/4. `None` when the label is not a filler note."""
+    text = str(label.get("text") or "")
+    if not _FILLER_WORD.search(text):
+        return None
+    stacked = _STACKED_FILLER.match(text)
+    if stacked is not None:
+        top, bottom = int(stacked.group(1)), int(stacked.group(2))
+        if bottom in _DENOMINATORS and 0 < top < bottom:
+            return Decimal(top) / Decimal(bottom)
+    value = _inches(label)
+    if value is not None and value > 0:
+        return value
+    return _inches_of(_FILLER_WORD.split(text, 1)[0])
+
+
+def _rows_of(
+    found: Sequence[tuple[float, float, float, Decimal]],
+) -> list[list[tuple[float, float, Decimal]]]:
+    """Parts (start, end, across, value) grouped into rows: lines within `_ROW_PT` across."""
+    rows: list[list[tuple[float, float, float, Decimal]]] = []
+    for item in sorted(found, key=lambda part: part[2]):
+        if rows and item[2] - rows[-1][-1][2] <= _ROW_PT:
+            rows[-1].append(item)
+        else:
+            rows.append([item])
+    return [[(a, b, value) for a, b, _across, value in row] for row in rows]
+
+
+def string_chain(
+    parts: Sequence[object],
+    printed: object,
+    labels: Sequence[Mapping[str, Any]],
+    box: Sequence[float] | None = None,
+) -> StringChain:
+    """Whether code's lines prove a vendor string complete (#1641, #1802): the printed overall
+    (inside `box` when given) and a row of labels printing exactly the reading's parts, each with
+    its dimension line. Parts that leave a gap between them, or at an end that no filler note
+    fills, mean the reading left a part out (`gap`). A filler note fills an end gap when its
+    size, at the overall's own scale (its line's length over its printed inches), is the gap
+    within `_FILL_PT`, and it is printed on that end's side of the run: the readings and code's
+    labels both leave notes out of a string, so its sum must count them."""
     total = _inches_of(printed)
     want = sorted(v for v in (_inches_of(p) for p in parts) if v is not None)
-    if total is None or len(want) != len(parts):
-        return None
-
-    def axis(label: Mapping[str, Any]) -> tuple[float, float, float] | None:
-        """(start, end, row) along the label's own line."""
-        line = label.get("dim_line")
-        if not line or len(line) != 2:
-            return None
-        along = 0 if label.get("orientation") == "h" else 1
-        ends = sorted(float(point[along]) for point in line)
-        return ends[0], ends[1], float(line[0][1 - along])
+    if total is None or not want or len(want) != len(parts):
+        return StringChain("unknown")
 
     def inside(label: Mapping[str, Any]) -> bool:
-        if box is None:
-            return True
-        x0, y0, x1, y1 = (float(v) for v in label.get("box") or (0, 0, 0, 0))
-        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-        return box[0] <= cx <= box[2] and box[1] <= cy <= box[3]
+        return box is None or _centre_in(label, box)
 
-    vendor = [lab for lab in labels if lab.get("side") == "vendor" and axis(lab) is not None]
-    for overall in vendor:
+    vendor = [lab for lab in labels if lab.get("side") == "vendor"]
+    lined = [lab for lab in vendor if _line(lab) is not None]
+    notes = [(lab, size) for lab in vendor if (size := filler_size(lab)) is not None]
+    for overall in lined:
         if _inches(overall) != total or not inside(overall):
             continue
-        start, end, row = axis(overall)  # type: ignore[misc]
-        rows: dict[int, list[tuple[float, float, Decimal]]] = {}
-        for label in vendor:
-            found = axis(label)
+        start, end, row = _line(overall)  # type: ignore[misc]
+        found: list[tuple[float, float, float, Decimal]] = []
+        for label in lined:
+            line = _line(label)
             value = _inches(label)
-            if label is overall or found is None or value is None or value not in want:
+            if label is overall or line is None or value is None or value not in want:
                 continue
-            if label.get("orientation") != overall.get("orientation") or abs(found[2] - row) < 1:
+            if label.get("orientation") != overall.get("orientation") or abs(line[2] - row) < 1:
                 continue
-            if found[0] < start - _TOUCH_PT or found[1] > end + _TOUCH_PT:
+            if line[0] < start - _TOUCH_PT or line[1] > end + _TOUCH_PT:
                 continue
-            rows.setdefault(round(found[2] / 2), []).append((found[0], found[1], value))
-        for run in rows.values():
+            found.append((line[0], line[1], line[2], value))
+        for run in _rows_of(found):
             if sorted(value for _a, _b, value in run) != want:
                 continue
             run.sort()
-            gaps = [run[0][0] - start, end - run[-1][1]]
-            gaps += [later[0] - before[1] for before, later in pairwise(run)]
-            if max(abs(gap) for gap in gaps) > _TOUCH_PT:
-                return (
-                    "code sees the parts' dimension lines stop short of the overall's ends, so "
-                    "the readings left a part out"
-                )
-            return None
-    return None
+            joints = [abs(later[0] - before[1]) for before, later in pairwise(run)]
+            if any(joint > _JOINT_PT for joint in joints):
+                return StringChain("gap", _LEFT_OUT)
+            head, tail = run[0][0] - start, end - run[-1][1]
+            if abs(head) <= _TOUCH_PT and abs(tail) <= _TOUCH_PT:
+                # Tiled: the readings decide, so a joint must be as tight as ever.
+                tight = all(joint <= _TOUCH_PT for joint in joints)
+                return StringChain("tiles") if tight else StringChain("gap", _LEFT_OUT)
+            scale = (end - start) / float(total)
+            middle = (start + end) / 2
+            along = 0 if overall.get("orientation") == "h" else 1
+            before = _filled(head, scale, notes, along, middle, start=True)
+            after = _filled(tail, scale, notes, along, middle, start=False)
+            if before is not None and after is not None:
+                return StringChain("fillers", "", before, after)
+            return StringChain("gap", _LEFT_OUT)
+    return StringChain("unknown")
+
+
+#: The Not-compared words for a vendor string code cannot prove complete (#1802).
+INCOMPLETE: Final = "the string could not be proved complete"
+_LEFT_OUT: Final = (
+    "code sees the parts' dimension lines stop short of the overall's ends, so the readings "
+    "left a part out"
+)
+
+
+def _filled(
+    gap: float,
+    scale: float,
+    notes: Sequence[tuple[Mapping[str, Any], Decimal]],
+    along: int,
+    middle: float,
+    *,
+    start: bool,
+) -> tuple[Decimal, ...] | None:
+    """The filler size that fills one end gap: `()` when there is no gap, the one size of the
+    notes on that side that fills it exactly, else `None` (no note, or two sizes that both fit).
+    A note is on the start's side when its centre is before the run's `middle`."""
+    if abs(gap) <= _TOUCH_PT:
+        return ()
+    if gap < 0:
+        return None
+    sizes = set()
+    for label, size in notes:
+        x0, y0, x1, y1 = (float(v) for v in label.get("box") or (0, 0, 0, 0))
+        centre = ((x0 + x1) / 2, (y0 + y1) / 2)[along]
+        on_side = centre < middle if start else centre > middle
+        if on_side and abs(float(size) * scale - gap) <= _FILL_PT:
+            sizes.add(size)
+    return (next(iter(sizes)),) if len(sizes) == 1 else None
+
+
+#: How far beyond the overall's ends (a share of its length) a filler note may be printed and
+#: still belong to its run, and how far across (its length): the notes stand off the drawing.
+_NOTE_BEYOND: Final = 0.25
+_NOTE_ACROSS: Final = 1.0
+
+
+def filler_notes_left_out(
+    parts: Sequence[object], overall: Mapping[str, Any], labels: Sequence[Mapping[str, Any]]
+) -> list[str]:
+    """Filler notes printed by the overall's run whose size the reading's end parts do not
+    include (#1802): a reading of the parts only (a note is not a dimension) leaves them out of
+    the sum, so the string cannot be proved complete. Used when code found no row of the parts'
+    own lines (`string_chain` is `unknown`): then nothing shows whether the fillers are inside."""
+    found = _line(overall)
+    if found is None:
+        return []
+    start, end, across = found
+    length = end - start
+    along = 0 if overall.get("orientation") == "h" else 1
+    values = [_inches_of(p) for p in parts]
+    ends = [v for v in (values[:1] + values[-1:] if len(values) > 1 else values) if v is not None]
+    left: list[str] = []
+    for label in labels:
+        size = filler_size(label)
+        if size is None or label.get("side") != "vendor":
+            continue
+        x0, y0, x1, y1 = (float(v) for v in label.get("box") or (0, 0, 0, 0))
+        centre = ((x0 + x1) / 2, (y0 + y1) / 2)
+        if not start - _NOTE_BEYOND * length <= centre[along] <= end + _NOTE_BEYOND * length:
+            continue
+        if abs(centre[1 - along] - across) > _NOTE_ACROSS * length:
+            continue
+        if size in ends:
+            ends.remove(size)
+            continue
+        left.append(str(label.get("text") or _words(size)))
+    return left
+
+
+def same_chain(first: Sequence[Decimal], second: Sequence[Decimal], *, slips: int = 1) -> bool:
+    """Two strings' parts are one run drawn twice (#1802): the same number of parts (two or more),
+    in the same order or reversed, with at most `slips` parts printed differently."""
+    if len(first) < 2 or len(first) != len(second):
+        return False
+    return any(
+        sum(1 for a, b in zip(first, other, strict=True) if a != b) <= slips
+        for other in (second, second[::-1])
+    )
+
+
+def architect_overalls(
+    parts: Sequence[object],
+    pages: Iterable[Sequence[Mapping[str, Any]]],
+    *,
+    slips: int = 1,
+) -> set[Decimal]:
+    """The overalls the architect prints over the same run as a vendor string (#1802): on each
+    architect drawing, every overall with a dimension line and a row of the architect's parts
+    beside it, end to end, that is the same chain as the vendor's parts (`same_chain`). Empty:
+    code found no architect run of these parts (the architect may still draw it, by hand)."""
+    want = [_inches_of(p) for p in parts]
+    if not want or None in want:
+        return set()
+    wanted = [v for v in want if v is not None]
+    found: set[Decimal] = set()
+    for labels in pages:
+        lined = [lab for lab in labels if lab.get("side") == "architect" and _line(lab) is not None]
+        for overall in lined:
+            total = _inches(overall)
+            start, end, row = _line(overall)  # type: ignore[misc]
+            if total is None:
+                continue
+            beside: list[tuple[float, float, float, Decimal]] = []
+            for label in lined:
+                line, value = _line(label), _inches(label)
+                if label is overall or line is None or value is None or value >= total:
+                    continue
+                if label.get("orientation") != overall.get("orientation"):
+                    continue
+                if abs(line[2] - row) < 1:
+                    continue
+                if line[0] < start - _TOUCH_PT or line[1] > end + _TOUCH_PT:
+                    continue
+                beside.append((line[0], line[1], line[2], value))
+            for run in _rows_of(beside):
+                run.sort()
+                if any(abs(b[0] - a[1]) > _JOINT_PT for a, b in pairwise(run)):
+                    continue
+                if same_chain(wanted, [value for _a, _b, value in run], slips=slips):
+                    found.add(total)
+    return found
 
 
 #: How far across its own line another label may sit and still be in the overall's run (points).
