@@ -970,6 +970,7 @@ _ORDER: Final = (
     "axis",
     "round",
     "units",
+    "flags",
     "slip",
     "gv_ink",
     "trade",
@@ -1298,6 +1299,7 @@ def _verify_pair(
     checks.append(_round_check(pack, item, vendor))
     checks.append(_slip_check(v_in, a_in, "drawn" in (vendor.get("route"), architect.get("route"))))
     checks.append(_ink_check(vendor, ink))
+    checks.append(_flags_check(vendor, architect))
     failed = _first_failure(checks)
     if failed is not None:
         return _blocked(one, failed, matched, checks)
@@ -1318,6 +1320,21 @@ def _verify_pair(
         blind="pair",
         ends=ends,
     )
+
+
+#: A label's notes that make its value no proof of a mistake (#1778): verify in field (the size is
+#: taken on site) and plus or minus (the size is approximate).
+_NOT_PROOF_FLAGS: Final = {"vif": "verify in field (VIF)", "approx": "plus or minus (approximate)"}
+
+
+def _flags_check(vendor: Mapping[str, Any], architect: Mapping[str, Any]) -> Check:
+    """`flags`: neither value is marked verify in field or plus or minus (`dim_labels`, #1778);
+    such a value is read, but a difference against it is never red."""
+    for side, label in (("vendor", vendor), ("architect", architect)):
+        for flag in label.get("flags") or ():
+            if flag in _NOT_PROOF_FLAGS:
+                return Check("flags", "fail", f"the {side} marks it {_NOT_PROOF_FLAGS[flag]}")
+    return Check("flags", "pass")
 
 
 def _blocked(
