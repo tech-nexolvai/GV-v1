@@ -142,9 +142,17 @@ def code_summary(
     rounds = len({int(f.get("round") or 1) for f in findings}) or 1
     scope = f"{products_words(products).lower()}, {_plural(rounds, 'round', 'rounds')}"
     if coverage is not None:
+        # A page counts as checked only when it was compared: same or different (#1811). A page
+        # with nothing to compare it with, one never reached, or one whose differences are still
+        # open is said apart, never counted as checked.
         total = int(coverage.get("total") or 0)
-        checked = total - int(coverage.get("not_opened") or 0)
-        first = f"Checked {checked} of {total} pages ({scope})."
+        checked = int(coverage.get("same") or 0) + int(coverage.get("different") or 0)
+        rest = max(0, total - checked)
+        first = f"Checked {checked} of {total} pages ({scope})" + (
+            f"; {rest} {'page was' if rest == 1 else 'pages were'} not fully compared."
+            if rest
+            else "."
+        )
     else:
         pages = len({f.get("page") for f in findings})
         of = f" of {page_count}" if page_count else ""
