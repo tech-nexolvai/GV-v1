@@ -314,7 +314,8 @@ _VIEW: Final[Mapping[str, Any]] = {
         "with numbered lines (view_range for part of it), a folder is listed two levels deep. Use "
         "it for the set pack's page pictures (pages/<upload name without .pdf>/p-NNN.png, 100 dpi, "
         "e.g. /mnt/user-data/set/pages/Set_A/p-003.png) and contact sheets, the skill's files and "
-        "your own files; use zoom instead to read numbers. Returns the picture, the text or the "
+        "your own files; use zoom instead to read numbers. It takes no box: to see part of a page, "
+        "zoom with crops [{page, box}]. Returns the picture, the text or the "
         "listing, or 'Refused: <why>' with where the files really are. "
         'Example: {"path": "/mnt/user-data/set/page_map.json", "description": "Whose drawing is '
         'on each page"}'

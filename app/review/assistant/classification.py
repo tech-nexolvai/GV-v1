@@ -834,13 +834,18 @@ def _classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
     return _check_item(finding)
 
 
-def not_compared_line(counts: Mapping[str, int]) -> str:
+def not_compared_line(counts: Mapping[str, int], unopened: int = 0) -> str:
     """The summary's one line: "12 items not compared (architect gives no size or information: 9,
     …). See the Not-compared list." (or that everything could be compared). #1717: the screen's
-    words, one meaning each."""
+    words, one meaning each. `unopened`: content pages nobody opened (#1805: a stopped check with
+    13 of 17 pages unopened said "Every item could be compared"); then it never says that."""
     total = sum(counts.values())
+    pages = "1 page" if unopened == 1 else f"{unopened} pages"
     if not total:
+        if unopened > 0:
+            return f"{pages} not opened: their items were not compared."
         return "Every item could be compared."
     parts = [f"{REASON_WORDS[r]}: {counts[r]}" for r in REASONS if counts.get(r)]
     items = "1 item" if total == 1 else f"{total} items"
-    return f"{items} not compared ({'; '.join(parts)}). See the Not-compared list."
+    opened = f" {pages} not opened." if unopened > 0 else ""
+    return f"{items} not compared ({'; '.join(parts)}).{opened} See the Not-compared list."

@@ -2146,6 +2146,7 @@ class ChatEngine:
             for f in live
             if f.get("source") == "vendor_arithmetic"
         }
+        made: dict[Any, str] = {}
         for extra in self.reading_ledger.ledger_findings(live, coverage):
             entry = None
             if extra.get("source") == "vendor_arithmetic":
@@ -2170,8 +2171,42 @@ class ChatEngine:
                             self._show_finding(backed)
                     continue
             added = book.add_code_finding(extra)
-            if added is not None:
-                self._show_finding(added)
+            if added is None:
+                continue
+            if extra.get("source") == "vendor_arithmetic" and self._fold_same_string(added, made):
+                continue
+            self._show_finding(added)
+
+    def _fold_same_string(self, added: Mapping[str, Any], made: dict[Any, str]) -> bool:
+        """#1805: the same vendor string read twice on one page (the left and the right copy of
+        one elevation's height string: the same parts and the same overall) is one item. The
+        second is folded into the first, listed on it (`also_on`, so the drawing marks both
+        spots); True when folded. `made`: the strings added so far, by their key."""
+        from app.review.assistant.decision_resolver import _also
+
+        book = self.book
+        key = (
+            added.get("page"),
+            str(added.get("printed_total") or "").strip(),
+            tuple(str(p).strip() for p in added.get("parts") or ()),
+        )
+        first_id = made.get(key)
+        if first_id is None:
+            made[key] = str(added["id"])
+            return False
+        with self.finding_lock:
+            first = next((f for f in book.live() if f["id"] == first_id), None)
+            if first is None or not book.absorb(str(added["id"])):
+                made[key] = str(added["id"])
+                return False
+            joined = {**first, "also_on": [*(first.get("also_on") or []), _also(added)]}
+            book.replace(joined)
+        self._show_finding(joined)
+        self._show_dropped(
+            str(added["id"]),
+            f"The same string as {first_id} (the same parts and overall on this page): one item.",
+        )
+        return True
 
     def _ledger_trust(self, report: dict[str, Any]) -> None:
         """The ledger's counts (and everything it recorded, for a reload) in the trust report."""
@@ -3070,7 +3105,11 @@ class ChatEngine:
         if not needs_code_summary(text, stopped):
             # The vendor consistency check's line (#1584), the finish check's (#1623) and what
             # could not be compared (#1619), one line each, after the AI's own summary.
-            nothing = not_compared_line(Counter(row.reason for row in self.not_compared))
+            counts = self.book.coverage_map()["counts"] if self.book.coverage_used else {}
+            nothing = not_compared_line(
+                Counter(row.reason for row in self.not_compared),
+                int(counts.get("not_opened") or 0),
+            )
             for words in (*lines, nothing.replace("list.", "list (PDF / Excel).")):
                 if words:
                     index = self._add_block({"type": "text", "text": words, "by": "code"})

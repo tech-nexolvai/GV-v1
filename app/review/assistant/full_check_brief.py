@@ -125,7 +125,9 @@ LENSES: Final = ("both", "numbers", "drawn")
 LENS_FIELDS: Final[dict[str, tuple[str, ...]]] = {
     "both": ("architect", "notes", "strings"),
     "numbers": ("architect", "strings"),
-    "drawn": ("notes", "counts", "hardware"),
+    # #1805: tags and models are counted on their own (a sink's model tag was never compared:
+    # the helper compared its bowl width instead).
+    "drawn": ("notes", "tags", "counts", "hardware"),
 }
 
 #: The counted fields of the single helper's report line.
@@ -181,15 +183,15 @@ HOW: view your pages' overview pictures, then zoom (up to 8 crops per call) on e
 ALREADY RECORDED by GV Review on your pages (they are checked separately: do not report them again):
 {recorded}
 
-WHAT TO COMPARE: {principle} A note the vendor does not follow is a difference, even when the count of fronts matches.
+WHAT TO COMPARE: {principle} A note the vendor does not follow is a difference, even when the count of fronts matches. TAGS AND MODELS: every tag and model either drawing prints (sink, faucet, appliance and hardware models; finish and material codes such as LA-, WD-, MT-) is compared by its code on both sides, for the piece it labels: report_finding with both codes as printed (architect "SNK-03", vendor "UCB-20-2") and their boxes. A model that differs is a difference even when the sizes match, and a size never stands for a model; a tag one side prints and the other does not is reported too.
 
 {product_checklist}
 
 OUTPUT: report_finding for every drawn thing you compare, the same ones too (status different, check or same; every check with decision_help), with vendor_box and arch_box. `architect` and `vendor` say in a few words what each side shows ("pull-out drawers (note)", "2 doors drawn", "no grommet"); vs_page when the architect is on another page. When you are not sure the two sides show the same thing, still report it, as check with one line why: a miss is never found again. Name each item starting with its area from the list above ("<area>: bin drawer fronts"), the same way on every page, view and round. Never report a dimension or a dimension string, and do not call set_coverage: the numbers helper records both. verified: false (a separate check verifies).
 
 REPORT BACK (short): per page the differences (item, vendor vs architect, finding ids), then one line per page exactly like
-CHECKLIST p<N>: notes a/b; counts a/b; hardware a/b; not compared: <what and why, or none>
-(a/b = items done of items on the page; notes = the architect's notes, callouts and tags; counts = doors, drawers, bins, shelves and sections; hardware = pulls, locks, legs, grommets, power units).
+CHECKLIST p<N>: notes a/b; tags a/b; counts a/b; hardware a/b; not compared: <what and why, or none>
+(a/b = items done of items on the page; notes = the architect's notes and callouts; tags = the tags and models either side prints, each compared by its code; counts = doors, drawers, bins, shelves and sections; hardware = pulls, locks, legs, grommets, power units).
 
 BOUNDARIES: only your pages; never guess; GV's markup is never the vendor's drawing; no pass/fail words (code records results, and a reviewer signs off)."""
 
@@ -564,7 +566,7 @@ def with_label_gaps(
 
 _LINE: Final = re.compile(r"CHECKLIST\s+p\.?\s*(\d+)\s*:(.*)", re.IGNORECASE)
 _COUNT: Final = re.compile(
-    r"\b(architect|notes|strings|counts|hardware)\b\s*:?\s*(\d+)\s*/\s*(\d+)", re.IGNORECASE
+    r"\b(architect|notes|tags|strings|counts|hardware)\b\s*:?\s*(\d+)\s*/\s*(\d+)", re.IGNORECASE
 )
 _NOT_COMPARED: Final = re.compile(r"not compared\s*:\s*(.*)", re.IGNORECASE)
 _NOTHING: Final = frozenset({"", "none", "nothing", "-", "n/a", "no"})
@@ -608,7 +610,10 @@ def checklist_gaps(report: str, pages: Iterable[int], lens: str = "both") -> dic
 _LEFT: Final = {
     "both": "each architect dimension segment by segment, each architect note, each vendor string",
     "numbers": "each architect dimension segment by segment, each vendor string",
-    "drawn": "each architect note and tag, each door, drawer, bin and shelf, each piece of hardware",
+    "drawn": (
+        "each architect note, each tag and model (by its code), each door, drawer, bin and "
+        "shelf, each piece of hardware"
+    ),
 }
 
 

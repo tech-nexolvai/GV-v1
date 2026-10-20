@@ -99,7 +99,7 @@ from app.review.assistant.full_check_advocate import (
     string_extent,
     string_extras,
 )
-from app.review.assistant.full_check_specialists import HELPER_CORE, knowledge_text
+from app.review.assistant.full_check_specialists import HELPER_CORE, PACK_SHAPES, knowledge_text
 from app.review.assistant.impact import by_impact
 from app.review.assistant.product_scope import scaled_price
 from app.review.assistant.spot_locate import code_spotted
@@ -693,7 +693,7 @@ TAG_JOB: Final = (
 
 TAG_BRIEF: Final = """TAGS: pages {pages} of {file}. Your pages:
 {page_lines}
-For each page, list every tag printed in the drawing's own black or grey ink on the architect's drawing and on the vendor's, with the piece it labels (start with the page's area, and name the same piece the same way on both sides) and the tightest box round the tag. Coloured text and callouts ending "by GV" are GV's notes: leave them out. Use pdftotext -bbox on the drawings-only copy for text tags; zoom to see what each labels.
+For each page, list every tag printed in the drawing's own black or grey ink on the architect's drawing and on the vendor's, with the piece it labels (start with the page's area, and name the same piece the same way on both sides) and the tightest box round the tag. Coloured text and callouts ending "by GV" are GV's notes: leave them out. Use pdftotext -bbox on the drawings-only copy for text tags, filtered (grep or python) to the tag-like words, at most 40 lines a print; never print the set pack's JSON, a folder listing or a whole page's text. Zoom to see what each tag labels. Your reply is the tag table only.
 Reply with the whole tag table."""
 
 _TAG_WORD: Final = re.compile(r"[^A-Z0-9]")
@@ -988,6 +988,7 @@ class _Run:
         return "\n\n".join(
             [
                 HELPER_CORE,
+                PACK_SHAPES,
                 f"YOUR JOB: {job}",
                 "What a senior millwork reviewer knows, for this job:",
                 knowledge_text(knowledge),
