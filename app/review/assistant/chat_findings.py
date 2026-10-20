@@ -1726,6 +1726,19 @@ class FindingBook:
             )
         with self._lock:
             for entry in entries:
+                before = self.coverage.get(entry["page"])
+                if (
+                    entry["status"] == "not_opened"
+                    and before is not None
+                    and before.get("status") in ("same", "different")
+                    and before.get("by") != created_by
+                ):
+                    # A page another reader compared was opened (#1817: the lead review marked
+                    # pages "not opened: Budget" that their helpers had compared, one with a
+                    # proved red on it): its status stays, the later note is added to it.
+                    joined = "; ".join(str(n) for n in (before.get("note"), entry["note"]) if n)
+                    self.coverage[entry["page"]] = {**before, "note": joined[:_MAX_NOTE] or None}
+                    continue
                 self.coverage[entry["page"]] = entry
             self.coverage_used = True
         return self.coverage_map()

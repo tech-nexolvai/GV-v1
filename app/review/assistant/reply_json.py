@@ -11,6 +11,11 @@ wrappings and nothing more:
    fenced answers, or a fenced one and a bare one: refused, never picked);
 3. else the text from its first `{` to its last `}`, when that whole span is one JSON object.
 
+An inch mark written inside a string without its backslash (`"why": "prints 5'-2" and 4'-0""`)
+is the one slip it mends (#1817: a prover's whole answer was lost to it): a `"` inside a string
+that is not followed by `,` `:` `}` `]` or the end can never end that string in JSON, so it is read
+as the inch mark it is. Nothing else is mended, and valid JSON is never changed.
+
 It never takes a piece from inside a broken or cut answer, and never chooses between two answers:
 any doubt raises `ValueError`, exactly like the strict read did. What the answer must contain is
 still checked by each caller, as strictly as before (a wrong shape is refused, never guessed).
@@ -23,8 +28,51 @@ import logging
 import re
 from typing import Any, Final
 
+__all__ = ["excerpt", "inch_marks_escaped", "json_of_reply", "log_unreadable", "object_of_reply"]
+
 _FENCED: Final = re.compile(r"```[ \t]*(?:json|JSON)?[ \t]*\r?\n?(.*?)```", re.DOTALL)
 _EXCERPT_CHARS: Final = 300
+
+
+#: What may follow a string's closing quote in JSON (after spaces).
+_AFTER_STRING: Final = frozenset(",:}]")
+
+
+def inch_marks_escaped(text: str) -> str:
+    """`text` with each `"` inside a JSON string that cannot end it (not followed by `,` `:` `}`
+    `]` or the end, spaces skipped) written as `\\"`. Valid JSON comes back unchanged."""
+    out: list[str] = []
+    inside = escaped = False
+    size = len(text)
+    for at, char in enumerate(text):
+        if inside and escaped:
+            escaped = False
+        elif inside and char == "\\":
+            escaped = True
+        elif char == '"' and inside:
+            ahead = at + 1
+            while ahead < size and text[ahead] in " \t\r\n":
+                ahead += 1
+            if ahead < size and text[ahead] not in _AFTER_STRING:
+                out.append("\\")  # an inch mark inside the string, not its end
+            else:
+                inside = False
+        elif char == '"':
+            inside = True
+        out.append(char)
+    return "".join(out)
+
+
+def _loads(text: str) -> object:
+    """`json.loads`, else the same text with its unescaped inch marks mended (`inch_marks_escaped`);
+    `ValueError` when neither reads."""
+    try:
+        return json.loads(text)
+    except ValueError:
+        mended = inch_marks_escaped(text)
+        if mended == text:
+            raise
+        return json.loads(mended)
 
 
 def json_of_reply(text: str) -> object:
@@ -33,13 +81,13 @@ def json_of_reply(text: str) -> object:
     if not plain:
         raise ValueError("the reply is empty")
     try:
-        return json.loads(plain)
+        return _loads(plain)
     except ValueError:
         pass
     fenced: list[object] = []
     for block in _FENCED.findall(plain):
         try:
-            value = json.loads(block.strip())
+            value = _loads(block.strip())
         except ValueError:
             continue
         if isinstance(value, (dict, list)) and value not in fenced:
@@ -54,7 +102,7 @@ def json_of_reply(text: str) -> object:
         return fenced[0]
     start, end = plain.find("{"), plain.rfind("}")
     if 0 <= start < end:
-        value = json.loads(plain[start : end + 1])
+        value = _loads(plain[start : end + 1])
         if isinstance(value, dict):
             return value
     raise ValueError("the reply holds no JSON answer")
