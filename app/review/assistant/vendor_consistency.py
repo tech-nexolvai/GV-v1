@@ -71,14 +71,21 @@ from app.review.assistant.ledger import add_up, format_inches
 __all__ = [
     "CREATED_BY",
     "END_PT",
+    "GAP_PT",
     "LINE_WORK_DIR",
     "MIN_SCALE_SUPPORT",
+    "ROW_APART_PT",
     "TOLERANCE",
     "ConsistencyResult",
+    "Label",
     "StringCheck",
     "check_pack",
     "check_set",
+    "judge_string",
+    "label_rows",
     "line_work",
+    "proved_chain",
+    "read_label",
     "summary_line",
     "warm_line_work",
 ]
@@ -1324,6 +1331,42 @@ def check_pack(
         texts=texts,
         segments=line_work(uploads, folder) if uploads is not None else None,
     )
+
+
+# ---- for other code checks (`run_fit`) -----------------------------------------------------------
+
+#: One printed dimension with its dimension line (the check's own reading of a `dims.json` label).
+Label = _Label
+
+
+def read_label(raw: Mapping[str, Any], file: str, page: int) -> _Label | None:
+    """A `dims.json` label with a horizontal or vertical dimension line, else None."""
+    return _label(raw, file, page, ())
+
+
+def label_rows(labels: Sequence[_Label]) -> list[list[_Label]]:
+    """Labels on one dimension line (the same place across)."""
+    return _rows(labels)
+
+
+def proved_chain(overall: _Label, row: Sequence[_Label]) -> list[_Label] | None:
+    """The row's labels that tile the overall's span exactly, end to end, else None."""
+    return _chain(overall, row)
+
+
+def judge_string(
+    overall: _Label,
+    parts: Sequence[_Label],
+    drawing: Sequence[_Label],
+    segments: Segments | None,
+    area: str | None = None,
+) -> dict[str, Any] | None:
+    """A string another check proved (its parts tile the overall): the Wrong item when its parts
+    do not add up and every drawing check this module makes passes (`_judge`), else None."""
+    check = _judge(overall, parts, drawing, segments)
+    if check.verdict != "does_not_add_up":
+        return None
+    return _string_finding(check, area, {})
 
 
 # ---- the full check's hook -----------------------------------------------------------------------

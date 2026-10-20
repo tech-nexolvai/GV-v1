@@ -506,7 +506,10 @@ def _decision_words(operation: OperationRef) -> str:
             "architect's wall-to-wall goes to the fillers first (within the filler limits), then "
             "is shared over the regular cabinets (within their width limits); equipment cabinets "
             "(sink, appliances) never change size. If it cannot fit, the answer is an RFI to the "
-            'architect. A share that is not a whole 1/16" goes to the reviewer, never rounded.'
+            'architect. A share that is not a whole 1/16" goes to the reviewer, never rounded. '
+            "This is the older run check: in this chat GV's site-fit rule replaces it (fillers "
+            "and the drawer bank keep their design size; the door cabinets share the difference "
+            "equally), and code checks it on every vendor run it can read (products/cabinet.md)."
         )
     bound = ", ".join(f"{key} `{value}`" for key, value in operands.items())
     tolerance = "" if operation.tolerance is None else f", {_tolerance_words(operation.tolerance)}"

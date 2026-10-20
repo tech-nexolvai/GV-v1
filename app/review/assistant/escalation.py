@@ -159,6 +159,8 @@ def undecided(finding: Mapping[str, Any]) -> bool:
     sides aside), never one the reviewer decided, nor GV's filler-range note (`filler_range`)."""
     if finding.get("created_by") == "filler_range":
         return False  # GV's filler range decided it, the architect first: nothing to climb
+    if finding.get("created_by") == "run_fit":
+        return False  # GV's site-fit rule decided it by its own arithmetic: nothing to climb
     return proof.proof_group(finding) == "not_compared" and finding.get("status") != "same"
 
 

@@ -79,6 +79,7 @@ CODE_MADE: Final = frozenset(
         "pairs",
         "simple_check",
         "filler_range",
+        "run_fit",
     }
 )
 _NOT_WORD: Final = re.compile(r"[^0-9a-z]+")

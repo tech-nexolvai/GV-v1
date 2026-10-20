@@ -99,6 +99,7 @@ type KeepReason = Literal[
     "needs_job_value",
     "layout",
     "vendor_disagrees",
+    "outside_gv_rule",
     "other",
 ]
 
@@ -445,8 +446,15 @@ def _limit(settings: Mapping[str, str], key: str) -> Decimal | None:
     return to_inches(value) if value is not None else None
 
 
-def _filler_limits(finding: Mapping[str, Any], settings: Mapping[str, str]) -> _Settle | None:
-    """GV's filler limits in force for the set (rules.md) against the vendor's filler widths."""
+def _filler_limits(
+    finding: Mapping[str, Any], settings: Mapping[str, str]
+) -> _Settle | KeepReason | None:
+    """GV's filler limits in force for the set (rules.md) against the vendor's filler widths.
+
+    Never red (DECIDED 2026-10-20, as `filler_range`): GV's usual range is a note, so a filler
+    outside it is kept as a GV note (`outside_gv_rule`) for the later rules (the architect's own
+    print may still settle it); a filler goes red only by the architect or GV's site-fit rule
+    (`run_fit`)."""
     if not _FILLER.search(str(finding.get("item") or "")):
         return None  # a filler mentioned beside a run's width is not a filler item
     if _RUN_ITEM.search(str(finding.get("item") or "")):
@@ -464,13 +472,7 @@ def _filler_limits(finding: Mapping[str, Any], settings: Mapping[str, str]) -> _
     limits = f"{_inches_words(low)} to {_inches_words(high)}"
     where = "rules.md, the settings in force for this set"
     if outside:
-        listed = " and ".join(_inches_words(w) for w in outside)
-        return _Settle(
-            "wrong",
-            "gv_limits",
-            f"GV's filler limits are {limits} ({where}); the vendor draws {listed} fillers.",
-            {"rule": "agrees"},
-        )
+        return "outside_gv_rule"  # GV's usual range is a note, never a red
     listed = ", ".join(_inches_words(w) for w in sorted(set(widths)))
     return _Settle(
         "right",
@@ -815,6 +817,11 @@ def question_for(
                     f"{_inches_words(printed)}"
                 )
         return f"Do the vendor's own numbers for {thing} belong to one string? {why}".rstrip()
+    if reason == "outside_gv_rule":
+        return (
+            f"The vendor draws {vendor} for {thing}, outside GV's usual filler range (a GV note, "
+            f"not an error): is that size what the job needs?"
+        )
     if reason == "layout":
         return (
             f"Does the vendor's {_short(finding.get('item'), 50).lower()} match the architect's? "
@@ -1175,18 +1182,18 @@ def _settle_one(
     """Code's rules on one decision item, in order: the first that settles it wins. Else the
     reason a rule found to keep it (or `None`), and a sharper read's words for its question."""
     reason: KeepReason | None = None
-    simple = (
-        _other_trades_tags(finding),
-        _out_of_scope(finding),
-        _filler_limits(finding, ctx.settings),
-    )
-    for got in simple:
+    for got in (_other_trades_tags(finding), _out_of_scope(finding)):
         if got is not None:
             return got, None, None
+    limits = _filler_limits(finding, ctx.settings)
+    if isinstance(limits, _Settle):
+        return limits, None, None
+    if limits is not None:
+        reason = limits  # outside GV's usual range: a note, the later rules may still settle it
     summed = _vendor_sum(finding)
     if isinstance(summed, _Settle):
         return summed, None, None
-    if summed is not None:
+    if summed is not None and reason is None:
         reason = summed
     for later in (
         _printed_vs_printed(finding, ctx),
