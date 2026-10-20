@@ -165,7 +165,7 @@ def test_the_precedents_switch_reaches_the_compare_call_and_the_blind_look(
 
     monkeypatch.setattr(compare_module, "compare_all", compare_all)
     monkeypatch.setattr(compare_module, "PictureSource", _Pictures)
-    monkeypatch.setattr(blind, "pictures", lambda *_a: [{"type": "text", "text": "x"}])
+    monkeypatch.setattr(blind, "pictures", lambda *_a, **_k: [{"type": "text", "text": "x"}])
     monkeypatch.setattr(check.engine, "_call", call)
     check.engine.run()
     assert systems["compare"] and systems["blind"], systems
