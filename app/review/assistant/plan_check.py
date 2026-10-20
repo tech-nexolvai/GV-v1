@@ -269,6 +269,15 @@ def doubts(
         roles = [str(h.get("role")) for h in halves]
         labelled = [r for r in roles if r != "general"]
         area_roles = _area_roles(entry, by_area)
+        # A sheet with no heading whose roles code decided from both drawings' content (#1825):
+        # a drawing it left undecided (a plan printing no dimension) stays general unless a
+        # reviewer says otherwise; code never assumes it is the vendor's.
+        by_content = any(h.get("role_by") == "content" for h in halves)
+        role_order = (
+            ("general", "vendor", "architect", "brand_prototype")
+            if by_content
+            else ("vendor", "architect", "brand_prototype", "general")
+        )
         for index, half in enumerate(halves):
             where = _position(halves, index)
             role = roles[index]
@@ -282,10 +291,7 @@ def doubts(
                         page,
                         file,
                         f"Page {page}: whose is the {where} drawing? It has no heading.",
-                        tuple(
-                            (value, ROLE_WORDS[value])
-                            for value in ("vendor", "architect", "brand_prototype", "general")
-                        ),
+                        tuple((value, ROLE_WORDS[value]) for value in role_order),
                         _box(half),
                         f"page {page}, the {where} drawing (no heading)",
                     )

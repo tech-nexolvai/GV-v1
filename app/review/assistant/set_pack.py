@@ -6,7 +6,7 @@ that set-up once per upload, in the background, and the agent sees it read-only 
 `/mnt/user-data/set/`:
 
 - `<name>_drawings_only.pdf`: a copy of each PDF that keeps only the pasted drawings (`/Stamp`
-  annotations), so GV's markup is hidden (SKILL.md section 5). A page with no stamps is its own
+  annotations, and drawings pasted as pictures, #1825), so GV's markup is hidden (SKILL.md section 5). A page with no stamps is its own
   page content, without annotations. AutoCAD's SHX text comments are kept as invisible text at
   their rectangles (#1772), as `verify_value` reads them.
 - `pages/<name>/p-001.png`: every page at 100 dpi, from the drawings-only copy.
@@ -28,7 +28,11 @@ that set-up once per upload, in the background, and the agent sees it read-only 
   text, the vendor's pen strokes) do (`settle_candidates`). A page that prints no dimension (a
   cover, a notes sheet) stays general. Each such drawing says `from_upload`, and `upload_roles`
   names the files read so. GV's combined sheets (drawings GV pasted and headed) are read exactly
-  as before.
+  as before. **A sheet with no GV heading** (#1825): the roles of its pasted drawings are decided
+  from the content of both drawings, only when clear on both sides (`content_sides`, the rule of
+  #1052), `role_by: "content"`; anything less stays general. Drawings pasted as pictures (a
+  rectangle comment holding an image) are kept in the drawings-only copy and listed as the
+  page's `pictures`: the agents see them, code reads no number in them.
 - `dims.json` (#1558): every printed dimension on every page, numbered per page (`D17`), with its
   value, inches, box, whose drawing it is on, and its dimension and extension lines when found
   (`dim_labels.py`). The `zoom` tool draws these ids on a crop; findings name them. Written as
@@ -108,7 +112,7 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 #: Changes when what the pack holds changes: an older pack is built again.
-PACK_VERSION: Final = 9
+PACK_VERSION: Final = 10
 #: `status.json`'s state when the labels step broke or ran out of time (#1768): the page map and
 #: pictures are made, `dims.json` is missing or partial. Never "ready".
 READY_WITHOUT_LABELS: Final = "ready_without_labels"
@@ -360,17 +364,42 @@ def drawings_only(folder: Path, uploads: Path, name: str) -> Path:
             if not source.is_file():
                 raise FileNotFoundError(name)
             logging.getLogger("pypdf").setLevel(logging.ERROR)
+            pictures = picture_annotations(source)
             writer = PdfWriter(clone_from=_with_shx_text(source))
-            for page in writer.pages:
+            for number, page in enumerate(writer.pages, start=1):
                 if "/Annots" in page:
                     annotations: Any = page["/Annots"]
-                    keep = [a for a in annotations if a.get_object().get("/Subtype") == "/Stamp"]
+                    keep = [
+                        a
+                        for index, a in enumerate(annotations)
+                        if a.get_object().get("/Subtype") == "/Stamp" or (number, index) in pictures
+                    ]
                     page[NameObject("/Annots")] = ArrayObject(keep)
                 _hide_gv_marks(page)
             buffer = io.BytesIO()
             writer.write(buffer)
             _write_bytes(out, buffer.getvalue())
     return out
+
+
+def picture_annotations(source: Path) -> frozenset[tuple[int, int]]:
+    """`(page, index in /Annots)` of each pasted picture in `source` (#1825): a rectangle comment
+    holding an image and no text (`extraction.stamp_text.pasted_picture`), as a viewer's "paste
+    image" leaves a raster snapshot of a drawing. The drawings-only copy keeps them, so the
+    agents see a drawing pasted that way; code never reads a number from a picture."""
+    stamp_text = import_module("extraction.stamp_text")
+    pikepdf = import_module("pikepdf")
+    found: set[tuple[int, int]] = set()
+    try:
+        with pikepdf.open(str(source)) as pdf:
+            for number, page in enumerate(pdf.pages, start=1):
+                for index, annotation in enumerate(page.obj.get("/Annots") or []):
+                    if stamp_text.pasted_picture(annotation):
+                        found.add((number, index))
+    except Exception as failed:  # noqa: BLE001 - the copy is made without them, as before
+        _log.warning("assistant set pack pictures not kept: %s", type(failed).__name__)
+        return frozenset()
+    return frozenset(found)
 
 
 def _with_shx_text(source: Path) -> Path | io.BytesIO:
@@ -469,11 +498,14 @@ def _font_size(annotation: Mapping[str, Any]) -> float | None:
     return float(found.group(1)) if found else None
 
 
-def _annotations(name: str, reader: PdfReader) -> list[dict[str, Any]]:
+def _annotations(
+    name: str, reader: PdfReader, pictures: frozenset[tuple[int, int]] = frozenset()
+) -> list[dict[str, Any]]:
+    """Every annotation of `name`; one of `pictures` (`picture_annotations`) says so."""
     out: list[dict[str, Any]] = []
     for number, page in enumerate(reader.pages, start=1):
         geometry = _geometry(page)
-        for raw in page.get("/Annots") or []:
+        for index, raw in enumerate(page.get("/Annots") or []):
             try:
                 annotation = raw.get_object()
                 rect = annotation.get("/Rect")
@@ -482,17 +514,18 @@ def _annotations(name: str, reader: PdfReader) -> list[dict[str, Any]]:
                 continue
             kind = str(annotation.get("/Subtype") or "").lstrip("/")
             text = str(annotation.get("/Contents") or "").replace("\r", "\n").strip()
-            out.append(
-                {
-                    "file": name,
-                    "page": number,
-                    "kind": kind,
-                    "author": str(annotation.get("/T") or "") or None,
-                    "text": text[:500] or None,
-                    "font_pt": _font_size(annotation),
-                    "box": box,
-                }
-            )
+            item: dict[str, Any] = {
+                "file": name,
+                "page": number,
+                "kind": kind,
+                "author": str(annotation.get("/T") or "") or None,
+                "text": text[:500] or None,
+                "font_pt": _font_size(annotation),
+                "box": box,
+            }
+            if (number, index) in pictures:
+                item["picture"] = True
+            out.append(item)
     return out
 
 
@@ -690,6 +723,10 @@ def _page_entries(
                 if heading_meaning(str(a["text"])) is not None
             ],
         }
+        pictures = [list(a["box"]) for a in items if a.get("picture") and a["box"]]
+        if pictures:
+            # Pasted pictures (#1825): a drawing the agents see, whose numbers code cannot read.
+            entry["pictures"] = pictures
         if candidate is not None:
             entry[CANDIDATE] = candidate
         entries.append(entry)
@@ -888,7 +925,13 @@ page_map.json          per page: whose drawing each pasted drawing is (from GV's
                        A separate plain file (no pasted drawings): each page printing dimensions
                        is one whole-page drawing, its role from the upload (the architect's file)
                        or its title words; from_upload: true marks them.
-annotations.json       every annotation: file, page, kind, author, text, box (GV's markup and
+                       A sheet with no GV heading: the roles code decided from both drawings'
+                       own content (feet-and-inches labels and scale against the vendor's
+                       inch/millimetre labels and ratio scale); role_by: "content" marks them.
+                       Compare its architect drawing with its vendor drawing on the same sheet.
+                       pictures: boxes of drawings pasted as pictures (code reads no number in
+                       them; look at them).
+annotations.json      every annotation: file, page, kind, author, text, box (GV's markup and
                        headings included; the drawings-only copies drop them).
 *_drawings_only.pdf    each PDF with only the pasted drawings kept: GV's markup hidden.
 pages/<name>/p-NNN.png every page at 100 dpi (drawings only). Zoom to read numbers.
@@ -948,7 +991,7 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
         for name in names:
             logging.getLogger("pypdf").setLevel(logging.ERROR)
             reader = PdfReader(str(uploads / name))
-            found = _annotations(name, reader)
+            found = _annotations(name, reader, picture_annotations(uploads / name))
             annotations += found
             texts, own = _texts(copies[name])
             entries = _page_entries(
@@ -963,6 +1006,8 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
             )
             if any(h.get("from_upload") for e in entries for h in e["halves"]):
                 used[name] = roles[name]
+            # A sheet with no GV heading (#1825): its drawings' roles from their own content.
+            _content_sides(uploads / name, entries)
             page_map += entries
         _write_json(folder / "annotations.json", annotations)
         _write_json(
@@ -1004,6 +1049,41 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
         _set_status(folder, READY_WITHOUT_LABELS, done, files=names, labels_error=labels_error)
         return
     _set_status(folder, "ready", done, files=names)
+
+
+def _content_sides(pdf: Path, entries: list[dict[str, Any]]) -> None:
+    """The roles of the drawings on `pdf`'s pages that print no GV heading, decided by the content
+    of both drawings (`content_sides`, #1825), set on `entries` in place. Read in a process of its
+    own, as the labels are (`GV_DIM_LABELS_IN_PROCESS=1`: here); a failure or a time-out keeps
+    every drawing as it was, said in the log."""
+    sides = import_module("app.review.assistant.content_sides")
+    pages = sides.unheaded_pages(entries)
+    if not pages:
+        return
+    try:
+        if os.environ.get("GV_DIM_LABELS_IN_PROCESS") == "1":
+            decided = sides.decide_sides(pdf, pages)
+        else:
+            root = Path(__file__).resolve().parents[3]
+            done = subprocess.run(
+                [sys.executable, "-m", sides.__name__, str(pdf), *map(str, pages)],
+                cwd=root,
+                env=child_environment(root),
+                check=True,
+                timeout=SIDES_TIMEOUT_S + SIDES_PAGE_S * len(pages),
+                capture_output=True,
+                stdin=subprocess.DEVNULL,
+            )
+            decided = {int(k): v for k, v in json.loads(done.stdout or b"{}").items()}
+    except Exception as failed:  # noqa: BLE001 - the drawings keep no role, as before
+        _log.warning("assistant set pack content sides failed: %s", type(failed).__name__)
+        return
+    changed = sides.apply_sides(entries, decided)
+    _log.warning(
+        "assistant set pack: %d of %d pages with no heading decided by their drawings' content",
+        len(changed),
+        len(pages),
+    )
 
 
 def _read_json(path: Path) -> Any:
@@ -1078,6 +1158,10 @@ def _drawn_budget() -> float:
 #: The most seconds the labels' own process may take for one set: the text route and the drawn
 #: route's budget, with room to spare.
 DIMS_TIMEOUT_S: Final = 2400
+#: The most seconds the content-sides process (#1825) may take: this, plus `SIDES_PAGE_S` for each
+#: page it reads (the reader takes a few seconds a page).
+SIDES_TIMEOUT_S: Final = 60
+SIDES_PAGE_S: Final = 30
 
 
 #: What the labels' own process gets of the server's environment: enough to run Python, find this

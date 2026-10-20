@@ -1606,8 +1606,12 @@ _SIDES: Final = {"architect": "architect", "vendor": "vendor", "brand_prototype"
 
 
 def _side(box: Box, halves: Sequence[Mapping[str, Any]]) -> str:
+    """Whose drawing a label is on: the nearest drawing's (within 36 pt). A label lying inside
+    both an architect's and a vendor's drawing (two pasted drawings overlapping) is on neither
+    (#1825): code cannot tell, so it is never paired."""
     cx, cy = _centre(box)
     best: tuple[float, str] | None = None
+    inside: set[str] = set()
     for half in halves:
         hb = half.get("box")
         if not isinstance(hb, Sequence) or len(hb) != 4:
@@ -1615,9 +1619,11 @@ def _side(box: Box, halves: Sequence[Mapping[str, Any]]) -> str:
         x0, y0, x1, y1 = (float(v) for v in hb)
         distance = math.hypot(max(x0 - cx, 0, cx - x1), max(y0 - cy, 0, cy - y1))
         role = _SIDES.get(str(half.get("role")), "unknown")
+        if distance == 0:
+            inside.add(role)
         if best is None or distance < best[0]:
             best = (distance, role)
-    if best is None or best[0] > 36:
+    if best is None or best[0] > 36 or {"architect", "vendor"} <= inside:
         return "unknown"
     return best[1]
 
