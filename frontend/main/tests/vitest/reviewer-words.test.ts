@@ -72,6 +72,9 @@ describe('reviewer words (#1712)', () => {
     expect(roundTagWords('New in round 3')).toBe('New');
     // Everything is new in the first round: the tag says nothing there.
     expect(roundTagWords('New in round 1')).toBeNull();
+    // The server's own tags are already the letter's words (#1766).
+    expect(roundTagWords('Previous comment not addressed')).toBe('Previous comment not addressed');
+    expect(roundTagWords('New')).toBe('New');
     expect(roundTagWords('Overall size')).toBe('Overall size');
   });
 
