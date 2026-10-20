@@ -3,9 +3,12 @@ comment letter, the issue register, the cloud drawing's notes or the summary.
 
 GV Review's own working words are for the reviewer: "see GV Review's record", "recorded check",
 record ids (`air:<id>`, `ai-review:p3:…`), field names (`rule_check_id`), "AI", the lead and its
-helpers, "check it before sending". `vendor_text` cleans what can be cleaned (a record id inside an
-item's name) and refuses the rest (`None`, or the caller's fallback), so an internal phrase can never
-be printed by accident.
+helpers, "check it before sending", AI model and provider names ("Claude", "claude-opus-…",
+"Sonnet 4", "OpenRouter", …), the team's ticket numbers ("(#1652)", "PR #1622") and owner-decision
+notes (#1766). `vendor_text` cleans what can be cleaned (a record id inside an item's name, a ticket
+number in brackets) and refuses the rest (`None`, or the caller's fallback), so an internal phrase
+can never be printed by accident. A room or hardware number ("Room #101", "Hinge #2") is the
+vendor's own and stays.
 
 `rule_requirement` turns a GV rule check's own comparison (`verdict/operations`: `|38.25 - 40.5| =
 2.25 > 0 in`, `30 < 34 in`, …) into the plain requirement with its computed value ("40 1/2"", "at
@@ -18,19 +21,46 @@ Pure code: no I/O, no AI call.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 from typing import Final
 
-__all__ = ["inches_first", "internal", "item_name", "rule_requirement", "vendor_text"]
+__all__ = [
+    "REVIEWER_RIGHT",
+    "inches_first",
+    "internal",
+    "item_name",
+    "reviewer_right",
+    "rule_requirement",
+    "vendor_text",
+]
 
 #: Internal phrases, in any case.
 _PHRASES: Final = re.compile(
     r"GV Review'?s record|recorded (?:check|difference|result)s?|rule_check_id|record_id|"
     r"\bai[-_ ]review\b|\bhelpers?\b|\bthe lead\b|\blead (?:model|checks?|checked|verified)\b|"
-    r"devil'?s advocate|check (?:it |them |these )?before sending|AI reading|\bwitness(?:es)?\b",
+    r"devil'?s advocate|check (?:it |them |these )?before sending|AI reading|\bwitness(?:es)?\b|"
+    r"\bowner'?s? (?:decision|call|rule)\b",
     re.IGNORECASE,
 )
+#: AI model and provider names (#1766). A model family's name counts only with a version or as
+#: the subject of a reading ("Sonnet said", "Opus 4", "Sonnet's"), so a product called "Opus"
+#: stays.
+_MODELS: Final = re.compile(
+    r"\bclaude\b|\banthropic\b|\bopenrouter\b|\bopenai\b|\bchatgpt\b|\bgpt-?\d|\bgemini\b|"
+    r"\bdeepseek\b|\bLLMs?\b|\blanguage model\b|"
+    r"\b(?:opus|sonnet|haiku|fable)(?:'s\b|[\s-]*\d|\s+(?:said|says|read|reads|looked|thinks|"
+    r"answered)\b)",
+    re.IGNORECASE,
+)
+#: The team's ticket numbers: in brackets ("(#1652)", "(PR #1622, #1630)") or named ("PR #1622",
+#: "issue #1738"). A bare "#2" or "Room #101" is the vendor's own.
+_TICKET_REF: Final = r"(?:(?:PRs?|issues?|pull request)\s*)?#\d+"
+_TICKETS_IN_BRACKETS: Final = re.compile(
+    rf"\s*\(\s*{_TICKET_REF}(?:\s*(?:,|and|/)\s*{_TICKET_REF})*\s*\)", re.IGNORECASE
+)
+_NAMED_TICKET: Final = re.compile(r"\b(?:PRs?|issues?|pull request)\s*#\d+", re.IGNORECASE)
 #: "AI" as a word, as written (so "air" or a file name like "AI_Set" never trips it).
 _AI: Final = re.compile(r"(?<![\w-])AI(?![\w-])")
 #: Record ids that may sit inside an item's name; removed, the rest kept.
@@ -48,6 +78,9 @@ def internal(text: object) -> bool:
     words = str(text or "")
     return bool(
         _PHRASES.search(words)
+        or _MODELS.search(words)
+        or _TICKETS_IN_BRACKETS.search(words)
+        or _NAMED_TICKET.search(words)
         or _AI.search(words)
         or _RECORD_ID.search(words)
         or _CHECK_ID.search(words)
@@ -74,10 +107,24 @@ def vendor_text(text: object, fallback: str | None = None) -> str | None:
     if not internal(words):
         return words or fallback
     cleaned = _CHECK_ID.sub(r"\1", _SEE_RECORD.sub(" ", _RECORD_ID.sub(" ", words)))
+    cleaned = _TICKETS_IN_BRACKETS.sub("", cleaned)
     cleaned = " ".join(cleaned.split()).strip(" :;,·-")
     if cleaned and not internal(cleaned):
         return cleaned
     return fallback
+
+
+#: The reviewer's "Not a problem" as the vendor's files say it: Right, noted (#1766). The vendor's
+#: files have three outcomes only (Wrong / Right / Not compared, 2026-10-18); never a fourth group.
+REVIEWER_RIGHT: Final = "Right (reviewer)"
+
+
+def reviewer_right(finding: object) -> str:
+    """ "Right (reviewer)", with the reviewer's note when the vendor may read it."""
+    decision = finding.get("decision") if isinstance(finding, Mapping) else None
+    note = decision.get("note") if isinstance(decision, Mapping) else None
+    words = vendor_text(note, "") if note else ""
+    return f"{REVIEWER_RIGHT}: {words}" if words else REVIEWER_RIGHT
 
 
 #: An item named only by a record id (`air:<uuid>`, `ai-review:p3:...`, a bare uuid).

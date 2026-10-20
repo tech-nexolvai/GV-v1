@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from vocabulary.product_registry import DEFAULT_REGISTRY, REGISTRY_VARIABLE, reset_registry
+from vocabulary.product_registry import REGISTRY_VARIABLE, registry_data, reset_registry
 
 DUMMY = "dummy_widget"
 
@@ -39,12 +39,9 @@ DUMMY_SKILL = "# Dummy widgets\n\nMade up for tests: compare each widget's size 
 
 def write_dummy_registry(folder: Path) -> Path:
     """The repository's registry plus `dummy_widget`, written into `folder`; returns its path."""
-    data = yaml.safe_load(DEFAULT_REGISTRY.read_text(encoding="utf-8"))
+    data = registry_data()
     skills = folder / "products"
     skills.mkdir(parents=True, exist_ok=True)
-    real = (DEFAULT_REGISTRY.parent / data["skills_folder"]).resolve()
-    for source in real.glob("*.md"):
-        (skills / source.name).write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
     (skills / f"{DUMMY}.md").write_text(DUMMY_SKILL, encoding="utf-8")
     data["skills_folder"] = "products"
     data["products"].append(DUMMY_ENTRY)

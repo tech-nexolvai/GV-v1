@@ -1247,8 +1247,8 @@ def _check_band(
         return Step(
             "no",
             f"with the printed band the vendor's span is {sum_words} = {_inches_text(total)}, the "
-            f"architect's {_label_words(architect)}: a band result makes Right only (owner "
-            "decision 2026-10-19), never red",
+            f"architect's {_label_words(architect)}: a printed band result makes Right only, "
+            "never red",
             facts=facts,
         )
     why = (
