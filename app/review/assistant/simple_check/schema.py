@@ -42,11 +42,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 __all__ = [
     "END_WORDS",
+    "LEGACY_VERDICTS",
     "OTHER_KINDS",
     "OTHER_VERDICTS",
     "REPLY_SCHEMA",
     "SCHEMA_VERSION",
     "VERDICTS",
+    "WEAK_POINTS",
     "AcrossCandidate",
     "AcrossPair",
     "Box",
@@ -66,6 +68,7 @@ __all__ = [
     "WorkList",
     "canonical_ref",
     "check_result",
+    "claimed_verdict",
     "end_word",
     "label_ref",
     "parse_label_ref",
@@ -75,7 +78,12 @@ __all__ = [
 SCHEMA_VERSION: Final = 1
 
 type Box = tuple[float, float, float, float]
-type Verdict = Literal["same", "different", "no_architect_value", "different_points", "unsure"]
+type Verdict = Literal[
+    "same_points", "different_points", "unsure", "no_architect_value", "same", "different"
+]
+type WeakPoint = Literal[
+    "none", "end_not_visible", "value_hard_to_read", "views_differ", "scale_or_units", "other"
+]
 type OtherVerdict = Literal["same", "different", "no_architect_value", "unsure"]
 type OtherKind = Literal[
     "layout_count",
@@ -89,12 +97,27 @@ type Role = Literal["vendor", "architect", "brand_prototype"]
 type SameDrawing = Literal["yes", "no", "unsure"]
 type Sheet = Literal["combined", "ordinary"]
 
+#: The verdicts the model may give a pair (recipe step 2, C3): whether the two dimensions run
+#: between the same two points. The model never says whether the values are equal: code compares
+#: the numbers (`verify.py`).
 VERDICTS: Final[tuple[str, ...]] = (
-    "same",
-    "different",
-    "no_architect_value",
+    "same_points",
     "different_points",
     "unsure",
+    "no_architect_value",
+)
+#: The older verdicts, which said whether the values were equal too: still read in saved answers
+#: (a $0 replay), never asked for.
+LEGACY_VERDICTS: Final[tuple[str, ...]] = ("same", "different")
+#: What makes a pair least certain, said after the verdict (DeepSeekMath-V2's self-check, in a
+#: fixed form). It can only add work for code, never remove a check.
+WEAK_POINTS: Final[tuple[str, ...]] = (
+    "none",
+    "end_not_visible",
+    "value_hard_to_read",
+    "views_differ",
+    "scale_or_units",
+    "other",
 )
 OTHER_VERDICTS: Final[tuple[str, ...]] = ("same", "different", "no_architect_value", "unsure")
 OTHER_KINDS: Final[tuple[str, ...]] = (
@@ -106,7 +129,7 @@ OTHER_KINDS: Final[tuple[str, ...]] = (
     "dimension_without_label",
 )
 #: Verdicts that say two labels were compared, so they need an architect label.
-_PAIRED: Final = frozenset({"same", "different", "different_points"})
+_PAIRED: Final = frozenset({"same_points", "same", "different", "different_points"})
 
 #: The words a dimension's end is written with ("centre_line (fridge outlet)"): the prompt asks for
 #: one of them first, so code can compare ends without reading prose (`end_word`).
@@ -156,6 +179,24 @@ def _lower(value: object) -> object:
     if isinstance(value, str):
         return "_".join(value.strip().lower().replace("-", " ").split())
     return value
+
+
+def _weak_point(value: object) -> object:
+    """A weak point as the API may case it; one the form does not know is `other`."""
+    if value is None:
+        return None
+    word = _lower(value)
+    return word if word in WEAK_POINTS else "other"
+
+
+def claimed_verdict(pair: Mapping[str, Any] | None) -> str:
+    """A compare pair's verdict as code acts on it: lower case, `unsure` when absent, and
+    `same_points` said of an end the AI cannot see (`weak_point: end_not_visible`) read as
+    `unsure`. The weak point only ever adds caution (recipe step 3), never removes a check."""
+    said = _lower((pair or {}).get("verdict") or "unsure")
+    if said == "same_points" and _lower((pair or {}).get("weak_point")) == "end_not_visible":
+        return "unsure"
+    return str(said)
 
 
 # ---- label ids ---------------------------------------------------------------------------------
@@ -425,9 +466,12 @@ class Pair(_Frozen):
     architect_to: str
     verdict: Verdict
     note: str
+    weak_point: WeakPoint | None = None
+    """What makes the pair least certain (`WEAK_POINTS`); `None` in answers saved before it."""
 
     _refs = field_validator("vendor_label", "architect_label")(_check_ref)
     _verdict = field_validator("verdict", mode="before")(_lower)
+    _weak = field_validator("weak_point", mode="before")(_weak_point)
 
 
 class OtherItem(_Frozen):
@@ -494,9 +538,11 @@ class ReplyPair(_Frozen):
     architect_from: str
     architect_to: str
     verdict: Verdict
+    weak_point: WeakPoint | None = None
     note: str
 
     _verdict = field_validator("verdict", mode="before")(_lower)
+    _weak = field_validator("weak_point", mode="before")(_weak_point)
 
 
 class Reply(_Frozen):
@@ -550,7 +596,13 @@ REPLY_SCHEMA: Final[dict[str, Any]] = _object(
                     "vendor_to": _TEXT,
                     "architect_from": _TEXT,
                     "architect_to": _TEXT,
-                    "verdict": {"type": "string", "enum": list(VERDICTS)},
+                    "verdict": {
+                        "type": "string",
+                        "enum": list(VERDICTS),
+                        "description": "Do both run between the same two points? Never whether "
+                        "the values are equal: code compares them",
+                    },
+                    "weak_point": {"type": "string", "enum": list(WEAK_POINTS)},
                     "note": _TEXT,
                 }
             ),
@@ -657,8 +709,8 @@ def check_result(result: CompareResult, item: WorkItem) -> list[str]:
     - every vendor label of the drawing is in a pair or in `unaccounted_labels`, and none is both;
     - every label named is one of the item's (vendor labels from its vendor drawing, architect
       labels from its architect drawings);
-    - `same`, `different` and `different_points` name an architect label; `no_architect_value`
-      names none;
+    - `same_points` and `different_points` (and the older form's `same` and `different`, still read
+      in saved answers) name an architect label; `no_architect_value` names none;
     - an item without a label carries the box code needs to find it on the drawing: an architect
       item missing on the vendor its architect value, box and page; an item the vendor added its
       vendor value and box; any other at least one box, on an architect page of this item."""

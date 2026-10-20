@@ -67,7 +67,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.review.assistant.full_check_advocate import Check
 from app.review.assistant.reply_json import json_of_reply, log_unreadable
 from app.review.assistant.simple_check.prompts import kinds_sentence
-from app.review.assistant.simple_check.schema import END_WORDS, canonical_ref
+from app.review.assistant.simple_check.schema import END_WORDS, canonical_ref, claimed_verdict
 from app.review.assistant.simple_check.verify import (
     DIFFERENT_POINTS,
     TOLERANCE,
@@ -382,7 +382,12 @@ _KIND_WORDS: Final[Mapping[str, str]] = {
 
 
 def _verdict(raw: Mapping[str, Any] | None) -> str:
-    return str((raw or {}).get("verdict") or "unsure").strip().lower()
+    """The compare answer's verdict; `same_points` (recipe step 2: the AI says only that the two
+    run between the same two points) is the older form's `different` here, since an item enters
+    the loop only when code reads the two values as different; same_points of an end the AI
+    cannot see is `unsure` (`claimed_verdict`)."""
+    said = claimed_verdict(raw)
+    return "different" if said == "same_points" else said
 
 
 def _ends(raw: Mapping[str, Any]) -> tuple[str, str, str, str]:
@@ -641,7 +646,7 @@ PROPOSAL_SCHEMA: Final[Mapping[str, Any]] = {
         "architect_from": _END,
         "architect_to": _END,
         "conventions": {"type": "array", "items": {"type": "string"}},
-        "verdict": {"type": "string", "enum": ["same", "different", "different_points", "unsure"]},
+        "verdict": {"type": "string", "enum": ["same_points", "different_points", "unsure"]},
         "want": {"type": "string", "enum": list(WANTS)},
         "note": {"type": "string", "description": "One short line"},
     },
@@ -1171,7 +1176,7 @@ def check(
 def _need_ends(proposal: Proposal) -> str | None:
     if not _known_ends(proposal):
         return "name every end (both drawings, from and to) with code's end words"
-    if proposal.verdict not in ("same", "different"):
+    if proposal.verdict not in ("same_points", "same", "different"):
         return "the AI is still not sure"
     return None
 
@@ -1199,6 +1204,8 @@ def _check_ends(
             )
         ),
         "verdict": proposal.verdict,
+        # The repair's own claim is checked: the first answer's weak point is not carried over.
+        "weak_point": None,
     }
     result = replace(verify_pair(amended, item, pack, ink), key=v.key)
     return _judge(result, item, proposal.ends, facts)
@@ -1341,6 +1348,8 @@ def _check_eq_part(
             )
         ),
         "verdict": proposal.verdict,
+        # The repair's own claim is checked: the first answer's weak point is not carried over.
+        "weak_point": None,
     }
     result = replace(verify_pair(amended, item, pack, ink), key=v.key)
     return _judge(result, item, proposal.ends, {**facts, "eq_part": _ref(part), "of": _ref(vendor)})
@@ -1377,7 +1386,10 @@ def _check_newer_round(
         vendor_labels=(),
     )
     ends = proposal.ends if _known_ends(proposal) else _ends(raw)
-    verdict = proposal.verdict if proposal.verdict in ("same", "different") else _verdict(raw)
+    own = proposal.verdict in ("same_points", "same", "different")
+    # Not sure this round: the first answer's own verdict as it said it (a same_points stays
+    # same_points, so code compares the numbers and never writes "the answer said different").
+    verdict = proposal.verdict if own else claimed_verdict(raw)
     amended = {
         **raw,
         "vendor_label": _ref(newer),
@@ -1385,6 +1397,7 @@ def _check_newer_round(
             zip(("vendor_from", "vendor_to", "architect_from", "architect_to"), ends, strict=True)
         ),
         "verdict": verdict,
+        **({"weak_point": None} if own else {}),
     }
     result = replace(verify_pair(amended, newest_item, pack, ink), key=v.key)
     return _judge(
@@ -1907,7 +1920,7 @@ Rules:
 2. The pair is fixed. You may not swap the vendor or architect value for another one, except by naming one of code's own candidates listed for this item (the same dimension on the vendor's newest round, one of code's equal parts of the vendor's span, the label at the spot given).
 3. Answer with ONE kind of evidence: attach (the labels printing the two values at the spots given), newer_round (the same dimension on the newest round), ends (where each end lands, in code's end words), band (a printed band, such as a top's thickness or a splash, touching the vendor's dimension end to end on its own line), eq_part (one of code's equal parts of the vendor's span), architect_chain (the architect's printed parts, end to end on one line, that make the architect's value), or none.
 4. Ends: start each with one of: {", ".join(END_WORDS)}; then a few words in brackets, e.g. "centre_line (sink)". Fill all four ends for ends, band, eq_part, attach and architect_chain.
-5. verdict: different only when you are sure both run between the same two points and the values differ; same when they agree; different_points when they measure different things; unsure otherwise.
+5. verdict: same_points only when you are sure both run between the same two points; different_points when they measure different things; unsure otherwise. Never judge whether the values are equal: code reads and compares them.
 6. If the evidence does not settle it, answer kind none. That is a good answer. In round 1 you may ask for one more package in want (zoom, other_rounds, architect_views, chains, notes).
 7. Conventions you may cite by id (they explain where to look; they never give a value or a tolerance, and never override the architect's drawings or GV's rules):
 {_convention_lines()}
@@ -1915,7 +1928,7 @@ Rules:
 Keep the note short; reason before you answer.
 
 Example (made-up values): the failed check is "ends: unclear: code cannot tell that floor to top of unit and floor to top of counter are the same points"; the list shows the vendor's p8.D4 34" (vertical) and p8.D5 1 1/4" (vertical) - touches it end to end on its line. Answer:
-{{"kind":"band","vendor_label":null,"architect_label":null,"labels":["p8.D5"],"vendor_from":"floor","vendor_to":"top_of_counter (top of the stone)","architect_from":"floor","architect_to":"top_of_counter","conventions":["C3"],"verdict":"same","want":"none","note":"34 to the stone's underside plus the 1 1/4 stone"}}"""
+{{"kind":"band","vendor_label":null,"architect_label":null,"labels":["p8.D5"],"vendor_from":"floor","vendor_to":"top_of_counter (top of the stone)","architect_from":"floor","architect_to":"top_of_counter","conventions":["C3"],"verdict":"same_points","want":"none","note":"34 to the stone's underside plus the 1 1/4 stone"}}"""
 
 
 def user_text(

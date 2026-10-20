@@ -81,7 +81,8 @@ def _reply() -> dict[str, Any]:
                 "vendor_to": "wall_face (right)",
                 "architect_from": "wall_face (left)",
                 "architect_to": "wall_face (right)",
-                "verdict": "Different",
+                "verdict": "Same_Points",
+                "weak_point": "None",
                 "note": "",
             }
         ],
@@ -106,9 +107,9 @@ def _reply() -> dict[str, Any]:
 def test_the_reply_model_reads_what_the_schema_allows_and_lower_cases_enums() -> None:
     document = _reply()
     jsonschema.validate(Reply.model_validate(document).model_dump(mode="json"), REPLY_SCHEMA)
-    # The API does not guarantee an enum's case: code reads "Different" as "different".
+    # The API does not guarantee an enum's case: code reads "Same_Points" as "same_points".
     reply = Reply.model_validate(document)
-    assert reply.pairs[0].verdict == "different"
+    assert reply.pairs[0].verdict == "same_points" and reply.pairs[0].weak_point == "none"
     assert reply.other_items[0].kind == "missing_on_vendor"
     broken = {**document, "extra": 1}
     with pytest.raises(jsonschema.ValidationError):
