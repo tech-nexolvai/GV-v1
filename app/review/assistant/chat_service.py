@@ -1278,6 +1278,8 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             engine.carry_over(
                 [f for f in live_findings(_blocks) if not f.get("record_id")], coverage
             )
+            # The strings and readings it recorded too, so code's string check sees them (#1827).
+            engine.carry_ledger(_blocks)
             # A roster check then compares only the pages the earlier answer left (#1821).
             engine.continuing = True
         except Exception:  # noqa: BLE001 - the check goes on; it just redoes more

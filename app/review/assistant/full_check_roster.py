@@ -109,6 +109,7 @@ from app.review.assistant.full_check_advocate import (
     compare_strings,
     decide,
     filler_notes_left_out,
+    finding_words,
     ink_colour,
     needs_pairing,
     same_extent,
@@ -1244,7 +1245,10 @@ class _Run:
 
     def _launched(self, agents: Sequence[Any], **given: Any) -> list[dict[str, Any]]:
         """`engine._launch`, and each helper that ended with an error kept as a failed step: a
-        check with a broken step is never sendable (#1811)."""
+        check with a broken step is never sendable (#1811). No agents (a Continue whose pages
+        were all compared, #1827): nothing to launch."""
+        if not agents:
+            return []
         entries = self.engine._launch(agents, **given)
         for agent, entry in zip(agents, entries, strict=False):
             if entry.get("stopped") == "error":
@@ -2923,6 +2927,7 @@ class _Run:
                 extent=extent,
                 code_paired=code_paired,
                 item=str(finding.get("item") or ""),
+                words=finding_words(finding),
             )
             pairing = {
                 "labels": {

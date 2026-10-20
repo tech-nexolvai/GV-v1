@@ -81,9 +81,12 @@ __all__ = [
     "decide",
     "filler_notes_left_out",
     "filler_size",
+    "finding_words",
     "ink_colour",
     "is_slip",
     "needs_pairing",
+    "room_end",
+    "room_words",
     "same_chain",
     "same_extent",
     "string_chain",
@@ -110,6 +113,8 @@ SPANS: Final = (
 _ROOM_CONTEXT: Final = re.compile(
     r"\b(?:ceiling|soffit|bulkhead|header|door|window|beam|column|room height)s?\b", re.IGNORECASE
 )
+#: A box drawn above the unit, in a finding's or a pick's words (#1827).
+_BOX_ABOVE: Final = re.compile(r"\bbox(?:es)? (?:above|over)\b", re.IGNORECASE)
 #: A Wrong item between two drawings: its pairing must be proved.
 PAIRED_SOURCES: Final = frozenset({"architect", "brand_prototype", "gv_review"})
 #: Code paired these itself: the vendor's own string (one string, no pairing), GV's rule check.
@@ -528,6 +533,43 @@ def same_extent(
 # ---- the verdict -------------------------------------------------------------------------------------
 
 
+def finding_words(finding: Mapping[str, Any]) -> str:
+    """What the AI itself wrote about what a finding's dimensions measure (#1827): its `why` and
+    its decision help's `measures` and `confirm` (a helper that saw the architect's height run to a
+    bulkhead says so there, though its item is only "overall height")."""
+    help_ = finding.get("decision_help")
+    parts = [finding.get("why")]
+    if isinstance(help_, Mapping):
+        parts += [help_.get("measures"), help_.get("confirm")]
+    return " ".join(str(part) for part in parts if isinstance(part, str) and part.strip())
+
+
+def room_end(
+    *,
+    item: str | None,
+    words: str | None = None,
+    ends: Sequence[str] = (),
+) -> str | None:
+    """What the architect's end may be instead of the unit (#1827), or None: a room element named
+    in the item or the AI's own words (ceiling, soffit, bulkhead, beam ...), or a box above the
+    unit (a pick's end, or those words). Such an item is never proved by picks alone. A helper's
+    `different_extent` alone does not count: its doubt may be about the vendor's start (key s3-08,
+    a true Wrong the blind picks settle)."""
+    for text in (item or "", words or ""):
+        found = _ROOM_CONTEXT.search(text)
+        if found is not None:
+            word = found.group(0).lower()
+            return f"the {word.removesuffix('s')}"
+    if "box_above_unit" in ends or _BOX_ABOVE.search(f"{item or ''} {words or ''}"):
+        return "a box above the unit"
+    return None
+
+
+def room_words(thing: str) -> str:
+    """The Not-compared words for an item whose architect end may be `thing` (#1827)."""
+    return f"the architect's dimension may run to {thing}, not the unit: confirm"
+
+
 def decide(
     *,
     mode: str,
@@ -538,11 +580,14 @@ def decide(
     extent: tuple[Extent, str] | None,
     code_paired: bool,
     item: str | None = None,
+    words: str | None = None,
 ) -> Verdict:
     """The verdict on one red candidate under D1 (see the module). `printed`: code read both
     values at their spots. `helper_pick`: the helper's architect label (`p23.D10`). `advocate`: the
     blind pick's reply (`ADVOCATE_SCHEMA`) with `pick` set to the label it names on the
-    architect's page (`p23.D10`), or `None` when it was not asked. `extent`: `same_extent`'s."""
+    architect's page (`p23.D10`), or `None` when it was not asked. `extent`: `same_extent`'s.
+    `item` and `words` (`finding_words`): the finding's own, read for room context (`room_end`)
+    when geometry cannot back the picks."""
     answers: dict[str, str] = {check.name: str(check.outcome) for check in checks}
     failed = [check for check in checks if check.outcome != "pass"]
     if failed:
@@ -616,13 +661,12 @@ def decide(
             if isinstance(spans, Mapping)
             for end in ("from", "to")
         ]
-        if "box_above_unit" in ends or _ROOM_CONTEXT.search(item or ""):
+        thing = room_end(item=item, words=words, ends=ends)
+        if thing is not None:
+            # Room context or another trade's box: Not compared, never red on picks (#1827: an
+            # overall height whose helper wrote "to top of bulkhead" went red here).
             answers["trade"] = "fail"
-            return Verdict(
-                "objects",
-                f"Not proved: {why}, and it may measure room context or another trade's box.",
-                answers,
-            )
+            return Verdict("objects", f"Not proved: {room_words(thing)} ({why}).", answers)
     answers["pairing"] = "proved" if state == "same_extent" else "proved_by_two_picks"
     return Verdict("passed", "", answers)
 
