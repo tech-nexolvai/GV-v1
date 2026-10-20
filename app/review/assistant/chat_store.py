@@ -258,7 +258,11 @@ def add_file(
     size: int,
     mime: str,
     sha256: str,
+    created_at: datetime | None = None,
 ) -> AssistantChatFile:
+    """One file of a message. `created_at` (#1803): the files made again from the reviewer's
+    decisions carry the time of the newest decision they hold, so a package is out of date
+    exactly when a later decision exists (`package_outdated`)."""
     row = AssistantChatFile(
         id=file_id,
         chat_id=chat_id,
@@ -267,6 +271,7 @@ def add_file(
         size=size,
         mime=mime[:127],
         sha256=sha256,
+        **({} if created_at is None else {"created_at": created_at}),
     )
     session.add(row)
     session.flush()

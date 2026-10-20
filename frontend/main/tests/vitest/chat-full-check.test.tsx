@@ -12,7 +12,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AssistantMessage, UserMessage } from '@/components/chat/chat-message';
 import { ShellSlotsContext } from '@/components/shell/shellSlots';
-import type { ChatApi, ChatFile } from '@/lib/chat-api';
+import type { ChatApi, ChatFile, RemadeFiles } from '@/lib/chat-api';
 import { accuracyTone, accuracyWords } from '@/lib/chat-accuracy';
 import { allPicked, checkedWords, confirmWords, effectiveProducts, fullCheckBubble, fullCheckFiles, isFullCheck, lastProducts, matchesWords, productsWords, progressWords, scopeSentence, toggleProduct } from '@/lib/chat-full-check';
 import { applyChatEvent, localAnswer, type ViewMessage } from '@/lib/chat-messages';
@@ -358,9 +358,10 @@ describe('a full-check answer', () => {
   it('never hands out the old package: no download until it is made again with every decision (#1803)', async () => {
     const user = userEvent.setup();
     const PKG: ChatFile = { id: 'f-z', kind: 'package', name: 'set - GV review package.zip', size: 4_000_000, mime: 'application/zip', url: '/api/v1/chats/c-1/files/f-z' };
-    const decide = vi.fn(async (_message: string, _finding: string, decision: string) => ({ decision, by: 'anant', at: '2026-10-17T11:00:00Z' }));
-    let finish: (file: ChatFile) => void = () => {};
-    const remake = vi.fn(() => new Promise<ChatFile>((resolve) => { finish = resolve; }));
+    let saved: (value: unknown) => void = () => {};
+    const decide = vi.fn((_message: string, _finding: string, decision: string) => new Promise((resolve) => { saved = () => resolve({ decision, by: 'anant', at: '2026-10-17T11:00:00Z' }); }));
+    let finish: (file: RemadeFiles) => void = () => {};
+    const remake = vi.fn(() => new Promise<RemadeFiles>((resolve) => { finish = resolve; }));
     render(<AssistantMessage message={answer({ findings, files: [CLOUD, REPORT, PKG] })} chatId="c-1" models={[OPUS]} fullCheck decide={decide} remakeCloud={remake} onReload={vi.fn()} />);
     const node = screen.getByRole('article', { name: 'Answer' });
     expect(node.querySelector('[data-slot="chat-package-download"]')).not.toBeNull();
@@ -368,16 +369,22 @@ describe('a full-check answer', () => {
     const panel = await screen.findByRole('dialog');
     await user.click(within(panel).getByRole('button', { name: 'Not a mistake: remove the red mark' }));
     await user.click(within(panel).getByRole('button', { name: 'Remove the red mark' }));
-    // Saved, not yet made again: the old package is not offered anywhere.
+    // From the click on (not yet saved), the old package is not offered anywhere.
+    expect(node.querySelector('[data-slot="chat-package-download"]')).toBeNull();
+    saved(null);
     await waitFor(() => expect(node.querySelector('[data-slot="chat-package-download"]')).toBeNull());
     expect(node.querySelector('[data-slot="chat-result-files"]')).toBeNull();
     expect(within(screen.getByRole('dialog')).queryByRole('link', { name: /Download package/ })).toBeNull();
     await waitFor(() => expect(remake).toHaveBeenCalledTimes(1), { timeout: 3000 });
     expect(node.querySelector('[data-slot="chat-package-line"]')?.textContent).toBe('Making the package again with your 1 decision…');
-    finish({ ...PKG, id: 'f-z2' });
+    // The server's answer: the new drawing, and every file made with it (the new package among them).
+    const NEW_CLOUD: ChatFile = { ...CLOUD, id: 'f-c2', url: '/api/v1/chats/c-1/files/f-c2' };
+    const NEW_PKG: ChatFile = { ...PKG, id: 'f-z2', url: '/api/v1/chats/c-1/files/f-z2' };
+    finish({ ...NEW_CLOUD, made: [NEW_CLOUD, { ...REPORT, id: 'f-r2' }, NEW_PKG] });
     await waitFor(() => expect(node.querySelector('[data-slot="chat-package-line"]')?.getAttribute('data-state')).toBe('updated'));
     expect(node.querySelector('[data-slot="chat-package-line"]')?.textContent).toMatch(/^Package updated with your 1 decision/);
-    expect(node.querySelector('[data-slot="chat-package-download"]')).not.toBeNull();
+    // The new package at once (the chat is not read again here), never the old one.
+    expect(node.querySelector('[data-slot="chat-package-download"]')?.getAttribute('href')).toBe('/api/v1/chats/c-1/files/f-z2');
     expect(within(screen.getByRole('dialog')).getByRole('link', { name: /Download package/ })).toBeTruthy();
     // "Re-make the package" makes it again on request.
     await user.keyboard('{Escape}');

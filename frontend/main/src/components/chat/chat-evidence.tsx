@@ -8,7 +8,7 @@ import { RoundChip } from '@/components/chat/chat-trust';
 import { Sheet, SheetClose, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet';
 import type { ChatFile, ChatFinding, FindingDecisionExtra, FindingDecisionValue } from '@/lib/chat-api';
 import { architectPage, decisionHelpRows, pageWords, reviewerWords, sideLabels, vendorPage } from '@/lib/chat-findings';
-import { proofGroup } from '@/lib/chat-proof';
+import { isInternal, proofGroup } from '@/lib/chat-proof';
 import { boxOnPicture, decisionsWords, itemParts, shouldBeValue, suggestedShouldBe, vendorValue } from '@/lib/chat-result';
 import { plainChecks, sumWords, TRUST_WORDS, trustLevelOf } from '@/lib/chat-trust';
 import { useReducedMotion } from '@/lib/chat-motion';
@@ -288,13 +288,13 @@ export function EvidenceViewer({ findings, openId, onOpen, pictureUrl, fullPageH
 
           <div className="grid min-w-0 gap-3 border-t px-5 py-3 max-md:px-4">
             {notice && <p role="alert" data-slot="chat-evidence-notice" className="text-[13px] text-muted-foreground">{notice}</p>}
-            {decision && group && group !== 'right' && (
+            {decision && group && group !== 'right' && !isInternal(finding) && (
               <ReviewerCall key={finding.id} finding={finding} group={group} decision={decision} />
             )}
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               {draft ? <DraftLine draft={draft} /> : <span className="text-xs text-muted-foreground max-md:hidden"><kbd className="num rounded border px-1">J</kbd> <kbd className="num rounded border px-1">K</kbd> to step · <kbd className="num rounded border px-1">Esc</kbd></span>}
               <span className="flex-1" />
-              {cloudAt && group === 'clouded' && (
+              {cloudAt && group === 'clouded' && !draft?.stale && (
                 <a href={cloudAt(finding.vendor_box?.page ?? finding.page)} target="_blank" rel="noopener noreferrer" className={SMALL_BUTTON}><ExternalLink className="size-3.5" aria-hidden="true" />Open on the cloud drawing</a>
               )}
               {fullPageHref && (

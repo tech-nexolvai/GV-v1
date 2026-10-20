@@ -324,50 +324,43 @@ def xlsx(found: Sequence[Row]) -> bytes:
     )
 
 
-def set_rows_of(sheet: bytes) -> list[Row] | None:
-    """The set's own rows (`level: set`) read back from a workbook `xlsx` made (#1803): an answer
-    stored before its set gaps were kept with it can still have its list made again after the
-    reviewer's decisions, with the same set rows. `None` when it is not such a workbook."""
-    from importlib import import_module
-
-    try:
-        openpyxl = import_module("openpyxl")
-        book = openpyxl.load_workbook(io.BytesIO(sheet), read_only=True, data_only=True)
-    except Exception:  # noqa: BLE001 - not a workbook this list made
+def set_rows_of(sheet: bytes, *, csv: bool = False) -> list[Row] | None:
+    """The set's own rows (`level: set`) read back from a list this module made (#1803): an
+    answer stored before its set gaps were kept with it can still have its list made again after
+    the reviewer's decisions, with the same set rows. Today's workbook has them on its own sheet
+    (`SET_SHEET`); an older one (one "Not compared" sheet) and the CSV fallback list them with the
+    items, where a set row is one with no product and no vendor or architect value (`gap_rows`).
+    `None` when it is not such a list (the caller refuses to make the list again)."""
+    lines = _sheet_lines(sheet, csv=csv)
+    if lines is None:
         return None
-    if SET_SHEET not in book.sheetnames:
-        return None
-    lines = list(book[SET_SHEET].iter_rows(values_only=True))
-    if not lines or tuple(str(c or "") for c in lines[0][: len(COLUMNS)]) != COLUMNS:
-        return None
-    by_label = {
-        TRADE_WORDS.get(reason, REASON_WORDS.get(reason, reason)): reason for reason in REASONS
-    }
+    rows_in, mixed = lines
+    by_label = {TRADE_WORDS.get(r, REASON_WORDS.get(r, r)): r for r in REASONS}
     out: list[Row] = []
-    for line in lines[1:]:
+    for line in rows_in:
         cells = [("" if c is None else str(c)) for c in line[: len(COLUMNS)]]
         if len(cells) < len(COLUMNS) or not cells[4]:
             continue
         _at, page, area, product, item, vendor, architect, why_words, needed, reference = cells
+        if mixed and (product or vendor or architect):
+            continue  # an item of the answer: listed again from its finding
         # The column is "<label>: <why>" (`vendor_reason`); a label may hold ": " itself.
         label = max(
             (k for k in by_label if why_words == k or why_words.startswith(f"{k}: ")),
             key=len,
             default="",
         )
-        reason = by_label.get(label, "no_sheet")
-        why = why_words[len(label) + 2 :] if label else why_words
         out.append(
             Row(
                 finding_id="",
                 page=int(page) if page.isdigit() else None,
                 area=area,
-                product=product,
+                product="",
                 item=item,
-                vendor=vendor,
-                architect=architect,
-                reason=reason,
-                why=why,
+                vendor="",
+                architect="",
+                reason=by_label.get(label, "no_sheet"),
+                why=why_words[len(label) + 2 :] if label else why_words,
                 needed=needed,
                 reference=reference,
                 file=None,
@@ -376,6 +369,37 @@ def set_rows_of(sheet: bytes) -> list[Row] | None:
             )
         )
     return out
+
+
+def _sheet_lines(sheet: bytes, *, csv: bool) -> tuple[list[Sequence[Any]], bool] | None:
+    """The data lines of a list's workbook or CSV, and whether items and set rows share them."""
+    from importlib import import_module
+
+    if csv:
+        reader = import_module("csv")
+        try:
+            lines = list(reader.reader(io.StringIO(sheet.decode("utf-8-sig"))))
+        except (UnicodeDecodeError, reader.Error):
+            return None
+        # `csv_text` guards a cell that starts like a formula with one "'".
+        lines = [
+            [c[1:] if c[:2] in ("'=", "'+", "'-", "'@") else c for c in line] for line in lines
+        ]
+        mixed = True
+    else:
+        try:
+            openpyxl = import_module("openpyxl")
+            book = openpyxl.load_workbook(io.BytesIO(sheet), read_only=True, data_only=True)
+        except Exception:  # noqa: BLE001 - not a workbook this list made
+            return None
+        mixed = SET_SHEET not in book.sheetnames
+        name = "Not compared" if mixed else SET_SHEET
+        if name not in book.sheetnames:
+            return None
+        lines = [list(line) for line in book[name].iter_rows(values_only=True)]
+    if not lines or tuple(str(c or "") for c in lines[0][: len(COLUMNS)]) != COLUMNS:
+        return None
+    return lines[1:], mixed
 
 
 def csv_text(found: Sequence[Row]) -> str:

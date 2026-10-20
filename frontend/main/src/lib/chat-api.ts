@@ -1152,9 +1152,12 @@ export function makeMarkupPdf(chatId: string, messageId: string): Promise<ChatFi
   return json<ChatFile>(chatPaths.markupPdf(chatId, messageId), { method: 'POST', body: '{}' });
 }
 
-/** #1525: make the cloud drawing (and report) again from the reviewer's decisions; returns the new drawing. */
-export function remakeCloudDrawing(chatId: string, messageId: string): Promise<ChatFile> {
-  return json<ChatFile>(chatPaths.cloudDrawing(chatId, messageId), { method: 'POST', body: '{}' });
+/** #1803: the remade cloud drawing, and every file made with it (the report, the Not-compared list, the package). */
+export type RemadeFiles = ChatFile & { made?: ChatFile[] };
+
+/** #1525: make the cloud drawing (and report) again from the reviewer's decisions; returns the new drawing and (#1803) every file made with it. */
+export function remakeCloudDrawing(chatId: string, messageId: string): Promise<RemadeFiles> {
+  return json<RemadeFiles>(chatPaths.cloudDrawing(chatId, messageId), { method: 'POST', body: '{}' });
 }
 
 /** #1584: the "model" of an answer code wrote alone (the vendor consistency check): no AI. */

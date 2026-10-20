@@ -162,7 +162,11 @@ export interface paths {
          *     a problem; the rest listed in grey; stamped "Checked automatically by GV Review: <date>, and
          *     reviewed by <name>". A new cloud drawing and check report each time (older files are kept),
          *     and for a full check a new send-ready package (#1622) and Not-compared list (#1803: the items
-         *     the reviewer decided leave it); returns the cloud drawing.
+         *     the reviewer decided leave it); returns the cloud drawing and every file made with it.
+         *
+         *     #1803: remakes of one answer run one at a time (a lock held to the end), and the files made
+         *     carry the time of the newest decision they hold, read before the decisions themselves: a
+         *     decision saved while this runs leaves the package out of date (`package_outdated`).
          */
         post: operations["cloud_drawing_api_v1_chats__chat_id__messages__message_id__cloud_drawing_post"];
         delete?: never;
@@ -6270,6 +6274,29 @@ export interface components {
             missing?: components["schemas"]["ChatRecordedResultOut"][];
             /** Recorded */
             recorded: number;
+        };
+        /**
+         * ChatRemadeOut
+         * @description The cloud drawing made again from the reviewer's decisions (its fields, as before), and
+         *     every file made with it (#1803: the check report, the Not-compared PDF and workbook, the
+         *     send-ready package), so the screen offers the new package at once, never the old one.
+         */
+        ChatRemadeOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Made */
+            made?: components["schemas"]["ChatFileOut"][];
+            /** Mime */
+            mime: string;
+            /** Name */
+            name: string;
+            /** Size */
+            size: number;
+            /** Url */
+            url: string;
         };
         /** ChatResolverBlock */
         ChatResolverBlock: {
@@ -13472,7 +13499,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ChatFileOut"];
+                    "application/json": components["schemas"]["ChatRemadeOut"];
                 };
             };
             /** @description No such stored answer in this chat (or no access). */

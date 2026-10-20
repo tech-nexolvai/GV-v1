@@ -13,7 +13,7 @@ import { FullCheckResult } from '@/components/chat/chat-result';
 import { ConfidenceLine, HowChecked } from '@/components/chat/chat-trust';
 import { ChatMarkdown } from '@/components/chat/chat-markdown';
 import { Collapse, CopyButton, GVSpark, Shimmer, Spark, Spinner, type SparkState } from '@/components/chat/chat-motion';
-import { chatPaths, type ChatEffort, type ChatFile, type ChatFinding, type ChatFindingUpdate, type ChatModel, type FindingDecision, type FindingDecisionChoice, type FindingDecisionExtra } from '@/lib/chat-api';
+import { chatPaths, type ChatEffort, type ChatFile, type ChatFinding, type ChatFindingUpdate, type ChatModel, type FindingDecision, type FindingDecisionChoice, type FindingDecisionExtra, type RemadeFiles } from '@/lib/chat-api';
 import { coverageCounts, isNarrowAnswer, isShortAnswer, NO_FILTER, sectionOrder, type FindingFilter } from '@/lib/chat-findings';
 import { fullCheckBubble, fullCheckFiles, withoutCodeNote } from '@/lib/chat-full-check';
 import { commentNumber, resultGroups } from '@/lib/chat-result';
@@ -313,8 +313,8 @@ export interface AssistantMessageProps {
   fullCheck?: boolean;
   /** #1522 (PATH step 5): record the reviewer's Agree / Not a problem on a finding (#1803: with its note and the value it should be). */
   decide?: (messageId: string, findingId: string, decision: FindingDecisionChoice, extra?: FindingDecisionExtra) => Promise<unknown>;
-  /** #1525: make the cloud drawing again from the reviewer's decisions; returns the new drawing. */
-  remakeCloud?: (messageId: string) => Promise<ChatFile>;
+  /** #1525: make the cloud drawing again from the reviewer's decisions; returns the new drawing (#1803: and every file made with it). */
+  remakeCloud?: (messageId: string) => Promise<RemadeFiles>;
   /** #1578: a finding of this answer to open in the evidence viewer at once (the job tracker's link). */
   focusFindingId?: string | null;
   /** #1727: Stop on the live full check card (with its confirmation), for the answer running now. */
@@ -417,14 +417,17 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
   // #1803: after each saved decision of a full check, the draft (cloud drawing, letter, register,
   // Not-compared list, package) is made again by itself, a moment later so quick decisions share one
   // remake; decisions saved while it runs make it once more after.
+  // A remake done on this screen answers the server's flag until the chat is read again.
+  const filesKey = message.files.map((file) => file.id).join(',');
+  const [remadeKey, setRemadeKey] = useState<string | null>(null);
   const [remakeWanted, setRemakeWanted] = useState(0);
   const [remakeDone, setRemakeDone] = useState(0);
   const [remakeRunning, setRemakeRunning] = useState(false);
   const [remakeFailed, setRemakeFailed] = useState(false);
   const [draftAt, setDraftAt] = useState<Date | null>(null);
   // The page's functions change on every render; the timer reads the newest ones.
-  const latestRemake = useRef({ remakeCloud, onReload });
-  useEffect(() => { latestRemake.current = { remakeCloud, onReload }; });
+  const latestRemake = useRef({ remakeCloud, onReload, filesKey });
+  useEffect(() => { latestRemake.current = { remakeCloud, onReload, filesKey }; });
   const canRemake = Boolean(remakeCloud && messageId);
   useEffect(() => {
     if (!canRemake || !messageId || remakeWanted === remakeDone || remakeRunning || remakeFailed) return undefined;
@@ -435,7 +438,10 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
       setRemakeRunning(true);
       remake(messageId).then(
         (file) => {
-          setMadeFiles((known) => (known.some((each) => each.id === file.id) ? known : [...known, file]));
+          // #1803: every file made with the drawing (the package too), so the new package is offered at once, never the old one.
+          const fresh = file.made?.length ? file.made : [file];
+          setMadeFiles((known) => [...known, ...fresh.filter((made) => !known.some((each) => each.id === made.id))]);
+          setRemadeKey(latestRemake.current.filesKey);
           // The new letter, register, list and package are added to the message's files on the server: read the chat again.
           reload?.();
           setDraftAt(new Date());
@@ -450,7 +456,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
   const cloudState: 'idle' | 'updating' | 'failed' = remakeFailed ? 'failed' : remakeRunning || remakeWanted !== remakeDone ? 'updating' : 'idle';
   // #1803: the server says the package was made before the newest decision (a decision made
   // elsewhere, or a remake that never ran): it is never handed out, and it is made again at once.
-  const outdated = Boolean(fullCheck && finished && message.package_outdated);
+  const outdated = Boolean(fullCheck && finished && message.package_outdated) && remadeKey !== filesKey;
   useEffect(() => {
     if (!outdated || !canRemake || remakeWanted !== remakeDone || remakeRunning || remakeFailed) return undefined;
     const timer = setTimeout(askRemake, 0);
@@ -459,7 +465,9 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [outdated, canRemake]);
   // The package on the screen does not hold every decision yet: no download until it does.
-  const packageStale = cloudState !== 'idle' || outdated;
+  // #1803: stale from the click on (a decision still being saved), not only once it is saved.
+  const [saving, setSaving] = useState(0);
+  const packageStale = cloudState !== 'idle' || outdated || saving > 0;
   const decisionFor = finished && !decisionsOff && decide && messageId ? (finding: ChatFinding): DecisionProps => ({
     decision: decisionOf(finding)?.decision ?? null,
     saved: decisionOf(finding),
@@ -469,6 +477,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
       setDecideFailed(null);
       const laid: FindingDecision | null = decision === 'undo' ? null : { ...(decisionOf(finding) ?? {}), decision, note: extra?.note?.trim() || null, should_be: decision === 'agree' ? extra?.should_be?.trim() || null : null };
       setDecisions((now) => ({ ...now, [finding.id]: laid }));
+      setSaving((count) => count + 1);
       (extra ? decide(messageId, finding.id, decision, extra) : decide(messageId, finding.id, decision)).then(
         (saved) => {
           setDecisions((now) => ({ ...now, [finding.id]: decision !== 'undo' && isDecision(saved) ? saved : laid }));
@@ -487,7 +496,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
             return next;
           });
         },
-      );
+      ).finally(() => setSaving((count) => count - 1));
     },
   }) : null;
   // #1525: "12 of 43 decided", and the cloud drawing made again from the answers.

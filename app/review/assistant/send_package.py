@@ -293,14 +293,15 @@ def requires_words(finding: Mapping[str, Any]) -> str:
     parts add up to 80 1/8"". Only ever a stated requirement (`proof.stated_requirement`, through
     the guard on internal words): a comment without one is never made (`proof_group`)."""
     value = stated_requirement(finding) or "the value on the cloud drawing's note"
+    if governs(finding) == REVIEWER:
+        # A value GV's reviewer typed (#1803): never credited to the architect or to the
+        # vendor's own arithmetic.
+        return f"GV's reviewer requires {value}"
     own = vendor_own(finding)
     if own == "sum":
         return f"The vendor's own parts add up to {value}"
     if own == "span":
         return f"The vendor's other dimension of the same span shows {value}"
-    if governs(finding) == REVIEWER:
-        # A value GV's reviewer gave (#1803): never said to be the architect's.
-        return f"GV's reviewer requires {value}"
     source = str(finding.get("source") or "architect")
     settled = finding.get("settled")
     if isinstance(settled, Mapping) and settled.get("method") == "gv_limits":

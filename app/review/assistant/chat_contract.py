@@ -1731,6 +1731,14 @@ class ChatFileOut(BaseModel):
     url: str
 
 
+class ChatRemadeOut(ChatFileOut):
+    """The cloud drawing made again from the reviewer's decisions (its fields, as before), and
+    every file made with it (#1803: the check report, the Not-compared PDF and workbook, the
+    send-ready package), so the screen offers the new package at once, never the old one."""
+
+    made: list[ChatFileOut] = Field(default_factory=list)
+
+
 class ChatReviewActionOut(BaseModel):
     """A full check's review result (#1622, `review_action.review_action`, rules S0 to S7),
     decided by code on read from its findings with the reviewer's latest decisions and the state

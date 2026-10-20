@@ -90,6 +90,7 @@ from app.review.assistant.chat_drawing import (
 from app.review.assistant.cloud_layout import NOTE_WIDTH_PT, InkMap, marker_spot, place_notes
 from app.review.assistant.proof import (
     LEFT_CAPTIONS,
+    REVIEWER,
     RULE_LINE,
     architect_file,
     governs,
@@ -874,7 +875,9 @@ def _proof_entries(
             styles["head"],
         )
         left: list[Any] = [Paragraph(_coloured("Governs: ", governs(finding), GREEN), small)]
-        own = vendor_own(finding)
+        # A value GV's reviewer typed (#1803) is never shown as the vendor's own parts or span.
+        typed = governs(finding) == REVIEWER
+        own = None if typed else vendor_own(finding)
         if item.architect_png is not None:
             left.insert(0, _image(item.architect_png, max_w, _CROP_MAX_H))
         elif own == "sum":
@@ -889,6 +892,16 @@ def _proof_entries(
                     + escape(
                         f"The vendor prints {_vendor(vendor_value(finding))} for their total."
                     ),
+                    body,
+                ),
+            )
+        elif typed:
+            left.insert(
+                0,
+                Paragraph(
+                    _coloured("", should_be_value(finding), GREEN)
+                    + "<br/>"
+                    + escape("(the value GV's reviewer gave)"),
                     body,
                 ),
             )

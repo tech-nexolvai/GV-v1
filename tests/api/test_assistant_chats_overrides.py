@@ -19,6 +19,7 @@ from __future__ import annotations
 import io
 import zipfile
 from typing import Any
+from uuid import UUID
 
 import pytest
 from pypdf import PdfReader
@@ -289,3 +290,138 @@ def test_each_decision_updates_every_file_of_the_package_and_an_undo_restores_it
         assert "C-01" not in again["Comment letter.pdf"]
         assert "Sink base width" in again["Not compared.pdf"]
         assert "Sink base width" in _cells(again["Not compared.xlsx"])
+        # The register is back too: no comment for the undone item.
+        assert "C-01" not in _cells(again["Issue register.xlsx"])
+
+
+def _full_check(world: Any) -> tuple[str, dict[str, Any]]:
+    chat_id = world.chat()
+    response = world.client.post(
+        f"/api/v1/chats/{chat_id}/messages",
+        json={**ASK, "mode": "full_check", "products": ["countertop"]},
+    )
+    assert response.status_code == 200, response.text
+    return chat_id, _named(_events(response.text), "message_end")[0]["message"]
+
+
+def test_a_decision_saved_while_the_package_is_made_leaves_it_out_of_date(postgres_engine, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """#1803 review: the remake read the decisions before a new one landed; its package must
+    never look current. The remake also returns every file it made, the package among them."""
+    from sqlalchemy.orm import Session
+
+    from app.api import assistant_chats
+    from app.review.assistant.chat_decisions import record_decision
+
+    with _world(postgres_engine, tmp_path, provider=_provider(), pdf=PDF3, pages=3) as world:
+        chat_id, answer = _full_check(world)
+        assert (
+            _decide(world, chat_id, answer["id"], "F1", decision="not_a_problem").status_code == 201
+        )
+        made = assistant_chats.make_decided_files
+
+        def slow(*args: Any, **kwargs: Any) -> Any:
+            # Another reviewer's decision lands while the files are being made.
+            with Session(postgres_engine) as other:
+                record_decision(
+                    other,
+                    chat_id=UUID(chat_id),
+                    message_id=UUID(answer["id"]),
+                    finding_id="F2",
+                    decision="agree",
+                    note=None,
+                    decided_by="reviewer-two",
+                    should_be='34 1/2"',
+                )
+                other.commit()
+            return made(*args, **kwargs)
+
+        monkeypatch.setattr(assistant_chats, "make_decided_files", slow)
+        remade = world.client.post(f"/api/v1/chats/{chat_id}/messages/{answer['id']}/cloud-drawing")
+        assert remade.status_code == 200, remade.text
+        names = [file["name"] for file in remade.json()["made"]]
+        assert remade.json()["id"] == remade.json()["made"][0]["id"]
+        assert any(name.endswith("review package.zip") for name in names)
+        assert any(name.endswith("Not compared.xlsx") for name in names)
+        message = world.client.get(f"/api/v1/chats/{chat_id}").json()["messages"][-1]
+        assert message["package_outdated"] is True
+
+        monkeypatch.setattr(assistant_chats, "make_decided_files", made)
+        assert (
+            world.client.post(
+                f"/api/v1/chats/{chat_id}/messages/{answer['id']}/cloud-drawing"
+            ).status_code
+            == 200
+        )
+        assert (
+            world.client.get(f"/api/v1/chats/{chat_id}").json()["messages"][-1]["package_outdated"]
+            is False
+        )
+
+
+def test_a_red_mark_needs_a_number_other_than_the_vendors_own(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    with _world(postgres_engine, tmp_path, provider=_provider(), pdf=PDF3, pages=3) as world:
+        chat_id, answer = _full_check(world)
+        same = _decide(world, chat_id, answer["id"], "F2", decision="agree", should_be=' 33 " ')
+        assert same.status_code == 422 and same.json()["error"] == "should_be_refused"
+        words = _decide(world, chat_id, answer["id"], "F2", decision="agree", should_be="wider")
+        assert words.status_code == 422 and "number" in words.json()["message"]
+        assert (
+            _decide(
+                world, chat_id, answer["id"], "F2", decision="agree", should_be='34"'
+            ).status_code
+            == 201
+        )
+
+
+def _older_answer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Answers as stored before #1803: the package block holds no set gaps (stored answers are
+    append-only, so the read is changed, not the row)."""
+    from app.api import assistant_chats
+
+    read = assistant_chats.package_block
+
+    def older(blocks: Any) -> Any:
+        found = read(blocks)
+        return None if found is None else {k: v for k, v in found.items() if k != "set_gaps"}
+
+    monkeypatch.setattr(assistant_chats, "package_block", older)
+
+
+def test_an_older_answers_list_is_made_again_or_refused_never_handed_out_stale(postgres_engine, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    with _world(postgres_engine, tmp_path, provider=_provider(), pdf=PDF3, pages=3) as world:
+        chat_id, answer = _full_check(world)
+        _older_answer(monkeypatch)
+        assert (
+            _decide(
+                world, chat_id, answer["id"], "F2", decision="agree", should_be='34 1/2"'
+            ).status_code
+            == 201
+        )
+        remake = f"/api/v1/chats/{chat_id}/messages/{answer['id']}/cloud-drawing"
+        assert world.client.post(remake).status_code == 200
+        after = _package(world, chat_id)
+        assert "Sink base width" not in after["Not compared.pdf"]
+        assert "Sink base width" not in _cells(after["Not compared.xlsx"])
+
+        # A list that cannot be read back is refused, never re-attached as it was.
+        sheet = _newest(after["message"]["files"], "Not compared.xlsx")
+        folder = next(tmp_path.rglob(sheet["id"]))
+        folder.write_bytes(b"not a workbook")
+        refused = world.client.post(remake)
+        assert refused.status_code == 409 and refused.json()["error"] == "list_not_remade"
+
+
+def test_an_item_for_gvs_reviewer_only_is_never_decided(postgres_engine, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from app.api import assistant_chats
+
+    with _world(postgres_engine, tmp_path, provider=_provider(), pdf=PDF3, pages=3) as world:
+        chat_id, answer = _full_check(world)
+        monkeypatch.setattr(
+            assistant_chats.classification, "internal", lambda f: f.get("id") == "F2"
+        )
+        refused = _decide(world, chat_id, answer["id"], "F2", decision="agree", should_be='34"')
+        assert refused.status_code == 422 and refused.json()["error"] == "internal_item"
+        assert _decide(world, chat_id, answer["id"], "F2", decision="undo").status_code == 201
+        assert (
+            _decide(world, chat_id, answer["id"], "F1", decision="not_a_problem").status_code == 201
+        )

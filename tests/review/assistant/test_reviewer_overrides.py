@@ -26,6 +26,7 @@ from app.review.assistant.proof import (
     proof_line,
     proof_of,
     reviewer_decided,
+    reviewer_value_refusal,
     should_be,
     should_be_value,
     stated_requirement,
@@ -150,3 +151,66 @@ def test_an_older_workbooks_set_rows_are_read_back_as_they_were_listed() -> None
         (r.page, r.item, r.reason, r.why, r.needed, r.reference, r.level) for r in gaps
     ]
     assert not_compared.set_rows_of(b"not a workbook") is None
+
+
+def test_an_older_single_sheet_workbook_and_the_csv_give_back_their_set_rows_only() -> None:
+    """Workbooks before the set sheet, and the CSV fallback, list items and set rows together: a
+    set row has no product and no vendor or architect value; the items come back from findings."""
+    from app.review.assistant import not_compared
+    from app.review.assistant.workbook import write_xlsx
+
+    gaps = not_compared.gap_rows(
+        [{"what": "Sheet A-3: the island elevation", "needs": "the sheet", "page": 4}]
+    )
+    item = not_compared.Row(
+        finding_id="F9",
+        page=2,
+        area="",
+        product="Countertops",
+        item="Sink base width",
+        vendor='33"',
+        architect="",
+        reason=gaps[0].reason,
+        why="no size",
+        needed="a size",
+        reference="page 2",
+        file=None,
+        box=None,
+    )
+    table = not_compared._table([item, *gaps])
+    single = write_xlsx([("Not compared", not_compared.COLUMNS, table)])
+    for back in (
+        not_compared.set_rows_of(single),
+        not_compared.set_rows_of(
+            not_compared.csv_text([item, *gaps]).encode("utf-8-sig"), csv=True
+        ),
+    ):
+        assert back is not None
+        assert [(r.item, r.reason, r.needed, r.level) for r in back] == [
+            (r.item, r.reason, r.needed, r.level) for r in gaps
+        ]
+    assert not_compared.set_rows_of(b"\xff\xfe", csv=True) is None
+
+
+def test_a_reviewers_value_is_never_credited_to_the_vendors_own_parts() -> None:
+    """#1803 review: an agreed vendor-arithmetic item with a value the reviewer typed says it is
+    the reviewer's, never "the vendor's own parts add up to" the typed value."""
+    from app.review.assistant.send_package import requires_words
+
+    summed = {
+        "id": "S1",
+        "item": "Run of cabinets",
+        "status": "different",
+        "source": "vendor_arithmetic",
+        "parts": ['10"', '10"'],
+        "printed_total": '21"',
+        "vendor": '21"',
+        "architect": '20"',
+        "inches": {"vendor": "21", "architect": "20"},
+    }
+    typed = {**summed, "decision": {"decision": "agree", "should_be": '34 1/2"'}}
+    assert requires_words(typed) == "GV's reviewer requires 34 1/2\""
+    assert not requires_words(summed).startswith("GV's reviewer")
+    assert reviewer_value_refusal(summed, '21 "') is not None  # the vendor's own value
+    assert reviewer_value_refusal(summed, "wider") is not None  # no number
+    assert reviewer_value_refusal(summed, '20"') is None

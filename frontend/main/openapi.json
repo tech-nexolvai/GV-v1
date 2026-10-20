@@ -8202,6 +8202,48 @@
         "title": "ChatRecordedResultsOut",
         "type": "object"
       },
+      "ChatRemadeOut": {
+        "description": "The cloud drawing made again from the reviewer's decisions (its fields, as before), and\nevery file made with it (#1803: the check report, the Not-compared PDF and workbook, the\nsend-ready package), so the screen offers the new package at once, never the old one.",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "made": {
+            "items": {
+              "$ref": "#/components/schemas/ChatFileOut"
+            },
+            "title": "Made",
+            "type": "array"
+          },
+          "mime": {
+            "title": "Mime",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "size",
+          "mime",
+          "url"
+        ],
+        "title": "ChatRemadeOut",
+        "type": "object"
+      },
       "ChatResolverBlock": {
         "properties": {
           "resolver": {
@@ -23733,7 +23775,7 @@
     },
     "/api/v1/chats/{chat_id}/messages/{message_id}/cloud-drawing": {
       "post": {
-        "description": "The zero-click cloud drawing made again with the reviewer's decisions as overrides (#1581):\nred clouds at the Wrong items code proved and at every agreed item, none at an item marked not\na problem; the rest listed in grey; stamped \"Checked automatically by GV Review: <date>, and\nreviewed by <name>\". A new cloud drawing and check report each time (older files are kept),\nand for a full check a new send-ready package (#1622) and Not-compared list (#1803: the items\nthe reviewer decided leave it); returns the cloud drawing.",
+        "description": "The zero-click cloud drawing made again with the reviewer's decisions as overrides (#1581):\nred clouds at the Wrong items code proved and at every agreed item, none at an item marked not\na problem; the rest listed in grey; stamped \"Checked automatically by GV Review: <date>, and\nreviewed by <name>\". A new cloud drawing and check report each time (older files are kept),\nand for a full check a new send-ready package (#1622) and Not-compared list (#1803: the items\nthe reviewer decided leave it); returns the cloud drawing and every file made with it.\n\n#1803: remakes of one answer run one at a time (a lock held to the end), and the files made\ncarry the time of the newest decision they hold, read before the decisions themselves: a\ndecision saved while this runs leaves the package out of date (`package_outdated`).",
         "operationId": "cloud_drawing_api_v1_chats__chat_id__messages__message_id__cloud_drawing_post",
         "parameters": [
           {
@@ -23762,7 +23804,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ChatFileOut"
+                  "$ref": "#/components/schemas/ChatRemadeOut"
                 }
               }
             },

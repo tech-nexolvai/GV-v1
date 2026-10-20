@@ -14,6 +14,7 @@ problem is left out. The PDF is drawn by `proof_drawing.py`, loaded by name
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -42,6 +43,8 @@ from app.review.assistant.send_package import (
     make_package_file,
     package_context,
 )
+
+_log = logging.getLogger(__name__)
 
 __all__ = [
     "UNDO",
@@ -370,7 +373,11 @@ def _not_compared_rows(
     (as the full check makes them, `chat_engine._not_compared_rows`)."""
     try:
         return not_compared.check_rows(workspace, findings, ())
-    except Exception:  # noqa: BLE001 - listed from the findings alone then
+    except Exception as failed:  # noqa: BLE001 - listed from the findings alone then
+        _log.warning(
+            "not-compared rows without the set's areas (%s): listed from the findings alone",
+            type(failed).__name__,
+        )
         return not_compared.rows(findings)
 
 

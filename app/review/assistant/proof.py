@@ -75,6 +75,7 @@ __all__ = [
     "proof_of",
     "reviewer_decided",
     "reviewer_should_be",
+    "reviewer_value_refusal",
     "reviewer_wrong",
     "scaled",
     "should_be",
@@ -206,6 +207,21 @@ def reviewer_should_be(finding: Mapping[str, Any]) -> str | None:
     if _decided(finding) != "agree" or not isinstance(decision, Mapping):
         return None
     return vendor_text(decision.get("should_be")) or None
+
+
+def reviewer_value_refusal(finding: Mapping[str, Any], should_be: str | None) -> str | None:
+    """Why the reviewer's "should be" cannot make a red mark (#1803), or `None`: it must hold a
+    number, and it must not be the value the vendor already prints (a red mark that asks for what
+    is already there would be a false red)."""
+    value = " ".join((should_be or "").split())
+    if not value:
+        return None
+    if not any(ch.isdigit() for ch in value):
+        return 'The value it should be needs a number, like 34 1/2".'
+    printed = [vendor_value(finding), str(finding.get("vendor") or "")]
+    if any(_same_value(value) == _same_value(text) for text in printed if text):
+        return "That is the value the vendor already shows. A red mark needs a different value."
+    return None
 
 
 def reviewer_decided(finding: Mapping[str, Any]) -> bool:
