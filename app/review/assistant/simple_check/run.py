@@ -77,6 +77,7 @@ __all__ = [
     "load_outcomes",
     "replay",
     "run",
+    "run_of_message",
     "work_item_rows",
 ]
 
@@ -84,10 +85,11 @@ _log = logging.getLogger(__name__)
 
 #: The compare call's prompt id on the Usage page.
 COMPARE_PROMPT_ID: Final = "review-assistant-chat-simple-compare-{provider}-{harness}"
-#: What a compare call's cost is held at while it runs (`_guarded`): its pictures' tokens, the
-#: text of the request and the cached system prompt, and this much reply (thinking and the form).
+#: What a compare attempt's cost is held at while it runs (`_guarded`, `_again`): its pictures'
+#: tokens, the text of the request and the cached system prompt, and its whole reply room
+#: (`CompareSettings.max_tokens`, thinking and the form). Each retry and the repair turn hold it
+#: again before they start (#1769): the hold is a real ceiling, not a typical answer.
 _REQUEST_TEXT_TOKENS: Final = 8_000
-_REPLY_HOLD_TOKENS: Final = 16_000
 #: A chat's simple-check runs, each with its saved answers (`<chat>/simple/<run>/`).
 SIMPLE_DIR: Final = "simple"
 #: The order findings are recorded in (the finding book holds `MAX_FINDINGS`): what matters first.
@@ -138,6 +140,9 @@ class SimpleOptions:
     every saved answer and look is used again at $0, so the new answer is the whole result."""
     resolve: resolve_module.ResolveSettings = field(default_factory=resolve_module.ResolveSettings)
     """The resolve loop (`assistant_simple_resolve*`): off by default."""
+    message_id: str | None = None
+    """The answer this run belongs to, written in its `run.json`: a Continue after a restart finds
+    the interrupted answer's run by it (`run_of_message`, #1769)."""
 
     @classmethod
     def of(cls, raw: object) -> SimpleOptions:
@@ -157,6 +162,7 @@ class SimpleOptions:
             replay=str(given["replay"]) if given.get("replay") else None,
             compare_missing=bool(given.get("compare_missing")) and bool(given.get("replay")),
             resolve=resolve_module.ResolveSettings.of(given.get("resolve")),
+            message_id=str(given["message_id"]) if given.get("message_id") else None,
         )
 
 
@@ -221,6 +227,8 @@ class _Run:
     """What the compare calls in flight may still cost (millionths of $): the runaway guard counts
     it as spent, so the calls started never pass the cap together."""
     reservations: dict[str, int] = field(default_factory=dict)
+    attempt_holds: dict[str, int] = field(default_factory=dict)
+    """One attempt's hold per drawing started (`_guarded`): what each retry holds again."""
     refused: set[str] = field(default_factory=set)
     """Drawings not started because the runaway guard would have been passed."""
     saved_blind: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -626,6 +634,9 @@ class _Run:
                     settings=settings,
                     stop=self.stop,
                     on_outcome=self._on_outcome,
+                    # A Stop closes the calls streaming now (`ChatEngine.stop_streams`, #1769).
+                    streams=engine,
+                    before_attempt=self._again(settings),
                 )
         finally:
             self.stop.set()
@@ -643,7 +654,7 @@ class _Run:
             sent = draw(item)
             model, _effort = settings.for_item(item)
             tokens = _REQUEST_TEXT_TOKENS + sum(int(one.picture.tokens) for one in sent)
-            hold = engine._price(model, tokens, _REPLY_HOLD_TOKENS) or 0
+            hold = engine._price(model, tokens, int(settings.max_tokens)) or 0
             with self.lock:
                 over = engine._over(self.reserved + hold)
                 if over is not None:
@@ -653,10 +664,34 @@ class _Run:
                     raise _NotStarted("the per-answer cap would be passed")
                 self.reserved += hold
                 self.reservations[item.id] = hold
+                self.attempt_holds[item.id] = hold
             self._tell("drawing_started", item.id)
             return sent
 
         return pictures
+
+    def _again(self, settings: Any) -> Any:
+        """Asked before a drawing's retry or repair turn (`compare.compare_item`): the attempt is
+        held like the first (#1769), a repair turn with the earlier reply in its prompt too; when
+        that would pass the cap, the drawing is not tried again and nothing new starts."""
+        engine = self.engine
+
+        def again(item: WorkItem, _attempts: int, repair: bool) -> str | None:
+            hold = self.attempt_holds.get(item.id, 0)
+            if repair:
+                model, _effort = settings.for_item(item)
+                hold += engine._price(model, int(settings.max_tokens), 0) or 0
+            with self.lock:
+                over = engine._over(self.reserved + hold)
+                if over is not None:
+                    self.cap_hit = self.cap_hit or over
+                    self.stop.set()
+                    return "the per-answer cap would be passed"
+                self.reserved += hold
+                self.reservations[item.id] = self.reservations.get(item.id, 0) + hold
+            return None
+
+        return again
 
     def _watch_cancel(self) -> None:
         while not self.stop.wait(0.5):
@@ -1057,6 +1092,7 @@ class _Run:
                         "items": [item.id for item in self.compared],
                         "skipped": self.skipped,
                         "replay_of": self.options.replay,
+                        "message_id": self.options.message_id,
                         "compare": dict(self.options.compare),
                         "blind": {
                             "model": self.options.blind.model,
@@ -1586,6 +1622,23 @@ def _replay_dir(root: Path, run: str | None) -> Path | None:
         return None
     folder = root / SIMPLE_DIR / run
     return folder if folder.is_dir() else None
+
+
+def run_of_message(root: Path, message_id: object) -> str | None:
+    """The newest simple-check run of this chat made for that answer (`run.json`'s
+    `message_id`), by its folder name; None when there is none (#1769: a Continue after a restart
+    replays it and compares only the drawings it has no answer for)."""
+    folder = root / SIMPLE_DIR
+    if not message_id or not folder.is_dir():
+        return None
+    for run_dir in sorted(folder.iterdir(), reverse=True):
+        try:
+            record = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(record, Mapping) and record.get("message_id") == str(message_id):
+            return run_dir.name
+    return None
 
 
 def load_outcomes(run_dir: Path) -> dict[str, CompareOutcome]:

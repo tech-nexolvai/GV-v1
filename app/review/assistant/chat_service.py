@@ -953,6 +953,8 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
         "thinking": job.thinking,
         "mode": job.mode,
         "products": None if job.products is None else list(job.products),
+        # How Continue picks it up (`resume_of`): a simple check replays its saved answers.
+        "full_check_mode": job.full_check_mode if job.mode == "full_check" else None,
     }
     run.checkpoint = job.chat_root / str(job.chat_id) / CHECKPOINT_FILE
     _maybe_checkpoint(run, "message_start", force=True)
@@ -1161,7 +1163,7 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             roster=job.roster,
             pairing_proof=job.pairing_proof,
             full_check_mode=job.full_check_mode,
-            simple=job.simple,
+            simple=_simple_of(job, run, workspace.root),
             identity=job.identity,
             numbering=numbering(job.factory, job.package_id, job.chat_id, run.message_id),
         ),
@@ -1190,7 +1192,9 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
     engine.live = getattr(run, "live", None)
     engine.book.earlier = dict(earlier_found)
     engine.answer_number = answer_number
-    if earlier is not None and job.mode == "full_check":
+    if earlier is not None and job.mode == "full_check" and job.full_check_mode != "simple":
+        # A simple check's Continue replays its own saved answers instead (`_simple_of`): the
+        # interrupted findings would be listed twice.
         _blocks, _question = earlier
         coverage = _last_coverage(_blocks)
         # GV Review's recorded differences are seeded again by the check itself.
@@ -1434,13 +1438,20 @@ def _done_pages(coverage: Mapping[str, Any] | None) -> tuple[list[int], list[int
 
 
 def resume_of(
-    blocks: Sequence[Mapping[str, Any]], *, mode: str, products: Sequence[str] | None
+    blocks: Sequence[Mapping[str, Any]],
+    *,
+    mode: str,
+    products: Sequence[str] | None,
+    simple: bool = False,
 ) -> dict[str, Any]:
-    """How Continue picks up an interrupted answer, and what it will do again, in plain words."""
+    """How Continue picks up an interrupted answer, and what it will do again, in plain words.
+    `simple`: a simple full check, which replays its saved answers (#1769)."""
     findings = [f for f in live_findings(blocks) if not f.get("record_id")]
     done, left = _done_pages(_last_coverage(blocks))
     steps = sum(1 for block in blocks if block.get("type") == "step")
-    if mode == "full_check":
+    if mode == "full_check" and simple:
+        redo = SIMPLE_CONTINUE_WORDS
+    elif mode == "full_check":
         one = len(findings) == 1
         kept = (
             f"The {len(findings)} finding{'' if one else 's'} already made "
@@ -1480,6 +1491,34 @@ def resume_of(
         "pages_done": len(done),
         "redo": redo,
     }
+
+
+#: What Continue does for a simple full check (#1769).
+SIMPLE_CONTINUE_WORDS: Final = (
+    "Continue uses again, at no cost, every drawing answer this check had already received, and "
+    "compares only the drawings it had no answer for; code then checks every answer again and "
+    "makes the outputs."
+)
+
+
+def _simple_of(job: MessageJob, run: RunningMessage, root: Path) -> Mapping[str, Any] | None:
+    """The simple full check's options for this answer: the answer's id (its run folder keeps it),
+    and for a Continue, the interrupted answer's run replayed with the drawings it has no answer
+    for compared now (`replay` + `compare_missing`, #1769): a restart never pays twice."""
+    if job.simple is None or job.mode != "full_check" or job.full_check_mode != "simple":
+        return job.simple
+    options = {**job.simple, "message_id": str(run.message_id)}
+    if job.continue_from is not None and not options.get("replay"):
+        try:
+            earlier = import_module("app.review.assistant.simple_check.run").run_of_message(
+                root, job.continue_from
+            )
+        except Exception:  # noqa: BLE001 - then the whole check runs again
+            _log.exception("assistant chat could not find the interrupted check's answers")
+            earlier = None
+        if earlier is not None:
+            options.update(replay=earlier, compare_missing=True)
+    return options
 
 
 def _settled(blocks: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -1528,7 +1567,15 @@ def _store_interrupted(
                 thinking=bool(saved["thinking"]) if saved and "thinking" in saved else None,
                 blocks=[
                     *blocks,
-                    {"type": "resume", "resume": resume_of(blocks, mode=mode, products=products)},
+                    {
+                        "type": "resume",
+                        "resume": resume_of(
+                            blocks,
+                            mode=mode,
+                            products=products,
+                            simple=(saved or {}).get("full_check_mode") == "simple",
+                        ),
+                    },
                 ],
                 cost_micros=cost,
                 mode=mode,

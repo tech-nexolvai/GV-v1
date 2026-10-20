@@ -313,7 +313,9 @@ def test_the_calls_in_flight_are_held_against_the_cap() -> None:
         _over=lambda estimate: "message" if spent[0] + estimate > cap else None,
     )
     run = run_module._Run(engine, run_module.SimpleOptions.of({}))  # type: ignore[arg-type]
-    settings = SimpleNamespace(for_item=lambda _item: (MODELS["claude-sonnet-5-5"], "high"))
+    settings = SimpleNamespace(
+        for_item=lambda _item: (MODELS["claude-sonnet-5-5"], "high"), max_tokens=64000
+    )
     draw = run._guarded(
         lambda _item: [SimpleNamespace(picture=SimpleNamespace(tokens=1000))], settings
     )

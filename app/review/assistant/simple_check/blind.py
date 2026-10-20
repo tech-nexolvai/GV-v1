@@ -33,10 +33,11 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Final
 from uuid import uuid4
 
@@ -310,6 +311,25 @@ def pictures(engine: ChatEngine, verified: Verified, item: Item) -> list[dict[st
 
 # ---- the call ------------------------------------------------------------------------------------
 
+#: Why a look was not made when the runaway guard would be passed (counted as a failed look).
+GUARD_WORDS: Final = "the answer's runaway guard was reached"
+
+
+@dataclass
+class _Holds:
+    """What the looks running now may still cost (millionths of $), shared by the workers."""
+
+    reserved: int = 0
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+def look_hold(engine: ChatEngine, settings: BlindSettings) -> int:
+    """What one look is held at while it runs (#1769): every attempt the call may make
+    (`CALL_ATTEMPTS`), each at its prompt and its whole reply room."""
+    from app.review.assistant.chat_engine import CALL_ATTEMPTS
+
+    return CALL_ATTEMPTS * (engine._price(settings.chat_model, _PROMPT_TOKENS, _MAX_TOKENS) or 0)
+
 
 def look(
     engine: ChatEngine, verified: Verified, item: Item, settings: BlindSettings
@@ -320,7 +340,7 @@ def look(
     model = settings.chat_model
     estimate = engine._price(model, _PROMPT_TOKENS, _MAX_TOKENS) or 0
     if not engine._fits(estimate):
-        return None, "the answer's runaway guard was reached"
+        return None, GUARD_WORDS
     if engine.cancel.is_set():
         return None, "the check was stopped"
     try:
@@ -388,12 +408,27 @@ def look_all(
     at once. A candidate the look could not reach stays Not compared with the reason."""
 
     timings = getattr(engine, "timings", None)
+    holds = _Holds()
+    hold = look_hold(engine, settings)
 
     def one(pair: tuple[Verified, Item]) -> Verified:
         verified, item = pair
-        # Timed and charged to the blind phase on this worker thread (the timings are per thread).
-        with timings.phase("blind") if timings is not None else nullcontext():
-            answer, why = look(engine, verified, item, settings)
+        # Reserved before the look starts (#1769): the looks running together never pass the cap
+        # (each checked it alone before, so six could pass it at once).
+        with holds.lock:
+            refused = not engine._fits(holds.reserved + hold)
+            if not refused:
+                holds.reserved += hold
+        if refused:
+            answer, why = None, GUARD_WORDS
+        else:
+            try:
+                # Timed and charged to the blind phase on this worker thread (per thread).
+                with timings.phase("blind") if timings is not None else nullcontext():
+                    answer, why = look(engine, verified, item, settings)
+            finally:
+                with holds.lock:
+                    holds.reserved -= hold
         done = with_blind(verified, answer, why)
         if on_done is not None:
             try:

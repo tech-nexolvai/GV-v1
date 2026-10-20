@@ -447,6 +447,11 @@ def second_read_prompt_id(provider: str) -> str:
     return f"review-assistant-chat-check-{provider}-{HARNESS_ID}"
 
 
+#: The most attempts one `ChatEngine._call` makes (asked once more after a failure worth
+#: retrying): a call's money is held for all of them (#1769).
+CALL_ATTEMPTS: Final = 2
+
+
 def cost_text(micros: int) -> str:
     """Millionths of a dollar as "1.72"."""
     return str((Decimal(micros) / _MICROS).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
@@ -1370,6 +1375,21 @@ class ChatEngine:
         """A call stopped by cancel: recorded and charged for what it used so far."""
         self._record(model, prompt_id, started, _Reply([], None, None, usage, None), None)
         self._charge(model, usage)
+
+    def track_stream(self, stream: Any) -> None:
+        """A stream opened outside `_call` (the simple check's compare calls, #1769), kept so a
+        Stop closes it; one opened after the Stop is closed at once."""
+        with self._lock:
+            self._streams.add(stream)
+        if self.cancel.is_set():
+            try:
+                stream.close()
+            except Exception:  # noqa: BLE001 - closing is best effort
+                _log.debug("assistant chat stream did not close on cancel")
+
+    def untrack_stream(self, stream: Any) -> None:
+        with self._lock:
+            self._streams.discard(stream)
 
     def stop_streams(self) -> None:
         """Close the calls streaming now, so a cancel does not wait for the next event."""
