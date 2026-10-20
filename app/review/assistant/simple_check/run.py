@@ -276,6 +276,13 @@ class _Run:
             return self._finish("cancelled")
         if waited is not None:
             return self._finish("error", waited)
+        from app.review.assistant.full_check_plan import read_page_map
+
+        # The whole pack may have settled more drawings than its first page map held (a page of
+        # a separate upload read as a drawing from its labels, #1772).
+        self.page_map = (
+            read_page_map(folder, assume=True, main_file=engine.book.main_file) or self.page_map
+        )
         with engine.timings.phase("planning"):
             try:
                 worklist = import_module(
