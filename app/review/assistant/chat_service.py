@@ -120,8 +120,10 @@ __all__ = [
     "CHECKPOINT_FILE",
     "CONTINUE_TEXT",
     "FULL_CHECK_INSTRUCTION",
+    "PAID_JOB_WORDS",
     "ChatRegistry",
     "MessageJob",
+    "PaidJobRunning",
     "RunningMessage",
     "SessionChatLedger",
     "UploadSource",
@@ -199,6 +201,8 @@ class RunningMessage:
     """Stored as interrupted at shutdown: its own answer is then never stored."""
     live: LiveCheck | None = None
     """A full check's live state (#1710): drawings, phases, decided findings, stopping."""
+    paid: bool = False
+    """A paid full check (#1770): one at a time on this server, whatever the chat."""
 
     def spent(self) -> int:
         engine = self.engine
@@ -224,8 +228,25 @@ class RunningMessage:
                 _log.warning("assistant chat could not stop its sandbox commands")
 
 
+class PaidJobRunning(RuntimeError):
+    """Another paid full check runs now (`ChatRegistry.claim`, #1770): one paid job at a time."""
+
+    def __init__(self, other: RunningMessage) -> None:
+        super().__init__(PAID_JOB_WORDS)
+        self.other = other
+
+
+#: The refusal of a second paid full check (#1770, "one paid job at a time" per account).
+PAID_JOB_WORDS: Final = (
+    "Another full check is running now (in another chat). Only one full check runs at a time, "
+    "so the money it spends is never doubled: wait for it to finish, or stop it, then start this "
+    "one."
+)
+
+
 class ChatRegistry:
-    """The messages being answered in this process, one per chat at most."""
+    """The messages being answered in this process, one per chat at most, and one paid full check
+    at most across every chat (#1770: one paid job at a time per account)."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -248,21 +269,35 @@ class ChatRegistry:
         with self._lock:
             return list(self._runs.values())
 
-    def claim(self, chat_id: UUID, package_id: UUID, message_id: UUID) -> RunningMessage | None:
+    def claim(
+        self, chat_id: UUID, package_id: UUID, message_id: UUID, *, paid: bool = False
+    ) -> RunningMessage | None:
         """The chat's slot for a new message, or `None` when one is being answered (or the server
-        is stopping)."""
+        is stopping). `paid`: a full check that makes paid calls; raises `PaidJobRunning` while
+        another one runs in any chat (#1770)."""
         with self._lock:
             if self._closing:
                 return None
             current = self._runs.get(chat_id)
-            if current is not None and (
-                current.started or monotonic() - current.claimed_at < _STALE_CLAIM_SECONDS
-            ):
+            if current is not None and _holds(current):
                 return None
+            if paid:
+                other = next(
+                    (
+                        run
+                        for run in self._runs.values()
+                        if run.paid and run.chat_id != chat_id and _holds(run)
+                    ),
+                    None,
+                )
+                if other is not None:
+                    raise PaidJobRunning(other)
             if current is not None:
                 # A claim whose message never started: anything following it stops waiting.
                 current.feed.close()
-            run = RunningMessage(chat_id=chat_id, package_id=package_id, message_id=message_id)
+            run = RunningMessage(
+                chat_id=chat_id, package_id=package_id, message_id=message_id, paid=paid
+            )
             self._runs[chat_id] = run
             return run
 
@@ -288,6 +323,11 @@ class ChatRegistry:
                 r for r in self._runs.values() if r.package_id == package_id and r is not exclude
             ]
         return sum(run.spent() for run in runs)
+
+
+def _holds(run: RunningMessage) -> bool:
+    """Whether a claimed message still holds its slot: it started, or was claimed only now."""
+    return run.started or monotonic() - run.claimed_at < _STALE_CLAIM_SECONDS
 
 
 def package_spent_micros(

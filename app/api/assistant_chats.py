@@ -129,6 +129,7 @@ from app.review.assistant.chat_request import (
 from app.review.assistant.chat_service import (
     ChatRegistry,
     MessageJob,
+    PaidJobRunning,
     RunningMessage,
     SkillBuilder,
     UploadSource,
@@ -155,6 +156,7 @@ from app.review.assistant.chat_store import (
     message_out,
     messages_of,
     package_name,
+    recorded_worker_spend,
 )
 from app.review.assistant.chat_tools import ResultsLoader
 from app.review.assistant.chat_trust import findings_csv
@@ -420,9 +422,16 @@ def assistant_models(
 ) -> AssistantModelsOut:
     settings: Settings = request.app.state.settings
     spent = 0
+    worker = 0
     if package_id is not None:
         _package(session, package_id, principal)
         spent = package_spent_micros(session, package_id, registry)
+        # The set's one meter (#1770): GV Review's own reading at upload is spent too.
+        try:
+            worker = recorded_worker_spend(session, package_id)
+        except Exception as failed:  # noqa: BLE001 - the meter then shows the chats only
+            _log.warning("assistant chat worker spend not read: %s", type(failed).__name__)
+            session.rollback()
     return AssistantModelsOut(
         available=runtime.choice.available,
         reason=runtime.choice.reason,
@@ -444,6 +453,8 @@ def assistant_models(
         message_cap_usd=cost_text(int(settings.assistant_message_cap_usd * _MICROS)),
         package_cap_usd=cost_text(int(settings.assistant_package_cap_usd * _MICROS)),
         package_spent_usd=cost_text(spent),
+        worker_spent_usd=cost_text(worker),
+        set_spent_usd=cost_text(spent + worker),
         full_check_mode=settings.assistant_full_check_mode,
     )
 
@@ -1356,7 +1367,15 @@ def _message(
         mode = str(resume.get("mode") or "chat")
         if resume.get("products"):
             products = tuple(resume["products"])
-    run = registry.claim(chat.id, package.id, uuid4())
+    # One paid full check at a time on this server, whatever the chat (#1770): a $0 replay of a
+    # saved run is not one.
+    paid = mode == "full_check" and not (body.replay and not body.compare_missing)
+    try:
+        run = registry.claim(chat.id, package.id, uuid4(), paid=paid)
+    except PaidJobRunning as running:
+        raise CodedHTTPException(
+            status.HTTP_409_CONFLICT, "paid_job_running", str(running)
+        ) from None
     if run is None:
         raise CodedHTTPException(
             status.HTTP_409_CONFLICT,
@@ -1450,7 +1469,11 @@ def _resume_of(session: Session, chat_id: UUID, message_id: UUID) -> dict[str, A
     response_class=EventSourceResponse,
     summary="Send a message and stream the answer",
     responses={
-        409: {"description": "`message_running`: a message is being answered in this chat."},
+        409: {
+            "description": "`message_running`: a message is being answered in this chat; "
+            "`paid_job_running`: another paid full check runs now in another chat (one at a "
+            "time)."
+        },
         422: {
             "description": "`choice_refused`: a model, effort and thinking the API refuses; "
             "`invalid_request`: a body (or a `continue_from`) that is not right."

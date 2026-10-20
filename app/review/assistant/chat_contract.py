@@ -2094,6 +2094,16 @@ class AssistantModelsOut(BaseModel):
     message_cap_usd: str
     package_cap_usd: str
     package_spent_usd: str
+    worker_spent_usd: str = Field(
+        default="0.00",
+        description="What GV Review's own reading of the set at upload cost (the worker's paid "
+        "readers and page review), from the Usage page's rows (#1770). Not counted in the chats' "
+        "set budget.",
+    )
+    set_spent_usd: str = Field(
+        default="0.00",
+        description="The set's one meter (#1770): the chats' spend plus the worker's.",
+    )
     full_check_mode: Literal["roster", "simple"] = Field(
         default="roster",
         description="Which full check runs (`GV_ASSISTANT_FULL_CHECK_MODE`): the roster of "
