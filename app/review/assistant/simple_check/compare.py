@@ -797,9 +797,7 @@ def _broken_usage(answer: _Answer) -> dict[str, int]:
         len(str(block.get("text") or "")) + len(str(block.get("thinking") or ""))
         for block in answer.content
     )
-    usage["output_tokens"] = max(
-        usage.get("output_tokens", 0), -(-streamed // _CHARS_PER_TOKEN)
-    )
+    usage["output_tokens"] = max(usage.get("output_tokens", 0), -(-streamed // _CHARS_PER_TOKEN))
     return usage
 
 
