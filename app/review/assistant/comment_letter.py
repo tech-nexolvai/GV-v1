@@ -276,8 +276,8 @@ def _story(letter: Letter, width: float) -> list[Any]:
                     f"{'item' if letter.not_compared == 1 else 'items'} could not be compared "
                     "against the architect's drawings or GV's standards (for example, where the "
                     "architect gives no size). They are listed with the reason in "
-                    f"{letter.not_compared_where}. They were not reviewed; please field verify or "
-                    "confirm them as listed."
+                    f"{letter.not_compared_where}, with what is needed to compare each. They "
+                    "were not reviewed."
                 ),
                 styles["body"],
             )
