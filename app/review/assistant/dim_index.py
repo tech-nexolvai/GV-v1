@@ -139,6 +139,18 @@ class DimLabels:
             self._dims = (stamp, pages)
         return pages
 
+    def pages(self) -> dict[tuple[str, int], list[dict[str, Any]]]:
+        """Every page's labels code has (the pack's, and those read now), by (file, page), each
+        label with its `file` and `page` (#1802: the architect's runs, searched set-wide)."""
+        found = dict(self._from_pack())
+        with self._lock:
+            for key, labels in self._read.items():
+                found.setdefault(key, labels)
+        return {
+            key: [{**label, "file": key[0], "page": key[1]} for label in labels]
+            for key, labels in found.items()
+        }
+
     def halves(self, file: str, page: int) -> list[Mapping[str, Any]]:
         """The page's drawing halves from the pack's page map (each with its role and round)."""
         return self._halves(file, page)
