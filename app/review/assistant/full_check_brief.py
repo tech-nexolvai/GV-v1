@@ -172,7 +172,7 @@ DRAWN_BRIEF: Final = """OBJECTIVE: the drawn things on pages {pages} of {file}: 
 {scope}
 Your instructions hold the trade knowledge for this job; products/<id>.md for each product in focus is in /mnt/skills/gv-review.
 
-HOW: view your pages' overview pictures, then zoom (up to 8 crops per call) on each unit's notes, tags, fronts and hardware, the architect's and the vendor's side by side. Anything coloured is GV's markup, never the vendor's drawing.
+HOW: view your pages' overview pictures, then zoom (up to 8 crops per call) on each unit's notes, tags, fronts and hardware, the architect's and the vendor's side by side. GV's markup is never the vendor's drawing: on GV's combined review sheets coloured ink may be GV's markup; on an ordinary upload every colour is the drawing's own.
 
 ALREADY RECORDED by GV Review on your pages (they are checked separately: do not report them again):
 {recorded}

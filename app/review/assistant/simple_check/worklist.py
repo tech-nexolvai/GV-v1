@@ -53,6 +53,7 @@ from app.review.assistant.simple_check.schema import (
     Drawing,
     Label,
     PageCover,
+    Sheet,
     Skipped,
     WorkItem,
     WorkList,
@@ -64,6 +65,7 @@ __all__ = [
     "DENSE_LABELS",
     "MIN_DRAWING_PT",
     "build_worklist",
+    "combined_files",
     "worklist_from",
 ]
 
@@ -97,6 +99,13 @@ def _read(path: Path) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+
+
+def _sheet(combined: Mapping[str, bool] | None, file: str) -> Sheet | None:
+    """A file's kind for its drawings (`schema.Drawing.sheet`), `None` when not known."""
+    if combined is None or file not in combined:
+        return None
+    return "combined" if combined[file] else "ordinary"
 
 
 def _by_page(document: Any, key: str = "pages") -> dict[tuple[str, int], Mapping[str, Any]]:
@@ -372,7 +381,26 @@ def build_worklist(folder: Path, main_file: str | None = None) -> WorkList:
         scales=_read(folder / "scales.json"),
         notes=_read(folder / "notes.json"),
         main_file=main_file,
+        combined=combined_files(page_map, _read(folder / "annotations.json")),
     )
+
+
+def combined_files(page_map: Mapping[str, Any], annotations: Any) -> Mapping[str, bool] | None:
+    """Each file of the pack: whether it is one of GV's combined review sheets (the colour rule,
+    decided 2026-10-19). The set pack's own test of a plain file (`set_pack._page_entries`): a file
+    with a pasted drawing (a PDF stamp with a box) is a combined sheet; a file with none is an
+    ordinary upload, read in every colour. `None` when the pack has no annotations list (unknown:
+    the prompts then use the strict words)."""
+    if not isinstance(annotations, list):
+        return None
+    files = page_map.get("files") if isinstance(page_map, Mapping) else None
+    names = [str(name) for name in files] if isinstance(files, list) else []
+    stamped = {
+        str(entry.get("file"))
+        for entry in annotations
+        if isinstance(entry, Mapping) and entry.get("kind") == "Stamp" and entry.get("box")
+    }
+    return {name: name in stamped for name in names}
 
 
 def worklist_from(
@@ -382,8 +410,10 @@ def worklist_from(
     scales: Any = None,
     notes: Any = None,
     main_file: str | None = None,
+    combined: Mapping[str, bool] | None = None,
 ) -> WorkList:
-    """The work list from the pack's documents (pure: `build_worklist` reads them)."""
+    """The work list from the pack's documents (pure: `build_worklist` reads them). `combined`:
+    each file's kind (`combined_files`); a file it does not name is of unknown kind."""
     file = _main_file(page_map, main_file)
     if file is None:
         return WorkList(file="", items=(), skipped=(), pages=())
@@ -558,6 +588,7 @@ def worklist_from(
                 scale_in_per_pt=in_per_pt,
                 scale_note=note,
                 detail=any(_DETAIL.search(t) for t in titles),
+                sheet=_sheet(combined, entry_file),
             )
             drawings[half.ref] = drawing
             if half.role == "architect" and (separate or half.from_upload):

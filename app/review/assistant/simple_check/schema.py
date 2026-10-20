@@ -58,6 +58,7 @@ __all__ = [
     "Picture",
     "Reply",
     "ReplyItem",
+    "Sheet",
     "Skipped",
     "WorkItem",
     "WorkList",
@@ -84,6 +85,7 @@ type OtherKind = Literal[
 ]
 type Role = Literal["vendor", "architect", "brand_prototype"]
 type SameDrawing = Literal["yes", "no", "unsure"]
+type Sheet = Literal["combined", "ordinary"]
 
 VERDICTS: Final[tuple[str, ...]] = (
     "same",
@@ -266,6 +268,12 @@ class Drawing(_Frozen):
     file_page: int | None = None
     """Its page in its own file when `page` is a set page of a separate file (#1722: a separate
     architect file is numbered after the vendor's); `None`: `page` is its own page."""
+    sheet: Sheet | None = None
+    """The kind of file it is on, which says what coloured ink means (the colour rule, decided
+    2026-10-19): `combined`, one of GV's combined review sheets (drawings pasted as snapshots,
+    where coloured ink may be GV's earlier markup); `ordinary`, any other upload (every colour is
+    the drawing's own; only PDF comments and GV Review's signed marks are markup). `None`: not
+    known (an older work list): the prompts then use the strict combined-sheet words."""
 
     @property
     def own_page(self) -> int:

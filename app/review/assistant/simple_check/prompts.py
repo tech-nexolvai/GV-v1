@@ -13,6 +13,9 @@ What the prompt insists on (CONTRACT-SIMPLE, 2026-10-19):
   `different` (underside against top of a counter, a run to a soffit against the top of a unit, a
   splash band inside one of them, an overall against a part);
 - room features (ceilings, soffits, doors, artwork, switches, lights) are `millwork: false`;
+- coloured ink means what the drawing's kind of file says (the colour rule, decided 2026-10-19):
+  possible GV markup on GV's combined review sheets only; the drawing's own ink on an ordinary
+  upload. Code states the kind for every drawing (`schema.Drawing.sheet`);
 - a number with no code label (pen strokes, hand lettering, an EQ mark) is still compared, as a
   `dimension_without_label` with the value read and its box on both pictures;
 - label ids are code's; the model never types a value for a labelled dimension.
@@ -24,16 +27,19 @@ One worked example with made-up values shows the form. The model reasons in its 
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Final
 
 from app.review.assistant.simple_check.schema import END_WORDS, Label, Picture, WorkItem
 
 __all__ = [
     "EXAMPLE_REPLY",
+    "SHEET_WORDS",
     "SYSTEM_PROMPT",
     "item_text",
+    "kinds_sentence",
     "repair_text",
+    "sheet_words",
     "system_prompt",
 ]
 
@@ -157,7 +163,10 @@ Rules:
    - note: a written note the other drawing contradicts.
    Boxes are [x0, y0, x1, y1] in pixels on the picture you name (vendor_image, architect_image: the image numbers). Every item has at least one box.
    millwork is true for the millwork itself (cabinets, tops, splashes, panels, shelves, fronts, sinks, appliance openings, and outlets or cut-outs in the millwork); false for room features (ceilings, soffits, walls, doors, artwork, switches, lights, fixtures outside the unit).
-6. The blue tags are code's. The vendor's drawing is its black and grey ink: coloured ink inside a drawing (red, yellow or highlighted notes and dimensions) is earlier review markup, never a vendor value.
+6. The blue tags are code's. What other coloured ink means depends on the kind of file a drawing is on; the text says it for every drawing:
+   - GV's combined review sheet: the drawings are pasted snapshots, and coloured ink inside them (red, yellow or highlighted notes and dimensions) may be GV's earlier review markup, never a vendor value: read the black and grey ink;
+   - an ordinary upload: every colour is the drawing's own (vendors and architects draw in any colour): read it. Code already left PDF comments and GV Review's own marks out of the pictures;
+   - kind not given: read it as a combined review sheet.
 7. same_drawing: yes when the architect drawing(s) show the same thing as the vendor drawing (the same unit, run or elevation, whatever differs in its sizes); no when they plainly show something else (another room, another unit or wall); unsure when you cannot tell.
 Keep notes short; reason before you answer.
 
@@ -177,6 +186,29 @@ def system_prompt(rules_summary: str = "", scope_words: str = "All products") ->
         "for these products (standards the vendor must follow even where the architect is "
         f"silent; code applies them to the values):\n{rules}"
     )
+
+
+#: How each kind of file is named after its drawing (`schema.Drawing.sheet`, the colour rule).
+SHEET_WORDS: Final[Mapping[str, str]] = {
+    "combined": "on GV's combined review sheet: coloured ink in it may be GV's markup",
+    "ordinary": "an ordinary upload: every colour in it is the drawing's own",
+}
+
+
+def sheet_words(sheet: str | None) -> str:
+    """The words that say a drawing's file kind (empty when it is not known: rule 6's default)."""
+    return SHEET_WORDS.get(sheet or "", "")
+
+
+def kinds_sentence(vendor: str | None, architect: str | None) -> str:
+    """One sentence naming the vendor's and the architect's drawings' file kinds, for the blind
+    look and the resolve loop (empty when neither is known)."""
+    said = "; ".join(
+        f"the {whose}'s drawing is {sheet_words(sheet)}"
+        for whose, sheet in (("vendor", vendor), ("architect", architect))
+        if sheet_words(sheet)
+    )
+    return f"{said[0].upper()}{said[1:]}." if said else ""
 
 
 def _label_line(label: Label) -> str:
@@ -209,9 +241,11 @@ def item_text(item: WorkItem, pictures: Sequence[Picture]) -> str:
     ]
     if item.products:
         lines.append(f"Products named on it: {', '.join(item.products)}.")
+    kind = sheet_words(vendor.sheet)
     lines.append(
         f"Vendor drawing {vendor.ref} (images {_images_of(pictures, vendor.ref)})"
         + (f", titled {'; '.join(vendor.titles)}" if vendor.titles else "")
+        + (f"; {kind}" if kind else "")
         + "."
     )
     lines.append(
@@ -227,6 +261,8 @@ def item_text(item: WorkItem, pictures: Sequence[Picture]) -> str:
             about.append(f"scale {drawing.scale_note}")
         if drawing.detail:
             about.append("a detail")
+        if sheet_words(drawing.sheet):
+            about.append(sheet_words(drawing.sheet))
         lines.append(
             f"Architect drawing {drawing.ref}, {role} ({', '.join(about)}; images "
             f"{_images_of(pictures, drawing.ref)}). Labels: {_labels(drawing.labels)}"
