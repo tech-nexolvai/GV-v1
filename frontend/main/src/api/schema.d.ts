@@ -3886,6 +3886,18 @@ export interface components {
             provider: "openrouter" | "anthropic";
             /** Reason */
             reason?: string | null;
+            /**
+             * Set Spent Usd
+             * @description The set's one meter (#1770): the chats' spend plus the worker's.
+             * @default 0.00
+             */
+            set_spent_usd: string;
+            /**
+             * Worker Spent Usd
+             * @description What GV Review's own reading of the set at upload cost (the worker's paid readers and page review), from the Usage page's rows (#1770). Not counted in the chats' set budget.
+             * @default 0.00
+             */
+            worker_spent_usd: string;
         };
         /**
          * AssistantRequest
@@ -13415,7 +13427,7 @@ export interface operations {
                     "text/event-stream": unknown;
                 };
             };
-            /** @description `message_running`: a message is being answered in this chat. */
+            /** @description `message_running`: a message is being answered in this chat; `paid_job_running`: another paid full check runs now in another chat (one at a time). */
             409: {
                 headers: {
                     [name: string]: unknown;
