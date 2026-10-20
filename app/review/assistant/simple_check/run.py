@@ -120,6 +120,22 @@ _AS_IF_CHECKED: Final = re.compile(
 NOT_FINISHED_NEXT: Final = (
     "Next: finish the check (compare the drawings left) before anything is sent to the vendor."
 )
+#: The set pack's state when its labels step broke or ran out of time (`set_pack.build_pack`).
+READY_WITHOUT_LABELS: Final = "ready_without_labels"
+#: Why a check compares nothing on a set pack whose labels step broke (#1768).
+LABELS_NOT_READ: Final = (
+    "the drawings' printed numbers could not be read (the labels step did not finish), so no "
+    "drawing was compared; run the check again to read them"
+)
+#: The note on a vendor page with a drawing the work list did not cover (#1768).
+UNCOVERED_NOTE: Final = (
+    "a drawing on this page was not compared (code's work list did not cover it)"
+)
+#: The run's own steps, by name, when they break (#1768).
+SEED_STEP: Final = "GV Review's recorded results"
+FINAL_STEP: Final = "the final checks (spot guard, trust report)"
+#: The words of a blind look the runaway guard refused (`blind.look`).
+_GUARD: Final = "runaway guard"
 #: The note under the simple check's summary (the screen reads a last line "*Summary written by
 #: GV Review…*" as its note).
 SIMPLE_SUMMARY_NOTE: Final = "*Summary written by GV Review from code's own checks.*"
@@ -257,6 +273,14 @@ class _Run:
     """Vendor drawings of a separate file not compared because code could not pair them with an
     architect drawing, or the compare call said the drawing code paired shows something else
     (#1723): (page, drawing id, reason). Each is a Not-compared row; the check is not complete."""
+    uncovered: list[int] = field(default_factory=list)
+    """Vendor pages with a drawing that no work item covers and no reason explains
+    (`worklist.uncovered`, #1768): each is a Not-compared row; the check is not complete."""
+    broken: list[str] = field(default_factory=list)
+    """The run's own steps that broke (the seeding of GV Review's recorded results, the final
+    checks), by name (#1768): the check is not for sending (S0), whatever else it found."""
+    blind_refused: int = 0
+    """Of `blind_failed`: the looks the runaway guard refused (#1768): counted as failed looks."""
     verifications: dict[str, Verification] = field(default_factory=dict)
     """Code's verify of each answered drawing, before the resolve loop (the funnel, #1767)."""
     final: list[Verified] = field(default_factory=list)
@@ -323,6 +347,7 @@ class _Run:
                 for s in worklist.skipped
                 if s.reason.startswith(UNPAIRED)
             ]
+            self.uncovered = sorted({int(p) for p in getattr(worklist, "uncovered", ()) or ()})
             self.no_architect = sum(
                 1
                 for s in worklist.skipped
@@ -334,8 +359,9 @@ class _Run:
         with engine.timings.phase("seeding"):
             try:
                 engine._seed_recorded()
-            except Exception:  # noqa: BLE001 - the check goes on; the trust report says it
+            except Exception:  # noqa: BLE001 - the check goes on, not for sending (#1768)
                 _log.exception("simple check could not seed the recorded differences")
+                self.broken.append(SEED_STEP)
         try:
             engine._start_markup_base()
         except Exception:  # noqa: BLE001 - the drawing makes its own copy at the end
@@ -453,6 +479,11 @@ class _Run:
                         "note": "; ".join(sorted(r for r in reasons if r)) or "not compared",
                     }
                 )
+        # A page with a drawing the work list did not cover (#1768): never quietly left out.
+        listed = {entry["page"] for entry in pages}
+        for page in self.uncovered:
+            if page not in listed and page not in compared_pages:
+                pages.append({"page": page, "status": "not_opened", "note": UNCOVERED_NOTE})
         if pages:
             try:
                 engine.book.set_coverage({"pages": pages}, "code")
@@ -1058,9 +1089,7 @@ class _Run:
         looked: list[Verified]
         if self.options.replay:
             looked = [_with_saved(v, self.saved_blind.get(v.key)) for v, _item in candidates]
-            self.blind_failed = sum(
-                1 for done in looked if done.outcome != "red" and _no_look(done)
-            )
+            self._tally_looks(looked)
         elif engine.cancel.is_set() or self.cap_hit is not None:
             why = (
                 "the check was stopped"
@@ -1072,14 +1101,19 @@ class _Run:
         else:
             self._tell("second_looks", len(candidates))
             looked = look_all(engine, candidates, self.options.blind, on_done=self._live_look)
-            self.blind_failed = sum(
-                1 for done in looked if done.outcome != "red" and _no_look(done)
-            )
+            self._tally_looks(looked)
         for done in looked:
             self._save_blind(done)
         after = {id(old): new for (old, _item), new in zip(candidates, looked, strict=True)}
         after.update(outside)
         return [(after.get(id(v), v), item) for v, item in verified]
+
+    def _tally_looks(self, looked: Sequence[Verified]) -> None:
+        """The red candidates whose blind look was asked for but not made: each one counts like a
+        failed compare call (S0), the runaway guard's refusals too (#1768)."""
+        failed = [done for done in looked if done.outcome != "red" and _no_look(done)]
+        self.blind_failed = len(failed)
+        self.blind_refused = sum(1 for done in failed if _GUARD in done.reason)
 
     def _looks_again(
         self,
@@ -1110,7 +1144,7 @@ class _Run:
             else:
                 self._tell("second_looks", len(fresh))
                 done = look_all(engine, fresh, self.options.blind, on_done=self._live_look)
-                self.blind_failed = sum(1 for one in done if one.outcome != "red" and _no_look(one))
+                self._tally_looks(done)
             made = {id(v): one for (v, _item), one in zip(fresh, done, strict=True)}
         looked = [again.get(id(v)) or made[id(v)] for v, _item in candidates]
         for one in looked:
@@ -1300,6 +1334,18 @@ class _Run:
                     "category": "other",
                 }
             )
+        for page in self.uncovered:
+            self.rows.append(
+                {
+                    "page": page,
+                    "what": f"Vendor page {page}: {UNCOVERED_NOTE}",
+                    "why": "not_proved",
+                    "needs": "the check run again once code covers this page",
+                    "scope": "set",
+                    "item": f"Page {page}: drawing not compared",
+                    "category": "other",
+                }
+            )
         engine.extra_gaps = list(self.rows)
 
     def _without_run_fit(
@@ -1403,12 +1449,11 @@ class _Run:
             engine.incomplete_note = self._unpaired_words()
         elif self.blind_failed:
             # A failed second look counts like a failed compare call (orchestrator, 2026-10-19):
-            # an outage, not the drawings, left these possible differences undecided.
-            engine.incomplete_note = (
-                f"{self.blind_failed} possible "
-                f"{'difference' if self.blind_failed == 1 else 'differences'} could not get "
-                "their second check (the service did not answer); check again to settle them"
-            )
+            # an outage, not the drawings, left these possible differences undecided. A look the
+            # runaway guard refused is one too (#1768).
+            engine.incomplete_note = self._blind_words()
+        elif self.uncovered:
+            engine.incomplete_note = self._uncovered_words()
         self._cover_answered(failed)
         try:
             engine._store_scope()
@@ -1419,8 +1464,15 @@ class _Run:
         else:
             try:
                 engine._trust_phase()
-            except Exception:  # noqa: BLE001 - stored without its trust report
+            except Exception:  # noqa: BLE001 - stored without its trust report; not for sending
                 _log.exception("simple check trust report failed")
+                self.broken.append(FINAL_STEP)
+        broken = self._broken_words()
+        if broken is not None:
+            # A step that broke never ends in a sendable check (#1768): named, with what else held.
+            engine.incomplete_note = "; ".join(
+                part for part in (engine.incomplete_note, broken) if part
+            )
         engine._close_checks()
         files: list[str] = []
         if engine._progress is not None:
@@ -1570,6 +1622,45 @@ class _Run:
             except Exception:  # noqa: BLE001 - said in the summary
                 _log.warning("simple check could not record the compared pages")
 
+    def _broken_steps(self) -> list[str]:
+        """The steps that broke, by name: the run's own and code's checks (`add_code_findings`)."""
+        named = [*getattr(self.engine, "code_checks_failed", ()), *self.broken]
+        return list(dict.fromkeys(named))
+
+    def _broken_words(self) -> str | None:
+        steps = self._broken_steps()
+        if not steps:
+            return None
+        from app.review.assistant.chat_engine import broken_steps_note
+
+        return broken_steps_note(steps)
+
+    def _blind_words(self) -> str:
+        count = self.blind_failed
+        why = (
+            "the money limit for one answer was reached"
+            if self.blind_refused == count
+            else (
+                "the service did not answer"
+                if not self.blind_refused
+                else "the service did not answer, or the money limit for one answer was reached"
+            )
+        )
+        return (
+            f"{count} possible {'difference' if count == 1 else 'differences'} could not get "
+            f"their second check ({why}); check again to settle them"
+        )
+
+    def _uncovered_words(self) -> str:
+        count = len(self.uncovered)
+        pages = ", ".join(str(p) for p in self.uncovered[:12])
+        more = f" and {count - 12} more" if count > 12 else ""
+        return (
+            f"{count} vendor {'page' if count == 1 else 'pages'} with a drawing "
+            f"{'was' if count == 1 else 'were'} not compared (page{'' if count == 1 else 's'} "
+            f"{pages}{more}: code's work list did not cover {'it' if count == 1 else 'them'})"
+        )
+
     def _unpaired_words(self) -> str:
         count = len(self.unpaired)
         drawings = "vendor drawing" if count == 1 else "vendor drawings"
@@ -1643,6 +1734,8 @@ class _Run:
             or not self.compared
             or bool(self.blind_failed)
             or bool(self.unpaired)
+            or bool(self.uncovered)
+            or bool(self._broken_steps())
         )
         nothing_ran = why is not None or (not self.compared and not failed)
         kept: list[str] = []
@@ -1683,6 +1776,13 @@ class _Run:
             lines.append(
                 f"**Not compared: {self._unpaired_words()}. Not for sending until they are.**"
             )
+        if self.uncovered and why is None:
+            lines.append(
+                f"**Not compared: {self._uncovered_words()}. Not for sending until they are.**"
+            )
+        broken = self._broken_words()
+        if broken is not None:
+            lines.append(f"**Check incomplete: {broken}. Not for sending until it does.**")
         if stopped == "cancelled" and why is None:
             lines.append(
                 f"**Stopped: {answered} of {len(self.compared)} drawings were compared and "
@@ -1694,10 +1794,20 @@ class _Run:
                 f"({self.blind_skipped}): they are Not compared, never red."
             )
         if self.blind_failed:
+            why = (
+                "the call failed or its reply was unusable"
+                if not self.blind_refused
+                else (
+                    "the money limit for one answer was reached"
+                    if self.blind_refused == self.blind_failed
+                    else "the call failed, its reply was unusable, or the money limit for one answer "
+                    "was reached"
+                )
+            )
             lines.append(
                 f"{self.blind_failed} possible differences could not get their blind second look "
-                "(the call failed or its reply was unusable): they are Not compared, never red, "
-                "and the check is not for sending. Check again to settle them."
+                f"({why}): they are Not compared, never red, and the check is not for sending. "
+                "Check again to settle them."
             )
         if pilot:
             lines.append(
@@ -1753,6 +1863,10 @@ def _wait_for_pack(folder: Path, cancel: threading.Event) -> str | None:
             return None
         if state == "failed":
             return "the drawing set's pack (labels, pairs) could not be made"
+        if state == READY_WITHOUT_LABELS:
+            # The labels step broke or ran out of time (#1768): comparing would send every
+            # drawing without code's numbers, so nothing is compared.
+            return LABELS_NOT_READ
         if time.monotonic() >= ends:
             return "the drawing set's pack (labels, pairs) was still being made"
         if cancel.wait(_PACK_POLL_SECONDS):
@@ -1866,9 +1980,10 @@ def load_blind(run_dir: Path) -> dict[str, dict[str, Any]]:
 
 def _no_look(done: Verified) -> bool:
     """A red candidate whose blind look was asked for but could not be made (`blind.look`'s
-    reasons: the call failed, the reply was cut short or not the form, its pictures)."""
-    return "blind second look was not made" in done.reason and not any(
-        why in done.reason for why in ("the check was stopped", "runaway guard")
+    reasons: the call failed, the reply was cut short or not the form, its pictures, and the
+    runaway guard's refusal, #1768). A stop is not one: the stopped check says so itself."""
+    return "blind second look was not made" in done.reason and "the check was stopped" not in (
+        done.reason
     )
 
 
