@@ -458,3 +458,13 @@ def test_main_refuses_whitespace_only_project_list(
     monkeypatch.setenv("GV_DEV_PROJECTS", "   ")
 
     assert dev_server.main() == 1
+
+
+def test_every_log_line_has_its_time() -> None:
+    """#1811: the app's warnings printed with no time; both formats now start with it, and the
+    app still prints warnings and errors only (no new INFO noise)."""
+    config = dev_server.log_config()
+    assert config["formatters"]["default"]["fmt"].startswith("%(asctime)s")
+    assert config["formatters"]["access"]["fmt"].startswith("%(asctime)s")
+    assert config["root"] == {"handlers": ["default"], "level": "WARNING"}
+    assert config["disable_existing_loggers"] is False

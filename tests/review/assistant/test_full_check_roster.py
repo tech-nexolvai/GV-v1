@@ -386,6 +386,15 @@ def test_code_compares_the_tag_table_by_piece() -> None:
     statuses = sorted(f["status"] for f in found.values())
     assert statuses == ["different", "same"]  # the vendor-only tag is not compared
     assert compare_tags("not json") == []
+    # #1811: the same table fenced, or after a paragraph (as a route without structured outputs
+    # returns it), gives the same rows; two different tables in one reply give none.
+    bare = compare_tags(json.dumps(table))
+    assert compare_tags(f"```json\n{json.dumps(table)}\n```") == bare
+    assert compare_tags(f"I read every tag.\n\n```json\n{json.dumps(table)}\n```") == bare
+    other = {"tags": table["tags"][:2]}
+    assert (
+        compare_tags(f"```json\n{json.dumps(table)}\n```\n```json\n{json.dumps(other)}\n```") == []
+    )
 
 
 def test_the_reworded_summary_must_keep_every_number() -> None:
@@ -420,11 +429,21 @@ def _dims(pages: list[int]) -> dict[str, Any]:
 class _Roster:
     """Every call of a roster full check, answered from its parameters, with what each saw."""
 
-    def __init__(self, advocate_pick: str = "D2") -> None:
+    def __init__(
+        self, advocate_pick: str = "D2", *, fenced: bool = False, unpaired: int | None = None
+    ) -> None:
         self.lock = threading.Lock()
         self.calls: dict[str, int] = {}
         self.params: dict[str, list[Mapping[str, Any]]] = {}
         self.advocate_pick = advocate_pick
+        #: Every JSON answer wrapped as a route without structured outputs sends it (#1811).
+        self.fenced = fenced
+        #: A page its numbers helper records as having no architect drawing to compare.
+        self.unpaired = unpaired
+
+    def _json(self, value: object) -> str:
+        body = json.dumps(value)
+        return f"Here is my answer.\n\n```json\n{body}\n```" if self.fenced else body
 
     def _seen(self, kind: str, params: Mapping[str, Any]) -> None:
         with self.lock:
@@ -442,7 +461,7 @@ class _Roster:
             spans = {"from": "floor", "to": "top_of_counter"}
             answer = {"architect_pick": self.advocate_pick, "vendor_spans": spans,
                       "architect_spans": spans, "vendor_ink_black": "yes", "note": ""}  # fmt: skip
-            return reply(text(json.dumps(answer)), model=SONNET)
+            return reply(text(self._json(answer)), model=SONNET)
         if system == SUMMARY_SYSTEM:
             self._seen("summary", params)
             return reply(text(json.dumps({"lines": ["Too short."]})), model=HAIKU)
@@ -466,7 +485,7 @@ class _Roster:
                 {"page": 2, "side": "architect", "item": "Area 1: top", "tag": "ST-1", "box": spot},
                 {"page": 2, "side": "vendor", "item": "Area 1: top", "tag": "ST-2", "box": spot},
             ]}  # fmt: skip
-            return reply(text(json.dumps(table)), model=SONNET)
+            return reply(text(self._json(table)), model=SONNET)
         if brief.startswith("PROVE:"):
             self._seen("prove", params)
             ids = [line.split()[1] for line in brief.splitlines() if line.startswith("- F")]
@@ -475,7 +494,7 @@ class _Roster:
                  "arch_box": None, "outcome": "cannot_prove", "why": "no label"}
                 for i in ids
             ]  # fmt: skip
-            return reply(text(json.dumps({"proofs": proofs})), model=SONNET)
+            return reply(text(self._json({"proofs": proofs})), model=SONNET)
         drawn = brief.startswith("OBJECTIVE: the drawn things")
         pages = [int(n) for n in brief.split("on pages ", 1)[1].split(" of ", 1)[0].split(", ")]
         self._seen("drawn" if drawn else "numbers", params)
@@ -491,7 +510,11 @@ class _Roster:
                 "vendor_dim": "D1",
                 "architect_dim": "D2",
             }
-            covered = {"pages": [{"page": p, "status": "different"} for p in pages]}
+            covered = {"pages": [
+                {"page": p, "status": "not_comparable", "note": "no architect drawing in the set"}
+                if p == self.unpaired else {"page": p, "status": "different"}
+                for p in pages
+            ]}  # fmt: skip
             return reply(
                 tool(f"f{page}", "report_finding", found),
                 tool(f"c{page}", "set_coverage", covered),
@@ -712,6 +735,9 @@ def test_the_verifiers_proofs_are_applied_by_code(tmp_path: Path) -> None:
     assert apply_proofs(engine, "not json", ["F1"]) == {
         "F1": "no proof: the verifier's reply was not readable"
     }
+    # #1811: a fenced proof is read (the item already proved stays proved, the other is read).
+    fenced = apply_proofs(engine, f"Proofs:\n```json\n{json.dumps(proofs)}\n```", [other["id"]])
+    assert fenced == {other["id"]: "cannot prove: no value"}
 
 
 def test_codes_own_pairing_is_proof_and_a_different_one_keeps_it_grey(
@@ -958,3 +984,200 @@ def test_a_reply_cut_at_the_smaller_allowance_is_sent_on(
     _roster(tmp_path, script).run()
     later = [p for p in script.params["numbers"] if _steps(p) > 0]
     assert later and all("cut at its length limit" in json.dumps(p) for p in later)
+
+
+# ---- answers wrapped in a code block; the not-for-sending rule (#1811) --------------------------
+
+
+def _package_state(outcome: Any) -> dict[str, Any]:
+    block = next((b for b in outcome.blocks if b.get("type") == "package"), None)
+    return dict((block or {}).get("package", {}).get("state") or {})
+
+
+def test_answers_in_a_code_block_give_the_same_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Through a route without structured outputs every JSON answer comes after a sentence in a
+    ```json block: the tag table, the advocate's picks and the proofs are read, and the check
+    comes out exactly as with bare answers (no item more or less red)."""
+    _clean_ink(monkeypatch)
+    results = []
+    for n, fenced in enumerate((False, True)):
+        folder = tmp_path / str(n)
+        folder.mkdir()
+        harness = _roster(folder, _Roster(fenced=fenced))
+        outcome = harness.run()
+        results.append(
+            sorted(
+                (f["item"], f["status"], (f.get("critic") or {}).get("result"))
+                for f in _findings(outcome)
+            )
+        )
+    bare, fenced_run = results
+    assert fenced_run == bare
+    assert ("Area 1: top: tag", "different", None) in [r[:2] + (None,) for r in fenced_run]
+    assert any(r[2] == "passed" for r in fenced_run)  # the advocate's fenced picks were read
+
+
+def test_a_vendor_page_not_compared_is_never_send_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clean_ink(monkeypatch)
+    outcome = _roster(tmp_path, _Roster(unpaired=3)).run()
+    assert "send the cloud drawing" not in outcome.text
+    assert "send the wrong items" not in outcome.text
+    assert full_check_roster.NOT_SENDABLE_NEXT in outcome.text
+    assert "Check incomplete: 1 vendor page was not compared (p3). Not for sending" in outcome.text
+    state = _package_state(outcome)
+    assert not state or state.get("incomplete") == "1 vendor page was not compared (p3)"
+
+
+def test_a_whole_roster_check_with_wrongs_still_says_send_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clean_ink(monkeypatch)
+    outcome = _roster(tmp_path, _Roster()).run()
+    assert "Next: send the cloud drawing to the vendor." in outcome.text.splitlines()
+    assert "Check incomplete" not in outcome.text
+    assert full_check_roster.NOT_SENDABLE_NEXT not in outcome.text
+
+
+def test_a_helper_that_errors_makes_the_check_not_for_sending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    _clean_ink(monkeypatch)
+    run = full_check_roster._Run(engine=None)  # type: ignore[arg-type]
+    agents = [SimpleNamespace(description="Tags"), SimpleNamespace(description="Numbers p2-3")]
+    run.engine = SimpleNamespace(  # type: ignore[assignment]
+        _launch=lambda given, **_k: [{"stopped": None}, {"stopped": "error"}]
+    )
+    run._launched(agents)
+    assert run._not_for_sending() == "a step did not finish: Numbers p2-3 ended with an error"
+    run._apply_tags('```json\n{"tags": [\n')  # cut short: its rows were never compared
+    assert "the tag table could not be read" in str(run._not_for_sending())
+
+
+class _SilentHelper(_Roster):
+    """The numbers helper of pages 2-3 records its findings, then never writes its report."""
+
+    def helper(self, params: Mapping[str, Any], brief: str) -> list[dict[str, Any]]:
+        if (
+            _steps(params) > 0
+            and brief.startswith("OBJECTIVE:")
+            and not brief.startswith("OBJECTIVE: the drawn things")
+            and "on pages 2" in brief
+        ):
+            self._seen("silent", params)
+            return reply(text(""), model=SONNET)
+        return super().helper(params, brief)
+
+
+def test_a_helper_with_no_report_is_logged_and_its_pages_noted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """#1811: a helper that ends with no written report says why in the log, and its pages are
+    noted as not compared with that reason (a gap closer then takes them)."""
+    _clean_ink(monkeypatch)
+    script = _SilentHelper()
+    harness = _roster(tmp_path, script)
+    noted: list[tuple[int, str]] = []
+    original = harness.engine._note_coverage
+
+    def note(page: int, words: str) -> None:
+        noted.append((page, words))
+        original(page, words)
+
+    monkeypatch.setattr(harness.engine, "_note_coverage", note)
+    with caplog.at_level("WARNING"):
+        outcome = harness.run()
+    assert script.calls.get("silent")
+    said = [r.getMessage() for r in caplog.records if "no written report" in r.getMessage()]
+    assert said and "stop=end_turn" in said[0] and "turns=" in said[0]
+    assert {page for page, words in noted if "did not write its report" in words} == {2, 3}
+    coverage = next(b for b in outcome.blocks if b.get("type") == "coverage")["coverage"]
+    page = next(p for p in coverage["pages"] if p["page"] == 2)
+    assert page["by"] != "helper:1"  # a later look compared the page again
+
+
+def test_a_wrong_shaped_tag_table_is_a_failed_step() -> None:
+    from types import SimpleNamespace
+
+    for report in ('[{"page": 2, "side": "vendor"}]', '{"rows": []}', '{"tags": "none"}'):
+        run = full_check_roster._Run(engine=SimpleNamespace())  # type: ignore[arg-type]
+        run._apply_tags(report)
+        assert run.failed_steps == ["the tag table could not be read"], report
+    run = full_check_roster._Run(engine=SimpleNamespace())  # type: ignore[arg-type]
+    run._apply_tags('{"tags": []}')  # read, nothing tagged on both sides: not a failure
+    assert run.failed_steps == []
+
+
+def test_a_page_noted_not_reached_is_not_compared_even_when_marked_different(
+    tmp_path: Path,
+) -> None:
+    """#1654's pattern: a page still "different" whose note says it was not reached within the
+    price, or that its helper wrote no report, is not compared: never "send it"."""
+    from types import SimpleNamespace
+
+    harness = _roster(tmp_path, _Roster())
+    book = harness.engine.book
+    book.set_coverage(
+        {
+            "pages": [
+                {"page": 1, "status": "same"},
+                {"page": 2, "status": "different",
+                 "note": "partly compared; not reached within the fixed price"},
+                {"page": 3, "status": "same"},
+                {"page": 4, "status": "same"},
+                {"page": 5, "status": "same"},
+                {"page": 6, "status": "same"},
+            ]
+        },
+        "helper:1",
+    )  # fmt: skip
+    book.note_coverage(3, "not compared in detail: its helper did not write its report")
+    harness.engine._plan = SimpleNamespace(skipped=())
+    run = full_check_roster._Run(engine=harness.engine)
+    assert run._not_for_sending() == "2 vendor pages were not compared (p2, p3)"
+    harness.engine._plan = SimpleNamespace(skipped=((2, "divider"), (3, "divider")))
+    assert run._not_for_sending() is None
+
+
+def test_nothing_recorded_is_not_for_sending(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    harness = _roster(tmp_path, _Roster())
+    harness.engine._plan = SimpleNamespace(skipped=())
+    run = full_check_roster._Run(engine=harness.engine)
+    assert not harness.engine.book.coverage_used
+    assert run._not_for_sending() == "no page's comparison was recorded"
+
+
+class _SilentTags(_Roster):
+    """The tag reader never writes its report."""
+
+    def helper(self, params: Mapping[str, Any], brief: str) -> list[dict[str, Any]]:
+        if brief.startswith("TAGS:"):
+            self._seen("tags", params)
+            return reply(text(""), model=SONNET)
+        return super().helper(params, brief)
+
+
+def test_a_silent_tag_reader_never_notes_pages_it_does_not_own(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clean_ink(monkeypatch)
+    harness = _roster(tmp_path, _SilentTags())
+    noted: list[int] = []
+    original = harness.engine._note_coverage
+
+    def note(page: int, words: str) -> None:
+        if "did not write its report" in words:
+            noted.append(page)
+        original(page, words)
+
+    monkeypatch.setattr(harness.engine, "_note_coverage", note)
+    outcome = harness.run()
+    assert noted == []
+    assert "send the cloud drawing" not in outcome.text  # the tag step broke: not for sending
