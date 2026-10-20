@@ -336,7 +336,8 @@ def test_a_small_drawing_goes_whole_and_a_big_one_in_sharp_tiles() -> None:
 
 
 def test_the_prompt_is_short_and_states_the_rules() -> None:
-    assert len(SYSTEM_PROMPT) < 7000
+    # +1,000: the colour rule by file kind and the data fence with label places (#1775).
+    assert len(SYSTEM_PROMPT) < 8000
     for words in (
         "architect's drawings are the truth",
         "EVERY vendor label",

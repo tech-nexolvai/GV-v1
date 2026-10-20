@@ -159,6 +159,8 @@ class CompareSettings:
     parallel: int = 8
     max_tokens: int = 64000
     retries: int = 3
+    label_places: bool = True
+    """Each label line gives its direction and place on its drawing (recipe step 1, #1775)."""
 
     @classmethod
     def from_settings(cls, settings: Any) -> CompareSettings:
@@ -170,6 +172,7 @@ class CompareSettings:
             parallel=settings.assistant_simple_parallel,
             max_tokens=settings.assistant_simple_max_tokens,
             retries=settings.assistant_simple_retries,
+            label_places=getattr(settings, "assistant_simple_label_places", True),
         )
 
     def for_item(self, item: WorkItem) -> tuple[ChatModel, str]:
@@ -408,7 +411,11 @@ def _caption(picture: Picture, item: WorkItem) -> str:
 
 
 def request_content(
-    item: WorkItem, sent: Sequence[SentPicture], *, provider: str = "anthropic"
+    item: WorkItem,
+    sent: Sequence[SentPicture],
+    *,
+    provider: str = "anthropic",
+    places: bool = True,
 ) -> list[dict[str, Any]]:
     """The user message: each picture after its one-line caption, then the item's text."""
     content: list[dict[str, Any]] = []
@@ -426,7 +433,9 @@ def request_content(
             # A picture the server would shrink is refused instead (its boxes would not map back).
             image["transformations"] = {"oversized_image": "error"}
         content.append(image)
-    content.append({"type": "text", "text": item_text(item, [s.picture for s in sent])})
+    content.append(
+        {"type": "text", "text": item_text(item, [s.picture for s in sent], places=places)}
+    )
     return content
 
 
@@ -797,7 +806,12 @@ def compare_item(
             reason=f"the pictures are {request_bytes // 1_000_000} MB, over the request limit",
         )
     messages: list[dict[str, Any]] = [
-        {"role": "user", "content": request_content(item, sent, provider=provider.name)}
+        {
+            "role": "user",
+            "content": request_content(
+                item, sent, provider=provider.name, places=settings.label_places
+            ),
+        }
     ]
     if before_call is not None:
         before_call()
