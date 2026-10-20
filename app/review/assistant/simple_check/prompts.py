@@ -280,7 +280,20 @@ def item_text(item: WorkItem, pictures: Sequence[Picture], *, places: bool = Tru
         + (f"; {kind}" if kind else "")
         + "."
     )
+    if item.prototype_reference:
+        lines.append(
+            "The architect gives no elevation of this area: the brand prototype is the reference. "
+            "Compare the vendor with the brand prototype drawing(s) below as you would with the "
+            "architect's (architect_label: the prototype's label)."
+        )
     for n, drawing in enumerate(item.architect):
+        if item.prototype_reference:
+            role = "the reference brand prototype drawing" if n == 0 else "another one"
+            lines.append(
+                f"Brand prototype drawing {drawing.ref}, {role}: page {drawing.page}; images "
+                f"{_images_of(pictures, drawing.ref)}."
+            )
+            continue
         role = "the governing architect drawing" if n == 0 else "another architect drawing"
         about = [f"page {drawing.page}"]
         if drawing.detail:
@@ -306,8 +319,9 @@ def item_text(item: WorkItem, pictures: Sequence[Picture], *, places: bool = Tru
             about.append(f"titled {'; '.join(drawing.titles)}")
         if drawing.scale_note:
             about.append(f"scale {drawing.scale_note}")
+        named = "Brand prototype drawing" if item.prototype_reference else "Architect drawing"
         data.append(
-            f"Architect drawing {drawing.ref}"
+            f"{named} {drawing.ref}"
             + (f" ({', '.join(about)})" if about else "")
             + f". Labels: {_labels(drawing, places)}"
         )

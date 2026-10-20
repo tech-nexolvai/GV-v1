@@ -153,7 +153,7 @@ def test_a_vendor_file_pairs_with_the_architect_file_by_code(tmp_path: Path) -> 
     first = work.items[0]
     assert first.architect[0].file == "arch.pdf" and first.architect[0].own_page == 2
     assert first.paired_by is not None and "printed reference" in first.paired_by
-    assert work.items[1].paired_by is not None and "layout" in work.items[1].paired_by
+    assert work.items[1].paired_by is not None and "spans lined up" in work.items[1].paired_by
     unpaired = next(s for s in work.skipped if s.drawing == "p3.v0")
     assert unpaired.reason.startswith(UNPAIRED) and unpaired.reason.endswith("(code)")
     assert work.uncovered == ()

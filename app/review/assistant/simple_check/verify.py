@@ -77,6 +77,7 @@ from pathlib import Path
 from typing import Any, Final, Literal
 
 from app.review.assistant.architect_items import MIN_TEXT, tag_codes
+from app.review.assistant.classification import PROTOTYPE_REFERENCE, PROTOTYPE_REFERENCE_WORDS
 from app.review.assistant.dim_index import parse_ref
 from app.review.assistant.finding_checks import to_inches
 from app.review.assistant.full_check_advocate import Check, code_pairs, is_slip, same_extent
@@ -591,6 +592,9 @@ class Item:
     """The label refs of its architect drawings (empty: each drawing's box decides)."""
     products: tuple[str, ...] = ()
     """The products the drawings' printed words name (the work list's)."""
+    prototype_reference: bool = False
+    """R1 (Anant, 2026-10-20): the area has no architect drawing, so `architect` is its brand
+    prototype, the reference (`schema.WorkItem.prototype_reference`)."""
 
     @property
     def category(self) -> str:
@@ -627,6 +631,7 @@ class Item:
                 label.ref for drawing in work.architect for label in drawing.labels
             ),
             products=tuple(getattr(work, "products", ()) or ()),
+            prototype_reference=bool(getattr(work, "prototype_reference", False)),
         )
 
     @classmethod
@@ -902,10 +907,16 @@ def _view_check(item: Item, a_file: str, a_page: int) -> Check:
     return Check("view", "pass")
 
 
-def _roles_check(vendor: Mapping[str, Any], architect: Mapping[str, Any]) -> Check:
+def _roles_check(
+    vendor: Mapping[str, Any], architect: Mapping[str, Any], prototype: bool = False
+) -> Check:
+    """A vendor label against an architect label; against the brand prototype's only for an item
+    whose area has no architect elevation (`prototype`: the prototype is the reference, R1)."""
     if vendor.get("side") != "vendor":
         return Check("roles", "fail", f"the vendor value is on the {vendor.get('side')}'s drawing")
     side = str(architect.get("side") or "unknown")
+    if side == "brand" and prototype:
+        return Check("roles", "pass", PROTOTYPE_REFERENCE_WORDS)
     if side == "brand":
         return Check("roles", "fail", "the reference is the brand prototype (reference only)")
     if side != "architect":
@@ -951,7 +962,11 @@ def _geometry_check(vendor: Mapping[str, Any], architect: Mapping[str, Any], pac
         return [x for x in on if x.get("side") == wanted]
 
     state, why = same_extent(
-        vendor, architect, side(vendor, "vendor"), side(architect, "architect")
+        vendor,
+        architect,
+        side(vendor, "vendor"),
+        # The brand prototype's own labels when it is the reference (R1).
+        side(architect, "brand" if architect.get("side") == "brand" else "architect"),
     )
     if state == "different_extent":
         return Check("geometry", "fail", f"code's geometry shows different points: {why}")
@@ -976,6 +991,7 @@ _ORDER: Final = (
     "axis",
     "round",
     "units",
+    "flags",
     "slip",
     "gv_ink",
     "trade",
@@ -1102,6 +1118,10 @@ def _pair_finding(
             finding["vs_page"] = int(architect.get("page") or 0)
         if architect.get("side") == "brand":
             finding["source"] = "brand_prototype"
+    if item.prototype_reference:
+        # R1: no architect elevation of the area; the brand prototype is the reference.
+        finding["source"] = "brand_prototype"
+        finding["reference"] = PROTOTYPE_REFERENCE
     if status == "check" and reason_code is not None and reason_code in _KEEP:
         finding["keep_reason"] = _KEEP[reason_code]
     return finding
@@ -1152,12 +1172,46 @@ def verify_pair(
     ink: Ink | None = None,
     *,
     architect: Mapping[str, Any] | None = None,
+    number: NumberReader | None = None,
 ) -> Verified:
     """One pair verified from scratch, every check, no shortcut: the resolve loop's re-verification
     of a pair it amended (`resolve.py`). `architect`: the architect's value when it is not one label
     (code's proved chain of the architect's printed parts, owner decision 2026-10-19), with
-    `area_ref` naming one of its labels for the area check."""
-    return _verify_pair(pair, item, pack, ink, architect_override=architect)
+    `area_ref` naming one of its labels for the area check. `number`: `read_number`, for a label
+    whose value code cannot read (`_read_label`)."""
+    return _verify_pair(pair, item, pack, ink, architect_override=architect, number=number)
+
+
+def _read_label(
+    label: dict[str, Any], side: str, pack: Pack, number: NumberReader | None
+) -> Fraction | None:
+    """A label's inches when code cannot read its value (#1781): `read_number` at the label (its
+    id and box, on its file's own page), used only when the tool says read (its two-route
+    agreement rule). The pack's copy of the label takes the reading (`inches` and `read_number`),
+    so the resolve loop's re-verification and the finding see the value and how it was read;
+    `dims.json` is never changed. `None` when it is not read (the label keeps the tool's answer)."""
+    done = label.get("read_number")
+    if isinstance(done, Mapping):
+        return _fraction(label.get("inches")) if done.get("outcome") == "read" else None
+    if number is None:
+        return None
+    file = str(label.get("file") or pack.main_file)
+    page = int(label.get("page") or 0)
+    reading = number(
+        Request(
+            file,
+            pack.own_page(file, page),
+            side,
+            label=str(label.get("id") or "") or None,
+            box=_box(label.get("box")),
+        )
+    )
+    label["read_number"] = reading.as_dict()
+    value = reading.inches if reading.outcome == "read" else None
+    if value is None or value <= 0:
+        return None
+    label["inches"] = format(value.normalize(), "f")
+    return Fraction(value)
 
 
 def _verify_pair(
@@ -1167,6 +1221,7 @@ def _verify_pair(
     ink: Ink | None,
     *,
     architect_override: Mapping[str, Any] | None = None,
+    number: NumberReader | None = None,
 ) -> Verified:
     vref = str(pair.get("vendor_label") or "")
     key = f"{item.id}:{vref}"
@@ -1219,8 +1274,19 @@ def _verify_pair(
         note = str(pair.get("note") or "").strip()
         return one.grey(UNSURE + (f": {note}" if note else ""), "not_proved")
     v_in, a_in = _fraction(vendor.get("inches")), _fraction(architect.get("inches"))
+    if v_in is None:
+        v_in = _read_label(vendor, "vendor", pack, number)
+    if a_in is None and architect_override is None:
+        a_in = _read_label(architect, "architect", pack, number)
     if v_in is None or a_in is None:
-        return one.grey("code could not read the value as a size", "unreadable")
+        tool = [
+            str(label["read_number"].get("reason") or "")
+            for label in (vendor, architect)
+            if isinstance(label.get("read_number"), Mapping)
+            and label["read_number"].get("outcome") != "read"
+        ]
+        said = f" (the read-number tool: {tool[0]})" if tool and tool[0] else ""
+        return one.grey(f"code could not read the value as a size{said}", "unreadable")
     a_file = str(architect.get("file") or pack.main_file)
     a_page = int(architect.get("page") or 0)
     matched = ends_match(
@@ -1229,7 +1295,7 @@ def _verify_pair(
     same_axis = vendor.get("orientation") == architect.get("orientation")
     disagree = "disagrees" in (vendor.get("units"), architect.get("units"))
     checks = [
-        _roles_check(vendor, architect),
+        _roles_check(vendor, architect, item.prototype_reference),
         _area_check(
             item,
             pack,
@@ -1258,13 +1324,21 @@ def _verify_pair(
     checks.append(_round_check(pack, item, vendor))
     checks.append(_slip_check(v_in, a_in, "drawn" in (vendor.get("route"), architect.get("route"))))
     checks.append(_ink_check(vendor, ink))
+    checks.append(_flags_check(vendor, architect))
     failed = _first_failure(checks)
     if failed is not None:
         return _blocked(one, failed, matched, checks)
     why = (
-        f"The vendor prints {_label_words(vendor)}; the architect prints "
-        f"{_label_words(architect)} for the same dimension ({_plain(ends['vendor_from'])} to "
-        f"{_plain(ends['vendor_to'])}). Code read both values at their labels"
+        f"The vendor prints {_label_words(vendor)}; the "
+        + ("brand prototype" if item.prototype_reference else "architect")
+        + f" prints {_label_words(architect)} for the same dimension "
+        f"({_plain(ends['vendor_from'])} to {_plain(ends['vendor_to'])}). Code read both values "
+        "at their labels"
+        + (
+            f" ({PROTOTYPE_REFERENCE_WORDS}: no architect elevation)"
+            if item.prototype_reference
+            else ""
+        )
     )
     finding = _pair_finding(item, pack, pair.get("measures"), vendor, architect, "different", why)
     return Verified(
@@ -1278,6 +1352,21 @@ def _verify_pair(
         blind="pair",
         ends=ends,
     )
+
+
+#: A label's notes that make its value no proof of a mistake (#1778): verify in field (the size is
+#: taken on site) and plus or minus (the size is approximate).
+_NOT_PROOF_FLAGS: Final = {"vif": "verify in field (VIF)", "approx": "plus or minus (approximate)"}
+
+
+def _flags_check(vendor: Mapping[str, Any], architect: Mapping[str, Any]) -> Check:
+    """`flags`: neither value is marked verify in field or plus or minus (`dim_labels`, #1778);
+    such a value is read, but a difference against it is never red."""
+    for side, label in (("vendor", vendor), ("architect", architect)):
+        for flag in label.get("flags") or ():
+            if flag in _NOT_PROOF_FLAGS:
+                return Check("flags", "fail", f"the {side} marks it {_NOT_PROOF_FLAGS[flag]}")
+    return Check("flags", "pass")
 
 
 def _blocked(
@@ -1575,6 +1664,10 @@ def _verify_other(
         "vendor_box": _spot(_box(entry.get("vendor_box")), item.vendor.file, item.vendor.page),
         "arch_box": _spot(_box(entry.get("architect_box")), a_file, a_page),
     }
+    if item.prototype_reference:
+        # R1: no architect elevation of the area; the brand prototype is the reference.
+        base["source"] = "brand_prototype"
+        base["reference"] = PROTOTYPE_REFERENCE
     if isinstance(a_page, int) and a_page != item.vendor.page:
         base["vs_page"] = a_page
     other = _Other(key, kind, entry, base)
@@ -1616,7 +1709,7 @@ def _verify_missing(
     vendor = "not proved missing"
     if label is None and tag is None:
         return other.grey(f"not proved: {why}", "not_proved", vendor=vendor)
-    if label is not None and label.get("side") == "brand":
+    if label is not None and label.get("side") == "brand" and not item.prototype_reference:
         return other.grey(
             "the reference is the brand prototype (reference only)", "prototype", vendor=vendor
         )
@@ -1829,6 +1922,8 @@ def _verify_unlabelled(
     a_half = pack.half_at(a_file, a_page, a_box)
     if v_half is None or v_half.role != "vendor":
         roles = Check("roles", "fail", "the vendor box is not on a vendor drawing")
+    elif a_half is not None and a_half.role == "brand_prototype" and item.prototype_reference:
+        roles = Check("roles", "pass", PROTOTYPE_REFERENCE_WORDS)  # no architect elevation (R1)
     elif a_half is not None and a_half.role == "brand_prototype":
         roles = Check("roles", "fail", "the reference is the brand prototype (reference only)")
     elif a_half is None or a_half.role != "architect":
@@ -1972,7 +2067,8 @@ def verify_answer(
     on the markup-free copy), asked only for a red candidate; None blocks red. `read`: `verify_value`
     at a spot, for an item without labels; None: such an item is never red. `products`: the check's
     product scope (None: every active product). `number`: `read_number` (#1746), called by itself
-    for a value without a label that `read` could not confirm or the AI could not read."""
+    for a value without a label that `read` could not confirm or the AI could not read, and for a
+    labelled value whose inches code cannot read (#1781)."""
     data = _plain_data(result)
     if not isinstance(data, Mapping):
         data = {}
@@ -1995,7 +2091,7 @@ def verify_answer(
                 one = _Pair(f"{item.id}:{vref}", item, pack, pair, label, None, {})
                 out.items.append(one.grey(f"the answer pairs {vref} more than once", "not_proved"))
             continue
-        out.items.append(_verify_pair(pair, item, pack, ink))
+        out.items.append(_verify_pair(pair, item, pack, ink, number=number))
     for at, entry in enumerate(data.get("other_items") or [], start=1):
         if isinstance(entry, Mapping):
             out.items.append(_verify_other(entry, at, item, pack, read, scope, number))
