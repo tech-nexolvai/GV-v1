@@ -30,6 +30,7 @@ from vocabulary.product_registry import (
     RegistryError,
     load_registry,
     registry,
+    registry_data,
 )
 
 VENDOR = "vendor.pdf"
@@ -514,8 +515,8 @@ BENCH = {
 
 
 def _registry_with(tmp_path: Path, *entries: dict[str, Any]) -> Any:
-    data = yaml.safe_load(DEFAULT_REGISTRY.read_text(encoding="utf-8"))
-    data["skills_folder"] = str((DEFAULT_REGISTRY.parent / data["skills_folder"]).resolve())
+    data = registry_data(DEFAULT_REGISTRY)
+    data["skills_folder"] = str(tmp_path)
     data["products"] = [*data["products"], *entries]
     path = tmp_path / "products.yaml"
     path.write_text(yaml.safe_dump(data), encoding="utf-8")
