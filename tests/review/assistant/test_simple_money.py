@@ -461,7 +461,7 @@ def test_blind_looks_running_together_never_pass_the_cap_and_wait_for_room(
         return "agreed", ""
 
     monkeypatch.setattr(blind_module, "look", look)
-    monkeypatch.setattr(blind_module, "with_blind", lambda v, answer, why: (v, answer, why))
+    monkeypatch.setattr(blind_module, "with_blind", lambda v, answer, why, **_kw: (v, answer, why))
     names = [f"c{n}" for n in range(6)]
     done = blind_module.look_all(
         engine,  # type: ignore[arg-type]
@@ -478,7 +478,7 @@ def test_a_blind_look_that_would_pass_the_cap_alone_is_refused(
 ) -> None:
     engine = SimpleNamespace(_price=lambda *_a: DOLLARS, _fits=lambda estimate: estimate <= 0)
     monkeypatch.setattr(blind_module, "look", lambda *_a: pytest.fail("no look is made"))
-    monkeypatch.setattr(blind_module, "with_blind", lambda v, answer, why: (v, answer, why))
+    monkeypatch.setattr(blind_module, "with_blind", lambda v, answer, why, **_kw: (v, answer, why))
     done = blind_module.look_all(
         engine,  # type: ignore[arg-type]
         [("a", None), ("b", None)],  # type: ignore[list-item]

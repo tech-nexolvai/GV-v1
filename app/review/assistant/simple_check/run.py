@@ -1528,6 +1528,11 @@ class _Run:
             for f in live
             if f.get("created_by") == CREATED_BY and f.get("status") == "different"
         }
+        open_pages: dict[int, int] = {}
+        for f in live:
+            if f.get("created_by") == CREATED_BY and _open_difference(f):
+                page = int(f.get("page") or 0)
+                open_pages[page] = open_pages.get(page, 0) + 1
         main = engine.book.main_file
         # The coverage map is the vendor's file's pages: an earlier round's file (#1728) is not.
         failing = {item.page: (self.outcomes.get(item.id)) for item in failed if item.file == main}
@@ -1539,9 +1544,25 @@ class _Run:
                 pages.append(
                     {"page": page, "status": "not_opened", "note": f"Not compared: {reason}"[:290]}
                 )
+            elif page in red_pages:
+                pages.append({"page": page, "status": "different"})
+            elif page in open_pages:
+                # Possible differences left Not compared (a second look that failed, a pairing
+                # code could not prove): the page is open, never "same" (#1811).
+                count = open_pages[page]
+                pages.append(
+                    {
+                        "page": page,
+                        "status": "not_comparable",
+                        "note": (
+                            f"Open: {count} possible "
+                            f"{'difference' if count == 1 else 'differences'} not settled (see "
+                            "the Not-compared list)"
+                        ),
+                    }
+                )
             else:
-                status = "different" if page in red_pages else "same"
-                pages.append({"page": page, "status": status})
+                pages.append({"page": page, "status": "same"})
         if pages:
             try:
                 engine.book.set_coverage({"pages": pages}, "code")
@@ -2194,3 +2215,18 @@ def _run_resolve(run_dir: Path) -> resolve_module.ResolveSettings:
 def run(engine: ChatEngine) -> MessageOutcome:
     """The simple full check (see the module)."""
     return _Run(engine, SimpleOptions.of(engine.settings.simple)).run()
+
+
+def _open_difference(finding: Mapping[str, Any]) -> bool:
+    """A Not-compared item whose two printed values both read and differ: a possible difference
+    still open (a red or Right item, or one with a side not read, is not)."""
+    from app.review.assistant.finding_checks import to_inches
+    from app.review.assistant.proof import proof_group
+
+    if proof_group(finding) != "not_compared":
+        return False
+    vendor, architect = finding.get("vendor"), finding.get("architect")
+    if not isinstance(vendor, str) or not isinstance(architect, str):
+        return False
+    left, right = to_inches(vendor), to_inches(architect)
+    return left is not None and right is not None and left != right
