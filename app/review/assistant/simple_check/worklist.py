@@ -390,17 +390,26 @@ def combined_files(page_map: Mapping[str, Any], annotations: Any) -> Mapping[str
     decided 2026-10-19). The set pack's own test of a plain file (`set_pack._page_entries`): a file
     with a pasted drawing (a PDF stamp with a box) is a combined sheet; a file with none is an
     ordinary upload, read in every colour. `None` when the pack has no annotations list (unknown:
-    the prompts then use the strict words)."""
+    the prompts then use the strict words).
+
+    A file with a rectangle annotation (`/Square`) and no stamp is left out (unknown, the strict
+    words): the label reader's own test (`gv_marks.gv_combined`, via `stamp_text.carries_drawing`)
+    counts a snapshot pasted as a rectangle with the drawing inside it, and this list cannot tell
+    one from a reviewer's rectangle, so it never calls such a file ordinary."""
     if not isinstance(annotations, list):
         return None
     files = page_map.get("files") if isinstance(page_map, Mapping) else None
     names = [str(name) for name in files] if isinstance(files, list) else []
-    stamped = {
-        str(entry.get("file"))
-        for entry in annotations
-        if isinstance(entry, Mapping) and entry.get("kind") == "Stamp" and entry.get("box")
-    }
-    return {name: name in stamped for name in names}
+    stamped: set[str] = set()
+    boxed: set[str] = set()
+    for entry in annotations:
+        if not isinstance(entry, Mapping):
+            continue
+        if entry.get("kind") == "Stamp" and entry.get("box"):
+            stamped.add(str(entry.get("file")))
+        elif entry.get("kind") == "Square":
+            boxed.add(str(entry.get("file")))
+    return {name: name in stamped for name in names if name in stamped or name not in boxed}
 
 
 def worklist_from(

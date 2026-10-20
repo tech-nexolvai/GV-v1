@@ -9,6 +9,7 @@ drawing; the other prompts state both kinds.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 
@@ -17,9 +18,12 @@ from app.review.assistant import (
     finding_critic,
     full_check_advocate,
     full_check_brief,
+    full_check_roster,
     full_check_specialists,
+    read_adjudication,
     second_read,
 )
+from app.review.assistant import agent as review_agent
 from app.review.assistant.colour_rule import COLOUR_RULE
 from app.review.assistant.simple_check import blind, prompts, resolve
 from app.review.assistant.simple_check.schema import Drawing, Label, WorkItem
@@ -32,7 +36,12 @@ OLD_RULE = re.compile(
     r"|coloured marks are a reviewer"
     r"|coloured ink inside a drawing \([^)]*\) is earlier review markup"
     r"|coloured notes drawn over a drawing are earlier review markup"
-    r"|the drawings' own ink is black or grey",
+    r"|the drawings' own ink is black or grey"
+    r"|read only the drawing's own black or grey ink"
+    r"|printed in the drawing's own black or grey ink"
+    r"|coloured text and callouts ending \"by GV\" are GV's notes"
+    r"|GV's coloured markup"
+    r"|a coloured value, or a callout ending \"by GV\", is GV's",
     re.IGNORECASE,
 )
 
@@ -50,6 +59,15 @@ def _prompts() -> dict[str, str]:
         "helper": chat_tools.HELPER_SYSTEM_PROMPT,
         "drawn brief": full_check_brief.DRAWN_BRIEF,
         "specialists": full_check_specialists.HELPER_CORE,
+        "reader pair adjudication": read_adjudication.question(
+            "upper height", (("architect", False),)
+        ),
+        "tag brief": full_check_roster.TAG_BRIEF,
+        "chat agent": review_agent.AGENT_SYSTEM_PROMPT,
+        "chat subagent": review_agent.SUB_SYSTEM_PROMPT,
+        "vendor mistakes": (
+            Path(review_agent.__file__).parent / "skills/gv-review/knowledge/vendor-mistakes.md"
+        ).read_text(encoding="utf-8"),
     }
 
 
@@ -142,3 +160,20 @@ def test_worklist_tells_combined_sheets_from_ordinary_uploads() -> None:
     ]
     assert combined_files(page_map, annotations) == {"combined.pdf": True, "plain.pdf": False}
     assert combined_files(page_map, None) is None
+
+
+def test_a_rectangle_annotation_never_makes_a_file_ordinary() -> None:
+    """Review of #1785: the label reader's own test (`gv_marks.gv_combined`) also counts a
+    snapshot pasted as a `/Square` annotation with the drawing inside it, and the pack's list
+    cannot tell that from a reviewer's rectangle. So a file with one is of unknown kind (the strict
+    combined-sheet words), never an ordinary upload, where every colour would be read."""
+    page_map = {"files": ["square.pdf", "both.pdf", "plain.pdf"]}
+    annotations = [
+        {"file": "square.pdf", "page": 1, "kind": "Square", "box": [0, 0, 10, 10]},
+        {"file": "both.pdf", "page": 1, "kind": "Square", "box": [0, 0, 10, 10]},
+        {"file": "both.pdf", "page": 2, "kind": "Stamp", "box": [0, 0, 10, 10]},
+        {"file": "plain.pdf", "page": 1, "kind": "Ink", "box": [0, 0, 1, 1]},
+    ]
+    kinds = combined_files(page_map, annotations)
+    assert kinds == {"both.pdf": True, "plain.pdf": False}
+    assert "square.pdf" not in kinds  # unknown: the prompts use the strict words

@@ -58,6 +58,7 @@ from uuid import uuid4
 from app.review.assistant import proof as proof_rule
 from app.review.assistant import witness
 from app.review.assistant.chat_findings import UPDATE_FINDING
+from app.review.assistant.colour_rule import COLOUR_RULE
 from app.review.assistant.chat_request import BY_SHORT, thinking_config
 from app.review.assistant.chat_summary import CODE_SUMMARY_NOTE, code_summary
 from app.review.assistant.chat_tools import HELPER_TOOLS, new_step
@@ -597,10 +598,14 @@ TAG_JOB: Final = (
     "Code compares them; you only read and place them."
 )
 
-TAG_BRIEF: Final = """TAGS: pages {pages} of {file}. Your pages:
+TAG_BRIEF: Final = (
+    """TAGS: pages {pages} of {file}. Your pages:
 {page_lines}
-For each page, list every tag printed in the drawing's own black or grey ink on the architect's drawing and on the vendor's, with the piece it labels (start with the page's area, and name the same piece the same way on both sides) and the tightest box round the tag. Coloured text and callouts ending "by GV" are GV's notes: leave them out. Use pdftotext -bbox on the drawings-only copy for text tags; zoom to see what each labels.
+For each page, list every tag printed in the drawing's own ink on the architect's drawing and on the vendor's, with the piece it labels (start with the page's area, and name the same piece the same way on both sides) and the tightest box round the tag. GV's notes (callouts ending "by GV", GV's markup) are not tags: leave them out. """
+    + COLOUR_RULE
+    + """ Use pdftotext -bbox on the drawings-only copy for text tags; zoom to see what each labels.
 Reply with the whole tag table."""
+)
 
 _TAG_WORD: Final = re.compile(r"[^A-Z0-9]")
 
