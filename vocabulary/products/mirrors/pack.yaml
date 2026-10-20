@@ -1,0 +1,24 @@
+# The mirrors product pack (#1776): its registry entry and what it teaches the engines.
+# What each field means: vocabulary/products.yaml (the registry's fields) and
+# vocabulary/product_packs.py (the pack's own fields). Generic trade words only, no client values.
+
+id: mirrors
+label: Mirror
+plural: Mirrors
+description: Wall and vanity mirrors (draft starter checklist).
+active: false
+draft: true
+check_kinds: [dimension_match, global_rules]
+checklist:
+  - name: dimensions
+    text: Mirror and frame size, mounting height, centre line over the sink or vanity.
+  - name: specs
+    text: Edge (polished or bevelled), glass type, lighting or demister, hanging hardware.
+  - name: finish
+    text: Frame finish code matches the architect's or the specification.
+  - name: quantities
+    text: How many of each mirror, and where each one goes.
+  - name: notes
+    text: Every note and callout on the architect's drawing or specification is followed.
+global_rule_hints: []
+words: [mirror, mirrors]
