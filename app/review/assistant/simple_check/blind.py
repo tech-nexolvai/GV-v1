@@ -146,15 +146,21 @@ BLIND_SYSTEM: Final = (
 
 
 def blind_system(
-    products: Sequence[str] = (), precedents: bool = True, *, kind: str = "pair"
+    products: Sequence[str] = (),
+    precedents: bool = True,
+    *,
+    kind: str = "pair",
+    prototype_reference: bool = False,
 ) -> str:
     """The blind look's system prompt: `BLIND_SYSTEM`, then the "looks wrong but isn't"
     precedents for the item's products (recipe step 6; off for a paid A/B). A `chain` look is
     asked to pick a string of parts code adds up, so P6 (a sum the model made is not a value) is
-    left out of it."""
+    left out of it. Where the brand prototype is the reference (R1: the architect gives no
+    elevation) the blind question does not say so, so P5 ("a prototype is reference only") is
+    left out too: it could make the look reject a real difference from the reference."""
     if not precedents:
         return BLIND_SYSTEM
-    leave_out = ("P6",) if kind == "chain" else ()
+    leave_out = (*(("P6",) if kind == "chain" else ()), *(("P5",) if prototype_reference else ()))
     return f"{BLIND_SYSTEM}\n\n{precedents_module.render(products, leave_out=leave_out)}"
 
 
@@ -428,7 +434,12 @@ def look(
             # Always adaptive thinking (#1775, C4): the gate of every red is a judgement. Opus 5.5
             # thinks anyway; Sonnet 5.5 would otherwise answer cold.
             thinking=thinking_config(model, True),
-            system=blind_system(item.products, settings.precedents, kind=verified.blind or "pair"),
+            system=blind_system(
+                item.products,
+                settings.precedents,
+                kind=verified.blind or "pair",
+                prototype_reference=item.prototype_reference,
+            ),
             tools=(),
             messages=[{"role": "user", "content": content}],
             final=False,

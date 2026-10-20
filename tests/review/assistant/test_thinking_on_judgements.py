@@ -151,3 +151,13 @@ def test_the_critic_is_asked_with_thinking_on(monkeypatch: pytest.MonkeyPatch) -
     )
     chat_read_review.critic_jobs(engine, [], object(), lambda *a: None)  # type: ignore[arg-type]
     assert seen and seen[0]["thinking"] is True
+
+
+def test_the_compare_total_never_makes_up_thinking_tokens() -> None:
+    """Attempts that do not report thinking tokens add none: the total has no field (unknown),
+    never a made-up 0; a reported count is summed."""
+    total: dict[str, int] = {}
+    compare._add(total, {"input_tokens": 10, "output_tokens": 5})
+    assert "thinking_tokens" not in total and total["output_tokens"] == 5
+    compare._add(total, {"output_tokens": 5, "thinking_tokens": 7})
+    assert total["thinking_tokens"] == 7

@@ -86,9 +86,8 @@ _GENERAL: Final[tuple[Precedent, ...]] = (
     ),
     Precedent(
         "P7",
-        "A plan view and an elevation of the same unit do not measure the same thing by default "
-        "(a depth is not a height): two values on different views are the same points only when "
-        "both ends are the same edges.",
+        "A depth on a plan is not a height on an elevation. A width on a plan and a width on an "
+        "elevation are the same thing when both ends are the same edges, and are compared then.",
         "different views",
     ),
 )
