@@ -134,6 +134,8 @@ _MIN_LABELS: Final = 3
 _PAD_PT: Final = 2.0
 #: How far from a missing item's box the architect's printed words count as "beside it" (points).
 _NEAR_PT: Final = 60.0
+#: The most of a not-the-form blind reply kept in its record (#1811).
+_MAX_KEPT_REPLY: Final = 4000
 #: The finding book's limits for an item name and a why.
 _ITEM_CHARS: Final = 150
 _WHY_CHARS: Final = 590
@@ -2253,14 +2255,21 @@ def _order(ref: str) -> tuple[int, int]:
 # ---- the blind second look ------------------------------------------------------------------------
 
 
-def with_blind(verified: Verified, answer: BlindAnswer | None, failed: str = "") -> Verified:
+def with_blind(
+    verified: Verified, answer: BlindAnswer | None, failed: str = "", *, reply: str = ""
+) -> Verified:
     """A red candidate after the blind second look: red when it agrees (see the module), else Not
     compared with the reason. `answer` None: the look was not made (`failed` says why: it failed,
-    the check was stopped, the money ran out)."""
+    the check was stopped, the money ran out). `reply`: the model's reply when it was not the
+    form, kept in the record (never read as an answer) for diagnosis and a $0 replay."""
     if verified.outcome != "candidate":
         return verified
     finding = dict(verified.finding)
-    record = answer.as_dict() if answer is not None else {"failed": failed or "not made"}
+    record: dict[str, Any] = (
+        answer.as_dict() if answer is not None else {"failed": failed or "not made"}
+    )
+    if answer is None and reply:
+        record["reply"] = reply[:_MAX_KEPT_REPLY]
     if verified.blind == "absence":
         reason = _absence_disagrees(answer, failed)
     else:

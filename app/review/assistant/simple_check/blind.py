@@ -38,8 +38,8 @@ guard (`assistant_message_cap_usd`) would be passed. The crops come from the eng
 
 from __future__ import annotations
 
-import json
 import logging
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
@@ -50,6 +50,7 @@ from uuid import uuid4
 from app.review.assistant.chat_request import MODELS, ChatModel, thinking_config
 from app.review.assistant.chat_tools import new_step
 from app.review.assistant.product_packs import carry, pack_prompt_parts
+from app.review.assistant.reply_json import json_of_reply, log_unreadable
 from app.review.assistant.simple_check.prompts import kinds_sentence
 from app.review.assistant.simple_check.verify import (
     BlindAnswer,
@@ -74,6 +75,16 @@ __all__ = [
 ]
 
 _log = logging.getLogger(__name__)
+#: The last not-the-form reply of this thread's blind look, for its record (#1811): `look` keeps
+#: its two-value answer (the seam the run's tests replace), the record still gets the reply.
+_KEPT = threading.local()
+
+
+def _kept_reply() -> str:
+    reply = getattr(_KEPT, "reply", "")
+    _KEPT.reply = ""
+    return reply if isinstance(reply, str) else ""
+
 
 #: The prompt's id on the Usage page.
 PROMPT_ID: Final = "review-assistant-chat-simple-blind-{provider}-{harness}"
@@ -349,7 +360,8 @@ def pictures(engine: ChatEngine, verified: Verified, item: Item) -> list[dict[st
 def look(
     engine: ChatEngine, verified: Verified, item: Item, settings: BlindSettings
 ) -> tuple[BlindAnswer | None, str]:
-    """One blind look: its answer, or None with why it could not be made."""
+    """One blind look: its answer, or None with why it could not be made. A reply that was not
+    the form is kept for this thread (`_kept_reply`) for the look's record (#1811)."""
     from app.review.assistant.chat_engine import HARNESS_ID
 
     model = settings.chat_model
@@ -386,11 +398,14 @@ def look(
         return None, "the model declined"
     if reply.stop_reason == "max_tokens":
         return None, "the reply was cut short"
+    text = reply.text()
     try:
-        found = answer_of(json.loads(reply.text()))
+        found = answer_of(json_of_reply(text))
     except ValueError:
         found = None
     if found is None:
+        log_unreadable(_log, "simple blind look", str(verified.key), text)
+        _KEPT.reply = text
         return None, "the reply was not the form"
     return BlindAnswer(**{**_fields(found), "model": model.id}), ""
 
@@ -428,8 +443,9 @@ def look_all(
         verified, item = pair
         # Timed and charged to the blind phase on this worker thread (the timings are per thread).
         with timings.phase("blind") if timings is not None else nullcontext():
+            _KEPT.reply = ""
             answer, why = look(engine, verified, item, settings)
-        done = with_blind(verified, answer, why)
+        done = with_blind(verified, answer, why, reply=_kept_reply())
         if on_done is not None:
             try:
                 on_done(done)

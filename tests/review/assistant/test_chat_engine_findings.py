@@ -576,9 +576,9 @@ def test_a_full_check_seeds_recorded_results_and_makes_the_cloud_drawing_and_rep
     # The zero-click drawing (#1581): its cover, the code-proved wrong item clouded on its page
     # (the cover is first, so the vendor's page 2 is the PDF's third), its proof, the Right list.
     assert "1\nWrong" in drawing.pages[0].extract_text()
-    assert "Vendor: 3'-10\"" in " ".join(drawing.pages[2].extract_text().split())
+    assert '3\'-10" should be 37"' in " ".join(drawing.pages[2].extract_text().split())
     # The run's record id stays off the vendor's drawing (#1622, `vendor_text`).
-    assert "Proved by: GV's rule check fails it" in drawing.pages[-2].extract_text()
+    assert "Proved by code: GV's rule check fails it" in drawing.pages[-2].extract_text()
     assert "Right (1)" in drawing.pages[-1].extract_text()
     assert "Backsplash height" in drawing.pages[-1].extract_text()
     report = "".join(

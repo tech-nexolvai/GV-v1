@@ -859,3 +859,21 @@ def test_a_reply_shape_goes_in_output_config_on_anthropic_and_in_the_prompt_on_o
     assert '"required":["ok"]' in schema_note(_SHAPE)
     # Without a shape nothing changes.
     assert call_params(provider="anthropic", **common)["output_config"] == {"effort": "low"}
+
+
+def test_a_spending_limit_is_not_called_a_bad_key() -> None:
+    """#1811: OpenRouter refuses a key past its spending limit with a 403; it is said as the
+    account's limit, and a plain 403 still says the key was refused."""
+    import anthropic
+
+    request = httpx2.Request("POST", "https://openrouter.ai/api/v1/messages")
+
+    def denied(words: str) -> Exception:
+        return anthropic.PermissionDeniedError(
+            words, response=httpx2.Response(403, request=request), body=None
+        )
+
+    limit = failure_from(denied("Key limit exceeded (total limit)"))
+    assert "reached its spending limit" in str(limit) and "limit exceeded" not in str(limit)
+    assert limit.kind == "key" and not limit.retryable
+    assert "refused this server's key" in str(failure_from(denied("Forbidden")))
