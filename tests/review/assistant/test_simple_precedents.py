@@ -172,3 +172,16 @@ def test_the_precedents_switch_reaches_the_compare_call_and_the_blind_look(
     for kind in ("compare", "blind"):
         for system in systems[kind]:
             assert ("Looks wrong but isn't" in system) is value, (kind, value)
+
+
+def test_views_differ_is_not_a_default_different_points() -> None:
+    """P7 says a depth is not a height, never that two views differ by default: a width on a plan
+    and on an elevation between the same edges is still compared."""
+    p7 = next(p.rule for p in precedents.precedents() if p.id == "P7")
+    assert "by default" not in p7 and "are compared then" in p7
+
+
+def test_a_prototype_reference_look_is_not_told_the_prototype_is_reference_only() -> None:
+    assert "P5." in blind.blind_system(("cabinet",))
+    reference = blind.blind_system(("cabinet",), prototype_reference=True)
+    assert "P5." not in reference and "P4." in reference
