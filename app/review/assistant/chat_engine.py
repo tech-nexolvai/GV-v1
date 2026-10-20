@@ -228,21 +228,26 @@ from app.review.assistant.full_check_brief import (
 )
 from app.review.assistant.full_check_lenses import Fold, lens_folds, names_apart, same_wrongs
 from app.review.assistant.full_check_plan import (
+    MAX_JOB_PAGES,
     CrossPairs,
     FanOutPlan,
     HelperJob,
     pack_ready,
     pack_without_labels,
     pair_lines,
-    plan_jobs,
     rules_summary,
+    scoped_plan,
     wait_for_page_map,
     with_lenses,
 )
 from app.review.assistant.full_check_specialists import specialist_system
 from app.review.assistant.ledger import LEDGER_TOOL_NAMES, ReadingLedger, recorded_results_check
 from app.review.assistant.pair_findings import add_to_answer as add_code_pairs
-from app.review.assistant.product_scope import ProductScope, outside_unit, scoped_gaps
+from app.review.assistant.product_scope import (
+    PriceRule,
+    ProductScope,
+    scoped_gaps,
+)
 from app.review.assistant.proof import proof_counts, vendor_facing
 from app.review.assistant.run_fit import add_to_answer as add_run_fit
 from app.review.assistant.sandbox import SET_PACK, SKILLS, UPLOADS, SandboxRefused
@@ -561,7 +566,17 @@ class EngineSettings:
     """The turns kept whole when clearing (this question and the ones before it)."""
     roster: bool = False
     """A full check as a fixed-price roster of specialists, no lead (`full_check_roster`,
-    `GV_ASSISTANT_FULL_CHECK_ROSTER`); the message cap is then the full check's fixed price."""
+    `GV_ASSISTANT_FULL_CHECK_ROSTER`). Its message cap starts as the upper bound (the set's budget,
+    or a lower `cap_usd`) and becomes the full check's fixed price once code has planned the pages
+    (`price_rule`, #1823)."""
+    price_rule: PriceRule = field(default_factory=PriceRule)
+    """The full check's fixed price: base + per content page in scope, at least a minimum
+    (`GV_ASSISTANT_FULL_CHECK_BASE_USD`, `..._PER_PAGE_USD`, `..._MIN_USD`, #1823)."""
+    numbers_effort: str = "low"
+    """The roster's first numbers page helpers' effort (`GV_ASSISTANT_NUMBERS_HELPER_EFFORT`)."""
+    numbers_pages: int = MAX_JOB_PAGES
+    """The roster's numbers page helpers' most pages each (`GV_ASSISTANT_NUMBERS_HELPER_PAGES`);
+    the drawn-things helpers keep the plan's groups (`full_check_plan.with_lenses`)."""
     pairing_proof: str = "ai_pair_plus_code"
     """What proves that two numbers measure the same thing (`GV_ASSISTANT_PAIRING_PROOF`):
     `ai_pair_plus_code` or `code_only` (`full_check_roster`)."""
@@ -597,6 +612,9 @@ class MessageOutcome:
     drawing set's budget)."""
     seen: list[dict[str, Any]] = field(default_factory=list)
     """Every zoom crop of the answer, the lead's and its helpers' (`ChatTools.seen`)."""
+    cap_micros: int | None = None
+    """The cap this answer ran under when it is not the job's message cap: a roster full check's
+    fixed price (#1823), stored on the message and shown on its stop words."""
 
 
 # ---- one streamed call ---------------------------------------------------------------------------
@@ -861,6 +879,9 @@ class _Agent:
     spent: int = 0
     partner: _Agent | None = None
     """The other lens's helper on the same pages."""
+    fold: tuple[_Agent, ...] = ()
+    """When the numbers helpers have smaller page groups (`HelperJob.fold`): the other helpers it
+    folds with once all have reported; empty: its `partner` alone."""
     system: str | None = None
     """A code-planned helper's own system prompt (its kind's, `full_check_specialists`), else the
     helpers' shared one."""
@@ -3596,8 +3617,17 @@ class ChatEngine:
             "one other has the same pages for the "
             + ("drawn things" if job.lens == "numbers" else "numbers")
             + ", the rest have the other pages"
-            if job.partner is not None
-            else "the others have the other pages"
+            if job.partner is not None and not job.fold
+            else (
+                (
+                    "one other has your pages (and its own) for the drawn things, the rest have "
+                    "the other pages"
+                    if job.lens == "numbers"
+                    else "others share your pages for the numbers, the rest have the other pages"
+                )
+                if job.partner is not None
+                else "the others have the other pages"
+            )
         )
         lines = [
             brief,
@@ -3683,10 +3713,11 @@ class ChatEngine:
         findings wait for its partner: then their duplicates are folded first (#1569)."""
         del entry
         self._merge_seeds(f"helper:{agent.number}")
-        if agent.partner is not None:
+        others = agent.fold or (() if agent.partner is None else (agent.partner,))
+        if others:
             with self._lock:
                 self._lens_reported.add(agent.number)
-                both = agent.partner.number in self._lens_reported
+                both = all(other.number in self._lens_reported for other in others)
                 if not both:
                     self._lens_waiting.add(f"helper:{agent.number}")
             if both:
@@ -3704,13 +3735,15 @@ class ChatEngine:
     def _fold_lenses(self, agent: _Agent) -> None:
         """One page group's two helpers, both reported: each item and page kept once
         (`full_check_lenses.lens_folds`); a disagreement is kept for the lead."""
-        partner = agent.partner
-        assert partner is not None
-        numbers, drawn = (agent, partner) if agent.lens == "numbers" else (partner, agent)
+        others = agent.fold or ((agent.partner,) if agent.partner is not None else ())
+        assert others
+        group = (agent, *others)
         with self._lock:
-            self._lens_waiting.discard(f"helper:{partner.number}")
+            for other in others:
+                self._lens_waiting.discard(f"helper:{other.number}")
         folds = lens_folds(
-            self.book.by(f"helper:{numbers.number}"), self.book.by(f"helper:{drawn.number}")
+            [f for a in group if a.lens == "numbers" for f in self.book.by(f"helper:{a.number}")],
+            [f for a in group if a.lens == "drawn" for f in self.book.by(f"helper:{a.number}")],
         )
         for fold in folds:
             if fold.disagree:
@@ -3833,31 +3866,16 @@ class ChatEngine:
 
     def scoped_jobs(self, page_map: Mapping[str, Any] | None) -> tuple[FanOutPlan | None, int]:
         """A full check's helper jobs for the products in scope, and the pages the whole set would
-        have compared: an area whose every page names only out-of-scope products gets no helper
-        (`product_scope.outside_unit`, read from the pages' printed words, $0)."""
-        main = self.book.main_file
-        across = self._cross
-        plan = plan_jobs(page_map, main, self._max_agents, across=across)
-        scope = self.product_scope
-        if plan is None or scope.every or self.tools.workspace.set_pack is None:
-            return plan, 0 if plan is None else plan.pages
-        files = [str(name) for name in (page_map or {}).get("files") or [] if name]
-        if not files and main:
-            files = [main]
-        try:
-            read = page_texts(self.tools.workspace.set_pack, files)
-        except Exception as failed:  # noqa: BLE001 - every area is then checked
-            _log.warning("assistant chat page words not read: %s", type(failed).__name__)
-            return plan, plan.pages
-        texts = {page: text for (name, page), text in read.items() if name == main}
-        scoped = plan_jobs(
+        have compared (`full_check_plan.scoped_plan`: the plan check counts the same pages)."""
+        folder = self.tools.workspace.set_pack
+        return scoped_plan(
             page_map,
-            main,
+            self.book.main_file,
             self._max_agents,
-            outside=lambda pages: outside_unit(pages, texts, scope),
-            across=across,
+            self.product_scope,
+            None if folder is None else lambda files: page_texts(folder, files),
+            across=self._cross,
         )
-        return scoped, plan.pages
 
     def page_words(self, page: int) -> str:
         """A vendor page's printed words and its area's title (the set pack's page map), read once

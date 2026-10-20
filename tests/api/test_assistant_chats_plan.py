@@ -11,6 +11,7 @@ import json
 import re
 import threading
 import time
+from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, ClassVar
@@ -65,12 +66,18 @@ def _half(role: str, y: float, round_: int | None = None) -> dict[str, Any]:
 
 def test_the_plan_check_asks_where_unsure_and_keeps_the_answers(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
     provider = ScriptedProvider(lead=[reply(text("Done."))])
-    with _world(postgres_engine, tmp_path, provider=provider, pdf=PDF3, pages=3) as world:
+    # A chat question's cap below the full check's price never cuts the full check (#1823).
+    lower = {"assistant_message_cap_usd": Decimal(1)}
+    with _world(
+        postgres_engine, tmp_path, provider=provider, pdf=PDF3, pages=3, settings=lower
+    ) as world:
         # The first ask copies the PDFs aside and starts the set pack: code's plan, nothing to ask
         # on a set with no pasted drawings.
         first = _plan(world)
         assert first["state"] == "ready", first
         assert first["doubts"] == [] and first["summary"] == "3 pages · 0 pairs · 3 general pages"
+        # No drawing to compare: no price yet (#1823).
+        assert first["price_usd"] is None and first["price_pages"] is None
 
         # A page map with one unsure drawing: p2's lower drawing is headed as a brand prototype
         # and no architect's drawing of its area was found.
@@ -91,6 +98,12 @@ def test_the_plan_check_asks_where_unsure_and_keeps_the_answers(postgres_engine,
         plan = _plan(world)
 
         assert plan["more"] == 0 and len(plan["doubts"]) == 1
+        # The price before the run (#1823): one content page, so the minimum; a product with no
+        # drawing in the set keeps that page (it names no product), the same price.
+        assert plan["price_pages"] == 1 and plan["price_usd"] == "5.00"
+        url = f"/api/v1/packages/{world.package_id}/full-check-plan?products=countertop"
+        scoped = world.client.get(url).json()
+        assert scoped["price_pages"] == 1 and scoped["price_usd"] == "5.00"
         doubt = plan["doubts"][0]
         assert doubt["id"] == "prototype:f0:p2:h1" and doubt["kind"] == "prototype"
         assert doubt["question"].startswith("Page 2: is the lower drawing the brand prototype")
@@ -134,7 +147,10 @@ def test_the_plan_check_asks_where_unsure_and_keeps_the_answers(postgres_engine,
             },
         )
         assert response.status_code == 200, response.text
-        assert _named(_events(response.text), "message_end")
+        ended = _named(_events(response.text), "message_end")
+        assert ended
+        # Its own price is its cap: one content page, the $5 minimum, above the $1 message cap.
+        assert ended[-1]["message"]["message_cap_usd"] == "5.00"
         rows = [json.loads(line) for line in (pack / ANSWERS_FILE).read_text().splitlines()]
         assert [(row["id"], row["answer"], row["by"]) for row in rows] == [
             (doubt["id"], "architect", "reviewer-one")

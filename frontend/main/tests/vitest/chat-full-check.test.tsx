@@ -540,7 +540,8 @@ describe('the chat page', () => {
     await user.click(run);
     const summary = await screen.findByText(/^Full check · /, { selector: '[data-slot="chat-full-check-summary"]' });
     // All by default, even for a set stated "countertop" (2026-10-18).
-    expect(summary.textContent).toBe('Full check · Countertops + Cabinets · Opus 5.5 · High · up to $5');
+    // #1823: no per-answer cap here; a full check's price is its own line.
+    expect(summary.textContent).toBe('Full check · Countertops + Cabinets · Opus 5.5 · High');
     expect(screen.getByText('Checks all products (countertops, cabinets).')).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Run' }));
     await waitFor(() => expect(stream.send).toHaveBeenCalled());

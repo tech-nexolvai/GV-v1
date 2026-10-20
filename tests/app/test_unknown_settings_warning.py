@@ -22,7 +22,7 @@ def test_only_unknown_assistant_and_review_names_are_listed() -> None:
         "GV_ASSISTANT_FULL_CHECK_CAPX_USD": "3",
         "GV_REVIEW_ASSISTANT_SANDBOXX": "docker",
         "GV_ASSISTANT_MESSAGE_CAP_USD": "15",
-        "GV_ASSISTANT_FULL_CHECK_CAP_USD": "5",
+        "GV_ASSISTANT_FULL_CHECK_BASE_USD": "2",
         "GV_REVIEW_ASSISTANT_ENABLED": "1",
         "GV_READER_LINE_MINIMUM_PT": "6",
         "GV_DEV_PORT": "8000",

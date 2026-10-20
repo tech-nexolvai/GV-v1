@@ -106,7 +106,8 @@ describe('the + menu’s rules, without React', () => {
 
   it('says the full check’s time from one constant, and the cap it is given', () => {
     expect(FULL_CHECK_MINUTES).toBe(15);
-    expect(fullCheckEstimate('$15')).toBe('~15 min · up to $15');
+    expect(fullCheckEstimate('$2 + $0.35/page')).toBe('~15 min · $2 + $0.35/page');
+    expect(fullCheckEstimate(null)).toBe('~15 min');
     expect(fullCheckEstimate(null)).toBe('~15 min');
   });
 
@@ -183,7 +184,7 @@ function Harness(props: Partial<PlusMenuProps> & { initial?: string; onSend?: (t
           models={[OPUS]}
           choice={choice}
           onChoice={setChoice}
-          messageCap="$5"
+          fullCheckPrice="$2 + $0.35/page"
           areas={['Vanity (left)', 'Pantry']}
           onNotice={vi.fn()}
           running={false}
@@ -224,7 +225,7 @@ describe('the + menu', () => {
     expect(opt('product:lighting').getAttribute('aria-disabled')).toBe('true');
     expect(opt('product:lighting').textContent).toContain('Coming later');
     const full = opt('full_check');
-    expect(full.textContent).toContain('~15 min · up to $5');
+    expect(full.textContent).toContain('~15 min · $2 + $0.35/page');
     expect(opt('check_page').textContent).toContain('~2 min · ~$0.50');
     expect(opt('cloud').textContent).toContain('$0');
     // The products already picked are marked.
@@ -516,17 +517,17 @@ describe('the + menu on the chat page', () => {
     expect(api.markup).toHaveBeenCalledWith('c-1', 'a-1');
   });
 
-  it('shows the per-answer cap the server states, in the words’ face (no monospace)', async () => {
+  it('shows the full check’s price rule the server states (#1823: never the per-answer cap), in the words’ face (no monospace)', async () => {
     const user = userEvent.setup();
     const api = fakeChatApi({
-      models: vi.fn(async () => modelsOut({ message_cap_usd: '15.00' })) as never,
+      models: vi.fn(async () => modelsOut({ message_cap_usd: '15.00', full_check_base_usd: '2.00', full_check_per_page_usd: '0.35', full_check_min_usd: '5.00' })) as never,
       get: vi.fn(async (id: string) => chatOut(id, [QUESTION, ANSWER], { product_type: 'countertop' })) as never,
     });
     renderPage(api);
     await screen.findByText('Two items differ.');
     await user.click(plusButton());
     const estimate = opt('full_check').querySelector('[data-slot=chat-plus-estimate]');
-    expect(estimate?.textContent).toBe('~15 min · up to $15');
+    expect(estimate?.textContent).toBe('~15 min · $2 + $0.35/page');
     expect(opt('check_page').querySelector('[data-slot=chat-plus-estimate]')?.textContent).toBe('~2 min · ~$0.50');
     for (const hint of document.querySelectorAll('[data-slot=chat-plus-estimate], [data-slot=chat-plus-estimate] *')) {
       expect(hint.className).not.toMatch(/\b(num|font-mono)\b/);

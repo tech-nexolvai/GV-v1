@@ -396,7 +396,9 @@ export interface paths {
         /**
          * Code's plan for a full check and its 0-3 questions (no AI call)
          * @description Copies the set's latest PDFs aside and starts its set pack when it is not made yet, then
-         *     reads the page map: `building` until it is made (ask again in a moment).
+         *     reads the page map: `building` until it is made (ask again in a moment). With the page map,
+         *     the full check's fixed price for `products` (none: every active product, #1823): base + per
+         *     content page in scope, at least the minimum, never above the set's budget left.
          */
         get: operations["get_full_check_plan_api_v1_packages__package_id__full_check_plan_get"];
         put?: never;
@@ -3870,12 +3872,28 @@ export interface components {
             /** Available */
             available: boolean;
             /**
+             * Full Check Base Usd
+             * @description The full check's price rule (#1823, `GV_ASSISTANT_FULL_CHECK_BASE_USD`): this plus `full_check_per_page_usd` per content page in scope, at least `full_check_min_usd`, never above the set's budget left.
+             * @default 2.00
+             */
+            full_check_base_usd: string;
+            /**
+             * Full Check Min Usd
+             * @default 5.00
+             */
+            full_check_min_usd: string;
+            /**
              * Full Check Mode
              * @description Which full check runs (`GV_ASSISTANT_FULL_CHECK_MODE`): the roster of specialists, or the simple check (one compare call per vendor drawing, #1665).
              * @default roster
              * @enum {string}
              */
             full_check_mode: "roster" | "simple";
+            /**
+             * Full Check Per Page Usd
+             * @default 0.35
+             */
+            full_check_per_page_usd: string;
             /** Message Cap Usd */
             message_cap_usd: string;
             /** Models */
@@ -5285,6 +5303,16 @@ export interface components {
              */
             more: number;
             /**
+             * Price Pages
+             * @description The content pages in scope the price counts: the pages the plan compares (drawings of the products asked; title and divider pages left out).
+             */
+            price_pages?: number | null;
+            /**
+             * Price Usd
+             * @description The full check's fixed price for the products asked (`products`), when the page map is read (#1823): base + per content page in scope, at least the minimum, never above the set's budget left. A roster full check's own cap; `null` until then.
+             */
+            price_usd?: string | null;
+            /**
              * State
              * @description ready: the page map is read; building: ask again in a moment; none: no page map can be made (no PDFs): run without questions.
              * @enum {string}
@@ -5848,7 +5876,7 @@ export interface components {
         ChatMessageIn: {
             /**
              * Cap Usd
-             * @description This answer's per-answer cap in dollars, when lower than the server's (`GV_ASSISTANT_MESSAGE_CAP_USD`, and a roster full check's fixed price); it never raises them. The runaway guard holds what the calls in flight may cost against it, so a paid run's money stop is kept before calls start (harness audit 2026-10-19).
+             * @description This answer's per-answer cap in dollars, when lower than the server's (`GV_ASSISTANT_MESSAGE_CAP_USD` for a question; a roster full check's fixed price, #1823); it never raises them. The runaway guard holds what the calls in flight may cost against it, so a paid run's money stop is kept before calls start (harness audit 2026-10-19).
              */
             cap_usd?: number | null;
             /**
@@ -13930,7 +13958,9 @@ export interface operations {
     };
     get_full_check_plan_api_v1_packages__package_id__full_check_plan_get: {
         parameters: {
-            query?: never;
+            query?: {
+                products?: string[] | null;
+            };
             header?: never;
             path: {
                 package_id: string;

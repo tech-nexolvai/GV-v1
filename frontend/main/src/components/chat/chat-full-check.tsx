@@ -7,7 +7,7 @@ import { PlanCheck } from '@/components/chat/chat-plan-check';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { chatPaths, type ChatAccuracy, type ChatCoverage, type ChatFile, type ChatFullCheckPlan, type ChatPlanAnswer, type ChatProduct, type ChatReviewAction } from '@/lib/chat-api';
 import { coverageCounts, coverageWords, type FindingCounts } from '@/lib/chat-findings';
-import { allPicked, progressWords } from '@/lib/chat-full-check';
+import { allPicked, fullCheckPrice, progressWords, type FullCheckPriceParts } from '@/lib/chat-full-check';
 import { planAnswers, usePlanCheck } from '@/lib/chat-plan-check';
 import { fileKind, fileSize, openHref, type ViewMessage } from '@/lib/chat-messages';
 import { activeProducts, comingLater, useProductCatalog } from '@/lib/products';
@@ -84,8 +84,10 @@ export function ProductChips({ products, onToggle, onAll, disabled }: { products
 }
 
 export interface FullCheckButtonProps {
-  /** "Full check · Countertops · Opus 5.5 · High · up to $15". */
+  /** "Full check · Countertops · Opus 5.5 · High". */
   summary: string;
+  /** #1823: the price rule ("$2 + $0.35 a content page, at least $5"), said until the plan counts the pages. */
+  priceRule?: string | null;
   /** Runs it, with the reviewer's answers to the plan check (#1569), if any. */
   onRun: (answers?: ChatPlanAnswer[]) => void;
   /** Why it cannot run now, in plain words; null when it can. */
@@ -99,11 +101,12 @@ export interface FullCheckButtonProps {
 }
 
 /** "Run full check", confirmed in a small popover that names the products, model, effort and cap. */
-export function FullCheckButton({ summary, onRun, blocked, variant = 'primary', loadPlan, scope }: FullCheckButtonProps) {
+export function FullCheckButton({ summary, onRun, blocked, variant = 'primary', loadPlan, scope, priceRule = null }: FullCheckButtonProps) {
   const [open, setOpen] = useState(false);
   const [picked, setPicked] = useState<Record<string, string>>({});
   const plan = usePlanCheck(loadPlan, open);
   const doubts = plan.status === 'ready' ? plan.plan.doubts : [];
+  const price = fullCheckPrice(plan.status === 'ready' ? plan.plan : null, priceRule);
   return (
     <Popover open={open} onOpenChange={(next) => { setOpen(next); if (next) setPicked({}); }}>
       <PopoverTrigger
@@ -123,6 +126,7 @@ export function FullCheckButton({ summary, onRun, blocked, variant = 'primary', 
       </PopoverTrigger>
       <PopoverContent align={variant === 'primary' ? 'center' : 'end'} className="w-[min(24rem,calc(100vw-24px))] gap-3 rounded-xl p-3 font-sans">
         <p data-slot="chat-full-check-summary" className="text-sm font-medium tabular-nums">{summary}</p>
+        <FullCheckPrice parts={price} />
         {scope && <p data-slot="chat-full-check-scope" className="text-xs font-medium text-foreground">{scope}</p>}
         <p className="text-xs text-muted-foreground">
           Checks every page against the architect and GV’s rules, then code draws the cloud drawing and the check report.
@@ -147,6 +151,26 @@ export function FullCheckButton({ summary, onRun, blocked, variant = 'primary', 
         </div>
       </PopoverContent>
     </Popover>
+  );
+}
+
+/**
+ * #1823: the full check's fixed price before it runs, worked out by code from the content pages of
+ * the products picked: "Fixed price $16 · 40 content pages"; until the plan has counted them, the
+ * rule. It is the check's own cap (a question's per-answer cap does not apply to it).
+ */
+export function FullCheckPrice({ parts }: { parts: FullCheckPriceParts | null }) {
+  if (!parts) return null;
+  return (
+    <p
+      data-slot="chat-full-check-price"
+      title="The full check’s own cap: a base plus a price per content page of the products picked, at least a minimum, never above the set’s budget left"
+      className="flex flex-wrap items-baseline gap-x-1.5 text-xs"
+    >
+      <span className="font-medium text-foreground">{parts.price ? 'Fixed price' : 'Fixed price:'}</span>
+      {parts.price && <span className="font-mono text-sm font-semibold text-foreground tabular-nums">{parts.price}</span>}
+      {parts.detail && <span className="text-muted-foreground tabular-nums">{parts.price ? `· ${parts.detail}` : parts.detail}</span>}
+    </p>
   );
 }
 

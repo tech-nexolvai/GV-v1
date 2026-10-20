@@ -47,6 +47,13 @@ export interface ChatModels {
   /** The most one drawing set's chats may cost together, and what they have cost so far. */
   package_cap_usd: string;
   package_spent_usd: string;
+  /**
+   * #1823: the full check's price rule ("2.00", "0.35", "5.00"): base + per content page in scope,
+   * at least the minimum, never above the set's budget left. A full check's own price is its cap.
+   */
+  full_check_base_usd?: string;
+  full_check_per_page_usd?: string;
+  full_check_min_usd?: string;
 }
 
 /** Chat v4 (CONTRACT4): a product a message focuses on: a product id from `GET /products` (#1547). */
@@ -978,6 +985,10 @@ export interface ChatFullCheckPlan {
   doubts: ChatPlanDoubt[];
   /** Further unsure places, compared as read. */
   more: number;
+  /** #1823: the full check's fixed price for the products asked ("17.75"); null until the page map is read. */
+  price_usd?: string | null;
+  /** The content pages in scope it counts (drawings of those products; title and divider pages left out). */
+  price_pages?: number | null;
 }
 
 /** `POST /chats/{id}/messages`. */
@@ -1134,9 +1145,13 @@ export function createChat(packageId: string): Promise<CreatedChat> {
   return json<CreatedChat>(chatPaths.chats(packageId), { method: 'POST', body: '{}' });
 }
 
-/** #1569: the plan check before a full check ($0); `building` means ask again shortly. */
-export function getFullCheckPlan(packageId: string): Promise<ChatFullCheckPlan> {
-  return json<ChatFullCheckPlan>(chatPaths.fullCheckPlan(packageId));
+/**
+ * #1569: the plan check before a full check ($0); `building` means ask again shortly. With the
+ * products picked (#1823), its fixed price for them.
+ */
+export function getFullCheckPlan(packageId: string, products?: readonly ChatProduct[] | null): Promise<ChatFullCheckPlan> {
+  const query = (products ?? []).map((product) => `products=${encodeURIComponent(product)}`).join('&');
+  return json<ChatFullCheckPlan>(query ? `${chatPaths.fullCheckPlan(packageId)}?${query}` : chatPaths.fullCheckPlan(packageId));
 }
 
 export function getChat(chatId: string): Promise<Chat> {

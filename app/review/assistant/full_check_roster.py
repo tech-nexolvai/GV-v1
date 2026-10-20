@@ -30,7 +30,11 @@ checkers decide what may be red:
   undecided item, the trust report, the files), then the **summary writer**: code's 5-6 lines,
   reworded by Haiku only when every number survives.
 
-**The fixed price.** `assistant_full_check_cap_usd` (default $5) is the message's whole cap. Each
+**The fixed price** (owner, 2026-10-21, #1823): $2 + $0.35 per content page in scope (the pages
+the plan compares), at least $5, never above the drawing set's budget left nor a lower `cap_usd`
+(`PriceRule`, `GV_ASSISTANT_FULL_CHECK_BASE_USD`, `..._PER_PAGE_USD`, `..._MIN_USD`). Until code
+has planned the pages the message's cap is that bound; then the price becomes its whole cap (the
+chat's per-answer message cap never cuts a full check below its price). Each
 phase has its share of it and each specialist its own cap within that share (`PricePlan`); every
 share and cap is proportional to the price (#1805: a cap made for $5 stopped "look again" at $1.69
 of a $15 price). Money a phase leaves rolls forward: each later step (the gap closers, the verifier,
@@ -67,7 +71,7 @@ import re
 import threading
 from collections.abc import Collection, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from itertools import zip_longest
 from pathlib import Path
@@ -114,7 +118,6 @@ from app.review.assistant.full_check_advocate import (
 )
 from app.review.assistant.full_check_specialists import HELPER_CORE, PACK_SHAPES, knowledge_text
 from app.review.assistant.impact import by_impact
-from app.review.assistant.product_scope import scaled_price
 from app.review.assistant.reply_json import json_of_reply, log_unreadable, object_of_reply
 from app.review.assistant.spot_locate import code_spotted
 from app.review.assistant.untrusted import fence
@@ -1168,7 +1171,7 @@ class _Run:
                 (
                     tuple(job.pages)
                     for job in jobs
-                    if job.lens != "drawn" and f.get("page") in job.pages
+                    if job.lens != "numbers" and f.get("page") in job.pages
                 ),
                 (f.get("page"),),
             )
@@ -1387,7 +1390,7 @@ class _Run:
                 engine.cross_file_pairs(page_map)
             with engine.timings.phase("planning"):
                 # Only the areas of the products in scope get helpers (`product_scope`).
-                plan, pages_all = engine.scoped_jobs(page_map)
+                plan, _pages_all = engine.scoped_jobs(page_map)
                 rules = engine._rules_summary() if plan is not None else ""
                 pictures = pack_ready(workspace.set_pack)
             warm.result()
@@ -1420,20 +1423,24 @@ class _Run:
         )
         if carried:
             # Continue (#1821): the pages the earlier answer compared are never opened again.
-            pages_all = pages_all or plan.pages
             plan = remaining_plan(plan, carried)
         if settings.drawn_helpers:
-            plan = with_lenses(plan)
+            # The numbers helpers may have smaller groups than the drawn-things helpers
+            # (`GV_ASSISTANT_NUMBERS_HELPER_PAGES`); the default is today's plan exactly.
+            plan = with_lenses(plan, settings.numbers_pages, page_map)
         engine._plan = plan
-        groups = len({job.pages for job in plan.jobs})
-        # The fixed price shrinks with the pages the product scope leaves to compare (never grows).
-        price = scaled_price(settings.message_cap_micros, plan.pages, pages_all)
+        # The page groups: the drawn-things helpers' (the plan's own), never the numbers'.
+        groups = len({job.pages for job in plan.jobs if job.lens != "numbers"})
+        # The fixed price (#1823): base + per content page the plan compares (the products in
+        # scope, no title or divider page), at least the minimum, never above the bound.
+        bound = price_bound(engine)
+        price = settings.price_rule.price(plan.pages, bound)
         self.plan = PricePlan.balanced(price, groups, plan.pages)
         if engine.continuing:
             # A Continue's price: the pages left, plus what the finishing steps need for every red
-            # candidate it carried over, never more than the message's cap (#1821).
+            # candidate it carried over, never above the set's budget left (#1821, #1823).
             needs = sum(self.finish_needs().values())
-            price = min(settings.message_cap_micros, price + needs)
+            price = min(bound, price + needs)
             self.plan = PricePlan.balanced(price, groups, plan.pages)
             _log.warning(
                 "assistant roster Continue: %d pages kept from the earlier answer, %d to compare; "
@@ -1442,6 +1449,7 @@ class _Run:
                 plan.pages,
                 price / _MICROS,
             )
+        set_price(engine, price)
         self.started_at = engine.spent
         for timing, names in TIMINGS_PHASES.items():
             engine.timings.set_budget(timing, sum(self.plan.budgets[n] for n in names))
@@ -1477,7 +1485,7 @@ class _Run:
                     model=BY_SHORT["sonnet"] if job.lens == "drawn" else model,
                     pages=job.pages,
                     lens=job.lens,
-                    effort="low",
+                    effort=settings.numbers_effort if job.lens == "numbers" else "low",
                     cap_micros=self.plan.cap_for(kind, len(job.pages)),
                     soft_cap=True,
                     system=engine._kind_system(job.lens),
@@ -1486,8 +1494,9 @@ class _Run:
         by_job = {job.number: agent for job, agent in zip(plan.jobs, agents, strict=True)}
         for job, agent in zip(plan.jobs, agents, strict=True):
             agent.partner = None if job.partner is None else by_job.get(job.partner)
+            agent.fold = tuple(by_job[number] for number in job.fold if number in by_job)
         tag_pages = sorted({page for job in plan.jobs for page in job.pages})
-        tag_groups = tag_page_groups([job.pages for job in plan.jobs])
+        tag_groups = tag_page_groups([job.pages for job in plan.jobs if job.lens != "numbers"])
         for group in tag_groups:
             agents.append(self._tag_agent(group, page_map, of_pages=len(tag_pages)))
         for agent in agents:
@@ -2051,8 +2060,8 @@ class _Run:
         groups: dict[tuple[int, ...], list[dict[str, Any]]] = {}
         seen: set[str] = set()
         for job in plan.jobs:
-            if job.lens == "drawn":
-                continue
+            if job.lens == "numbers":
+                continue  # the plan's page groups: the drawn-things helpers' (#1823)
             for finding in candidates:
                 if finding["page"] in job.pages and finding["id"] not in seen:
                     groups.setdefault(tuple(job.pages), []).append(finding)
@@ -3192,7 +3201,7 @@ class _Run:
                 (
                     tuple(job.pages)
                     for job in plan.jobs
-                    if job.lens != "drawn" and finding["page"] in job.pages
+                    if job.lens != "numbers" and finding["page"] in job.pages
                 ),
                 (int(finding["page"]),),
             )
@@ -3314,7 +3323,7 @@ class _Run:
         lines = [reworded or text]
         if unsendable:
             lines.append(f"**Check incomplete: {unsendable}. Not for sending until it is.**")
-        # The price for the products in scope (`scaled_price`), else the whole price.
+        # The price for the content pages in scope (`PriceRule`, #1823), else the message's cap.
         price = cap_text(self.plan.price if self.plan is not None else settings.message_cap_micros)
         lines.append(f"Fixed price ${price}: this check used {_dollars(engine.spent)}.")
         if self.not_done:
@@ -3483,5 +3492,29 @@ def _code_pairs(engine: ChatEngine) -> dict[str, str]:
 
 def run(engine: ChatEngine) -> MessageOutcome | None:
     """A full check as the fixed-price roster (see the module). `None`: there is no page map to
-    plan from, so the lead plans as before."""
-    return _Run(engine).run()
+    plan from, so the lead plans as before, under the price of the set's pages (#1823)."""
+    ended = _Run(engine).run()
+    if ended is None:
+        rule = engine.settings.price_rule
+        set_price(engine, rule.price(engine.tools.page_count, price_bound(engine)))
+    return ended
+
+
+def price_bound(engine: ChatEngine) -> int:
+    """The most a full check may cost (#1823, millionths of $): its starting cap (the set's
+    budget, or a lower `cap_usd` asked with the message) and the set's budget its other answers
+    left. `0` when the set's spend cannot be read: it stops rather than overspends (`_over`)."""
+    settings = engine.settings
+    try:
+        package = engine.package_spent()
+    except Exception:  # noqa: BLE001 - an unknown spend stops rather than overspends
+        _log.exception("assistant roster could not read the drawing set's spend")
+        return 0
+    return max(0, min(settings.message_cap_micros, settings.package_cap_micros - package))
+
+
+def set_price(engine: ChatEngine, price: int) -> None:
+    """The full check's fixed price made the message's whole cap (#1823): every call's runaway
+    guard and the second reads' share then hold it, as a chat question's hold the message cap."""
+    engine.settings = replace(engine.settings, message_cap_micros=max(0, price))
+    engine._read_share.limit = min(engine._read_share.limit, max(0, price))

@@ -176,7 +176,7 @@ from app.review.assistant.consistency_answer import (
 from app.review.assistant.not_compared import XLSX_MIME
 from app.review.assistant.package_store import identity as package_identity
 from app.review.assistant.package_store import stored_numbers
-from app.review.assistant.product_scope import ProductScope
+from app.review.assistant.product_scope import PriceRule, ProductScope
 from app.review.assistant.proof import reviewer_value_refusal
 from app.review.assistant.review_action import CheckState
 from app.review.assistant.sandbox import ChatWorkspace, Sandbox, open_sandbox
@@ -464,6 +464,11 @@ def assistant_models(
         worker_spent_usd=cost_text(worker),
         set_spent_usd=cost_text(spent + worker),
         full_check_mode=settings.assistant_full_check_mode,
+        full_check_base_usd=cost_text(int(settings.assistant_full_check_base_usd * _MICROS)),
+        full_check_per_page_usd=cost_text(
+            int(settings.assistant_full_check_per_page_usd * _MICROS)
+        ),
+        full_check_min_usd=cost_text(int(settings.assistant_full_check_min_usd * _MICROS)),
     )
 
 
@@ -675,10 +680,19 @@ def get_full_check_plan(
     package_id: UUID,
     principal: Authenticated,
     session: Annotated[Session, Depends(get_session)],
+    registry: Annotated[ChatRegistry, Depends(chat_registry)],
+    products: Annotated[list[str] | None, Query()] = None,
 ) -> ChatFullCheckPlanOut:
     """Copies the set's latest PDFs aside and starts its set pack when it is not made yet, then
-    reads the page map: `building` until it is made (ask again in a moment)."""
+    reads the page map: `building` until it is made (ask again in a moment). With the page map,
+    the full check's fixed price for `products` (none: every active product, #1823): base + per
+    content page in scope, at least the minimum, never above the set's budget left."""
     package = _package(session, package_id, principal)
+    settings: Settings = request.app.state.settings
+    rule = price_rule(settings)
+    left = int(settings.assistant_package_cap_usd * _MICROS) - package_spent_micros(
+        session, package.id, registry
+    )
     uploads = _upload_sources(
         _factory(session),
         getattr(request.app.state, ARTIFACT_STORE_STATE, None),
@@ -691,6 +705,8 @@ def get_full_check_plan(
             package.id,
             uploads,
             lambda page: f"/api/v1/packages/{package.id}/plan-pages/{page}",
+            products=products,
+            price=lambda pages: rule.price(pages, max(0, left)),
         )
     except Exception as failed:  # noqa: BLE001 - the full check still runs, without questions
         _log.warning("assistant chat plan check failed: %s", type(failed).__name__)
@@ -1389,6 +1405,16 @@ def _simple_options(settings: Settings, body: ChatMessageIn) -> dict[str, Any] |
     }
 
 
+def price_rule(settings: Settings) -> PriceRule:
+    """The full check's fixed price from the settings (#1823): base + per page, at least a
+    minimum."""
+    return PriceRule(
+        base=int(settings.assistant_full_check_base_usd * _MICROS),
+        per_page=int(settings.assistant_full_check_per_page_usd * _MICROS),
+        minimum=int(settings.assistant_full_check_min_usd * _MICROS),
+    )
+
+
 def _lowered(cap_micros: int, asked_usd: float | None) -> int:
     """A cap, lowered to the message's own `cap_usd` when that is lower; never raised."""
     if asked_usd is None:
@@ -1516,9 +1542,14 @@ def _message(
             page_cache_workers=settings.assistant_page_cache_workers,
             page_cache_memory_mb=settings.assistant_page_cache_memory_mb,
             roster=settings.assistant_full_check_roster,
+            # A full check's own price is its cap (#1823): until code has planned the pages, the
+            # set's budget (or a lower `cap_usd`) bounds it, never the chat's message cap.
             full_check_cap_micros=_lowered(
-                int(settings.assistant_full_check_cap_usd * _MICROS), body.cap_usd
+                int(settings.assistant_package_cap_usd * _MICROS), body.cap_usd
             ),
+            price_rule=price_rule(settings),
+            numbers_effort=settings.assistant_numbers_helper_effort,
+            numbers_pages=settings.assistant_numbers_helper_pages,
             pairing_proof=settings.assistant_pairing_proof,
             full_check_mode=settings.assistant_full_check_mode,
             page_match_model=(
