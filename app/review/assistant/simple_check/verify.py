@@ -20,11 +20,12 @@ outputs read (the cloud drawing, the package, the Not-compared PDF and workbook,
   value the same way (the difference is still on the vendor's current drawing);
 - `units`: a dual label's millimetres agree with its inches; `slip`: the difference is not a unit
   slip (10x, 12x) or one drawn digit easy to misread;
-- `gv_ink`: the vendor value's OWN ink is not GV's colour. This replaces the old GV-note box check,
+- `gv_ink`: the vendor value's OWN ink is not GV's markup. This replaces the old GV-note box check,
   which blocked a label that merely sat inside a GV note's box: it stopped four true items and no
-  false one (PIPELINE-AUDIT.md). A label code read from the vendor's black or grey layer (the text
-  and drawn routes never read GV's colours) is the vendor's, whatever GV drew over it; any other
-  label's own spot is looked at (`run.py` measures it on the markup-free copy);
+  false one (PIPELINE-AUDIT.md). A label code read from the vendor's own ink (the text and drawn
+  routes: every colour on an ordinary upload, black or grey on GV's combined review sheets, never
+  GV's markup) is the vendor's, whatever GV drew over it; any other label's own spot is looked at
+  (`run.py` measures it on the markup-free copy);
 - `trade`: no end runs to the ceiling, a soffit or bulkhead, a door or another trade's work;
 - `ends`: the model's "from / to" ends name the same two points on both drawings;
 - `geometry`: code's drawn extents (`full_check_advocate.same_extent`) do not show different
@@ -552,6 +553,9 @@ class Region:
     view: str | None = None
     file_page: int | None = None
     """Its page in its own file when `page` is a separate file's set page (#1722)."""
+    sheet: str | None = None
+    """Its file's kind (`schema.Drawing.sheet`: `combined` / `ordinary`), for the prompts' colour
+    words; `None`: not known."""
 
 
 _VIEWS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = tuple(
@@ -608,6 +612,7 @@ class Item:
                 _box(getattr(vendor, "crop_box", None)) or _box(vendor.box),
                 vendor.round,
                 _view_of(getattr(vendor, "titles", ()) or ()),
+                sheet=getattr(vendor, "sheet", None),
             ),
             architect=tuple(
                 Region(
@@ -617,6 +622,7 @@ class Item:
                     None,
                     _view_of(getattr(d, "titles", ()) or ()),
                     getattr(d, "file_page", None),
+                    getattr(d, "sheet", None),
                 )
                 for d in work.architect
             ),
@@ -918,19 +924,19 @@ def _roles_check(
     return Check("roles", "pass")
 
 
-#: Label routes whose characters code read from the vendor's black or grey ink only: the text
-#: route reads black or grey characters, the drawn route black or grey strokes (`dim_labels`); GV's
-#: coloured markup is never read as a label.
+#: Label routes whose characters code read from the drawing's own ink (`dim_labels`): on an
+#: ordinary upload every colour, on GV's combined review sheets only black or grey (the colour rule,
+#: 2026-10-19); GV's markup is never read as a label either way.
 _VENDOR_INK_ROUTES: Final = frozenset({"text", "drawn"})
 
 
 def _ink_check(label: Mapping[str, Any], ink: Ink | None) -> Check:
     """Whether the vendor value is GV's markup: only by the label's OWN ink. A label code read
-    from the vendor's black or grey layer is the vendor's, whatever GV drew over or around it
-    (a yellow note covering it, a note box round it: the old box check stopped four true items).
-    Any other label's own spot is looked at (`ink`, its coloured share)."""
+    from the vendor's own ink (`_VENDOR_INK_ROUTES`) is the vendor's, whatever GV drew over or
+    around it (a yellow note covering it, a note box round it: the old box check stopped four true
+    items). Any other label's own spot is looked at (`ink`, its coloured share)."""
     if label.get("route") in _VENDOR_INK_ROUTES:
-        return Check("gv_ink", "pass", "read from the vendor's black or grey ink")
+        return Check("gv_ink", "pass", "read from the vendor's own ink, never GV's markup")
     measured = ink(label) if ink is not None else None
     if measured is None:
         return Check("gv_ink", "unknown", "the vendor value's own ink could not be looked at")
@@ -947,6 +953,45 @@ def _trade_check(measures: object, ends: tuple[Ends, str]) -> Check:
             "trade", "fail", f"it measures room context or another trade ({_plain(measures)})"
         )
     return Check("trade", "pass")
+
+
+#: The check that records code's answer to the AI's own "different points" (`objection`): it
+#: passes when code's evidence contradicts it, so the pair is verified like any other.
+OBJECTION: Final = "objection"
+
+
+def _contradicts(pair: Mapping[str, Any], ends: Mapping[str, str]) -> bool:
+    """Whether the AI's own answer contradicts its "different points" (#1773 review): it writes
+    the very same end words on both drawings (in either order, every end named) and gives no note.
+    Ends of one rough kind are not enough (two outlets' centre lines, two units' tops are
+    different points), and the note is where the AI says why the points differ."""
+    if str(pair.get("note") or "").strip():
+        return False
+    vendor = [_plain(ends["vendor_from"]), _plain(ends["vendor_to"])]
+    architect = [_plain(ends["architect_from"]), _plain(ends["architect_to"])]
+    if not all(vendor + architect):
+        return False
+    return vendor in (architect, architect[::-1])
+
+
+def _objection(matched: tuple[Ends, str], differ: bool) -> Check | None:
+    """Code's answer to the AI's "different points" (DeepSeekMath-V2: check the "no" as well as
+    the "yes"): a passed `objection` check when the AI's own end words are the same words on both
+    drawings with no note (`_contradicts`, checked first), code's end words agree and code reads
+    two different values; None otherwise (the AI's "no" stands). A pair it lets through still
+    needs every code check and the blind look to be red.
+
+    Code's drawn geometry (`same_extent`) is never evidence against the "no": it allows the two
+    lines' ends to differ by the values' own difference, which is exactly what two dimensions to
+    different points look like (a top against an underside), so it only ever blocks."""
+    if not differ or matched[0] != "same":
+        return None
+    return Check(
+        OBJECTION,
+        "pass",
+        f"the AI said {DIFFERENT_POINTS}, but its own end words are the same on both drawings "
+        f"({matched[1]})",
+    )
 
 
 def _geometry_check(vendor: Mapping[str, Any], architect: Mapping[str, Any], pack: Pack) -> Check:
@@ -991,6 +1036,7 @@ _ORDER: Final = (
     "trade",
     "ends",
     "geometry",
+    OBJECTION,
 )
 
 
@@ -1262,17 +1308,21 @@ def _verify_pair(
         return Verified(
             key, "pair", "listed", AI_UNSURE, "ai_unsure", vendor=vendor, ends=ends, about=about
         )
-    if verdict == "different_points":
-        return one.grey(DIFFERENT_POINTS, "different_reference")
-    if verdict not in ("same", "different"):
+    objected = verdict == "different_points"
+    if not objected and verdict not in ("same", "different"):
         note = str(pair.get("note") or "").strip()
         return one.grey(UNSURE + (f": {note}" if note else ""), "not_proved")
+    if objected and not _contradicts(pair, ends):
+        # Nothing in the AI's own answer contradicts its "different points": it stands.
+        return one.grey(DIFFERENT_POINTS, "different_reference")
     v_in, a_in = _fraction(vendor.get("inches")), _fraction(architect.get("inches"))
     if v_in is None:
         v_in = _read_label(vendor, "vendor", pack, number)
     if a_in is None and architect_override is None:
         a_in = _read_label(architect, "architect", pack, number)
     if v_in is None or a_in is None:
+        if objected:
+            return one.grey(DIFFERENT_POINTS, "different_reference")
         tool = [
             str(label["read_number"].get("reason") or "")
             for label in (vendor, architect)
@@ -1313,6 +1363,11 @@ def _verify_pair(
         Check("ends", "pass" if matched[0] == "same" else "fail", matched[1]),
         _geometry_check(vendor, architect, pack),
     ]
+    if objected:
+        objection = _objection(matched, _differ(v_in, a_in))
+        if objection is None:
+            return one.grey(DIFFERENT_POINTS, "different_reference", checks)
+        checks.append(objection)
     if verdict == "same" or not _differ(v_in, a_in):
         return _right(one, checks, matched, v_in, a_in, said_different=verdict == "different")
     checks.append(_round_check(pack, item, vendor))
@@ -1321,6 +1376,10 @@ def _verify_pair(
     checks.append(_flags_check(vendor, architect))
     failed = _first_failure(checks)
     if failed is not None:
+        if objected:
+            # The AI's "different points" was not supported, but another check stops it: the
+            # AI's own reason stays the item's reason.
+            return one.grey(DIFFERENT_POINTS, "different_reference", checks)
         return _blocked(one, failed, matched, checks)
     why = (
         f"The vendor prints {_label_words(vendor)}; the "
