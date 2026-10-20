@@ -341,33 +341,15 @@ class Held:
 
 
 def look(
-    engine: ChatEngine,
-    verified: Verified,
-    item: Item,
-    settings: BlindSettings,
-    held: Held | None = None,
+    engine: ChatEngine, verified: Verified, item: Item, settings: BlindSettings
 ) -> tuple[BlindAnswer | None, str]:
-    """One blind look: its answer, or None with why it could not be made. Its price is held in
-    `held` (a fresh hold when none is shared) while the call runs."""
-    held = held if held is not None else Held()
-    model = settings.chat_model
-    estimate = engine._price(model, _PROMPT_TOKENS, _MAX_TOKENS) or 0
-    with held.lock:
-        if not engine._fits(held.reserved + estimate):
-            return None, "the answer's runaway guard was reached"
-        held.reserved += estimate
-    try:
-        return _look(engine, verified, item, settings, model)
-    finally:
-        with held.lock:
-            held.reserved -= estimate
-
-
-def _look(
-    engine: ChatEngine, verified: Verified, item: Item, settings: BlindSettings, model: ChatModel
-) -> tuple[BlindAnswer | None, str]:
+    """One blind look: its answer, or None with why it could not be made."""
     from app.review.assistant.chat_engine import HARNESS_ID
 
+    model = settings.chat_model
+    estimate = engine._price(model, _PROMPT_TOKENS, _MAX_TOKENS) or 0
+    if not engine._fits(estimate):
+        return None, "the answer's runaway guard was reached"
     if engine.cancel.is_set():
         return None, "the check was stopped"
     try:
@@ -427,6 +409,22 @@ def _fields(answer: BlindAnswer) -> dict[str, Any]:
     }
 
 
+def _held_look(
+    engine: ChatEngine, verified: Verified, item: Item, settings: BlindSettings, held: Held
+) -> tuple[BlindAnswer | None, str]:
+    """`look`, its price held in `held` while it runs: the guard counts the looks in flight."""
+    estimate = engine._price(settings.chat_model, _PROMPT_TOKENS, _MAX_TOKENS) or 0
+    with held.lock:
+        if not engine._fits(held.reserved + estimate):
+            return None, "the answer's runaway guard was reached"
+        held.reserved += estimate
+    try:
+        return look(engine, verified, item, settings)
+    finally:
+        with held.lock:
+            held.reserved -= estimate
+
+
 def look_all(
     engine: ChatEngine,
     candidates: Sequence[tuple[Verified, Item]],
@@ -444,7 +442,7 @@ def look_all(
         verified, item = pair
         # Timed and charged to the blind phase on this worker thread (the timings are per thread).
         with timings.phase("blind") if timings is not None else nullcontext():
-            answer, why = look(engine, verified, item, settings, held)
+            answer, why = _held_look(engine, verified, item, settings, held)
         done = with_blind(verified, answer, why)
         if on_done is not None:
             try:
