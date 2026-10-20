@@ -167,6 +167,15 @@ def _finding(
     arch_text = _inches_text(arch_in) if chain else arch_texts[0]
     off = vendor_in - arch_in
     different = abs(off) > TOLERANCE
+    # A value marked verify in field or plus or minus (`dim_labels` flags, #1778) is no proof of a
+    # mistake: a difference against it is a check, never Wrong.
+    noted = any(
+        flag in ("vif", "approx")
+        for raw in (vendor_raw, *arch_raws)
+        if raw
+        for flag in raw.get("flags") or ()
+    )
+
     span = _span_words(pair.get("how")) or "the same two points on both drawings"
     method = "by what both ends land on" if pair.get("method") == "anchors" else "by drawn position"
     printed = (
@@ -180,6 +189,12 @@ def _finding(
         else (
             f"The architect prints {printed}; the vendor prints {vendor_text}, "
             f"{_inches_text(abs(off))} {'more' if off > 0 else 'less'}."
+            + (
+                " One of them is marked verify in field or plus or minus, so the difference is "
+                "no proof of a mistake."
+                if noted
+                else ""
+            )
             if different
             else f"Both print the same: the architect {printed}, the vendor {vendor_text}."
         )
@@ -191,7 +206,7 @@ def _finding(
         "category": "other",
         "architect": arch_text,
         "vendor": vendor_text,
-        "status": ("check" if chain else "different") if different else "same",
+        "status": ("check" if chain or noted else "different") if different else "same",
         "why": why,
         "verified": False,
         "source": "architect",
