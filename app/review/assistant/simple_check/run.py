@@ -234,9 +234,9 @@ class _Run:
     attempt_holds: dict[str, int] = field(default_factory=dict)
     """One attempt's hold per drawing started (`_guarded`): what each retry holds again."""
     refused: set[str] = field(default_factory=set)
+    """Drawings not started because the runaway guard would have been passed."""
     waiting: set[str] = field(default_factory=set)
     """Drawings waiting for room (`_room`): their holds are not counted as calls that will end."""
-    """Drawings not started because the runaway guard would have been passed."""
     saved_blind: dict[str, dict[str, Any]] = field(default_factory=dict)
     blind_failed: int = 0
     """Red candidates whose blind look was asked for but could not be made (the call failed, the
@@ -662,7 +662,7 @@ class _Run:
                     source=self._guarded(source.pictures, settings),
                     system=system,
                     settings=settings,
-                    stop=self.stop,
+                    stop=_AnyStop(self.stop, getattr(engine, "cancel", None)),
                     on_outcome=self._on_outcome,
                     # A Stop closes the calls streaming now (`ChatEngine.stop_streams`, #1769).
                     streams=engine,
@@ -1736,6 +1736,33 @@ def _wait_for_pack(folder: Path, cancel: threading.Event) -> str | None:
             return "the drawing set's pack (labels, pairs) was still being made"
         if cancel.wait(_PACK_POLL_SECONDS):
             return None
+
+
+class _AnyStop:
+    """The compare calls' stop (`compare.compare_all`'s `stop`): set when the run's own flag is,
+    or the reviewer's Stop (the engine's cancel) at once. A Stop closes the first call's stream,
+    which wakes the calls waiting for its first event before the watcher sets the run's flag
+    (#1769 review): they must see the Stop then, or each would send its request."""
+
+    def __init__(self, own: threading.Event, cancel: threading.Event | None) -> None:
+        self.own, self.cancel = own, cancel
+
+    def is_set(self) -> bool:
+        if self.cancel is not None and self.cancel.is_set():
+            self.own.set()
+        return self.own.is_set()
+
+    def set(self) -> None:
+        self.own.set()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        ends = None if timeout is None else time.monotonic() + timeout
+        while not self.is_set():
+            left = 0.1 if ends is None else min(0.1, ends - time.monotonic())
+            if left <= 0:
+                return False
+            self.own.wait(left)
+        return True
 
 
 #: Why a compare call waiting for room, or about to start, does not start: the check was stopped.

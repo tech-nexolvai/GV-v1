@@ -202,6 +202,69 @@ def test_stop_closes_the_stream_and_its_usage_is_kept() -> None:
     assert tracker.open == set()
 
 
+def test_a_stop_during_the_warm_up_starts_none_of_the_waiting_calls() -> None:
+    """The first call streams while the others wait for its first event; the reviewer's Stop
+    sets the engine's cancel and closes the stream, which wakes the others before the run's own
+    flag follows (#1769 review): none of them opens a stream."""
+
+    class Silent:
+        """A call that sends nothing yet (its first event has not come) until it is closed."""
+
+        def __init__(self) -> None:
+            self.closed = threading.Event()
+
+        def __iter__(self) -> Iterator[dict[str, Any]]:
+            if not self.closed.wait(10):
+                raise AssertionError("never closed")
+            raise ConnectionError("closed")
+            yield {}
+
+        def close(self) -> None:
+            self.closed.set()
+
+    class Provider:
+        name = "anthropic"
+
+        def __init__(self) -> None:
+            self.first = Silent()
+            self.opened: list[float] = []
+
+        def open_stream(self, _params: Any) -> Any:
+            self.opened.append(time.monotonic())
+            return self.first if len(self.opened) == 1 else _Hangs()
+
+    provider = Provider()
+    tracker = _Tracker()
+    cancel = threading.Event()
+    run_stop = threading.Event()  # the watcher would set it only half a second later
+    stop = run_module._AnyStop(run_stop, cancel)
+    items = [_item(item_id=f"p{n}.v1") for n in range(4)]
+    worker = threading.Thread(
+        target=lambda: compare_all(
+            items,
+            provider=provider,  # type: ignore[arg-type]
+            source=_pictures,
+            system=SYSTEM,
+            settings=CompareSettings(retries=3, parallel=4),
+            stop=stop,
+            streams=tracker,
+            warm_wait_s=30,
+        )
+    )
+    worker.start()
+    for _ in range(100):
+        if tracker.open:
+            break
+        time.sleep(0.02)
+    stopped = time.monotonic()
+    cancel.set()
+    tracker.stop_streams()
+    worker.join(5)
+    assert not worker.is_alive()
+    assert len(provider.opened) == 1  # only the first call, opened before the Stop
+    assert [at for at in provider.opened if at >= stopped] == []
+
+
 def test_stop_ends_the_retry_wait_at_once() -> None:
     stop = threading.Event()
     provider = _Provider([ProviderFailure("overloaded", status=529, retryable=True)])
