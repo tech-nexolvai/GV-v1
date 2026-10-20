@@ -138,7 +138,8 @@ ROUND_FAILS = Check("round", "fail", "not the newest round")
 
 def _funnel() -> dict[str, Any]:
     """Three drawings: p1 answered (a red, a Right, a difference code refused, an absence the blind
-    look refused), p2 answered (a candidate the resolve loop made, then a stopped look), p3 failed."""
+    look refused), p2 answered (a candidate the resolve loop made, then a stopped look), p3 failed.
+    """
     items = [_item(1), _item(2), _item(3)]
     outcomes = {
         "p1.v1": _answered(
