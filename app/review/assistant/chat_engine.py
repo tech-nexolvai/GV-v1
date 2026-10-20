@@ -168,6 +168,7 @@ from app.review.assistant.chat_scope import (
 from app.review.assistant.chat_summary import code_summary, needs_code_summary
 from app.review.assistant.chat_timings import Timings
 from app.review.assistant.chat_tools import (
+    BATCH_LISTS,
     HELPER_KITS,
     HELPER_SYSTEM_PROMPT,
     HELPER_TOOLS,
@@ -175,8 +176,10 @@ from app.review.assistant.chat_tools import (
     LEAD_SYSTEM_PROMPT,
     LEAD_TOOLS,
     MAX_AGENTS,
+    MAX_BATCH_ITEMS,
     MAX_PARALLEL_COMMANDS,
     PARALLEL_TOOLS,
+    RECORD_ITEMS,
     TOOL_FAILED_WORDS,
     ChatTools,
     TaskList,
@@ -294,11 +297,12 @@ _log = logging.getLogger(__name__)
 #: chat-v18: the knowledge pack, each full-check helper kind's own system prompt
 #: (`full_check_specialists`), the label-first brief, record_string's part_dims / total_dim, and
 #: structured outputs for the sharpen step, the reads and the critic. chat-v19: drawing_facts (code's
-#: facts from the set pack), Anthropic tool search with the lead's rarer tools deferred, #1606.)
+#: facts from the set pack), Anthropic tool search with the lead's rarer tools deferred, #1606.
+#: chat-v20: record_items, many findings, strings and readings in one call, #1821.)
 #: A chat's stored messages
 #: replay unchanged, and since chat-v16 so do its system prompt and tools: a newer harness reaches
 #: an older chat as one appended note.
-HARNESS_ID: Final = "chat-v19"
+HARNESS_ID: Final = "chat-v20"
 #: Helpers that may run at once, at most, whatever the setting says.
 MAX_PARALLEL_AGENTS_LIMIT: Final = 12
 #: Helpers one lead turn may start. More than run at once wait for a free place in the same turn:
@@ -407,8 +411,9 @@ WRAP_UP_NOTE: Final = (
 )
 #: A roster page helper's or gap closer's one turn to record before it wraps up (#1641).
 RECORD_NOTE: Final = (
-    "Record now ({why}). In this one turn call report_finding (and record_string) for every "
-    "difference, Right item and dimension string you have read but not recorded yet: the labels "
+    "Record now ({why}). In this one turn call record_items (or report_finding and "
+    "record_string) for every difference, Right item and dimension string you have read but not "
+    "recorded yet: the labels "
     "where code numbered them, else the value with its box. No more zooms. A reading you do not "
     "record is lost: your report records nothing. Your report comes after this turn."
 )
@@ -1054,6 +1059,9 @@ class ChatEngine:
         #: Code's own checks that crashed (`add_code_findings`), by name (#1768): each makes a
         #: full check "not for sending" (S0), never a quiet log line.
         self.code_checks_failed: list[str] = []
+        #: Continue of a full check that did not finish (#1821): set by `chat_service` after
+        #: `carry_over`, so a roster check compares only the pages its earlier answer left.
+        self.continuing = False
         self.extra_gaps: list[dict[str, Any]] = []
         #: The set's gaps the Not-compared list named, once it is made (#1803).
         self._set_gaps: list[Any] | None = None
@@ -1251,6 +1259,9 @@ class ChatEngine:
             self._spent += cost
             total = self._spent
         self.timings.charge(cost)
+        for _key, attempt in self._attempts(model, usage):
+            # Each phase's tokens by kind (#1821): whether the prompt cache is hit, in the log.
+            self.timings.tokens(attempt)
         self.emit("usage", {"cost_usd": cost_text(total)})
 
     # ---- one call --------------------------------------------------------------------------------
@@ -1711,6 +1722,11 @@ class ChatEngine:
                 return self._guarded(
                     call,
                     lambda: self._result(call, self._ledger_tool(name, call.get("input"), "lead")),
+                )
+            if name == RECORD_ITEMS["name"]:
+                return self._guarded(
+                    call,
+                    lambda: self._result(call, self._record_items(call.get("input"), "lead")),
                 )
             # The step shows at once, in the order asked, even when its work runs alongside others.
             step = new_step(str(call.get("id")), name, call.get("input"))
@@ -2178,6 +2194,64 @@ class ChatEngine:
                 for entry_id in (after - before) or ({replaces} if replaces else set()):
                     self._kept_inputs[str(entry_id)] = set_proofs.ledger_input(raw)
         return ToolResult(content=[{"type": "text", "text": text}], step={}, is_error=is_error)
+
+    def _record_items(self, raw: object, by: str) -> ToolResult:
+        """`record_items` (#1821): many findings, strings and readings in one call. Each entry goes
+        through its own tool (`report_finding`, `record_string`, `record_reading`), exactly as one
+        call of it would, and is counted under that tool in the timings; the model gets one line
+        per entry, in the order given. A wrong-shaped entry is refused on its own line, never
+        stopping the others."""
+        if not isinstance(raw, Mapping):
+            return ToolResult(
+                content=[{"type": "text", "text": "Refused: give findings, strings or readings."}],
+                step={},
+                is_error=True,
+            )
+        lines: list[str] = []
+        recorded = 0
+        for key, tool in BATCH_LISTS:
+            entries = raw.get(key)
+            if entries is None:
+                continue
+            if not isinstance(entries, list):
+                lines.append(f"{key}: Refused: a list is needed.")
+                continue
+            for number, entry in enumerate(entries[:MAX_BATCH_ITEMS], start=1):
+                self.timings.tool(tool)
+                try:
+                    if tool == "report_finding":
+                        result = self._finding_tool(tool, entry, by)
+                    else:
+                        result = self._ledger_tool(tool, entry, by)
+                except Exception:  # noqa: BLE001 - one entry never stops the others
+                    _log.exception("assistant chat record_items entry failed")
+                    result = ToolResult(
+                        content=[{"type": "text", "text": f"Refused: {TOOL_FAILED_WORDS}"}],
+                        step={},
+                        is_error=True,
+                    )
+                # One line per entry: its tool's words with their line breaks folded.
+                words = " ".join(
+                    " ".join(str(block.get("text") or "").split())
+                    for block in result.content
+                    if isinstance(block, Mapping) and block.get("type") == "text"
+                ).strip()
+                recorded += 0 if result.is_error else 1
+                lines.append(f"{key} {number}: {words}")
+            if len(entries) > MAX_BATCH_ITEMS:
+                lines.append(
+                    f"{key}: only the first {MAX_BATCH_ITEMS} were recorded; send the other "
+                    f"{len(entries) - MAX_BATCH_ITEMS} in another call."
+                )
+        if not lines:
+            return ToolResult(
+                content=[{"type": "text", "text": "Refused: give findings, strings or readings."}],
+                step={},
+                is_error=True,
+            )
+        return ToolResult(
+            content=[{"type": "text", "text": "\n".join(lines)}], step={}, is_error=recorded == 0
+        )
 
     def _chat_name(self) -> str | None:
         root = getattr(self.tools.workspace, "root", None)
@@ -3926,6 +4000,10 @@ class ChatEngine:
         if name == "set_coverage" and agent.lens == "drawn":
             skipped = self._not_run(call, "the numbers helper records these pages' coverage")
             return lambda: skipped
+        if name == RECORD_ITEMS["name"]:
+            return self._guarded(
+                call, lambda: self._result(call, self._record_items(call.get("input"), by))
+            )
         if name in HELPER_FINDING_TOOL_NAMES or (name == "update_finding" and agent.lens == "lead"):
             # The full check's lead review (#1641) places items already recorded.
             return self._guarded(

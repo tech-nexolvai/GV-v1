@@ -15,6 +15,9 @@ every message records, per phase, the seconds it took and what its model calls c
   called, by name, so a phase that never proved a value is seen at once.
 - **Shares** (#1805): a full check's fixed price gives each phase a share; a phase with one shows
   what it spent against it ("$4.47 of $4.95"), so a phase stopped by its share is seen at once.
+- **Tokens** (#1821): each phase adds up its calls' input, output, cache-read and cache-write
+  tokens ("tokens in 120k out 40k read 900k write 80k"), so a paid run shows whether the prompt
+  cache is hit and where the money really goes (output and thinking, or prompts sent again).
 
 The engine stores the result in the trust block (`timings`), shows it under "How this was
 checked", and logs it.
@@ -69,7 +72,14 @@ PHASE_LABELS: Final = {
 }
 _MICROS: Final = Decimal(1_000_000)
 #: A phase's keys only the log line shows, never stored (the published `ChatTimingsOut`).
-_LOG_ONLY: Final = frozenset({"budget_usd", "tools"})
+_LOG_ONLY: Final = frozenset({"budget_usd", "tools", "tokens"})
+#: The usage fields a phase adds up (#1821), and the log line's short names for them.
+TOKEN_FIELDS: Final = (
+    ("input_tokens", "in"),
+    ("output_tokens", "out"),
+    ("cache_read_input_tokens", "read"),
+    ("cache_creation_input_tokens", "write"),
+)
 
 
 def _dollars(micros: int) -> str:
@@ -96,6 +106,11 @@ class _Phase:
     micros: int = 0
     calls: int = 0
     tools: dict[str, int] = field(default_factory=dict)
+    tokens: dict[str, int] = field(default_factory=dict)
+
+
+def _thousands(count: int) -> str:
+    return f"{count / 1000:.0f}k" if count >= 1000 else str(count)
 
 
 @dataclass(slots=True)
@@ -157,6 +172,20 @@ class Timings:
                 self._helpers[helper].micros += micros
                 self._helpers[helper].calls += 1
 
+    def tokens(self, usage: Mapping[str, Any]) -> None:
+        """One model call's usage (its tokens by kind, #1821), to this thread's phase."""
+        where = self.current()
+        phase_name = where[0] if where is not None else "other"
+        with self._lock:
+            tokens = self._phases.setdefault(phase_name, _Phase()).tokens
+            for key, _short in TOKEN_FIELDS:
+                try:
+                    count = int(usage.get(key) or 0)
+                except (TypeError, ValueError):
+                    continue
+                if count > 0:
+                    tokens[key] = tokens.get(key, 0) + count
+
     def tool(self, name: str, count: int = 1) -> None:
         """One tool call (or `count`), to this thread's phase."""
         where = self.current()
@@ -210,6 +239,8 @@ class Timings:
                     row["budget_usd"] = _dollars(self._budgets[name])
                 if phase.tools:
                     row["tools"] = dict(sorted(phase.tools.items()))
+                if phase.tokens:
+                    row["tokens"] = dict(phase.tokens)
                 phases.append(row)
             helpers = [
                 {
@@ -253,6 +284,16 @@ class Timings:
             + (
                 " [" + ", ".join(f"{k} {v}" for k, v in p["tools"].items()) + "]"
                 if p.get("tools")
+                else ""
+            )
+            + (
+                " {tokens "
+                + " ".join(
+                    f"{short} {_thousands(int(p['tokens'].get(key) or 0))}"
+                    for key, short in TOKEN_FIELDS
+                )
+                + "}"
+                if p.get("tokens")
                 else ""
             )
             for p in timings["phases"]

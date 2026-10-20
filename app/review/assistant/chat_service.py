@@ -127,6 +127,7 @@ __all__ = [
     "RunningMessage",
     "SessionChatLedger",
     "UploadSource",
+    "continuable",
     "package_spent_micros",
     "recover_interrupted",
     "resume_of",
@@ -1245,6 +1246,8 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             engine.carry_over(
                 [f for f in live_findings(_blocks) if not f.get("record_id")], coverage
             )
+            # A roster check then compares only the pages the earlier answer left (#1821).
+            engine.continuing = True
         except Exception:  # noqa: BLE001 - the check goes on; it just redoes more
             _log.exception("assistant chat could not carry over the interrupted findings")
     if job.mode == "chat" and job.continue_from is None:
@@ -1709,13 +1712,28 @@ def shutdown_chats(registry: ChatRegistry, *, wait_seconds: float = SHUTDOWN_WAI
     return sum(1 for run in left if run.abandoned)
 
 
+def continuable(message: AssistantChatMessage) -> bool:
+    """Whether Continue may go on from `message`: a server restart interrupted it (#1514), or it
+    is a full check that did not finish and said how to continue (its `resume` block, #1821)."""
+    if message.stopped == "interrupted":
+        return True
+    return (
+        message.role == "assistant"
+        and message.mode == "full_check"
+        and any(
+            isinstance(block, Mapping) and block.get("type") == "resume"
+            for block in message.blocks or []
+        )
+    )
+
+
 def _interrupted(
     session: Session, chat_id: UUID, message_id: UUID
 ) -> tuple[list[dict[str, Any]], str] | None:
-    """The interrupted answer's blocks and the question it was answering."""
+    """The blocks of the answer Continue goes on from (`continuable`) and its question."""
     messages = messages_of(session, chat_id)
     for at, message in enumerate(messages):
-        if message.id == message_id and message.stopped == "interrupted":
+        if message.id == message_id and continuable(message):
             question = next((m.text for m in reversed(messages[:at]) if m.role == "user"), "")
             return [dict(b) for b in message.blocks or [] if isinstance(b, Mapping)], question
     return None

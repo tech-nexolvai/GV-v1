@@ -14,7 +14,7 @@ import json
 import re
 from collections.abc import Iterator, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import jsonschema
 import pytest
@@ -80,11 +80,21 @@ def test_every_tool_says_what_when_returns_and_one_valid_example(name: str) -> N
     assert words.count("Example:") == 1, f"{name}: one example only"
 
 
+#: `record_items`'s entries (#1821): each is another tool's own input, not repeated here.
+_ENTRIES_OF_OTHER_TOOLS: Final = frozenset(
+    {"record_items.findings[]", "record_items.strings[]", "record_items.readings[]"}
+)
+
+
 @pytest.mark.parametrize("name", sorted(ALL_TOOLS))
 def test_every_schema_is_closed_with_required_fields_and_described_fields(name: str) -> None:
     schema = ALL_TOOLS[name]["input_schema"]
     jsonschema.Draft202012Validator.check_schema(schema)
     for where, obj in _objects(schema, name):
+        if where in _ENTRIES_OF_OTHER_TOOLS:
+            # #1821: each entry is the input of a one-item tool, checked by that tool when it runs.
+            assert "takes it" in str(obj.get("description")), where
+            continue
         assert obj.get("additionalProperties") is False, f"{where}: not closed"
         assert isinstance(obj.get("required"), list), f"{where}: no required list"
         properties = obj.get("properties") or {}
@@ -233,8 +243,9 @@ def test_the_prompts_stay_within_their_budgets() -> None:
     assert len(json.dumps(list(LEAD_TOOLS))) <= 90_000
     # The helpers' full list grew by drawing_facts (#1606) and read_number (#1805: the helper and
     # verifier briefs say to call it on a number they cannot read); a kit is smaller (#1608).
-    assert len(json.dumps(list(HELPER_TOOLS))) <= 32_500
-    assert len(json.dumps(list(helper_tools("compare")))) <= 25_000
+    # record_items (#1821): about 1,700 characters, its entries' schemas not repeated.
+    assert len(json.dumps(list(HELPER_TOOLS))) <= 34_000
+    assert len(json.dumps(list(helper_tools("compare")))) <= 27_000  # record_items (#1821)
     assert len(json.dumps(list(helper_tools("rounds")))) <= 20_000
     assert len(json.dumps(list(helper_tools("notes")))) <= 20_000
 

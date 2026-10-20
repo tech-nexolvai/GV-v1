@@ -88,3 +88,26 @@ describe('an answer a server restart interrupted', () => {
     expect(isFullCheck({ mode: null }, { mode: null, text: CONTINUE_TEXT })).toBe(false);
   });
 });
+
+describe('a full check that did not finish (#1821)', () => {
+  const FULL_REDO = 'Continue keeps the 12 findings and the 9 pages already compared, compares only pages 14-16, and runs the proof steps on 3 red candidates not proved yet. It has its own fixed price for that work.';
+
+  it('says what is left, and Continue goes on as a full check from the answer’s id', async () => {
+    const stream = drivenStream();
+    const stopped = interrupted({ mode: 'full_check', findings: 12, pages_done: 9, redo: FULL_REDO }, { stopped: 'cancelled' });
+    renderChat([QUESTION, stopped], stream.send);
+    const answer = await screen.findByRole('article', { name: 'Answer' });
+    expect(answer.querySelector('[data-slot="chat-unfinished"]')).toBeTruthy();
+    expect(within(answer).getByText(FULL_REDO)).toBeTruthy();
+    const button = await waitFor(() => within(answer).getByRole('button', { name: 'Continue' }));
+    await userEvent.setup().click(button);
+    const body = stream.send.mock.calls[0][1];
+    expect(body.continue_from).toBe('a-cut');
+  });
+
+  it('a stopped chat answer with no resume offers no Continue', async () => {
+    renderChat([QUESTION, { ...SAVED_ANSWER, id: 'a-stop', stopped: 'cancelled' }]);
+    await screen.findByRole('article', { name: 'Answer' });
+    expect(screen.queryByRole('button', { name: 'Continue' })).toBeNull();
+  });
+});

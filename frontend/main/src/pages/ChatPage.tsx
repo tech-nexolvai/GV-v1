@@ -734,8 +734,10 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                 // Retry asks the answer's question again, as a new message (claude.ai's Retry).
                 const question = previousQuestion(messages, message.key);
                 const canRetry = question !== null && !running && !blocked;
-                // Continue (#1514): only the newest answer, when a server restart interrupted it.
-                const resumeId = message.stopped === 'interrupted' && message.id && at === messages.length - 1 && !running && !blocked ? message.id : null;
+                // Continue (#1514): only the newest answer, when a server restart interrupted it, or
+                // a full check that did not finish and says how to continue (#1821).
+                const canContinue = message.stopped === 'interrupted' || message.resume?.mode === 'full_check';
+                const resumeId = canContinue && message.id && at === messages.length - 1 && !running && !blocked ? message.id : null;
                 return (
                   <AssistantMessage
                     key={message.key}
