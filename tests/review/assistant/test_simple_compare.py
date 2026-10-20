@@ -48,7 +48,6 @@ from app.review.assistant.simple_check.schema import (
     Picture,
     Reply,
     WorkItem,
-    check_result,
 )
 
 SYSTEM = system_prompt("- CT-1: top width = cabinets + fillers (made up)", "All products")
@@ -743,34 +742,65 @@ def test_broken_claims_and_merge_are_code_only() -> None:
     assert [p.vendor_label for p in merged.pairs] == [p.vendor_label for p in first.pairs]
 
 
-def test_a_repair_of_one_item_without_a_label_keeps_the_others_that_passed() -> None:
-    """Review of the targeted repair: the repair is asked only for the broken item, so the first
-    answer's items that passed must stay (else they would be lost: a recall loss)."""
-    item = _item()
-    pictures = [p.picture for p in _pictures(item)]
-    outlet = {
-        "kind": "missing_on_vendor",
-        "what": "outlet right of the sink",
-        "vendor": None,
-        "architect": "duplex outlet",
-        "vendor_image": None,
-        "vendor_box_px": None,
-        "architect_image": 2,
-        "architect_box_px": None,  # broken: no box code can find it by
-        "verdict": "different",
-        "millwork": True,
-    }
-    first_answer = _answer()
-    first_answer["other_items"] = [*first_answer["other_items"], outlet]
-    first, problems = to_result(Reply.model_validate(first_answer), item, pictures)
-    assert first is not None and problems
-    labels, others = broken_claims(first, item)
-    assert labels == [] and others
-    fixed = {**_answer(), "pairs": [], "unaccounted_labels": []}
-    fixed["other_items"] = [{**outlet, "architect_box_px": [10, 10, 60, 60]}]
-    second, _ = to_result(Reply.model_validate(fixed), item, pictures)
-    assert second is not None
-    merged = merge_repair(first, second, item, labels)
-    kinds = sorted(o.kind for o in merged.other_items)
-    assert kinds == ["dimension_without_label", "missing_on_vendor"]
-    assert check_result(merged, item) == []
+_OUTLET = {
+    "kind": "missing_on_vendor",
+    "what": "outlet right of the sink",
+    "vendor": None,
+    "architect": "duplex outlet",
+    "vendor_image": None,
+    "vendor_box_px": None,
+    "architect_image": 2,
+    "architect_box_px": None,  # broken: no box code can find it by
+    "verdict": "different",
+    "millwork": True,
+}
+
+
+def test_a_broken_item_without_a_label_asks_the_whole_form_again() -> None:
+    """Review of the targeted repair: an item without a label that failed code's checks could be
+    left out of a targeted reply and vanish; so the whole form is asked again, as before."""
+    first = _answer(missing=True)
+    first["other_items"] = [*first["other_items"], _OUTLET]
+    provider = _Provider([_events(json.dumps(first)), _events(json.dumps(_answer()))])
+    outcome, _slept = _run(provider)
+    asked = provider.calls[1]["messages"][2]["content"][0]["text"]
+    assert "Answer again with the whole JSON form" in asked
+    assert "only for these vendor labels" not in asked
+    assert outcome.status == "ok"
+
+
+def test_a_labels_only_repair_never_takes_new_or_changed_items() -> None:
+    """Only the asked labels are taken from the reply: an item it changes or adds is not."""
+    reply = _answer()
+    reply["other_items"] = [
+        {**reply["other_items"][0], "verdict": "different", "vendor": '61"'},
+        {**_OUTLET, "architect_box_px": [10, 10, 60, 60]},
+    ]
+    provider = _Provider([_events(json.dumps(_answer(missing=True))), _events(json.dumps(reply))])
+    outcome, _slept = _run(provider)
+    assert outcome.status == "ok"
+    (kept,) = outcome.result.other_items
+    assert kept.verdict == "same" and kept.vendor == '60"'
+
+
+def test_a_reading_problem_in_the_first_answer_asks_the_whole_form_again() -> None:
+    """A problem only the reading step finds (here an unaccounted entry that is not a label id)
+    is not a claim `broken_claims` can name: the whole form is asked again."""
+    first = _answer(missing=True)
+    first["unaccounted_labels"] = ["the shelf"]
+    provider = _Provider([_events(json.dumps(first)), _events(json.dumps(_answer()))])
+    _run(provider)
+    asked = provider.calls[1]["messages"][2]["content"][0]["text"]
+    assert "Answer again with the whole JSON form" in asked
+
+
+def test_a_reading_problem_in_the_targeted_reply_fails_the_drawing() -> None:
+    """The repair reply's own reading problems survive the merge: the drawing fails (Not
+    compared), never ok on half its evidence."""
+    reply = _answer()
+    reply["unaccounted_labels"] = ["p7.D5", "the shelf"]
+    provider = _Provider([_events(json.dumps(_answer(missing=True))), _events(json.dumps(reply))])
+    outcome, _slept = _run(provider)
+    asked = provider.calls[1]["messages"][2]["content"][0]["text"]
+    assert "only for these vendor labels" in asked
+    assert outcome.status == "failed" and any("not a label id" in p for p in outcome.problems)

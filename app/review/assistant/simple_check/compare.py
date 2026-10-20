@@ -785,9 +785,11 @@ def broken_claims(result: CompareResult, item: WorkItem) -> tuple[list[str], boo
 def merge_repair(
     first: CompareResult, second: CompareResult, item: WorkItem, labels: Sequence[str]
 ) -> CompareResult:
-    """The first answer with only the asked claims taken from the repair: its passed pairs frozen
-    (a repair can never undo a pair that passed), the asked labels' pairs from the repair, the
-    items without a label from the repair when it fixed them (else the first's)."""
+    """The first answer with only the asked labels' claims taken from the repair: its passed pairs
+    frozen (a repair can never undo a pair that passed), the asked labels' pairs from the repair.
+    Items without a label are never asked in a targeted repair (`compare_item` asks the whole form
+    when one is broken), so they are the first answer's, as they were: an item the reply adds or
+    changes is not taken."""
     asked = set(labels)
     frozen = [p for p in first.pairs if p.vendor_label not in asked]
     fixed = [p for p in second.pairs if p.vendor_label in asked]
@@ -798,25 +800,10 @@ def merge_repair(
         for ref in (*first.unaccounted_labels, *second.unaccounted_labels)
         if ref not in paired and (ref in asked or ref in first.unaccounted_labels)
     ]
-    # Items without a label: each of the first answer's that passes code's checks on its own is
-    # kept (frozen), and each the repair gave that passes is added; a broken one is never kept.
-    others = [
-        other
-        for other in (*first.other_items, *second.other_items)
-        if not check_result(
-            CompareResult(
-                work_item=item.id,
-                pairs=(),
-                other_items=(other,),
-                unaccounted_labels=item.vendor_refs,
-            ),
-            item,
-        )
-    ]
     return CompareResult(
         work_item=first.work_item,
         pairs=tuple(pairs),
-        other_items=tuple(dict.fromkeys(others)),
+        other_items=first.other_items,
         unaccounted_labels=tuple(dict.fromkeys(unaccounted)),
         same_drawing=first.same_drawing,
     )
@@ -981,8 +968,11 @@ def compare_item(
         result, problems = _read(answer, item, pictures)
         if asked is not None and result is not None and last is not None:
             # The targeted repair's reply: only the asked claims are taken; the rest is frozen.
+            # Its own reading problems (a box on the wrong picture, an id that is not a label)
+            # stay: they fail the drawing, never pass on half its evidence.
+            reading = [p for p in problems if p not in check_result(result, item)]
             result = merge_repair(last, result, item, asked)
-            problems = check_result(result, item)
+            problems = [*reading, *check_result(result, item)]
         last = result or last
         if not problems and result is not None:
             return outcome(status="ok", result=result, repaired=repaired)
@@ -996,11 +986,16 @@ def compare_item(
             )
         repaired = True
         labels: Sequence[str] = ()
-        others = False
         if settings.targeted_repair and result is not None:
-            labels, others = broken_claims(result, item)
-            asked = list(labels) if (labels or others) else None
-        text = repair_text(item, problems, labels=labels, others=others)
+            broken, others = broken_claims(result, item)
+            reading = [p for p in problems if p not in check_result(result, item)]
+            # Targeted only when every problem is a vendor label's claim: a broken item without a
+            # label, or a problem only the reading step finds, asks the whole form again (a
+            # targeted reply could leave such an item out and it would vanish).
+            if broken and not others and not reading:
+                labels = broken
+                asked = list(labels)
+        text = repair_text(item, problems, labels=labels)
         follow_up = {"role": "user", "content": [{"type": "text", "text": text}]}
         if answer.fell_back:
             # Another model answered: its thinking cannot be passed back; ask again from the start

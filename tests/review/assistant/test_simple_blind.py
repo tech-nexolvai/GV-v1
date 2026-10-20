@@ -351,3 +351,40 @@ def test_looks_started_together_hold_their_price_and_never_pass_the_cap() -> Non
     assert len(engine.calls) == 2 and engine.spent <= engine.cap
     refused = [d for d in done if d.outcome == "not_compared"]
     assert len(refused) == 4 and all("runaway guard" in d.reason for d in refused)
+
+
+@pytest.mark.parametrize(("repair", "relook"), [(True, False), (False, True)])
+def test_the_repair_and_re_look_switches_reach_the_run(repair: bool, relook: bool) -> None:
+    from app.api.assistant_chats import _simple_options
+    from app.config import Settings
+    from app.review.assistant.chat_contract import ChatMessageIn
+    from app.review.assistant.simple_check.compare import CompareSettings
+    from app.review.assistant.simple_check.run import SimpleOptions
+
+    assert Settings.model_fields["assistant_simple_targeted_repair"].default is True
+    assert Settings.model_fields["assistant_simple_zoom_relook"].default is False
+    settings = SimpleNamespace(
+        assistant_full_check_mode="simple",
+        assistant_simple_compare_model="claude-sonnet-5-5",
+        assistant_simple_compare_effort="high",
+        assistant_simple_hard_model="claude-opus-5-5",
+        assistant_simple_hard_effort="high",
+        assistant_simple_parallel=8,
+        assistant_simple_max_tokens=64000,
+        assistant_simple_retries=3,
+        assistant_simple_blind_model="claude-opus-5-5",
+        assistant_simple_blind_effort="high",
+        assistant_simple_resolve="off",
+        assistant_simple_resolve_rounds=1,
+        assistant_simple_resolve_model="claude-sonnet-5-5",
+        assistant_simple_resolve_effort="medium",
+        assistant_simple_resolve_web_search=False,
+        assistant_simple_targeted_repair=repair,
+        assistant_simple_zoom_relook=relook,
+    )
+    body = ChatMessageIn.model_validate(
+        {"model": "claude-opus-5-5", "effort": "high", "thinking": True, "mode": "full_check"}
+    )
+    options = SimpleOptions.of(_simple_options(settings, body))  # type: ignore[arg-type]
+    assert CompareSettings(**options.compare).targeted_repair is repair
+    assert options.blind.zoom_relook is relook

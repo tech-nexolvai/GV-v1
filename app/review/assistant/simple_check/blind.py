@@ -544,8 +544,8 @@ def look_all(
                 again, again_why = _held_look(engine, verified, item, settings, held, zoom=True)
                 if again is not None:
                     answer = replace(again, note=f"zoomed re-look: {again.note}"[:300])
-                elif answer is None:
-                    why = again_why
+                else:  # the re-look could not be made: the first (unsure) look stands
+                    _log.info("simple check zoomed re-look not made: %s", again_why)
         done = with_blind(verified, answer, why)
         if on_done is not None:
             try:
