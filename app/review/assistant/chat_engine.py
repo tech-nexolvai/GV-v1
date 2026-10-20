@@ -229,6 +229,7 @@ from app.review.assistant.full_check_plan import (
     FanOutPlan,
     HelperJob,
     pack_ready,
+    pack_without_labels,
     pair_lines,
     plan_jobs,
     rules_summary,
@@ -447,6 +448,34 @@ def prompt_ids(provider: str) -> tuple[str, str]:
 def second_read_prompt_id(provider: str) -> str:
     """A finding's second read, on the Usage page (counted in the chat's spend)."""
     return f"review-assistant-chat-check-{provider}-{HARNESS_ID}"
+
+
+#: Code's own checks of a full check (`ChatEngine.add_code_findings`), by the name a reviewer
+#: reads when one could not run (#1768).
+CODE_CHECK_NAMES: Final[Mapping[str, str]] = {
+    "ledger": "the reading ledger's check",
+    "consistency": "the vendor consistency check",
+    "architect_items": "the finish check",
+    "code_pairs": "code's own pairs",
+    "run_fit": "GV's site-fit rule",
+    "filler_range": "GV's filler range",
+}
+
+
+#: The other steps of a roster or lead full check that may break (#1768); the simple check names
+#: its own (`simple_check.run`).
+SEEDING_STEP: Final = "GV Review's recorded results"
+LABELS_STEP: Final = "the drawings' printed numbers (the labels step did not finish)"
+
+
+def broken_steps_note(steps: Sequence[str]) -> str:
+    """Why a full check is not for sending when its own steps broke (#1768), in plain words."""
+    names = ", ".join(dict.fromkeys(steps))
+    one = len(set(steps)) == 1
+    return (
+        f"{'a step' if one else f'{len(set(steps))} steps'} of the check could not run ({names}); "
+        "its results may be missing, check again"
+    )
 
 
 def cost_text(micros: int) -> str:
@@ -996,6 +1025,9 @@ class ChatEngine:
         #: could not be compared: review result S0), and its Not-compared rows that are not
         #: findings (an architect that gives no size), for the Not-compared PDF and workbook.
         self.incomplete_note: str | None = None
+        #: Code's own checks that crashed (`add_code_findings`), by name (#1768): each makes a
+        #: full check "not for sending" (S0), never a quiet log line.
+        self.code_checks_failed: list[str] = []
         self.extra_gaps: list[dict[str, Any]] = []
         #: A full check's live state for the live screen (`live_check.LiveCheck`, #1710), set by
         #: `chat_service`; the simple check reports its drawings, phases and decisions to it.
@@ -2524,31 +2556,41 @@ class ChatEngine:
         if self._code_findings_added:
             return
         self._code_findings_added = True
+        steps: tuple[tuple[str, Callable[[], object]], ...] = (
+            (CODE_CHECK_NAMES["ledger"], self._ledger_findings),
+            # A full check's vendor consistency check (#1584).
+            (CODE_CHECK_NAMES["consistency"], lambda: add_consistency(self)),
+            # Missed, changed and added finishes (#1623).
+            (CODE_CHECK_NAMES["architect_items"], lambda: add_architect_items(self)),
+            # Dimensions code paired by itself, Wrong or Right.
+            (CODE_CHECK_NAMES["code_pairs"], lambda: add_code_pairs(self)),
+            # GV's site-fit rule on the vendor's runs (`run_fit`).
+            (CODE_CHECK_NAMES["run_fit"], lambda: add_run_fit(self)),
+            # GV's filler range on the vendor's fillers.
+            (CODE_CHECK_NAMES["filler_range"], lambda: add_filler_range(self)),
+        )
+        # The pack's state before the checks read its labels counts too: it may turn `ready` while
+        # they run on partial labels (#1768 review).
+        unlabelled = pack_without_labels(self.tools.workspace.set_pack)
         with self.timings.phase("finish_checks"):
-            try:
-                self._ledger_findings()
-            except Exception:  # noqa: BLE001 - the answer goes on without the ledger's findings
-                _log.exception("assistant chat ledger findings failed")
-            try:
-                add_consistency(self)  # a full check's vendor consistency check (#1584), $0
-            except Exception:  # noqa: BLE001 - the answer goes on without it
-                _log.exception("assistant chat vendor consistency check failed")
-            try:
-                add_architect_items(self)  # missed, changed and added finishes (#1623), $0
-            except Exception:  # noqa: BLE001 - the answer goes on without it
-                _log.exception("assistant chat finish check failed")
-            try:
-                add_code_pairs(self)  # dimensions code paired by itself, Wrong or Right, $0
-            except Exception:  # noqa: BLE001 - the answer goes on without them
-                _log.exception("assistant chat code pairs failed")
-            try:
-                add_run_fit(self)  # GV's site-fit rule on the vendor's runs (`run_fit`), $0
-            except Exception:  # noqa: BLE001 - the answer goes on without it
-                _log.exception("assistant chat run fit check failed")
-            try:
-                add_filler_range(self)  # GV's filler range on the vendor's fillers, $0
-            except Exception:  # noqa: BLE001 - the answer goes on without it
-                _log.exception("assistant chat filler range check failed")
+            for name, step in steps:
+                try:
+                    step()
+                except Exception:  # noqa: BLE001 - the answer goes on, never sendable (#1768)
+                    _log.exception("assistant chat code check failed: %s", name)
+                    self.code_checks_failed.append(name)
+        if self.settings.mode != "full_check" or self._simple:
+            return  # the simple check names its broken steps once, with its other reasons
+        if unlabelled or pack_without_labels(self.tools.workspace.set_pack):
+            # The roster and the lead go on without labels; code's pairs are then missing.
+            self.code_checks_failed.append(LABELS_STEP)
+        if self.code_checks_failed:
+            # A check that crashed took its reds with it: the check is not for sending (S0).
+            self.incomplete_note = "; ".join(
+                part
+                for part in (self.incomplete_note, broken_steps_note(self.code_checks_failed))
+                if part
+            )
 
     def _code_finish(self) -> None:
         """A stopped full check's finish, by code only: no model call."""
@@ -4266,8 +4308,9 @@ class ChatEngine:
         with self.timings.phase("seeding"):
             try:
                 seeded = self._seed_recorded()
-            except Exception:  # noqa: BLE001 - the check goes on; the trust report says it
+            except Exception:  # noqa: BLE001 - the check goes on, never sendable (#1768)
                 _log.exception("assistant chat could not seed the recorded differences")
+                self.code_checks_failed.append(SEEDING_STEP)
         try:
             self._start_markup_base()
         except Exception:  # noqa: BLE001 - the drawing makes its own copy at the end

@@ -2250,7 +2250,7 @@ def helper_footer(
                 "boxes are PDF points, origin top-left):"
             )
             lines += [_page_line(entry) for entry in entries[:20]]
-    if state == "ready":
+    if state in ("ready", "ready_without_labels"):
         lines.append(
             f"- The set pack is ready at {SET_PACK}/: page_map.json, *_drawings_only.pdf, "
             "pages/<upload name without .pdf>/p-NNN.png (100 dpi, drawings only), contact/ "

@@ -1121,8 +1121,11 @@ class _Run:
         with engine.timings.phase("seeding"):
             try:
                 engine._seed_recorded()
-            except Exception:  # noqa: BLE001 - the check goes on; the trust report says it
+            except Exception:  # noqa: BLE001 - the check goes on, never sendable (#1768)
                 _log.exception("assistant roster could not seed the recorded differences")
+                from app.review.assistant.chat_engine import SEEDING_STEP
+
+                engine.code_checks_failed.append(SEEDING_STEP)
             try:
                 engine.replay_chat_proofs()  # what the set's chat questions proved (#1805)
             except Exception:  # noqa: BLE001 - the check goes on without them
