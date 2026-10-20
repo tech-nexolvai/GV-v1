@@ -1,4 +1,5 @@
-"""The automatic round-2 check (#1603): Fixed / Still wrong / New, value by value, by code.
+"""The automatic round-2 check (#1603): fixed / still wrong / new, value by value, by code (said in
+the comment letter's words everywhere: Closed / Previous comment not addressed / New, #1766).
 
 When the set holds the vendor's next round of a drawing (GV's sheets head each vendor drawing with
 its round; `page_map.json` carries it per drawing), the full check's cloud drawing says, for every
@@ -187,13 +188,15 @@ class RoundReport:
         }
 
     def line(self) -> str | None:
-        """The cover's summary, or `None` when the set has no round 2 to compare."""
+        """The cover's summary in the comment letter's words (Closed / Previous comment not
+        addressed / New, #1766), or `None` when the set has no round 2 to compare."""
         if not self.items:
             return None
         counts = self.counts()
+        still = counts["still_wrong"]
         line = (
-            f"Round 2: {counts['fixed']} fixed, {counts['still_wrong']} still wrong, "
-            f"{counts['new']} new"
+            f"Round 2: {counts['fixed']} closed, {still} previous "
+            f"{'comment' if still == 1 else 'comments'} not addressed, {counts['new']} new"
         )
         if counts["now_right"] or counts["still_not_compared"]:
             line += (

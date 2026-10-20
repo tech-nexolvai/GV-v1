@@ -61,6 +61,7 @@ __all__ = [
     "classify",
     "not_compared_line",
     "points_to_prototype",
+    "rule_without_requirement",
 ]
 
 type Outcome = Literal["wrong", "right", "not_compared"]
@@ -552,7 +553,26 @@ def _check_item(finding: Mapping[str, Any]) -> Classified:
 def classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
     """Where `finding` stands under R1-R10. `proved`: code proved it Wrong (`proof.code_proved`,
     which applies D1 for a pairing). The reviewer's decisions are laid over this by `proof`."""
-    found = _classify(finding, proved=proved)
+    return _with_thing(_classify(finding, proved=proved), finding)
+
+
+def rule_without_requirement(finding: Mapping[str, Any]) -> Classified:
+    """A GV rule result that states no requirement the vendor can act on (#1622, R6): Not
+    compared, because the value GV's rule requires is not set for it. The Not-compared list and
+    the issue register both say this (#1766)."""
+    found = _not(
+        "missing_setting",
+        "GV's rule found a difference, but the value it requires is not set, so there is "
+        "nothing the vendor can act on",
+        "the value GV's rule requires for {thing}",
+    )
+    return _with_thing(
+        Classified(found.outcome, "R6", found.reason, found.why, found.settle), finding
+    )
+
+
+def _with_thing(found: Classified, finding: Mapping[str, Any]) -> Classified:
+    """`found` with "{thing}" in what would settle it named by the item."""
     if found.settle is None or "{thing}" not in found.settle:
         return found
     item = _flat(finding.get("item")) or "this item"
