@@ -227,3 +227,10 @@ def test_a_prototype_reference_item_fences_the_prototypes_labels_too() -> None:
     assert "Brand prototype drawing p2.a1, the reference brand prototype drawing" in outside
     assert "Labels:" not in outside
     assert "Brand prototype drawing p2.a1 (titled" in text
+
+
+def test_third_read_fences_the_item_name() -> None:
+    from app.review.assistant import read_adjudication
+
+    text = read_adjudication.question(f"upper height {PLANT}", (("architect", False),))
+    _assert_fenced(text)
