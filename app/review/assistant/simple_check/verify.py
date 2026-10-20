@@ -1289,9 +1289,11 @@ def _verify_pair(
         if matched[0] != "same":
             # Code's drawn extent outranks the AI's own end words; the blind look names the ends.
             checks = [
-                Check("ends", "pass", f"code's geometry shows the same extent ({matched[1]})")
-                if check.name == "ends"
-                else check
+                (
+                    Check("ends", "pass", f"code's geometry shows the same extent; {matched[1]}")
+                    if check.name == "ends"
+                    else check
+                )
                 for check in checks
             ]
         checks.append(objection)
