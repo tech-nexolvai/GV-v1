@@ -112,6 +112,10 @@ SOURCES: Final = ("architect", "brand_prototype", "rules", "vendor_arithmetic", 
 CODE_SOURCES: Final = ("cross_view", "completeness")
 COVERAGE_STATUSES: Final = ("same", "different", "not_comparable", "not_opened")
 MAX_FINDINGS: Final = 300
+#: A big set's answer may hold this many findings a page of the vendor's file, when that is more
+#: than `MAX_FINDINGS` (#1825): the 60-page full check of 2026-10-21 hit 300 during its pass after
+#: the lead, so its closers could record nothing and the pages stayed open with money left.
+FINDINGS_PER_PAGE: Final = 12
 _MAX_ITEM: Final = 160
 _MAX_VALUE: Final = 200
 _MAX_WHY: Final = 600
@@ -957,6 +961,12 @@ class FindingBook:
     # ---- files and boxes ---------------------------------------------------------------------------
 
     @property
+    def finding_cap(self) -> int:
+        """The most findings this answer may hold: `MAX_FINDINGS`, or `FINDINGS_PER_PAGE` a page
+        of the vendor's file when that is more (#1825)."""
+        return max(MAX_FINDINGS, FINDINGS_PER_PAGE * max(0, int(self.page_count or 0)))
+
+    @property
     def main_file(self) -> str | None:
         item = main_upload(self.listing)
         return None if item is None else str(item["name"])
@@ -1162,8 +1172,8 @@ class FindingBook:
         fields["created_by"] = created_by
         changed = _status_rules(fields, list(self.extents))
         with self._lock:
-            if len(self.findings) >= MAX_FINDINGS:
-                raise SandboxRefused(f"at most {MAX_FINDINGS} findings in one answer")
+            if len(self.findings) >= self.finding_cap:
+                raise SandboxRefused(f"at most {self.finding_cap} findings in one answer")
             self._count += 1
             finding_id = f"F{self._count}"
         arch_picture, arch_why = self._picture(fields.get("arch_box"))
@@ -1257,7 +1267,8 @@ class FindingBook:
         if not self._in_scope(fields, created_by):
             return None
         with self._lock:
-            if len(self.findings) >= MAX_FINDINGS:
+            if len(self.findings) >= self.finding_cap:
+                _log.warning("assistant chat ledger finding skipped: %d findings", self.finding_cap)
                 return None
             self._count += 1
             finding_id = f"F{self._count}"
