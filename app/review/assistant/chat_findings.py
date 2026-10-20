@@ -56,6 +56,8 @@ __all__ = [
     "CHECK_REASONS",
     "CITE",
     "CLOUD_DRAWING_KIND",
+    "CODE_FINDINGS_ROOM",
+    "CODE_ROOM_MAKERS",
     "CODE_SOURCES",
     "COVERAGE_CHECK_PREFIX",
     "DECISION_LIKELY",
@@ -63,6 +65,7 @@ __all__ = [
     "DROP_FINDING",
     "FINDING_TOOL_NAMES",
     "HELPER_FINDING_TOOL_NAMES",
+    "MAX_FINDINGS",
     "PROOF_MODULE",
     "REPORT_FINDING",
     "SET_COVERAGE",
@@ -112,6 +115,27 @@ SOURCES: Final = ("architect", "brand_prototype", "rules", "vendor_arithmetic", 
 CODE_SOURCES: Final = ("cross_view", "completeness")
 COVERAGE_STATUSES: Final = ("same", "different", "not_comparable", "not_opened")
 MAX_FINDINGS: Final = 300
+#: The room code's own findings have beyond the AI's `MAX_FINDINGS` (#1827): code's checks run last
+#: (the vendor's strings that don't add up, code's own pairs, the consistency and finish checks), so
+#: a book the helpers filled must never leave them out. On a 60-page set the helpers filled all 300
+#: and every code finding was skipped without a word.
+CODE_FINDINGS_ROOM: Final = 300
+#: Who makes code's own findings (`add_code_finding`): their room is `CODE_FINDINGS_ROOM` beyond the
+#: AI's. Every other maker (helpers, the lead, the tag reader, the simple check's compare call, an
+#: earlier answer's findings carried over) shares the AI's `MAX_FINDINGS`.
+CODE_ROOM_MAKERS: Final = frozenset(
+    {
+        "ledger",
+        "consistency",
+        "architect_items",
+        "pairs",
+        "run_fit",
+        "filler_range",
+        "sink_offset",
+        "gv_review",
+        "code",
+    }
+)
 _MAX_ITEM: Final = 160
 _MAX_VALUE: Final = 200
 _MAX_WHY: Final = 600
@@ -951,6 +975,9 @@ class FindingBook:
     item to a product before the scope drops it (`product_scope.refiled`)."""
     _cites: int = 0
     """The recorded differences this answer must account for (set by the engine)."""
+    left_out_for_room: dict[str, int] = field(default_factory=dict)
+    """Findings refused because the book was full, by who made them (`ai` or `code`, #1827): never
+    silent; the engine says so in the answer."""
     _count: int = 0
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -1162,7 +1189,7 @@ class FindingBook:
         fields["created_by"] = created_by
         changed = _status_rules(fields, list(self.extents))
         with self._lock:
-            if len(self.findings) >= MAX_FINDINGS:
+            if not self._room_for("ai"):
                 raise SandboxRefused(f"at most {MAX_FINDINGS} findings in one answer")
             self._count += 1
             finding_id = f"F{self._count}"
@@ -1209,8 +1236,23 @@ class FindingBook:
         notes.extend(changed)
         return dict(finding), notes
 
+    def _room_for(self, room: str) -> bool:
+        """Whether one more finding fits (under the lock): the AI's findings share
+        `MAX_FINDINGS`; code's own may use `CODE_FINDINGS_ROOM` more, so they never compete with
+        the AI's (#1827). A finding refused for room is counted (`left_out_for_room`)."""
+        if room == "code":
+            fits = len(self.findings) < MAX_FINDINGS + CODE_FINDINGS_ROOM
+        else:
+            held = sum(
+                1 for f in self.findings.values() if f.get("created_by") not in CODE_ROOM_MAKERS
+            )
+            fits = held < MAX_FINDINGS
+        if not fits:
+            self.left_out_for_room[room] = self.left_out_for_room.get(room, 0) + 1
+        return fits
+
     def add_code_finding(
-        self, given: Mapping[str, Any], *, created_by: str = "ledger"
+        self, given: Mapping[str, Any], *, created_by: str = "ledger", room: str | None = None
     ) -> dict[str, Any] | None:
         """A finding code made (the reading ledger's: `created_by: "ledger"`; the vendor
         consistency check's: `"consistency"`; the finish check's: `"architect_items"`; code's
@@ -1218,7 +1260,9 @@ class FindingBook:
         a lead finding (id, crops, checks). Its `ledger_ids`, `reference_side`, `dims` (the labels
         its values came from), `paired_by` (code paired the two sides) and `text_proof` (what the
         finish check read and searched) are kept. A box that is not on an upload is left out; a
-        finding that still does not fit is skipped (None).
+        finding that still does not fit is skipped (None). `room`: whose room it takes (`code`
+        for code's own makers, `ai` for the rest: `CODE_ROOM_MAKERS`); a carried-over AI finding
+        passes `ai` (#1827).
         """
         fields_given = {k: v for k, v in given.items() if k in _FINDING_FIELDS}
         for name, limit in (("item", _MAX_ITEM), ("why", _MAX_WHY)):
@@ -1256,8 +1300,14 @@ class FindingBook:
                 return None
         if not self._in_scope(fields, created_by):
             return None
+        room = room or ("code" if created_by in CODE_ROOM_MAKERS else "ai")
         with self._lock:
-            if len(self.findings) >= MAX_FINDINGS:
+            if not self._room_for(room):
+                _log.warning(
+                    "assistant chat finding left out: the book is full (%s, by %s)",
+                    room,
+                    created_by,
+                )
                 return None
             self._count += 1
             finding_id = f"F{self._count}"

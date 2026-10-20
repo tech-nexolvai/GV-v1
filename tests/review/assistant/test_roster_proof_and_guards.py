@@ -319,7 +319,7 @@ def test_no_page_is_left_unchecked_without_its_reason(
 def test_two_picks_alone_never_prove_room_context(spans: Mapping[str, str], item: str) -> None:
     advocate = {**_AGREE, STRONG_PICK: True, "vendor_spans": spans, "architect_spans": spans}
     verdict = decide(advocate=advocate, extent=_CANNOT, item=item, **_COMMON)
-    assert verdict.result == "objects" and "room context" in verdict.reason
+    assert verdict.result == "objects" and "not the unit: confirm" in verdict.reason
     # Where code's geometry proves the same extent, the item is judged as before.
     proved = decide(advocate=advocate, extent=("same_extent", "ok"), item=item, **_COMMON)
     assert proved.result == "passed"

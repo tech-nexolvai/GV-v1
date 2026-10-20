@@ -104,9 +104,11 @@ from app.review.assistant.chat_context import (
     history_summary,
 )
 from app.review.assistant.chat_findings import (
+    CODE_ROOM_MAKERS,
     COVERAGE_CHECK_PREFIX,
     FINDING_TOOL_NAMES,
     HELPER_FINDING_TOOL_NAMES,
+    MAX_FINDINGS,
     FindingBook,
     MarkupFile,
     boxless_findings,
@@ -1120,7 +1122,10 @@ class ChatEngine:
         how many findings were kept."""
         kept = 0
         for given in findings:
-            finding = self.book.add_code_finding(given)
+            # An earlier answer's AI findings take the AI's room, code's own take code's (#1827).
+            maker = str(given.get("created_by") or "lead")
+            room = "code" if maker in CODE_ROOM_MAKERS else "ai"
+            finding = self.book.add_code_finding(given, room=room)
             if finding is None:
                 continue
             finding = {
@@ -2300,6 +2305,33 @@ class ChatEngine:
             _log.warning("assistant full check: %d chat proofs replayed into the ledger", replayed)
         return replayed
 
+    def carry_ledger(self, blocks: Sequence[Mapping[str, Any]]) -> int:
+        """Continue (#1827): the strings and readings an earlier answer recorded (its trust
+        block's `ledger_entries`), recorded again in this answer's reading ledger, so code adds
+        them up again and its string check at the finish sees them as before. Returns the entries
+        carried."""
+        entries: Mapping[str, Any] = {}
+        for block in blocks:
+            trust = block.get("trust") if block.get("type") == "trust" else None
+            if isinstance(trust, Mapping) and isinstance(trust.get("ledger_entries"), Mapping):
+                entries = trust["ledger_entries"]
+        fields = {
+            "record_string": ("page", "view", "side", "parts", "printed_total", "box"),
+            "record_reading": ("page", "view", "side", "item", "kind", "value", "box"),
+        }
+        carried = 0
+        for key, tool in (("strings", "record_string"), ("readings", "record_reading")):
+            for entry in entries.get(key) or []:
+                if not isinstance(entry, Mapping):
+                    continue
+                given = {name: entry[name] for name in fields[tool] if entry.get(name) is not None}
+                by = str(entry.get("by") or "earlier")
+                _text, is_error = self.reading_ledger.run_tool(tool, given, by=by)
+                carried += 0 if is_error else 1
+        if carried:
+            _log.warning("assistant full check: %d earlier ledger entries carried over", carried)
+        return carried
+
     def _string_label(self, ref: object, page: int, side: str) -> Mapping[str, Any]:
         """A numbered label for `record_string` (part_dims, total_dim): on the vendor's file for
         the vendor's side, else on the architect's upload (the main file when there is one PDF)."""
@@ -2714,10 +2746,16 @@ class ChatEngine:
         unlabelled = pack_without_labels(self.tools.workspace.set_pack)
         with self.timings.phase("finish_checks"):
             for name, step in steps:
+                left_out = self.book.left_out_for_room.get("code", 0)
                 try:
                     step()
                 except Exception:  # noqa: BLE001 - the answer goes on, never sendable (#1768)
                     _log.exception("assistant chat code check failed: %s", name)
+                    self.code_checks_failed.append(name)
+                    continue
+                if self.book.left_out_for_room.get("code", 0) > left_out:
+                    # A finding of code's own left out for room took its red with it (#1827).
+                    _log.warning("assistant chat code check left findings out: %s", name)
                     self.code_checks_failed.append(name)
         if self.settings.mode != "full_check" or self._simple:
             return  # the simple check names its broken steps once, with its other reasons
@@ -2806,6 +2844,16 @@ class ChatEngine:
             unknowns=self._unknowns,
         )
         report["scope"] = scope
+        refused = self.book.left_out_for_room.get("ai", 0)
+        if refused:
+            # Never silent (#1827): what the AI found and the full book refused.
+            report["not_checked"] = [
+                *(report.get("not_checked") or []),
+                (
+                    f"{refused} findings the AI found were not recorded: one answer holds at "
+                    f"most {MAX_FINDINGS} AI findings."
+                ),
+            ]
         self._ledger_trust(report)
         self._diff_rounds(report)
         index = self._add_block({"type": "trust", "trust": report})
