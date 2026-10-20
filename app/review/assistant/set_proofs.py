@@ -33,6 +33,7 @@ import threading
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
+from importlib import import_module
 from pathlib import Path
 from typing import Any, Final
 
@@ -61,9 +62,8 @@ _LOCK = threading.Lock()
 def _readers() -> int:
     """The readers' version a kept value was proved with (`read_number.READER_VERSION`): a value
     kept by older readers is never used once they change (their own cache does the same)."""
-    from app.review.assistant.read_number import READER_VERSION
-
-    return int(READER_VERSION)
+    # Loaded by name, as the chat tools load it: the API process never imports the readers.
+    return int(import_module("app.review.assistant.read_number").READER_VERSION)
 
 
 def _now() -> str:
