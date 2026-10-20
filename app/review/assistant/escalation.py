@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
@@ -64,7 +65,9 @@ __all__ = [
 
 _log = logging.getLogger(__name__)
 
-type StepName = Literal["labels", "under_markup", "same_item", "vendor_sums", "pairs"]
+type StepName = Literal[
+    "labels", "under_markup", "same_item", "vendor_sums", "pairs", "equal_parts", "read_number"
+]
 #: The free code steps, cheapest first.
 FREE_STEPS: Final[tuple[StepName, ...]] = (
     "labels",
@@ -81,6 +84,11 @@ _SLACK_PT: Final = 8.0
 
 #: (file, page, box) -> the drawing's own words under GV's markup in that box (text, colour).
 type UnderReader = Callable[[str, int, tuple[float, float, float, float]], list[dict[str, Any]]]
+#: The read-number tool bound to the set pack (`read_number.NumberReader`): a `Request` in, a
+#: `Reading` out.
+type NumberReader = Callable[[Any], Any]
+#: A side that prints only equal-parts marks (EQ / EQ), no number.
+_EQ: Final = re.compile(r"\b(?:EQ|EQUAL)\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +100,8 @@ class EscalationContext:
     page_map: Mapping[str, Any] | None = None
     pairs: Mapping[str, str] = field(default_factory=dict)
     under: UnderReader | None = None
+    reread: NumberReader | None = None
+    """The read-number tool, for a vendor value that has no spot (#1746)."""
 
 
 @dataclass(slots=True)
@@ -241,9 +251,126 @@ def _settle_right(item: _Item, step: StepName, how: str) -> None:
     item.outcome = "right"
 
 
+def _equal_parts(item: _Item, ctx: EscalationContext) -> None:
+    """A vendor side that prints only EQ marks: its code label is an equal part code worked out
+    (`dims.json`'s derived label: the printed overall, less the chain's printed parts, shared
+    equally), so its value is that part's, said as code's ("EQ (18")"), and compared like any
+    value code read. Any other label (or none) leaves the item as it is."""
+    finding = item.finding
+    text = " ".join(str(finding.get("vendor") or "").split())
+    if not _EQ.search(text) or _claim(text) is not None:
+        return
+    dims = dict(finding.get("dims") or {}) if isinstance(finding.get("dims"), Mapping) else {}
+    label = _label_of(ctx, dims.get("vendor"))
+    if label is None:
+        boxed = [
+            lab for lab in _labels_in(ctx, finding, "vendor_box", "vendor") if lab.get("derived")
+        ]
+        label = boxed[0] if len(boxed) == 1 else None
+    derived = label.get("derived") if label is not None else None
+    value = _decimal(label.get("inches")) if label is not None else None
+    if not isinstance(derived, Mapping) or derived.get("rule") != "equal_parts" or not value:
+        return
+    assert label is not None
+    inches = dict(finding.get("inches") or {})
+    inches["vendor"] = str(value)
+    words = inch_words(value)
+    how = (
+        f"the EQ marks share {derived.get('from')}'s printed overall equally in "
+        f"{derived.get('parts')} parts: {words} each (code)"
+    )
+    finding.update(inches=inches, vendor=f"EQ ({words})")
+    dims["vendor"] = {**_provenance(label), "derived": dict(derived)}
+    finding["dims"] = dims
+    checks = dict(finding.get("checks") or {})
+    checks["verify_vendor"] = {
+        "result": "match",
+        "route": "drawn" if label.get("route") == "drawn" else "text",
+        "read": f"EQ ({words})",
+        "reads": [f"{_ref(label)}: {how}"],
+        "reason": how,
+        "value": words,
+        "pending": False,
+        "words": f"Code worked out the equal part: {how}",
+    }
+    finding["checks"] = checks
+    item.changed = True
+    _check(item, "printed_vendor", "match")
+    item.note("equal_parts", "read", f"{_ref(label)}: {how}")
+    _printed_compare(item, "equal_parts")
+
+
+def _label_of(ctx: EscalationContext, side: object) -> dict[str, Any] | None:
+    """The set pack's label a finding's `dims` side names (its file, page and id)."""
+    if not isinstance(side, Mapping) or not side.get("id"):
+        return None
+    file = str(side.get("file") or ctx.main_file or "")
+    page = int(side.get("page") or 0)
+    for label in ctx.labels.get((file, page), []):
+        if label.get("id") == side.get("id"):
+            return dict(label, page=page, file=file)
+    return None
+
+
+def _claim(text: str) -> str | None:
+    checks = import_module("app.review.assistant.finding_checks")
+    claim = checks.claim_value(text)
+    return claim if claim is not None and checks.to_inches(claim) is not None else None
+
+
+def _reread(item: _Item, ctx: EscalationContext) -> None:
+    """A vendor value of a difference between two drawings that has no spot (no box, no label):
+    the read-number tool looks for it on the page (#1746). Read with the same value: its spot and
+    code's reading go on the item (the code checks and the pairing proof still decide any red).
+    Unread: its reason goes on the item, which stays listed as Not compared, never red and never
+    dropped for having no spot (`spot_guard`)."""
+    finding = item.finding
+    if ctx.reread is None or finding.get("status") not in ("different", "check"):
+        return
+    dims = finding.get("dims") if isinstance(finding.get("dims"), Mapping) else {}
+    if finding.get("vendor_box") or (dims or {}).get("vendor"):
+        return
+    claim = _claim(" ".join(str(finding.get("vendor") or "").split()))
+    page = finding.get("page")
+    if claim is None or not isinstance(page, int) or isinstance(page, bool) or page >= 1000:
+        return  # a set's page of a separate file (1001...) has no file of its own here
+    file = str(ctx.main_file or "")
+    numbers = import_module("app.review.assistant.read_number")
+    try:
+        reading = ctx.reread(numbers.Request(file, page, "vendor", claim=claim))
+    except Exception as failed:  # noqa: BLE001 - a tool that cannot run settles nothing
+        item.note("read_number", "no_change", f"the read-number tool could not run ({failed})")
+        return
+    checks = dict(finding.get("checks") or {})
+    checks["verify_vendor"] = reading.as_verify(claim)
+    finding["checks"] = checks
+    item.changed = True
+    box = reading.box
+    if not reading.matches(claim) or not box or len(box) != 4:
+        item.note("read_number", "no_change", f"not read on page {page}: {reading.reason}")
+        return
+    finding["vendor_box"] = {
+        "page": page,
+        "x0": float(box[0]),
+        "y0": float(box[1]),
+        "x1": float(box[2]),
+        "y1": float(box[3]),
+        "file": file or None,
+    }
+    if reading.label:
+        label = _label_of(ctx, {"id": reading.label, "page": page, "file": file})
+        if label is not None:
+            finding["dims"] = {**(dims or {}), "vendor": _provenance(label)}
+    item.note("read_number", "read", f"read on page {page}: {reading.reason}")
+
+
 def _labels_step(item: _Item, ctx: EscalationContext) -> None:
     """Code's label in each box that prints the item's value is a code reading of it; a vendor
-    value nobody could read becomes the only vendor label in its box."""
+    value nobody could read becomes the only vendor label in its box. Before that, a vendor side
+    of EQ marks takes its equal part's value (`_equal_parts`) and a vendor value with no spot is
+    looked for by the read-number tool (`_reread`)."""
+    _equal_parts(item, ctx)
+    _reread(item, ctx)
     finding = item.finding
     inches = dict(finding.get("inches") or {})
     dims = dict(finding.get("dims") or {}) if isinstance(finding.get("dims"), Mapping) else {}
@@ -537,6 +664,7 @@ def context_from_pack(
     *,
     page_map: Mapping[str, Any] | None = None,
     under: UnderReader | None = None,
+    reread: NumberReader | None = None,
 ) -> EscalationContext:
     """The free steps' facts from a set pack (`dims.json`, `pairs.json`)."""
     labels: dict[tuple[str, int], list[Mapping[str, Any]]] = {}
@@ -557,6 +685,7 @@ def context_from_pack(
         page_map=page_map if isinstance(page_map, Mapping) else None,
         pairs=pairs,
         under=under,
+        reread=reread,
     )
 
 
@@ -582,11 +711,13 @@ def escalate_answer(engine: Any) -> Escalation | None:
         return None
     plan = import_module("app.review.assistant.full_check_plan")
     page_map = plan.read_page_map(workspace.set_pack, assume=True, main_file=book.main_file)
+    numbers = import_module("app.review.assistant.read_number")
     ctx = context_from_pack(
         workspace.set_pack,
         book.main_file,
         page_map=page_map,
         under=_under_reader(book.pdf_paths()),
+        reread=numbers.reader_for_pack(workspace.set_pack, workspace.uploads),
     )
     with engine.finding_lock:
         result = escalate(book.live(), ctx)

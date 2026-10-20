@@ -91,3 +91,15 @@ def test_the_architect_side_is_looked_for_on_its_own_page() -> None:
     other = finding(page=5, vs_page=3, vendor_box={**BOX, "page": 5})
     assert unbacked(other, labels) is None
     assert unbacked({**other, "vs_page": None}, labels) is not None
+
+
+def test_a_found_difference_is_kept_when_only_the_vendors_number_has_no_spot() -> None:
+    """Round 1 (2026-10-20): a difference between two drawings whose architect side has its spot
+    stays listed (Not compared, never red) when the page scan missed the vendor's number; any
+    other item with an unfound size and no spot is still an internal note."""
+    assert unbacked(finding(vendor='49 1/4"', arch_box=BOX), labels) is None
+    by_label = finding(vendor='49 1/4"', dims={"architect": {"id": "D1", "page": 3}})
+    assert unbacked(by_label, labels) is None
+    copy = finding(source="completeness", vendor='49 1/4"', arch_box=BOX)
+    assert unbacked(copy, labels) is not None
+    assert unbacked(finding(vendor='49 1/4"'), labels) is not None

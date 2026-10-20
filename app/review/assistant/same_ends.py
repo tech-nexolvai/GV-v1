@@ -1,4 +1,4 @@
-"""Same end points proved from the drawn run, when the vendor and the architect draw the same run.
+"""Same end points proved from the drawn run, when vendor and architect draw the same run (#1808).
 
 A red cloud between two drawings needs proof that both dimensions run between the same two points
 (rule R8). The anchor fit (`full_check_advocate.same_extent`) lines the drawings up on values
@@ -133,7 +133,10 @@ def _inches(label: Mapping[str, Any]) -> Fraction | None:
 
 
 def side(
-    role: str, labels: Sequence[Mapping[str, Any]], segments: Iterable[Segment], box: Sequence[float]
+    role: str,
+    labels: Sequence[Mapping[str, Any]],
+    segments: Iterable[Segment],
+    box: Sequence[float],
 ) -> Side | None:
     """One drawing (`role` architect or vendor, `box` on its page), or `None` when code trusts no
     dimension on it. Each label's span is its own ticks' (`dim_anchors`); a label the tick reader
@@ -144,7 +147,9 @@ def side(
     if found is None or found.pt_per_in <= 0:
         return None
     lines = {
-        key: Line(key, span.axis, span.row, span.a, span.b, span.inches, str(span.label.get("text")))
+        key: Line(
+            key, span.axis, span.row, span.a, span.b, span.inches, str(span.label.get("text"))
+        )
         for key, span in found.spans.items()
     }
     for label in labels:
@@ -173,7 +178,9 @@ def side(
         a, b = sorted(float(point[along]) for point in line)
         if abs((b - a) / found.pt_per_in / float(value) - 1) > dim_anchors.FIT:
             continue
-        lines[key] = Line(key, str(axis), float(line[0][1 - along]), a, b, value, str(label.get("text")))
+        lines[key] = Line(
+            key, str(axis), float(line[0][1 - along]), a, b, value, str(label.get("text"))
+        )
     return Side(role, found.pt_per_in, lines, found, area)
 
 
@@ -221,7 +228,9 @@ def _base(found: Side, axis: str) -> float | None:
     return bottom
 
 
-def _intervals(found: Side, axis: str, skip: Iterable[tuple[float, float]]) -> dict[Fraction, list[Line]]:
+def _intervals(
+    found: Side, axis: str, skip: Iterable[tuple[float, float]]
+) -> dict[Fraction, list[Line]]:
     """{value: one line per distinct place} of the axis' dimensions, leaving out lines on the
     places in `skip` (the pair itself, printed again)."""
     skipped = list(skip)
@@ -319,7 +328,9 @@ def _consistent(ties: list[_Tie]) -> list[_Tie]:
     most disagreements (the weakest kind first) until none is left."""
     kept = list(ties)
     while True:
-        clashes = [sum(1 for other in kept if other is not tie and _clash(tie, other)) for tie in kept]
+        clashes = [
+            sum(1 for other in kept if other is not tie and _clash(tie, other)) for tie in kept
+        ]
         if not any(clashes):
             return kept
         worst = max(
@@ -388,7 +399,11 @@ def _features(found: Side, line: Line, end: float, window: tuple[float, float]) 
 
 
 def _moved(
-    vendor: Side, architect: Side, pair: tuple[Line, Line], tied: tuple[float, float], moved: tuple[float, float]
+    vendor: Side,
+    architect: Side,
+    pair: tuple[Line, Line],
+    tied: tuple[float, float],
+    moved: tuple[float, float],
 ) -> tuple[Extent, str]:
     v_line, a_line = pair
     (tv, ta), (mv, ma) = tied, moved
@@ -396,7 +411,10 @@ def _moved(
         return "cannot_tell", "the two dimensions run the other way from the shared end"
     gap = abs(v_line.inches - a_line.inches)
     if gap > MAX_MOVE_IN:
-        return "cannot_tell", f'the difference is more than {MAX_MOVE_IN:.0f}" (too far to call it the same point)'
+        return (
+            "cannot_tell",
+            f'the difference is more than {MAX_MOVE_IN:.0f}" (too far to call it the same point)',
+        )
     for found, line, length in ((vendor, v_line, abs(mv - tv)), (architect, a_line, abs(ma - ta))):
         drawn = length / found.ppi
         if abs(drawn - float(line.inches)) > max(_DRAWN_IN, _DRAWN_SHARE * float(line.inches)):
@@ -405,14 +423,17 @@ def _moved(
     v_other = tv + math.copysign(float(a_line.inches) * vendor.ppi, mv - tv)
     a_other = ta + math.copysign(float(v_line.inches) * architect.ppi, ma - ta)
     seen = {
-        "vendor": _features(vendor, v_line, mv, (min(mv, v_other) - margin_v, max(mv, v_other) + margin_v)),
+        "vendor": _features(
+            vendor, v_line, mv, (min(mv, v_other) - margin_v, max(mv, v_other) + margin_v)
+        ),
         "architect": _features(
             architect, a_line, ma, (min(ma, a_other) - margin_a, max(ma, a_other) + margin_a)
         ),
     }
     busy = [f"{who}: {', '.join(sorted(set(what)))}" for who, what in seen.items() if what]
     if busy:
-        return "cannot_tell", "another drawn feature is near the moved end (" + "; ".join(busy) + ")"
+        said = "; ".join(busy)
+        return "cannot_tell", f"another drawn feature is near the moved end ({said})"
     return "same_extent", ""
 
 
@@ -472,9 +493,7 @@ def prove(vendor: Side, architect: Side, vendor_id: str, architect_id: str) -> t
 # ---- from two labels -----------------------------------------------------------------------------
 
 
-def _half(
-    page_map: Mapping[str, Any] | None, label: Mapping[str, Any], role: str
-) -> Box | None:
+def _half(page_map: Mapping[str, Any] | None, label: Mapping[str, Any], role: str) -> Box | None:
     """The box of the label's drawing: the page map's half of that role holding its centre."""
     raw = label.get("box")
     if not raw or len(raw) != 4:
@@ -488,9 +507,14 @@ def _half(
             continue
         for half in entry.get("halves") or []:
             box = half.get("box") if isinstance(half, Mapping) else None
-            if half.get("role") == role and box and len(box) == 4:
-                if box[0] <= cx <= box[2] and box[1] <= cy <= box[3]:
-                    return (float(box[0]), float(box[1]), float(box[2]), float(box[3]))
+            if (
+                half.get("role") == role
+                and box
+                and len(box) == 4
+                and box[0] <= cx <= box[2]
+                and box[1] <= cy <= box[3]
+            ):
+                return (float(box[0]), float(box[1]), float(box[2]), float(box[3]))
     return None
 
 
