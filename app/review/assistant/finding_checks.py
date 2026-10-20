@@ -58,12 +58,14 @@ __all__ = [
     "critic_passed",
     "dimension_tokens",
     "drawn_checks",
+    "inch_first_mm",
     "printed_at_spot",
     "printed_from",
     "read_result",
     "to_inches",
     "trust_level",
     "units_check",
+    "value_flags",
     "verify_at_spot",
 ]
 
@@ -105,6 +107,26 @@ _METRIC_ONLY: Final = re.compile(r"^\d+(?:\.\d+)?\s*(?:mm|cm|m)\.?$", re.IGNOREC
 #: The longest text read as one value. A sentence is not a dimension.
 _LONGEST_VALUE: Final = 40
 
+#: A reference dimension, written in round brackets with its mark: `(24")`, `(2'-6")` (#1778).
+_REFERENCE: Final = re.compile(r"""^\(\s*(?P<value>[^()]*\d[^()]*['"][^()]*)\s*\)$""")
+#: Words and signs written before a value that are not part of it: `VIF 24"`, `±24"`, `+/- 24"`,
+#: `APPROX. 24"` (#1778). The value is read; the note is kept by `value_flags`.
+_LEADING_NOTE: Final = re.compile(
+    r"^(?:V\.?I\.?F\.?|APPROX\.?|REF\.?|\+\s*/\s*-|\+-|±)\s*", re.IGNORECASE
+)
+#: A plus-or-minus written after a value: `24"+/-`, `24" ±` (#1778).
+_TRAILING_PLUS_MINUS: Final = re.compile(r"\s*(?:\+\s*/\s*-|\+-|±)\s*$")
+#: Inches first, millimetres in brackets: `31 1/4" [794]`, `2'-0" [610]`, `25 [635]` (#1778).
+_INCH_FIRST: Final = re.compile(
+    r"^(?P<inches>[^\[\]]*\d[^\[\]]*?)\s*\[\s*(?P<mm>\d+(?:\.\d+)?)\s*(?:mm\.?)?\s*\]$",
+    re.IGNORECASE,
+)
+_INCH_MARKS: Final = re.compile(r"""["']|\bin\b|\binch""", re.IGNORECASE)
+_FLAG_PATTERNS: Final = (
+    ("vif", re.compile(r"\bV\.?I\.?F\b|verify in field|field verify", re.IGNORECASE)),
+    ("approx", re.compile(r"\+\s*/\s*-|\+-|±|\bAPPROX", re.IGNORECASE)),
+)
+
 
 def to_inches(text: str) -> Decimal | None:
     """A written value as exact inches, or `None` when it is not one value code can be sure of.
@@ -123,10 +145,29 @@ def to_inches(text: str) -> Decimal | None:
     token = " ".join(plain_marks(text).split())
     if not token or len(token) > _LONGEST_VALUE:
         return None
-    while (trailing := _TRAILING_WORD.match(token)) and (
-        trailing.group("word").lower() not in _UNIT_WORDS
-    ):
-        token = trailing.group("value")
+    reference = _REFERENCE.match(token)
+    if reference is not None:
+        token = reference.group("value").strip()
+    noted = _LEADING_NOTE.match(token) is not None or _TRAILING_PLUS_MINUS.search(token)
+    if noted and not re.search(r"""['"]""", token):
+        return None  # `approx 36`: a noted value with no mark is not one sure value
+    while True:
+        bare = _LEADING_NOTE.sub("", token, count=1)
+        bare = _TRAILING_PLUS_MINUS.sub("", bare)
+        if (trailing := _TRAILING_WORD.match(bare)) and (
+            trailing.group("word").lower() not in _UNIT_WORDS
+        ):
+            bare = trailing.group("value")
+        if bare == token or not bare:
+            break
+        token = bare
+    inch_first = _inch_first(token)
+    if inch_first is not None:
+        return inch_first or None
+    dual = _DUAL_UNITS.match(token)
+    if dual is not None and "'" in dual.group("inches"):
+        # Millimetres with feet and inches in brackets: `610 [2'-0"]` is 24" (#1778).
+        return to_inches(dual.group("inches"))
     round_dual = _ROUND_DUAL.match(token)
     if round_dual is not None:
         token = f"{round_dual.group('mm')} [{round_dual.group('inches').strip()}]"
@@ -140,6 +181,70 @@ def to_inches(text: str) -> Decimal | None:
     except (UnitNormalisationError, ArithmeticError):
         return None
     return _exact_decimal(exact)
+
+
+def _mm_agrees(millimetres: str, inches: Decimal) -> bool:
+    """Whether printed millimetres are the printed inches times 25.4, within the millimetres' own
+    rounding (half their last printed digit): `794` for 31 1/4" (793.75), `635` for 25"."""
+    places = len(millimetres.partition(".")[2])
+    allowance = Decimal("0.5") / (Decimal(10) ** places)
+    return abs(Decimal(millimetres) - inches * _MM_PER_INCH) <= allowance
+
+
+def _inch_first(token: str) -> Decimal | Literal[False] | None:
+    """A pair written inches first with the millimetres in brackets (#1778): `31 1/4" [794]` is
+    31 1/4", `25 [635]` is 25". The order is settled by the 25.4 cross-check: a marked value
+    (`31 1/4"`, `2'-0"`) is the inches, and is read only when the bracket is its millimetres; two
+    bare numbers are inches first only when the bracket is the first number times 25.4 and the
+    first is not the bracket's millimetres (GV's usual `794 [31 1/4]` keeps its reading). `None`:
+    not this form (read as before); `False`: this form, refused (the numbers disagree)."""
+    found = _INCH_FIRST.match(token)
+    if found is None:
+        return None
+    outside, millimetres = found.group("inches").strip(), found.group("mm")
+    if outside.lower().endswith("mm") or "[" in outside:
+        return None
+    marked = _INCH_MARKS.search(outside) is not None
+    value = to_inches(outside if marked else f'{outside}"')
+    if value is None or value <= 0:
+        return False if marked else None
+    if _mm_agrees(millimetres, value):
+        if marked:
+            return value
+        # Two bare numbers: GV's order (mm first) wins whenever it agrees too.
+        backwards = to_inches(f'{millimetres}"')
+        plain = re.fullmatch(r"\d+(?:\.\d+)?", outside) is not None
+        if plain and backwards is not None and _mm_agrees(outside, backwards):
+            return None
+        return value
+    return False if marked else None
+
+
+def inch_first_mm(text: object) -> str | None:
+    """The millimetres of a value written inches first with them in brackets (`31 1/4" [794]`
+    gives `794`), when `to_inches` reads it so (the 25.4 cross-check agrees); else `None`."""
+    if not isinstance(text, str):
+        return None
+    token = " ".join(plain_marks(text).split())
+    found = _INCH_FIRST.match(token)
+    if found is None or not _inch_first(token):
+        return None
+    return found.group("mm")
+
+
+def value_flags(text: object) -> tuple[str, ...]:
+    """The notes written with a value that `to_inches` reads past (#1778), kept beside it:
+    `reference` for a reference dimension in round brackets (`(24")`), `vif` for verify in field
+    (`VIF 24"`, `24" (VIF)`), `approx` for plus-or-minus (`24"+/-`, `±24"`). Empty for a plain
+    value."""
+    if not isinstance(text, str):
+        return ()
+    token = " ".join(plain_marks(text).split())
+    flags: list[str] = []
+    if _REFERENCE.match(token) or re.search(r"\bREF\b", token, re.IGNORECASE):
+        flags.append("reference")
+    flags += [name for name, pattern in _FLAG_PATTERNS if pattern.search(token)]
+    return tuple(flags)
 
 
 def _exact_decimal(value: Fraction) -> Decimal | None:
@@ -377,7 +482,16 @@ def units_check(text: object) -> UnitsResult | None:
     written in both units or either part is not a number. $0, no PDF."""
     if not isinstance(text, str):
         return None
-    dual = _DUAL_UNITS.match(" ".join(plain_marks(text).split()))
+    token = " ".join(plain_marks(text).split())
+    first = _INCH_FIRST.match(token)
+    if first is not None and _inch_first(token) is not None:
+        # Inches first (#1778): read only when the millimetres agree; a marked pair that does not.
+        outside = first.group("inches").strip()
+        value = to_inches(outside if _INCH_MARKS.search(outside) else f'{outside}"')
+        if value is None:
+            return None
+        return "agrees" if _mm_agrees(first.group("mm"), value) else "disagrees"
+    dual = _DUAL_UNITS.match(token)
     if dual is None:
         return None
     inches = to_inches(dual.group("inches"))

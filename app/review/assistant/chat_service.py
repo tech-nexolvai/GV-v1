@@ -732,6 +732,8 @@ class MessageJob:
     """Which full check runs: `roster` or `simple` (`simple_check/`, #1665)."""
     simple: Mapping[str, Any] | None = None
     """The simple check's options (`simple_check.run.SimpleOptions.of`), with the pilot's size."""
+    page_match_model: str | None = None
+    """The AI page matcher's model for separate uploads (#1798); `None`: off."""
     plan_answers: Mapping[str, str] | None = None
     """The reviewer's answers to the plan check (#1569), kept with the set pack before the run."""
     sharpen_model: bool = False
@@ -1164,6 +1166,7 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             pairing_proof=job.pairing_proof,
             full_check_mode=job.full_check_mode,
             simple=_simple_of(job, run, workspace.root),
+            page_match_model=job.page_match_model,
             identity=job.identity,
             numbering=numbering(job.factory, job.package_id, job.chat_id, run.message_id),
         ),

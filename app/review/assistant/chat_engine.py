@@ -225,9 +225,11 @@ from app.review.assistant.full_check_brief import (
 )
 from app.review.assistant.full_check_lenses import Fold, lens_folds, names_apart, same_wrongs
 from app.review.assistant.full_check_plan import (
+    CrossPairs,
     FanOutPlan,
     HelperJob,
     pack_ready,
+    pair_lines,
     plan_jobs,
     rules_summary,
     wait_for_page_map,
@@ -520,6 +522,9 @@ class EngineSettings:
     simple: Any = None
     """The simple check's options for this run (`simple_check.run.SimpleOptions.of`): the compare
     and blind-look settings and the pilot's size."""
+    page_match_model: str | None = None
+    """The AI page matcher's model for vendor drawings paired across separate uploads (#1798,
+    `assistant_page_match_model`); `None`: off (code pairs alone)."""
 
 
 @dataclass(slots=True)
@@ -947,6 +952,8 @@ class ChatEngine:
         self._checks: list[Future[None]] = []
         self._checks_budget: Budget | None = None
         self._plan: FanOutPlan | None = None
+        self._cross: CrossPairs | None = None
+        """The vendor pages paired across separate uploads (#1798), once worked out."""
         self._read_share = _Share(limit=settings.message_cap_micros)
         self._markup_base: Future[Any] | None = None
         self._trust_index: int | None = None
@@ -1660,8 +1667,9 @@ class ChatEngine:
         with self.timings.phase(self._lead_phase()):
             results = self._in_turns(
                 [call for call in calls if call.get("name") != "Agent"],
-                lambda call: call.get("name") in LEAD_PARALLEL_TOOLS
-                and id(call) not in reply.bad_inputs,
+                lambda call: (
+                    call.get("name") in LEAD_PARALLEL_TOOLS and id(call) not in reply.bad_inputs
+                ),
                 prepare,
             )
         if agents:
@@ -3365,6 +3373,7 @@ class ChatEngine:
         if job.reference:
             looked = "; ".join(f"{name} p.{number}" for name, number in job.reference)
             lines.append(f"LOOK AT, to compare with (another helper or file has them): {looked}.")
+        lines += pair_lines(job.pairs, job.unpaired, UPLOADS)
         if rules:
             lines.append(
                 f"GV's rules for {products} (summary; all of them in {SKILLS}/rules.md):\n{rules}"
@@ -3496,6 +3505,8 @@ class ChatEngine:
                 page_map = wait_for_page_map(
                     workspace.set_pack, self.cancel, assume=True, main_file=self.book.main_file
                 )
+            with self.timings.phase("page_match"):
+                self.cross_file_pairs(page_map)
             with self.timings.phase("planning"):
                 plan, _pages_all = self.scoped_jobs(page_map)
                 rules = self._rules_summary() if plan is not None else ""
@@ -3548,12 +3559,48 @@ class ChatEngine:
         self._lead_message(agents, entries)
         return True
 
+    def cross_file_pairs(self, page_map: Mapping[str, Any] | None) -> CrossPairs | None:
+        """The vendor pages paired across separate uploads (#1798), for the code-planned helpers:
+        when the set has an architect's upload apart from the vendor's, the whole pack is waited
+        for (its labels), the AI page matcher is asked about every vendor drawing the work list
+        pairs across the uploads (saved in the pack: asked once per set), and the work list
+        (code's score and the agreement rule) says which page goes with which. `None` when the
+        set has no separate architect's upload or the pack is not there."""
+        folder = self.tools.workspace.set_pack
+        main = self.book.main_file
+        roles = (page_map or {}).get("upload_roles") or {}
+        separate = any(
+            role == "architect" and name != main
+            for name, role in (roles.items() if isinstance(roles, Mapping) else ())
+        )
+        if folder is None or not separate:
+            return None
+        # Loaded by name: the work list reaches the drawn-position pairing (OpenCV-side code),
+        # which `app/api/` must not import (`tests/api/test_no_heavy_work.py`).
+        page_match = import_module("app.review.assistant.page_match")
+        worklist = import_module("app.review.assistant.simple_check.worklist")
+        if not page_match.wait_ready(folder, self.cancel):
+            _log.warning("assistant full check: the set pack is not ready; no cross-file pairs")
+            return None
+        try:
+            page_match.run_for_engine(self, folder, main)
+        except Exception:  # noqa: BLE001 - code then pairs alone (its saved answers, if any)
+            _log.exception("assistant full check: the page matcher failed")
+        try:
+            work = worklist.build_worklist(folder, main)
+        except Exception:  # noqa: BLE001 - the helpers are planned without the pairs
+            _log.exception("assistant full check: no work list for the cross-file pairs")
+            return None
+        self._cross = CrossPairs.of(work)
+        return self._cross
+
     def scoped_jobs(self, page_map: Mapping[str, Any] | None) -> tuple[FanOutPlan | None, int]:
         """A full check's helper jobs for the products in scope, and the pages the whole set would
         have compared: an area whose every page names only out-of-scope products gets no helper
         (`product_scope.outside_unit`, read from the pages' printed words, $0)."""
         main = self.book.main_file
-        plan = plan_jobs(page_map, main, self._max_agents)
+        across = self._cross
+        plan = plan_jobs(page_map, main, self._max_agents, across=across)
         scope = self.product_scope
         if plan is None or scope.every or self.tools.workspace.set_pack is None:
             return plan, 0 if plan is None else plan.pages
@@ -3571,6 +3618,7 @@ class ChatEngine:
             main,
             self._max_agents,
             outside=lambda pages: outside_unit(pages, texts, scope),
+            across=across,
         )
         return scoped, plan.pages
 
