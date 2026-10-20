@@ -26,8 +26,10 @@
 
 ## The three layers on a sheet
 - The architect's drawing (the design), the vendor's drawing (what is checked), and GV's markup
-  (coloured clouds, boxes, numbers and notes added by GV's reviewers). Drawings are plotted in black
-  and grey, so anything coloured is GV's. A callout that ends "by GV" ("STONE TOP by GV") is GV's
+  (clouds, boxes, numbers and notes added by GV's reviewers). On GV's combined review sheets
+  (pasted drawings under GV's headings) coloured ink inside a pasted drawing may be GV's; on an
+  ordinary upload every colour is the drawing's own, and only PDF comments and GV Review's signed
+  marks are markup. A callout that ends "by GV" ("STONE TOP by GV") is GV's
   note, never the vendor's tag.
 - A sheet can hold an ID-set drawing and a brand prototype side by side. Label each half, never the
   whole page.
