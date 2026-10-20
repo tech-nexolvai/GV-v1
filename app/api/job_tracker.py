@@ -186,7 +186,7 @@ def read_tracker(
 
 STATE_WORDS: Final[Mapping[str, str]] = {
     "open": "Open",
-    "fixed": "Fixed",
+    "fixed": "Closed",
     "not_a_problem": "Not a problem",
     "right_later": "Right on a later check",
 }
@@ -204,7 +204,7 @@ _ITEM_COLUMNS: Final = (
     "Should be",
     "First seen round",
     "Round now",
-    "Fixed in round",
+    "Closed in round",
     "Tags",
     "Decision",
     "Decided by",
@@ -215,12 +215,12 @@ _ITEM_COLUMNS: Final = (
 
 
 def state_words(item: Mapping[str, Any]) -> str:
-    """'Open · Wrong', 'Fixed · round 2', 'Not a problem · <name>'."""
+    """'Open · Wrong', 'Closed · round 2', 'Not a problem · <name>'."""
     state = str(item["state"])
     if state == "open":
         return "Open · Wrong" if item.get("open_kind") == "wrong" else "Open · Not compared"
     if state == "fixed" and item.get("fixed_round"):
-        return f"Fixed · round {item['fixed_round']}"
+        return f"Closed · round {item['fixed_round']}"
     if state == "not_a_problem" and item.get("decided_by"):
         return f"Not a problem · {item['decided_by']}"
     return STATE_WORDS.get(state, state)

@@ -9,7 +9,8 @@ one download the vendor can be sent as it is, with no editing:
    submittal's identity, the review result and one entry per comment.
 3. **The issue register** (XLSX, every cell text): the submittal sheet, then one row per item,
    Wrong / Right / Not compared, with a blank "Vendor response" column.
-4. **The Not-compared list** and **the check report**, when the full check made them.
+4. **The Not-compared list** (PDF and workbook), when the full check made it. GV's own check report
+   never goes in (`internal_report`).
 
 **Comment numbers are stable** (`comment_labels`): "C-01", "C-02", … from the job tracker's item
 identity (`job_tracker.comment_numbers`, #1591), so an item keeps its number across checks and
@@ -34,7 +35,6 @@ import csv
 import hashlib
 import io
 import logging
-import re
 import zipfile
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -42,11 +42,10 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any, Final, Literal
 
+from app.review.assistant import not_compared
 from app.review.assistant.impact import by_impact
 from app.review.assistant.proof import (
-    AI_ONLY_REASON,
     NO_REQUIREMENT_REASON,
-    PAIRING_REASON,
     governs,
     proof_group,
     proof_line,
@@ -65,7 +64,7 @@ from app.review.assistant.review_action import (
     review_action,
     stamp_words,
 )
-from app.review.assistant.vendor_text import item_name, vendor_text
+from app.review.assistant.vendor_text import item_name, reviewer_right, vendor_text
 
 __all__ = [
     "LETTER_KIND",
@@ -133,7 +132,7 @@ _STORED_ROUND: Final[Mapping[str, str]] = {
 LETTER_KIND: Final = "Comment letter"
 REGISTER_KIND: Final = "Issue register"
 PACKAGE_KIND: Final = "GV review package"
-#: The check report's name inside the package (the vendor gets no "AI" in a file name).
+#: The check report's other name: a file so named is GV's own and never goes in the package.
 REPORT_IN_PACKAGE: Final = "Check report"
 ZIP_MIME: Final = "application/zip"
 XLSX_MIME: Final = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -679,35 +678,14 @@ def _proof_words(finding: Mapping[str, Any], status: Status) -> str:
     if status == "wrong":
         return proof_line(finding)
     if proof_group(finding) == "dismissed":
-        decision = finding.get("decision")
-        by = decision.get("by") if isinstance(decision, Mapping) else None
-        return f"Not a problem (reviewer{': ' + str(by) if by else ''})"
+        return reviewer_right(finding)
     if status == "right" and proof_group(finding) == "clouded":
         return "Closed: this round prints what it should be"
     if status == "right":
         return "Matches the drawings"
-    return _vendor_words(str(proof_of(finding).get("reason") or ""))
-
-
-#: The reviewer-facing reasons (`proof.unproved_reason`) in the vendor's words (research note
-#: INDUSTRY-REVIEW.md, section 5: "Vendor to confirm").
-_TO_CONFIRM: Final = "Possible difference, not proved by GV's code: vendor to confirm."
-_BEFORE_SENDING: Final = re.compile(
-    r"\s*(?:check it before sending|the vendor is asked to confirm)\.?\s*$", re.IGNORECASE
-)
-
-
-def _vendor_words(reason: str) -> str:
-    """A Not-compared row's reason as the vendor reads it: never "check it before sending" (a note
-    to GV), and an unproved difference becomes "vendor to confirm"."""
-    if not reason:
-        return "Not compared by code."
-    if reason in (AI_ONLY_REASON, PAIRING_REASON):
-        return _TO_CONFIRM
-    trimmed = _BEFORE_SENDING.sub("", reason).strip()
-    if trimmed != reason.strip():
-        return f"{trimmed.rstrip('.')}. Vendor to confirm." if trimmed else _TO_CONFIRM
-    return reason
+    # The Not-compared list's own reason for the item (#1766): the two files say the same.
+    listed = not_compared.rows([finding])
+    return not_compared.vendor_reason(listed[0]) if listed else "Not compared by code."
 
 
 def _item_action_of(finding: Mapping[str, Any], status: Status) -> str:
@@ -762,7 +740,7 @@ def register_rows(
     # The guard on internal words (#1622): every cell is vendor-facing.
     for row in rows:
         row[4] = _item({"item": row[4], "page": int(row[1]) if row[1] else None})
-        for at in (7, 8, 9, 10, 12):
+        for at in (2, 3, 7, 8, 9, 10, 12):
             row[at] = vendor_text(row[at], "") or ""
     return rows
 

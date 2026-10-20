@@ -2,7 +2,8 @@
 
 - the fit lines round 1 up with round 2 by the values printed once in both, and refuses a
   different view rather than guess;
-- Fixed / Still wrong (same value, or changed but still not right) / New / also in round 1;
+- Fixed / Still wrong (same value, or changed but still not right) / New / also in round 1, said
+  in the letter's words (Closed / Previous comment not addressed / New, #1766);
 - what code cannot compare goes to the grey list with the reason;
 - the drawing: a green check at a fixed item, a red cloud at a still-wrong one, "NEW" on a new
   round-2 item, the cover's round-2 summary and the grey list.
@@ -160,7 +161,7 @@ def test_fixed_still_wrong_and_new_are_decided_by_the_printed_values() -> None:
         "still_not_compared": 0,
         "not_compared": 0,
     }
-    assert report.line() == "Round 2: 1 fixed, 1 still wrong, 1 new."
+    assert report.line() == "Round 2: 1 closed, 1 previous comment not addressed, 1 new."
 
 
 def _asked(fid: str, text: str, architect: str, **more: Any) -> dict[str, Any]:
@@ -202,7 +203,8 @@ def test_what_round_one_could_not_compare_is_rechecked_on_round_two() -> None:
     assert by["Q3"].status == "now_right" and by["Q3"].now == '29"'
     assert by["Q3"].was == "no size printed"
     assert report.line() == (
-        "Round 2: 0 fixed, 0 still wrong, 0 new; of what round 1 could not compare, 2 now right, "
+        "Round 2: 0 closed, 0 previous comments not addressed, 0 new; of what round 1 could not "
+        "compare, 2 now right, "
         "1 still not compared."
     )
     # A change code cannot judge is refused (grey), never called answered.
@@ -294,11 +296,11 @@ def test_the_drawing_marks_round_two_and_summarises_it(tmp_path: Path) -> None:
     reader = PdfReader(str(out))
     cover = " ".join(reader.pages[0].extract_text().split())
     assert "Round 2: what the vendor did" in cover
-    assert "Round 2: 1 fixed, 1 still wrong, 1 new." in cover
+    assert "Round 2: 1 closed, 1 previous comment not addressed, 1 new." in cover
     round_two_page = " ".join(reader.pages[2].extract_text().split())
-    assert 'Fixed in round 2: was 46"' in round_two_page and 'now 37"' in round_two_page
-    assert 'Still wrong in round 2: now 12"' in round_two_page
-    assert "NEW Item F3" in round_two_page
+    assert 'Closed in round 2: was 46"' in round_two_page and 'now 37"' in round_two_page
+    assert 'Previous comment not addressed: now 12"' in round_two_page
+    assert "New Item F3" in round_two_page
     fixed_at, still_at = _moved(ROUND_ONE['46"']), _moved(ROUND_ONE['12"'])
     assert _colour_near(out, 2, fixed_at, GREEN) > 10  # the green box at the fixed value
     assert _colour_near(out, 2, fixed_at, RED) == 0  # no red cloud there
