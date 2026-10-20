@@ -102,7 +102,8 @@ NEXT_STEP: Final[Mapping[Action, str]] = {
 }
 #: S6's note: what was not reviewed, said plainly.
 NOT_REVIEWED_NOTE: Final = (
-    "Items in the Not-compared list were not reviewed; vendor to field verify / confirm as listed."
+    "Items in the Not-compared list were not reviewed; each is listed with the reason and what is "
+    "needed to compare it."
 )
 # Pending legal review: GV's or Nexolv's lawyer approves this wording before it is relied on.
 #: The standard disclaimer printed under the result on the letter, the cloud drawing's cover and

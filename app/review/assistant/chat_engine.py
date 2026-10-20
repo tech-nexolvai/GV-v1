@@ -2069,8 +2069,10 @@ class ChatEngine:
         fixed = sum(1 for s in statuses.values() if s == "fixed_in_later_round")
         still = sum(1 for s in statuses.values() if s == "still_wrong")
         unrequested = sum(int(p["unrequested"]) for p in pairs)
+        # The comment letter's words (Closed / Previous comment not addressed / New, #1766).
         line = (
-            f"Vendor fixed {fixed} of {fixed + still} round-1 items · {still} still wrong · "
+            f"Round 1 comments: {fixed} of {fixed + still} closed · {still} previous "
+            f"{'comment' if still == 1 else 'comments'} not addressed · "
             f"{unrequested} change{'' if unrequested == 1 else 's'} nobody asked for"
         )
         report["rounds"] = {
