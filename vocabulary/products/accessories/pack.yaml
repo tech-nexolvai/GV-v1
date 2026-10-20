@@ -1,0 +1,24 @@
+# The accessories product pack (#1776): its registry entry and what it teaches the engines.
+# What each field means: vocabulary/products.yaml (the registry's fields) and
+# vocabulary/product_packs.py (the pack's own fields). Generic trade words only, no client values.
+
+id: accessories
+label: Accessory
+plural: Accessories
+description: Small items such as hooks, bars, holders and bins (draft starter checklist).
+active: false
+draft: true
+check_kinds: [dimension_match, global_rules]
+checklist:
+  - name: dimensions
+    text: Size and mounting height or position of each accessory.
+  - name: specs
+    text: Model, mounting method and fixings.
+  - name: finish
+    text: Finish and material codes match the architect's or the specification.
+  - name: quantities
+    text: How many of each accessory, and where each one goes.
+  - name: notes
+    text: Every note and callout on the architect's drawing or specification is followed.
+global_rule_hints: []
+words: [towel bar, robe hook, coat hook, toilet paper holder]

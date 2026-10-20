@@ -46,6 +46,7 @@ __all__ = [
     "ChatFindingUpdateBlock",
     "ChatFindingUpdateOut",
     "ChatFullCheckPlanOut",
+    "ChatFunnelOut",
     "ChatListOut",
     "ChatLiveCountsOut",
     "ChatLiveDrawingOut",
@@ -1460,6 +1461,29 @@ class ChatWorkItemOut(BaseModel):
     cost_usd: str = Field(default="0", description="Its compare call's estimated cost.")
 
 
+class ChatFunnelOut(BaseModel):
+    """The simple full check's funnel in total (#1767; the whole one is `funnel.json` in the run
+    folder): how far the vendor's dimensions got, step by step."""
+
+    model_config = ConfigDict(frozen=True)
+
+    drawings: int = Field(default=0, description="Vendor drawings compared (answered).")
+    labels_read: int = Field(default=0, description="Vendor labels code read on them.")
+    paired: int = Field(default=0, description="Vendor labels the AI paired with an architect's.")
+    unaccounted: int = Field(
+        default=0, description="Vendor labels the AI left unaccounted or never named."
+    )
+    verified_different: int = Field(
+        default=0, description="Differences code verified (red candidates before the second look)."
+    )
+    resolved: int = Field(default=0, description="Items the resolve loop looked at again.")
+    second_looks: int = Field(default=0, description="Blind second looks made.")
+    agreed: int = Field(default=0, description="Second looks that agreed (red).")
+    red: int = 0
+    right: int = 0
+    not_compared: int = 0
+
+
 class ChatWorkItemsBlock(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -1469,6 +1493,11 @@ class ChatWorkItemsBlock(BaseModel):
         default=None,
         description="The run's folder (its saved compare answers and blind looks): name it in "
         "`replay` to verify it again at $0.",
+    )
+    funnel: ChatFunnelOut | None = Field(
+        default=None,
+        description="The run's funnel in total (#1767): shown under How this was checked; null on "
+        "a run from before it.",
     )
 
 

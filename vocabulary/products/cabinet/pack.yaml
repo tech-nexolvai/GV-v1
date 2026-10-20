@@ -1,0 +1,101 @@
+# The cabinets product pack (#1776): its registry entry and what it teaches the engines.
+# What each field means: vocabulary/products.yaml (the registry's fields) and
+# vocabulary/product_packs.py (the pack's own fields). Generic trade words only, no client values.
+
+id: cabinet
+label: Cabinet
+plural: Cabinets
+description: Base, upper and tall cabinets, with their fillers, doors, drawers and panels.
+active: true
+draft: false
+check_kinds: [dimension_match, global_rules]
+checklist:
+  - name: widths
+    text: >-
+      Each cabinet and filler width, left to right, and the run's overall (wall to wall).
+  - name: heights_depths
+    text: >-
+      Base and tall cabinet heights, uppers' bottom and top, toe kick height, depth (carcass depth + door
+      thickness).
+  - name: fronts
+    text: >-
+      Door or drawer, how many of each and how arranged, hinge side, open shelves, pull-outs and bins.
+  - name: panels
+    text: >-
+      End panels, scribes and fillers at walls and appliances; uppers present and where they start and
+      stop.
+  - name: equipment
+    text: >-
+      Equipment cabinets (sink, microwave, under-counter fridge, other appliances): their size must not
+      change, and they sit where the architect puts them.
+  - name: hardware
+    text: Pulls (type, size, finish), hinges, locks, shelves fixed or adjustable.
+  - name: material
+    text: Finish and material tags of fronts, carcass and panels match the architect's.
+global_rule_hints:
+  - Filler width limits (smallest and largest filler).
+  - >-
+    Fit to the site: fillers and the drawer bank keep their design size; the door cabinets share the site
+    difference equally; equipment cabinets are never resized.
+  - Cabinet width limits per kind (single door, double door, drawer) for this job.
+words: [cabinet, cabinets, filler, fillers, drawer, drawers, toe kick, toekick, shelf, shelves, end panel,
+  end panels]
+hints: [door, doors, base, upper, uppers, scribe, pull, pulls, hinge, hinges, panel, panels, vanity, cab,
+  toe]
+tag_families: [LA, PLAM, WD, WV, MT]
+run_fit:
+  source: >-
+    The client lead's worked cabinet sheets (2026-10-19): one base run drawn as designed, then fitted
+    to a smaller and a larger site, with 3, 4 and 5 door cabinets. Fillers and the drawer bank keep their
+    design size; the door cabinets all change by the same amount, so the run still adds up to the site's
+    overall; the height stack keeps its design sizes.
+  distribution: equally
+  parts:
+    - kind: filler
+      role: fixed
+      words: [filler, fillers, scribe]
+      drawn: plain
+      place: ends
+    - kind: drawer bank
+      role: fixed
+      words: [drawer, drawers, drawer bank]
+      drawn: stacked
+    - kind: door cabinet
+      role: flex
+      words: [door, doors]
+      drawn: crossed
+  height_stack: true
+# Moved from code (#1776), unchanged.
+# Words of this product's materials (the architect's "by others" notes; was architect_items.py).
+material_words: [laminate, plam, veneer, melamine, wood, lacquer, thermofoil]
+# The parts an architect's note may ask for (was architect_items.py `_PARTS`, same patterns, same
+# order). Not countable yet: turning the count check on for cabinets is a measured decision.
+part_kinds:
+  - kind: drawers
+    architect_pattern: '\bDRAWERS?\b|\bPULL[- ]?OUTS?\b'
+    vendor_pattern: '\bDRAWERS?\b|\bPULL[- ]?OUTS?\b|\bDWRS?\b'
+  - kind: shelves
+    architect_pattern: '\bSHEL(?:F|VES|VING)\b'
+    vendor_pattern: '\bSHEL(?:F|VES|VING)\b|\bSHLF\b'
+  - kind: pulls
+    architect_pattern: '\bPULLS?\b(?![- ]?OUT)'
+    vendor_pattern: '\bPULLS?\b(?![- ]?OUT)|\bHANDLES?\b|\bKNOBS?\b'
+  - kind: hinges
+    architect_pattern: '\bHINGES?\b'
+    vendor_pattern: '\bHINGES?\b|\bHINGED\b'
+  - kind: grommets
+    architect_pattern: '\bGROMMETS?\b'
+    vendor_pattern: '\bGROMMETS?\b'
+  - kind: locks
+    architect_pattern: '\bLOCKS?\b'
+    vendor_pattern: '\bLOCKS?\b'
+  - kind: bins
+    architect_pattern: '\b(?:TRASH|WASTE|RECYCL\w*)\b|\bBINS?\b'
+    vendor_pattern: '\b(?:TRASH|WASTE|RECYCL\w*)\b|\bBINS?\b'
+  - kind: outlets
+    architect_pattern: '\bOUTLETS?\b|\bRECEPTACLES?\b|\bJ-?BOX(?:ES)?\b|\bGFC?I\b'
+    vendor_pattern: '\bOUTLETS?\b|\bRECEPTACLES?\b|\bJ-?BOX(?:ES)?\b|\bGFC?I\b|\bDUPLEX\b|\bPOWER\b'
+# The chat ledger files a reading by these words and cabinet codes (B36, SB30, W24; was ledger.py).
+item_words: [cabinet, base, wall, tall, vanity, drawer, door, filler]
+item_codes: ['(?:b|w|sb|t|v)\d+']
+# A cabinet's worked example is the compare prompt's own (a kitchen run): no example.json.
