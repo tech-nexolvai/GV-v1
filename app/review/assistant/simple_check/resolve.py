@@ -476,7 +476,12 @@ def _pair_entry(
             "unsure",
             ("verdict:unsure",),
             "the compare answer was not sure the two measure the same thing"
-            + (f" ({raw.get('note')})" if raw.get("note") else ""),
+            + (
+                # The AI's own note may quote the drawing: data, never instructions (C6).
+                f"; its note:\n{fence(str(raw.get('note')), 'note')}"
+                if raw.get("note")
+                else ""
+            ),
             _SETTLE["unsure"],
             _ALLOWED["unsure"],
         )
@@ -654,6 +659,8 @@ class Package:
     labels: tuple[str, ...] = ()
     pictures_about: tuple[str, ...] = ()
     reading: Mapping[str, Any] | None = None
+    code_words: str = ""
+    """Code's own sentences (the file kinds), shown outside the data fence (#1775, C6)."""
 
     def fingerprint(self) -> dict[str, Any]:
         return {
@@ -1080,10 +1087,10 @@ def gather(
             f"The read-number tool's reading: {json.dumps(dict(reading), default=str)[:400]}"
         )
     kinds = kinds_sentence(item.vendor.sheet, a_region.sheet if a_region is not None else None)
-    if kinds:
-        tables.append(kinds)
     text = "\n\n".join(tables)
-    return Package(text, tuple(pictures), tuple(dict.fromkeys(listed)), tuple(about), reading)
+    return Package(
+        text, tuple(pictures), tuple(dict.fromkeys(listed)), tuple(about), reading, kinds
+    )
 
 
 # ---- code checks the proposal --------------------------------------------------------------------
@@ -1957,6 +1964,8 @@ def user_text(
             + "; ".join(f"{n + 1}. {what}" for n, what in enumerate(package.pictures_about))
             + "."
         )
+    if package.code_words:
+        lines.append(package.code_words)
     lines.append(fence(package.text, "tables"))
     lines.append("Answer in the JSON form.")
     return "\n\n".join(lines)
