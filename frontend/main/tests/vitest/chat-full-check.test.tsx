@@ -299,7 +299,7 @@ describe('a full-check answer', () => {
 
   it('offers clear overrides in the evidence panel and makes the draft again by itself (#1803)', async () => {
     const user = userEvent.setup();
-    const decide = vi.fn(async (_message: string, _finding: string, decision: string, extra?: { note?: string; should_be?: string }) => ({ decision, by: 'anant', at: '2026-10-17T11:00:00Z', ...(extra?.should_be ? { should_be: extra.should_be } : {}), note: extra?.note || null }));
+    const decide = vi.fn(async (_message: string, _finding: string, decision: string, extra?: { note?: string | null; should_be?: string | null }) => ({ decision, by: 'anant', at: '2026-10-17T11:00:00Z', ...(extra?.should_be ? { should_be: extra.should_be } : {}), note: extra?.note || null }));
     const NEW_CLOUD: ChatFile = { ...CLOUD, id: 'f-c2', name: 'vendor-clouded-reviewed.pdf', url: '/api/v1/chats/c-1/files/f-c2' };
     const remake = vi.fn(async () => NEW_CLOUD);
     const reload = vi.fn();
