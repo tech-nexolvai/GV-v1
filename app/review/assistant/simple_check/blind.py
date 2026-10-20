@@ -40,10 +40,11 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Final
 from uuid import uuid4
 
@@ -341,6 +342,16 @@ def pictures(engine: ChatEngine, verified: Verified, item: Item) -> list[dict[st
 # ---- the call ------------------------------------------------------------------------------------
 
 
+@dataclass
+class Held:
+    """What the looks in flight may still cost (millionths of $), shared by `look_all`'s workers:
+    the runaway guard counts it as spent, so looks started together never pass the cap between
+    them (a look is charged only when its call ends; with thinking on its worst case is big)."""
+
+    reserved: int = 0
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+
 def look(
     engine: ChatEngine, verified: Verified, item: Item, settings: BlindSettings
 ) -> tuple[BlindAnswer | None, str]:
@@ -410,6 +421,22 @@ def _fields(answer: BlindAnswer) -> dict[str, Any]:
     }
 
 
+def _held_look(
+    engine: ChatEngine, verified: Verified, item: Item, settings: BlindSettings, held: Held
+) -> tuple[BlindAnswer | None, str]:
+    """`look`, its price held in `held` while it runs: the guard counts the looks in flight."""
+    estimate = engine._price(settings.chat_model, _PROMPT_TOKENS, _MAX_TOKENS) or 0
+    with held.lock:
+        if not engine._fits(held.reserved + estimate):
+            return None, "the answer's runaway guard was reached"
+        held.reserved += estimate
+    try:
+        return look(engine, verified, item, settings)
+    finally:
+        with held.lock:
+            held.reserved -= estimate
+
+
 def look_all(
     engine: ChatEngine,
     candidates: Sequence[tuple[Verified, Item]],
@@ -421,12 +448,13 @@ def look_all(
     at once. A candidate the look could not reach stays Not compared with the reason."""
 
     timings = getattr(engine, "timings", None)
+    held = Held()
 
     def one(pair: tuple[Verified, Item]) -> Verified:
         verified, item = pair
         # Timed and charged to the blind phase on this worker thread (the timings are per thread).
         with timings.phase("blind") if timings is not None else nullcontext():
-            answer, why = look(engine, verified, item, settings)
+            answer, why = _held_look(engine, verified, item, settings, held)
         done = with_blind(verified, answer, why)
         if on_done is not None:
             try:

@@ -32,6 +32,7 @@ __all__ = ["PHASES", "PHASE_LABELS", "Timings"]
 PHASES: Final = (
     "seeding",
     "set_pack",
+    "page_match",
     "planning",
     "prewarm",
     "lead",
@@ -48,6 +49,7 @@ PHASES: Final = (
 PHASE_LABELS: Final = {
     "seeding": "GV Review's recorded differences made findings",
     "set_pack": "Waiting for the set pack's page map",
+    "page_match": "Drawings paired across the uploads",
     "planning": "Helpers planned by code",
     "prewarm": "Prompt cache warmed",
     "lead": "Lead",

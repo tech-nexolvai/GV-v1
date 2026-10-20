@@ -94,8 +94,11 @@ PRINCIPLE: Final = (
     "locates a thing (an outlet, a sink centre line) is that thing's position: if the vendor leaves "
     "the thing out, that is its own item, with the architect's values. A recorded GV result never "
     "closes its area: still compare everything around it. A round-2 page is compared with the "
-    "architect again and with round 1 (Fixed, or Still wrong). Your instructions list the usual "
-    "misses and how to spot each."
+    "architect again and with round 1 (Fixed, or Still wrong). When the architect gives no "
+    "elevation of an item, the brand prototype elevation is the reference: compare the vendor with "
+    "it (source brand_prototype, its labels as architect_dim); wherever the architect gives "
+    "information, the architect governs. Your instructions list the usual misses and how to spot "
+    "each."
 )
 
 #: What each lens covers, in one line (#1569): `both` is the single helper of a page group.
@@ -163,7 +166,7 @@ BOUNDARIES: only your pages; never guess a number; GV's markup is never a value;
 
 #: What the numbers lens adds to `HELPER_BRIEF` (#1569).
 NUMBERS_NOTE: Final = (
-    """LENS: numbers. Another helper has the same pages for what is drawn and written (notes, doors and drawers, hardware, extent, the brand prototype, finish tags): leave those to it, unless a number depends on them."""
+    """LENS: numbers. Another helper has the same pages for what is drawn and written (notes, doors and drawers, hardware, extent, the brand prototype's notes, finish tags): leave those to it, unless a number depends on them. The sizes are yours, the brand prototype's too where the architect gives no elevation of the item (it is then the reference)."""
 )
 
 #: The drawn-things lens's brief (#1569): what is drawn and written, not sizes.

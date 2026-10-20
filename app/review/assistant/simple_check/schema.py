@@ -49,6 +49,8 @@ __all__ = [
     "SCHEMA_VERSION",
     "VERDICTS",
     "WEAK_POINTS",
+    "AcrossCandidate",
+    "AcrossPair",
     "Box",
     "CompareOutcome",
     "CompareResult",
@@ -66,6 +68,7 @@ __all__ = [
     "WorkList",
     "canonical_ref",
     "check_result",
+    "claimed_verdict",
     "end_word",
     "label_ref",
     "parse_label_ref",
@@ -184,6 +187,16 @@ def _weak_point(value: object) -> object:
         return None
     word = _lower(value)
     return word if word in WEAK_POINTS else "other"
+
+
+def claimed_verdict(pair: Mapping[str, Any] | None) -> str:
+    """A compare pair's verdict as code acts on it: lower case, `unsure` when absent, and
+    `same_points` said of an end the AI cannot see (`weak_point: end_not_visible`) read as
+    `unsure`. The weak point only ever adds caution (recipe step 3), never removes a check."""
+    said = _lower((pair or {}).get("verdict") or "unsure")
+    if said == "same_points" and _lower((pair or {}).get("weak_point")) == "end_not_visible":
+        return "unsure"
+    return str(said)
 
 
 # ---- label ids ---------------------------------------------------------------------------------
@@ -327,6 +340,10 @@ class WorkItem(_Frozen):
     reference: tuple[Drawing, ...] = ()
     """The area's brand prototype drawings: reference only unless the architect points to them
     (R1). Listed, not sent."""
+    prototype_reference: bool = False
+    """R1 (Anant, 2026-10-20): the area has no architect drawing, so `architect` holds its brand
+    prototype drawings, the reference the vendor is compared with (as GV's reviewer does); its
+    findings say `source: brand_prototype`, `reference: brand_prototype`."""
     round: int | None = None
     newest_round: bool = True
     """No later round of the same area exists in the set."""
@@ -376,6 +393,45 @@ class PageCover(_Frozen):
     reason: str | None = None
 
 
+class AcrossCandidate(_Frozen):
+    """One architect item a vendor drawing of a separate file may be paired with (#1798): the
+    architect drawings of one page of the architect's file, with code's score for it."""
+
+    id: str
+    """The item's id: its set page (`p1003`)."""
+    file: str
+    page: int
+    """Its page in its own file."""
+    drawings: tuple[Drawing, ...]
+    title: str | None = None
+    """The item title GV typed on the page, as typed."""
+    section: str | None = None
+    """The section of the set's divider pages it is in, as typed."""
+    score: float = 0.0
+    evidence: tuple[str, ...] = ()
+    contradicts: str | None = None
+    strong: bool = False
+    """Code holds strong evidence for it (`pairing.Scored.strong`)."""
+
+
+class AcrossPair(_Frozen):
+    """How a vendor drawing with no architect drawing of its own area was paired across the
+    uploads (#1798): code's candidates, code's own pick, the AI page matcher's answer (when
+    there is one) and the outcome."""
+
+    vendor: Drawing
+    section: str | None = None
+    candidates: tuple[AcrossCandidate, ...]
+    """Every architect item, code's best first."""
+    code_pick: str | None = None
+    asked: tuple[str, ...] = ()
+    """The candidates the AI page matcher is shown (the ones code does not contradict)."""
+    answer: tuple[str, ...] | None = None
+    """The matcher's picks (`None`: not answered)."""
+    chosen: tuple[str, ...] = ()
+    why: str
+
+
 class WorkList(_Frozen):
     version: int = SCHEMA_VERSION
     file: str
@@ -386,6 +442,8 @@ class WorkList(_Frozen):
     uncovered: tuple[int, ...] = ()
     """Pages with a drawing that no item covers and no skip explains (always empty when the
     work list is right; a test holds it so)."""
+    across: tuple[AcrossPair, ...] = ()
+    """The vendor drawings paired across separate uploads, and how (#1798)."""
     round_groups: tuple[tuple[str, int, int, str], ...] = ()
     """Vendor drawings of separate files that are rounds of one drawing (#1728): (file, its own
     page, set page, the group: the architect drawing all of them were paired with). GV's combined
@@ -651,8 +709,8 @@ def check_result(result: CompareResult, item: WorkItem) -> list[str]:
     - every vendor label of the drawing is in a pair or in `unaccounted_labels`, and none is both;
     - every label named is one of the item's (vendor labels from its vendor drawing, architect
       labels from its architect drawings);
-    - `same`, `different` and `different_points` name an architect label; `no_architect_value`
-      names none;
+    - `same_points` and `different_points` (and the older form's `same` and `different`, still read
+      in saved answers) name an architect label; `no_architect_value` names none;
     - an item without a label carries the box code needs to find it on the drawing: an architect
       item missing on the vendor its architect value, box and page; an item the vendor added its
       vendor value and box; any other at least one box, on an architect page of this item."""

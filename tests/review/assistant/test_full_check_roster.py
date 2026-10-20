@@ -19,6 +19,7 @@ import io
 import json
 import threading
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -547,6 +548,9 @@ def test_a_roster_full_check_runs_its_specialists_with_no_lead(
     listed = [b["text"] for b in blocks if b["type"] == "text" and "numbered:" in b["text"]]
     assert any("D2" in words for words in listed)  # every label of the architect's drawing
     assert advocate["output_config"]["format"]["schema"]["required"][0] == "architect_pick"
+    # A judgement: adaptive thinking at a lower effort, never thinking off (#1775, C4).
+    assert advocate["thinking"]["type"] == "adaptive"
+    assert advocate["output_config"]["effort"] == "medium"
     # The tag table compared by code: ST-1 vs ST-2.
     assert any(f["item"] == "Area 1: top: tag" and f["status"] == "different" for f in findings)
     # The summary: code's words (the reworded one dropped a number) and the fixed price.
@@ -908,3 +912,31 @@ def test_a_reply_cut_at_the_smaller_allowance_is_sent_on(
     _roster(tmp_path, script).run()
     later = [p for p in script.params["numbers"] if _steps(p) > 0]
     assert later and all("cut at its length limit" in json.dumps(p) for p in later)
+
+
+def test_blind_picks_started_together_hold_their_price_within_the_phase(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The advocate's six workers: each blind pick holds its price while its call runs, so picks
+    started together never pass the phase's budget between them (#1775, C4)."""
+    import time
+    from types import SimpleNamespace
+
+    made: list[str] = []
+    lock = threading.Lock()
+
+    def held_pick(self: Any, finding: Any, *_rest: Any) -> dict[str, Any]:
+        with lock:
+            made.append(str(finding["id"]))
+        time.sleep(0.05)  # the other workers ask while this one runs
+        self._charge(self.pick_phase, 50_000)
+        return {"pick": "none"}
+
+    monkeypatch.setattr(full_check_roster._Run, "_held_pick", held_pick)
+    engine = SimpleNamespace(_price=lambda *a: 50_000, _fits=lambda estimate: True)
+    run = full_check_roster._Run(engine=engine)  # type: ignore[arg-type]
+    run.plan = SimpleNamespace(budgets={"advocate": 120_000})  # type: ignore[assignment]
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        replies = list(pool.map(lambda n: run._blind_pick({"id": f"F{n}"}, {}, {}, None), range(6)))
+    assert len(made) == 2 and run.spent["advocate"] <= 120_000 and run.held == 0
+    assert replies.count(None) == 4

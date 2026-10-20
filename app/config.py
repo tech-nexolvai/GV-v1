@@ -167,6 +167,12 @@ class Settings(BaseSettings):
     # verifies, one blind look per red candidate; `app/review/assistant/simple_check/`). The switch
     # to `simple` waits for a paid test that beats today's best.
     assistant_full_check_mode: Literal["roster", "simple"] = "roster"
+    # The AI page matcher (#1798): when the vendor's and the architect's drawings come as separate
+    # PDFs, one cheap call per vendor drawing says which architect item shows the same piece; a
+    # pair is made only where code agrees. Both full-check modes; `off`: code pairs alone.
+    assistant_page_match_model: Literal["off", "claude-sonnet-5-5", "claude-opus-5-5"] = (
+        "claude-sonnet-5-5"
+    )
     # The simple check's compare call: the model and effort for every drawing, the stronger model
     # for drawings the work list marks hard (no code labels, very dense, hand-lettered architect),
     # how many calls run at once, the reply's token room (thinking included) and the retries on a

@@ -47,44 +47,51 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 from collections.abc import Collection, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from decimal import Decimal
 from itertools import zip_longest
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 from uuid import uuid4
 
+from app.review.assistant import classification, witness
 from app.review.assistant import proof as proof_rule
-from app.review.assistant import witness
 from app.review.assistant.chat_findings import UPDATE_FINDING
 from app.review.assistant.chat_request import BY_SHORT, thinking_config
 from app.review.assistant.chat_summary import CODE_SUMMARY_NOTE, code_summary
 from app.review.assistant.chat_tools import HELPER_TOOLS, new_step
 from app.review.assistant.chat_trust import judged
+from app.review.assistant.colour_rule import COLOUR_RULE
 from app.review.assistant.escalation import label_provenance
 from app.review.assistant.full_check_advocate import (
     ADVOCATE_SCHEMA,
     ADVOCATE_SYSTEM,
     CODE_PAIRED_SOURCES,
     CODE_PAIRS_FILE,
+    INCOMPLETE,
     NOT_VERIFIED,
     STRING_QUESTION,
     STRING_SCHEMA,
     STRING_SYSTEM,
     Check,
     Extent,
+    StringChain,
     advocate_question,
+    architect_overalls,
     code_checks,
     code_pairs,
     compare_strings,
     decide,
+    filler_notes_left_out,
     ink_colour,
     needs_pairing,
     same_extent,
+    string_chain,
     string_extent,
     string_extras,
-    string_gap,
 )
 from app.review.assistant.full_check_specialists import HELPER_CORE, knowledge_text
 from app.review.assistant.impact import by_impact
@@ -169,6 +176,8 @@ _STRING_PROMPT_TOKENS: Final = 5_000
 _STRING_MAX_TOKENS: Final = 3_000
 #: Room round a string's box for its extension lines and overall (points), at least.
 _STRING_PAD_PT: Final = 24.0
+#: A string within this of its printed overall adds up (the drawings' rounding).
+_STRING_ROUNDING: Final = Decimal(1) / Decimal(16)
 #: The lead review's pages at most (#1641): about $0.10 of Opus 5.5 a page.
 LEAD_MAX_PAGES: Final = 16
 #: The escalation's deeper look after the lead review, kept from the lead's money (#1654).
@@ -597,10 +606,14 @@ TAG_JOB: Final = (
     "Code compares them; you only read and place them."
 )
 
-TAG_BRIEF: Final = """TAGS: pages {pages} of {file}. Your pages:
+TAG_BRIEF: Final = (
+    """TAGS: pages {pages} of {file}. Your pages:
 {page_lines}
-For each page, list every tag printed in the drawing's own black or grey ink on the architect's drawing and on the vendor's, with the piece it labels (start with the page's area, and name the same piece the same way on both sides) and the tightest box round the tag. Coloured text and callouts ending "by GV" are GV's notes: leave them out. Use pdftotext -bbox on the drawings-only copy for text tags; zoom to see what each labels.
+For each page, list every tag printed in the drawing's own ink on the architect's drawing and on the vendor's, with the piece it labels (start with the page's area, and name the same piece the same way on both sides) and the tightest box round the tag. GV's notes (callouts ending "by GV", GV's markup) are not tags: leave them out. """
+    + COLOUR_RULE
+    + """ Use pdftotext -bbox on the drawings-only copy for text tags; zoom to see what each labels.
 Reply with the whole tag table."""
+)
 
 _TAG_WORD: Final = re.compile(r"[^A-Z0-9]")
 
@@ -791,6 +804,12 @@ def page_ranges_words(pages: Sequence[int]) -> str:
 # ---- the run ------------------------------------------------------------------------------------------
 
 
+def _plain(value: Decimal) -> str:
+    """Inches as the finding's numbers hold them: `56`, `97.5`."""
+    text = format(value.normalize(), "f")
+    return text if text != "-0" else "0"
+
+
 @dataclass(slots=True)
 class _Run:
     engine: ChatEngine
@@ -805,6 +824,13 @@ class _Run:
     pick_phase: str = "advocate"
     #: Items the escalation already gave their one deeper look.
     escalated: set[str] = field(default_factory=set)
+    #: Every page's architect labels, set-wide, once read (`_architect_pages`, #1802).
+    architect_labels: list[list[dict[str, Any]]] | None = None
+    #: What the blind picks in flight may still cost (millionths of $): counted as spent by the
+    #: phase's room, so picks started together on the advocate's workers never pass its budget
+    #: (a call is charged only when it ends; with thinking on its worst case is big, #1775 C4).
+    held: int = 0
+    held_lock: threading.Lock = field(default_factory=threading.Lock)
 
     # -- money --
 
@@ -863,6 +889,10 @@ class _Run:
             warm = warm_pool.submit(engine._prewarm)
             with engine.timings.phase("set_pack"):
                 page_map = wait_for_page_map(workspace.set_pack, engine.cancel)
+            with engine.timings.phase("page_match"):
+                # Separate uploads: each vendor page's architect pages, agreed by code and the AI
+                # page matcher (#1798); the helpers are handed them with their pages.
+                engine.cross_file_pairs(page_map)
             with engine.timings.phase("planning"):
                 # Only the areas of the products in scope get helpers (`product_scope`).
                 plan, pages_all = engine.scoped_jobs(page_map)
@@ -977,6 +1007,7 @@ class _Run:
         from app.review.assistant.escalation import escalate_answer
 
         engine.add_code_findings()
+        self._prototype_references(page_map)
         try:
             escalate_answer(engine)
         except Exception:  # noqa: BLE001 - the advocate judges the items as they are
@@ -984,12 +1015,43 @@ class _Run:
         if engine.cancel.is_set():
             return
         with engine.timings.phase("advocate"):
-            self._strings()
+            self._strings(page_map)
+            self._architect_guard()
             if not engine.cancel.is_set():
                 self._advocate(page_map)
         if not engine.cancel.is_set():
             with engine.timings.phase("escalation"):
                 self._escalate(plan, page_map)
+
+    def _prototype_references(self, page_map: Mapping[str, Any] | None) -> None:
+        """R1 (Anant, 2026-10-20): a finding compared with the brand prototype has the prototype
+        as its reference when the page map shows no architect drawing of its area
+        (`plan_check.architect_in_area`); code sets the mark, and clears one no page map backs,
+        so the architect governs wherever it gives information. Before the proof steps, so the
+        advocate and the escalation judge the marked items."""
+        from app.review.assistant.plan_check import architect_in_area
+
+        engine = self.engine
+        for finding in engine.book.live():
+            if finding.get("source") != "brand_prototype" or not finding.get("id"):
+                continue
+            box = finding.get("vendor_box")
+            file = box.get("file") if isinstance(box, Mapping) else None
+            page = finding.get("page")
+            marked = isinstance(page, int) and not architect_in_area(
+                page_map, str(file) if file else None, page
+            )
+            if marked == (finding.get("reference") == classification.PROTOTYPE_REFERENCE):
+                continue
+
+            def change(current: dict[str, Any], marked: bool = marked) -> dict[str, Any]:
+                if marked:
+                    current["reference"] = classification.PROTOTYPE_REFERENCE
+                else:
+                    current.pop("reference", None)
+                return current
+
+            engine._update_finding(str(finding["id"]), change)
 
     # -- P1: tags --
 
@@ -1038,6 +1100,7 @@ class _Run:
         engine = self.engine
         assert self.plan is not None
         from app.review.assistant.full_check_brief import helper_brief
+        from app.review.assistant.full_check_plan import pair_lines
         from app.review.assistant.sandbox import UPLOADS
 
         with engine._lock:
@@ -1090,6 +1153,12 @@ class _Run:
                 products=engine.settings.products,
             )
             gaps = "\n".join(f"- p{page}: {line}" for page in run for line in pages[page])
+            across = engine._cross
+            if across is not None:
+                # Separate uploads (#1798): the run's pages' agreed architect pages, or why none.
+                paired = [(p, across.pairs[p]) for p in run if p in across.pairs]
+                unpaired = [(p, across.unpaired[p]) for p in run if p in across.unpaired]
+                brief = "\n\n".join([brief, *pair_lines(paired, unpaired, UPLOADS)])
             where = page_ranges_words(run)
             agents.append(
                 self._agent(
@@ -1431,14 +1500,19 @@ class _Run:
 
     # -- the vendor's own strings: a blind second reading (#1641) --
 
-    def _strings(self) -> None:
+    def _strings(self, page_map: Mapping[str, Any] | None = None) -> None:
         """Each vendor string an AI grouped that code's geometry could not verify, the biggest
         first, gets one blind second reading from the protected money (D1, `ai_pair_plus_code`
         only): the same parts and overall, and code's sum off, prove it; a reading of other parts
-        that add up drops it; else it stays Not compared."""
+        that add up drops it; else it stays Not compared. Code's lines come first ($0, #1802): a
+        part left out, or filler notes at the run's ends, settle it without a reading. A page with
+        no architect drawing paired with it gets no reading at all: two readings of a sum are not
+        a second check there, so the string is Not compared with no "should be"."""
         engine = self.engine
         if engine.settings.pairing_proof == "code_only":
             return
+        if page_map is None:
+            page_map = self._stored_page_map()
         candidates = [
             dict(f)
             for f in by_impact([judged(f) for f in engine.book.live()])
@@ -1454,10 +1528,10 @@ class _Run:
             if engine.cancel.is_set():
                 return
             finding_id = str(finding["id"])
-            gap = self._string_gap(finding)
-            if gap is not None:
+            chain = self._string_chain(finding)
+            if chain.outcome == "gap":
                 # Code's own lines say a part was left out: no reading can prove it ($0).
-                self._set_string(finding_id, "gap", gap)
+                self._set_string(finding_id, "gap", f"{INCOMPLETE}: {chain.why}")
                 continue
             extent = self._string_extent(finding)
             if isinstance(extent, str):
@@ -1465,7 +1539,34 @@ class _Run:
                 self._set_string(finding_id, "gap", extent)
                 continue
             overall, line_box = extent
+            if chain.outcome == "fillers":
+                # The parts stop short of the ends by exactly the filler notes there ($0, #1802).
+                self._filler_string(finding, chain)
+                continue
+            left_out = (
+                filler_notes_left_out(finding["parts"], overall, self._page_labels(finding))
+                if chain.outcome == "unknown"
+                else []
+            )
+            if left_out:
+                # A filler note by the run's end the parts leave out: never proved by readings,
+                # which leave notes out too (#1802).
+                self._set_string(
+                    finding_id,
+                    "gap",
+                    f"{INCOMPLETE}: a filler note is printed by the run's end "
+                    f"({', '.join(left_out[:4])}) and the parts leave it out",
+                )
+                continue
             extras = string_extras(finding["parts"], overall, self._page_labels(finding))
+            if not extras and self._unpaired(finding, page_map):
+                self._set_string(
+                    finding_id,
+                    "gap",
+                    "the string does not add up, but no architect drawing is paired with this "
+                    "page, so its sum alone is never clouded and no correction is proposed",
+                )
+                continue
             if extras:
                 self._set_string(
                     finding_id,
@@ -1488,6 +1589,147 @@ class _Run:
                     engine._show_dropped(finding_id, f"Dropped: {why}.")
                 continue
             self._set_string(finding_id, outcome, why, proved=outcome == "proved")
+
+    def _filler_string(self, finding: Mapping[str, Any], chain: StringChain) -> None:
+        """A vendor string whose parts stop short of the overall's ends by exactly the filler notes
+        printed there (#1802): its sum counts the fillers. Adding up: dropped (the string is
+        right). Not adding up: red only when the architect prints that very sum over the same
+        parts (code's lines and the architect agree on what it should be); else Not compared,
+        since the parts or the overall may be the wrong number."""
+        from app.review.assistant.finding_checks import to_inches
+        from app.review.assistant.ledger import format_inches
+
+        finding_id = str(finding["id"])
+        printed = str(finding["printed_total"])
+        total = to_inches(printed)
+        values = [to_inches(str(p)) for p in finding["parts"]]
+        if total is None or None in values:
+            self._set_string(finding_id, "gap", f"{INCOMPLETE}: a part is not a size code reads")
+            return
+        parts = [
+            *(format_inches(v) for v in chain.before),
+            *(str(p) for p in finding["parts"]),
+            *(format_inches(v) for v in chain.after),
+        ]
+        summed = sum((v for v in values if v is not None), Decimal(0)) + sum(
+            chain.fillers, Decimal(0)
+        )
+        fillers = " and ".join(f"{format_inches(v)} filler" for v in chain.fillers)
+        listed = " + ".join(parts)
+        if abs(summed - total) <= _STRING_ROUNDING:
+            with self.engine.finding_lock:
+                gone = self.engine.book.absorb(finding_id)
+            if gone:
+                self.engine._show_dropped(
+                    finding_id,
+                    f"Dropped: with the {fillers} notes at the run's ends the parts add up "
+                    f"({listed} = {printed} printed).",
+                )
+            return
+        architect = architect_overalls(finding["parts"], self._architect_pages())
+        exact = architect_overalls(finding["parts"], self._architect_pages(), slips=0)
+        if architect != {summed} or exact != {summed}:
+            said = ", ".join(sorted(format_inches(v) for v in architect)) or "no overall code found"
+            self._set_string(
+                finding_id,
+                "gap",
+                f"{INCOMPLETE} as a sum alone: with the {fillers} notes the parts add up to "
+                f"{format_inches(summed)} against {printed} printed, and the architect's same "
+                f"run prints {said}, so which number is wrong is not proved",
+            )
+            return
+        off = total - summed
+        sum_text = f"{listed} = {format_inches(summed)} ≠ {printed} printed (off {format_inches(abs(off))})"
+
+        def change(current: dict[str, Any]) -> dict[str, Any]:
+            current.update(
+                {
+                    "parts": parts,
+                    "parts_sum": _plain(summed),
+                    "architect": format_inches(summed),
+                    "sum_text": sum_text,
+                    "why": (
+                        f"Vendor's parts and its {fillers} notes don't add up: {sum_text}. The "
+                        f"architect prints {format_inches(summed)} over the same parts."
+                    ),
+                    "inches": {
+                        **(current.get("inches") or {}),
+                        "architect": _plain(summed),
+                        "difference": _plain(total - summed),
+                    },
+                    "string_geometry": "verified",
+                    "architect_printed": [_plain(summed)],
+                    "string_reads": {
+                        "outcome": "proved",
+                        "why": (
+                            "code's lines: the parts and the filler notes at the run's ends fill "
+                            "the overall's line; the architect prints the same sum over the same "
+                            "parts"
+                        ),
+                    },
+                }
+            )
+            return current
+
+        self.engine._update_finding(finding_id, change)
+
+    def _stored_page_map(self) -> Mapping[str, Any] | None:
+        folder = self.engine.tools.workspace.set_pack
+        if folder is None:
+            return None
+        try:
+            found = json.loads((Path(folder) / "page_map.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return found if isinstance(found, Mapping) else None
+
+    def _unpaired(self, finding: Mapping[str, Any], page_map: Mapping[str, Any] | None) -> bool:
+        """The vendor string's page has no architect drawing paired with it (#1802)."""
+        from app.review.assistant.plan_check import architect_paired
+
+        box = finding.get("vendor_box")
+        file = box.get("file") if isinstance(box, Mapping) else None
+        page = box.get("page") if isinstance(box, Mapping) and box.get("page") else None
+        page = page or finding.get("page")
+        if not isinstance(page, int):
+            return False
+        return architect_paired(page_map, str(file) if file else None, page) is False
+
+    def _architect_pages(self) -> list[list[dict[str, Any]]]:
+        """Every page's architect labels code has (the set pack's `dims.json`), set-wide: a
+        vendor page is not always paired with its architect page."""
+        if self.architect_labels is None:
+            pages = self.engine.book.dim_labels.pages()
+            self.architect_labels = [
+                [label for label in labels if label.get("side") == "architect"]
+                for labels in pages.values()
+            ]
+        return self.architect_labels
+
+    def _architect_guard(self) -> None:
+        """Each vendor string's run as the architect prints it (#1802, $0): the overalls of the
+        architect's runs of the same parts (at most one printed differently), stamped on the
+        finding as `architect_printed`. The proof rule then never clouds a printed overall that
+        equals the architect's, nor a "should be" the architect's overall contradicts."""
+        engine = self.engine
+        for finding in engine.book.live():
+            if (
+                finding.get("source") != "vendor_arithmetic"
+                or finding.get("status") != "different"
+                or finding.get("architect_printed")
+                or not finding.get("parts")
+            ):
+                continue
+            found = architect_overalls(finding["parts"], self._architect_pages())
+            if not found:
+                continue
+            printed = sorted(_plain(v) for v in found)
+
+            def change(current: dict[str, Any], printed: list[str] = printed) -> dict[str, Any]:
+                current["architect_printed"] = printed
+                return current
+
+            engine._update_finding(str(finding["id"]), change)
 
     def _set_string(self, finding_id: str, outcome: str, why: str, *, proved: bool = False) -> None:
         def change(current: dict[str, Any]) -> dict[str, Any]:
@@ -1517,12 +1759,11 @@ class _Run:
             finding.get("printed_total"), self._page_labels(finding), self._string_box(finding)
         )
 
-    def _string_gap(self, finding: Mapping[str, Any]) -> str | None:
-        labels = self._page_labels(finding)
-        return string_gap(
+    def _string_chain(self, finding: Mapping[str, Any]) -> StringChain:
+        return string_chain(
             finding.get("parts") or [],
             finding.get("printed_total"),
-            labels,
+            self._page_labels(finding),
             self._string_box(finding),
         )
 
@@ -1691,7 +1932,13 @@ class _Run:
             # A value typed with its box (GV Review's recorded rows, a helper without labels):
             # code's label at that box printing that very value stands for it.
             vendor = vendor or self._label_at(finding, "vendor_box", "vendor")
-            architect = architect or self._label_at(finding, "arch_box", "architect")
+            architect = architect or self._label_at(
+                finding,
+                "arch_box",
+                "architect",
+                # R1: with no architect elevation, the value is on the brand prototype's drawing.
+                "brand" if classification.prototype_reference(finding) else "architect",
+            )
             code_paired = not needs_pairing(finding)
             if vendor is None and code_paired:
                 # The vendor's own string or a rule, read from boxes: only the ink and note checks
@@ -1705,6 +1952,7 @@ class _Run:
                 page_map=page_map,
                 vendor_ink=ink,
                 newer_same=self._newer_same(vendor, page_map) if vendor is not None else None,
+                prototype_reference=classification.prototype_reference(finding),
             )
             found = witness.witnesses(finding.get("checks") or {}, finding.get("status"))
             printed = "printed" in found or "ocr_ink" in found
@@ -1774,9 +2022,12 @@ class _Run:
                 {},
             )
 
-    def _label_at(self, finding: Mapping[str, Any], key: str, side: str) -> dict[str, Any] | None:
+    def _label_at(
+        self, finding: Mapping[str, Any], key: str, side: str, on: str | None = None
+    ) -> dict[str, Any] | None:
         """The label code numbered inside a finding's box whose value is the finding's value on
-        that side (the only one: two such labels in the box name nothing)."""
+        that side (the only one: two such labels in the box name nothing). `on`: the drawing's
+        side the label is on, when not `side` (`brand`: the brand prototype's)."""
         from app.review.assistant.finding_checks import to_inches
 
         box = finding.get(key)
@@ -1795,7 +2046,7 @@ class _Run:
             inside = float(box["x0"]) <= cx <= float(box["x1"]) and (
                 float(box["y0"]) <= cy <= float(box["y1"])
             )
-            if inside and label.get("side") == side and _same_inches(label, want):
+            if inside and label.get("side") == (on or side) and _same_inches(label, want):
                 hits.append(dict(label))
         return hits[0] if len(hits) == 1 else None
 
@@ -1853,11 +2104,28 @@ class _Run:
     ) -> dict[str, Any] | None:
         """One blind call: the vendor's drawing with its label marked, the architect's whole
         drawing with every label numbered; `None` when the price leaves no room."""
-        engine = self.engine
         model = BY_SHORT["sonnet"]
-        estimate = engine._price(model, _ADVOCATE_PROMPT_TOKENS, _ADVOCATE_MAX_TOKENS) or 0
-        if not self._phase_room(self.pick_phase, estimate):
-            return None
+        estimate = self.engine._price(model, _ADVOCATE_PROMPT_TOKENS, _ADVOCATE_MAX_TOKENS) or 0
+        with self.held_lock:
+            if not self._phase_room(self.pick_phase, self.held + estimate):
+                return None
+            self.held += estimate
+        try:
+            return self._held_pick(finding, vendor, architect, page_map, model)
+        finally:
+            with self.held_lock:
+                self.held -= estimate
+
+    def _held_pick(
+        self,
+        finding: Mapping[str, Any],
+        vendor: Mapping[str, Any],
+        architect: Mapping[str, Any],
+        page_map: Mapping[str, Any] | None,
+        model: Any,
+    ) -> dict[str, Any] | None:
+        """The blind pick's crops and call, its price already held (`_blind_pick`)."""
+        engine = self.engine
         tools = engine.tools
 
         def crop(label: Mapping[str, Any], marks: bool) -> list[dict[str, Any]]:

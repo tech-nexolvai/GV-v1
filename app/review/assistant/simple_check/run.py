@@ -284,6 +284,18 @@ class _Run:
         self.page_map = (
             read_page_map(folder, assume=True, main_file=engine.book.main_file) or self.page_map
         )
+        if not self.options.replay:
+            with engine.timings.phase("page_match"):
+                # Separate uploads (#1798): the AI page matcher is asked about each vendor
+                # drawing the work list pairs across them (saved in the pack: a replay and the
+                # roster read the same answers at $0); the work list then pairs only where code
+                # and the matcher agree.
+                try:
+                    import_module("app.review.assistant.page_match").run_for_engine(
+                        engine, folder, engine.book.main_file
+                    )
+                except Exception:  # noqa: BLE001 - code then pairs alone, said per drawing
+                    _log.exception("simple check: the page matcher failed")
         with engine.timings.phase("planning"):
             try:
                 worklist = import_module(
