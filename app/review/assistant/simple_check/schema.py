@@ -357,6 +357,8 @@ class AcrossCandidate(_Frozen):
     score: float = 0.0
     evidence: tuple[str, ...] = ()
     contradicts: str | None = None
+    strong: bool = False
+    """Code holds strong evidence for it (`pairing.Scored.strong`)."""
 
 
 class AcrossPair(_Frozen):

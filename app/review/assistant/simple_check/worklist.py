@@ -1109,7 +1109,12 @@ def _pair_across(
         section=section if mine.section is not None else None,
         candidates=tuple(
             by_id[s.ref].model_copy(
-                update={"score": s.score, "evidence": s.evidence, "contradicts": s.contradicts}
+                update={
+                    "score": s.score,
+                    "evidence": s.evidence,
+                    "contradicts": s.contradicts,
+                    "strong": s.strong,
+                }
             )
             for s in ranked
         ),

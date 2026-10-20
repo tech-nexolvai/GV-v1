@@ -155,15 +155,16 @@ def test_sizes_count_within_a_tolerance_but_alone_are_not_strong() -> None:
 
 
 def _scored(
-    *pairs: tuple[str, float], strong: str | None = None, out: str | None = None
+    *pairs: tuple[str, float], strong: str | tuple[str, ...] = (), out: str | None = None
 ) -> tuple[Scored, ...]:
+    strong_refs = (strong,) if isinstance(strong, str) else strong
     return tuple(
         Scored(
             ref,
             score,
             (f"evidence for {ref}",) if score else (),
             "another section" if ref == out else None,
-            ref == strong,
+            ref in strong_refs,
         )
         for ref, score in pairs
     )
@@ -177,28 +178,51 @@ def test_no_answer_pairs_only_on_codes_own_clear_pick() -> None:
     assert chosen == () and why.startswith(UNPAIRED)
 
 
-def test_the_matchers_pick_must_be_codes_top_candidate() -> None:
+def test_a_sure_pick_needs_strong_code_evidence_or_a_clear_lead() -> None:
     ranked = _scored(("p1005", 2.0), ("p1006", 0.5), ("p1007", 0.0), strong="p1005")
-    sure = MatchAnswer(("p1005",), confident=False, reason="same three-door base run")
-    chosen, why = agree(ranked, None, sure)
-    assert chosen == ("p1005",) and "code's top candidate" in why
-    # Code ranks another item clearly higher: not paired, both named.
-    chosen, why = agree(ranked, None, MatchAnswer(("p1007",), confident=True))
-    assert chosen == () and "code ranks p1005 higher" in why
-    # Weak evidence only (finish tags, words, close sizes): it ranks but rules out less.
-    weak = _scored(("p1026", 6.7), ("p1023", 4.7), ("p1003", 1.5))
-    chosen, _why = agree(weak, None, MatchAnswer(("p1023",), confident=True))
-    assert chosen == ("p1023",)
-    chosen, why = agree(weak, None, MatchAnswer(("p1003",), confident=True))
+    chosen, why = agree(ranked, None, MatchAnswer(("p1005",), True, "same three-door base run"))
+    assert chosen == ("p1005",) and "code holds strong evidence for it" in why
+    # Not sure, and not code's own clear pick: no pair, even with strong code evidence.
+    chosen, why = agree(ranked, None, MatchAnswer(("p1005",), confident=False))
+    assert chosen == () and "is not sure" in why
+    # Sure, strong evidence for the pick, but another item clearly ahead: no pair.
+    ahead = _scored(("p1024", 4.0), ("p1026", 5.5), strong=("p1024",))
+    chosen, why = agree(ahead, None, MatchAnswer(("p1024",), confident=True))
     assert chosen == () and "code ranks p1026 higher" in why
+    # Weak evidence only: the pick must be code's first by `WEAK_LEAD`.
+    clear = _scored(("p1001", 1.0), ("p1002", 0.25), ("p1003", 0.0))
+    chosen, _why = agree(clear, None, MatchAnswer(("p1001",), confident=True))
+    assert chosen == ("p1001",)
 
 
-def test_among_tied_candidates_only_a_sure_matcher_pairs() -> None:
-    ranked = _scored(("p1011", 0.0), ("p1012", 0.0), ("p1013", 0.0))
-    chosen, _why = agree(ranked, None, MatchAnswer(("p1012",), confident=True, reason="wine racks"))
-    assert chosen == ("p1012",)
-    chosen, why = agree(ranked, None, MatchAnswer(("p1012",), confident=False))
-    assert chosen == () and "is not sure" in why and "p1011, p1013" in why
+def test_a_sure_pick_among_look_alikes_code_cannot_tell_apart_is_not_paired() -> None:
+    """The paid test (2026-10-20): the matcher was sure of a look-alike that code ranked first by
+    one close size only, and of a run code ranked second; neither may pair."""
+    narrow = _scored(("p1010", 1.0), ("p1009", 0.75), ("p1001", 0.25))
+    chosen, why = agree(narrow, None, MatchAnswer(("p1010",), True, "same base run"))
+    assert chosen == () and "does not put it clearly first" in why
+    second = _scored(("p1026", 6.7), ("p1023", 4.7), ("p1003", 1.5))
+    chosen, why = agree(second, None, MatchAnswer(("p1023",), confident=True))
+    assert chosen == () and "p1026" in why
+    twins = _scored(("p1011", 0.0), ("p1012", 0.0), ("p1013", 0.0))
+    assert agree(twins, None, MatchAnswer(("p1012",), True, "wine racks"))[0] == ()
+    # A product tag two plans print is no strong evidence for either (`rank`).
+    tied = rank(
+        _facts("p6.v0", tags=frozenset({"EQ310"})),
+        [
+            _facts("p1005", tags=frozenset({"EQ310"})),
+            _facts("p1007", tags=frozenset({"EQ310"})),
+            *(_facts(f"p100{n}") for n in (6, 8, 9)),
+        ],
+    )
+    assert not any(s.strong for s in tied)
+    assert agree(tied, None, MatchAnswer(("p1007",), confident=False))[0] == ()
+
+
+def test_codes_own_pick_pairs_with_an_unsure_matcher() -> None:
+    ranked = _scored(("p1012", 8.5), ("p1011", 2.8), strong="p1012")
+    chosen, why = agree(ranked, "p1012", MatchAnswer(("p1012",), confident=False))
+    assert chosen == ("p1012",) and "code's own pick" in why
 
 
 def test_disagreement_and_contradiction_make_no_pair() -> None:
@@ -217,12 +241,12 @@ def test_disagreement_and_contradiction_make_no_pair() -> None:
     assert chosen == () and "found no architect drawing of the same item" in why
 
 
-def test_a_second_pick_is_kept_only_among_codes_top_candidates() -> None:
+def test_a_second_pick_is_kept_only_with_strong_code_evidence() -> None:
     ranked = _scored(("p1001", 0.5), ("p1002", 0.0), ("p1006", 3.0), strong="p1006")
     chosen, _why = agree(ranked, None, MatchAnswer(("p1006", "p1001"), confident=True))
     assert chosen == ("p1006",)
-    tied = _scored(("p1001", 0.5), ("p1002", 0.0), ("p1006", 1.0))
-    chosen, _why = agree(tied, None, MatchAnswer(("p1006", "p1001"), confident=True))
+    both = _scored(("p1001", 2.5), ("p1002", 0.0), ("p1006", 3.0), strong=("p1006", "p1001"))
+    chosen, _why = agree(both, None, MatchAnswer(("p1006", "p1001"), confident=True))
     assert chosen == ("p1006", "p1001")
 
 
@@ -401,11 +425,11 @@ def test_the_work_list_pairs_where_code_and_the_saved_answer_agree(tmp_path: Pat
     across = work.across[0]
     assert across.vendor.ref == "p1.v0" and set(across.asked) == {"p1002", "p1003"}
     assert across.code_pick is None and across.why.startswith(UNPAIRED)
-    # The matcher's saved answer, sure, among code's top candidates: paired, at $0.
+    # The matcher's saved answer, sure, and code's clear first (on weak evidence): paired, at $0.
     _save(folder, "p1.v0", ["p1002", "p1003"], ["p1002"], sure=True)
     work = build_worklist(folder, "shop.pdf")
     assert [(i.id, [d.ref for d in i.architect]) for i in work.items] == [("p1.v0", ["p1002.a1"])]
-    assert "the AI page matcher picked it" in str(work.items[0].paired_by)
+    assert "the AI page matcher is sure" in str(work.items[0].paired_by)
     # The roster's planning gets the same pair.
     found = CrossPairs.of(work)
     assert found.pairs == {1: (("arch.pdf", 2),)} and found.unpaired == {}
@@ -414,7 +438,7 @@ def test_the_work_list_pairs_where_code_and_the_saved_answer_agree(tmp_path: Pat
     assert build_worklist(folder, "shop.pdf").items == ()
 
 
-def test_an_unsure_answer_among_twins_is_not_paired(tmp_path: Path) -> None:
+def test_no_answer_among_twins_is_paired(tmp_path: Path) -> None:
     twins = [cover(), Sheet("ARCH ELEVATION", (24, 30, 18)), Sheet("ARCH ELEVATION", (24, 30, 18))]
     folder = _two_files(tmp_path, twins)
     scores = [c.score for c in build_worklist(folder, "shop.pdf").across[0].candidates]
@@ -424,8 +448,10 @@ def test_an_unsure_answer_among_twins_is_not_paired(tmp_path: Path) -> None:
     assert work.items == ()
     unpaired = CrossPairs.of(work).unpaired
     assert 1 in unpaired and "is not sure" in unpaired[1]
+    # Sure is not enough when code cannot tell the twins apart (a wrong pair makes false reds).
     _save(folder, "p1.v0", ["p1002", "p1003"], ["p1003"], sure=True)
-    assert [d.ref for d in build_worklist(folder, "shop.pdf").items[0].architect] == ["p1003.a1"]
+    work = build_worklist(folder, "shop.pdf")
+    assert work.items == () and "does not put it clearly first" in CrossPairs.of(work).unpaired[1]
 
 
 # ---- the roster's planning hands each helper its pairs ------------------------------------------
@@ -555,4 +581,4 @@ def test_the_engine_hands_the_roster_its_cross_file_pairs(tmp_path: Path) -> Non
     assert engine._cross is found
     # A combined-sheet set (no separate architect's upload): nothing to pair across.
     alone = {**page_map, "upload_roles": {"shop.pdf": "vendor"}}
-    assert ChatEngine.cross_file_pairs(engine, alone) is None  # type: ignore[arg-type]
+    assert ChatEngine.cross_file_pairs(engine, alone) is None

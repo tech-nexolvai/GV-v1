@@ -14,10 +14,12 @@ the items that show the same piece (or none), whether it is sure, and one short 
 no values, no verdicts. A route without structured outputs (OpenRouter) may fence its JSON: that
 is read too, and an answer that is still not the form gets ONE repair turn.
 
-**The agreement rule** (`pairing.agree`, applied by the work list): a pair is made only when the
-matcher's pick is code's top candidate, or one of code's top candidates and the matcher is sure,
-and code does not contradict it or clearly prefer another. Zero wrong pairs matters more than
-coverage: a wrong pair can make false reds.
+**The agreement rule** (`pairing.agree`, applied by the work list): a pair is made when the
+matcher's pick is code's own clear pick; or when the matcher is sure AND code either holds strong
+evidence for the pick (its title on the vendor's sheet, a view reference, an item tag only it
+prints...) or ranks it first on weak evidence with a clear lead. A sure pick among look-alikes
+code cannot tell apart is never paired. Zero wrong pairs matters more than coverage: a wrong pair
+can make false reds.
 
 **Saved answers.** Every answer is kept in the set pack (`page_match.json`, with the candidates
 it was shown, the model, the usage and the cost), so the work list is built again at $0 (a

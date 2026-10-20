@@ -35,8 +35,9 @@ reference, spans lined up, item tags and naming words both print (weighted by ho
 them), the same overall width or height within 4%, a plan against a single elevation
 (contradicts). Code pairs alone only on strong evidence well ahead of the next item
 (`clear_winner`, or `decide`); otherwise the AI page matcher (`page_match.py`) is asked, and
-`agree` makes the pair only when the matcher's pick is among code's top candidates and code does
-not contradict it or clearly prefer another. Zero wrong pairs matters more than coverage.
+`agree` makes the pair only when the matcher is sure and code holds strong evidence for its pick
+or ranks it clearly first, never against a contradiction or code's own other pick. Zero wrong
+pairs matters more than coverage.
 
 Pure: plain values in, a decision out. The work list (`worklist._pair_across`) builds the facts.
 """
@@ -485,10 +486,12 @@ _MAX_NAMED: Final = 3.0
 #: Code pairs on its own score only above this, and this far ahead of the next candidate.
 CODE_BAR: Final = 3.0
 CODE_MARGIN: Final = 2.0
-#: Candidates scored within this of code's best are code's top candidates (`agree`); within
-#: `WEAK_TIER` when code's best holds only weak evidence (it ranks, it cannot rule out).
+#: A sure AI pick with strong code evidence is refused when another item scores this much more;
+#: the matcher's further picks are kept only within this of its first (`agree`).
 TIER: Final = 1.0
-WEAK_TIER: Final = 3.0
+#: With only weak code evidence, a sure AI pick must be code's first by this much (two pieces of
+#: weak evidence: two close sizes, or a size and a naming word).
+WEAK_LEAD: Final = 0.5
 
 
 def tags_in(texts: Iterable[str]) -> frozenset[str]:
@@ -682,7 +685,8 @@ def rank(vendor: Facts, candidates: Sequence[Facts]) -> tuple[Scored, ...]:
         for word in words:
             named += _idf(word_counts, total, word)
         if tags or words:
-            strong = strong or any(_ITEM_TAG.match(t) for t in tags)
+            # An item tag counts as strong only where this item alone prints it.
+            strong = strong or any(_ITEM_TAG.match(t) and tag_counts[t] == 1 for t in tags)
             score += min(_MAX_NAMED, named)
             evidence.append("both print " + ", ".join([*tags, *words][:6]))
         for axis, name in (("h", "width"), ("v", "height")):
@@ -765,10 +769,13 @@ def agree(
       a printed reference / the same printed values, `decide`), else none;
     - the matcher picks an item code contradicts (another section, a plan for an elevation), or
       code clearly picked another one: none (they disagree);
-    - the matcher's pick is code's own pick, or one of code's top candidates (within `TIER`
-      of code's best; `WEAK_TIER` when code's best holds only weak evidence) and the matcher
-      is sure (or code holds strong evidence for it): paired. Its other picks are kept when they
-      are among code's top candidates too (a plan and an elevation of one item);
+    - the matcher's pick is code's own clear pick: paired, sure or not;
+    - otherwise the matcher must be sure, AND either code holds strong evidence for the pick
+      (no other item `TIER` ahead of it), or the pick is code's first on weak evidence by at
+      least `WEAK_LEAD` over every other item. A sure pick among look-alikes code cannot tell
+      apart is never paired (the paid test, 2026-10-20: the matcher was sure of a wrong
+      look-alike once). The matcher's further picks are kept only when code holds strong
+      evidence for them too (a plan and an elevation of one item);
     - the matcher finds none while code picked one: none (they disagree)."""
     by = {s.ref: s for s in ranked}
     open_ = sorted((s for s in ranked if s.contradicts is None), key=lambda s: -s.score)
@@ -804,31 +811,61 @@ def agree(
             f"{UNPAIRED}: the AI page matcher picked {pick}{reason}, but code chose "
             f"{code_pick} ({evidence_words(by[code_pick])}), so they disagree"
         )
-    best = open_[0]
-    # Code's top candidates: within `TIER` of a best that holds strong evidence; when code's best
-    # holds only weak evidence (finish tags, naming words, close sizes), within `WEAK_TIER`.
-    width = TIER if best.strong else WEAK_TIER
-    tier = [s for s in open_ if s.score >= best.score - width]
-    if all(s.ref != pick for s in tier):
-        return (), (
-            f"{UNPAIRED}: the AI page matcher picked {pick}{reason}, but code ranks {best.ref} "
-            f"higher ({evidence_words(best)}; {pick}: {evidence_words(scored)})"
+    if pick == code_pick:
+        # Code's own clear pick, and the matcher's: paired, sure or not.
+        extra = [m for m in dict.fromkeys(answer.matches[1:]) if m != pick and _also(by, m, scored)]
+        chosen = (pick, *extra)
+        return chosen, (
+            f"paired with {', '.join(chosen)}: code's own pick, and the AI page matcher's"
+            f"{reason} ({evidence_words(scored)})"
         )
-    if pick != code_pick and not scored.strong and not answer.confident:
-        others = ", ".join(s.ref for s in tier if s.ref != pick)
+    if not answer.confident:
         return (), (
             f"{UNPAIRED}: the AI page matcher picked {pick} but is not sure{reason}, and code "
-            + (f"cannot tell it from {others}" if others else "holds no strong evidence for it")
+            "has no clear pick of its own"
         )
-    tier_refs = {s.ref for s in tier}
-    chosen = (pick, *(m for m in dict.fromkeys(answer.matches[1:]) if m in tier_refs and m != pick))
-    if pick == code_pick:
-        how = "code's own pick too"
-    elif len(tier) == 1:
-        how = "code's top candidate"
+    best = open_[0]
+    others = [s for s in open_ if s.ref != pick]
+    if scored.strong:
+        # Strong code evidence for the pick (its title on the vendor's sheet, a view reference,
+        # its own item tag...), and no other item clearly ahead of it.
+        if best.ref != pick and best.score - scored.score >= TIER:
+            return (), (
+                f"{UNPAIRED}: the AI page matcher picked {pick}{reason}, but code ranks "
+                f"{best.ref} higher ({evidence_words(best)}; {pick}: {evidence_words(scored)})"
+            )
+        how = "code holds strong evidence for it"
     else:
-        how = f"one of code's {len(tier)} top candidates"
+        # Weak evidence only (finish tags, naming words, close sizes): the pick must be code's
+        # first, ahead of every other item by `WEAK_LEAD` (two pieces of weak evidence), so a
+        # look-alike the matcher was sure of but code cannot tell apart is never paired.
+        runner = others[0].score if others else 0.0
+        if best.ref != pick or scored.score - runner < WEAK_LEAD:
+            return (), (
+                f"{UNPAIRED}: the AI page matcher is sure of {pick}{reason}, but code holds no "
+                "strong evidence for it and does not put it clearly first"
+                + (
+                    f" ({best.ref}: {evidence_words(best)})"
+                    if best.ref != pick
+                    else f" ({pick}: {evidence_words(scored)})"
+                )
+            )
+        how = "code's clear first, on weak evidence"
+    extra = [m for m in dict.fromkeys(answer.matches[1:]) if m != pick and _also(by, m, scored)]
+    chosen = (pick, *extra)
     return chosen, (
-        f"paired with {', '.join(chosen)}: the AI page matcher picked it{reason} and it is "
-        f"{how} ({evidence_words(scored)})"
+        f"paired with {', '.join(chosen)}: the AI page matcher is sure{reason}, and {how} "
+        f"({evidence_words(scored)})"
+    )
+
+
+def _also(by: Mapping[str, Scored], ref: str, pick: Scored) -> bool:
+    """Whether the matcher's further pick is kept beside its first (a plan and an elevation of one
+    item): code holds strong evidence for it too, within `TIER` of the first, uncontradicted."""
+    other = by.get(ref)
+    return (
+        other is not None
+        and other.contradicts is None
+        and other.strong
+        and other.score >= pick.score - TIER
     )
