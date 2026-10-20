@@ -224,6 +224,24 @@ def test_a_roster_check_on_a_pack_still_being_made_is_not_for_sending(
     assert engine_module.LABELS_STEP in str(run.engine.incomplete_note)
 
 
+def test_labels_finishing_while_the_code_checks_run_still_is_not_for_sending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pack turns `ready` while code's checks read its partial labels (#1768 review): the
+    state before the checks counts too."""
+    run = _Run(tmp_path)
+    run.engine.settings = dataclasses.replace(run.engine.settings, full_check_mode="roster")
+    status = json.loads((run.pack / "status.json").read_text())
+    (run.pack / "status.json").write_text(json.dumps({**status, "state": "building"}))
+
+    def labels_finish(engine: Any) -> None:
+        (run.pack / "status.json").write_text(json.dumps(status), encoding="utf-8")
+
+    monkeypatch.setattr(engine_module, "add_run_fit", labels_finish)
+    run.engine.add_code_findings()
+    assert run.engine.code_checks_failed == [engine_module.LABELS_STEP]
+
+
 def test_a_whole_roster_check_gets_no_note(tmp_path: Path) -> None:
     run = _Run(tmp_path)
     run.engine.settings = dataclasses.replace(run.engine.settings, full_check_mode="roster")

@@ -2485,6 +2485,9 @@ class ChatEngine:
             # GV's filler range on the vendor's fillers.
             (CODE_CHECK_NAMES["filler_range"], lambda: add_filler_range(self)),
         )
+        # The pack's state before the checks read its labels counts too: it may turn `ready` while
+        # they run on partial labels (#1768 review).
+        unlabelled = pack_without_labels(self.tools.workspace.set_pack)
         with self.timings.phase("finish_checks"):
             for name, step in steps:
                 try:
@@ -2494,7 +2497,7 @@ class ChatEngine:
                     self.code_checks_failed.append(name)
         if self.settings.mode != "full_check" or self._simple:
             return  # the simple check names its broken steps once, with its other reasons
-        if pack_without_labels(self.tools.workspace.set_pack):
+        if unlabelled or pack_without_labels(self.tools.workspace.set_pack):
             # The roster and the lead go on without labels; code's pairs are then missing.
             self.code_checks_failed.append(LABELS_STEP)
         if self.code_checks_failed:
