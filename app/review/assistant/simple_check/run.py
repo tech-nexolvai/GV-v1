@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 from uuid import uuid4
 
+from app.review.assistant import product_packs
 from app.review.assistant.chat_request import MODELS, ChatModel
 from app.review.assistant.chat_summary import CODE_SUMMARY_NOTE, code_summary
 from app.review.assistant.chat_trust import judged
@@ -254,6 +255,11 @@ class _Run:
     # -- the run --
 
     def run(self) -> MessageOutcome:
+        # The products in scope decide the room and end words code verifies with (#1776).
+        with product_packs.scoped(self.engine.product_scope.products):
+            return self._run()
+
+    def _run(self) -> MessageOutcome:
         engine = self.engine
         workspace = engine.tools.workspace
         folder = workspace.set_pack
@@ -635,7 +641,11 @@ class _Run:
         compare = _compare()
         prompts = import_module("app.review.assistant.simple_check.prompts")
         settings = compare.CompareSettings(**self.options.compare)
-        system = prompts.system_prompt(engine._rules_summary(), engine.product_scope.label)
+        system = prompts.system_prompt(
+            engine._rules_summary(),
+            engine.product_scope.label,
+            packs=product_packs.pack_prompt_parts(engine.product_scope.products).compare_text(),
+        )
         source = compare.PictureSource(folder, engine.tools.workspace.uploads)
         try:
             source.prefetch(items)
@@ -888,7 +898,7 @@ class _Run:
         from concurrent.futures import ThreadPoolExecutor
 
         with ThreadPoolExecutor(max_workers=4, thread_name_prefix="gv-simple-resolve") as pool:
-            list(pool.map(one, entering))
+            list(pool.map(product_packs.carry(one), entering))
         if settings.web_search and not self.options.replay:
             routes = []
             for _n, v, item in entering:
@@ -1990,6 +2000,30 @@ def replay_with_funnel(
 ) -> tuple[dict[str, list[Verified]], dict[str, Any]]:
     """`replay`, and the replay's funnel (#1767, `funnel.build`): the local eval tools write it
     for an offline replay ($0). Nothing is written here."""
+    with product_packs.scoped(products):
+        return _replay_with_funnel(
+            run_dir,
+            pack_dir,
+            main_file=main_file,
+            products=products,
+            read=read,
+            ink=ink,
+            number=number,
+            resolve=resolve,
+        )
+
+
+def _replay_with_funnel(
+    run_dir: Path,
+    pack_dir: Path,
+    *,
+    main_file: str | None,
+    products: Sequence[str] | None,
+    read: ValueReader | None,
+    ink: Any,
+    number: Any,
+    resolve: resolve_module.ResolveSettings | None,
+) -> tuple[dict[str, list[Verified]], dict[str, Any]]:
     worklist = import_module("app.review.assistant.simple_check.worklist")
     work = worklist.build_worklist(pack_dir, main_file)
     items = work.items

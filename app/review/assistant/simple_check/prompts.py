@@ -176,13 +176,18 @@ Answer:
 {json.dumps(EXAMPLE_REPLY, separators=(",", ":"))}"""
 
 
-def system_prompt(rules_summary: str = "", scope_words: str = "All products") -> str:
-    """The run's system prompt: `SYSTEM_PROMPT`, the products in scope and GV's rules for them.
-    The same bytes for every drawing of a run (the prompt cache keys on them)."""
+def system_prompt(
+    rules_summary: str = "", scope_words: str = "All products", *, packs: str = ""
+) -> str:
+    """The run's system prompt: `SYSTEM_PROMPT`, the products in scope, what their product packs add
+    (`packs`: `product_packs.pack_prompt_parts(products).compare_text()`, their checklists, what
+    counts as ours, extra end words, worked examples; #1776) and GV's rules for them. The same bytes
+    for every drawing of a run (the prompt cache keys on them)."""
     rules = rules_summary.strip() or "- none given for this run"
+    added = f"\n\n{packs.strip()}" if packs.strip() else ""
     return (
         f"{SYSTEM_PROMPT}\n\nProducts in scope for this review: {scope_words}. Compare every "
-        "dimension and item of the drawing; code files each under its product.\n\nGV's own rules "
+        f"dimension and item of the drawing; code files each under its product.{added}\n\nGV's own rules "
         "for these products (standards the vendor must follow even where the architect is "
         f"silent; code applies them to the values):\n{rules}"
     )

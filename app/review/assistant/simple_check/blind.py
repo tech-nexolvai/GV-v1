@@ -49,6 +49,7 @@ from uuid import uuid4
 
 from app.review.assistant.chat_request import MODELS, ChatModel, thinking_config
 from app.review.assistant.chat_tools import new_step
+from app.review.assistant.product_packs import carry, pack_prompt_parts
 from app.review.assistant.reply_json import json_of_reply, log_unreadable
 from app.review.assistant.simple_check.prompts import kinds_sentence
 from app.review.assistant.simple_check.verify import (
@@ -65,6 +66,7 @@ if TYPE_CHECKING:
 __all__ = [
     "BLIND_SCHEMA",
     "BLIND_SYSTEM",
+    "PACK_KINDS",
     "BlindSettings",
     "answer_of",
     "look",
@@ -93,6 +95,9 @@ _PROMPT_TOKENS: Final = 12_000
 _WORKERS: Final = 6
 #: Room kept round a value code has no label for, in its close crop (points).
 _CLOSE_PT: Final = 48.0
+#: The product packs' code checks' red candidates (`pack_checks`): a specification value and a
+#: count, each looked at like a value without a label (two close views), asked about plainly.
+PACK_KINDS: Final = ("attribute", "count")
 
 #: Where an end lands: the compare prompt's words (`schema.END_WORDS`), then what it is.
 _END_HELP: Final = (
@@ -184,6 +189,18 @@ def question(
             "architect_to). verdict: same_thing when both run between the same two points, "
             "different_points when they do not, unsure when the pictures do not show it. "
             "millwork: unsure." + kinds
+        )
+    if kind in PACK_KINDS:
+        what = "property (a specification value)" if kind == "attribute" else "count of a part"
+        return (
+            "Picture 1 is the vendor's shop drawing and picture 2 a close view of one callout on "
+            "it (in the middle of picture 2). Picture 3 is the architect's drawing and picture 4 a "
+            f"close view of one callout on it (in its middle). Do the two callouts state the same "
+            f"{what} of the same item? pick: none. verdict: same_thing when they do (whatever "
+            "values each states), different_points when they are about different items or "
+            "different things, unsure when the pictures do not show it. vendor_from, vendor_to, "
+            "architect_from, architect_to: other. vendor_ink_black: is the vendor's callout in "
+            "black or grey ink? millwork: unsure."
         )
     if kind == "values":
         return (
@@ -306,7 +323,7 @@ def pictures(engine: ChatEngine, verified: Verified, item: Item) -> list[dict[st
         sheets = (item.vendor.sheet, region.sheet)
         return [*content, {"type": "text", "text": question(kind, ref, None, sheets)}]
     finding = verified.finding
-    if kind == "values":
+    if kind == "values" or kind in PACK_KINDS:
         v_box, a_box = finding.get("vendor_box"), finding.get("arch_box")
         if not isinstance(v_box, Mapping) or not isinstance(a_box, Mapping):
             raise ValueError("a value has no box")
@@ -320,7 +337,7 @@ def pictures(engine: ChatEngine, verified: Verified, item: Item) -> list[dict[st
             *_crop(engine, region, box=_close(a_box)),
         ]
         sheets = (item.vendor.sheet, region.sheet)
-        return [*content, {"type": "text", "text": question("values", None, None, sheets)}]
+        return [*content, {"type": "text", "text": question(kind, None, None, sheets)}]
     a_box = finding.get("arch_box")
     page = int(a_box.get("page") or 0) if isinstance(a_box, Mapping) else 0
     region = _drawing_of(item, page)
@@ -363,7 +380,7 @@ def look(
             model=model,
             effort=settings.effort,
             thinking=thinking_config(model, False),
-            system=BLIND_SYSTEM,
+            system=BLIND_SYSTEM + pack_prompt_parts().blind_text(),
             tools=(),
             messages=[{"role": "user", "content": content}],
             final=False,
@@ -439,4 +456,4 @@ def look_all(
     if not candidates:
         return []
     with ThreadPoolExecutor(max_workers=_WORKERS, thread_name_prefix="gv-simple-blind") as pool:
-        return list(pool.map(one, candidates))
+        return list(pool.map(carry(one), candidates))

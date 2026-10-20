@@ -62,6 +62,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final, Literal
 
+from app.review.assistant.product_packs import screen_words
 from app.review.assistant.spot_locate import spot_words
 
 __all__ = [
@@ -358,8 +359,9 @@ def _spans(finding: Mapping[str, Any]) -> tuple[str, str] | None:
     vendor, architect = reply.get("vendor_spans"), reply.get("architect_spans")
     if not isinstance(vendor, Mapping) or not isinstance(architect, Mapping) or vendor == architect:
         return None
-    v = _SPAN_WORDS.get(str(vendor.get("to")), "")
-    a = _SPAN_WORDS.get(str(architect.get("to")), "")
+    words = screen_words(_SPAN_WORDS)  # the core's, then the product packs' (#1776)
+    v = words.get(str(vendor.get("to")), "")
+    a = words.get(str(architect.get("to")), "")
     return (v, a) if v and a else None
 
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import Enum, StrEnum
+from typing import Any
 
 #: The vocabulary is **provisional** until Q20 (#16) confirms the codes are final.
 #:
@@ -108,7 +109,29 @@ class SemanticType(str, Enum):
         people debugging a failed check are usually us. This is what keeps the codes usable.
         """
         described = CLIENT_CODES.get(self.value)
-        return described.description if described else self.value.replace("_", " ")
+        if described:
+            return described.description
+        pack = _pack_type(self.value)
+        return pack.meaning if pack is not None else self.value.replace("_", " ")
+
+    @classmethod
+    def _missing_(cls, value: object) -> SemanticType | None:
+        """A product pack's own code (`semantic_types` in `vocabulary/products/<id>/pack.yaml`,
+        #1776): made on first use, once, so a pack's GV rule can name it with no code change. The
+        core codes above are members; any other value is still refused."""
+        if not isinstance(value, str) or _pack_type(value) is None:
+            return None
+        member = str.__new__(cls, value)
+        member._name_ = value
+        member._value_ = value
+        return cls._value2member_map_.setdefault(value, member)  # type: ignore[return-value]
+
+
+def _pack_type(code: str) -> Any:
+    """The product pack semantic type with this code (`PackSemanticType`), or None."""
+    from vocabulary.product_registry import registry
+
+    return next((t for p in registry().products for t in p.semantic_types if t.code == code), None)
 
 
 class Acquisition(StrEnum):
@@ -325,6 +348,8 @@ def resolve_semantic(name: str) -> SemanticType:
         by_name = _BY_NAME.get(candidate.upper().replace(".", "_").replace(" ", "_"))
         if by_name is not None:
             return by_name
+    if _pack_type(text) is not None:
+        return SemanticType(text)
     raise UnknownVocabularyError(
         f"unknown semantic type {name!r}. Known: the client's codes ({', '.join(sorted(CLIENT_CODES))}) "
         "or our descriptive aliases. A code the client has not defined must not be invented — "

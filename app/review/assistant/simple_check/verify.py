@@ -82,8 +82,16 @@ from app.review.assistant.dim_index import parse_ref
 from app.review.assistant.finding_checks import to_inches
 from app.review.assistant.full_check_advocate import Check, code_pairs, is_slip, same_extent
 from app.review.assistant.full_check_plan import read_page_map
-from app.review.assistant.product_scope import ProductScope, named_products
+from app.review.assistant.product_packs import (
+    EndVocabulary,
+    end_vocabulary,
+    in_scope,
+    room_pattern,
+    scoped,
+)
+from app.review.assistant.product_scope import named_products
 from app.review.assistant.read_number import Reading, Request
+from app.review.assistant.simple_check import pack_checks
 from app.review.assistant.simple_check.set_pages import SetPages, set_pages
 
 __all__ = [
@@ -163,10 +171,10 @@ _ROOM: Final = (
     r"|column|chandelier|sconce|light fixture|sprinkler|grille|diffuser|\btv\b|television"
     r"|wall ?covering|\bpaint|\btile|by others|by g\.?c\b|\bn\.?i\.?c\b|corner guard|crown"
 )
-_ROOM_WORDS: Final = re.compile(_ROOM, re.IGNORECASE)
 #: An end's kind, from the words the model (or the blind look) writes, in this order: the first
 #: that matches wins. `room` is room context or another trade's work. The compare prompt's end words
-#: (`schema.END_WORDS`, `top_of_counter`) read as words.
+#: (`schema.END_WORDS`, `top_of_counter`) read as words. These are the core (the kitchen's): the
+#: products in scope change the room words and add their packs' end words (`_ends`, #1776).
 _END_KINDS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = tuple(
     (kind, re.compile(pattern, re.IGNORECASE))
     for kind, pattern in (
@@ -234,6 +242,28 @@ _STRICT: Final = frozenset(
 #: A centre line named alone may be the centre of any of these.
 _CENTRED: Final = frozenset({"centre", "outlet", "sink", "appliance"})
 _SIDE: Final = re.compile(r"\b(left|right)\b", re.IGNORECASE)
+
+
+class _RoomWords:
+    """Room context for the products in scope (`product_packs.room_pattern`): `_ROOM` less the
+    in-scope products' own words, plus their packs' `room_words_extra` (#1776)."""
+
+    def search(self, text: str) -> re.Match[str] | None:
+        return _compiled(room_pattern(_ROOM)).search(text)
+
+
+_ROOM_WORDS: Final = _RoomWords()
+
+
+def _compiled(pattern: str) -> re.Pattern[str]:
+    return re.compile(pattern, re.IGNORECASE)  # re caches compiled patterns
+
+
+def _ends() -> EndVocabulary:
+    """The end kinds for the products in scope: the core above plus their packs' end words."""
+    return end_vocabulary(_END_KINDS, _STRICT, _CENTRED, _ROOM)
+
+
 _NOT_WORD: Final = re.compile(r"[^a-z0-9]+")
 
 type Ends = Literal["same", "different", "unclear", "room"]
@@ -248,7 +278,7 @@ def end_kind(text: object) -> End:
         return "none", None
     side = _SIDE.search(words)
     named = side.group(1).lower() if side else None
-    for kind, pattern in _END_KINDS:
+    for kind, pattern in _ends().kinds:
         if pattern.search(words):
             return kind, named
     return "other", named
@@ -268,9 +298,10 @@ def _end_same(a: End, b: End, a_words: str, b_words: str) -> str:
         return "same" if a_words == b_words else "unclear"
     if kind_a == kind_b:
         return "same"
-    if {kind_a, kind_b} <= _CENTRED and "centre" in (kind_a, kind_b):
+    ends = _ends()
+    if {kind_a, kind_b} <= ends.centred and "centre" in (kind_a, kind_b):
         return "same"
-    if kind_a in _STRICT and kind_b in _STRICT:
+    if kind_a in ends.strict and kind_b in ends.strict:
         return "different"
     return "unclear"
 
@@ -1726,6 +1757,10 @@ def _verify_other(
     if isinstance(a_page, int) and a_page != item.vendor.page:
         base["vs_page"] = a_page
     other = _Other(key, kind, entry, base)
+    # A spec value or a count the in-scope product packs teach code to read (#1776).
+    proved = pack_checks.check(entry, kind, verdict, key, base, item, pack, a_file)
+    if proved is not None:
+        return proved
     if verdict == "same":
         return Verified(key, kind, "covered", "the AI reads it the same; code cannot check it")
     if verdict == "no_architect_value":
@@ -2121,13 +2156,29 @@ def verify_answer(
     module). `ink(label)`: the vendor value's own ink (`full_check_advocate.ink_colour` of its box
     on the markup-free copy), asked only for a red candidate; None blocks red. `read`: `verify_value`
     at a spot, for an item without labels; None: such an item is never red. `products`: the check's
-    product scope (None: every active product). `number`: `read_number` (#1746), called by itself
-    for a value without a label that `read` could not confirm or the AI could not read, and for a
-    labelled value whose inches code cannot read (#1781)."""
+    product scope (None: every active product): its packs' room and end words apply (#1776).
+    `number`: `read_number` (#1746), called by itself for a value without a label that `read` could
+    not confirm or the AI could not read, and for a labelled value whose inches code cannot read
+    (#1781)."""
+    # None keeps the check's own scope (the resolve loop gives none, #1776 review), else every
+    # active product.
+    scope = tuple(products) if products else in_scope()
+    with scoped(scope):
+        return _verify_answer(result, item, pack, ink, read, scope, number)
+
+
+def _verify_answer(
+    result: Any,
+    item: Item,
+    pack: Pack,
+    ink: Ink | None,
+    read: ValueReader | None,
+    scope: tuple[str, ...],
+    number: NumberReader | None,
+) -> Verification:
     data = _plain_data(result)
     if not isinstance(data, Mapping):
         data = {}
-    scope = tuple(products) if products else ProductScope.of(None).products
     out = Verification(item)
     labels = vendor_labels(item, pack)
     own = {_ref(label) for label in labels}
