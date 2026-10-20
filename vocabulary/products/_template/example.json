@@ -1,0 +1,16 @@
+{
+  "input": "Work item p5.v1 (vendor round 1). Image 1: the vendor drawing. Image 2: the architect drawing p4.a1.\nVendor labels: p5.D1 18\" | p5.D2 60\" | p5.D3 4\"\nArchitect labels (p4.a1): p4.D1 18\" | p4.D2 62\"\n(D2 is the floor to the widget's centre on both. D3 is the knob's projection; the architect gives none. The architect calls for (2) knobs, the vendor draws 3.)",
+  "reply": {
+    "work_item": "p5.v1",
+    "pairs": [
+      {"vendor_label": "p5.D1", "architect_label": "p4.D1", "measures": "widget width", "vendor_from": "other (left edge of widget)", "vendor_to": "other (right edge of widget)", "architect_from": "other (left edge of widget)", "architect_to": "other (right edge of widget)", "verdict": "same", "note": ""},
+      {"vendor_label": "p5.D2", "architect_label": "p4.D2", "measures": "mounting height to the widget's centre", "vendor_from": "floor", "vendor_to": "widget_centre", "architect_from": "floor", "architect_to": "widget_centre", "verdict": "different", "note": ""},
+      {"vendor_label": "p5.D3", "architect_label": null, "measures": "knob projection", "vendor_from": "other (widget face)", "vendor_to": "other (knob face)", "architect_from": "", "architect_to": "", "verdict": "no_architect_value", "note": ""}
+    ],
+    "other_items": [
+      {"kind": "layout_count", "what": "number of knobs", "vendor": "(3) KNOBS", "architect": "(2) KNOBS", "vendor_image": 1, "vendor_box_px": [400, 220, 520, 250], "architect_image": 2, "architect_box_px": [380, 210, 500, 240], "verdict": "different", "millwork": true}
+    ],
+    "unaccounted_labels": [],
+    "same_drawing": "yes"
+  }
+}

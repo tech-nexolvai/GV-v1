@@ -98,7 +98,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from app.review.assistant import hand_labels, ink_labels
 from app.review.assistant import verify_value as vv
-from app.review.assistant.finding_checks import to_inches, units_check
+from app.review.assistant.finding_checks import inch_first_mm, to_inches, units_check, value_flags
 from app.review.assistant.measure import _pieces
 from extraction.visible_text import ink_picture
 
@@ -172,6 +172,9 @@ class _Reading:
     mm: str | None = None
     units: str | None = None
     route: str = "text"
+    flags: tuple[str, ...] = ()
+    """The notes written with the value (`finding_checks.value_flags`, #1778): `reference`
+    (`(24")`), `vif` (`VIF 24"`), `approx` (`24"+/-`)."""
 
 
 @dataclass(slots=True)
@@ -187,6 +190,10 @@ class PageLabels:
     the scale measured from the dimensions)."""
     phrases: list[dict[str, Any]] = field(default_factory=list)
     """Every printed phrase: `{text, box, side}` (`drawing_notes` finds the notes and tags)."""
+    metric: list[dict[str, Any]] = field(default_factory=list)
+    """Millimetre-only values (`794mm`, #1778): `{text, mm, box, side}`. Never a label: inches
+    count, millimetres are never a verdict operand, and 794 mm is no exact number of inches; listed
+    so the page is known to print dimensions."""
 
 
 # ---- reading the page once -----------------------------------------------------------------------
@@ -375,11 +382,66 @@ def _row_readings(chars: Sequence[Any], font: float) -> list[_Reading]:
             value = to_inches(joined)
             if value is not None and value > 0:
                 group = [c for _, part in run for c in part]
-                out.append(_reading(joined, value, group, bare=_bare(joined)))
+                before = tokens[start - 1][0] if start > 0 else ""
+                after = tokens[start + size][0] if start + size < len(tokens) else ""
+                mm = inch_first_mm(joined)
+                out.append(
+                    _reading(
+                        joined,
+                        value,
+                        group,
+                        bare=_bare(joined),
+                        mm=mm,
+                        units=units_check(joined) if mm is not None else None,
+                        flags=_flags(joined, before, after),
+                    )
+                )
                 start += size
                 break
         else:
             start += 1
+    return out
+
+
+#: A word or sign written just before a value that notes it (`VIF 24"`, `± 24"`), or just after
+#: it (`24" +/-`, `24" VIF`): its flag is kept on the label (#1778).
+_NOTE_BEFORE: Final = re.compile(r"^(?:V\.?I\.?F\.?|APPROX\.?|\+/-|\+-|±)$", re.IGNORECASE)
+_NOTE_AFTER: Final = re.compile(r"^(?:V\.?I\.?F\.?|\(V\.?I\.?F\.?\)|\+/-|\+-|±)$", re.IGNORECASE)
+#: A millimetre-only value: `794mm`, `794 mm` (25 mm or more: smaller is a gap or a reveal note).
+_METRIC: Final = re.compile(r"(?<![\d./\[])(\d{2,5}(?:\.\d+)?)\s?mm\b\.?(?!\s*\[)", re.IGNORECASE)
+_METRIC_MIN_MM: Final = Decimal(25)
+
+
+def _flags(text: str, before: str, after: str) -> tuple[str, ...]:
+    """The value's own flags (`value_flags`) and those of the note words beside it."""
+    found = list(value_flags(text))
+    for word, pattern in ((before, _NOTE_BEFORE), (after, _NOTE_AFTER)):
+        if word and pattern.match(word):
+            for flag in value_flags(word):
+                if flag not in found:
+                    found.append(flag)
+    return tuple(found)
+
+
+def _metric(
+    phrases: Sequence[tuple[str, Box]], halves: Sequence[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    """The page's millimetre-only values (`PageLabels.metric`), each with its phrase's box."""
+    out: list[dict[str, Any]] = []
+    for text, box in phrases:
+        if "[" in text or "(" in text:
+            continue  # millimetres with their inches: the label's own
+        for found in _METRIC.finditer(text):
+            if Decimal(found.group(1)) < _METRIC_MIN_MM:
+                continue
+            out.append(
+                {
+                    "text": found.group(0).strip(),
+                    "mm": found.group(1),
+                    "box": [round(v, 2) for v in box],
+                    "side": _side(box, halves),
+                }
+            )
     return out
 
 
@@ -1575,6 +1637,7 @@ def _label(reading: _Reading, line: dict[str, Any] | None, side: str) -> dict[st
         "dim_line": None if line is None else line["dim_line"],
         "extension": None if line is None else line["extension"],
         "span_pt": None if line is None else line["span_pt"],
+        **({"flags": list(reading.flags)} if reading.flags else {}),
     }
 
 
@@ -1623,6 +1686,7 @@ def page_labels(
             {"text": text, "box": [round(v, 2) for v in box], "side": _side(box, halves)}
             for text, box in phrases[:MAX_PHRASES]
         ],
+        metric=_metric(phrases, halves),
     )
     if drawn_budget_s > 0:
         _add_drawn(
@@ -2353,6 +2417,13 @@ def build_dims(
         if isinstance(entry, Mapping):
             key = (str(entry.get("file")), int(entry.get("page") or 0))
             halves[key] = [h for h in entry.get("halves") or [] if isinstance(h, Mapping)]
+            # A page of a separate upload not yet known to be a drawing (`set_pack`, #1772): its
+            # candidate whole-page drawing gives a side to every label outside its pasted
+            # drawings (listed last, so a pasted drawing keeps its own labels), so its pen
+            # strokes are read too; the set pack decides it from these labels afterwards.
+            candidate = entry.get("candidate")
+            if isinstance(candidate, Mapping):
+                halves[key].append(candidate)
     document: dict[str, Any] = {"version": LABELS_VERSION, "files": list(pdfs), "pages": []}
     for name, pdf in pdfs.items():
         count = 0
@@ -2373,6 +2444,7 @@ def build_dims(
                     "labels": found.labels,
                     "scale_notes": found.scale_notes,
                     "phrases": found.phrases,
+                    **({"metric": found.metric} if found.metric else {}),
                 }
             )
             if on_page is not None:
